@@ -494,8 +494,9 @@ function buildUsageSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean)
 	return { id: "usage", text: dimText(theme, tokens), width: visibleWidth(tokens) }
 }
 
-function buildContextSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
-	if (!pinned) return null
+// Context is one of the three hardcoded core elements (with permissions and
+// model): it always renders, no pinned gate.
+function buildContextSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const contextUsage = ctx.getContextUsage()
 	const pct = contextUsage?.percent ?? 0
 
@@ -615,8 +616,12 @@ const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
 /**
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
  * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
+ *
+ * Extension-status-driven like lsp/dap: renders whenever the pull-request-status
+ * extension sets a status, unless the user opted out via `hidden`.
  */
-function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
 	const statuses = statusLineData.getExtensionStatuses()
 	const status = statuses.get("work-pr")
 	if (!status) return null
@@ -724,8 +729,8 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 	// Opt-out set for defaultVisible, extension-status-driven segments
-	// (lsp/dap): they render whenever their extension sets a status, so the
-	// customize UI hides them here instead of through pinning.
+	// (lsp/dap/work-pr): they render whenever their extension sets a status, so
+	// the customize UI hides them here instead of through pinning.
 	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
 	const tags = peekActiveTags(ctx.sessionManager)
@@ -740,14 +745,14 @@ export function buildStatusLineSegments(
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildAgentsSegment(theme, pinned.has("agents")),
-		buildContextSegment(ctx, theme, pinned.has("context")),
+		buildContextSegment(ctx, theme),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
 		buildDapSegment(theme, statusLineData, hidden.has("dap")),
-		buildWorkPrSegment(theme, statusLineData),
+		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
 	].filter((s): s is Segment => s !== null)
 }
 
@@ -766,8 +771,13 @@ const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
 ])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
-export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {
-	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED).filter((s) => CONTROLS_LINE_IDS.has(s.id))
+export function buildControlsLineSegments(
+	buildCtx: StatusLineBuildContext,
+	// Same opt-out semantics as the main status line: a hidden work-pr stays
+	// out of the script controls line too.
+	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
+): Segment[] {
+	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED, hidden).filter((s) => CONTROLS_LINE_IDS.has(s.id))
 }
 
 export class StatusLine implements Component {
@@ -802,6 +812,10 @@ export class StatusLine implements Component {
 	render(width: number): string[] {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
+		// Context is hardcoded: it always renders, and pinned membership only
+		// selects its display group. Force-add so even configs that unpinned it
+		// keep the default right-group placement.
+		pinnedSet.add("context")
 		const hiddenSet = new Set<SegmentId>(config.hidden)
 		const allSegments = buildStatusLineSegments(
 			{ ctx: this.ctx, theme: this.theme, statusLineData: this.statusLineData },

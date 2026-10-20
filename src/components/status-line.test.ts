@@ -18,6 +18,7 @@ import {
 	buildScriptPayload,
 	buildStatusLineSegments,
 	renderFittedLine,
+	type SegmentId,
 	SHORTCUT_TAIL,
 	StatusLine,
 	StatusLineScript,
@@ -212,6 +213,23 @@ describe("buildScriptPayload", () => {
 			statusLineData: createMockStatusLineData({ workPr: `${statusBranch} · PR #7 open`, gitBranch: branch }),
 		}
 		expect(buildStatusLineSegments(context, new Set()).some((item) => item.id === "work-pr")).toBe(false)
+	})
+	it("omits work-pr from both segment pools when hidden via the customize opt-out", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({
+				workPr: "feature · PR #7 open",
+				workPrUrl: "https://github.com/example/repo/pull/7",
+				gitBranch: "feature",
+			}),
+		}
+		const hidden = new Set<SegmentId>(["work-pr"])
+		expect(buildStatusLineSegments(context, new Set(), hidden).some((item) => item.id === "work-pr")).toBe(false)
+		expect(buildControlsLineSegments(context, hidden).some((item) => item.id === "work-pr")).toBe(false)
+		// No hidden set (the default before this toggle existed): still shows.
+		expect(buildStatusLineSegments(context, new Set()).some((item) => item.id === "work-pr")).toBe(true)
+		expect(buildControlsLineSegments(context).some((item) => item.id === "work-pr")).toBe(true)
 	})
 	it.each([
 		["PR #7 open", "#7", "https://github.com/example/repo/pull/7"],
@@ -852,7 +870,9 @@ describe("StatusLine segment coverage", () => {
 		withPinned(["budget"], () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
-			const compact = renderVisible(statusLine, 60)
+			// Width 72 (was 60): context is now hardcoded and always occupies
+			// ~9 columns — the same compaction window needs that extra room.
+			const compact = renderVisible(statusLine, 72)
 			const shed = renderVisible(statusLine, 42)
 
 			expect(visible).not.toContain("Credits:")
@@ -1176,12 +1196,20 @@ describe("status line pinning", () => {
 		})
 	})
 
-	it("unpinned context is always hidden regardless of pct", () => {
+	it("context always renders regardless of pinned membership (hardcoded core element)", () => {
 		withPinned([], () => {
-			// Hidden at 0%
-			expect(stripAnsi(makeStatusLine({ percent: 0 }).render(200)[0])).not.toContain("ctx")
-			// Hidden even at 75%
-			expect(stripAnsi(makeStatusLine({ percent: 75 }).render(200)[0])).not.toContain("ctx")
+			expect(stripAnsi(makeStatusLine({ percent: 0 }).render(200)[0])).toContain("0% ctx")
+			expect(stripAnsi(makeStatusLine({ percent: 75 }).render(200)[0])).toContain("75% ctx")
+		})
+	})
+
+	it("context keeps the right-group placement even when a config unpinned it", () => {
+		withPinned([], () => {
+			const visible = stripAnsi(makeStatusLine({ percent: 50 }).render(200)[0])
+			// Nothing else pinned: the unpinned model leads, and the force-pinned
+			// context still lands after it in the right group.
+			expect(visible.indexOf("ctrl+p")).toBeGreaterThanOrEqual(0)
+			expect(visible.indexOf("50% ctx")).toBeGreaterThan(visible.indexOf("ctrl+p"))
 		})
 	})
 
@@ -1366,6 +1394,22 @@ describe("status line priority shedding", () => {
 			expect(visible).not.toContain("js-debug")
 		})
 	})
+
+	it("hidden work-pr is omitted while other defaultVisible segments remain", () => {
+		const data = createMockStatusLineData({
+			permissionsMode: "● default",
+			lsp: "LSP:typescript-language-server",
+			workPr: "feature · PR #7 open",
+			gitBranch: "feature",
+		})
+		expect(renderVisibleWith(data, 200)).toContain("PR #7")
+
+		withHidden(["work-pr"], () => {
+			const visible = renderVisibleWith(data, 200)
+			expect(visible).not.toContain("PR #7")
+			expect(visible).toContain("typescript-language-server")
+		})
+	})
 })
 
 describe("script controls line (statusLine.command path)", () => {
@@ -1439,6 +1483,20 @@ describe("script controls line (statusLine.command path)", () => {
 		const { visible } = controlsLine(80)
 		expect(visible).toContain("Budget: 13.73%")
 		expect(visible).not.toContain("$274.59/$2k")
+	})
+
+	it("omits work-pr from the controls line when hidden", () => {
+		const data = createMockStatusLineData({ permissionsMode, workPr: "feature · PR #7 open", gitBranch: "feature" })
+		const build = (hidden?: Set<SegmentId>) =>
+			stripAnsi(
+				renderFittedLine(
+					buildControlsLineSegments({ ctx: createMockContext(), theme, statusLineData: data }, hidden),
+					200,
+					theme,
+				),
+			)
+		expect(build()).toContain("PR #7")
+		expect(build(new Set<SegmentId>(["work-pr"]))).not.toContain("PR #7")
 	})
 })
 

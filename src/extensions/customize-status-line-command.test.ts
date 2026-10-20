@@ -183,14 +183,9 @@ describe("status line bar: default content", () => {
 // ── 2. Status line bar: toggling ──────────────────────────────────────────────
 
 describe("status line bar: toggling", () => {
-	it("unpinning context removes the ctx segment", () => {
+	it("context always renders regardless of pinned writes — it is a hardcoded core element", () => {
 		setStatusLineElementPinned("context", false)
-		expect(renderStatusLine()).not.toContain("ctx")
-	})
-
-	it("re-pinning context after unpinning restores the ctx segment", () => {
-		setStatusLineElementPinned("context", false)
-		expect(renderStatusLine()).not.toContain("ctx")
+		expect(renderStatusLine()).toContain("ctx")
 		setStatusLineElementPinned("context", true)
 		expect(renderStatusLine()).toContain("ctx")
 	})
@@ -211,10 +206,14 @@ describe("status line bar: toggling", () => {
 		expect(renderStatusLine()).toContain("Ferment:")
 	})
 
-	it("unpinning all three defaults shows none of their segments", () => {
+	it("unpinning the togglable defaults hides them; hardcoded context still renders", () => {
 		for (const id of DEFAULT_STATUS_LINE_PINNED) setStatusLineElementPinned(id, false)
 		const visible = renderStatusLine()
-		expect(visible).not.toContain("ctx")
+		expect(visible).not.toContain("agent")
+		expect(visible).not.toContain("↑")
+		expect(visible).not.toContain("thinking")
+		// Context is no longer togglable: it survives unpinning.
+		expect(visible).toContain("ctx")
 	})
 })
 
@@ -223,7 +222,6 @@ describe("status line bar: toggling", () => {
 describe("customize-status-line popover", () => {
 	it("default state: default-pinned elements show '● ElementLabel'", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
-		expect(text).toContain("● Context")
 		expect(text).toContain("● Agents")
 		expect(text).toContain("● Thinking level")
 		expect(text).toContain("○ Phase")
@@ -241,6 +239,7 @@ describe("customize-status-line popover", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("× Permissions mode")
 		expect(text).toContain("× Model")
+		expect(text).toContain("× Context")
 	})
 
 	it("pressing space on ferment pins it: popover shows '● Ferment' AND status line bar shows ferment", () => {
@@ -263,12 +262,13 @@ describe("customize-status-line popover", () => {
 		expect(renderStatusLine()).toContain("Ferment:")
 	})
 
-	it("pressing space on context unpins it: popover shows '○ Context' AND status line bar loses ctx", () => {
+	it("pressing space on context is a no-op: context is a hardcoded core element and always renders", () => {
 		const component = makeComponent(5) // context at STATUS_LINE_ELEMENTS index 5
-		component.handleInput(" ") // unpin context (was default-pinned)
+		component.handleInput(" ")
 
-		expect(strip(component.render(80).join("\n"))).toContain("○ Context")
-		expect(renderStatusLine()).not.toContain("ctx")
+		expect(strip(component.render(80).join("\n"))).toContain("× Context")
+		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
+		expect(renderStatusLine()).toContain("ctx")
 	})
 })
 
@@ -324,6 +324,23 @@ describe("customize-status-line popover: defaultVisible LSP/DAP rows", () => {
 		expect(visible).not.toContain("typescript-language-server")
 		expect(visible).toContain("js-debug")
 	})
+
+	it("shows the Branch / PR row checked (●) by default", () => {
+		const text = strip(makeComponent().render(80).join("\n"))
+		expect(text).toContain("● Branch / PR")
+	})
+
+	it("pressing space on Branch / PR hides it: row goes ○ and settings gain hidden:[work-pr]", () => {
+		const component = makeComponent(14) // work-pr at STATUS_LINE_ELEMENTS index 14 (last)
+		component.handleInput(" ")
+
+		expect(strip(component.render(80).join("\n"))).toContain("○ Branch / PR")
+		expect(readStatusLineConfig().hidden).toEqual(["work-pr"])
+		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
+
+		component.handleInput(" ") // toggle back
+		expect(readStatusLineConfig().hidden).toEqual([])
+	})
 })
 
 /** Run the command's no-UI branch (hasUI=false) and return the notified text. */
@@ -341,11 +358,13 @@ async function runNoUiCommand(): Promise<string> {
 }
 
 describe("customize-status-line command: no-UI branch", () => {
-	it("lists LSP and DAP rows checked ([●]) by default", async () => {
+	it("lists LSP, DAP and Branch / PR rows checked ([●]) by default, core three as [×]", async () => {
 		const text = await runNoUiCommand()
 		expect(text).toContain("Customize Status Line")
 		expect(text).toContain("[●] LSP")
 		expect(text).toContain("[●] DAP")
+		expect(text).toContain("[●] Branch / PR")
+		expect(text).toContain("[×] Context")
 	})
 
 	it("mirrors hidden state: [○] LSP after hiding via config, DAP stays [●]", async () => {

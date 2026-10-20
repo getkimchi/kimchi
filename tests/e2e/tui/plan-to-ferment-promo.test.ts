@@ -101,8 +101,11 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 
 			// Stage 5: dropdown closes — Ferment is running under auto permissions.
 			// Status-line order is now permissions/model first, then ferment, so
-			// look for "auto" leading and "Ferment: ... · Running" somewhere after.
-			await waitForText(terminal, /auto · .* · Ferment: .* · Running/, { timeoutMs: STREAM_TIMEOUT_MS })
+			// look for "auto" leading and "Ferment: ... · Running" (or just
+			// "<name> · Running") somewhere after. With context hardcoded into the
+			// status line, the 120-col fixture line can overflow enough for the
+			// compaction ladder to drop the "Ferment: " prefix — accept both forms.
+			await waitForText(terminal, /auto · .* · (?:Ferment: )?.*? · Running/, { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("status line transitioned to auto — ferment created")
 
 			// Stage 6: verify the ferment artifact was written.
