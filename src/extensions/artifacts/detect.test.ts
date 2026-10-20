@@ -33,11 +33,14 @@ describe("artifactsFromToolCall", () => {
 		// and from write/edit args (map lookup) — a drift in either list
 		// silently disables one path.
 		for (const ext of Object.keys(ARTIFACT_EXTENSIONS)) {
-			const out = artifactsFromToolCall("bash", {}, textResult(`wrote docs/file${ext}`), cwd, { verifyExists: false })
+			// Sniffed from output text: exists on disk with a fresh mtime.
+			touch(`f${ext}`)
 			expect(
-				out.map((a) => a.name),
-				`bash sniff of file${ext}`,
-			).toEqual([`file${ext}`])
+				artifactsFromToolCall("bash", {}, textResult(`wrote f${ext}`), cwd, { windowStart: Date.now() - 1000 }).map(
+					(a) => a.name,
+				),
+				`bash sniff of f${ext}`,
+			).toEqual([`f${ext}`])
 			const abs = touch(`w${ext}`)
 			expect(
 				artifactsFromToolCall("write", { path: `w${ext}` }, textResult("ok"), cwd).map((a) => a.path),
@@ -101,11 +104,8 @@ describe("artifactsFromToolCall", () => {
 		expect(out.map((a) => a.path)).toEqual([abs])
 		const md = artifactsFromToolCall("bash", {}, textResult(`see [results.pdf](file://x)`), cwd)
 		expect(md.map((a) => a.path)).toEqual([results])
-		// Without the bracket strip, replay mode would surface ghost tokens.
-		const replay = artifactsFromToolCall("bash", {}, textResult("wrote (docs/ghost.pdf)"), cwd, {
-			verifyExists: false,
-		})
-		expect(replay.map((a) => a.name)).toEqual(["ghost.pdf"])
+		// Nonexistent tokens drop out at the stat gate regardless of delimiters.
+		expect(artifactsFromToolCall("bash", {}, textResult("wrote (docs/ghost.pdf)"), cwd)).toEqual([])
 	})
 
 	it("a repeated token does not starve the candidate budget", () => {
@@ -134,39 +134,18 @@ describe("artifactsFromToolCall", () => {
 		expect(out).toEqual([])
 	})
 
-	it("skips the existence check when verifyExists is false (replay mode)", () => {
-		const out = artifactsFromToolCall("bash", {}, textResult("saved to docs/ghost.pptx"), cwd, {
-			verifyExists: false,
-		})
-		expect(out.map((a) => a.name)).toEqual(["ghost.pptx"])
-	})
-
 	it("ignores comma/backslash/dollar shapes (data rows, escapes, shell vars) even without a stat gate", () => {
 		for (const text of ["monday,grumpy,report.csv shipped", "wrote $OUT.md", "copied foo\\ bar.md done"]) {
-			const out = artifactsFromToolCall("bash", {}, textResult(text), cwd, { verifyExists: false })
+			const out = artifactsFromToolCall("bash", {}, textResult(text), cwd)
 			expect(out).toHaveLength(0)
 		}
 	})
 
-	it("on replay, suppresses bare-basename tokens from output text but keeps path mentions", () => {
-		const replay = artifactsFromToolCall("bash", {}, textResult("created report.csv then out/notes.md"), cwd, {
-			verifyExists: false,
-		})
-		expect(replay.map((a) => a.name)).toEqual(["notes.md"])
-		// Live is stat-gated: existing bare names chip; nonexistent path
-		// mentions drop despite having a separator.
-		touch("report.csv")
-		const live = artifactsFromToolCall("bash", {}, textResult("created report.csv then out/notes.md"), cwd, {
-			windowStart: Date.now() - 3000,
-		})
-		expect(live.map((a) => a.name)).toEqual(["report.csv"])
-	})
-
-	it("chips only the real redirect target, not a CSV content line naming another file (replay)", () => {
+	it("chips the redirect target and not a CSV content line naming another file", () => {
 		const target = touch("echo-baby-2.csv")
 		const result = textResult("day,mood,evidence\nwednesday,elated,echo-baby.csv shipped in prod\n")
 		const args = { command: `echo x > ${target} && cat ${target}` }
-		const out = artifactsFromToolCall("bash", args, result, cwd, { verifyExists: false })
+		const out = artifactsFromToolCall("bash", args, result, cwd, { windowStart: Date.now() - 1000 })
 		expect(out.map((a) => a.name)).toEqual(["echo-baby-2.csv"])
 	})
 
@@ -481,7 +460,7 @@ describe("artifactsFromToolCall", () => {
 		})
 
 		it("still rejects partial-extension matches (report.md.bak)", () => {
-			expect(artifactsFromToolCall("bash", {}, textResult("report.md.bak"), cwd, { verifyExists: false })).toEqual([])
+			expect(artifactsFromToolCall("bash", {}, textResult("report.md.bak"), cwd)).toEqual([])
 		})
 	})
 })

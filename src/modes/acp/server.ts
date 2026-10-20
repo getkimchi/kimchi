@@ -2057,9 +2057,6 @@ export class KimchiAcpAgent implements Agent {
 						rawOutput: result ? wireSafeToolResult(result) : undefined,
 					}),
 				})
-				if (result && !result.isError && record) {
-					artifactBuffer.collectFromToolCall({ toolName: name, args, result, cwd: record.cwd, verifyExists: false })
-				}
 				// The branch may contain multiple toolCalls with the same upstream id
 				// (e.g., across a compaction boundary). Drop the mapping after replaying
 				// each call so the next one with the same upstream id gets a fresh id.

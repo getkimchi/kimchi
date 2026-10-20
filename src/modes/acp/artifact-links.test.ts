@@ -94,16 +94,6 @@ describe("TurnArtifactBuffer", () => {
 		expect(buffer.size).toBe(0)
 	})
 
-	it("collect passes verifyExists:false through (replay skips the on-disk check)", () => {
-		const missing = join(tmpDir, "gone.pdf")
-		const buffer = new TurnArtifactBuffer()
-		buffer.collectFromToolCall({ ...writeCall(missing), verifyExists: false })
-		buffer.noteTextBlock("km.1")
-		const chunks = buffer.flush(undefined, { verifyExists: false })
-		expect(chunks).toHaveLength(1)
-		expect(chunkOf(chunks[0]).content.uri).toBe(pathToFileURL(missing).href)
-	})
-
 	it("live flush drops an artifact deleted before the turn ended", () => {
 		const target = join(tmpDir, "temp.pdf")
 		writeFileSync(target, "pdf")

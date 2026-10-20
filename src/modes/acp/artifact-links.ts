@@ -116,20 +116,19 @@ export class TurnArtifactBuffer {
 
 	/**
 	 * Fold one completed tool call's detected artifacts into the buffer.
-	 * Pass `verifyExists: false` for replay (files may no longer exist).
+	 * Live-only: detection always stat-verifies candidates. Replay fills
+	 * the buffer from recorded rows (adoptRecorded), never from tool data.
 	 */
 	collectFromToolCall(opts: {
 		toolName: string
 		args: unknown
 		result: unknown
 		cwd: string
-		verifyExists?: boolean
 		/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
 		windowStart?: number
 	}): void {
 		const sniffed = opts.toolName === "bash" || opts.toolName === "powershell"
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
-			verifyExists: opts.verifyExists ?? true,
 			windowStart: opts.windowStart,
 		})) {
 			if (sniffed) {

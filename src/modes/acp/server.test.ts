@@ -6173,6 +6173,20 @@ describe("generated artifacts (replay)", () => {
 			),
 			// The file need not exist anymore — replay skips the existence check.
 			toolResultEntry("tc-r1", "bash", "saved to assets/out.pptx", false, "tr1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{
+							path: "/tmp/assets/out.pptx",
+							name: "out.pptx",
+							mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+						},
+					],
+				},
+			} as never,
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)
@@ -6230,26 +6244,6 @@ describe("generated artifacts (replay)", () => {
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
 
-	it("falls back to re-derivation when a session has no recorded rows (legacy)", async () => {
-		const fake = new FakeAgentSession("loaded-legacy")
-		fake.branch = [
-			userTextEntry("make slides", "u1", null),
-			assistantBlocksEntry(
-				[
-					{ type: "text", text: "Here you go." },
-					{ type: "toolCall", id: "tc-l1", name: "bash", arguments: { command: "make" } },
-				],
-				"a1",
-				"u1",
-			),
-			toolResultEntry("tc-l1", "bash", "saved to assets/out.pptx", false, "tr1", "a1"),
-		]
-		const { conn, updates } = makeRecordingConn()
-		const agent = makeAgent(async () => asSession(fake), conn)
-		await agent.loadSession({ sessionId: "loaded-legacy", cwd: "/tmp", mcpServers: [] })
-		expect(artifactChunks(updates)).toHaveLength(1)
-	})
-
 	it("emits no artifacts chunk for messages without generated files", async () => {
 		const fake = new FakeAgentSession("loaded-no-artifacts")
 		fake.branch = [
@@ -6305,6 +6299,11 @@ describe("generated artifacts (replay)", () => {
 				"u1",
 			),
 			toolResultEntry("tc-d1", "bash", "wrote assets/mid.pdf", false, "trd1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/assets/mid.pdf", name: "mid.pdf", mimeType: "application/pdf" }] },
+			} as never,
 			assistantTextEntry("All done.", "a2", "trd1"),
 		]
 		const { conn, updates } = makeRecordingConn()
@@ -6332,6 +6331,11 @@ describe("generated artifacts (replay)", () => {
 				"u1",
 			),
 			toolResultEntry("tc-x1", "bash", "wrote assets/dup.pdf", false, "trx1", "a1"),
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: { v: 1, artifacts: [{ path: "/tmp/assets/dup.pdf", name: "dup.pdf", mimeType: "application/pdf" }] },
+			} as never,
 			toolResultEntry("tc-x2", "bash", "wrote assets/dup.pdf", false, "trx2", "a1"),
 		]
 		const { conn, updates } = makeRecordingConn()
@@ -6390,6 +6394,18 @@ describe("generated artifacts (replay)", () => {
 				"trt1",
 			),
 			toolResultEntry("tc-t2", "bash", "wrote assets/tail2.pdf", false, "trt2", "a2"),
+			// One row per turn in reality (recorder appends at turn end).
+			{
+				type: "custom",
+				customType: "kimchi-artifacts",
+				data: {
+					v: 1,
+					artifacts: [
+						{ path: "/tmp/assets/tail.pdf", name: "tail.pdf", mimeType: "application/pdf" },
+						{ path: "/tmp/assets/tail2.pdf", name: "tail2.pdf", mimeType: "application/pdf" },
+					],
+				},
+			} as never,
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)

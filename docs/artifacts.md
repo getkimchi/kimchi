@@ -44,13 +44,10 @@ session log, so rows travel with branch trees (kill-branch, intersections)
 exactly like the turns that produced them.
 
 On replay, sighting a row adopts it verbatim (`TurnArtifactBuffer
-.adoptRecorded`) — replacing whatever raw-output re-derivation sniffed — so
-replay shows exactly what the live turn emitted, including links to files
-since deleted or renamed, and never ghosts that never existed (data-shaped
-tokens were stat-gated at record time). Older sessions carry no rows and
-fall back to re-derivation without the live gates (no mtime window, no
-existence check — artifacts may legitimately be gone). The fallback can
-surface links for historical read-only output (`cat report.md`); shape
-filters (commas/backslashes/shell variables, bare-basename suppression on
-replay) remove the most visible nonsense. Non-goals as before: backgrounded
-commands, subagent files.
+.adoptRecorded`): replay shows exactly what the live turn emitted,
+including links to files since deleted or renamed, and never ghosts that
+never existed (candidates were stat-gated at record time). Replay does NOT
+re-run detection — detection is live-only, stat-verified by construction;
+sessions recorded before the rows shipped have no artifacts, and nothing is
+emitted for them. Non-goals as before: backgrounded commands, subagent
+files.

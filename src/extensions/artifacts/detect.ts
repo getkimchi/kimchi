@@ -219,11 +219,7 @@ type DeclaredArtifactEntry = { path?: unknown; name?: unknown }
 // without the write tool running. Empty/missing entries are skipped; filtered
 // entries (wrong extension, missing live file) drop out, and an empty
 // result still short-circuits the path-guess fallbacks.
-function parseDeclaredArtifacts(
-	result: unknown,
-	cwd: string,
-	verifyExists?: boolean,
-): { handled: boolean; artifacts: Artifact[] } {
+function parseDeclaredArtifacts(result: unknown, cwd: string): { handled: boolean; artifacts: Artifact[] } {
 	const entries = (result as { details?: { artifacts?: unknown } } | null | undefined)?.details?.artifacts
 	if (!Array.isArray(entries) || !entries.length) return { handled: false, artifacts: [] }
 	const artifacts: Artifact[] = []
@@ -231,7 +227,7 @@ function parseDeclaredArtifacts(
 		if (artifacts.length >= MAX_DECLARED_ARTIFACTS) break
 		const { path, name } = entry ?? {}
 		if (!path || typeof path !== "string") continue
-		const artifact = artifactFromPath(path, cwd, { verifyExists })
+		const artifact = artifactFromPath(path, cwd, {})
 		if (!artifact) continue
 		artifacts.push(name && typeof name === "string" ? { ...artifact, name } : artifact)
 	}
@@ -239,16 +235,16 @@ function parseDeclaredArtifacts(
 }
 
 type DetectOpts = {
-	/** Require the file to exist (live detection; false for replay). */
-	verifyExists?: boolean
 	/**
 	 * Tool-call start (epoch ms). Sniffed bash/powershell candidates must
 	 * have an mtime inside the window; write/edit args are authoritative
-	 * and skip the check. Requires a stat, so it implies verifyExists.
+	 * and skip the check.
 	 */
 	windowStart?: number
 }
 
+// Candidates always have to exist on disk — this is live detection; replay
+// reads recorded rows instead of re-running this pipeline.
 function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artifact | null {
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
 	if (mimeType === undefined) return null
@@ -258,16 +254,14 @@ function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artif
 	} catch {
 		return null
 	}
-	if ((opts.verifyExists ?? true) || opts.windowStart !== undefined) {
-		let stats: ReturnType<typeof statSync>
-		try {
-			stats = statSync(path)
-		} catch {
-			return null
-		}
-		if (!stats.isFile()) return null
-		if (opts.windowStart !== undefined && stats.mtimeMs < opts.windowStart - MTIME_TOLERANCE_MS) return null
+	let stats: ReturnType<typeof statSync>
+	try {
+		stats = statSync(path)
+	} catch {
+		return null
 	}
+	if (!stats.isFile()) return null
+	if (opts.windowStart !== undefined && stats.mtimeMs < opts.windowStart - MTIME_TOLERANCE_MS) return null
 	return { path, name: basename(path), uri: pathToFileURL(path).href, mimeType }
 }
 
@@ -318,13 +312,6 @@ function bashArtifacts(result: unknown, cwd: string, opts: DetectOpts): Artifact
 			seenTokens.add(token)
 			if (++candidates > MAX_BASH_CANDIDATES) return out
 			if (token.includes("://")) continue
-			// Replay has no stat gate (artifacts may be legitimately deleted
-			// later), so a bare-basename token from output text is
-			// indistinguishable from data embedded in it (CSV rows etc.).
-			// Require a path separator on replay. Redirect targets, write/edit
-			// args, and declared artifacts are command/arg-driven and bypass
-			// this text-sniff gate.
-			if (opts.verifyExists === false && !token.includes("/")) continue
 			const artifact = artifactFromPath(token, cwd, opts)
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)
@@ -368,13 +355,13 @@ export function artifactsFromToolCall(
 ): Artifact[] {
 	try {
 		if (isErrorResult(result)) return []
-		const declared = parseDeclaredArtifacts(result, cwd, opts.verifyExists)
+		const declared = parseDeclaredArtifacts(result, cwd)
 		if (declared.handled) return declared.artifacts
 		if (toolName === "write" || toolName === "edit") {
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
 			// No mtime window here: the write/edit tool authored the file itself.
-			const artifact = artifactFromPath(path, cwd, { verifyExists: opts.verifyExists })
+			const artifact = artifactFromPath(path, cwd, {})
 			return artifact ? [artifact] : []
 		}
 		if (toolName === "bash" || toolName === "powershell") {
