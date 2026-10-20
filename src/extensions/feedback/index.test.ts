@@ -7,6 +7,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../auto-model/state.js"
 import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import feedbackExtension from "./index.js"
+import { clearRatingWindow, getRatingWindow } from "./rating-window.js"
 
 /**
  * Ctrl+R is delivered through `ctx.ui.onTerminalInput` (not a registered
@@ -50,6 +51,9 @@ vi.mock("../telemetry/index.js", () => ({
 vi.mock("./dialog.js", () => ({
 	showFeedbackDetailsDialog: dialogMock.show,
 	isPredefinedReason: (reason: string) => reason === "Too slow" || reason === "Solved my task",
+	// record-rating clamps through the real dialog module; the mock mirrors it.
+	clampReason: (reason: string) => reason,
+	MAX_REASON_LENGTH: 300,
 }))
 
 vi.mock("./model-switch-dialog.js", () => ({
@@ -71,6 +75,97 @@ const visionGateMock = vi.hoisted(() => ({ dialogOpen: false }))
 vi.mock("../vision-gate.js", () => ({
 	isVisionGateDialogOpen: () => visionGateMock.dialogOpen,
 }))
+
+describe("feedbackExtension rating window registry", () => {
+	// The registry is the cross-surface read of the extension's invitation
+	// state: the TUI flow mutates its own state machine AND mirrors the
+	// window so the ACP ext-method can observe and consume it.
+	beforeEach(() => {
+		feedbackMock.trackFeedback.mockReset()
+		dialogMock.show.mockReset()
+		clearRatingWindow("test-session")
+	})
+
+	afterEach(() => {
+		clearRatingWindow("test-session")
+		clearAutoRoutingState("test-session")
+	})
+
+	it("arms the window when the response settles", () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		expect(getRatingWindow("test-session")).toBeUndefined()
+
+		getHandler("agent_settled")({}, ctx)
+		expect(getRatingWindow("test-session")).toEqual({
+			autoModelUsed: false,
+			routedModelId: undefined,
+		})
+	})
+
+	it("captures the resolved routed pick when the settle ran on a routed virtual model", () => {
+		const { api, ctx, getHandler } = makeApi()
+		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
+		setAutoRoutingState("test-session", {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
+			requestedId: "auto-beta",
+		})
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		expect(getRatingWindow("test-session")).toEqual({
+			autoModelUsed: true,
+			routedModelId: "glm-5.3",
+		})
+	})
+
+	it("a successful rating consumes the window — one rating per settled response", async () => {
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValue({ reason: "Too slow" })
+		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
+
+		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+
+	it("a failed write keeps the window armed so the rating can be retried", async () => {
+		const { api, ctx, getHandler, getShortcutHandler, appendEntry } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValue({ reason: "Too slow" })
+		appendEntry.mockImplementation(() => {
+			throw new Error("disk full")
+		})
+		await getShortcutHandler(Key.ctrl("2"))?.(ctx)
+
+		expect(getRatingWindow("test-session")).toEqual({
+			autoModelUsed: false,
+			routedModelId: undefined,
+		})
+	})
+
+	it("turn_start clears the window", () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		getHandler("turn_start")({ turnIndex: 1 }, ctx)
+		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+
+	it("session replacement clears the window", async () => {
+		const { api, ctx, getHandler } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+})
 
 describe("feedbackExtension state machine", () => {
 	beforeEach(async () => {
@@ -756,6 +851,34 @@ describe("feedbackExtension stale ctx handling", () => {
 		const { api, getHandler } = makeApi()
 		feedbackExtension(api)
 		expect(() => getHandler("agent_settled")({}, staleCtx())).not.toThrow()
+	})
+
+	it("a stale ctx after a succeeded record reports success — no retry that double-records", async () => {
+		// The runtime tears down AFTER the record succeeded (transcript entry
+		// + telemetry written): only the post-record window-consume read goes
+		// stale. Reporting that as a failure would resurrect the invitation
+		// for a retry that double-records the rating.
+		const { api, ctx, getHandler, getShortcutHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
+		Object.defineProperty(ctx, "sessionManager", {
+			get: () => {
+				throw new Error(STALE_MESSAGE)
+			},
+		})
+
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+
+		// The record itself succeeded — no failure toast, entry written.
+		expect(getAppendedEntries("feedback-summary")).toHaveLength(1)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+
+		// Reported as success → the invitation is not resurrected: a second
+		// press must not reopen the dialog (a retry would double-record).
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+		expect(dialogMock.show).toHaveBeenCalledTimes(1)
 	})
 
 	it("rethrows non-stale errors from agent_settled", () => {

@@ -8,6 +8,7 @@
  */
 
 import type { Skill } from "@earendil-works/pi-coding-agent"
+import { getVersion } from "../../utils.js"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import type { ModelRegistry } from "../orchestration/model-registry/index.js"
@@ -135,8 +136,31 @@ interface PromptParts {
 	hasUserLoop: boolean
 }
 
-const BASE_INSTRUCTIONS =
-	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you — use only those, never guess or invent tool names."
+const BASE_GOAL =
+	"Help users with software engineering tasks using only your available tools — never guess or invent tool names."
+
+/**
+ * Product self-knowledge in the base intro. Models have no training
+ * knowledge of Kimchi — the name collides with an unrelated IBM product —
+ * so without this a cautious model can conclude "Kimchi Studio" is
+ * user-invented and refuse to answer under the Factual Accuracy rules,
+ * even with web tools available. Stating that Kimchi + Kimchi Studio are
+ * real CAST AI products, with the running version and a docs-verification
+ * rule, makes every routed model able to answer self-referential questions
+ * from the docs instead of training data. The verification clause degrades
+ * to an outdated-warning when the session has no web tools (org policy /
+ * resource overrides can remove them).
+ */
+function buildBaseInstructions(webToolsAvailable: boolean): string {
+	const lookupRule = webToolsAvailable
+		? "verify against https://kimchi.dev with web_search/web_fetch before answering"
+		: "flag any training-data-based answer as possibly outdated (no web tools; docs: https://kimchi.dev)"
+	return (
+		`You are Kimchi, an AI coding agent by CAST AI (v${getVersion()}); Kimchi Studio is its desktop GUI. ` +
+		`When asked about Kimchi itself, ${lookupRule}. ` +
+		BASE_GOAL
+	)
+}
 
 /** Output-language rule, applied to every mode and every user-facing artifact
  *  (todos, plan titles, phase/step names and descriptions, summaries, commit
@@ -146,10 +170,6 @@ const LANGUAGE_SECTION = `## Language
 
 - Respond in the language the user writes in; default to English when unclear.
 - Match that language in everything the user reads — todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged.`
-
-const SINGLE_INTRO = BASE_INSTRUCTIONS
-
-const ORCHESTRATOR_INTRO = BASE_INSTRUCTIONS
 
 /**
  * Resolve the mode-specific instruction payload for the system prompt.
@@ -438,8 +458,9 @@ export const HARNESS_NOTES_AND_APPROVAL = `## Harness Notes and Approval
 function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
-	// 1. Intro
-	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
+	// 1. Intro (product identity + version; identical across modes so every
+	// routed model and subagent gets the self-knowledge clause)
+	const intro = buildBaseInstructions(parts.toolNames.has("web_search") || parts.toolNames.has("web_fetch"))
 	sections.push(intro)
 	sections.push(LANGUAGE_SECTION)
 
