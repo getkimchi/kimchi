@@ -228,6 +228,8 @@ describe("pdf.mjs LibreOffice editing (dump-shapes + edit-draw)", () => {
 	function loOverride(outPdfBytes?: Uint8Array, files?: Map<string, Uint8Array>) {
 		const { writeFileSync, rmSync } = require("node:fs") as typeof import("node:fs")
 		return {
+			// Fake soffice discovery too: CI runners have no LibreOffice installed.
+			which: (cmd: string) => (cmd === "soffice" ? "/fake/soffice" : undefined),
 			run: (_cmd: string, _args: string[], env: Record<string, string>) => {
 				writeFileSync(env.LO_STATUS, JSON.stringify({ ok: true, pages: 2, applied: 1 }))
 				if (env.LO_MODE === "dump") {
@@ -300,5 +302,145 @@ describe("pdf.mjs LibreOffice editing (dump-shapes + edit-draw)", () => {
 		t.files.set(mapPath, new TextEncoder().encode("[]"))
 		expect(await runPdfCli(["edit-draw", "in.pdf", "--out", "out.pdf", "--map", mapPath], t.io)).toBe(2)
 		expect(t.err.join("")).toContain("non-empty JSON array")
+	})
+})
+
+describe("pdf.mjs render (visual check)", () => {
+	/** Fake rasterizer chain: pdftoppm "runs" by writing PNG-named files to the real fs. */
+	function rasterizeOverride(opts: { pngs?: string[]; available?: boolean } = {}) {
+		const { writeFileSync } = require("node:fs") as typeof import("node:fs")
+		const pngs = opts.pngs ?? ["1", "2"]
+		return {
+			which: (cmd: string) => (cmd === "pdftoppm" && opts.available !== false ? "/fake/pdftoppm" : undefined),
+			run: (_cmd: string, args: string[]) => {
+				const prefix = args[args.length - 1]
+				for (const n of pngs) writeFileSync(`${prefix}-${n}.png`, "png")
+				return { code: 0, stdout: "", stderr: "" }
+			},
+			listdir: (dir: string) => require("node:fs").readdirSync(dir),
+		}
+	}
+
+	it("writes one PNG per page and names the rasterizer used", async () => {
+		const { mkdtempSync, rmSync } = require("node:fs") as typeof import("node:fs")
+		const { tmpdir } = await import("node:os")
+		const outDir = mkdtempSync(join(await import("node:os").then(() => tmpdir()), "pdf-render-test-"))
+		try {
+			const t = io({ rasterize: rasterizeOverride() })
+			t.files.set("in.pdf", await makePdf(["a", "b"]))
+			expect(await runPdfCli(["render", "in.pdf", "--out", outDir], t.io)).toBe(0)
+			expect(t.out[0]).toContain("rendered 2 pages of in.pdf")
+			expect(t.out[0]).toContain("rasterizer: pdftoppm (poppler)")
+			expect(t.out).toHaveLength(3) // summary + 2 image paths
+		} finally {
+			rmSync(outDir, { recursive: true, force: true })
+		}
+	})
+
+	it("--pages filters the rendered PNGs", async () => {
+		const { mkdtempSync, rmSync } = require("node:fs") as typeof import("node:fs")
+		const { tmpdir } = await import("node:os")
+		const outDir = mkdtempSync(join(tmpdir(), "pdf-render-test-"))
+		try {
+			const t = io({ rasterize: rasterizeOverride({ pngs: ["1", "2", "3"] }) })
+			t.files.set("in.pdf", await makePdf(["a", "b", "c"]))
+			expect(await runPdfCli(["render", "in.pdf", "--out", outDir, "--pages", "2-3"], t.io)).toBe(0)
+			expect(t.out[0]).toContain("rendered 2 pages")
+			expect(t.out.slice(1).every((p) => /-([23])\.png$/.test(p))).toBe(true)
+		} finally {
+			rmSync(outDir, { recursive: true, force: true })
+		}
+	})
+
+	it("is tool-missing with the install hint when no rasterizer exists", async () => {
+		const { mkdtempSync, rmSync } = require("node:fs") as typeof import("node:fs")
+		const { tmpdir } = await import("node:os")
+		const outDir = mkdtempSync(join(tmpdir(), "pdf-render-test-"))
+		try {
+			const t = io({ rasterize: rasterizeOverride({ available: false }) })
+			t.files.set("in.pdf", await makePdf(["a"]))
+			expect(await runPdfCli(["render", "in.pdf", "--out", outDir], t.io)).toBe(2)
+			expect(t.err.join("")).toContain("tool-missing")
+			expect(t.err.join("")).toContain("pdftoppm (poppler-utils), ghostscript, or python3 with pymupdf")
+		} finally {
+			rmSync(outDir, { recursive: true, force: true })
+		}
+	})
+
+	it("rejects a bad page range against the real page count", async () => {
+		const t = io({ rasterize: rasterizeOverride() })
+		t.files.set("in.pdf", await makePdf(["a"]))
+		expect(await runPdfCli(["render", "in.pdf", "--out", "some-dir", "--pages", "5-9"], t.io)).toBe(2)
+		expect(t.err.join("")).toContain("out of range")
+	})
+})
+
+describe("pdf.mjs html (styled HTML -> PDF via browser)", () => {
+	/** Fake browser: prints a real PDF to the staged --print-to-pdf path and mirrors it into `files`. */
+	function browserOverride(pdfBytes?: Uint8Array) {
+		const { writeFileSync } = require("node:fs") as typeof import("node:fs")
+		return {
+			which: (cmd: string) => (cmd === "chromium" ? "/usr/bin/chromium" : undefined),
+			fileExists: (p: string) => p !== "/missing",
+			run: (_cmd: string, args: string[]) => {
+				const target = args.find((a) => a.startsWith("--print-to-pdf="))?.slice("--print-to-pdf=".length)
+				if (target && pdfBytes) writeFileSync(target, pdfBytes)
+				return { code: 0, stderr: "" }
+			},
+			env: {},
+			platform: "linux" as NodeJS.Platform,
+			home: "/home/u",
+			mkdtemp: () => "/tmp/fake-profile",
+			rmdir: () => undefined,
+		}
+	}
+
+	it("prints to a staged PDF, verifies, and lands it at --out naming the browser", async () => {
+		const printed = await makePdf(["rendered by browser"])
+		const t = io({ browser: browserOverride(printed) })
+		// The staged output is a real fs path; make readFile see it after the "browser" wrote it.
+		const origRead = t.io.readFile!
+		t.io.readFile = (path: string) => {
+			try {
+				return origRead(path)
+			} catch {
+				return new Uint8Array(require("node:fs").readFileSync(path))
+			}
+		}
+		t.files.set("doc.html", new TextEncoder().encode("<h1>hello</h1>"))
+		expect(await runPdfCli(["html", "doc.html", "--out", "out.pdf"], t.io)).toBe(0)
+		expect(t.out[0]).toContain("converted doc.html -> out.pdf")
+		expect(t.out[0]).toContain("browser: chromium")
+		expect(t.written.get("out.pdf")).toBeDefined()
+	})
+
+	it("is tool-missing with the install hint and names the core fallback when no browser exists", async () => {
+		const t = io({
+			browser: {
+				which: () => undefined,
+				fileExists: () => false,
+				run: () => ({ code: 0, stderr: "" }),
+				env: {},
+				platform: "linux",
+				home: "/home/u",
+				mkdtemp: () => "/tmp/fake-profile",
+				rmdir: () => undefined,
+			},
+		})
+		t.files.set("doc.html", new TextEncoder().encode("<h1>hello</h1>"))
+		expect(await runPdfCli(["html", "doc.html", "--out", "out.pdf"], t.io)).toBe(2)
+		expect(t.err.join("")).toContain("tool-missing")
+		expect(t.err.join("")).toContain("Google Chrome, Chromium, or Microsoft Edge")
+		expect(t.err.join("")).toContain("create (plain styling) never needs it")
+	})
+
+	it("refuses a non-html input and an --out equal to the input", async () => {
+		const t = io({ browser: browserOverride() })
+		t.files.set("doc.txt", new TextEncoder().encode("x"))
+		expect(await runPdfCli(["html", "doc.txt", "--out", "out.pdf"], t.io)).toBe(2)
+		expect(t.err.join("")).toContain("must end in .html")
+		t.files.set("doc.html", new TextEncoder().encode("<h1>hello</h1>"))
+		expect(await runPdfCli(["html", "doc.html", "--out", "doc.html"], t.io)).toBe(2)
+		expect(t.err.join("")).toContain("must differ from the input")
 	})
 })

@@ -17,17 +17,11 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { DocumentError } from "./model.js"
+import { defaultWhich, findSoffice } from "./soffice.js"
 
 const SOFFICE_TIMEOUT_MS = 120_000
-
-const SOFFICE_CANDIDATES = [
-	"/Applications/LibreOffice.app/Contents/MacOS/soffice",
-	"/usr/bin/soffice",
-	"/usr/local/bin/soffice",
-	"C:\\Program Files\\LibreOffice\\program\\soffice.exe",
-]
 
 export interface LoDrawDeps {
 	which?: (cmd: string) => string | undefined
@@ -49,25 +43,6 @@ export interface LoDrawDeps {
 export interface LoDrawResult {
 	/** Status parsed from the macro: pages seen, edits applied, per-edit failures. */
 	status: { ok: boolean; pages?: number; applied?: number; error?: string; errors?: string[] }
-}
-
-function defaultWhich(cmd: string): string | undefined {
-	const result = spawnSync("which", [cmd], { encoding: "utf8" })
-	const path = result.status === 0 ? (result.stdout ?? "").trim() : ""
-	return path !== "" && existsSync(path) ? path : undefined
-}
-
-function findSoffice(deps: Required<LoDrawDeps>): string {
-	const onPath = deps.which("soffice")
-	if (onPath) return onPath
-	for (const candidate of SOFFICE_CANDIDATES) {
-		if (deps.fileExists(candidate)) return candidate
-	}
-	throw new DocumentError(
-		"tool-missing",
-		"edit-draw/dump-shapes need LibreOffice (soffice). Install it with `brew install --cask libreoffice` (macOS) or `apt install libreoffice` (Debian/Ubuntu); on Windows use the LibreOffice installer. read/create/merge/check never need it.",
-		"pdf",
-	)
 }
 
 function excerpt(stderr: string): string {
@@ -117,7 +92,11 @@ export async function runLoDraw(
 		unlink: loDeps?.unlink ?? ((p) => unlinkSync(p)),
 		scriptDir: loDeps?.scriptDir ?? "",
 	}
-	const soffice = findSoffice(deps)
+	const soffice = findSoffice(deps, {
+		format: "pdf",
+		commands: "edit-draw/dump-shapes",
+		core: "read/info/create/merge/split/fill-form",
+	})
 	const scriptDir = resolveScriptDir(deps)
 
 	const profileDir = deps.mkdtemp(join(tmpdir(), "pdf-lo-profile-"))
@@ -145,7 +124,7 @@ export async function runLoDraw(
 				"--headless",
 				"--norestore",
 				"--nolockcheck",
-				`-env:UserInstallation=file://${profileDir}`,
+				`-env:UserInstallation=${pathToFileURL(profileDir).href}`,
 				"vnd.sun.star.script:lodraw_edit.py$main?language=Python&location=user",
 			],
 			env,
