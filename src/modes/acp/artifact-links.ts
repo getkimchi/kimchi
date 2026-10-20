@@ -144,10 +144,7 @@ export class TurnArtifactBuffer {
 	 */
 	adoptRecorded(artifacts: RecordedArtifact[]): void {
 		for (const artifact of artifacts) {
-			// Rows recorded before the sniffed flag existed treat entries as
-			// intentional (never evicted) — the safe direction for a link the
-			// live turn stat-verified.
-			this.addEntry(artifact.sniffed === true, {
+			this.addEntry(artifact.sniffed, {
 				uri: pathToFileURL(artifact.path).href,
 				path: artifact.path,
 				name: artifact.name,

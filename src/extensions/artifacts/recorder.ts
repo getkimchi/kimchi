@@ -21,12 +21,8 @@ export interface RecordedArtifact {
 	path: string
 	name: string
 	mimeType: string | null
-	/**
-	 * bash/powershell-sniffed: eviction-eligible at the turn cap. Absent in
-	 * rows written before the flag — replay treats those as intentional
-	 * (never evicted): the safe direction for stat-verified live links.
-	 */
-	sniffed?: boolean
+	/** bash/powershell-sniffed: eviction-eligible at the turn cap. */
+	sniffed: boolean
 }
 
 export interface ArtifactsEntry {
