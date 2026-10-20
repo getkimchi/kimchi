@@ -4,10 +4,12 @@ import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
 import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
 
-// Max artifacts a single turn may carry. Bash results are capped per call
-// (MAX_BASH_ARTIFACTS in tool-calls/artifacts.ts), but a turn can run many
-// calls; without a turn-level cap one flush could emit an unbounded burst
-// of resource_link updates.
+// Max sniffed (bash/powershell) artifacts a single turn may carry. Bash
+// results are capped per call (MAX_BASH_ARTIFACTS), but a turn can run many
+// calls. Past the cap the oldest sniffed entry is evicted. Only sniffed
+// artifacts count: write/edit and tool-declared (details.artifacts) paths
+// are intentional and always land — otherwise a late plan could be
+// ejected by earlier sniffed noise.
 const MAX_TURN_ARTIFACTS = 32
 
 // Two artifacts with the same basename (docs/report.md, out/report.md)
@@ -87,6 +89,7 @@ export function buildArtifactLinkChunks(opts: {
  */
 export class TurnArtifactBuffer {
 	private readonly artifacts = new Map<string, Artifact>()
+	private readonly sniffedKeys: string[] = []
 	private lastBlockId: string | undefined
 
 	get size(): number {
@@ -111,11 +114,25 @@ export class TurnArtifactBuffer {
 		/** Foreground mtime window start; sniffed bash candidates require a fresh mtime. */
 		windowStart?: number
 	}): void {
+		const sniffed = opts.toolName === "bash" || opts.toolName === "powershell"
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
 			verifyExists: opts.verifyExists ?? true,
 			windowStart: opts.windowStart,
 		})) {
-			if (!this.artifacts.has(artifact.path) && this.artifacts.size >= MAX_TURN_ARTIFACTS) continue
+			if (sniffed) {
+				if (this.artifacts.has(artifact.path)) continue
+				this.sniffedKeys.push(artifact.path)
+				this.artifacts.set(artifact.path, artifact)
+				if (this.sniffedKeys.length > MAX_TURN_ARTIFACTS) {
+					const evicted = this.sniffedKeys.shift()
+					if (evicted !== undefined) this.artifacts.delete(evicted)
+				}
+				continue
+			}
+			// Intentional path (write/edit/declared): if it was previously
+			// sniffed, drop its eviction eligibility.
+			const sniffedIndex = this.sniffedKeys.indexOf(artifact.path)
+			if (sniffedIndex >= 0) this.sniffedKeys.splice(sniffedIndex, 1)
 			this.artifacts.set(artifact.path, artifact)
 		}
 	}
@@ -134,6 +151,7 @@ export class TurnArtifactBuffer {
 		let artifacts = [...this.artifacts.values()]
 		const messageId = this.lastBlockId
 		this.artifacts.clear()
+		this.sniffedKeys.length = 0
 		this.lastBlockId = undefined
 		if (artifacts.length === 0 || messageId === undefined) return []
 		if (opts?.verifyExists !== false) {

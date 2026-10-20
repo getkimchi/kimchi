@@ -114,15 +114,75 @@ describe("TurnArtifactBuffer", () => {
 		expect(buffer.flush()).toEqual([])
 	})
 
-	it("caps turn-level accumulation (a flush never emits an unbounded burst)", () => {
+	it("caps turn-level sniffed accumulation, evicting the oldest sniffed entry", () => {
+		const buffer = new TurnArtifactBuffer()
+		for (let i = 0; i < 40; i++) {
+			const p = join(tmpDir, `f${i}.pdf`)
+			writeFileSync(p, "pdf") // fresh mtime passes the window
+			buffer.collectFromToolCall({
+				toolName: "bash",
+				args: { command: "ls" },
+				result: { content: [{ type: "text", text: p }] },
+				cwd: tmpDir,
+				windowStart: Date.now() - 1000,
+			})
+		}
+		buffer.noteTextBlock("km.1")
+		const chunks = buffer.flush()
+		expect(chunks).toHaveLength(32) // MAX_TURN_ARTIFACTS
+		const names = chunks.map((c) => chunkOf(c).content.name)
+		expect(names).toContain("f39.pdf")
+		expect(names).not.toContain("f0.pdf") // oldest evicted
+	})
+
+	it("evicts only sniffed entries (write/edit artifacts stay past the cap)", () => {
+		const buffer = new TurnArtifactBuffer()
+		const written = join(tmpDir, "written.md")
+		writeFileSync(written, "md")
+		buffer.collectFromToolCall(writeCall(written)) // first, intentional
+		for (let i = 0; i < 40; i++) {
+			const p = join(tmpDir, `f${i}.pdf`)
+			writeFileSync(p, "pdf")
+			buffer.collectFromToolCall({
+				toolName: "bash",
+				args: { command: "ls" },
+				result: { content: [{ type: "text", text: p }] },
+				cwd: tmpDir,
+				windowStart: Date.now() - 1000,
+			})
+		}
+		buffer.noteTextBlock("km.1")
+		const names = buffer.flush().map((c) => chunkOf(c).content.name)
+		expect(names).toHaveLength(33)
+		expect(names).toContain("written.md")
+	})
+
+	it("declared and write/edit artifacts bypass the sniffed cap", () => {
 		const buffer = new TurnArtifactBuffer()
 		for (let i = 0; i < 40; i++) {
 			const p = join(tmpDir, `f${i}.pdf`)
 			writeFileSync(p, "pdf")
-			buffer.collectFromToolCall(writeCall(p))
+			buffer.collectFromToolCall({
+				toolName: "bash",
+				args: { command: "ls" },
+				result: { content: [{ type: "text", text: p }] },
+				cwd: tmpDir,
+				windowStart: Date.now() - 1000,
+			})
 		}
+		// Late plan: must not be ejected by earlier sniffed noise.
+		const plan = join(tmpDir, "plan.md")
+		writeFileSync(plan, "md")
+		buffer.collectFromToolCall({
+			toolName: "submit_plan",
+			args: {},
+			result: { content: [{ type: "text", text: "ok" }], details: { artifacts: [{ path: plan }] } },
+			cwd: tmpDir,
+		})
 		buffer.noteTextBlock("km.1")
-		expect(buffer.flush()).toHaveLength(32) // MAX_TURN_ARTIFACTS
+		const chunks = buffer.flush()
+		expect(chunks).toHaveLength(33)
+		expect(chunks.map((c) => chunkOf(c).content.name)).toContain("plan.md")
 	})
 
 	it("disambiguates colliding basenames with the shortest unique path suffix", () => {
