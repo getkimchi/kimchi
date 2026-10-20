@@ -131,21 +131,7 @@ export class TurnArtifactBuffer {
 		for (const artifact of artifactsFromToolCall(opts.toolName, opts.args, opts.result, opts.cwd, {
 			windowStart: opts.windowStart,
 		})) {
-			if (sniffed) {
-				if (this.artifacts.has(artifact.path)) continue
-				this.sniffedKeys.push(artifact.path)
-				this.artifacts.set(artifact.path, artifact)
-				if (this.sniffedKeys.length > MAX_TURN_ARTIFACTS) {
-					const evicted = this.sniffedKeys.shift()
-					if (evicted !== undefined) this.artifacts.delete(evicted)
-				}
-				continue
-			}
-			// Intentional path (write/edit/declared): if it was previously
-			// sniffed, drop its eviction eligibility.
-			const sniffedIndex = this.sniffedKeys.indexOf(artifact.path)
-			if (sniffedIndex >= 0) this.sniffedKeys.splice(sniffedIndex, 1)
-			this.artifacts.set(artifact.path, artifact)
+			this.addEntry(sniffed, artifact)
 		}
 	}
 
@@ -158,8 +144,10 @@ export class TurnArtifactBuffer {
 	 */
 	adoptRecorded(artifacts: RecordedArtifact[]): void {
 		for (const artifact of artifacts) {
-			if (this.artifacts.has(artifact.path)) continue
-			this.artifacts.set(artifact.path, {
+			// Rows recorded before the sniffed flag existed treat entries as
+			// intentional (never evicted) — the safe direction for a link the
+			// live turn stat-verified.
+			this.addEntry(artifact.sniffed === true, {
 				uri: pathToFileURL(artifact.path).href,
 				path: artifact.path,
 				name: artifact.name,
@@ -203,5 +191,26 @@ export class TurnArtifactBuffer {
 			seenModelMeta,
 			fallbackAttribution: fallback,
 		})
+	}
+
+	// Per-turn cap: sniffed entries evict oldest-past-the-cap; intentional
+	// ones (writes/edits/declared — recorded rows mark them sniffed:false)
+	// always land and promote a previously sniffed same path out of
+	// eviction eligibility. Shared by live collection and row adoption so
+	// cross-row turns still bound like one live turn would.
+	private addEntry(sniffed: boolean, artifact: Artifact): void {
+		if (sniffed) {
+			if (this.artifacts.has(artifact.path)) return
+			this.sniffedKeys.push(artifact.path)
+			this.artifacts.set(artifact.path, artifact)
+			if (this.sniffedKeys.length > MAX_TURN_ARTIFACTS) {
+				const evicted = this.sniffedKeys.shift()
+				if (evicted !== undefined) this.artifacts.delete(evicted)
+			}
+			return
+		}
+		const sniffedIndex = this.sniffedKeys.indexOf(artifact.path)
+		if (sniffedIndex >= 0) this.sniffedKeys.splice(sniffedIndex, 1)
+		this.artifacts.set(artifact.path, artifact)
 	}
 }

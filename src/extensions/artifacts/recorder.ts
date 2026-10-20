@@ -21,6 +21,12 @@ export interface RecordedArtifact {
 	path: string
 	name: string
 	mimeType: string | null
+	/**
+	 * bash/powershell-sniffed: eviction-eligible at the turn cap. Absent in
+	 * rows written before the flag — replay treats those as intentional
+	 * (never evicted): the safe direction for stat-verified live links.
+	 */
+	sniffed?: boolean
 }
 
 export interface ArtifactsEntry {
@@ -36,7 +42,9 @@ const MAX_TURN_RECORDED = 32
 // mirrors the ACP live path's clock-skew allowance.
 const CLOCK_SKEW_MS = 5000
 
-function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
+type DetectedArtifact = Artifact & { sniffed: boolean }
+
+function turnArtifacts(event: TurnEndEvent, cwd: string): DetectedArtifact[] {
 	if (event.message.role !== "assistant") return []
 	const toolCalls = new Map<string, { name: string; arguments: Record<string, unknown> }>()
 	for (const block of event.message.content) {
@@ -49,7 +57,7 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 	// window, while live (per-call start − skew) caught it.
 	const windowStart = event.message.timestamp - CLOCK_SKEW_MS
 	const seen = new Set<string>()
-	const out: Artifact[] = []
+	const out: DetectedArtifact[] = []
 	// Cap parity with live: sniffed (bash/powershell) entries evict
 	// oldest-past-the-cap; intentional (write/edit/declared) always land.
 	const sniffedKeys: string[] = []
@@ -65,9 +73,11 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 			cwd,
 			{ windowStart },
 		)) {
-			if (sniffed && sniffedKeys.includes(artifact.path)) continue
-			if (!sniffed && seen.has(artifact.path)) {
+			const existing = seen.has(artifact.path) ? out.findIndex((a) => a.path === artifact.path) : -1
+			if (sniffed && existing >= 0) continue
+			if (!sniffed && existing >= 0) {
 				// Intentional path promotes out of sniffed eviction eligibility.
+				out[existing] = { ...out[existing], sniffed: false }
 				const idx = sniffedKeys.indexOf(artifact.path)
 				if (idx >= 0) sniffedKeys.splice(idx, 1)
 				continue
@@ -86,7 +96,7 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 					}
 				}
 			}
-			out.push(artifact)
+			out.push({ ...artifact, sniffed })
 		}
 	}
 	return out
@@ -94,7 +104,7 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
 
 export function artifactRecorderExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
-		let artifacts: Artifact[]
+		let artifacts: DetectedArtifact[]
 		try {
 			artifacts = turnArtifacts(event, ctx.sessionManager.getCwd())
 		} catch {
@@ -107,6 +117,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 				path: a.path,
 				name: a.name,
 				mimeType: ARTIFACT_EXTENSIONS[extname(a.path).toLowerCase()] ?? null,
+				sniffed: a.sniffed,
 			})),
 		}
 		pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)

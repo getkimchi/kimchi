@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -54,7 +54,7 @@ describe("artifact-recorder", () => {
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
 		expect(rows[0].v).toBe(1)
-		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown" }])
+		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown", sniffed: false }])
 	})
 
 	it("records nothing for a turn without tool calls (or user messages)", async () => {
@@ -71,6 +71,39 @@ describe("artifact-recorder", () => {
 			ctx,
 		)
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
+	})
+
+	it("anchors the mtime window at the message (long-running call kept its early-written artifact)", async () => {
+		const now = Date.now()
+		// Artifact written 30s "before" the message (long-running call),
+		// result lands now. A result-anchored window would drop it.
+		const abs = touch("slow.md")
+		utimesSync(abs, new Date(now - 30_000), new Date(now - 30_000))
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now - 31_000,
+					content: [{ type: "toolCall", id: "tc-1", name: "write", arguments: { path: "slow.md" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-1",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		expect(getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toHaveLength(1)
 	})
 
 	it("records nothing when no detected artifact exists (live stat gate)", async () => {
