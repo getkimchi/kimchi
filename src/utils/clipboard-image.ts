@@ -217,7 +217,9 @@ function readClipboardImageViaXclip(): ClipboardImage | null {
 	return null
 }
 
-async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | null> {
+export async function readClipboardImageViaNativeClipboard(options?: {
+	ignoreFileUrlGuard?: boolean
+}): Promise<ClipboardImage | null> {
 	let nativeClipboard: unknown
 
 	try {
@@ -242,8 +244,11 @@ async function readClipboardImageViaNativeClipboard(): Promise<ClipboardImage | 
 	// "public.file-url" + a thumbnail on the pasteboard.
 	// getImageBinary() returns the thumbnail/icon in this case.
 	// Detect this and return null so clipboard-read.ts uses AppleScript
-	// to read the actual file from disk.
-	if (availableFormats) {
+	// to read the actual file from disk. Callers that already tried the
+	// file on disk and failed (sandbox/TCC permissions, deleted file) can
+	// pass ignoreFileUrlGuard to use the pasteboard's own representation
+	// instead of failing the paste entirely.
+	if (availableFormats && !options?.ignoreFileUrlGuard) {
 		const formats = availableFormats()
 		if (formats.includes("public.file-url")) {
 			return null

@@ -182,6 +182,7 @@ import toolOutputExternalizerExtension from "./extensions/tool-output-externaliz
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
+import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
@@ -1036,6 +1037,7 @@ async function cliMain(): Promise<void> {
 				// placeholder. Keep refused-turns ahead of interactive-error-surface in
 				// this list.
 				refusedTurnsExtension,
+				undecodableImageSanitizerExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,

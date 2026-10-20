@@ -101,17 +101,29 @@ async function handlePaste(): Promise<void> {
 		return
 	}
 
-	let image: { bytes: Uint8Array; mimeType: string } | null
+	let image: { bytes: Uint8Array; mimeType: string; degraded?: boolean } | null
 	try {
 		image = await readClipboardImage()
-	} catch {
-		currentCtx?.ui?.notify("Clipboard image support is not available", "warning")
+	} catch (err) {
+		// The pasteboard advertises an image (so the indicator shows) but the
+		// bytes cannot be decoded — corrupt or unsupported image data. "Support
+		// is not available" would be misleading: support works, this image does
+		// not. Log the underlying error; it is invisible in the TUI otherwise.
+		console.error("[clipboard-image] Failed to read clipboard image:", err)
+		currentCtx?.ui?.notify("Clipboard image could not be read — corrupt or unsupported image data", "warning")
 		return
 	}
 
 	if (!image) {
 		currentCtx?.ui?.notify("No image found on clipboard", "info")
 		return
+	}
+
+	// The bytes came from the pasteboard's own representation because the
+	// Finder-copied file could not be read — they may be a thumbnail or a
+	// rendering (e.g. page 1 of a PDF) rather than the original file.
+	if (image.degraded) {
+		currentCtx?.ui?.notify("Pasted a lower-quality preview — the original file could not be read", "info")
 	}
 
 	const base64 = Buffer.from(image.bytes).toString("base64")
