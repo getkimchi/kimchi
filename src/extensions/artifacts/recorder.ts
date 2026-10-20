@@ -112,7 +112,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 			artifacts: artifacts.map((a) => ({
 				path: a.path,
 				name: a.name,
-				mimeType: ARTIFACT_EXTENSIONS[extname(a.path).toLowerCase()] ?? null,
+				mimeType: a.mimeType ?? null,
 				sniffed: a.sniffed,
 			})),
 		}

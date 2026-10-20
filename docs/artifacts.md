@@ -38,8 +38,9 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 The artifact-recorder extension (`src/extensions/artifacts/recorder.ts`, both
 surfaces) runs the same detection at turn end and appends the result as a
 session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
-artifacts: [{ path, name, mimeType }] } }` — already stat-gated, deduped,
-label-resolved and capped (32). `pi.appendEntry` persists it into the
+artifacts: [{ path, name, mimeType, sniffed }] } }` (`sniffed: true` =
+bash/powershell-sniffed, eviction-eligible at the cap the way live is) —
+already stat-gated, deduped, label-resolved and capped (32). `pi.appendEntry` persists it into the
 session log, so rows travel with branch trees (kill-branch, intersections)
 exactly like the turns that produced them.
 
@@ -48,5 +49,4 @@ On replay, sighting a row adopts it verbatim (`TurnArtifactBuffer
 including links to files since deleted or renamed, and never ghosts that
 never existed (candidates were stat-gated at record time). Replay does NOT
 re-run detection — detection is live-only, stat-verified by construction;
-a replayed session shows exactly the artifacts its rows recorded. Non-goals as before: backgrounded commands, subagent
-files.
+a replayed session shows exactly the artifacts its rows recorded. Non-goals as before: backgrounded commands, subagent files.
