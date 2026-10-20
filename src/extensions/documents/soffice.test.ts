@@ -10,10 +10,11 @@ function deps(opts: {
 	env?: Record<string, string | undefined>
 	opt?: string[]
 }) {
-	const exists = new Set(opts.exists ?? [])
+	const exists = new Set((opts.exists ?? []).map((p) => p.replace(/\\/g, "/")))
 	return {
 		which: (cmd: string) => (cmd === "soffice" ? opts.onPath : undefined),
-		fileExists: (p: string) => exists.has(p),
+		// Production builds candidates with `join` — backslashes on Windows.
+		fileExists: (p: string) => exists.has(p.replace(/\\/g, "/")),
 		env: opts.env ?? {},
 		platform: opts.platform,
 		home: "/home/u",
