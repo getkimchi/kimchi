@@ -1827,7 +1827,7 @@ export class KimchiAcpAgent implements Agent {
 		// preserving messageId parity with live (seedBlockCounterFromBranch).
 		const artifactBuffer = new TurnArtifactBuffer()
 		const flushTurnArtifacts = () => {
-			// verifyExists:false: replayed chips keep pointing at files that may
+			// verifyExists:false: replayed artifacts keep pointing at files that may
 			// legitimately be gone (detection already skipped the on-disk check).
 			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta, {
 				verifyExists: false,
@@ -2468,7 +2468,7 @@ export class KimchiAcpAgent implements Agent {
 	 * Emission is TURN-scoped (Claude-style trailing artifacts), attached to
 	 * the turn's LAST agent_message block id — never a fresh `km.N`: a fresh
 	 * id has no persisted counterpart, so replay could not reproduce the
-	 * chips. A turn with no emitted text block at all (tool-call-only,
+	 * artifacts. A turn with no emitted text block at all (tool-call-only,
 	 * thinking-only) has nothing reproducible to attach to, so its artifacts
 	 * are dropped.
 	 *
