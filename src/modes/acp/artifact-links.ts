@@ -154,6 +154,29 @@ export class TurnArtifactBuffer {
 	}
 
 	/**
+	 * Mid-turn emission for tool-declared artifacts (details.artifacts):
+	 * removes the named paths from the buffer and flushes them NOW against
+	 * the current text block — e.g. a submitted plan chips before its
+	 * review questionnaire opens. [] when no text block has streamed yet
+	 * (entries stay buffered; the turn-end flush still covers them) or the
+	 * paths aren't buffered. Emitted entries are removed, so the turn-end
+	 * flush can't double-chip them.
+	 */
+	emitNow(paths: string[], seenModelMeta?: Map<string, ModelAttribution>): SessionUpdate[] {
+		const messageId = this.lastBlockId
+		if (messageId === undefined) return []
+		const emitted: Artifact[] = []
+		for (const path of paths) {
+			const artifact = this.artifacts.get(path)
+			if (artifact === undefined || !this.artifacts.delete(path)) continue
+			this.removeFromSniffed(path)
+			emitted.push(artifact)
+		}
+		if (emitted.length === 0) return []
+		return this.emitChunks(emitted, messageId, this.lastBlockMeta, seenModelMeta)
+	}
+
+	/**
 	 * Build the flush chunks and clear state; [] when nothing to attach or
 	 * no attachment point. `seenModelMeta` may be absent in partial test
 	 * harnesses.
@@ -182,6 +205,17 @@ export class TurnArtifactBuffer {
 			})
 			if (artifacts.length === 0) return []
 		}
+		return this.emitChunks(artifacts, messageId, fallback, seenModelMeta)
+	}
+
+	// One construction point for live and replay chunk emission (mid-turn
+	// emitNow and turn-end flush share name disambiguation + attribution).
+	private emitChunks(
+		artifacts: Artifact[],
+		messageId: string,
+		fallback: ModelAttribution | undefined,
+		seenModelMeta: Map<string, ModelAttribution> | undefined,
+	): SessionUpdate[] {
 		return buildArtifactLinkChunks({
 			messageId,
 			artifacts: disambiguateNames(artifacts),
@@ -206,8 +240,12 @@ export class TurnArtifactBuffer {
 			}
 			return
 		}
-		const sniffedIndex = this.sniffedKeys.indexOf(artifact.path)
-		if (sniffedIndex >= 0) this.sniffedKeys.splice(sniffedIndex, 1)
+		this.removeFromSniffed(artifact.path)
 		this.artifacts.set(artifact.path, artifact)
+	}
+
+	private removeFromSniffed(path: string): void {
+		const index = this.sniffedKeys.indexOf(path)
+		if (index >= 0) this.sniffedKeys.splice(index, 1)
 	}
 }

@@ -44,6 +44,66 @@ describe("buildArtifactLinkChunks", () => {
 	})
 })
 
+describe("TurnArtifactBuffer > emitNow", () => {
+	let tmpDir: string
+	let plan: string
+	let note: string
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-emitnow-"))
+		plan = join(tmpDir, "emit-plan.md")
+		note = join(tmpDir, "emit-note.pdf")
+		writeFileSync(plan, "# plan")
+		writeFileSync(note, "pdf")
+	})
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	const links = (us: SessionUpdate[]) =>
+		us.filter((u) => u.sessionUpdate === "agent_message_chunk" && u.content?.type === "resource_link")
+	// NOTE: structural assertions below use toMatchObject; the SessionUpdate
+	// union isn't narrowed by filter alone.
+
+	const collect = (buf: TurnArtifactBuffer) =>
+		buf.collectFromToolCall({
+			toolName: "custom_doc_tool",
+			args: {},
+			result: { content: [{ type: "text", text: "ok" }], details: { artifacts: [{ path: plan }, { path: note }] } },
+			cwd: "/tmp",
+		})
+
+	it("stays buffered when no text block registered yet", () => {
+		const buf = new TurnArtifactBuffer()
+		collect(buf)
+		expect(buf.emitNow([plan])).toEqual([])
+		expect(buf.size).toBe(2)
+		buf.noteTextBlock("km.1")
+		const flushed = links(buf.flush())
+		expect(flushed).toHaveLength(2)
+	})
+
+	it("emits listed paths mid-turn and the flush skips them (no double chip)", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		const mid = links(buf.emitNow([plan]))
+		expect(mid).toHaveLength(1)
+		expect(mid[0]).toMatchObject({ messageId: "km.5", content: { name: "emit-plan.md" } })
+		// flush emits only the remaining artifact.
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "emit-note.pdf" } })
+	})
+
+	it("ignores unbuffered paths", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		expect(buf.emitNow([join(tmpDir, "not-here.md")])).toEqual([])
+		expect(buf.size).toBe(2)
+	})
+})
+
 describe("TurnArtifactBuffer", () => {
 	let tmpDir: string
 

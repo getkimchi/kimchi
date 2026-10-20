@@ -236,6 +236,12 @@ function parseDeclaredArtifacts(result: unknown, cwd: string): { handled: boolea
 	return { handled: true, artifacts }
 }
 
+// Resolved absolute paths of a tool's declared artifacts — for consumers
+// that need just the keys (mid-turn emission), not the full Artifact set.
+export function declaredArtifactPaths(result: unknown, cwd: string): string[] {
+	return parseDeclaredArtifacts(result, cwd).artifacts.map((a) => a.path)
+}
+
 type DetectOpts = {
 	/**
 	 * Tool-call start (epoch ms). Sniffed bash/powershell candidates must
