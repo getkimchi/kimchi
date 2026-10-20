@@ -838,7 +838,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 								text: (planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.") + retainedPlanNote,
 							},
 						],
-						details: { submitted: true, source: "worker", planPath, snapshotPath },
+						details: {
+							submitted: true,
+							source: "worker",
+							planPath,
+							...(planPath ? { artifacts: [{ path: planPath }] } : {}),
+							snapshotPath,
+						},
 						terminate: true,
 					}
 				}
@@ -874,7 +880,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				if (!ctx.hasUI || pi.getFlag?.("ferment-oneshot") === true) {
 					return {
 						content: [{ type: "text", text: `Plan submitted.${retainedPlanNote}` }],
-						details: { submitted: true, planPath, snapshotPath },
+						details: {
+							submitted: true,
+							planPath,
+							...(planPath ? { artifacts: [{ path: planPath }] } : {}),
+							snapshotPath,
+						},
 						terminate: true,
 					}
 				}
@@ -954,7 +965,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 				return {
 					content: [{ type: "text", text: `Plan submitted for review. Waiting for user decision.${retainedPlanNote}` }],
-					details: { submitted: true, planPath, snapshotPath },
+					details: {
+						submitted: true,
+						planPath,
+						...(planPath ? { artifacts: [{ path: planPath }] } : {}),
+						snapshotPath,
+					},
 					terminate: true,
 				}
 			},

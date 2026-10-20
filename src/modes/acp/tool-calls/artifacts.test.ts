@@ -172,6 +172,65 @@ describe("artifactsFromToolCall", () => {
 		expect(artifactsFromToolCall("write", { path: `${String.fromCharCode(0)}.pdf` }, textResult("ok"), cwd)).toEqual([])
 	})
 
+	describe("tool-declared artifacts", () => {
+		const declared = (...entries: unknown[]) => ({
+			content: [{ type: "text", text: "Plan submitted." }],
+			details: { artifacts: entries },
+		})
+
+		it("detects declared locations regardless of toolName", () => {
+			// submit_plan writeFileSyncs .kimchi/plans/<slug>.md inside its
+			// execute (the write tool never runs) and declares the location.
+			const abs = touch("plan.md")
+			const out = artifactsFromToolCall("submit_plan", { plan: "# Plan" }, declared({ path: abs }), cwd)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("detects multiple locations; optional name overrides the basename", () => {
+			const a = touch("a.md")
+			const b = touch("b.pdf")
+			const out = artifactsFromToolCall("submit_plan", {}, declared({ path: a }, { path: b, name: "Deck" }), cwd)
+			expect(out.map((x) => [x.path, x.name])).toEqual([
+				[a, "a.md"],
+				[b, "Deck"],
+			])
+		})
+
+		it("declared paths are authoritative (no mtime window); missing file is still dropped live", () => {
+			const abs = touch("plan.md")
+			const past = Date.now() - 60_000
+			utimesSync(abs, new Date(past), new Date(past))
+			expect(
+				artifactsFromToolCall("submit_plan", {}, declared({ path: abs }), cwd, { windowStart: Date.now() }).map(
+					(a) => a.path,
+				),
+			).toEqual([abs])
+			expect(artifactsFromToolCall("submit_plan", {}, declared({ path: join(cwd, "gone.md") }), cwd)).toEqual([])
+		})
+
+		it("skips malformed entries but keeps valid ones", () => {
+			const abs = touch("plan.md")
+			const out = artifactsFromToolCall(
+				"submit_plan",
+				{},
+				declared("not-an-object", { path: 42 }, { path: "" }, null, { path: abs }),
+				cwd,
+			)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+	})
+
+	it("submit_plan without details.artifacts produces nothing", () => {
+		const abs = touch("plan.md")
+		const out = artifactsFromToolCall(
+			"submit_plan",
+			{ plan: "# Plan" },
+			textResult(`Plan submitted and saved to ${abs}.`),
+			cwd,
+		)
+		expect(out).toEqual([])
+	})
+
 	describe("mtime window and command filtering", () => {
 		it("rejects a pre-existing file mentioned by a read-only command", () => {
 			const abs = touch("notes.md")

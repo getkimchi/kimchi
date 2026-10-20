@@ -2,8 +2,9 @@
 //
 // Detects user-openable files (slides, spreadsheets, PDFs, …) the agent
 // produced, so clients can render an "Open <name>" action. Detection is
-// conservative: only write/edit paths and bash/powershell output are
-// inspected, candidates must match the extension allowlist, and live
+// conservative: write/edit paths, tool-declared `details.artifacts`
+// (submit_plan is the first producer), and bash/powershell output are
+// inspected; candidates must match the extension allowlist, and live
 // detection requires the file to exist. Detection never throws.
 //
 // Trust assumption: artifact paths are agent-controlled output; the chip
@@ -203,6 +204,34 @@ function navigatedCwd(segments: CommandSegments, cwd: string): string {
 
 type CommandSegments = ReturnType<typeof parseCommandSegments>
 
+// Tool-declared artifact entry, shaped after ACP's ToolCallLocation.
+// `name` falls back to the file basename.
+type DeclaredArtifactEntry = { path?: unknown; name?: unknown }
+
+// `details.artifacts` declarations are authoritative paths (like write/edit
+// args): no mtime window. They let tools that write files internally
+// (submit_plan saves .kimchi/plans/<slug>.md itself) surface artifacts
+// without the write tool running. Empty/missing entries are skipped; filtered
+// entries (wrong extension, missing live file) drop out, and an empty
+// result still short-circuits the path-guess fallbacks.
+function parseDeclaredArtifacts(
+	result: unknown,
+	cwd: string,
+	verifyExists?: boolean,
+): { handled: boolean; artifacts: Artifact[] } {
+	const entries = (result as { details?: { artifacts?: unknown } } | null | undefined)?.details?.artifacts
+	if (!Array.isArray(entries) || !entries.length) return { handled: false, artifacts: [] }
+	const artifacts: Artifact[] = []
+	for (const entry of entries as DeclaredArtifactEntry[]) {
+		const { path, name } = entry ?? {}
+		if (!path || typeof path !== "string") continue
+		const artifact = artifactFromPath(path, cwd, { verifyExists })
+		if (!artifact) continue
+		artifacts.push(name && typeof name === "string" ? { ...artifact, name } : artifact)
+	}
+	return { handled: true, artifacts }
+}
+
 type DetectOpts = {
 	/** Require the file to exist (live detection; false for replay). */
 	verifyExists?: boolean
@@ -301,6 +330,8 @@ export function artifactsFromToolCall(
 ): Artifact[] {
 	try {
 		if (isErrorResult(result)) return []
+		const declared = parseDeclaredArtifacts(result, cwd, opts.verifyExists)
+		if (declared.handled) return declared.artifacts
 		if (toolName === "write" || toolName === "edit") {
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
