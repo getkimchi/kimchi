@@ -5842,6 +5842,57 @@ describe("generated artifacts (live turns)", () => {
 		expect(artifactIdx).toBeGreaterThan(textIdx)
 	})
 
+	it("emits tool-declared artifacts mid-turn (before review UI), no duplicate at turn end", async () => {
+		const plan = join(tmpDir, "plan.md")
+		writeFileSync(plan, "# Plan")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			// A text block must already exist for mid-turn attachment.
+			emitDelta("text_delta", 0, "First part ")
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-declare",
+				toolName: "custom_doc_tool",
+				args: { path: plan },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-declare",
+				toolName: "custom_doc_tool",
+				result: {
+					content: [{ type: "text", text: "Doc saved." }],
+					details: { artifacts: [{ path: plan }] },
+				},
+				isError: false,
+			})
+			// Streaming continues for the same turn AFTER tool completion.
+			emitDelta("text_delta", 0, "second part")
+			fake.emit(assistantMessageEnd("First part second part"))
+			fake.emit(agentEnd())
+		}
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "plan" }] })
+		expect(res.stopReason).toBe("end_turn")
+		// Exactly one chip: emitNow removed it from the turn-end flush.
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].uri).toBe(pathToFileURL(plan).href)
+		const chipIdx = updates.findIndex(
+			(u) =>
+				u.update.sessionUpdate === "agent_message_chunk" &&
+				(u.update as { content?: { type?: string } }).content?.type === "resource_link",
+		)
+		const laterTextIdx = updates.findIndex(
+			(u) =>
+				u.update.sessionUpdate === "agent_message_chunk" &&
+				(u.update as { content?: { text?: string } }).content?.text === "second part",
+		)
+		expect(chipIdx).toBeGreaterThan(-1)
+		expect(laterTextIdx).toBeGreaterThan(-1)
+		// Mid-turn: chip landed before the rest of the turn's streaming —
+		// i.e. immediately at tool completion.
+		expect(chipIdx).toBeLessThan(laterTextIdx)
+	})
+
 	it("detects artifacts mentioned in bash output and dedupes across calls", async () => {
 		const target = join(tmpDir, "report.pdf")
 		writeFileSync(target, "pdf")
