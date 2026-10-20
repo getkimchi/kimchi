@@ -30,10 +30,7 @@ export function notifyMigrationReport(agentDir: string, ctx: ExtensionContext): 
 		// profile migration's outcome message). Only notify when something was
 		// actually dropped; a clean migration stays silent.
 		if (issues.length === 0) return
-		ctx.ui.notify(
-			`MCP configs migrated to the native engine — ${issues.length} adapter-only setting${issues.length === 1 ? "" : "s"} not carried over. Report: ${reportPath} (originals: *.pre-native-migration.bak)`,
-			"info",
-		)
+		ctx.ui.notify(`MCP configs migrated to the native engine (report: ${reportPath})`, "info")
 	} catch {
 		// Never block startup on a notice.
 	}

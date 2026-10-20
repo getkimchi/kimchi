@@ -40,7 +40,7 @@ describe("notifyMigrationReport", () => {
 		)
 	})
 
-	it("notifies once with a one-line info summary pointing at the report and backups", () => {
+	it("notifies once with a one-line info summary pointing at the report", () => {
 		const { agentDir, ctx, notify } = setup()
 		writeReport(agentDir, {
 			issues: [
@@ -55,7 +55,7 @@ describe("notifyMigrationReport", () => {
 		const [message, level] = notify.mock.calls[0] as [string, string]
 		expect(level).toBe("info")
 		expect(message).toBe(
-			`MCP configs migrated to the native engine — 3 adapter-only settings not carried over. Report: ${join(agentDir, "mcp-native-migration-report.json")} (originals: *.pre-native-migration.bak)`,
+			`MCP configs migrated to the native engine (report: ${join(agentDir, "mcp-native-migration-report.json")})`,
 		)
 		// Field-level detail no longer surfaces in the TUI.
 		expect(message).not.toContain("oauth")
@@ -68,11 +68,4 @@ describe("notifyMigrationReport", () => {
 		expect(notify).toHaveBeenCalledTimes(1)
 	})
 
-	it("uses the singular for one dropped setting", () => {
-		const { agentDir, ctx, notify } = setup()
-		writeReport(agentDir, { issues: [{ message: 'adapter-only field "debug" dropped' }] })
-		notifyMigrationReport(agentDir, ctx)
-		const [message] = notify.mock.calls[0] as [string]
-		expect(message).toContain("1 adapter-only setting not carried over")
-	})
 })
