@@ -263,7 +263,14 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 		// effective window drives context management.
 		if (resolution.kind !== "unknown") {
 			setAutoRoutingState(sessionId, { status: "resolved", model: resolution.model, requestedId: message.model })
-			if (ctx.model) {
+			// Re-capability only the virtual model the request was made with. If
+			// the selection changed before this handler runs, ctx.model is the new
+			// concrete model and must not inherit the routed model's window:
+			// setModel for the same id emits no model_select (modelsAreEqual), so
+			// nothing would correct it afterwards. A switch landing during the
+			// sync's own await inside setModel can still win — pre-existing window,
+			// not widened here.
+			if (ctx.model && ctx.model.id === message.model) {
 				void syncAutoCapabilities(pi, ctx.model as Model<Api>, resolution.model as Model<Api>).catch(() =>
 					clearAutoRoutingState(sessionId),
 				)

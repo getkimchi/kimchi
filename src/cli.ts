@@ -108,6 +108,7 @@ import memoryExtension from "./extensions/memory/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
+import modelWindowSnapshotExtension from "./extensions/model-window-snapshot.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
@@ -897,6 +898,7 @@ async function cliMain(): Promise<void> {
 					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
 				] satisfies ManagedExtensionFactory[]),
+				modelWindowSnapshotExtension,
 				modelSwitchExtension,
 				modelListExtension,
 				modelGuardExtension,
