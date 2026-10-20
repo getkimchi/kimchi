@@ -631,6 +631,15 @@ describe("SHORTCUT_TAIL regex", () => {
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("● default")
 	})
 
+	it("matches pi 1.3 dim tokens (compound open \\x1b[<color>m\\x1b[2m, close \\x1b[22;39m) without orphaning the gap", () => {
+		// pi 1.3 theme.fg() for a dim token emits `${color-open}\x1b[2m${text}\x1b[22;39m`.
+		// A single-escape match would start at \x1b[2m and leave `default <color-open>`,
+		// rendering as `default  ·` (double space) after the hint strip.
+		const text = "\x1b[38;2;1;2;3mdefault\x1b[39m \x1b[38;5;245m\x1b[2m→ shift+tab\x1b[22;39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\x1b[38;2;1;2;3mdefault\x1b[39m")
+	})
+
 	it("matches the model segment trailing shortcut", () => {
 		const text = "multi-model (kimi-k2.6) \x1b[38;5;242m→ ctrl+p\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
