@@ -36,6 +36,25 @@ Org policy is fetched at startup and held for the session; each field has one en
 Behavior and contracts documented per topic — read the linked doc when working in that area:
 
 - [docs/artifacts.md](docs/artifacts.md) — generated-file artifacts: declaring them from tools (`details.artifacts`), detection, emission and replay
+- [docs/acp-model-attribution.md](docs/acp-model-attribution.md) — per-message model/provider attribution on ACP blocks
+- [docs/agents.md](docs/agents.md) — agent infrastructure (workers, subagents, ferment planning pipeline)
+- [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
+- [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
+- [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
+- [docs/ferment.md](docs/ferment.md) · [docs/ferment-v2.md](docs/ferment-v2.md) · [docs/ferment-storage-schema.md](docs/ferment-storage-schema.md) — autonomous project execution: concept, runtime, storage
+- [docs/hooks.md](docs/hooks.md) — lifecycle hooks (lint:fix, session-end, compaction timeout guard, work tracking)
+- [docs/mcp-e2e-testing.md](docs/mcp-e2e-testing.md) — MCP end-to-end testing approach (live creds, real preconditions)
+- [docs/memory-extension.md](docs/memory-extension.md) · [docs/memory-residency.md](docs/memory-residency.md) — memory: LLM-extraction pipeline, disk-backed residency and display budget
+- [docs/model-routing.md](docs/model-routing.md) — auto model routing (incl. multi-model: main/author/verifier)
+- [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
+- [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
+- [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
+- [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md) — TUI wheel-scroll speed tuning
+- [docs/work-attribution.md](docs/work-attribution.md) — proxying agent work to authored PRs (`--work`)
+- [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
+- [docs/windows/](docs/windows/) — Windows platform notes
+- [docs/research/](docs/research/) — research notes (e.g. bash visibility)
+- [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration
 
 ## Shared TUI components
 
