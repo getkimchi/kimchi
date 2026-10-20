@@ -272,9 +272,11 @@ function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artif
 // so "Wrote report.md." matches, while (?![\w.]) still rejects
 // report.md.bak. Tokens containing "://" (URLs) are rejected before
 // resolution. artifacts.test.ts keeps this extension list in sync with
-// ARTIFACT_EXTENSIONS in both directions.
+// ARTIFACT_EXTENSIONS in both directions. The prefix requires >=1 char so
+// bare extension mentions ("wrote a .md file") never become candidates —
+// `.md` alone would resolve to <cwd>/.md.
 const PATH_TOKEN =
-	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
+	/[^\s"'<>`;|&*?()[\]{}]+\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
 
 function textBlocks(result: unknown): string[] {
 	const r = result as { content?: unknown } | null | undefined

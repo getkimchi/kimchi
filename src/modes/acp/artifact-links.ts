@@ -4,6 +4,40 @@ import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
 import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
 
+// Max artifacts a single turn may carry. Bash results are capped per call
+// (MAX_BASH_ARTIFACTS in tool-calls/artifacts.ts), but a turn can run many
+// calls; without a turn-level cap one flush could emit an unbounded burst
+// of resource_link updates.
+const MAX_TURN_ARTIFACTS = 32
+
+// Two artifacts with the same basename (docs/report.md, out/report.md)
+// would render identical labels. Disambiguate with the shortest unique
+// trailing path-suffix.
+function disambiguateNames(artifacts: Artifact[]): Artifact[] {
+	const byName = new Map<string, Artifact[]>()
+	for (const a of artifacts) byName.set(a.name, [...(byName.get(a.name) ?? []), a])
+	const out: Artifact[] = []
+	for (const group of byName.values()) {
+		if (group.length === 1) {
+			out.push(group[0])
+			continue
+		}
+		for (const artifact of group) {
+			let label = artifact.name
+			const segments = artifact.path.split(/[/\\]/)
+			for (let k = 2; k <= segments.length; k++) {
+				const labels = new Set(group.map((g) => g.path.split(/[/\\]/).slice(-k).join("/")))
+				if (labels.size === group.length) {
+					label = segments.slice(-k).join("/")
+					break
+				}
+			}
+			out.push({ ...artifact, name: label })
+		}
+	}
+	return out
+}
+
 /**
  * Build artifact chunks: one `resource_link` agent_message_chunk per
  * artifact, attached to `messageId` and carrying
@@ -81,6 +115,7 @@ export class TurnArtifactBuffer {
 			verifyExists: opts.verifyExists ?? true,
 			windowStart: opts.windowStart,
 		})) {
+			if (!this.artifacts.has(artifact.path) && this.artifacts.size >= MAX_TURN_ARTIFACTS) continue
 			this.artifacts.set(artifact.path, artifact)
 		}
 	}
@@ -111,6 +146,6 @@ export class TurnArtifactBuffer {
 			})
 			if (artifacts.length === 0) return []
 		}
-		return buildArtifactLinkChunks({ messageId, artifacts, seenModelMeta })
+		return buildArtifactLinkChunks({ messageId, artifacts: disambiguateNames(artifacts), seenModelMeta })
 	}
 }

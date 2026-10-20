@@ -32,3 +32,7 @@ Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool 
 - `TurnArtifactBuffer` flushes once per turn as `agent_message_chunk` `resource_link`s, attached to the turn's last text block, identically on live and replayed sessions. Text-less turns emit nothing.
 - Live flush re-verifies existence, so files produced and deleted within one turn never link to ghosts; replay omits the check so artifact links survive for files created and later removed by subsequent turns.
 - Chunks carry `_meta["kimchi.dev"].type = "artifact"` so clients can distinguish generated files from links the model merely references; capability is advertised in initialize as `artifacts: true`.
+
+## Replay divergence (accepted v1 trade-off)
+
+Replay re-runs detection without the live gates — no mtime window and no existence check — because the session record stores tool results, not tool-call start times, and replayed files may legitimately be gone. Consequence: historical read-only output (`cat report.md`, `git log --name-only`) can surface artifact links on replay that the live turn suppressed. Exact parity would require persisting the per-turn detection result, which is intentionally out of scope; the zero-prefix-token filter (`wrote a .md file`) removes the most visible nonsense in both paths. Non-goals as before: backgrounded commands, subagent files.

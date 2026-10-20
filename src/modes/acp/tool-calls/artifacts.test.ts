@@ -231,6 +231,14 @@ describe("artifactsFromToolCall", () => {
 		expect(out).toEqual([])
 	})
 
+	it("bare extension mentions are not candidates (empty path prefix)", () => {
+		// "wrote a .md file" — `.md` alone has no path to resolve and would
+		// otherwise produce file://<cwd>/.md on replay (no stat gate).
+		expect(
+			artifactsFromToolCall("bash", {}, textResult("wrote a .md file"), cwd, { windowStart: Date.now() - 1000 }),
+		).toEqual([])
+	})
+
 	describe("mtime window and command filtering", () => {
 		it("rejects a pre-existing file mentioned by a read-only command", () => {
 			const abs = touch("notes.md")

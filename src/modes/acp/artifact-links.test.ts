@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -112,5 +112,31 @@ describe("TurnArtifactBuffer", () => {
 		buffer.noteTextBlock("km.1")
 		rmSync(target)
 		expect(buffer.flush()).toEqual([])
+	})
+
+	it("caps turn-level accumulation (a flush never emits an unbounded burst)", () => {
+		const buffer = new TurnArtifactBuffer()
+		for (let i = 0; i < 40; i++) {
+			const p = join(tmpDir, `f${i}.pdf`)
+			writeFileSync(p, "pdf")
+			buffer.collectFromToolCall(writeCall(p))
+		}
+		buffer.noteTextBlock("km.1")
+		expect(buffer.flush()).toHaveLength(32) // MAX_TURN_ARTIFACTS
+	})
+
+	it("disambiguates colliding basenames with the shortest unique path suffix", () => {
+		mkdirSync(join(tmpDir, "docs"))
+		mkdirSync(join(tmpDir, "out"))
+		writeFileSync(join(tmpDir, "docs", "report.md"), "md")
+		writeFileSync(join(tmpDir, "out", "report.md"), "md")
+		writeFileSync(join(tmpDir, "solo.pdf"), "pdf")
+		const buffer = new TurnArtifactBuffer()
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "docs", "report.md")))
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "out", "report.md")))
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "solo.pdf")))
+		buffer.noteTextBlock("km.1")
+		const names = buffer.flush().map((c) => chunkOf(c).content.name)
+		expect(names.sort()).toEqual(["docs/report.md", "out/report.md", "solo.pdf"])
 	})
 })
