@@ -52,6 +52,11 @@ export const ARTIFACT_EXTENSIONS: Record<string, string> = {
 // Max artifacts reported per bash result (bounds flood-prone output).
 const MAX_BASH_ARTIFACTS = 8
 
+// Max tool-declared artifacts per result. Declared paths are trusted, but
+// the array is arbitrary tool output — bound it so a verbose or buggy
+// execute() can't burst resource_link chunks.
+const MAX_DECLARED_ARTIFACTS = 16
+
 // Max candidate tokens evaluated per result. statSync is synchronous,
 // so an unbounded match stream could stall the server's event loop.
 const MAX_BASH_CANDIDATES = 256
@@ -223,6 +228,7 @@ function parseDeclaredArtifacts(
 	if (!Array.isArray(entries) || !entries.length) return { handled: false, artifacts: [] }
 	const artifacts: Artifact[] = []
 	for (const entry of entries as DeclaredArtifactEntry[]) {
+		if (artifacts.length >= MAX_DECLARED_ARTIFACTS) break
 		const { path, name } = entry ?? {}
 		if (!path || typeof path !== "string") continue
 		const artifact = artifactFromPath(path, cwd, { verifyExists })
