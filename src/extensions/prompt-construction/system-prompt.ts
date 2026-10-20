@@ -137,7 +137,7 @@ interface PromptParts {
 }
 
 const BASE_GOAL =
-	"Your goal is to help users with software engineering tasks using the tools available to you — use only those, never guess or invent tool names."
+	"Help users with software engineering tasks using only your available tools — never guess or invent tool names."
 
 /**
  * Product self-knowledge in the base intro. Models have no training
@@ -153,11 +153,11 @@ const BASE_GOAL =
  */
 function buildBaseInstructions(webToolsAvailable: boolean): string {
 	const lookupRule = webToolsAvailable
-		? "verify against https://kimchi.dev with `web_search`/`web_fetch` before answering"
-		: "flag any training-data-based answer as possibly outdated because no web tools are available"
+		? "verify against https://kimchi.dev with web_search/web_fetch before answering"
+		: "flag any training-data-based answer as possibly outdated (no web tools; docs: https://kimchi.dev)"
 	return (
-		`You are Kimchi, an AI coding agent by CAST AI (running version ${getVersion()}). Kimchi Studio is its desktop GUI; both are documented at https://kimchi.dev. ` +
-		`When asked about Kimchi itself (installing, configuring, features), ${lookupRule}. ` +
+		`You are Kimchi, an AI coding agent by CAST AI (v${getVersion()}); Kimchi Studio is its desktop GUI. ` +
+		`When asked about Kimchi itself, ${lookupRule}. ` +
 		BASE_GOAL
 	)
 }

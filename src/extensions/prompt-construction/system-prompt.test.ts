@@ -169,14 +169,14 @@ describe("buildSystemPrompt", () => {
 		it("states product identity and the running version in the base intro", () => {
 			const result = buildSystemPrompt({ tools: webTools, env: testEnv, mode: "single" })
 			expect(result).toContain("You are Kimchi, an AI coding agent by CAST AI")
-			expect(result).toContain(`running version ${getVersion()}`)
+			expect(result).toContain(`(v${getVersion()})`)
 			expect(result).toContain("Kimchi Studio")
 			expect(result).toContain("https://kimchi.dev")
 		})
 
 		it("sends self-referential questions to the docs when web tools are available", () => {
 			const result = buildSystemPrompt({ tools: webTools, env: testEnv, mode: "single" })
-			expect(result).toContain("verify against https://kimchi.dev with `web_search`/`web_fetch` before answering")
+			expect(result).toContain("verify against https://kimchi.dev with web_search/web_fetch before answering")
 			// The positive verify rule is enough; a "never claim it doesn't
 			// exist" prohibition was rejected as over-defensive (refusal-prone
 			// models can invert it into hallucinated "yes it exists" claims).
@@ -193,7 +193,7 @@ describe("buildSystemPrompt", () => {
 			for (const mode of ["orchestrator", "subagent"] as const) {
 				const result = buildSystemPrompt({ tools: webTools, env: testEnv, mode })
 				expect(result).toContain("You are Kimchi, an AI coding agent by CAST AI")
-				expect(result).toContain("verify against https://kimchi.dev with `web_search`/`web_fetch` before answering")
+				expect(result).toContain("verify against https://kimchi.dev with web_search/web_fetch before answering")
 			}
 		})
 	})
