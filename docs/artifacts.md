@@ -25,7 +25,7 @@ Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool 
 
 1. `details.artifacts` declarations (above).
 2. `write`/`edit` tool args (`args.path`).
-3. Bash/powershell output sniffing — file-path tokens must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing.
+3. Bash/powershell detection — two sources per call, merged and deduped: redirect targets taken from `args.command` (`>`out.csv``, `>>`, via the taxonomy segmenter; stderr/fd forms excluded), and file-path tokens sniffed from the result text. Candidates must pass an extension allowlist, path resolution (a leading `cd`/`Set-Location` segment redirects relative paths), a live existence check, and an mtime window: the file must have been touched at-or-after the tool call started. Tree-materializing git commands (checkout/merge/pull/…) are excluded — they refresh mtimes of files the agent did not author; invocations are unwrapped through common launchers (sudo/doas/env/time/…) first, and anything unrecognized degrades to plain sniffing.
 
 ## Emission and replay
 
