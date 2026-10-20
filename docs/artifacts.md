@@ -14,7 +14,7 @@ return {
 ```
 
 - Shape follows ACP's `ToolCallLocation`; `name` is optional and defaults to the basename.
-- Multiple entries allowed (capped per result at 16 — a buggy tool must not burst chunks); empty/malformed entries are skipped.
+- Multiple entries allowed (capped per result at 32 — a buggy tool must not burst chunks); empty/malformed entries are skipped.
 - Declared paths are authoritative (no freshness window), but existence is still verified on live turns. Only declare files the tool actually wrote.
 
 Current producers: `submit_plan` and the ferment plan tools (they save `.kimchi/plans/*.md` inside `execute`).

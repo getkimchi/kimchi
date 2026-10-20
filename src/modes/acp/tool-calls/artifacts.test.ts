@@ -209,9 +209,9 @@ describe("artifactsFromToolCall", () => {
 		})
 
 		it("caps declared entries (MAX_DECLARED_ARTIFACTS)", () => {
-			const entries = Array.from({ length: 20 }, (_, i) => ({ path: touch(`d${i}.md`) }))
+			const entries = Array.from({ length: 40 }, (_, i) => ({ path: touch(`d${i}.md`) }))
 			const out = artifactsFromToolCall("submit_plan", {}, declared(...entries), cwd)
-			expect(out).toHaveLength(16)
+			expect(out).toHaveLength(32)
 		})
 
 		it("skips malformed entries but keeps valid ones", () => {

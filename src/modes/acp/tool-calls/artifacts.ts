@@ -55,7 +55,7 @@ const MAX_BASH_ARTIFACTS = 8
 // Max tool-declared artifacts per result. Declared paths are trusted, but
 // the array is arbitrary tool output — bound it so a verbose or buggy
 // execute() can't burst resource_link chunks.
-const MAX_DECLARED_ARTIFACTS = 16
+const MAX_DECLARED_ARTIFACTS = 32
 
 // Max candidate tokens evaluated per result. statSync is synchronous,
 // so an unbounded match stream could stall the server's event loop.
