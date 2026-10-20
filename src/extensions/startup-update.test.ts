@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const isAcpMode = { current: false }
 const checkForUpdateMock = vi.fn()
 const getVersionMock = vi.fn()
 const isHomebrewInstallMock = vi.fn(() => false)
@@ -14,6 +15,11 @@ vi.mock(import("../update/workflow.js"), async (importOriginal) => {
 		checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
 	}
 })
+vi.mock("../modes/acp/state.js", () => ({
+	get IS_ACP_MODE() {
+		return isAcpMode.current
+	},
+}))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
@@ -33,12 +39,16 @@ type Handler = (event: unknown, ctx: unknown) => unknown
 
 function createMockApi() {
 	const handlers = new Map<string, Handler>()
+	const appendEntry = vi.fn()
+	const registerEntryRenderer = vi.fn()
 	const api = {
 		on: (event: string, handler: Handler) => {
 			handlers.set(event, handler)
 		},
+		appendEntry,
+		registerEntryRenderer,
 	}
-	return { handlers, api: api as unknown as Parameters<typeof startupUpdateExtension>[0] }
+	return { handlers, appendEntry, api: api as unknown as Parameters<typeof startupUpdateExtension>[0] }
 }
 
 function makeCtx(opts: { hasUI: boolean }) {
@@ -57,6 +67,7 @@ function makeCtx(opts: { hasUI: boolean }) {
 
 describe("startupUpdateExtension", () => {
 	beforeEach(() => {
+		isAcpMode.current = false
 		checkForUpdateMock.mockReset()
 		getVersionMock.mockReset()
 		isHomebrewInstallMock.mockReset()
@@ -167,11 +178,34 @@ describe("startupUpdateExtension", () => {
 			expect(notify).not.toHaveBeenCalled()
 		})
 
-		it("emits one-time notify and marks shown when autoUpdate is enabled and notice not yet shown", async () => {
+		it("appends a one-time persistent entry and marks shown when autoUpdate is enabled and notice not yet shown", async () => {
 			getVersionMock.mockReturnValue("v0.0.23")
 			loadAutoUpdateSettingMock.mockReturnValue(true)
 			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
-			const { handlers, api } = createMockApi()
+			const { handlers, appendEntry, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx, setStatus, notify } = makeCtx({ hasUI: true })
+			await handler({}, ctx)
+
+			// TUI renders the notice as a permanent transcript entry — a
+			// notify() toast would auto-dismiss before the user reads it.
+			expect(appendEntry).toHaveBeenCalledOnce()
+			expect(appendEntry).toHaveBeenCalledWith("auto-update-notice", AUTO_UPDATE_NOTICE)
+			expect(notify).not.toHaveBeenCalled()
+			expect(markAutoUpdateNoticeShownMock).toHaveBeenCalledOnce()
+			expect(checkForUpdateMock).not.toHaveBeenCalled()
+			expect(setStatus).not.toHaveBeenCalled()
+		})
+
+		it("falls back to notify in ACP mode, which does not render custom entries", async () => {
+			isAcpMode.current = true
+			getVersionMock.mockReturnValue("v0.0.23")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
+			const { handlers, appendEntry, api } = createMockApi()
 			startupUpdateExtension(api)
 			const handler = handlers.get("session_start")
 			if (!handler) throw new Error("no session_start handler")
@@ -180,9 +214,9 @@ describe("startupUpdateExtension", () => {
 			await handler({}, ctx)
 
 			expect(notify).toHaveBeenCalledOnce()
-			expect(notify).toHaveBeenCalledWith(AUTO_UPDATE_NOTICE)
+			expect(notify).toHaveBeenCalledWith(AUTO_UPDATE_NOTICE, "info")
+			expect(appendEntry).not.toHaveBeenCalled()
 			expect(markAutoUpdateNoticeShownMock).toHaveBeenCalledOnce()
-			expect(checkForUpdateMock).not.toHaveBeenCalled()
 			expect(setStatus).not.toHaveBeenCalled()
 		})
 
@@ -289,17 +323,17 @@ describe("startupUpdateExtension", () => {
 			markAutoUpdateNoticeShownMock.mockImplementation(() => {
 				throw new Error("disk full")
 			})
-			const { handlers, api } = createMockApi()
+			const { handlers, appendEntry, api } = createMockApi()
 			startupUpdateExtension(api)
 			const handler = handlers.get("session_start")
 			if (!handler) throw new Error("no session_start handler")
 
-			const { ctx, notify } = makeCtx({ hasUI: true })
+			const { ctx } = makeCtx({ hasUI: true })
 			await expect(handler({}, ctx)).resolves.toBeUndefined()
 
-			// The notify ran, but the throw happened AFTER notify. The
+			// The announcement ran, but the throw happened AFTER it. The
 			// catch must swallow the error so session_start doesn't crash.
-			expect(notify).toHaveBeenCalledOnce()
+			expect(appendEntry).toHaveBeenCalledOnce()
 			expect(checkForUpdateMock).not.toHaveBeenCalled()
 			expect(stderrSpy).toHaveBeenCalledOnce()
 			expect(stderrSpy.mock.calls[0][0]).toContain("disk full")
