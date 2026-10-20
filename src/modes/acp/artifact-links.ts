@@ -1,10 +1,10 @@
 import { statSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
-import type { RecordedArtifact } from "../../extensions/artifact-recorder.js"
+import { type Artifact, artifactsFromToolCall } from "../../extensions/artifacts/detect.js"
+import type { RecordedArtifact } from "../../extensions/artifacts/recorder.js"
 import { kimchiDevMetaOf } from "./capabilities.js"
 import type { ModelAttribution } from "./model-attribution.js"
-import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
 
 // Max sniffed (bash/powershell) artifacts a single turn may carry. Bash
 // results are capped per call (MAX_BASH_ARTIFACTS), but a turn can run many

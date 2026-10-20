@@ -21,7 +21,7 @@ Current producers: `submit_plan` and the ferment plan tools (they save `.kimchi/
 
 ## How detection works
 
-Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool call, in order:
+Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool call, in order:
 
 1. `details.artifacts` declarations (above).
 2. `write`/`edit` tool args (`args.path`).
@@ -35,7 +35,7 @@ Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool 
 
 ## Replay from recorded rows
 
-The artifact-recorder extension (`src/extensions/artifact-recorder.ts`, both
+The artifact-recorder extension (`src/extensions/artifacts/recorder.ts`, both
 surfaces) runs the same detection at turn end and appends the result as a
 session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
 artifacts: [{ path, name, mimeType }] } }` — already stat-gated, deduped,

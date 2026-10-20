@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall } from "./artifacts.js"
+import { ARTIFACT_EXTENSIONS, artifactsFromToolCall } from "./detect.js"
 
 let cwd: string
 

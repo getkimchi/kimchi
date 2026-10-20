@@ -13,7 +13,7 @@
 
 import { extname } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { ARTIFACT_EXTENSIONS, type Artifact, artifactsFromToolCall } from "../modes/acp/tool-calls/artifacts.js"
+import { ARTIFACT_EXTENSIONS, type Artifact, artifactsFromToolCall } from "./detect.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
 

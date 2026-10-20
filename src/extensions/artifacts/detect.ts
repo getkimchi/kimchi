@@ -14,8 +14,8 @@
 import { statSync } from "node:fs"
 import { basename, extname } from "node:path"
 import { pathToFileURL } from "node:url"
-import { parseCommandSegments } from "../../../extensions/permissions/taxonomy.js"
-import { resolveToolPath } from "./utils.js"
+import { parseCommandSegments } from "../permissions/taxonomy.js"
+import { resolveToolPath } from "./paths.js"
 
 export type Artifact = {
 	/** Absolute resolved path. */

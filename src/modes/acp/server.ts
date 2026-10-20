@@ -73,7 +73,8 @@ import {
 	writeApiKey,
 } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
-import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifact-recorder.js"
+import { resolveToolPath } from "../../extensions/artifacts/paths.js"
+import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
 	AUTO_MODEL_PROVIDER,
@@ -171,13 +172,7 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import {
-	buildToolCall,
-	buildToolCallUpdate,
-	describeToolCall,
-	isHiddenToolCall,
-	resolveToolPath,
-} from "./tool-calls/utils.js"
+import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,
@@ -1691,7 +1686,7 @@ export class KimchiAcpAgent implements Agent {
 				// tool_execution_end carries no args — stash them so artifact
 				// detection can pair args with the result there.
 				// startedAt anchors the artifact mtime window (see
-				// MTIME_TOLERANCE_MS in tool-calls/artifacts.ts).
+				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {

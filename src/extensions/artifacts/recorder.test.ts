@@ -4,8 +4,8 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { createExtensionApi } from "./__mocks__/extension-api.js"
-import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./artifact-recorder.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
 
 // Artifact recorder: one custom session entry per artifact-producing turn,
 // so replay (any client) can re-emit exactly what live detected — stat-gated,
