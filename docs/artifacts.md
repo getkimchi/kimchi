@@ -48,6 +48,5 @@ On replay, sighting a row adopts it verbatim (`TurnArtifactBuffer
 including links to files since deleted or renamed, and never ghosts that
 never existed (candidates were stat-gated at record time). Replay does NOT
 re-run detection — detection is live-only, stat-verified by construction;
-sessions recorded before the rows shipped have no artifacts, and nothing is
-emitted for them. Non-goals as before: backgrounded commands, subagent
+a replayed session shows exactly the artifacts its rows recorded. Non-goals as before: backgrounded commands, subagent
 files.

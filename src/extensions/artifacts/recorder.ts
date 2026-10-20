@@ -8,8 +8,8 @@
 // Runs on both surfaces (TUI + ACP): sessions authored anywhere carry
 // rows. ctx.sessionManager.getCwd() is the (possibly cd-navigated)
 // session cwd, mirroring what the ACP server's live path tracks. ACP
-// replay hydrates only these rows (no re-derivation): sessions recorded
-// before the recorder shipped emit no artifacts on reload.
+// replay hydrates these rows (never re-derives from output): sessions
+// without rows emit no artifacts on reload.
 
 import { extname } from "node:path"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
