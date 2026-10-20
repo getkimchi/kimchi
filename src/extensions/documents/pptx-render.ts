@@ -183,6 +183,23 @@ async function convertAndRasterize(
 	inputPath: string,
 	opts: RenderOptions,
 ): Promise<RenderResult> {
+	// Sweep stale artifacts of an earlier render of the same deck name from
+	// outDir BEFORE converting — running it after would delete this run's own
+	// PDF (the name matches), and collectImages matches <stem>-<n>.png, so
+	// leftovers would otherwise be picked up as this run's output.
+	const stem0 = basename(inputPath).replace(/\.pptx$/i, "")
+	// outDir may not exist yet on a fresh render — soffice creates it; nothing to sweep.
+	if (deps.fileExists(opts.outDir)) {
+		for (const entry of deps.listdir(opts.outDir)) {
+			if (entry === `${stem0}.pdf` || /^Q${stem0}E-\d+\.png$/.test(entry)) {
+				try {
+					unlinkSync(join(opts.outDir, entry))
+				} catch {
+					// best-effort — a locked file just leaves a stale PNG
+				}
+			}
+		}
+	}
 	const conversion = deps.run(soffice, [
 		"--headless",
 		"--norestore",
@@ -194,19 +211,6 @@ async function convertAndRasterize(
 		opts.outDir,
 		inputPath,
 	])
-	// Sweep stale artifacts of an earlier render of the same deck name from
-	// outDir first — collectImages matches <stem>-<n>.png, so leftovers would
-	// otherwise be picked up as this run's output.
-	const stem0 = basename(inputPath).replace(/\.pptx$/i, "")
-	for (const entry of deps.listdir(opts.outDir)) {
-		if (entry === `${stem0}.pdf` || /^Q${stem0}E-\d+\.png$/.test(entry)) {
-			try {
-				unlinkSync(join(opts.outDir, entry))
-			} catch {
-				// best-effort — a locked file just leaves a stale PNG
-			}
-		}
-	}
 	if (conversion.signal) {
 		throw new DocumentError(
 			"timeout",
