@@ -117,8 +117,15 @@ const XMLNS = {
 /** Build the slide XML for a spec slide on a layout: ph shapes carry text. */
 function buildSlideXml(slide: SlideSpec, layout: TemplateLayout): string {
 	const shapeText: string[] = []
-	const bullets = slide.elements.filter((e) => e.type === "bullets" || e.type === "paragraphs" || e.type === "table")
+	const elements = [...slide.elements]
 	const titlePh = layout.placeholders.find((p) => p.type === "title" || p.type === "ctrTitle")
+	// A leading `##` heading acts as the slide title when the markdown used no
+	// explicit `#` heading — otherwise it would fall into the body stream and
+	// read as a stray bold line under a missing title.
+	if (slide.heading === undefined && elements[0]?.type === "heading") {
+		const promoted = elements.shift()
+		if (promoted?.type === "heading") slide.heading = promoted.inline.map((i) => i.text).join("")
+	}
 	if (slide.heading && titlePh) {
 		shapeText.push(phShape(titlePh, `<a:p><a:r><a:t>${escapeXml(slide.heading)}</a:t></a:r></a:p>`, 2))
 	} else if (slide.heading) {
@@ -133,17 +140,32 @@ function buildSlideXml(slide: SlideSpec, layout: TemplateLayout): string {
 			),
 		)
 	}
-	let bodySlot = 1
-	for (let i = 0; i < layout.placeholders.length; i++) {
-		const ph = layout.placeholders[i]
-		if (ph.type === "title" || ph.type === "ctrTitle") continue
-		const element = bullets[bodySlot - 1]
-		const bodyXml = element === undefined ? "" : elementBodyXml(element)
-		if (bodyXml === "") {
-			bodySlot++
-			continue
+	// Fill text placeholders only (body type or untyped). Picture/table/chart
+	// placeholders would render the text invisibly or corrupt on save, and a
+	// layout can legitimately have fewer text slots than the slide has content
+	// blocks — overflow concatenates into the last used placeholder instead of
+	// being dropped, so template mode never loses content silently.
+	const textPlaceholders = layout.placeholders.filter((p) => p.type === "body" || p.type === undefined)
+	let bodySlot = 0
+	for (const element of elements) {
+		const bodyXml = elementBodyXml(element)
+		if (bodyXml === "") continue
+		if (bodySlot < textPlaceholders.length) {
+			const ph = textPlaceholders[bodySlot]
+			shapeText.push(phShape(ph, bodyXml, 3 + bodySlot + 1))
+		} else if (textPlaceholders.length > 0) {
+			const ph = textPlaceholders[textPlaceholders.length - 1]
+			const last = shapeText[shapeText.length - 1]
+			if (last !== undefined && last.includes(`idx="${ph.idx}"`)) {
+				shapeText[shapeText.length - 1] = last.replace("</p:txBody>", `${bodyXml}</p:txBody>`)
+			} else {
+				shapeText.push(phShape(ph, bodyXml, 3 + bodySlot + 1))
+			}
+		} else {
+			// Layout has no text placeholders: free-form text boxes keep the
+			// content visible and editable (same fallback as the title above).
+			shapeText.push(freeFormTextShape(`Text ${bodySlot}`, bodyXml, 3 + bodySlot))
 		}
-		shapeText.push(phShape(ph, bodyXml, 3 + bodySlot))
 		bodySlot++
 	}
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -162,8 +184,15 @@ function escapeXml(text: string): string {
 
 /** Text runs for one body element, with bullet paragraph breaks. */
 function elementBodyXml(element: NonNullable<SlideSpec["elements"][number]>): string {
-	const run = (text: string) => `<a:p><a:r><a:t>${escapeXml(text)}</a:t></a:r></a:p>`
+	const run = (text: string, bold = false) => {
+		const rPr = bold ? `<a:rPr lang="en-US" b="1"/>` : ""
+		return `<a:p><a:r>${rPr}<a:t>${escapeXml(text)}</a:t></a:r></a:p>`
+	}
 	switch (element.type) {
+		case "heading":
+			// Sub-headings inside the body stream render as bold paragraphs —
+			// dropping them silently lost real user content.
+			return run(element.inline.map((i) => i.text).join(""), true)
 		case "bullets": {
 			const lines: string[] = []
 			const walk = (items: typeof element.items, depth: number) => {
@@ -180,7 +209,7 @@ function elementBodyXml(element: NonNullable<SlideSpec["elements"][number]>): st
 			return element.inline.map((p) => run(p.map((i) => i.text).join(""))).join("")
 		case "table": {
 			const rows = [element.header, ...element.rows].map((r) => r.map((c) => c.map((i) => i.text).join("")).join(" | "))
-			return rows.map(run).join("")
+			return rows.map((r) => run(r)).join("")
 		}
 		default:
 			return ""

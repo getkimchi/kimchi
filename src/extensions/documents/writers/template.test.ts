@@ -123,6 +123,99 @@ describe("createFromTemplate", () => {
 		const spec = parseDeckMarkdown('# A\n\n```chart\n{"type":"bar","labels":["Q"],"series":[{"values":[1]}]}\n```\n')
 		await expect(createFromTemplate(spec, await makeTemplate())).rejects.toMatchObject({ code: "unsupported-format" })
 	})
+
+	// Regression: the body fill loop used to pour elements into EVERY
+	// non-title placeholder (including picture placeholders — text in a pic ph
+	// renders as an empty image box) and silently dropped elements once the
+	// placeholders ran out. Now only body/untyped placeholders are filled and
+	// overflow concatenates into the last used one, so nothing is lost.
+	it("never fills picture placeholders and never drops overflow content", async () => {
+		const { default: JSZip } = await import("jszip")
+		const zip = new JSZip()
+		zip.file(
+			"[Content_Types].xml",
+			`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
+</Types>`,
+		)
+		zip.file(
+			"ppt/_rels/presentation.xml.rels",
+			`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+</Relationships>`,
+		)
+		zip.file(
+			"ppt/presentation.xml",
+			`<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>`,
+		)
+		// One text placeholder, one picture placeholder — content must overflow
+		// into the text one and never touch the picture one.
+		zip.file(
+			"ppt/slideLayouts/slideLayout1.xml",
+			`<?xml version="1.0" encoding="UTF-8"?>
+<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld name="Pic Layout"><p:spTree><p:nvGrpSpPr/><p:grpSpPr/>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="t"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="3" name="p"/><p:cNvSpPr/><p:nvPr><p:ph type="pic" idx="5"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>
+    <p:sp><p:nvSpPr><p:cNvPr id="4" name="b"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:p/></p:txBody></p:sp>
+  </p:spTree></p:cSld>
+</p:sldLayout>`,
+		)
+		zip.file(
+			"ppt/slides/slide1.xml",
+			`<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:nvGrpSpPr/><p:grpSpPr/></p:spTree></p:cSld>
+</p:sld>`,
+		)
+		zip.file(
+			"ppt/slides/_rels/slide1.xml.rels",
+			`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`,
+		)
+		const template = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+
+		const spec = parseDeckMarkdown("# Cover\n\npara one\n\npara two\n\npara three\n\n- bullet a\n- bullet b\n")
+		const bytes = await createFromTemplate(spec, template)
+		const pkg = await openOoxml(bytes)
+		const slide = pkg.getXml("ppt/slides/slide2.xml")
+		const texts = byTag(slide, "t").map((el) => el.textContent ?? "")
+		// Nothing dropped: every paragraph and bullet made it onto the slide.
+		for (const expected of ["Cover", "para one", "para two", "para three", "bullet a", "bullet b"]) {
+			expect(texts).toContain(expected)
+		}
+		// The picture placeholder was never filled with text.
+		const phs = byTag(slide, "ph").map((el) => el.getAttribute("type"))
+		expect(phs).not.toContain("pic")
+	})
+
+	it("promotes a leading sub-heading to the slide title", async () => {
+		// No `#` heading: the first `##` is the title, not a stray bold line.
+		const spec = parseDeckMarkdown("## What we verify\n\nbody text\n")
+		const bytes = await createFromTemplate(spec, await makeTemplate())
+		const pkg = await openOoxml(bytes)
+		const slide = pkg.getXml("ppt/slides/slide2.xml")
+		const titleShape = byTag(slide, "sp").find((sp) =>
+			byTag(sp, "ph").some((ph) => ph.getAttribute("type") === "title"),
+		)
+		expect(titleShape).toBeDefined()
+		const titleText =
+			titleShape === undefined
+				? ""
+				: byTag(titleShape, "t")
+						.map((el) => el.textContent ?? "")
+						.join("")
+		expect(titleText).toBe("What we verify")
+	})
 })
 
 describe("relativeTarget", () => {

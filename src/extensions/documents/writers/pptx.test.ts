@@ -55,6 +55,22 @@ describe("parseDeckMarkdown", () => {
 		expect(spec.slides[0].heading).toBe("Two ways")
 	})
 
+	// Regression: `:: hint` on a sub-heading used to be rendered literally
+	// ("What we verify :: content"). Now it sets the slide's layout and is
+	// stripped from the text; unknown ":: whatever" stays as prose.
+	it("parses layout hints off sub-headings and strips them from the text", () => {
+		const spec = parseDeckMarkdown("# Deck\n\n---\n\n## What we verify :: content\n\nbody\n\n---\n\n## Revenue :: Q3\n")
+		const s2 = spec.slides[1]
+		expect(s2.layoutHint).toBe("content")
+		const heading = s2.elements[0]
+		expect(heading.type === "heading" && heading.inline.map((i) => i.text).join("")).toBe("What we verify")
+		// Unknown hint text stays literal — it's prose, not a layout hint.
+		const s3 = spec.slides[2]
+		const h3 = s3.elements[0]
+		expect(s3.layoutHint).toBeUndefined()
+		expect(h3.type === "heading" && h3.inline.map((i) => i.text).join("")).toBe("Revenue :: Q3")
+	})
+
 	it("errors name the slide: unknown chart type", () => {
 		expect(() => parseDeckMarkdown('# A\n\n```chart\n{"type": "scatter", "labels": [], "series": []}\n```\n')).toThrow(
 			/slide 1: unknown chart type "scatter"/,
