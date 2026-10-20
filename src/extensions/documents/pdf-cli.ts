@@ -16,12 +16,22 @@
  *   pdf.mjs reorder <in.pdf> --order 3,1,2 --out <out.pdf>
  *   pdf.mjs rotate <in.pdf> --out <out.pdf> --angle 90|180|270 [--pages N-M]
  *
+ *   pdf.mjs dump-shapes <file.pdf> [--page N]   text shapes (page, index, xywh,
+ *                                              text) as JSON — discovery for
+ *                                              edit-draw. Needs LibreOffice.
+ *   pdf.mjs edit-draw <in.pdf> --out <out.pdf> --map map.json
+ *                                              replace shape text in place
+ *                                              (styling preserved). map entries:
+ *                                              {"page":1,"shape":4,"text":"..."}.
+ *                                              Needs LibreOffice.
+ *
  * Pages are 1-based. Writes are atomic (temp + rename) and outputs are
  * re-parsed before landing; --out must differ from every input.
  */
 
 import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { dirname, isAbsolute, resolve } from "node:path"
+import { tmpdir } from "node:os"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { PDFDocument } from "@cantoo/pdf-lib"
 import { fillForm, listFields, mergePdfs, reorderPdf, rotatePdf, splitPdf } from "./editors/pdf.js"
@@ -31,6 +41,7 @@ import { parseMarkdownBlocks } from "./markdown/blocks.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { sameFile } from "./paths.js"
 import { findPdfFonts, pdfFontSearchDirs } from "./pdf-fonts.js"
+import { type LoDrawDeps, runLoDraw } from "./pdf-lo-draw.js"
 import { renderDocument } from "./render.js"
 import { PAGE_SIZES, renderBlocksToPdf } from "./writers/pdf.js"
 
@@ -41,6 +52,8 @@ export interface PdfCliIo {
 	writeFile?: (path: string, data: Uint8Array) => void
 	/** Font bytes override for tests (host fonts via pdf-fonts.ts otherwise). */
 	fonts?: { regular: Uint8Array; bold: Uint8Array; mono: Uint8Array }
+	/** LibreOffice runner override for tests (real soffice otherwise). */
+	loDraw?: LoDrawDeps
 }
 
 const USAGE = `usage: pdf.mjs <command> [args]
@@ -54,7 +67,10 @@ commands:
   merge <out.pdf> <in1.pdf> <in2.pdf> [...]
   split <in.pdf> --pages N-M --out <out.pdf>
   reorder <in.pdf> --order 3,1,2 --out <out.pdf>
-  rotate <in.pdf> --out <out.pdf> --angle 90|180|270 [--pages N-M]`
+  rotate <in.pdf> --out <out.pdf> --angle 90|180|270 [--pages N-M]
+  dump-shapes <file.pdf> [--page N]              text shapes as JSON (LibreOffice)
+  edit-draw <in.pdf> --out <out.pdf> --map <map.json>
+                                                 replace shape text (LibreOffice)`
 
 function readBytes(readFile: NonNullable<PdfCliIo["readFile"]>, path: string): Uint8Array {
 	try {
@@ -362,6 +378,91 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 				await verifyOutput(bytes, out)
 				writeFile(out, bytes)
 				io.stdout(`rotated -> ${out}`)
+				return 0
+			}
+			case "dump-shapes": {
+				const [input, ...flags] = rest
+				if (!input)
+					throw new DocumentError("corrupt", "dump-shapes needs: pdf.mjs dump-shapes <file.pdf> [--page N]", "pdf")
+				refuseNonPdf(input)
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				const pageFilter = flagValue(flags, "--page")
+				if (pageFilter !== undefined && !/^\d+$/.test(pageFilter)) {
+					throw new DocumentError("corrupt", `--page must be a number, got "${pageFilter}"`, "pdf")
+				}
+				const dumpPath = join(tmpdir(), `pdf-lo-dump-${Date.now()}.json`)
+				try {
+					await runLoDraw("dump", resolve(input), dumpPath, io.loDraw)
+					const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
+						pages: number
+						shapes: Array<{ page: number; shape: number; xywh: number[]; text: string }>
+					}
+					const shapes =
+						pageFilter === undefined
+							? dump.shapes
+							: dump.shapes.filter((s) => s.page === Number.parseInt(pageFilter, 10))
+					io.stdout(JSON.stringify({ pages: dump.pages, shapes }, null, 2))
+				} finally {
+					try {
+						unlinkSync(dumpPath)
+					} catch {
+						// best-effort temp cleanup
+					}
+				}
+				return 0
+			}
+			case "edit-draw": {
+				const [input, ...flags] = rest
+				if (!input)
+					throw new DocumentError(
+						"corrupt",
+						"edit-draw needs: pdf.mjs edit-draw <in.pdf> --out <out.pdf> --map <map.json>",
+						"pdf",
+					)
+				const out = flagValue(flags, "--out")
+				const mapPath = flagValue(flags, "--map")
+				if (!out) throw new DocumentError("corrupt", "edit-draw needs --out <out.pdf>", "pdf")
+				if (!mapPath)
+					throw new DocumentError(
+						"corrupt",
+						"edit-draw needs --map <map.json> — run dump-shapes first to find shape indices",
+						"pdf",
+					)
+				if (sameFile(out, input)) {
+					throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "pdf")
+				}
+				refuseNonPdf(out)
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				const edits = JSON.parse(new TextDecoder().decode(readFile(mapPath))) as Array<{
+					page: number
+					shape: number
+					text: string
+				}>
+				if (!Array.isArray(edits) || edits.length === 0) {
+					throw new DocumentError("corrupt", "--map must be a non-empty JSON array of {page, shape, text}", "pdf")
+				}
+				// Export lands in a temp file first: verify before anything exists at
+				// --out, then land atomically like every other command.
+				const stagedOut = join(tmpdir(), `pdf-lo-export-${Date.now()}.pdf`)
+				try {
+					const { status } = await runLoDraw("apply", resolve(input), stagedOut, io.loDraw, resolve(mapPath))
+					const exported = readBytes(readFile, stagedOut)
+					await verifyOutput(exported, out)
+					writeFile(out, exported)
+					for (const failure of status.errors ?? []) io.stderr(`ignored: ${failure}`)
+					const applied = status.applied ?? 0
+					io.stdout(
+						`edited ${input} -> ${out} (${applied} edit${applied === 1 ? "" : "s"} applied of ${edits.length} mapped)`,
+					)
+				} finally {
+					try {
+						unlinkSync(stagedOut)
+					} catch {
+						// best-effort temp cleanup
+					}
+				}
 				return 0
 			}
 			default:

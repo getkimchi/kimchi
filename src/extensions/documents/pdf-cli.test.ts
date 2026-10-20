@@ -220,3 +220,85 @@ describe("pdf.mjs structural edits", () => {
 		expect(t.written.get("r.pdf")).toBeUndefined()
 	})
 })
+
+describe("pdf.mjs LibreOffice editing (dump-shapes + edit-draw)", () => {
+	/** Real fs stubs: runLoDraw's status/output contract crosses real tmpdir.
+	 *  The staged export is also mirrored into `files` so the CLI's io.readFile
+	 *  (which reads the map) sees what soffice "wrote". */
+	function loOverride(outPdfBytes?: Uint8Array, files?: Map<string, Uint8Array>) {
+		const { writeFileSync, rmSync } = require("node:fs") as typeof import("node:fs")
+		return {
+			run: (_cmd: string, _args: string[], env: Record<string, string>) => {
+				writeFileSync(env.LO_STATUS, JSON.stringify({ ok: true, pages: 2, applied: 1 }))
+				if (env.LO_MODE === "dump") {
+					writeFileSync(
+						env.LO_OUT,
+						JSON.stringify({
+							pages: 2,
+							shapes: [{ page: 1, shape: 3, xywh: [10, 20, 200, 30], text: "hello" }],
+						}),
+					)
+				} else if (outPdfBytes !== undefined) {
+					writeFileSync(env.LO_OUT, outPdfBytes)
+					files?.set(env.LO_OUT, outPdfBytes)
+				}
+				return { code: 0, stderr: "" }
+			},
+			rmdir: (dir: string) => rmSync(dir, { recursive: true, force: true }),
+		}
+	}
+
+	it("dump-shapes prints the shape inventory as JSON", async () => {
+		const t = io({ loDraw: loOverride() })
+		t.files.set("in.pdf", await makePdf(["hello"]))
+		expect(await runPdfCli(["dump-shapes", "in.pdf"], t.io)).toBe(0)
+		const dump = JSON.parse(t.out.join(""))
+		expect(dump.pages).toBe(2)
+		expect(dump.shapes[0]).toMatchObject({ page: 1, shape: 3, text: "hello" })
+	})
+
+	it("dump-shapes filters by --page", async () => {
+		const t = io({ loDraw: loOverride() })
+		t.files.set("in.pdf", await makePdf(["hello"]))
+		await runPdfCli(["dump-shapes", "in.pdf", "--page", "2"], t.io)
+		const dump = JSON.parse(t.out.join(""))
+		expect(dump.shapes).toEqual([])
+	})
+
+	it("edit-draw maps shape text and re-verifies the exported PDF", async () => {
+		const outBytes = await makePdf(["replaced"])
+		const t = io()
+		t.io.loDraw = loOverride(outBytes, t.files)
+		t.files.set("in.pdf", await makePdf(["hello"]))
+		const { tmpdir } = await import("node:os")
+		const { join } = await import("node:path")
+		const mapPath = join(tmpdir(), `pdf-edit-map-${Date.now()}.json`)
+		t.files.set(mapPath, new TextEncoder().encode(JSON.stringify([{ page: 1, shape: 3, text: "replaced" }])))
+		try {
+			const outPath = join(tmpdir(), `pdf-edit-out-${Date.now()}.pdf`)
+			t.files.set(outPath, outBytes)
+			const code = await runPdfCli(["edit-draw", "in.pdf", "--out", outPath, "--map", mapPath], t.io)
+			if (code !== 0) throw new Error(`exit ${code}: ${t.err.join("|")}`)
+			expect(t.out.join("")).toContain("1 edit applied of 1 mapped")
+		} finally {
+			t.files.delete(mapPath)
+		}
+	})
+
+	it("edit-draw refuses in-place output", async () => {
+		const t = io()
+		t.files.set("in.pdf", await makePdf(["hello"]))
+		expect(await runPdfCli(["edit-draw", "in.pdf", "--out", "in.pdf", "--map", "m.json"], t.io)).toBe(2)
+	})
+
+	it("edit-draw rejects an empty map", async () => {
+		const t = io()
+		t.files.set("in.pdf", await makePdf(["hello"]))
+		const { tmpdir } = await import("node:os")
+		const { join } = await import("node:path")
+		const mapPath = join(tmpdir(), `pdf-edit-map-empty-${Date.now()}.json`)
+		t.files.set(mapPath, new TextEncoder().encode("[]"))
+		expect(await runPdfCli(["edit-draw", "in.pdf", "--out", "out.pdf", "--map", mapPath], t.io)).toBe(2)
+		expect(t.err.join("")).toContain("non-empty JSON array")
+	})
+})

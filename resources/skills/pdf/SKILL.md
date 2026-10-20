@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: Read, create, and transform PDFs locally — extract, write from Markdown, merge, split, rotate, fill forms. Use whenever the user mentions a .pdf file.
+description: Read, create, transform, and edit PDFs locally — extract, write from Markdown, merge, split, rotate, fill forms, replace text in place (needs LibreOffice). Use whenever the user mentions a .pdf file.
 requires-resource: skills.pdf
 disables-skills: pdf
 ---
@@ -13,6 +13,45 @@ All commands run the bundled runtime. Replace `<skill>` with this skill's own di
 - Fallback if `kimchi` is not on PATH and Node is: `node <skill>/scripts/pdf.mjs ...`
 
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
+
+## Choosing an approach
+
+| Goal | Route |
+|---|---|
+| Change text on existing pages, keep styling | in-place editing (`dump-shapes` + `edit-draw`; needs LibreOffice) |
+| Rebuild a styled layout (colors, complex tables) from scratch | write styled HTML, then headless Chrome `--print-to-pdf` if Chrome is installed (environmental — check first; never assume) |
+| Simple monochrome doc from Markdown | `create` |
+| Fill a form | `fill-form` |
+| Page surgery (merge/split/reorder/rotate) | the dedicated commands |
+
+`create` limits worth knowing: pipe-table cells are single-line only (no `<br>`, no lists inside cells) and styling is minimal (headings, bold/italic/code, tables, images) — for colors or multi-line cells, use the Chrome route above instead of forcing `create`.
+
+## In-place text editing (needs LibreOffice)
+
+Two commands, always in this order:
+
+## dump-shapes `<file.pdf> [--page N]`
+
+JSON: every non-empty text shape as `{page, shape, xywh, text}` (indices are the
+keys `edit-draw` needs; `xywh` is the bounding box). `--page N` filters to one
+page — prefer it on long documents. **Run this before `edit-draw`; no dump, no
+edit.**
+
+## edit-draw `<in.pdf> --out <out.pdf> --map map.json`
+
+Replace shape text in place, keeping the surrounding layout. The map is a JSON
+array of `{"page": 1, "shape": 4, "text": "New text"}` — page and shape indices
+from the last `dump-shapes`, text is the full replacement (setString semantics,
+not a find/replace).
+
+The output keeps the original's fonts and layout; LibreOffice re-flows the edited
+shape only. **Substituted text can overflow its box** (different languages are
+different widths) — after editing, run the visual check below and rebalance the
+text (shorter phrasing, or split across shapes) rather than shrinking fonts.
+Errors name the failed page/shape; nothing is written unless at least one edit
+applies. Needs LibreOffice installed; the error says so otherwise. Preview
+rendering for the visual check: `qlmanage -t` works on macOS, `pdftoppm` (poppler)
+on Linux — compare the edited pages against the original before handing over.
 
 ## read `<file.pdf> [N-M]`
 
@@ -74,7 +113,11 @@ Costs and limits to know before writing:
 - **No charts.** Render data as a table, or create a deck instead.
 - **Only local PNG/JPEG images**, with paths relative to the Markdown file.
 - Output is re-parsed before it's written — you can hand it over without a
-  re-open, but a quick `read out.pdf 1-2` sanity pass is cheap.
+  re-open, but a quick `read out.pdf 1-2` sanity pass is cheap. For anything
+  where layout matters (in-place edits, styled rebuilds), also do a visual
+  check: render the changed pages to images (`qlmanage -t` on macOS,
+  `pdftoppm` on Linux) and compare against the original — a text-only read
+  back never catches overflowing lines or broken tables.
 
 ## Error language
 
