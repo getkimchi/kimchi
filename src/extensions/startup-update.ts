@@ -6,6 +6,9 @@ import { getVersion } from "../utils.js"
 
 const UPDATE_STATUS_KEY = "update-available"
 
+export const AUTO_UPDATE_NOTICE =
+	"Auto-update is now on by default: from the next launch, kimchi installs new versions in the background when it starts. Run `/update` to turn it off."
+
 /**
  * Startup-time check for new kimchi versions. Uses cache (24h) and displays
  * a message on the status line (right side, centered) if an update is available.
@@ -16,8 +19,9 @@ const UPDATE_STATUS_KEY = "update-available"
  * When auto-update is enabled (opt-out default — the toggle defaults
  * to on, so most users land here), the footer hint is suppressed — users
  * get updates silently on next launch. The first launch with the toggle
- * on also emits a one-time onboarding toast explaining the behavior and
- * how to opt out via `/update`.
+ * on also emits a one-time toast announcing the default change and how to
+ * opt out via `/update`. The launch auto-update (auto-update.ts) waits for
+ * this toast, so upgraded users hear about it before their first update.
  */
 export default function startupUpdateExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
@@ -37,9 +41,9 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 			// nor the `brew upgrade kimchi` hint.
 			if (autoUpdateEnabled && !isHomebrewInstall()) {
 				// Auto-update is on: no nag (next launch applies silently).
-				// First launch only: explain the new behavior and how to opt out.
+				// First launch only: announce the default change and how to opt out.
 				if (!loadAutoUpdateNoticeShown()) {
-					ctx.ui.notify("kimchi now updates itself in the background. Run `/update` to disable.")
+					ctx.ui.notify(AUTO_UPDATE_NOTICE)
 					markAutoUpdateNoticeShown()
 				}
 				return

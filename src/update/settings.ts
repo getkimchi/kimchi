@@ -26,13 +26,15 @@ function autoUpdateStatePath(): string {
 }
 
 interface AutoUpdateState {
-	/** Opt-out (default true). Only an explicit `false` disables. */
+	/** Opt-out (default true when absent). Any other non-boolean disables. */
 	autoUpdate?: boolean
-	/** One-time onboarding toast shown flag. */
+	/** One-time onboarding toast shown flag. The launch auto-update waits
+	 *  for it, so nobody is updated before being told. */
 	autoUpdateNoticeShown?: boolean
 }
 
-function readState(path: string): AutoUpdateState {
+/** Returns undefined when the file exists but is not valid JSON. */
+function readState(path: string): AutoUpdateState | undefined {
 	try {
 		// Stat-gated: read at startup, from the /update command, and by the
 		// auto-update tip provider. Spread at this boundary — the cached object
@@ -41,32 +43,43 @@ function readState(path: string): AutoUpdateState {
 		return { ...readJsonCached(path) } as AutoUpdateState
 	} catch (err) {
 		// readJson throws on malformed JSON (by design — corrupt configs should
-		// be visible). Auto-update is non-critical, so swallow and return the
-		// default state rather than crashing the session.
+		// be visible). Auto-update is non-critical, so don't crash the session.
 		const reason = err instanceof Error ? err.message : String(err)
 		console.warn(`[kimchi-update] Ignoring malformed auto-update state at ${path}: ${reason}`)
-		return {}
+		return undefined
 	}
 }
 
-/** Default for autoUpdate is `true` (opt-out). Only an explicit
- *  `false` disables it. */
+/** Default for autoUpdate is `true` (opt-out) when the user never set it.
+ *  A state file that exists but can't be trusted — malformed JSON, or an
+ *  `autoUpdate` value that isn't a boolean (e.g. the string "false") — fails
+ *  closed: the user may have meant to opt out, and this setting installs code. */
 export function loadAutoUpdateSetting(): boolean {
-	const state = readState(autoUpdateStatePath())
-	// Missing or wrong type → opt-out default. Only an explicit `false` opts out.
-	if (typeof state.autoUpdate !== "boolean") return true
+	const path = autoUpdateStatePath()
+	const state = readState(path)
+	if (state === undefined) return false
+	if (state.autoUpdate === undefined) return true
+	if (typeof state.autoUpdate !== "boolean") {
+		console.warn(
+			`[kimchi-update] Ignoring non-boolean autoUpdate value in ${path}; auto-update stays off. Set it from /update.`,
+		)
+		return false
+	}
 	return state.autoUpdate
 }
 
 /** Default for the one-time onboarding toast is `false` — we haven't shown it yet. */
 export function loadAutoUpdateNoticeShown(): boolean {
-	const state = readState(autoUpdateStatePath())
-	return state.autoUpdateNoticeShown === true
+	return readState(autoUpdateStatePath())?.autoUpdateNoticeShown === true
 }
 
+/** Turning auto-update on explicitly also counts as having seen the
+ *  onboarding notice: the user already knows, and the launch path waits
+ *  for that notice before its first update (see auto-update.ts). */
 export function saveAutoUpdateSetting(enabled: boolean): void {
 	const path = autoUpdateStatePath()
-	const next = { ...readState(path), autoUpdate: enabled }
+	const next: AutoUpdateState = { ...readState(path), autoUpdate: enabled }
+	if (enabled) next.autoUpdateNoticeShown = true
 	writeJson(path, next)
 }
 

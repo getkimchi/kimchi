@@ -27,7 +27,7 @@ vi.mock("../update/settings.js", () => ({
 	markAutoUpdateNoticeShown: () => markAutoUpdateNoticeShownMock(),
 }))
 
-const { default: startupUpdateExtension } = await import("./startup-update.js")
+const { default: startupUpdateExtension, AUTO_UPDATE_NOTICE } = await import("./startup-update.js")
 
 type Handler = (event: unknown, ctx: unknown) => unknown
 
@@ -180,7 +180,7 @@ describe("startupUpdateExtension", () => {
 			await handler({}, ctx)
 
 			expect(notify).toHaveBeenCalledOnce()
-			expect(notify.mock.calls[0][0]).toContain("Run `/update` to disable")
+			expect(notify).toHaveBeenCalledWith(AUTO_UPDATE_NOTICE)
 			expect(markAutoUpdateNoticeShownMock).toHaveBeenCalledOnce()
 			expect(checkForUpdateMock).not.toHaveBeenCalled()
 			expect(setStatus).not.toHaveBeenCalled()
