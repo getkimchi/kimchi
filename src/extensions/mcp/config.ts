@@ -14,6 +14,21 @@ setPiMcpConfigEnabled(true)
 
 export const LEGACY_PROJECT_MCP_CONFIG = ".kimchi/mcp.json"
 
+/** Filename of the user-global MCP config kimchi shares with kimchi-studio. */
+export const SHARED_MCP_CONFIG_FILENAME = "mcp.json"
+
+/**
+ * The user-global MCP config kimchi shares with kimchi-studio's bundled
+ * harness (`~/.config/kimchi/harness/mcp.json`). Passed to createMcpAdapter()
+ * as the default configPath so every adapter write flow (compat imports, Jev
+ * settings, user-kind write-backs) lands in the file Studio reads — the same
+ * single global file the 2.x adapter used before upstream moved to
+ * `mcp-adapter.json`.
+ */
+export function getSharedMcpConfigPath(): string {
+	return join(getAgentDir(), SHARED_MCP_CONFIG_FILENAME)
+}
+
 export interface KimchiMcpConfigResult {
 	config: McpConfig
 	configPath?: string

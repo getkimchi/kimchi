@@ -87,6 +87,9 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 
 			expect(fullText(terminal)).not.toContain("Pi-owned")
 			expect(fullText(terminal)).toContain("~/.config/mcp/mcp.json")
+			// kimchi reads the Studio-shared harness/mcp.json as its global config;
+			// the adapter's own mcp-adapter.json must not appear in user guidance.
+			expect(fullText(terminal)).not.toContain("mcp-adapter.json")
 			trace.step("MCP setup rendered Kimchi manual configuration guidance")
 		},
 	)

@@ -28,6 +28,7 @@ const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
 	userConfig: { mcpServers: {} } as McpConfig,
 	configPath: undefined as string | undefined,
+	sharedConfigPath: "/tmp/kimchi-harness/mcp.json",
 	useProgrammaticConfig: false,
 	warnings: [] as string[],
 	legacyKeys: [] as string[],
@@ -89,6 +90,7 @@ vi.mock("../../cli-args.js", async (importOriginal) => ({
 }))
 
 vi.mock("./config.js", () => ({
+	getSharedMcpConfigPath: () => configState.sharedConfigPath,
 	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) =>
 		options.includeProjectSources === false
 			? { config: configState.userConfig, useProgrammaticConfig: true, warnings: [] }
@@ -177,6 +179,7 @@ describe("upstream MCP adapter facade", () => {
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
+		configState.sharedConfigPath = "/tmp/kimchi-harness/mcp.json"
 		configState.useProgrammaticConfig = false
 		configState.warnings = []
 		configState.legacyKeys = []
@@ -281,6 +284,26 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 		expect(upstream.api).toBeDefined()
+	})
+
+	it("defaults the adapter config to the Studio-shared mcp.json", async () => {
+		const harness = createExtensionApi()
+
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		expect(upstream.options).toEqual({ configPath: configState.sharedConfigPath })
+	})
+
+	it("lets an explicit selected config win over the Studio-shared default", async () => {
+		cliState.mcpConfig = "/tmp/mcp.json"
+		configState.configPath = "/tmp/mcp.json"
+		const harness = createExtensionApi()
+
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 	})
 
 	it("uses the resolved config when selected-file precedence requires an overlay", async () => {
