@@ -69,9 +69,12 @@ describe("renderPptx", () => {
 
 	it("throws tool-missing when soffice is nowhere on the machine", async () => {
 		const { deps } = harness({ which: {} })
+		// The install command is per-OS — assert the OS-independent parts.
 		await expect(renderPptx(INPUT, { outDir: OUT, deps })).rejects.toMatchObject({
 			code: "tool-missing",
-			message: expect.stringContaining("brew install --cask libreoffice"),
+			message: expect.stringMatching(
+				/render needs LibreOffice \(soffice\).*KIMCHI_SOFFICE.*read\/create\/edit\/check never need it/,
+			),
 		} satisfies Partial<DocumentError>)
 	})
 
