@@ -605,3 +605,23 @@ Re-home of the fix previously carried as `@modelcontextprotocol/client@2.3.1`: w
 
 - `pi-mcp-adapter@5.3.1.patch` — adapter is deleted; native MCP replaces the whole stack (config.json, keyring-OAuth, panels).
 - `@modelcontextprotocol/client@2.3.1.patch` — only the adapter used this client package.
+
+### `@earendil-works/pi-mcp@1.3.0` amendment — dead-grant invalidation codes
+
+**NEW HUNK — `authorizeMcp` treats `invalid_refresh_token` and `access_denied` like `invalid_grant`.**
+Upstream only invalidates stored tokens when a refresh is rejected with RFC
+`invalid_grant`; Slack answers `invalid_refresh_token` and Ory Hydra answers
+`access_denied` instead. An unrecognized rejection leaves the stale grant in
+`mcp-auth.json`, so the server sits in `failed` and the `/mcp` panel offers
+only Reconnect, which retries the same dead grant forever — no path to
+sign-in. The hunk widens the code list so those rejections also invalidate
+the tokens; the re-run then surfaces REDIRECT and the panel offers Sign in,
+which mints a fresh grant. `server_error` and other transient codes are
+deliberately unaffected (the grant survives). Single choke point verified by
+inspection: every refresh path (startup, 401 retry, renew, `kimchi mcp login`)
+runs through `authorizeMcp` in `dist/oauth/flow.js`. Tracking:
+https://github.com/earendil-works/pi/issues/10737. Verified against the
+installed dist with a stubbed OAuth provider: refresh rejected with
+each of the three codes now invalidates tokens and yields REDIRECT;
+`server_error` leaves the grant intact. Surfaced by a 1.16.0→2.0.0 user
+upgrade (Slack stuck at `failed: invalid_refresh_token`, Reconnect a no-op).

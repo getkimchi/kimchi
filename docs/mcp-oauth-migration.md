@@ -59,6 +59,11 @@ registration). Atomic 0600 writes; existing native keys are never modified.
 - Servers without a native grant surface at runtime through pi's own
   "MCP servers need attention" banner (`<name>: needs sign-in — run /mcp`),
   which reflects live connect state.
+- A stored grant the authorization server has since revoked is dropped on
+  first refresh failure (`invalid_grant` / `invalid_refresh_token` /
+  `access_denied`), and the server flips to `needs sign-in`; run `/mcp` →
+  Sign in. If a server is stuck at `failed` instead, clear its grant with
+  `kimchi mcp forget-grant <name>` and sign in again.
 
 ## Safety properties
 

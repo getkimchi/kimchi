@@ -1,4 +1,5 @@
-# Patch: OAuth Accept headers for spec-strict gateways (@earendil-works/pi-mcp 1.3.0)
+# Patch: OAuth Accept headers for spec-strict gateways; dead-grant invalidation
+# (@earendil-works/pi-mcp 1.3.0)
 #
 # Tracking:
 #   - Spec-strict MCP gateways (e.g. agentgateway v1.5.0) answer 406 when the
@@ -7,10 +8,20 @@
 #     token/registration calls. Same fix pi previously carried via the
 #     @modelcontextprotocol/client@2.3.1 patch for the adapter stack — the
 #     client code moved with pi 1.3 to this package.
+#   - Dead-grant invalidation: https://github.com/earendil-works/pi/issues/10737
+#     (open). Upstream only invalidates stored tokens on RFC invalid_grant;
+#     servers answering a refresh rejection with other codes (Slack:
+#     invalid_refresh_token; Ory Hydra: access_denied) strand the server in
+#     "failed" with only a Reconnect that retries the dead grant forever.
 # Changes:
 #   - dist/oauth/discovery.js fetchMetadata: Accept "application/json, text/event-stream".
 #   - dist/oauth/flow.js token + registration request headers: same widen.
-# Removal: delete when the pinned version sends the widened Accept header natively.
+#   - dist/oauth/flow.js authorizeMcp: treat error codes "invalid_refresh_token"
+#     and "access_denied" like "invalid_grant" — invalidate stored tokens and
+#     re-run the flow (which then surfaces needs sign-in) instead of surfacing
+#     the dead grant as a permanent connection failure.
+# Removal: delete the Accept-header hunks when the pinned version sends the widened
+#   header natively; delete the authorizeMcp hunk when upstream fixes #10737.
 diff --git a/dist/oauth/discovery.js b/dist/oauth/discovery.js
 index e1ed433513b766953d311356b8cd68d5f24db661..a1a957e2e7ef2903823b3439744401b391509a37 100644
 --- a/dist/oauth/discovery.js
@@ -25,7 +36,7 @@ index e1ed433513b766953d311356b8cd68d5f24db661..a1a957e2e7ef2903823b3439744401b3
      });
  }
 diff --git a/dist/oauth/flow.js b/dist/oauth/flow.js
-index 6384b460f05bc04c20c1559856ddb28c29f4fdff..39851034a4333bb9e286bcb25ea64b80645ed458 100644
+index 6384b460f05bc04c20c1559856ddb28c29f4fdff..762e26d948f2c5f011ed361e30bde27789b84ecd 100644
 --- a/dist/oauth/flow.js
 +++ b/dist/oauth/flow.js
 @@ -91,7 +91,7 @@ export async function startAuthorization(authorizationServerUrl, options) {
@@ -46,3 +57,15 @@ index 6384b460f05bc04c20c1559856ddb28c29f4fdff..39851034a4333bb9e286bcb25ea64b80
          body: JSON.stringify({
              ...options.clientMetadata,
              application_type: options.clientMetadata.application_type ?? applicationType(options.clientMetadata.redirect_uris),
+@@ -287,7 +287,10 @@ export async function authorizeMcp(provider, options) {
+             await provider.invalidateCredentials?.("all");
+             return runFlow(provider, options);
+         }
+-        if (error instanceof OAuthError && error.code === "invalid_grant") {
++        // kimchi: dead-refresh error codes beyond RFC invalid_grant (slack's invalid_refresh_token,
++        // Ory Hydra's access_denied) — recycling the dead grant otherwise strands the server in
++        // "failed" with only a no-op Reconnect; dropping it flips the server to needs sign-in.
++        if (error instanceof OAuthError && ["invalid_grant", "invalid_refresh_token", "access_denied"].includes(error.code)) {
+             await provider.invalidateCredentials?.("tokens");
+             return runFlow(provider, options);
+         }
