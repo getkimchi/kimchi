@@ -87,6 +87,7 @@ export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker
 			const text = result.success
 				? [
 						result.content ?? "",
+						result.skill_dir ? `\nSkill directory: ${result.skill_dir}` : "",
 						result.linked_files ? `\nLinked files: ${JSON.stringify(result.linked_files)}` : "",
 					].join("")
 				: (result.error ?? "Error")
