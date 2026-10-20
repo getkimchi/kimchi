@@ -280,9 +280,12 @@ function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artif
 // resolution. artifacts.test.ts keeps this extension list in sync with
 // ARTIFACT_EXTENSIONS in both directions. The prefix requires >=1 char so
 // bare extension mentions ("wrote a .md file") never become candidates —
-// `.md` alone would resolve to <cwd>/.md.
+// `.md` alone would resolve to <cwd>/.md. Also excluded: commas (data rows
+// like "monday,grumpy,report.csv" must not become comma-joined fake paths),
+// backslashes (escape noise in output), and dollars (shell syntax —
+// "$OUT.md", "${DIR}/x.pdf") — none realistically appear in doc-ish names.
 const PATH_TOKEN =
-	/[^\s"'<>`;|&*?()[\]{}]+\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
+	/[^\s"'<>`;|&*?()[\]{},$\\]+\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
 
 function textBlocks(result: unknown): string[] {
 	const r = result as { content?: unknown } | null | undefined
@@ -315,6 +318,13 @@ function bashArtifacts(result: unknown, cwd: string, opts: DetectOpts): Artifact
 			seenTokens.add(token)
 			if (++candidates > MAX_BASH_CANDIDATES) return out
 			if (token.includes("://")) continue
+			// Replay has no stat gate (artifacts may be legitimately deleted
+			// later), so a bare-basename token from output text is
+			// indistinguishable from data embedded in it (CSV rows etc.).
+			// Require a path separator on replay. Redirect targets, write/edit
+			// args, and declared artifacts are command/arg-driven and bypass
+			// this text-sniff gate.
+			if (opts.verifyExists === false && !token.includes("/")) continue
 			const artifact = artifactFromPath(token, cwd, opts)
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)

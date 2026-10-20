@@ -6172,7 +6172,7 @@ describe("generated artifacts (replay)", () => {
 				"u1",
 			),
 			// The file need not exist anymore — replay skips the existence check.
-			toolResultEntry("tc-r1", "bash", "saved to out.pptx", false, "tr1", "a1"),
+			toolResultEntry("tc-r1", "bash", "saved to assets/out.pptx", false, "tr1", "a1"),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)
@@ -6182,7 +6182,7 @@ describe("generated artifacts (replay)", () => {
 		expect(chunks).toHaveLength(1)
 		expect(chunks[0]).toMatchObject({
 			name: "out.pptx",
-			uri: pathToFileURL("/tmp/out.pptx").href,
+			uri: pathToFileURL("/tmp/assets/out.pptx").href,
 			mimeType: expect.stringContaining("presentationml"),
 		})
 		// Same messageId as the replayed text chunk — the chip attaches to the
@@ -6246,7 +6246,7 @@ describe("generated artifacts (replay)", () => {
 				"a1",
 				"u1",
 			),
-			toolResultEntry("tc-d1", "bash", "wrote mid.pdf", false, "trd1", "a1"),
+			toolResultEntry("tc-d1", "bash", "wrote assets/mid.pdf", false, "trd1", "a1"),
 			assistantTextEntry("All done.", "a2", "trd1"),
 		]
 		const { conn, updates } = makeRecordingConn()
@@ -6255,7 +6255,7 @@ describe("generated artifacts (replay)", () => {
 
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(1)
-		expect(chunks[0].uri).toBe(pathToFileURL("/tmp/mid.pdf").href)
+		expect(chunks[0].uri).toBe(pathToFileURL("/tmp/assets/mid.pdf").href)
 		const textChunk = messageChunks(updates).find((c) => c.text === "All done.")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)
 	})
@@ -6273,8 +6273,8 @@ describe("generated artifacts (replay)", () => {
 				"a1",
 				"u1",
 			),
-			toolResultEntry("tc-x1", "bash", "wrote dup.pdf", false, "trx1", "a1"),
-			toolResultEntry("tc-x2", "bash", "wrote dup.pdf", false, "trx2", "a1"),
+			toolResultEntry("tc-x1", "bash", "wrote assets/dup.pdf", false, "trx1", "a1"),
+			toolResultEntry("tc-x2", "bash", "wrote assets/dup.pdf", false, "trx2", "a1"),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)
@@ -6282,7 +6282,7 @@ describe("generated artifacts (replay)", () => {
 
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(1)
-		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL("/tmp/dup.pdf").href])
+		expect(chunks.map((c) => c.uri)).toEqual([pathToFileURL("/tmp/assets/dup.pdf").href])
 	})
 
 	// Live artifact lifetime is per-turn (TurnContext.artifacts dies with the
@@ -6325,13 +6325,13 @@ describe("generated artifacts (replay)", () => {
 				"a1",
 				"u1",
 			),
-			toolResultEntry("tc-t1", "bash", "wrote tail.pdf", false, "trt1", "a1"),
+			toolResultEntry("tc-t1", "bash", "wrote assets/tail.pdf", false, "trt1", "a1"),
 			assistantBlocksEntry(
 				[{ type: "toolCall", id: "tc-t2", name: "bash", arguments: { command: "more" } }],
 				"a2",
 				"trt1",
 			),
-			toolResultEntry("tc-t2", "bash", "wrote tail2.pdf", false, "trt2", "a2"),
+			toolResultEntry("tc-t2", "bash", "wrote assets/tail2.pdf", false, "trt2", "a2"),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = makeAgent(async () => asSession(fake), conn)
@@ -6342,8 +6342,8 @@ describe("generated artifacts (replay)", () => {
 		const chunks = artifactChunks(updates)
 		expect(chunks).toHaveLength(2)
 		expect(chunks.map((c) => c.uri)).toEqual([
-			pathToFileURL("/tmp/tail.pdf").href,
-			pathToFileURL("/tmp/tail2.pdf").href,
+			pathToFileURL("/tmp/assets/tail.pdf").href,
+			pathToFileURL("/tmp/assets/tail2.pdf").href,
 		])
 		const textChunk = messageChunks(updates).find((c) => c.text === "starting")
 		expect(chunks[0].messageId).toBe(textChunk?.messageId)

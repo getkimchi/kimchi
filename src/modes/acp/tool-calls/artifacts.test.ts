@@ -33,7 +33,7 @@ describe("artifactsFromToolCall", () => {
 		// and from write/edit args (map lookup) — a drift in either list
 		// silently disables one path.
 		for (const ext of Object.keys(ARTIFACT_EXTENSIONS)) {
-			const out = artifactsFromToolCall("bash", {}, textResult(`wrote file${ext}`), cwd, { verifyExists: false })
+			const out = artifactsFromToolCall("bash", {}, textResult(`wrote docs/file${ext}`), cwd, { verifyExists: false })
 			expect(
 				out.map((a) => a.name),
 				`bash sniff of file${ext}`,
@@ -102,7 +102,7 @@ describe("artifactsFromToolCall", () => {
 		const md = artifactsFromToolCall("bash", {}, textResult(`see [results.pdf](file://x)`), cwd)
 		expect(md.map((a) => a.path)).toEqual([results])
 		// Without the bracket strip, replay mode would surface ghost tokens.
-		const replay = artifactsFromToolCall("bash", {}, textResult("wrote (ghost.pdf)"), cwd, {
+		const replay = artifactsFromToolCall("bash", {}, textResult("wrote (docs/ghost.pdf)"), cwd, {
 			verifyExists: false,
 		})
 		expect(replay.map((a) => a.name)).toEqual(["ghost.pdf"])
@@ -135,8 +135,39 @@ describe("artifactsFromToolCall", () => {
 	})
 
 	it("skips the existence check when verifyExists is false (replay mode)", () => {
-		const out = artifactsFromToolCall("bash", {}, textResult("saved to ghost.pptx"), cwd, { verifyExists: false })
+		const out = artifactsFromToolCall("bash", {}, textResult("saved to docs/ghost.pptx"), cwd, {
+			verifyExists: false,
+		})
 		expect(out.map((a) => a.name)).toEqual(["ghost.pptx"])
+	})
+
+	it("ignores comma/backslash/dollar shapes (data rows, escapes, shell vars) even without a stat gate", () => {
+		for (const text of ["monday,grumpy,report.csv shipped", "wrote $OUT.md", "copied foo\\ bar.md done"]) {
+			const out = artifactsFromToolCall("bash", {}, textResult(text), cwd, { verifyExists: false })
+			expect(out).toHaveLength(0)
+		}
+	})
+
+	it("on replay, suppresses bare-basename tokens from output text but keeps path mentions", () => {
+		const replay = artifactsFromToolCall("bash", {}, textResult("created report.csv then out/notes.md"), cwd, {
+			verifyExists: false,
+		})
+		expect(replay.map((a) => a.name)).toEqual(["notes.md"])
+		// Live is stat-gated: existing bare names chip; nonexistent path
+		// mentions drop despite having a separator.
+		touch("report.csv")
+		const live = artifactsFromToolCall("bash", {}, textResult("created report.csv then out/notes.md"), cwd, {
+			windowStart: Date.now() - 3000,
+		})
+		expect(live.map((a) => a.name)).toEqual(["report.csv"])
+	})
+
+	it("chips only the real redirect target, not a CSV content line naming another file (replay)", () => {
+		const target = touch("echo-baby-2.csv")
+		const result = textResult("day,mood,evidence\nwednesday,elated,echo-baby.csv shipped in prod\n")
+		const args = { command: `echo x > ${target} && cat ${target}` }
+		const out = artifactsFromToolCall("bash", args, result, cwd, { verifyExists: false })
+		expect(out.map((a) => a.name)).toEqual(["echo-baby-2.csv"])
 	})
 
 	it("returns nothing for errored results", () => {
