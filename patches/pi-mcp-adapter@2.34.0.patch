@@ -19,6 +19,8 @@
 #     sends "Accept: application/json, text/event-stream")
 #   - DCR clientInfo version: hardcoded "2.11.0" in mcp-auth-flow; remove
 #     when upstream derives it from the package version
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when
+#     upstream ships a protocol-capable auth flow for non-TUI modes
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -59,6 +61,11 @@
 #     "2.11.0" to "2.34.0".
 #   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
 #     "application/json, text/event-stream" instead of "application/json".
+#   - commands: bare /mcp-auth in non-TUI modes (rpc, ACP) falls back to a
+#     ui.select server picker plus the same authenticateServer flow that
+#     "/mcp-auth <server>" uses, instead of refusing with a TUI-only error.
+#     package.json also exports a ./commands subpath so the harness test
+#     can pin the fallback.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -96,6 +103,68 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      }
      return manifest.piConfig
    } catch {
+diff --git a/commands.ts b/commands.ts
+index 108b0b753b4e372e606ae736882799ac00621a34..c11c7a0e81554238bc3463f5e5028c3e071dca81 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -713,6 +713,47 @@ export async function openMcpPanel(
+   return { configChanged };
+ }
+ 
++/**
++ * Remote-capable `/mcp-auth` fallback for modes without TUI overlays (rpc, ACP).
++ *
++ * `canRenderPanel()` gates the AltScreen picker on `ctx.mode === "tui"`, so
++ * protocol hosts used to hit a dead end on bare `/mcp-auth`. Those hosts do
++ * implement the dialog primitives (`ui.select`, `ui.input`), so ask for the
++ * server with a plain select and run the same per-server authenticateServer
++ * flow that `/mcp-auth <server>` uses — including the post-auth reconnect.
++ */
++async function openMcpAuthFallback(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++): Promise<PanelFlowResult> {
++  if (state.programmaticConfig) {
++    ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
++    return { configChanged: false };
++  }
++
++  const config = state.config;
++  const oauthServers = Object.entries(config.mcpServers).filter(
++    ([, definition]) => !isServerDisabled(definition) && supportsOAuth(definition),
++  );
++  if (oauthServers.length === 0) {
++    ctx.ui.notify("No OAuth-capable MCP servers are configured.", "warning");
++    return { configChanged: false };
++  }
++
++  const names = oauthServers.map(([name]) => name);
++  let serverName: string | undefined = names[0];
++  if (names.length > 1) {
++    serverName = await ctx.ui.select("Select an OAuth MCP server to authenticate", names);
++  }
++  if (!serverName) return { configChanged: false };
++
++  const result = await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
++  if (result.ok) {
++    await reconnectServer(state, ctx, serverName);
++  }
++  return { configChanged: false };
++}
++
+ export async function openMcpAuthPanel(
+   state: McpExtensionState,
+   pi: ExtensionAPI,
+@@ -721,8 +762,7 @@ export async function openMcpAuthPanel(
+ ): Promise<PanelFlowResult> {
+   if (!ctx.hasUI) return { configChanged: false };
+   if (!canRenderPanel(ctx)) {
+-    ctx.ui.notify(`The interactive MCP auth panel is only available in the terminal UI (current mode: ${ctx.mode}). Use /mcp-auth <server> to authenticate a specific server.`, "info");
+-    return { configChanged: false };
++    return openMcpAuthFallback(state, ctx);
+   }
+   if (state.programmaticConfig) {
+     ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
 diff --git a/config.ts b/config.ts
 index dfcccbfe12646daf4593f193c2649d422c2d4195..450b02972b7f624e38130aef2d00ee304d6632a4 100644
 --- a/config.ts
@@ -761,6 +830,22 @@ index 0b449fe35389429912739bcfe10ce906ecb1ab33..d8a12e0e735fe5f6eb344b0996ef3128
 -    return undefined;
 -  }
 -}
+diff --git a/package.json b/package.json
+index b02d959fcdf896c4cb67c0b13196183c0936c5e6..1540313451a86597a7fe8fc600c6e5fbb6110799 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,11 @@
+       "import": "./oauth.ts",
+       "default": "./oauth.ts"
+     },
++    "./commands": {
++      "types": "./commands.ts",
++      "import": "./commands.ts",
++      "default": "./commands.ts"
++    },
+     "./config": {
+       "types": "./dist/config.d.ts",
+       "import": "./dist/config.js",
 diff --git a/proxy-modes.ts b/proxy-modes.ts
 index 49f1b4eccfbee9a14ef6e71db8d8392dcba6ed23..cf860c2aa2a9bdc9b4fb8c96b4c4a8895a3d539c 100644
 --- a/proxy-modes.ts
