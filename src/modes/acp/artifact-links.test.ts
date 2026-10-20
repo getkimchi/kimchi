@@ -135,6 +135,43 @@ describe("TurnArtifactBuffer", () => {
 		expect(names).not.toContain("f0.pdf") // oldest evicted
 	})
 
+	it("disambiguates a mixed-depth group uniformly (no bare-basename straggler)", () => {
+		// /bb/report.md vs y/a/bb/report.md: one shared k; the short member
+		// clamps via slice(-k) instead of falling back to the bare basename.
+		const yDir = join(tmpDir, "y", "a", "bb")
+		mkdirSync(yDir, { recursive: true })
+		mkdirSync(join(tmpDir, "bb"))
+		writeFileSync(join(tmpDir, "bb", "report.md"), "md")
+		writeFileSync(yDir + "/report.md", "md")
+		const buffer = new TurnArtifactBuffer()
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "bb", "report.md")))
+		buffer.collectFromToolCall(writeCall(join(yDir, "report.md")))
+		buffer.noteTextBlock("km.1")
+		const names = buffer.flush().map((c) => String(chunkOf(c).content.name))
+		// Uniform depth: no member keeps the bare basename, labels unique,
+		// and the y/a/bb member is identifiable by its distinguishing suffix.
+		expect(names).not.toContain("report.md")
+		expect(new Set(names).size).toBe(2)
+		expect(names.every((n) => n.endsWith("bb/report.md"))).toBe(true)
+		expect(names.some((n) => n.endsWith("a/bb/report.md"))).toBe(true)
+	})
+
+	it("drops the leading slash when the full path is needed (no '/a/b.md' labels)", () => {
+		// Same basename in sibling dirs of tmpDir root: depth reaches the
+		// root, the leading empty segment must not render.
+		mkdirSync(join(tmpDir, "a"))
+		mkdirSync(join(tmpDir, "b"))
+		writeFileSync(join(tmpDir, "a", "r.md"), "md")
+		writeFileSync(join(tmpDir, "b", "r.md"), "md")
+		const buffer = new TurnArtifactBuffer()
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "a", "r.md")))
+		buffer.collectFromToolCall(writeCall(join(tmpDir, "b", "r.md")))
+		buffer.noteTextBlock("km.1")
+		for (const c of buffer.flush()) {
+			expect(chunkOf(c).content.name).not.toMatch(/^\//)
+		}
+	})
+
 	it("falls back to the noteTextBlock attribution snapshot when the meta map lacks the block", () => {
 		const target = join(tmpDir, "out.pdf")
 		writeFileSync(target, "pdf")

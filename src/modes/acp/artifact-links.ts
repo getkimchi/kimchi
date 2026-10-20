@@ -14,7 +14,12 @@ const MAX_TURN_ARTIFACTS = 32
 
 // Two artifacts with the same basename (docs/report.md, out/report.md)
 // would render identical labels. Disambiguate with the shortest unique
-// trailing path-suffix.
+// trailing path-suffix. The distinguishing depth is a property of the whole
+// collision group: one uniform k per group, searched once (per-artifact
+// bounds could leave a short-path member with a bare basename next to deep
+// labels). Uniqueness is guaranteed at k = maxLen because artifact paths
+// are deduped. The empty leading segment of an absolute POSIX path is
+// dropped from the label ("/a/b.md" renders "a/b.md").
 function disambiguateNames(artifacts: Artifact[]): Artifact[] {
 	const byName = new Map<string, Artifact[]>()
 	for (const a of artifacts) byName.set(a.name, [...(byName.get(a.name) ?? []), a])
@@ -24,17 +29,12 @@ function disambiguateNames(artifacts: Artifact[]): Artifact[] {
 			out.push(group[0])
 			continue
 		}
-		for (const artifact of group) {
-			let label = artifact.name
-			const segments = artifact.path.split(/[/\\]/)
-			for (let k = 2; k <= segments.length; k++) {
-				const labels = new Set(group.map((g) => g.path.split(/[/\\]/).slice(-k).join("/")))
-				if (labels.size === group.length) {
-					label = segments.slice(-k).join("/")
-					break
-				}
-			}
-			out.push({ ...artifact, name: label })
+		const parts = group.map((g) => g.path.split(/[/\\]/).filter(Boolean))
+		const maxLen = Math.max(...parts.map((p) => p.length))
+		let k = 2
+		while (k < maxLen && new Set(parts.map((p) => p.slice(-k).join("/"))).size < group.length) k++
+		for (const [i, artifact] of group.entries()) {
+			out.push({ ...artifact, name: parts[i].slice(-k).join("/") })
 		}
 	}
 	return out
