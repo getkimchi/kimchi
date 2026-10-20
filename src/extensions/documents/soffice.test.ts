@@ -47,7 +47,8 @@ describe("findSoffice", () => {
 
 	it("finds the per-user macOS app bundle when soffice is not on PATH", () => {
 		const bundle = "/home/u/Applications/LibreOffice.app/Contents/MacOS/soffice"
-		expect(findSoffice(deps({ platform: "darwin", exists: [bundle] }), FEATURE)).toBe(bundle)
+		// Candidates are built with `join` — backslashes on Windows. Normalize.
+		expect(findSoffice(deps({ platform: "darwin", exists: [bundle] }), FEATURE).replace(/\\/g, "/")).toBe(bundle)
 	})
 
 	it("prefers soffice.com over soffice.exe on Windows", () => {

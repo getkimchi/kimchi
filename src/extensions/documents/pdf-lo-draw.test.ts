@@ -3,6 +3,9 @@ import { type LoDrawDeps, runLoDraw } from "./pdf-lo-draw.js"
 
 const SCRIPT_URL = "vnd.sun.star.script:lodraw_edit.py$main?language=Python&location=user"
 
+/** Production builds paths with `join`, so on Windows they use backslashes — normalize before comparing. */
+const norm = (p: string) => p.replace(/\\/g, "/")
+
 interface RunResult {
 	code: number
 	stderr?: string
@@ -27,7 +30,7 @@ interface FakeState {
 function fakeDeps(state: FakeState, scriptDir = "/skills/pdf/scripts"): LoDrawDeps {
 	return {
 		which: (cmd) => (cmd === "soffice" ? "/usr/bin/soffice" : undefined),
-		fileExists: (p) => state.files.has(p) || p === `${scriptDir}/lodraw_edit.py`,
+		fileExists: (p) => state.files.has(p) || norm(p) === `${scriptDir}/lodraw_edit.py`,
 		run: (cmd, args, env) => {
 			state.runs.push({ cmd, args, env })
 			// Emulate the macro: status lands at env.LO_STATUS; output at LO_OUT
@@ -43,7 +46,7 @@ function fakeDeps(state: FakeState, scriptDir = "/skills/pdf/scripts"): LoDrawDe
 			return dir
 		},
 		readFile: (p) => {
-			if (p === `${scriptDir}/lodraw_edit.py`) return "# fake macro"
+			if (norm(p) === `${scriptDir}/lodraw_edit.py`) return "# fake macro"
 			if (!state.files.has(p)) throw new Error(`ENOENT: ${p}`)
 			return p.endsWith("lo-status.json")
 				? JSON.stringify(state.statusPayload ?? { ok: true, pages: 3, applied: 1 })
@@ -78,7 +81,7 @@ describe("runLoDraw", () => {
 		expect(run.env.LO_MAP).toBe("/work/map.json")
 		// The macro script is staged into the throwaway profile.
 		const profile = state.profileDirs[0]
-		expect(state.written).toContain(`${profile}/user/Scripts/python/lodraw_edit.py`)
+		expect(state.written.map(norm)).toContain(`${norm(profile)}/user/Scripts/python/lodraw_edit.py`)
 	})
 
 	it("removes a stale profile lock before running and cleans the profile after", async () => {
@@ -87,9 +90,9 @@ describe("runLoDraw", () => {
 		// Seed the stale lock: the fake must know it exists on whatever profile
 		// path mkdtemp hands out (known only after staging).
 		const baseFileExists = deps.fileExists ?? (() => false)
-		deps.fileExists = (p) => baseFileExists(p) || (p.endsWith("/.lock") && p.includes("pdf-lo-profile"))
+		deps.fileExists = (p) => baseFileExists(p) || (norm(p).endsWith("/.lock") && norm(p).includes("pdf-lo-profile"))
 		await runLoDraw("dump", "/work/in.pdf", "/work/dump.json", deps)
-		expect(state.removed.some((p) => p.endsWith("/.lock"))).toBe(true)
+		expect(state.removed.some((p) => norm(p).endsWith("/.lock"))).toBe(true)
 		expect(state.removed).toContain(state.profileDirs[0])
 	})
 
