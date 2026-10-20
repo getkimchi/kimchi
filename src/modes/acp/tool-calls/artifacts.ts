@@ -7,7 +7,7 @@
 // inspected; candidates must match the extension allowlist, and live
 // detection requires the file to exist. Detection never throws.
 //
-// Trust assumption: artifact paths are agent-controlled output; the chip
+// Trust assumption: artifact paths are agent-controlled output; the link
 // is an explicit user action. Script-capable types (.html/.svg) open in
 // the user's own environment.
 
@@ -20,7 +20,7 @@ import { resolveToolPath } from "./utils.js"
 export type Artifact = {
 	/** Absolute resolved path. */
 	path: string
-	/** Basename, for chip labels. */
+	/** Basename, for link labels. */
 	name: string
 	/** file:// URI form of path. */
 	uri: string
@@ -59,7 +59,7 @@ const MAX_BASH_CANDIDATES = 256
 // A sniffed bash/powershell candidate counts as agent-produced only if its
 // mtime is at-or-after the tool call's start (stamped at
 // tool_execution_start); otherwise a read-only command (`cat`/`ls`) naming
-// a pre-existing file would produce a chip (cf. anthropics/claude-code
+// a pre-existing file would produce a link (cf. anthropics/claude-code
 // #102401). The tolerance absorbs 1-second mtime granularity (HFS+, some
 // network mounts). Backgrounded commands are not covered: their output
 // arrives via steering/bash_control messages, not tool results.

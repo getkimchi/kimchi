@@ -31,7 +31,7 @@ Org policy is fetched at startup and held for the session; each field has one en
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
-- **Tool results that produce user-openable files**: return them via `details.artifacts` — see [docs/artifact-chips.md](docs/artifact-chips.md).
+- **Tool results that produce user-openable files**: return them via `details.artifacts` — see [docs/artifacts.md](docs/artifacts.md).
 
 ## Shared TUI components
 

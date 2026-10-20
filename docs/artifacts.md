@@ -1,6 +1,6 @@
-# Artifact chips (generated files)
+# Artifacts (generated files)
 
-Product behavior: when a turn produces a user-openable file (a report, export, generated document, plan, …), ACP clients render an "Open <file>" chip. Detection is conservative — false negatives preferred over false positives.
+Product behavior: when a turn produces a user-openable file (a report, export, generated document, plan, …), ACP clients render an "Open <file>" artifact link. Detection is conservative — false negatives preferred over false positives.
 
 ## Declaring artifacts from a tool
 
@@ -30,5 +30,5 @@ Source of truth: `src/modes/acp/tool-calls/artifacts.ts`. Three inputs per tool 
 ## Emission and replay
 
 - `TurnArtifactBuffer` flushes once per turn as `agent_message_chunk` `resource_link`s, attached to the turn's last text block, identically on live and replayed sessions. Text-less turns emit nothing.
-- Live flush re-verifies existence, so files produced and deleted within one turn never link to ghosts; replay omits the check so chips survive for files created and later removed by subsequent turns.
+- Live flush re-verifies existence, so files produced and deleted within one turn never link to ghosts; replay omits the check so artifact links survive for files created and later removed by subsequent turns.
 - Chunks carry `_meta["kimchi.dev"].type = "artifact"` so clients can distinguish generated files from links the model merely references; capability is advertised in initialize as `artifacts: true`.

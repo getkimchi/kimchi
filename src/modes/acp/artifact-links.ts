@@ -5,7 +5,7 @@ import type { ModelAttribution } from "./model-attribution.js"
 import { type Artifact, artifactsFromToolCall } from "./tool-calls/artifacts.js"
 
 /**
- * Build artifact chip chunks: one `resource_link` agent_message_chunk per
+ * Build artifact chunks: one `resource_link` agent_message_chunk per
  * artifact, attached to `messageId` and carrying
  * `_meta["kimchi.dev"].type = "artifact"` so clients can distinguish
  * generated files from links the model merely references.
@@ -47,7 +47,7 @@ export function buildArtifactLinkChunks(opts: {
  * 3. flush() builds the chunks and clears state. It returns [] when no
  *    text block was registered (tool-call-only / thinking-only turn):
  *    a fresh `km.N` has no persisted counterpart for replay, so such
- *    chips are dropped by design.
+ *    artifacts are dropped by design.
  *
  * Emission is turn-scoped: one flush point per turn, no mid-turn state.
  */
@@ -92,7 +92,7 @@ export class TurnArtifactBuffer {
 	 *
 	 * Live flushes re-verify every artifact still exists and is a file: a
 	 * tool call may have produced it temporarily and deleted it before the
-	 * turn ended. Replay flushes pass verifyExists:false — replayed chips
+	 * turn ended. Replay flushes pass verifyExists:false — replayed artifacts
 	 * keep pointing at files that may legitimately be gone.
 	 */
 	flush(seenModelMeta?: Map<string, ModelAttribution>, opts?: { verifyExists?: boolean }): SessionUpdate[] {
