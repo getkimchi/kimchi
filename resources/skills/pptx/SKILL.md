@@ -8,10 +8,10 @@ disables-skills: pptx
 # pptx
 
 All commands run the bundled runtime. Replace `<deck>` with the user's path.
-- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill>/scripts/pptx.mjs <command> ...`
-  (`<skill>` = this skill's directory e.g. `<kimchi-data>/extensions/skills/pptx`)
+- Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
+- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/pptx.mjs <command> ...`
 - On Windows/Git Bash the same `BUN_BE_BUN=1 kimchi ...` prefix works.
-- Fallback if `kimchi` is not on PATH and Node is: `node <skill>/scripts/pptx.mjs ...`
+- Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/pptx.mjs ...`
 
 ## read `<deck> [start-end]`
 
