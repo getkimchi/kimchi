@@ -11,9 +11,9 @@
 // the user's own environment.
 
 import { existsSync } from "node:fs"
-import { homedir } from "node:os"
-import { basename, extname, isAbsolute, join, resolve } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { basename, extname } from "node:path"
+import { pathToFileURL } from "node:url"
+import { resolveToolPath } from "./utils.js"
 
 export type Artifact = {
 	/** Absolute resolved path. */
@@ -54,23 +54,6 @@ const MAX_BASH_ARTIFACTS = 8
 // so an unbounded match stream could stall the server's event loop.
 const MAX_BASH_CANDIDATES = 256
 
-// Replicates pi's resolveToCwd (pi-coding-agent path-utils: unicode-space
-// normalization, @-prefix strip, ~ expansion) because the write tool uses
-// it for args.path; callers must resolve identically. pi only exports
-// "."/"./hooks", so the helper cannot be imported directly.
-const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
-export function resolveToolPath(input: string, cwd: string): string {
-	let p = input.replace(UNICODE_SPACES, " ")
-	if (p.startsWith("@")) p = p.slice(1)
-	if (p === "~") {
-		p = homedir()
-	} else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
-		p = join(homedir(), p.slice(2))
-	}
-	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
-	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
-}
-
 function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: boolean }): Artifact | null {
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
 	if (mimeType === undefined) return null
@@ -88,10 +71,13 @@ function artifactFromPath(rawPath: string, cwd: string, opts: { verifyExists: bo
 // extensions so plain words never match. Quotes, whitespace and shell
 // metachars terminate a token (paths containing spaces are not detected —
 // a documented v1 trade-off). Tokens containing "://" (URLs) are rejected
-// before resolution. The extension list must stay in sync with
+// A single sentence-final period after the extension is allowed (\.? then
+// stripped from the token) so "Wrote report.md." still matches, while the
+// (?![\w.]) lookahead keeps rejecting partial-extension matches like
+// report.md.bak. The extension list must stay in sync with
 // ARTIFACT_EXTENSIONS; artifacts.test.ts asserts this in both directions.
 const PATH_TOKEN =
-	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)(?![\w.])/gi
+	/[^\s"'<>`;|&*?()[\]{}]*\.(?:pptx|xlsx|docx|pdf|html|htm|csv|png|jpg|jpeg|gif|webp|svg|md|markdown|zip|ics)\.?(?![\w.])/gi
 
 function textBlocks(result: unknown): string[] {
 	const r = result as { content?: unknown } | null | undefined
@@ -116,13 +102,15 @@ function bashArtifacts(result: unknown, cwd: string, opts: { verifyExists: boole
 	for (const text of textBlocks(result)) {
 		for (const match of text.matchAll(PATH_TOKEN)) {
 			if (out.length >= MAX_BASH_ARTIFACTS) return out
+			// Strip the allowed sentence-final period (see PATH_TOKEN).
+			const token = match[0].endsWith(".") ? match[0].slice(0, -1) : match[0]
 			// Dedupe raw tokens before the budget check so repeats cost
 			// neither a budget slot nor resolution/existence syscalls.
-			if (seenTokens.has(match[0])) continue
-			seenTokens.add(match[0])
+			if (seenTokens.has(token)) continue
+			seenTokens.add(token)
 			if (++candidates > MAX_BASH_CANDIDATES) return out
-			if (match[0].includes("://")) continue
-			const artifact = artifactFromPath(match[0], cwd, opts)
+			if (token.includes("://")) continue
+			const artifact = artifactFromPath(token, cwd, opts)
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)
 			out.push(artifact)

@@ -1,3 +1,6 @@
+import { homedir } from "node:os"
+import { isAbsolute, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import type {
 	SessionUpdate,
 	ToolCall,
@@ -7,6 +10,25 @@ import type {
 	ToolKind,
 } from "@agentclientprotocol/sdk"
 import { asString, truncate } from "../utils.js"
+
+// Replicates pi's resolveToCwd (pi-coding-agent path-utils: unicode-space
+// normalization, @-prefix strip, ~ expansion) because the write tool uses
+// it for args.path; callers must resolve identically. pi only exports
+// "."/"./hooks", so the helper cannot be imported directly. Shared by the
+// artifact sniffer and the per-turn diff reader so neither feature owns
+// the other's copy.
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
+export function resolveToolPath(input: string, cwd: string): string {
+	let p = input.replace(UNICODE_SPACES, " ")
+	if (p.startsWith("@")) p = p.slice(1)
+	if (p === "~") {
+		p = homedir()
+	} else if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
+		p = join(homedir(), p.slice(2))
+	}
+	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
+	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
+}
 
 // Mirrors the tool names kimchi actually exposes: pi-coding-agent core tools
 // plus the kimchi extensions in src/extensions (web-fetch, web-search, Agent).

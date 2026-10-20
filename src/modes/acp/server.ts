@@ -170,8 +170,13 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
-import { resolveToolPath } from "./tool-calls/artifacts.js"
-import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
+import {
+	buildToolCall,
+	buildToolCallUpdate,
+	describeToolCall,
+	isHiddenToolCall,
+	resolveToolPath,
+} from "./tool-calls/utils.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,

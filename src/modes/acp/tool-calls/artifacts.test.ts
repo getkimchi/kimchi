@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ARTIFACT_EXTENSIONS, artifactsFromToolCall, resolveToolPath } from "./artifacts.js"
+import { ARTIFACT_EXTENSIONS, artifactsFromToolCall } from "./artifacts.js"
 
 let cwd: string
 
@@ -171,15 +171,22 @@ describe("artifactsFromToolCall", () => {
 		expect(artifactsFromToolCall("bash", {}, { content: "not-an-array" }, cwd)).toEqual([])
 		expect(artifactsFromToolCall("write", { path: `${String.fromCharCode(0)}.pdf` }, textResult("ok"), cwd)).toEqual([])
 	})
-})
 
-describe("resolveToolPath", () => {
-	it("resolves relative paths against cwd", () => {
-		expect(resolveToolPath("a/b.pdf", cwd)).toBe(join(cwd, "a/b.pdf"))
-	})
+	describe("sentence-final periods in bash output", () => {
+		it("detects a path at the end of a sentence", () => {
+			const abs = touch("report.md")
+			const out = artifactsFromToolCall("bash", {}, textResult("Wrote report.md."), cwd)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
 
-	it("strips the @ prefix and file:// scheme", () => {
-		expect(resolveToolPath("@x.pdf", cwd)).toBe(join(cwd, "x.pdf"))
-		expect(resolveToolPath(pathToFileURL(join(cwd, "y.pdf")).href, cwd)).toBe(join(cwd, "y.pdf"))
+		it("treats the trailing period as punctuation, not part of the token", () => {
+			const abs = touch("a/out.pdf")
+			const out = artifactsFromToolCall("bash", {}, textResult("done: a/out.pdf. Next step"), cwd)
+			expect(out.map((a) => a.path)).toEqual([abs])
+		})
+
+		it("still rejects partial-extension matches (report.md.bak)", () => {
+			expect(artifactsFromToolCall("bash", {}, textResult("report.md.bak"), cwd, { verifyExists: false })).toEqual([])
+		})
 	})
 })
