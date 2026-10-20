@@ -318,6 +318,26 @@ function bashArtifacts(result: unknown, cwd: string, opts: DetectOpts): Artifact
 	return out
 }
 
+// Redirect targets (echo foo > out.csv, tee report.md). Taxonomy ops carry
+// the target; only stdout forms (">"/">>") count — fd/stderr forms like
+// 2>log never match. Same gates as sniffed tokens: allowlisted extension,
+// existence (live), mtime window.
+function redirectArtifacts(segments: CommandSegments, cwd: string, opts: DetectOpts): Artifact[] {
+	const out: Artifact[] = []
+	const seen = new Set<string>()
+	for (const segment of segments) {
+		for (const op of segment.ops) {
+			if ((op.op !== ">" && op.op !== ">>") || typeof op.target !== "string") continue
+			if (!(extname(op.target).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
+			const artifact = artifactFromPath(op.target, cwd, opts)
+			if (!artifact || seen.has(artifact.path)) continue
+			seen.add(artifact.path)
+			out.push(artifact)
+		}
+	}
+	return out
+}
+
 /**
  * Detect generated artifacts from a completed tool call. `args` are the
  * tool's arguments (stashed at tool_execution_start; the end event has
@@ -346,7 +366,12 @@ export function artifactsFromToolCall(
 			if (typeof command !== "string") return bashArtifacts(result, cwd, opts)
 			const segments = parseCommandSegments(command)
 			if (isTreeMaterializingGit(segments)) return []
-			return bashArtifacts(result, navigatedCwd(segments, cwd), opts)
+			const effectiveCwd = navigatedCwd(segments, cwd)
+			const out = redirectArtifacts(segments, effectiveCwd, opts)
+			for (const artifact of bashArtifacts(result, effectiveCwd, opts)) {
+				if (!out.some((a) => a.path === artifact.path)) out.push(artifact)
+			}
+			return out
 		}
 		return []
 	} catch {

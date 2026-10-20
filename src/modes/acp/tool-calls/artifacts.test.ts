@@ -231,6 +231,47 @@ describe("artifactsFromToolCall", () => {
 		expect(out).toEqual([])
 	})
 
+	it("detects bash redirect targets printed nowhere in the output", () => {
+		const abs = touch("echo-baby.csv")
+		// The path only appears in args.command (`> ...`), not in the cat output.
+		const out = artifactsFromToolCall(
+			"bash",
+			{ command: `echo "a,b" > ${abs} && cat ${abs}` },
+			textResult("a,b"),
+			cwd,
+			{ windowStart: Date.now() - 1000 },
+		)
+		expect(out.map((a) => a.path)).toEqual([abs])
+	})
+
+	it("excludes stderr redirects and non-allowlisted or stale redirect targets", () => {
+		const csv = touch("out.csv")
+		const past = Date.now() - 60_000
+		utimesSync(csv, new Date(past), new Date(past)) // stale: window rejects
+		const fresh = touch("fresh.csv")
+		const windowStart = Date.now() - 1000
+		expect(
+			artifactsFromToolCall("bash", { command: `cmd 2>${join(cwd, "log.md")} > ${fresh}` }, textResult(""), cwd, {
+				windowStart,
+			}).map((a) => a.path),
+		).toEqual([fresh])
+		expect(artifactsFromToolCall("bash", { command: `echo x > ${csv}` }, textResult(""), cwd, { windowStart })).toEqual(
+			[],
+		)
+	})
+
+	it("dedupes when the redirect target is also printed in the output", () => {
+		const abs = touch("report.md")
+		const out = artifactsFromToolCall(
+			"bash",
+			{ command: `gen > ${abs} && echo wrote ${abs}` },
+			textResult(`wrote ${abs}`),
+			cwd,
+			{ windowStart: Date.now() - 1000 },
+		)
+		expect(out).toHaveLength(1)
+	})
+
 	it("bare extension mentions are not candidates (empty path prefix)", () => {
 		// "wrote a .md file" — `.md` alone has no path to resolve and would
 		// otherwise produce file://<cwd>/.md on replay (no stat gate).
