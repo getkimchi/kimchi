@@ -120,15 +120,42 @@ Ops:
 ```
 
 - Slide/row indices are 1-based; `cell` is A1-style; `values` must match the column count.
+- `layout` names come from `inspect` (e.g. "Title Slide" — exact, case-insensitive).
 - Formatting inherits: new paragraphs clone the shape's last paragraph, so bullets,
   indent, and the last character styling carry over — **if a paragraph is bullet-styled
-  it stays bullet-styled**.
+  it stays bullet-styled**. For translation/localization, see
+  [Localizing / translating a deck](#localizing--translating-a-deck) below instead.
 - `layout` names come from `inspect` (e.g. "Title Slide" — exact, case-insensitive).
 
 Requesting an unsupported op reports which ops exist; requesting an unknown
 shape/table/slide reports what exists on the slide. **If the user asks for flaky
 formatting (fonts on one span, gradients, motion), say no and explain** — these ops
 cover structure and text only.
+
+## Localizing / translating a deck
+
+`set_shape_text` is the wrong tool for translation: it rebuilds the text body
+from the shape's LAST paragraph, flattening per-paragraph levels (sub-bullets)
+and per-run styling (italic spans, superscripts, `sym` runs like Wingdings
+smileys). For a 1:1 language swap, replace run text in place:
+
+1. Unzip the deck (`unzip` the .pptx) and dump exact strings: print every
+   `<a:t>` text with `repr()`. Do NOT build the replacement map from `read`
+   output — `read` merges runs and hides trailing spaces, so exact-match
+   edits miss.
+2. Replace `<a:t>source</a:t>` → `<a:t>translation</a:t>` per slide; require
+   exactly 1 occurrence per pair (XML-escape `&`, `<`, `>` first). Keep
+   multi-run boundaries where a run carries distinct rPr (superscript,
+   italic, `sym` font); where runs share formatting you may merge into the
+   first run — but blank the sibling runs.
+3. Update `lang="…"` on edited runs (e.g. `lang="pt-PT"`).
+4. Text boxes with `wrap="none"`+`spAutoFit` (speech bubbles, quote/banner
+   lines): keep the translated line NO LONGER than the original line.
+   LibreOffice wraps these at the stored box width; PowerPoint lets them run
+   off the slide edge.
+5. Run `check` on the ORIGINAL deck first as a baseline — flags present there
+   are pre-existing conditions, not your regressions. Then `render` both
+   decks and compare PNGs slide by slide.
 
 ## Validation errors to know
 
