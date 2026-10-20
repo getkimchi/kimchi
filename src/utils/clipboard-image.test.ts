@@ -11,7 +11,8 @@ vi.mock("./clipboard-native-harness.js", () => ({
 
 // We need to mock the platform since readClipboardImage checks it.
 // We'll mock process.platform indirectly through the options parameter.
-import { readClipboardImage } from "./clipboard-image.js"
+import { readClipboardImage, readClipboardImageViaNativeClipboard } from "./clipboard-image.js"
+import { PNG_SIGNATURE } from "./image-utils.js"
 
 describe("readClipboardImage", () => {
 	beforeEach(() => {
@@ -51,8 +52,24 @@ describe("readClipboardImage", () => {
 			expect(mockClipboard.getImageBinary).not.toHaveBeenCalled()
 		})
 
+		it("proceeds to read the pasteboard when ignoreFileUrlGuard is set despite public.file-url", async () => {
+			const pngData = new Uint8Array(PNG_SIGNATURE)
+			const mockClipboard = {
+				hasImage: vi.fn().mockReturnValue(true),
+				getImageBinary: vi.fn().mockResolvedValue(pngData),
+				availableFormats: vi.fn().mockReturnValue(["public.jpeg", "public.file-url"]),
+			}
+			mockGetNativeClipboard.mockReturnValue({ clipboard: mockClipboard, error: null })
+
+			const result = await readClipboardImageViaNativeClipboard({ ignoreFileUrlGuard: true })
+
+			// The guard is bypassed: the pasteboard representation is read anyway.
+			expect(result).toEqual({ bytes: pngData, mimeType: "image/png" })
+			expect(mockClipboard.getImageBinary).toHaveBeenCalled()
+		})
+
 		it("returns image data when availableFormats does NOT include public.file-url", async () => {
-			const pngData = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+			const pngData = new Uint8Array(PNG_SIGNATURE)
 			const mockClipboard = {
 				hasImage: vi.fn().mockReturnValue(true),
 				getImageBinary: vi.fn().mockResolvedValue(pngData),
