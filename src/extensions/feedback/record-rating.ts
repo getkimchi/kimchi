@@ -13,6 +13,14 @@
  * `appendEntry` is injected because each surface owns a different writer:
  * the TUI passes `pi.appendEntry`; the ACP server passes
  * `session.sessionManager.appendCustomEntry`.
+ *
+ * Failure semantics — the seam is atomic-in-effect: `appendEntry` runs
+ * first, so a throw from this function always means *nothing* was recorded
+ * and the caller can safely keep the rating window armed for a retry. Once
+ * the entry is written the record is complete — a telemetry failure after
+ * it is swallowed (best-effort observability, same contract as every other
+ * emission in this codebase) rather than failing a rating the user already
+ * submitted.
  */
 
 import { trackFeedback } from "../telemetry/index.js"
@@ -39,11 +47,19 @@ export function recordRating(opts: RecordRatingOptions): RecordRatingResult {
 	const reason = clampReason(opts.reason)
 	const { window } = opts
 	opts.appendEntry(FEEDBACK_SUMMARY_CUSTOM_TYPE, { sentiment: opts.sentiment, reason })
-	trackFeedback({
-		sentiment: opts.sentiment,
-		reason,
-		reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-		routingModelId: window.autoModelUsed ? window.routedModelId : undefined,
-	})
+	// Best-effort: the entry above IS the record. A telemetry failure must
+	// not fail the submission — the caller would keep the window armed and
+	// a retry would write a second entry for the same settled response.
+	try {
+		trackFeedback({
+			sentiment: opts.sentiment,
+			reason,
+			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
+			routingModelId: window.autoModelUsed ? window.routedModelId : undefined,
+		})
+	} catch {
+		// Swallowed deliberately — delivery failures of buffered telemetry
+		// are already swallowed downstream; this guards the synchronous half.
+	}
 	return { status: "recorded" }
 }

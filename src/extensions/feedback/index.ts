@@ -380,6 +380,12 @@ async function handleRating(
 		})
 		consumeRatingWindow(ctx.sessionManager.getSessionId())
 	} catch (err) {
+		// A stale ctx here means the runtime tore down AFTER the record
+		// succeeded (entry + telemetry written) — report success so the
+		// invitation is not resurrected for a retry that would double-record
+		// the rating. Mirrors clearWindowForCtx's stale guard; the session is
+		// gone either way, so the unconsumed window is unreachable.
+		if (isStaleCtxError(err)) return true
 		ctx.ui.notify(`[feedback] Failed to record rating: ${err}`, "error")
 		return false
 	}

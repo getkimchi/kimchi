@@ -257,6 +257,68 @@ describe("KimchiAcpAgent extMethod feedback", () => {
 		expect(session.appendCustomEntry).not.toHaveBeenCalled()
 	})
 
+	it("maps a failing transcript write to internalError and keeps the window armed for retry", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		armRatingWindow("sess-1", CONCRETE_WINDOW)
+		session.appendCustomEntry.mockImplementation(() => {
+			throw new Error("disk full")
+		})
+
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+				sessionId: "sess-1",
+				action: "rate_response",
+				sentiment: "positive",
+				reason: "Solved my task",
+			}),
+		).rejects.toMatchObject({ code: -32603, message: expect.stringContaining("failed to record rating") })
+
+		// Nothing recorded, nothing consumed — the client retry is safe.
+		expect(getRatingWindow("sess-1")).toEqual(CONCRETE_WINDOW)
+		expect(feedbackMock.trackFeedback).not.toHaveBeenCalled()
+	})
+
+	it("a telemetry failure after the transcript write cannot double-record on retry", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		armRatingWindow("sess-1", CONCRETE_WINDOW)
+		feedbackMock.trackFeedback.mockImplementationOnce(() => {
+			throw new Error("telemetry down")
+		})
+
+		// The transcript entry IS the record — telemetry failing afterwards
+		// must not fail the submission, or a retry writes a second entry.
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+				sessionId: "sess-1",
+				action: "rate_response",
+				sentiment: "negative",
+				reason: "Too slow",
+			}),
+		).resolves.toEqual({ status: "recorded" })
+		expect(session.appendCustomEntry).toHaveBeenCalledWith("feedback-summary", {
+			sentiment: "negative",
+			reason: "Too slow",
+		})
+		expect(getRatingWindow("sess-1")).toBeUndefined()
+
+		// The retry gets the one-rating-per-window rejection, not a second entry.
+		await expect(
+			agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+				sessionId: "sess-1",
+				action: "rate_response",
+				sentiment: "negative",
+				reason: "Too slow",
+			}),
+		).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+		expect(session.appendCustomEntry).toHaveBeenCalledTimes(1)
+	})
+
 	it("rejects invalid params: missing sessionId, unknown action, bad sentiment, non-string reason", async () => {
 		const session = new FakeAgentSession("sess-1")
 		const agent = makeAgent(session)

@@ -63,12 +63,22 @@ export async function handleFeedback(
 		throw RequestError.invalidRequest(undefined, "no settled response to rate")
 	}
 
-	const result = recordRating({
-		appendEntry: (customType, details) => target.session.sessionManager.appendCustomEntry(customType, details),
-		sentiment,
-		reason: reason ?? "",
-		window: ratingWindow,
-	})
-	consumeRatingWindow(sessionId)
-	return result
+	try {
+		const result = recordRating({
+			appendEntry: (customType, details) => target.session.sessionManager.appendCustomEntry(customType, details),
+			sentiment,
+			reason: reason ?? "",
+			window: ratingWindow,
+		})
+		consumeRatingWindow(sessionId)
+		return result
+	} catch (err) {
+		// The only remaining throw source is the transcript write (telemetry
+		// is swallowed inside the record seam), so nothing was recorded and
+		// the window above is still armed — a client retry is safe. Map to a
+		// controlled internal error instead of letting the raw failure escape
+		// as a generic -32603 (precedent: the server's browser-auth path).
+		const detail = err instanceof Error ? err.message : String(err)
+		throw RequestError.internalError(undefined, `failed to record rating: ${detail}`)
+	}
 }

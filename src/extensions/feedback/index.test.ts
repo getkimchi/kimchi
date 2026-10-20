@@ -853,6 +853,34 @@ describe("feedbackExtension stale ctx handling", () => {
 		expect(() => getHandler("agent_settled")({}, staleCtx())).not.toThrow()
 	})
 
+	it("a stale ctx after a succeeded record reports success — no retry that double-records", async () => {
+		// The runtime tears down AFTER the record succeeded (transcript entry
+		// + telemetry written): only the post-record window-consume read goes
+		// stale. Reporting that as a failure would resurrect the invitation
+		// for a retry that double-records the rating.
+		const { api, ctx, getHandler, getShortcutHandler, getAppendedEntries } = makeApi()
+		feedbackExtension(api)
+		getHandler("agent_settled")({}, ctx)
+
+		dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
+		Object.defineProperty(ctx, "sessionManager", {
+			get: () => {
+				throw new Error(STALE_MESSAGE)
+			},
+		})
+
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+
+		// The record itself succeeded — no failure toast, entry written.
+		expect(getAppendedEntries("feedback-summary")).toHaveLength(1)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+
+		// Reported as success → the invitation is not resurrected: a second
+		// press must not reopen the dialog (a retry would double-record).
+		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+		expect(dialogMock.show).toHaveBeenCalledTimes(1)
+	})
+
 	it("rethrows non-stale errors from agent_settled", () => {
 		const { api, getHandler } = makeApi()
 		feedbackExtension(api)

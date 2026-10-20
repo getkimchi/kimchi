@@ -11,6 +11,27 @@ beforeEach(() => {
 })
 
 describe("recordRating", () => {
+	it("reports recorded even when telemetry throws — the entry is the record", () => {
+		// The transcript entry is written first; if telemetry failed AFTER that,
+		// the record must still be "recorded" — otherwise the caller keeps the
+		// rating window armed and a retry writes a second entry for the same
+		// settled response. Telemetry is best-effort everywhere in this codebase.
+		const appendEntry = vi.fn()
+		feedbackMock.trackFeedback.mockImplementation(() => {
+			throw new Error("telemetry down")
+		})
+
+		const result = recordRating({
+			appendEntry,
+			sentiment: "positive",
+			reason: "Solved my task",
+			window: { autoModelUsed: false, routedModelId: undefined },
+		})
+
+		expect(result).toEqual({ status: "recorded" })
+		expect(appendEntry).toHaveBeenCalledWith("feedback-summary", { sentiment: "positive", reason: "Solved my task" })
+	})
+
 	it("appends a feedback-summary entry and tracks telemetry with the predefined reason type", () => {
 		const appendEntry = vi.fn()
 		const result = recordRating({

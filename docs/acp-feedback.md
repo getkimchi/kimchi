@@ -59,13 +59,14 @@ The window clears without recording when:
   wire,
 - the session resets or closes.
 
-Invalid submissions fail with two distinct errors:
+Invalid submissions fail with distinct errors:
 
 | Situation | Code | Message |
 | --- | --- | --- |
 | A prompt is in progress for the session | `-32600` (invalidRequest) | `a prompt is already in progress for this session` |
 | No window armed (nothing settled yet, already consumed, cancelled/errored turn, window cleared) | `-32600` (invalidRequest) | `no settled response to rate` |
 | Bad params (missing `sessionId`, unknown action, sentiment outside the enum, non-string `reason`, unknown session) | `-32602` (invalidParams) | describes the param |
+| The transcript write fails (disk full, session mid-teardown) | `-32603` (internal) | `failed to record rating: <detail>` — **nothing was recorded**; the window stays armed, so a retry is safe and cannot double-record |
 
 ## Reason vocabulary
 
