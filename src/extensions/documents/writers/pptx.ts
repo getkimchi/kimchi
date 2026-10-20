@@ -68,6 +68,23 @@ function inlineText(inline: Inline[]): string {
 	return inline.map((i) => i.text).join("")
 }
 
+/** Remove `drop` characters from the end of an inline run sequence (for stripping a matched suffix). */
+function trimInlineSuffix(inline: Inline[], drop: number): Inline[] {
+	const out = inline.map((i) => ({ ...i }))
+	let remaining = drop
+	for (let i = out.length - 1; i >= 0 && remaining > 0; i--) {
+		const text = out[i].text
+		if (text.length <= remaining) {
+			remaining -= text.length
+			out.splice(i, 1)
+		} else {
+			out[i].text = text.slice(0, text.length - remaining)
+			remaining = 0
+		}
+	}
+	return out
+}
+
 function headingHint(text: string): { heading: string; hint?: LayoutHint } {
 	const match = /^(.*?)\s*::\s*([a-z-]+)\s*$/.exec(text)
 	if (!match) return { heading: text }
@@ -326,7 +343,18 @@ export function parseDeckMarkdown(markdown: string, theme: DeckTheme = {}, warni
 				continue
 			}
 			if (block.type === "heading") {
-				slide.elements.push({ type: "heading", level: block.level, inline: block.inline })
+				// A `:: hint` suffix works on any heading level; on sub-headings it
+				// sets the slide's layout and is stripped from the rendered text.
+				// Unknown ":: whatever" text is left alone — it's prose, not a hint.
+				let inline = block.inline
+				const full = inlineText(block.inline)
+				const match = /^(.*?)\s*::\s*([a-z-]+)\s*$/.exec(full)
+				if (match && LAYOUT_HINTS.includes(match[2] as LayoutHint)) {
+					if (slide.layoutHint === undefined) slide.layoutHint = match[2] as LayoutHint
+					const drop = full.length - match[1].length
+					inline = trimInlineSuffix(block.inline, drop)
+				}
+				slide.elements.push({ type: "heading", level: block.level, inline })
 				seenContent = true
 				continue
 			}
