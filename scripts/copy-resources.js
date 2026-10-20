@@ -25,7 +25,7 @@ import {
 } from "node:fs"
 import { createRequire } from "node:module"
 import { platform, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -183,11 +183,13 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 		})
 		cpSync(stagedOut, pdfCliDest)
 		// The LO-edit macro ships beside the CLI: the CLI stages it into a
-		// throwaway LibreOffice profile at run time.
-		cpSync(
-			join(projectRoot, "resources", "skills", "pdf", "scripts", "lodraw_edit.py"),
-			join(dirname(pdfCliDest), "lodraw_edit.py"),
-		)
+		// throwaway LibreOffice profile at run time. In dev mode the skill dir
+		// IS the source dir, so the copy would be src === dest — skip it.
+		const lodrawSrc = join(projectRoot, "resources", "skills", "pdf", "scripts", "lodraw_edit.py")
+		const lodrawDest = join(dirname(pdfCliDest), "lodraw_edit.py")
+		if (resolve(lodrawSrc) !== resolve(lodrawDest)) {
+			cpSync(lodrawSrc, lodrawDest)
+		}
 	} finally {
 		try {
 			rmSync(pdfStaging, { recursive: true, force: true })
