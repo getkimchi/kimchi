@@ -42,6 +42,8 @@ export interface WorkPullRequest {
 	title?: string
 	/** The author's login: GitHub `user.login`, GitLab `author.username`. Like `title`, uploaded only. */
 	author?: string
+	/** The Jira keys the PR's head branch names, at most 20; the branch name itself is not kept. Uploaded only. */
+	branchIssueKeys?: string[]
 	state: "open" | "closed" | "merged"
 	repository: string
 	host: string

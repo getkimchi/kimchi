@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { lock } from "proper-lockfile"
+import { branchIssueKeys, ISSUE_KEY } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { currentBranch } from "../pull-request-status/branch-status.js"
 import { appendJournalLine, object, truncated } from "./summary.js"
@@ -13,10 +14,6 @@ import { appendJournalLine, object, truncated } from "./summary.js"
  * reporting stops on journal record types it does not know. Request rows copy the selection their input began with.
  */
 
-/** An uppercase project key of at least two characters, a dash and an issue number, within the lengths the backend accepts in titles. */
-const ISSUE_KEY = /^[A-Z][A-Z0-9_]{1,254}-[1-9][0-9]{0,15}$/
-/** Key-shaped tokens; a letter, digit or underscore on either side makes one part of a longer word. */
-const BRANCH_ISSUE_KEYS = /(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{1,254}-[1-9][0-9]{0,15}(?![A-Za-z0-9_])/g
 /** The lock timing of work summaries; a writer holds this lock only to read the file and append one line. */
 const LOCK_STALE_MS = 5000
 const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
@@ -58,11 +55,6 @@ export interface WorkIssue {
 export function parseIssueKey(text: string): string | undefined {
 	const key = text.replace(/[a-z]/g, (letter) => letter.toUpperCase())
 	return ISSUE_KEY.test(key) ? key : undefined
-}
-
-/** The distinct Jira-key-shaped tokens of a branch name, in order. */
-export function branchIssueKeys(branch: string): string[] {
-	return [...new Set(branch.match(BRANCH_ISSUE_KEYS))]
 }
 
 export function workIssuePath(agentDir: string, workId: string): string {

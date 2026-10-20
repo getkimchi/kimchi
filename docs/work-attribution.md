@@ -80,7 +80,7 @@ The selection applies from the next prompt. Each request records the issue its w
 
 `/work issue` also checks the current branch. A branch name with exactly one Jira-key-shaped token other than the selected issue, such as `feature/ABC-123-add-jira`, is suggested with the command that selects it; a name with several keys lists them. A detached HEAD or a folder outside Git suggests nothing. Kimchi never selects an issue from a branch name or from prompt text. `/work` and the work list show the selected issue under the work ID.
 
-Each selection or clear appends a revision to `work/<workId>/issue.jsonl`; earlier revisions stay. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read it and append, so sessions that select at the same time get consecutive revisions and the later one wins. A line cut short by a crash is skipped, as in the journals. If two revisions ever share a number, or the last line cannot be read, `/work` says the selection is unsettled or unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira, and the selection is not uploaded: PR cost reports are unchanged.
+Each selection or clear appends a revision to `work/<workId>/issue.jsonl`; earlier revisions stay. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read it and append, so sessions that select at the same time get consecutive revisions and the later one wins. A line cut short by a crash is skipped, as in the journals. If two revisions ever share a number, or the last line cannot be read, `/work` says the selection is unsettled or unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira. PR cost reports send the selection with each PR the work's requests went to, as a `work` key, so its cost counts for the issue.
 
 ## How Kimchi matches things
 
@@ -301,6 +301,7 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
 | `title` / `author` | The provider's title, cut to 1,024 characters, and the author's login (GitHub `user.login`, GitLab `author.username`), read from the responses lookup already receives. Only PR cost reporting uploads them; `/work` and the footer do not show them. Empty or malformed values are left out. Older records omit both and gain them on the link's next check; a merged link with stable IDs is no longer checked, so one saved by an earlier version usually keeps omitting them. |
+| `branchIssueKeys` | The Jira keys the PR's head branch names (GitHub `head.ref`, GitLab `source_branch`), at most 20; the branch name is not kept. Only PR cost reporting uploads them, as `branch` keys. Older records omit them. |
 | `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
@@ -369,7 +370,7 @@ All paths below are inside the agent directory.
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for model matching, bound to its original account and repository. Not written while matching is off. |
-| `work/<workId>/issue.jsonl` | The Jira issue chosen with `/work issue`: one revision per selection or clear, newest last. Not uploaded. |
+| `work/<workId>/issue.jsonl` | The Jira issue chosen with `/work issue`: one revision per selection or clear, newest last. The file is not uploaded; PR cost reports send the issue each request recorded with the PRs it went to. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |

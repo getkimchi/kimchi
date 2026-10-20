@@ -1,4 +1,6 @@
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
+
+import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
 import { plainURL } from "../../utils/url.js"
 import { object } from "../work-attribution/summary.js"
 import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
@@ -120,6 +122,8 @@ export function pullRequest(
 	const title = pullRequestTitle(value.title)
 	const user = provider === "gitlab" ? value.author : value.user
 	const author = object(user) ? pullRequestAuthor(provider === "gitlab" ? user.username : user.login) : undefined
+	const branch = provider === "gitlab" ? value.source_branch : object(value.head) ? value.head.ref : undefined
+	const branchKeys = typeof branch === "string" ? branchIssueKeys(branch).slice(0, MAX_PULL_REQUEST_ISSUE_KEYS) : []
 	const repositoryId = providerId(
 		provider === "gitlab"
 			? value.target_project_id
@@ -141,6 +145,7 @@ export function pullRequest(
 		number,
 		...(title ? { title } : {}),
 		...(author ? { author } : {}),
+		...(branchKeys.length ? { branchIssueKeys: branchKeys } : {}),
 		state,
 		repository: path[1],
 		host,
