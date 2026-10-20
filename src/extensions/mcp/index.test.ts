@@ -48,7 +48,13 @@ const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
-const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
+const oauthBranding = vi.hoisted(() => ({
+	install: vi.fn(),
+	// Mirrors the real factory signature; identity so existing tests keep their
+	// ctx identity assertions, spyable so the event-path tests can verify every
+	// adapter handler ctx is routed through the branding layer.
+	brandedContext: vi.fn(<T>(ctx: T): T => ctx),
+}))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
 const gatewayState = vi.hoisted(() => ({
@@ -133,7 +139,7 @@ vi.mock("./oauth-migration.js", () => ({
 vi.mock("./oauth-callback-branding.js", () => ({
 	brandMcpAdapterOwnedToolResult: (result: unknown) => result,
 	brandMcpAdapterText: (text: string) => text.replaceAll("Pi", "Kimchi"),
-	createBrandedMcpContext: (ctx: unknown) => ctx,
+	createBrandedMcpContext: oauthBranding.brandedContext,
 	installMcpOAuthCallbackBranding: oauthBranding.install,
 }))
 
@@ -826,6 +832,27 @@ describe("upstream MCP adapter facade", () => {
 		expect(harness.getRegisteredTools().find(({ name }) => name === "docs_reference")?.description).toBe(
 			"A server-owned guide for migrating from Pi",
 		)
+	})
+
+	it.each([
+		"mcp_servers_change",
+		"session_start",
+	])("routes adapter %s handler contexts through the branding layer", async (event) => {
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = await start(harness)
+		const handler = vi.fn()
+		oauthBranding.brandedContext.mockClear()
+
+		// ExtensionAPI.on has per-event overloads; emit dispatches by name.
+		const looseApi = upstream.api as unknown as {
+			on(event: string, handler: (value: unknown, ctx: unknown) => unknown): void
+		}
+		looseApi.on(event, handler)
+		await harness.emit(event, {}, ctx)
+
+		expect(handler).toHaveBeenCalledOnce()
+		expect(oauthBranding.brandedContext).toHaveBeenCalledWith(ctx)
 	})
 
 	it("does not expose the upstream /pi-mcp or /mcp-adapter aliases", async () => {

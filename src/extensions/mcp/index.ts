@@ -163,12 +163,18 @@ function createUpstreamApi(
 		get(target, property) {
 			if (property === "on") {
 				return (event: string, handler: (event: unknown, ctx: unknown) => unknown): void => {
+					// Brand every adapter event path, not just slash-command handlers:
+					// connect-/change-time notices (built-in MCP disable, sign-in
+					// imports, network hints) notify through this ctx and previously
+					// bypassed brandMcpAdapterText.
+					const branded = (value: unknown, ctx: unknown) =>
+						handler(value, createBrandedMcpContext(ctx as ExtensionContext))
 					if (event === "session_start" || event === "input") {
-						captureHandler(event, handler)
+						captureHandler(event, branded)
 						return
 					}
 					const on = target.on as (event: string, handler: (event: unknown, ctx: unknown) => unknown) => void
-					on(event, handler)
+					on(event, branded)
 				}
 			}
 			if (property === "registerTool") {

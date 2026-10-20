@@ -105,6 +105,59 @@ describe("MCP OAuth callback branding", () => {
 		)
 	})
 
+	it("brands every audited v5 panel and notice phrase", () => {
+		expect(brandMcpAdapterText("No sign-ins from Pi left to import.")).toBe("No sign-ins from Kimchi left to import.")
+		expect(brandMcpAdapterText("Failed to import the sign-in from Pi for linear: boom")).toBe(
+			"Failed to import the sign-in from Kimchi for linear: boom",
+		)
+		expect(brandMcpAdapterText('server "linear" signs in with Pi: run /login linear')).toBe(
+			'server "linear" signs in with Kimchi: run /login linear',
+		)
+		expect(
+			brandMcpAdapterText(
+				"Turned off Pi's built-in MCP so it doesn't run next to pi-mcp-adapter. If you remove the adapter, turn it back on in `pi config` → Built-in.",
+			),
+		).toBe(
+			"Turned off Kimchi's built-in MCP so it doesn't run next to pi-mcp-adapter. If you remove the adapter, turn it back on by removing `-builtin:mcp` from the extensions list in your settings file.",
+		)
+		expect(
+			brandMcpAdapterText(
+				'MCP server "x": auth.provider isn\'t available here; it needs a Pi session whose model registry provides provider tokens (Pi 0.99.2 or later)',
+			),
+		).toBe(
+			'MCP server "x": auth.provider isn\'t available here; it needs a Kimchi session whose model registry provides provider tokens',
+		)
+		expect(
+			brandMcpAdapterText(
+				"Local Network for the app hosting Pi; enable access if listed and restart it. Try launching Pi from Terminal.app or SSH.",
+			),
+		).toBe(
+			"Local Network for the app hosting Kimchi; enable access if listed and restart it. Try launching Kimchi from Terminal.app or SSH.",
+		)
+		expect(brandMcpAdapterText("user Pi settings /tmp/x malformed")).toBe("user harness settings /tmp/x malformed")
+		expect(brandMcpAdapterText("Pi package acme ignores invalid pi.mcp manifest entry")).toBe(
+			"Kimchi package acme ignores invalid pi.mcp manifest entry",
+		)
+		expect(brandMcpAdapterText('Pi provider "linear" returned a bad token')).toBe(
+			'Kimchi provider "linear" returned a bad token',
+		)
+		expect(brandMcpAdapterText("pi-mcp-adapter is not installed for this Pi instance")).toBe(
+			"pi-mcp-adapter is not installed for this Kimchi instance",
+		)
+		expect(
+			brandMcpAdapterText(
+				"Figma's remote MCP server only accepts approved clients, and Pi isn't approved yet. Use the Figma desktop app's local server instead: run /mcp-adapter setup.",
+			),
+		).toBe(
+			"Figma's remote MCP server only accepts approved clients, and Kimchi isn't approved yet. Use the Figma desktop app's local server with a localhost entry in .mcp.json instead.",
+		)
+		expect(brandMcpAdapterText("user-global Pi MCP; project Pi MCP; Kimchi mcp.json")).toBe(
+			"user-global Kimchi MCP; project Kimchi MCP; Kimchi mcp.json",
+		)
+		expect(brandMcpAdapterText("Pi exclusive config")).toBe("Kimchi exclusive config")
+		expect(brandMcpAdapterText("Pi project mcp.json")).toBe("Kimchi project mcp.json")
+	})
+
 	it("brands adapter-owned tool errors without rewriting MCP server results", () => {
 		const adapterResult = brandMcpAdapterOwnedToolResult({
 			content: [{ type: "text", text: '"read" is a native Pi tool.' }],
