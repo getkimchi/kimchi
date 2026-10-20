@@ -338,7 +338,7 @@ function dropFermentPrefix(segs: Segment[]): boolean {
  *  pi 1.3 dim tokens open as `\x1b[<color>m\x1b[2m` and close as `\x1b[22;39m`, so a
  *  single-escape match would orphan the space + color-open and render `mode  ·`. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are required for matching real terminal output
-export const SHORTCUT_TAIL = /\s*(?:\x1b\[[\d;]*m\s*)*→\s+[\w+]+(?:\x1b\[[\d;]*m\s*)*$/
+export const SHORTCUT_TAIL = /\s*(?:\x1b\[[\d;]*m)*→\s+[\w+]+(?:\x1b\[[\d;]*m\s*)*$/
 
 /** Strip shortcut hints from the named segments. Returns true if any were stripped. */
 function stripShortcutHintsAcross(segments: Segment[], ids: SegmentId[]): boolean {
