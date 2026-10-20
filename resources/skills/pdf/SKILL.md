@@ -9,35 +9,39 @@ disables-skills: pdf
 
 All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
 - With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/pdf.mjs <command> ...`
-- On Windows/Git Bash the same `BUN_BE_BUN=1 kimchi ...` prefix works.
 - Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/pdf.mjs ...`
 
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
 
 ## Choosing an approach
 
-| Goal | Route |
-|---|---|
-| Change text on existing pages, keep styling | in-place editing (`dump-shapes` + `edit-draw`; needs LibreOffice) |
-| Rebuild a styled layout (colors, complex tables) from scratch | write styled HTML, then headless Chrome `--print-to-pdf` if Chrome is installed (environmental — check first; never assume) |
-| Simple monochrome doc from Markdown | `create` |
-| Fill a form | `fill-form` |
-| Page surgery (merge/split/reorder/rotate) | the dedicated commands |
+Two tiers. **Core** commands work everywhere, on every install. **Enhanced** routes use tools the user may have (LibreOffice, a browser, a PDF rasterizer) — the command finds the tool itself and says which one it used; when the tool is missing it fails with `tool-missing` naming the install command, and you take the fallback. Never locate or invoke those tools yourself.
 
-`create` limits worth knowing: pipe-table cells are single-line only (no `<br>`, no lists inside cells) and styling is minimal (headings, bold/italic/code, tables, images) — for colors or multi-line cells, use the Chrome route above instead of forcing `create`.
+| Goal | Best route (needs) | Fallback (core) |
+|---|---|---|
+| Change text on existing pages, keep styling | `dump-shapes` + `edit-draw` (LibreOffice) | rebuild with `create`; say that styling is lost |
+| Styled document (colors, multi-line table cells) | write styled HTML, then `html <in.html> --out <out.pdf>` (browser) | `create` — minimal styling, single-line table cells; state the limit |
+| Visual check of an output PDF | `render <in.pdf> --out <dir>` → page PNGs (rasterizer) | `read` the text back; say that layout was not checked |
+| Simple monochrome doc from Markdown | `create` | — |
+| Fill a form | `fill-form` | — |
+| Page surgery (merge/split/reorder/rotate) | the dedicated commands | — |
+
+**Tell the user which route produced the file** — every enhanced command's output names it (`rasterizer: pdftoppm (poppler)`, `browser: chromium`, LibreOffice). After any write where layout matters, run `render` on the changed pages and look at them; a text-only read back never catches overflowing lines or broken tables.
+
+`create` limits worth knowing: pipe-table cells are single-line only (no `<br>`, no lists inside cells) and styling is minimal (headings, bold/italic/code, tables, images) — for colors or multi-line cells, use the `html` route above instead of forcing `create`.
 
 ## In-place text editing (needs LibreOffice)
 
 Two commands, always in this order:
 
-## dump-shapes `<file.pdf> [--page N]`
+### dump-shapes `<file.pdf> [--page N]`
 
 JSON: every non-empty text shape as `{page, shape, xywh, text}` (indices are the
 keys `edit-draw` needs; `xywh` is the bounding box). `--page N` filters to one
 page — prefer it on long documents. **Run this before `edit-draw`; no dump, no
 edit.**
 
-## edit-draw `<in.pdf> --out <out.pdf> --map map.json`
+### edit-draw `<in.pdf> --out <out.pdf> --map map.json`
 
 Replace shape text in place, keeping the surrounding layout. The map is a JSON
 array of `{"page": 1, "shape": 4, "text": "New text"}` — page and shape indices
@@ -46,12 +50,30 @@ not a find/replace).
 
 The output keeps the original's fonts and layout; LibreOffice re-flows the edited
 shape only. **Substituted text can overflow its box** (different languages are
-different widths) — after editing, run the visual check below and rebalance the
+different widths) — after editing, `render` the edited pages and rebalance the
 text (shorter phrasing, or split across shapes) rather than shrinking fonts.
 Errors name the failed page/shape; nothing is written unless at least one edit
-applies. Needs LibreOffice installed; the error says so otherwise. Preview
-rendering for the visual check: `qlmanage -t` works on macOS, `pdftoppm` (poppler)
-on Linux — compare the edited pages against the original before handing over.
+applies. Needs LibreOffice installed; the error says so otherwise.
+
+## html `<in.html> --out <out.pdf>`
+
+Print styled HTML to PDF through a headless browser (Chrome, Chromium, or Edge —
+found automatically, `KIMCHI_BROWSER` can point at one). The browser runs with a
+throwaway profile and no network. The output says which browser printed it.
+Write the HTML yourself with full CSS (colors, fonts, multi-line table cells),
+reference local images by relative path, then print. Without a browser, the
+error names the install options — take the `create` fallback and tell the user
+what styling was lost.
+
+## render `<in.pdf> --out <dir> [--pages N-M]`
+
+Visual check: one PNG per (selected) page in `--out`, one path per line on
+stdout, plus a summary naming the rasterizer used (pdftoppm, ghostscript, or
+pymupdf — found automatically). Read the PNGs of the pages you just wrote
+before calling the work done: you are looking for text touching box edges,
+overflowing lines, and colors that die against the background. Without a
+rasterizer, the error names the install options — fall back to `read` and say
+that layout was not checked.
 
 ## read `<file.pdf> [N-M]`
 
@@ -115,9 +137,7 @@ Costs and limits to know before writing:
 - Output is re-parsed before it's written — you can hand it over without a
   re-open, but a quick `read out.pdf 1-2` sanity pass is cheap. For anything
   where layout matters (in-place edits, styled rebuilds), also do a visual
-  check: render the changed pages to images (`qlmanage -t` on macOS,
-  `pdftoppm` on Linux) and compare against the original — a text-only read
-  back never catches overflowing lines or broken tables.
+  check: `render` the changed pages and compare against the original.
 
 ## Error language
 
@@ -132,6 +152,9 @@ Errors are typed (`error [code]: message`, exit 2):
 - `too-large` — over the size cap (default 20 MB; raise via `KIMCHI_DOCUMENT_MAX_MB`).
 - `unsupported-format` — the request is beyond this skill's coverage (charts,
   unencodable text); the message says what to do.
+- `tool-missing` — an enhanced route's tool (LibreOffice, browser, rasterizer)
+  isn't installed. The message names the install command; take the table's
+  fallback and tell the user what was lost.
 
 ## Secure handling
 
