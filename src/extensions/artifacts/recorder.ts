@@ -7,12 +7,12 @@
 //
 // Runs on both surfaces (TUI + ACP): sessions authored anywhere carry
 // rows. ctx.sessionManager.getCwd() is the (possibly cd-navigated)
-// session cwd, mirroring what the ACP server's live path tracks. The
-// ACP replay hydrators only these rows (no re-derivation): sessions
-// recorded before the recorder shipped emit no artifacts on reload.
+// session cwd, mirroring what the ACP server's live path tracks. ACP
+// replay hydrates only these rows (no re-derivation): sessions recorded
+// before the recorder shipped emit no artifacts on reload.
 
 import { extname } from "node:path"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
 import { ARTIFACT_EXTENSIONS, type Artifact, artifactsFromToolCall } from "./detect.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
@@ -36,44 +36,26 @@ const MAX_TURN_RECORDED = 32
 // mirrors the ACP live path's clock-skew allowance.
 const CLOCK_SKEW_MS = 5000
 
-type TurnEndEventShape = {
-	message: {
-		role?: string
-		timestamp?: number
-		content?: Array<{ type: string; id?: string; arguments?: Record<string, unknown> }>
+function turnArtifacts(event: TurnEndEvent, cwd: string): Artifact[] {
+	if (event.message.role !== "assistant") return []
+	const toolCalls = new Map<string, { name: string; arguments: Record<string, unknown> }>()
+	for (const block of event.message.content) {
+		if (block.type === "toolCall") toolCalls.set(block.id, block)
 	}
-	toolResults?: Array<{
-		toolCallId?: string
-		toolName?: string
-		content?: unknown
-		details?: unknown
-		isError?: boolean
-		timestamp?: number
-	}>
-}
-
-function turnArtifacts(event: TurnEndEventShape, cwd: string): Artifact[] {
-	const message = event.message
-	if (message.role !== "assistant" || !message.content) return []
-	const argsByToolCallId = new Map<string, unknown>()
-	for (const block of message.content) {
-		if (block.type === "toolCall" && block.id) argsByToolCallId.set(block.id, block.arguments)
-	}
-	if (argsByToolCallId.size === 0) return []
-	const results = event.toolResults ?? []
+	if (toolCalls.size === 0) return []
+	const results = event.toolResults
 	const timestamps = results.map((r) => r.timestamp).filter((t): t is number => typeof t === "number")
-	const windowStart =
-		(timestamps.length > 0 ? Math.min(...timestamps) : (message.timestamp ?? Date.now())) - CLOCK_SKEW_MS
+	const windowStart = (timestamps.length > 0 ? Math.min(...timestamps) : event.message.timestamp) - CLOCK_SKEW_MS
 	const seen = new Set<string>()
 	const out: Artifact[] = []
 	for (const result of results) {
-		if (!result.toolCallId || argsByToolCallId.get(result.toolCallId) === undefined) continue
-		if (result.isError) continue
+		const toolCall = toolCalls.get(result.toolCallId)
+		if (!toolCall) continue
 		for (const artifact of artifactsFromToolCall(
-			// The message drives tool identity; fall back to the result's.
-			result.toolName ?? "",
-			argsByToolCallId.get(result.toolCallId),
-			{ content: result.content, details: result.details, isError: false },
+			toolCall.name,
+			toolCall.arguments,
+			// artifactsFromToolCall handles errored/partial shapes itself.
+			{ content: result.content, details: result.details, isError: result.isError },
 			cwd,
 			{ windowStart },
 		)) {
@@ -90,7 +72,7 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	pi.on("turn_end", (event, ctx: ExtensionContext) => {
 		let artifacts: Artifact[]
 		try {
-			artifacts = turnArtifacts(event as TurnEndEventShape, ctx.sessionManager.getCwd())
+			artifacts = turnArtifacts(event, ctx.sessionManager.getCwd())
 		} catch {
 			return // Persistence must never break a turn.
 		}
