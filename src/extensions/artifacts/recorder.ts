@@ -11,9 +11,8 @@
 // replay hydrates these rows (never re-derives from output): sessions
 // without rows emit no artifacts on reload.
 
-import { extname } from "node:path"
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent"
-import { ARTIFACT_EXTENSIONS, type Artifact, artifactsFromToolCall } from "./detect.js"
+import { type Artifact, artifactsFromToolCall } from "./detect.js"
 
 export const ARTIFACTS_ENTRY_TYPE = "kimchi-artifacts"
 
