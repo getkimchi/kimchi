@@ -29,11 +29,12 @@
  * re-parsed before landing; --out must differ from every input.
  */
 
-import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { PDFDocument } from "@cantoo/pdf-lib"
+import { type BrowserDeps, htmlToPdf } from "./browser.js"
 import { fillForm, listFields, mergePdfs, reorderPdf, rotatePdf, splitPdf } from "./editors/pdf.js"
 import { extractPdf, pdfInfo } from "./extractors/pdf.js"
 import { MAX_UNITS_PER_CALL, maxFileBytes } from "./limits.js"
@@ -42,6 +43,7 @@ import { DocumentError, isDocumentError } from "./model.js"
 import { sameFile } from "./paths.js"
 import { findPdfFonts, pdfFontSearchDirs } from "./pdf-fonts.js"
 import { type LoDrawDeps, runLoDraw } from "./pdf-lo-draw.js"
+import { defaultRasterizeDeps, type RasterizeDeps, rasterizePdf } from "./pptx-render.js"
 import { renderDocument } from "./render.js"
 import { PAGE_SIZES, renderBlocksToPdf } from "./writers/pdf.js"
 
@@ -54,6 +56,10 @@ export interface PdfCliIo {
 	fonts?: { regular: Uint8Array; bold: Uint8Array; mono: Uint8Array }
 	/** LibreOffice runner override for tests (real soffice otherwise). */
 	loDraw?: LoDrawDeps
+	/** Rasterizer chain override for tests (real which/run otherwise). */
+	rasterize?: RasterizeDeps
+	/** Browser override for tests (real Chrome/Chromium/Edge otherwise). */
+	browser?: BrowserDeps
 }
 
 const USAGE = `usage: pdf.mjs <command> [args]
@@ -70,7 +76,9 @@ commands:
   rotate <in.pdf> --out <out.pdf> --angle 90|180|270 [--pages N-M]
   dump-shapes <file.pdf> [--page N]              text shapes as JSON (LibreOffice)
   edit-draw <in.pdf> --out <out.pdf> --map <map.json>
-                                                 replace shape text (LibreOffice)`
+                                                 replace shape text (LibreOffice)
+  render <in.pdf> --out <dir> [--pages N-M]       page PNGs for visual check
+  html <in.html> --out <out.pdf>                  styled HTML -> PDF (browser)`
 
 function readBytes(readFile: NonNullable<PdfCliIo["readFile"]>, path: string): Uint8Array {
 	try {
@@ -456,6 +464,67 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 					io.stdout(
 						`edited ${input} -> ${out} (${applied} edit${applied === 1 ? "" : "s"} applied of ${edits.length} mapped)`,
 					)
+				} finally {
+					try {
+						unlinkSync(stagedOut)
+					} catch {
+						// best-effort temp cleanup
+					}
+				}
+				return 0
+			}
+			case "render": {
+				const [input, ...flags] = rest
+				if (!input)
+					throw new DocumentError("corrupt", "render needs: pdf.mjs render <in.pdf> --out <dir> [--pages N-M]", "pdf")
+				const out = flagValue(flags, "--out")
+				if (!out) throw new DocumentError("corrupt", "render needs --out <dir> for the page PNGs", "pdf")
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				const pagesSpec = flagValue(flags, "--pages")
+				let pages: { start: number; end: number } | undefined
+				if (pagesSpec !== undefined) {
+					const list = parsePageList(pagesSpec, (await pdfInfo(data)).pageCount)
+					pages = { start: list[0], end: list[list.length - 1] }
+				}
+				try {
+					mkdirSync(out, { recursive: true })
+				} catch (err) {
+					throw new DocumentError("corrupt", `Cannot create output directory ${out}: ${(err as Error).message}`, "pdf")
+				}
+				const { images, rasterizer } = rasterizePdf(io.rasterize ?? defaultRasterizeDeps(), resolve(input), {
+					outDir: resolve(out),
+					pages,
+					format: "pdf",
+				})
+				io.stdout(
+					`rendered ${images.length} page${images.length === 1 ? "" : "s"} of ${input} -> ${out} (rasterizer: ${rasterizer})`,
+				)
+				for (const img of images) io.stdout(img)
+				return 0
+			}
+			case "html": {
+				const [input, ...flags] = rest
+				if (!input) throw new DocumentError("corrupt", "html needs: pdf.mjs html <in.html> --out <out.pdf>", "pdf")
+				const out = flagValue(flags, "--out")
+				if (!out) throw new DocumentError("corrupt", "html needs --out <out.pdf>", "pdf")
+				if (sameFile(out, input)) {
+					throw new DocumentError("corrupt", "--out must differ from the input — html never writes in place", "pdf")
+				}
+				if (!/\.html?$/i.test(input))
+					throw new DocumentError("corrupt", `input path must end in .html: ${input}`, "pdf")
+				refuseNonPdf(out)
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				// The browser writes to a staged path first: verify before anything
+				// exists at --out, then land atomically like every other command.
+				const stagedOut = join(tmpdir(), `pdf-html-${Date.now()}.pdf`)
+				try {
+					const browser = htmlToPdf(resolve(input), stagedOut, io.browser)
+					const printed = readBytes(readFile, stagedOut)
+					await verifyOutput(printed, out)
+					writeFile(out, printed)
+					io.stdout(`converted ${input} -> ${out} (browser: ${browser.label})`)
 				} finally {
 					try {
 						unlinkSync(stagedOut)
