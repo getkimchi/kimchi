@@ -56,8 +56,9 @@ registration). Atomic 0600 writes; existing native keys are never modified.
 - Any failure degrades to the pre-existing behavior: the server 401s on first
   use and the native engine starts its OAuth flow. A bad import can never be
   worse than a re-login.
-- The post-migration "sign in again" notice only lists servers that did **not**
-  end up with a native grant.
+- Servers without a native grant surface at runtime through pi's own
+  "MCP servers need attention" banner (`<name>: needs sign-in — run /mcp`),
+  which reflects live connect state.
 
 ## Safety properties
 
