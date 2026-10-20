@@ -1,7 +1,8 @@
-// Generated-artifact detection for ACP sessions.
+// Generated-artifact detection (live turns, any surface).
 //
 // Detects user-openable files (slides, spreadsheets, PDFs, …) the agent
-// produced, so clients can render an "Open <name>" action. Detection is
+// produced, so clients can render an "Open <name>" action. Live only:
+// replayed sessions replay recorded rows, they never re-run this module. Detection is
 // conservative: write/edit paths, tool-declared `details.artifacts`
 // (submit_plan is the first producer), and bash/powershell output are
 // inspected; candidates must match the extension allowlist, and live
@@ -271,7 +272,7 @@ function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artif
 // One trailing sentence period is allowed (\.?, stripped from the token)
 // so "Wrote report.md." matches, while (?![\w.]) still rejects
 // report.md.bak. Tokens containing "://" (URLs) are rejected before
-// resolution. artifacts.test.ts keeps this extension list in sync with
+// resolution. detect.test.ts keeps this extension list in sync with
 // ARTIFACT_EXTENSIONS in both directions. The prefix requires >=1 char so
 // bare extension mentions ("wrote a .md file") never become candidates —
 // `.md` alone would resolve to <cwd>/.md. Also excluded: commas (data rows

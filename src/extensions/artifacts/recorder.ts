@@ -8,8 +8,8 @@
 // Runs on both surfaces (TUI + ACP): sessions authored anywhere carry
 // rows. ctx.sessionManager.getCwd() is the (possibly cd-navigated)
 // session cwd, mirroring what the ACP server's live path tracks. The
-// ACP replay hydrator prefers these rows and falls back to re-derivation
-// for sessions recorded by older binaries.
+// ACP replay hydrators only these rows (no re-derivation): sessions
+// recorded before the recorder shipped emit no artifacts on reload.
 
 import { extname } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
