@@ -200,7 +200,7 @@ describe("startupUpdateExtension", () => {
 			expect(setStatus).not.toHaveBeenCalled()
 		})
 
-		it("falls back to notify in ACP mode, which does not render custom entries", async () => {
+		it("shows no notice and leaves the flag unmarked in ACP mode — the client owns harness updates there", async () => {
 			isAcpMode.current = true
 			getVersionMock.mockReturnValue("v0.0.23")
 			loadAutoUpdateSettingMock.mockReturnValue(true)
@@ -213,11 +213,15 @@ describe("startupUpdateExtension", () => {
 			const { ctx, setStatus, notify } = makeCtx({ hasUI: true })
 			await handler({}, ctx)
 
-			expect(notify).toHaveBeenCalledOnce()
-			expect(notify).toHaveBeenCalledWith(AUTO_UPDATE_NOTICE, "info")
+			// Launch auto-update never runs in ACP (Studio updates the
+			// harness), so the "updates on next launch" notice would be false.
+			// The flag must stay unset so the notice remains pending for the
+			// user's first TUI session, where it is accurate.
+			expect(notify).not.toHaveBeenCalled()
 			expect(appendEntry).not.toHaveBeenCalled()
-			expect(markAutoUpdateNoticeShownMock).toHaveBeenCalledOnce()
+			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
 			expect(setStatus).not.toHaveBeenCalled()
+			expect(checkForUpdateMock).not.toHaveBeenCalled()
 		})
 
 		it("does not notify when autoUpdate is enabled and notice already shown", async () => {

@@ -296,7 +296,9 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		// Auto-update is on by default, so a user upgrading from an opt-in
 		// build would otherwise be updated before ever hearing about it. Wait
 		// until a session has shown the one-time notice (startup-update.ts);
-		// the first launch after that applies updates.
+		// the first launch after that applies updates. Only TUI sessions can
+		// show that notice — protocol-mode launches return above before
+		// reaching this gate, and ACP clients own harness updates there.
 		if (!loadAutoUpdateNoticeShown()) return
 		if (opts.signal?.aborted) return
 
