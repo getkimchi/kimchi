@@ -1,6 +1,7 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { REQUEST_ID_HEADER } from "../http/instrument-fetch.js"
 import { isAutoRoutedModel } from "./auto-model/constants.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import {
@@ -11,8 +12,7 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-
-import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
+import { pinRequestContext, trackProviderRequest } from "./request-identity/index.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
 
@@ -89,13 +89,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 				return
 			}
 
-			const workContext = pinWorkContext(ctx)
-			let workId: string | undefined
-			try {
-				workId = getWorkId(workContext)
-			} catch (error) {
-				warnWorkAttribution(ctx, error)
-			}
+			const requestContext = pinRequestContext(ctx)
 			// Get API key and headers
 			const auth = await ctx.modelRegistry?.getApiKeyAndHeaders(visionModel)
 			if (!auth?.ok || !auth?.apiKey) {
@@ -111,14 +105,7 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 			let processedCount = 0
 			const errors: string[] = []
 			for (const [hash, img] of images) {
-				const headers = { ...auth.headers }
-				if (workId) {
-					try {
-						headers["X-Request-Id"] = recordProviderRequest(workContext, visionModel, workId).requestId
-					} catch (error) {
-						warnWorkAttribution(ctx, error)
-					}
-				}
+				const headers = { ...auth.headers, [REQUEST_ID_HEADER]: trackProviderRequest(requestContext) }
 				try {
 					const response = await complete(
 						visionModel,

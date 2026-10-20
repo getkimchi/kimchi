@@ -1,13 +1,14 @@
-/** The checked-out branch and its PR or MR, shown before a work records a commit. */
+/** The checked-out branch and its PR or MR, shown in the footer. */
 
-import { object } from "../work-attribution/summary.js"
 import { api, command, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
-import { LookupError, label, pullRequest } from "./provider-records.js"
-import { PASS_BUDGET_MS, type WorkPullRequest } from "./pull-requests.js"
+import { isRecord, LookupError, label, type PullRequestLink, pullRequest } from "./provider-records.js"
+
+/** One branch lookup, including repository identity, gets at most this long. */
+const LOOKUP_BUDGET_MS = 10_000
 
 export interface BranchPullRequest {
 	branch: string
-	pullRequest?: WorkPullRequest
+	pullRequest?: PullRequestLink
 }
 
 export async function currentBranch(cwd: string, signal: AbortSignal, deadline: number): Promise<string | undefined> {
@@ -20,15 +21,15 @@ export async function currentBranch(cwd: string, signal: AbortSignal, deadline: 
 	)
 }
 
-/** A branch status check has no work identity, ledger, summary, or attribution side effects. */
+/** A read-only lookup of the checked-out branch's PR or MR; it records nothing. */
 export async function lookupBranchPullRequest(
 	cwd: string,
 	signal: AbortSignal,
 ): Promise<BranchPullRequest | undefined> {
-	const deadline = Date.now() + PASS_BUDGET_MS
+	const deadline = Date.now() + LOOKUP_BUDGET_MS
 	const branch = await currentBranch(cwd, signal, deadline)
 	if (!branch) return undefined
-	let pull: WorkPullRequest | undefined
+	let pull: PullRequestLink | undefined
 	let failure: unknown
 	try {
 		const remote = await repositoryIdentity(cwd, signal, deadline, new Map(), branch)
@@ -61,19 +62,19 @@ export async function lookupBranchPullRequest(
 		const value =
 			remote.provider === "gitlab"
 				? values.find(
-						(value) => object(value) && value.source_project_id === remote.id && value.source_branch === branch,
+						(value) => isRecord(value) && value.source_project_id === remote.id && value.source_branch === branch,
 					)
 				: values[0]
 		if (value !== undefined) {
-			const head = object(value)
+			const head = isRecord(value)
 				? remote.provider === "gitlab"
 					? value.source_branch
-					: object(value.head)
+					: isRecord(value.head)
 						? value.head.ref
 						: undefined
 				: undefined
 			if (head !== branch) throw new LookupError(`${label(remote)} returned a pull request for a different branch.`)
-			pull = pullRequest(value, remote, new Date().toISOString())
+			pull = pullRequest(value, remote)
 		}
 	} catch (error) {
 		failure = error

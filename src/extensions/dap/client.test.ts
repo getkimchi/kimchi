@@ -20,7 +20,7 @@ import type { BunProcess } from "../lsp/types.js"
 import { DapClientRegistry, logSwallow, sendRequest } from "./client.js"
 import type { DapAdapterConfig, DapClient } from "./types.js"
 
-// Mock debuglog the same way work-attribution's tests do (#1362): capture the
+// Mock debuglog (#1362): capture the
 // debug logger so routing can be asserted, keeping node:util's other exports.
 const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))
 vi.mock("node:util", async (importOriginal) => ({

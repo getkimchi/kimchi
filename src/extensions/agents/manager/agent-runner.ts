@@ -30,16 +30,10 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import requestIdentityExtension from "../../request-identity/index.js"
 import requestTimingExtension from "../../request-timing.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
-import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
-import {
-	createWorkAttributionExtension,
-	getWorkId,
-	getWorkSegment,
-	tryWorkAttribution,
-} from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
@@ -373,8 +367,6 @@ async function runAgentInner(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	const inheritedWorkId = tryWorkAttribution(() => getWorkId(ctx))
-	const inheritedSegment = getWorkSegment(ctx)
 	const config = getConfig(type)
 	const agentConfig = getAgentConfig(type)
 
@@ -498,9 +490,7 @@ ${skillLines}`
 		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readEffectiveTelemetryConfig()),
-		...(isResourceEnabled(COST_PER_PR_RESOURCE_ID)
-			? [createWorkAttributionExtension(inheritedWorkId ?? null, inheritedSegment)]
-			: []),
+		requestIdentityExtension,
 		requestTimingExtension,
 		...autoExtensionFactories,
 		bashExtension,

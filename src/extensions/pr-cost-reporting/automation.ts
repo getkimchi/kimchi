@@ -14,12 +14,8 @@ export const CI_VARIABLES = [
 
 const disabled = (value: string | undefined) => ["0", "false", "off", "no"].includes(value?.trim().toLowerCase() ?? "")
 
-/**
- * Why this process must not upload PR costs, or undefined when it may. CI, one-shot print or JSON runs
- * and benchmarks (the only callers of the infrastructure breaker) would report noise. Interactive TUI,
- * ACP and RPC sessions still report. Local attribution runs either way.
- */
-export function uploadSkipReason(mode: ExtensionContext["mode"], env = process.env): string | undefined {
+/** Why this process must not report PR costs, or undefined when it may: CI, print, JSON and benchmark runs are noise. */
+export function reportingSkipReason(mode: ExtensionContext["mode"] | undefined, env = process.env): string | undefined {
 	if (disabled(env.KIMCHI_PR_COST_REPORTING)) return "KIMCHI_PR_COST_REPORTING=0"
 	if (mode === "print") return "non-interactive print mode"
 	if (mode === "json") return "non-interactive JSON mode"

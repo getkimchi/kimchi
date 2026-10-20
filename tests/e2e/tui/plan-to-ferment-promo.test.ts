@@ -277,7 +277,8 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			})
 			trace.step("execute selected and neutral approved-plan run started")
 
-			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
+			const executionRequest = await waitForChatRequest(fixture.fake.requests, 2)
+			const snapshot = fermentV2Snapshot(executionRequest)
 			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "streaming-parser.md")
 			expect(snapshot).toMatchObject({
 				objective: expect.stringContaining(planText),
@@ -288,18 +289,12 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			const workId = /^<!-- kimchi-work-id: ([0-9a-f-]{36}) -->\n/.exec(savedPlan)?.[1]
 			expect(workId).toBeDefined()
 			expect(savedPlan).toBe(`<!-- kimchi-work-id: ${workId} -->\n${planText}`)
-			const ledgerDir = join(fixture.agentDir, "work-attribution")
-			const requests = readdirSync(ledgerDir)
-				.flatMap((file) =>
-					readFileSync(join(ledgerDir, file), "utf8")
-						.trim()
-						.split("\n")
-						.map((line) => JSON.parse(line)),
-				)
-				.filter((record) => record.type === "request")
-			expect(requests.length).toBeGreaterThanOrEqual(2)
-			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
-			trace.step("plan approval retained planning work identity automatically, without work commands")
+			const retainedDir = join(fixture.agentDir, "work", String(workId), "plans")
+			const [retained] = readdirSync(retainedDir)
+			expect(readFileSync(join(retainedDir, retained), "utf-8")).toBe(savedPlan)
+			// The planning conversation names the retained copy, whose path carries the work ID the gateway links.
+			expect(JSON.stringify(executionRequest.body)).toContain(join(retainedDir, retained))
+			trace.step("the saved plan names its work in the header and the retained path")
 			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
 			trace.step("model request carried the approved Markdown and the terminal stayed neutral")

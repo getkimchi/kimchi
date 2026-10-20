@@ -23,7 +23,6 @@
 import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
-import { createWorkCommitTrackingOperations } from "../work-attribution/commits.js"
 import { createBashRenderers } from "./bash-display.js"
 import {
 	createProcessRegistry,
@@ -116,7 +115,6 @@ export function createBackgroundBashToolDefinition(
 		params: BackgroundBashInput,
 		signal: AbortSignal | undefined,
 		onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
-		ctx: Parameters<ToolDefinition["execute"]>[4],
 	): Promise<{
 		content: { type: "text"; text: string }[]
 		details: BackgroundBashToolDetails | undefined
@@ -124,17 +122,11 @@ export function createBackgroundBashToolDefinition(
 		const { command } = params
 		const { registry, coordinator } = state
 
-		const handle = registry.spawn(
-			options?.operations ?? createWorkCommitTrackingOperations(ctx, toolCallId, defaultLocalOps(options)),
-			command,
-			cwd,
-			undefined,
-			{
-				limitSeconds: state.limitSeconds,
-				toolCallId,
-				description: params.description,
-			},
-		)
+		const handle = registry.spawn(options?.operations ?? defaultLocalOps(options), command, cwd, undefined, {
+			limitSeconds: state.limitSeconds,
+			toolCallId,
+			description: params.description,
+		})
 		coordinator.handleSpawned(handle)
 
 		// Display updates never advance the model's delivered-output cursor.

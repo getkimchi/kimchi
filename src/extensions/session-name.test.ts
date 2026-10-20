@@ -2,7 +2,7 @@
  * Unit tests for session-name extension
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -14,9 +14,6 @@ import sessionNameExtension, {
 	SESSION_NAME_MODEL,
 	suggestSessionName,
 } from "./session-name.js"
-
-import { flushWorkSummaries } from "./work-attribution/summary.js"
-import { getWorkId, setWorkId } from "./work-attribution.js"
 
 const { mockGetRetrySettings, mockLoadConfig, retryDefaults } = vi.hoisted(() => ({
 	mockGetRetrySettings: vi.fn(),
@@ -57,10 +54,10 @@ vi.mock("node:path", async () => {
 	return { ...actual, basename: () => "my-project" }
 })
 
-let attributionDir: string
+let agentDir: string
 beforeEach(() => {
-	attributionDir = mkdtempSync(join(tmpdir(), "name-attribution-"))
-	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	agentDir = mkdtempSync(join(tmpdir(), "name-agent-"))
+	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 	mockGetRetrySettings.mockReset()
 	mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 1, baseDelayMs: 2000 })
 	mockLoadConfig.mockReset()
@@ -70,12 +67,11 @@ beforeEach(() => {
 	})
 })
 
-afterEach(async () => {
+afterEach(() => {
 	vi.useRealTimers()
-	await flushWorkSummaries()
 	vi.unstubAllGlobals()
 	vi.unstubAllEnvs()
-	rmSync(attributionDir, { recursive: true, force: true })
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 const createMockCtx = (entries: unknown[]) =>
@@ -197,33 +193,14 @@ describe("extractFirstUserMessage", () => {
 })
 
 describe("suggestSessionName", () => {
-	it("persists each naming retry before dispatch and pins original work and session", async () => {
+	it("gives each naming attempt its own request ID", async () => {
 		vi.useFakeTimers()
 		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
-		let sessionId = "original"
-		const ctx = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => sessionId } })
-		const workId = getWorkId(ctx)
+		const ctx = createContext({ cwd: agentDir, sessionManager: { getSessionId: () => "original" } })
 		const requestIds: string[] = []
 		const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-			const rows = readFileSync(join(attributionDir, "work-attribution", "original.jsonl"), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line))
-			const requestId = new Headers(init?.headers).get("X-Request-Id")
-			expect(requestId).toBeTruthy()
-			expect(rows.at(-1)).toMatchObject({
-				type: "request",
-				requestId,
-				workId,
-				sessionId: "original",
-				model: SESSION_NAME_MODEL,
-			})
-			requestIds.push(String(requestId))
-			if (requestIds.length === 1) {
-				sessionId = "new-session"
-				setWorkId(ctx)
-				return new Response("retry", { status: 500 })
-			}
+			requestIds.push(String(new Headers(init?.headers).get("X-Request-Id")))
+			if (requestIds.length === 1) return new Response("retry", { status: 500 })
 			return new Response(JSON.stringify({ choices: [{ message: { content: "Name retained" } }] }), { status: 200 })
 		})
 		vi.stubGlobal("fetch", fetchMock)
@@ -231,26 +208,8 @@ describe("suggestSessionName", () => {
 		await vi.runAllTimersAsync()
 		expect(await pending).toBe("Name retained")
 		expect(fetchMock).toHaveBeenCalledTimes(2)
+		for (const id of requestIds) expect(id).toMatch(/^[0-9a-f-]{36}$/)
 		expect(new Set(requestIds).size).toBe(2)
-	})
-
-	it.each(["identity", "request"])("keeps naming available when %s persistence fails", async (stage) => {
-		mockLoadConfig.mockReturnValue({ apiKey: "test-key", llmEndpoint: "https://llm.test/openai/v1" })
-		const ctx = createContext({ cwd: attributionDir })
-		if (stage === "request") {
-			getWorkId(ctx)
-			await flushWorkSummaries()
-		}
-		const path = join(attributionDir, "work-attribution")
-		rmSync(path, { recursive: true, force: true })
-		writeFileSync(path, "not a directory")
-		const fetchMock = vi.fn(
-			async () => new Response(JSON.stringify({ choices: [{ message: { content: "Still named" } }] })),
-		)
-		vi.stubGlobal("fetch", fetchMock)
-		expect(await suggestSessionName(ctx, "Task", true)).toBe("Still named")
-		expect(fetchMock).toHaveBeenCalledOnce()
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Work attribution unavailable"), "warning")
 	})
 
 	it("should fall back to basename when no hint and no user messages", async () => {

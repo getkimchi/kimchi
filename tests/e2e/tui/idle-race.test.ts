@@ -2,7 +2,7 @@
 //
 // kimchi-workflows steps send messages with { triggerTurn: true } and watch for
 // settlement via waitForIdle. Extensions legitimately await async work in
-// before_agent_start (memory's turn-1 digest, work-attribution's scope capture);
+// before_agent_start (memory's turn-1 digest, for example);
 // while that work is pending the session must not report idle, or idle watchers
 // misread the turn as failed ("became idle without the run settling").
 //

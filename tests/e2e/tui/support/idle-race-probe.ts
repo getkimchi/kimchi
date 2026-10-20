@@ -1,8 +1,8 @@
 // Regression probe for the before_agent_start idle race (kimchi PR: fix/before-agent-start-idle).
 //
 // Reproduces the invariant the kimchi-workflows bridge depends on: while an
-// async before_agent_start handler is pending (memory's turn-1 digest,
-// work-attribution's scope capture), the session must not report idle. The
+// async before_agent_start handler is pending (memory's turn-1 digest, for
+// example), the session must not report idle. The
 // bridge's watcher resolves waitForIdle during that window on unfixed pi and
 // fails the step ("became idle without the run settling").
 //

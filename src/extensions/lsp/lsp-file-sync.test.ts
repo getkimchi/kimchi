@@ -73,7 +73,7 @@ vi.mock("../steer-marker.js", () => ({
 	markHarnessSteer: vi.fn((content: string) => content),
 }))
 
-// Mock debuglog the same way work-attribution's tests do (#1362): capture the
+// Mock debuglog (#1362): capture the
 // debug logger so tests can assert routing, while keeping node:util's other
 // exports intact.
 const { debug } = vi.hoisted(() => ({ debug: vi.fn() }))

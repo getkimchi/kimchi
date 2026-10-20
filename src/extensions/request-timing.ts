@@ -13,13 +13,13 @@
  * diagnostics (status, duration, retries, errors) are visible.
  */
 
-import type { BeforeProviderHeadersEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getActiveRequest } from "./work-attribution.js"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getActiveRequestId } from "./request-identity/index.js"
 
 /** Shape of the `data` field on a `request_diagnostics` custom entry. */
 export interface RequestDiagnosticsData {
+	/** The request's X-Request-Id, when Kimchi sent one */
 	requestId?: string
-	workId?: string
 	/** ISO timestamp when the request was sent */
 	requestStartedAt: string
 	/** ISO timestamp when the response was received */
@@ -74,7 +74,8 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 	let lastRequestTime: number | undefined
 	let retryCount = 0
 	let pendingDiagnostics: RequestDiagnosticsData | undefined
-	let requestHeaders: BeforeProviderHeadersEvent["headers"] | undefined
+	/** Set once the current request's provider headers were built, so its ID is the session's active one. */
+	let providerHeadersSeen = false
 
 	const flushPendingDiagnostics = (error?: string) => {
 		if (!pendingDiagnostics) return
@@ -91,11 +92,10 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		retryCount = 0
 	})
 
-	pi.on("before_provider_headers", async (event) => {
+	pi.on("before_provider_headers", async () => {
 		flushPendingDiagnostics()
 		lastRequestTime = Date.now()
-		// The runner shares this object across handlers; attribution may run after us.
-		requestHeaders = event.headers
+		providerHeadersSeen = true
 	})
 
 	pi.on("before_provider_request", async () => {
@@ -118,10 +118,9 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 			retryCount++
 		}
 
-		const activeRequest = requestHeaders ? getActiveRequest(ctx) : undefined
-		const identity = activeRequest?.requestId === requestHeaders?.["X-Request-Id"] ? activeRequest : undefined
+		const requestId = providerHeadersSeen ? getActiveRequestId(ctx) : undefined
 		pendingDiagnostics = {
-			...identity,
+			...(requestId ? { requestId } : {}),
 			requestStartedAt: new Date(lastRequestTime).toISOString(),
 			requestCompletedAt: new Date(completedAt).toISOString(),
 			durationMs,
@@ -131,7 +130,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		}
 
 		lastRequestTime = undefined
-		requestHeaders = undefined
+		providerHeadersSeen = false
 	})
 
 	// Flush pending diagnostics once the assistant message is finalized so
@@ -140,7 +139,7 @@ export default function requestTimingExtension(pi: ExtensionAPI): void {
 		const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string }
 		if (msg?.role !== "assistant") return
 		lastRequestTime = undefined
-		requestHeaders = undefined
+		providerHeadersSeen = false
 
 		const error = msg.stopReason === "error" && msg.errorMessage ? msg.errorMessage : undefined
 		flushPendingDiagnostics(error)
