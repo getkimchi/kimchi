@@ -7,10 +7,10 @@ disables-skills: pdf
 
 # pdf
 
-All commands run the bundled runtime. Replace `<skill>` with this skill's own directory (e.g. `<kimchi-data>/extensions/skills/pdf`).
-- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill>/scripts/pdf.mjs <command> ...`
+All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
+- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/pdf.mjs <command> ...`
 - On Windows/Git Bash the same `BUN_BE_BUN=1 kimchi ...` prefix works.
-- Fallback if `kimchi` is not on PATH and Node is: `node <skill>/scripts/pdf.mjs ...`
+- Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/pdf.mjs ...`
 
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
 
