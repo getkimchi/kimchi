@@ -54,6 +54,30 @@ describe("document skills under the compiled binary", () => {
 		expect(readFileSync(join(workDir, "e.pptx"))).toEqual(original)
 	})
 
+	it("pdf.mjs: dump-shapes/edit-draw run the binary and degrade to a typed LibreOffice error", () => {
+		// LibreOffice is optional (like pptx render): CI boxes have none, dev
+		// machines may. Either the command succeeds (LO present, full loop) or
+		// it fails as tool-missing naming the fix — never a crash.
+		writeFileSync(join(workDir, "lo.md"), "# LO Edit Target\n\nEditable line.\n")
+		expect(runSkillScript({ workDir, cli: "pdf", args: ["create", "lo.pdf", "--content", "lo.md"] }).status).toBe(0)
+		const dump = runSkillScript({ workDir, cli: "pdf", args: ["dump-shapes", "lo.pdf"] })
+		if (dump.status === 0) {
+			const parsed = JSON.parse(dump.stdout)
+			expect(Array.isArray(parsed.shapes)).toBe(true)
+			const mapPath = join(workDir, "map.json")
+			writeFileSync(mapPath, JSON.stringify([{ page: 1, shape: 0, text: "edited" }]))
+			const edit = runSkillScript({
+				workDir,
+				cli: "pdf",
+				args: ["edit-draw", "lo.pdf", "--out", "edited.pdf", "--map", mapPath],
+			})
+			expect(edit.status).toBe(0)
+		} else {
+			expect(dump.status).toBe(2)
+			expect(dump.stderr).toContain("LibreOffice")
+		}
+	}, 60000)
+
 	it("pdf.mjs: create (unicode) → read → info → split → merge → reorder → rotate", () => {
 		writeFileSync(
 			join(workDir, "doc.md"),

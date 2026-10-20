@@ -182,6 +182,12 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 			stdio: "inherit",
 		})
 		cpSync(stagedOut, pdfCliDest)
+		// The LO-edit macro ships beside the CLI: the CLI stages it into a
+		// throwaway LibreOffice profile at run time.
+		cpSync(
+			join(projectRoot, "resources", "skills", "pdf", "scripts", "lodraw_edit.py"),
+			join(dirname(pdfCliDest), "lodraw_edit.py"),
+		)
 	} finally {
 		try {
 			rmSync(pdfStaging, { recursive: true, force: true })
