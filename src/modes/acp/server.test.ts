@@ -5979,6 +5979,47 @@ describe("generated artifacts (live turns)", () => {
 		})
 	})
 
+	// Text in message A, then a terminal tool-call-only message B: the
+	// artifact attaches to A's block, whose attribution may be absent from
+	// the emitted meta map — the noteTextBlock snapshot keeps the model
+	// fields on the artifact.
+	it("keeps model fields when the last text block predates a tool-only terminal message", async () => {
+		const target = join(tmpDir, "plan.md")
+		writeFileSync(target, "md")
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitDelta("text_delta", 0, "Here is the plan.")
+			fake.emit(assistantMessageEnd("Here is the plan."))
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-term",
+				toolName: "write",
+				args: { path: target, content: "md" },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-term",
+				toolName: "write",
+				result: { content: [{ type: "text", text: "done" }] },
+				isError: false,
+			})
+			fake.emit(
+				assistantMessageEnd("", [
+					{ type: "toolCall", id: "tc-term", name: "write", arguments: { path: target, content: "md" } },
+				]),
+			)
+			fake.emit(agentEnd())
+		}
+
+		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
+		expect(res.stopReason).toBe("end_turn")
+		const chunks = artifactChunks()
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0].meta).toMatchObject({
+			modelId: expect.stringContaining("claude"),
+		})
+	})
+
 	// A turn whose LAST content block is thinking must not see a
 	// resource_link chunk attached to the thinking block id — kind-keyed
 	// clients would render a spurious empty agent message. The link attaches

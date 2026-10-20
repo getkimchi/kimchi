@@ -56,8 +56,11 @@ export function buildArtifactLinkChunks(opts: {
 	messageId: string
 	artifacts: Artifact[]
 	seenModelMeta?: Map<string, ModelAttribution>
+	/** Snapshot from noteTextBlock; used when the meta map has no entry. */
+	fallbackAttribution?: ModelAttribution
 }): SessionUpdate[] {
-	const attribution = opts.seenModelMeta?.get(opts.messageId)
+	// Prefer the map: it also carries mid-stream corrections (responseModel).
+	const attribution = opts.seenModelMeta?.get(opts.messageId) ?? opts.fallbackAttribution
 	return opts.artifacts.map((artifact) => ({
 		sessionUpdate: "agent_message_chunk",
 		content: {
@@ -91,14 +94,22 @@ export class TurnArtifactBuffer {
 	private readonly artifacts = new Map<string, Artifact>()
 	private readonly sniffedKeys: string[] = []
 	private lastBlockId: string | undefined
+	private lastBlockMeta: ModelAttribution | undefined
 
 	get size(): number {
 		return this.artifacts.size
 	}
 
-	/** Register a text block id as the attachment candidate. */
-	noteTextBlock(messageId: string): void {
+	/**
+	 * Register a text block id as the attachment candidate; `meta` is the
+	 * block's metadata relayed verbatim to flush — a fallback for blocks
+	 * missing from the emitted meta map at flush time (e.g. a terminal
+	 * tool-call-only message followed the text block). The buffer never
+	 * reads it; interpretation lives in the chunk builder.
+	 */
+	noteTextBlock(messageId: string, meta?: ModelAttribution): void {
 		this.lastBlockId = messageId
+		this.lastBlockMeta = meta
 	}
 
 	/**
@@ -150,9 +161,11 @@ export class TurnArtifactBuffer {
 	flush(seenModelMeta?: Map<string, ModelAttribution>, opts?: { verifyExists?: boolean }): SessionUpdate[] {
 		let artifacts = [...this.artifacts.values()]
 		const messageId = this.lastBlockId
+		const fallback = this.lastBlockMeta
 		this.artifacts.clear()
 		this.sniffedKeys.length = 0
 		this.lastBlockId = undefined
+		this.lastBlockMeta = undefined
 		if (artifacts.length === 0 || messageId === undefined) return []
 		if (opts?.verifyExists !== false) {
 			artifacts = artifacts.filter((a) => {
@@ -164,6 +177,11 @@ export class TurnArtifactBuffer {
 			})
 			if (artifacts.length === 0) return []
 		}
-		return buildArtifactLinkChunks({ messageId, artifacts: disambiguateNames(artifacts), seenModelMeta })
+		return buildArtifactLinkChunks({
+			messageId,
+			artifacts: disambiguateNames(artifacts),
+			seenModelMeta,
+			fallbackAttribution: fallback,
+		})
 	}
 }

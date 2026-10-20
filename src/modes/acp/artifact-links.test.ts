@@ -135,6 +135,27 @@ describe("TurnArtifactBuffer", () => {
 		expect(names).not.toContain("f0.pdf") // oldest evicted
 	})
 
+	it("falls back to the noteTextBlock attribution snapshot when the meta map lacks the block", () => {
+		const target = join(tmpDir, "out.pdf")
+		writeFileSync(target, "pdf")
+		const buffer = new TurnArtifactBuffer()
+		buffer.collectFromToolCall(writeCall(target))
+		buffer.noteTextBlock("km.1", { modelId: "kimi-k3", requestedModelId: "auto" })
+		const chunks = buffer.flush(new Map()) // block never entered the emitted map
+		expect(chunks[0]._meta).toMatchObject({ "kimchi.dev": { type: "artifact", modelId: "kimi-k3" } })
+	})
+
+	it("prefers the meta map over the snapshot (map carries mid-stream corrections)", () => {
+		const target = join(tmpDir, "out.pdf")
+		writeFileSync(target, "pdf")
+		const buffer = new TurnArtifactBuffer()
+		buffer.collectFromToolCall(writeCall(target))
+		buffer.noteTextBlock("km.1", { modelId: "stale", requestedModelId: "auto" })
+		const seen = new Map([["km.1", { modelId: "corrected", requestedModelId: "auto" }]])
+		const chunks = buffer.flush(seen)
+		expect(chunks[0]._meta).toMatchObject({ "kimchi.dev": { modelId: "corrected" } })
+	})
+
 	it("evicts only sniffed entries (write/edit artifacts stay past the cap)", () => {
 		const buffer = new TurnArtifactBuffer()
 		const written = join(tmpDir, "written.md")

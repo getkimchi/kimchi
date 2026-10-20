@@ -1438,7 +1438,10 @@ export class KimchiAcpAgent implements Agent {
 					// Thinking ids are never registered: a chunk on one would
 					// render as an empty agent message on kind-keyed clients.
 					if (ame.type === "text_delta") {
-						turn.artifactBuffer.noteTextBlock(messageId)
+						turn.artifactBuffer.noteTextBlock(
+							messageId,
+							event.message.role === "assistant" ? modelAttributionFrom(event.message) : undefined,
+						)
 					}
 					// modelAttributionFrom reads the partial assistant message — the
 					// same best-known tuple the auto-model extension learns from — so
@@ -1608,7 +1611,7 @@ export class KimchiAcpAgent implements Agent {
 							entry.contentIndexToBlockId.set(index, messageId)
 						}
 						// Text blocks only reach here (filtered above).
-						turn.artifactBuffer.noteTextBlock(messageId)
+						turn.artifactBuffer.noteTextBlock(messageId, modelAttributionFrom(msg))
 						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
 						this.send({
 							sessionId,
@@ -1861,7 +1864,9 @@ export class KimchiAcpAgent implements Agent {
 					modelAttributionFrom(msg),
 					artifactBuffer,
 				)
-				if (lastTextBlockId !== undefined) artifactBuffer.noteTextBlock(lastTextBlockId)
+				if (lastTextBlockId !== undefined) {
+					artifactBuffer.noteTextBlock(lastTextBlockId, modelAttributionFrom(msg))
+				}
 			}
 			// toolResult: handled inline alongside its originating toolCall above.
 		}
