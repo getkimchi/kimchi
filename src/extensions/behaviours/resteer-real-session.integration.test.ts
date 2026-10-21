@@ -38,7 +38,7 @@ import {
 import {
 	createAgentSession,
 	DefaultResourceLoader,
-	type ModelRuntime,
+	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
@@ -211,8 +211,7 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 			return errorStream(OVERFLOW_ERROR)
 		}
 
-		const runtime = (await import("@earendil-works/pi-coding-agent")).ModelRuntime
-		const modelRuntime = await runtime.create({ authPath: join(tmp, "auth.json"), modelsPath: null })
+		const modelRuntime = await ModelRuntime.create({ authPath: join(tmp, "auth.json"), modelsPath: null })
 		modelRuntime.registerProvider("resteer-stub", {
 			name: "Resteer Stub",
 			baseUrl: model.baseUrl,
@@ -249,7 +248,7 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 			sessionManager: SessionManager.inMemory(tmp),
 			settingsManager: SettingsManager.create(tmp, tmp),
 			model,
-			modelRuntime: modelRuntime as ModelRuntime,
+			modelRuntime,
 			resourceLoader: loader,
 			customTools: [dumpTool],
 		})
