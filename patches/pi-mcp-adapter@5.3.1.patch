@@ -87,6 +87,11 @@
 #   - config: writeProjectServerDisabledOverride writes its override through
 #     the server's provenance path (the file it was loaded from), falling
 #     back to the adapter-native project config for unknown servers.
+#   - mcp-output-guard (+dist mirrors): default output budget 50 KB -> 12 KB
+#     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
+#     the session context on parallel tool results; still overridable via
+#     settings.mcpToolOutputTuning.maxBytes.
+
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -890,6 +895,27 @@ index b724478bf4036c199d4574c87a200207706ceb29..d0aae7b5f9fc4fce5a1b7841360efe1c
    })
    if (!response.ok) {
      await response.text().catch(() => {})
+diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
+index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc09c4f391b 100644
+--- a/mcp-output-guard.ts
++++ b/mcp-output-guard.ts
+@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import {
+-  DEFAULT_MAX_BYTES,
+   DEFAULT_MAX_LINES,
+   formatSize,
+   truncateHead,
+@@ -11,7 +10,7 @@ import {
+ } from "@earendil-works/pi-coding-agent";
+ import type { ContentBlock, McpSettings } from "./types.ts";
+ 
+-export const DEFAULT_MCP_OUTPUT_MAX_BYTES = DEFAULT_MAX_BYTES;
++export const DEFAULT_MCP_OUTPUT_MAX_BYTES = 12 * 1024;
+ export const DEFAULT_MCP_OUTPUT_MAX_LINES = DEFAULT_MAX_LINES;
+ export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
+ const SCRIPT_PIPE_HINT_MIN_BYTES = 8 * 1024;
 diff --git a/metadata-cache.ts b/metadata-cache.ts
 index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1d5b3545f 100644
 --- a/metadata-cache.ts

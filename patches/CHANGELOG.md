@@ -162,6 +162,12 @@ but are only drained by the next fresh run).
   server provenance so overrides land in the file the server came from.
 - **KEPT — OAuth loopback/tombstone/in-flight hunks, metadata Accept widen,
   `mcp.panel`, watcher instructions; DCR clientInfo bumped to "5.3.1".**
+- **PORTED — output-guard default 50 KB → 12 KB (`mcp-output-guard.ts`).**
+  Carried over from master's 2.34 patch: five parallel ~50 KB MCP results
+  (~64k tokens) overflowed 256k-context headroom and killed sessions
+  (284,070 of 262,144 tokens). Remove when upstream sizes the guard to
+  remaining context (window − reserve − usage); users can override via
+  `settings.outputGuard.maxBytes`.
 - **NEW — `KIMCHI_MANAGES_MCP_PROJECT_TRUST` hunk.** 5.x interactively prompts
   per project server on trust; the env flag skips that approval so Kimchi's
   existing `resolveMcpProjectTrust` stays the single gate (no double prompt).
