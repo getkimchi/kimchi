@@ -21,7 +21,7 @@ Two tiers. **Core** commands work everywhere, on every install. **Enhanced** rou
 |---|---|---|
 | Change text on existing pages, keep styling | `dump-shapes` + `edit-draw` (LibreOffice) | rebuild with `create`; say that styling is lost |
 | Styled document (colors, multi-line table cells) | write styled HTML, then `html <in.html> --out <out.pdf>` (browser) | `create` — minimal styling, single-line table cells; state the limit |
-| Visual check of an output PDF | `render <in.pdf> --out <dir>` → page PNGs (rasterizer) | `read` the text back; say that layout was not checked |
+| Visual check of an output PDF | `render <in.pdf> --out <dir>` → page PNGs (bundled PDFium; falls back to installed pdftoppm/gs/pymupdf if the WASM can't run) | `read` the text back; say that layout was not checked |
 | Simple monochrome doc from Markdown | `create` | — |
 | Fill a form | `fill-form` | — |
 | Page surgery (merge/split/reorder/rotate) | the dedicated commands | — |
@@ -68,12 +68,14 @@ what styling was lost.
 ## render `<in.pdf> --out <dir> [--pages N-M]`
 
 Visual check: one PNG per (selected) page in `--out`, one path per line on
-stdout, plus a summary naming the rasterizer used (pdftoppm, ghostscript, or
-pymupdf — found automatically). Read the PNGs of the pages you just wrote
-before calling the work done: you are looking for text touching box edges,
-overflowing lines, and colors that die against the background. Without a
-rasterizer, the error names the install options — fall back to `read` and say
-that layout was not checked.
+stdout, plus a summary naming the route used. The bundled PDFium engine runs
+in-process — works with zero installs on any OS — and if it fails
+(unreachable in exotic sandboxes), the command falls back to whatever the
+host has (pdftoppm, ghostscript, or pymupdf) and says so on stderr. Only if
+both are unavailable does the error name the install options — fall back to
+`read` and say that layout was not checked. Read the PNGs of the pages you
+just wrote before calling the work done: you are looking for text touching
+box edges, overflowing lines, and colors that die against the background.
 
 ## read `<file.pdf> [N-M]`
 
@@ -154,7 +156,8 @@ Errors are typed (`error [code]: message`, exit 2):
   unencodable text); the message says what to do.
 - `tool-missing` — an enhanced route's tool (LibreOffice, browser, rasterizer)
   isn't installed. The message names the install command; take the table's
-  fallback and tell the user what was lost.
+  fallback and tell the user what was lost. (`render` only reaches this when
+  even the bundled path failed.)
 
 ## Secure handling
 

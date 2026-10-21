@@ -43,6 +43,7 @@ import { DocumentError, isDocumentError } from "./model.js"
 import { sameFile } from "./paths.js"
 import { findPdfFonts, pdfFontSearchDirs } from "./pdf-fonts.js"
 import { type LoDrawDeps, runLoDraw } from "./pdf-lo-draw.js"
+import { type PdfPngDeps, renderPdfCore } from "./pdf-png.js"
 import { defaultRasterizeDeps, type RasterizeDeps, rasterizePdf } from "./pptx-render.js"
 import { renderDocument } from "./render.js"
 import { PAGE_SIZES, renderBlocksToPdf } from "./writers/pdf.js"
@@ -60,6 +61,8 @@ export interface PdfCliIo {
 	rasterize?: RasterizeDeps
 	/** Browser override for tests (real Chrome/Chromium/Edge otherwise). */
 	browser?: BrowserDeps
+	/** Core renderer override for tests (bundled PDFium otherwise). */
+	renderCore?: PdfPngDeps
 }
 
 const USAGE = `usage: pdf.mjs <command> [args]
@@ -492,11 +495,24 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 				} catch (err) {
 					throw new DocumentError("corrupt", `Cannot create output directory ${out}: ${(err as Error).message}`, "pdf")
 				}
-				const { images, rasterizer } = rasterizePdf(io.rasterize ?? defaultRasterizeDeps(), resolve(input), {
-					outDir: resolve(out),
-					pages,
-					format: "pdf",
-				})
+				let images: string[]
+				let rasterizer: string
+				try {
+					// Core route: in-process PDFium — works on any fresh install.
+					const result = await renderPdfCore(resolve(input), resolve(out), pages, io.renderCore)
+					images = result.images
+					rasterizer = "pdfium (bundled)"
+				} catch (coreErr) {
+					// Enhanced fallback: external rasterizers, if PDFium can't run here.
+					io.stderr(`pdfium unavailable (${(coreErr as Error).message}) — falling back to external rasterizers`)
+					const fallback = rasterizePdf(io.rasterize ?? defaultRasterizeDeps(), resolve(input), {
+						outDir: resolve(out),
+						pages,
+						format: "pdf",
+					})
+					images = fallback.images
+					rasterizer = fallback.rasterizer
+				}
 				io.stdout(
 					`rendered ${images.length} page${images.length === 1 ? "" : "s"} of ${input} -> ${out} (rasterizer: ${rasterizer})`,
 				)

@@ -444,3 +444,76 @@ describe("pdf.mjs html (styled HTML -> PDF via browser)", () => {
 		expect(t.err.join("")).toContain("must differ from the input")
 	})
 })
+
+describe("pdf.mjs render core (bundled pdfium)", () => {
+	const coreOhnePage = () => ({
+		loadWasm: async () => new Uint8Array(0),
+		initLibrary: async () => ({
+			loadDocument: async () => ({
+				pages: function* () {
+					yield {
+						render: async ({
+							render,
+						}: {
+							render: (o: { data: Uint8Array; width: number; height: number }) => Promise<Uint8Array>
+						}) => ({
+							data: await render({ data: new Uint8Array([200, 50, 50, 255]), width: 1, height: 1 }),
+						}),
+					}
+				},
+				destroy: () => {},
+			}),
+			destroy: () => {},
+		}),
+	})
+
+	it("labels the route when the bundled pdfium renders", async () => {
+		const { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync } =
+			require("node:fs") as typeof import("node:fs")
+		const { tmpdir } = await import("node:os")
+		const outDir = mkdtempSync(join(tmpdir(), "pdf-render-core-"))
+		try {
+			const t = io({ renderCore: coreOhnePage() })
+			// renderPdfCore reads its input from the real fs (like the external chain
+			// does), so stage it next to the in-memory stub harness.
+			writeFileSync("in.pdf", await makePdf(["a"]))
+			t.files.set("in.pdf", readFileSync("in.pdf"))
+			expect(await runPdfCli(["render", "in.pdf", "--out", outDir], t.io)).toBe(0)
+			expect(t.out[0]).toContain("rasterizer: pdfium (bundled)")
+			expect(existsSync(join(outDir, "in-1.png"))).toBe(true)
+		} finally {
+			rmSync("in.pdf", { force: true })
+			rmSync(outDir, { recursive: true, force: true })
+		}
+	})
+
+	it("falls back to external rasterizers with a stderr note when pdfium fails", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = require("node:fs") as typeof import("node:fs")
+		const { tmpdir } = await import("node:os")
+		const outDir = mkdtempSync(join(tmpdir(), "pdf-render-core-"))
+		try {
+			const t = io({
+				renderCore: {
+					loadWasm: async () => {
+						throw new Error("wasm corrupt")
+					},
+				},
+				rasterize: {
+					which: (cmd: string) => (cmd === "pdftoppm" ? "/fake/pdftoppm" : undefined),
+					run: (_cmd: string, args: string[]) => {
+						const prefix = args[args.length - 1]
+						writeFileSync(`${prefix}-1.png`, "png")
+						return { code: 0, stdout: "", stderr: "" }
+					},
+					listdir: (dir: string) => require("node:fs").readdirSync(dir),
+				},
+			})
+			t.files.set("in.pdf", await makePdf(["a"]))
+			expect(await runPdfCli(["render", "in.pdf", "--out", outDir], t.io)).toBe(0)
+			expect(t.err.join("")).toContain("pdfium unavailable")
+			expect(t.out[0]).toContain("rasterizer: pdftoppm (poppler)")
+		} finally {
+			rmSync(outDir, { recursive: true, force: true })
+		}
+	})
+})

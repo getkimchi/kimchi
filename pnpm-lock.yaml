@@ -67,6 +67,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 1.3.0
         version: 1.3.0(patch_hash=466ec87ff753c52571879f6b14e6726818be8fbccf2f233e61d39a031bd4dd4b)
+      '@hyzyla/pdfium':
+        specifier: ^3.0.0
+        version: 3.0.0
       '@kimchi-dev/kimchi-workflows':
         specifier: 0.0.9
         version: 0.0.9(@earendil-works/pi-coding-agent@1.3.0(patch_hash=ef194e2708b3894b6162a1c9e7e4c0754f134eba29b1f8a417309023099fd7b5)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=466ec87ff753c52571879f6b14e6726818be8fbccf2f233e61d39a031bd4dd4b))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.7(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
@@ -673,6 +676,10 @@ packages:
     engines: {node: '>=18.14.1'}
     peerDependencies:
       hono: ^4.13.11
+
+  '@hyzyla/pdfium@3.0.0':
+    resolution: {integrity: sha512-Hw7/Pc/y2f8ZYVNXxAvDiLAV0qJT4+e5HMwbMghra/s2RKXuuWYdR/8ohoD4YwQfTL5UzSNlTtP1LJHip7LiEQ==}
+    engines: {node: '>=22'}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -4100,6 +4107,8 @@ snapshots:
   '@hono/node-server@1.19.14(hono@4.13.13)':
     dependencies:
       hono: 4.13.13
+
+  '@hyzyla/pdfium@3.0.0': {}
 
   '@isaacs/cliui@8.0.2':
     dependencies:

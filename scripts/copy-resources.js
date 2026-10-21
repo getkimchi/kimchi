@@ -174,7 +174,7 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 				}
 			}
 		}
-		for (const dep of ["@cantoo/pdf-lib", "@pdf-lib/fontkit", "unpdf", "marked"]) {
+		for (const dep of ["@cantoo/pdf-lib", "@pdf-lib/fontkit", "unpdf", "marked", "@hyzyla/pdfium"]) {
 			stageDep(dep)
 		}
 		const stagedOut = join(pdfStaging, "pdf.mjs")
@@ -189,6 +189,16 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 		const lodrawDest = join(dirname(pdfCliDest), "lodraw_edit.py")
 		if (resolve(lodrawSrc) !== resolve(lodrawDest)) {
 			cpSync(lodrawSrc, lodrawDest)
+		}
+		// Same-self-copy guard for the bundled PDFium WASM used by render's
+		// in-process core route.
+		{
+			const requireFrom = createRequire(join(projectRoot, "package.json"))
+			const wasmSrc = realpathSync(requireFrom.resolve("@hyzyla/pdfium/pdfium.wasm"))
+			const wasmDest = join(dirname(pdfCliDest), "pdfium.wasm")
+			if (resolve(wasmSrc) !== resolve(wasmDest)) {
+				cpSync(wasmSrc, wasmDest)
+			}
 		}
 	} finally {
 		try {
