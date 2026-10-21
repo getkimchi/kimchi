@@ -231,7 +231,10 @@ function planSubmissionCheckinText(sessionId: string, revision: number): string 
  *  left alone. */
 function armPlanSubmissionCheckin(pi: ExtensionAPI, sessionId: string, interactive: boolean): void {
 	if (!isCheckinEnforcementAvailable(pi)) return
-	if (resolveTodoScope().kind !== "global") return
+	// The gate targets the global list of THIS session: the active-scope
+	// lookup is session-aware, so a ferment step running in another session
+	// of the same process cannot suppress it.
+	if (resolveTodoScope(sessionId).kind !== "global") return
 	const todos = getTodosForScope(GLOBAL_TODO_SCOPE, sessionId).filter(
 		(todo) => todo.status === TODO_STATUS.PENDING || todo.status === TODO_STATUS.IN_PROGRESS,
 	)
@@ -783,7 +786,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
 		if (message.stopReason !== "stop" || isAwaitingUserAnswer(message)) return
-		const scope = resolveTodoScope()
+		const scope = resolveTodoScope(ctx.sessionManager.getSessionId())
 		if (scope.kind !== "global") return
 		const todos = getTodosForScope(scope, ctx.sessionManager.getSessionId()).filter(
 			(todo) => todo.status === TODO_STATUS.PENDING || todo.status === TODO_STATUS.IN_PROGRESS,

@@ -106,7 +106,7 @@ function notify(sessionId: string, change: CheckinGateChange): void {
 export function getRelevantCheckinScopes(sessionId: string): TodoScope[] {
 	const scopes = new Map<string, TodoScope>()
 	scopes.set(getTodoScopeKey(GLOBAL_TODO_SCOPE), GLOBAL_TODO_SCOPE)
-	const active = resolveTodoScope()
+	const active = resolveTodoScope(sessionId)
 	if (active.kind !== "global") {
 		scopes.set(getTodoScopeKey(active), active)
 	}

@@ -709,8 +709,11 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 	// Auto-scope: when exactly one ferment step is running, scope-less todo
 	// calls target that step's ferment-step scope. When multiple parallel
 	// steps are active, return undefined to force the caller to pass an
-	// explicit scope — avoids silently writing to the wrong step.
-	const unregisterScope = registerActiveTodoScopeProvider(() => {
+	// explicit scope — avoids silently writing to the wrong step. Registered
+	// under this bridge's session id: scope-less resolution only consults the
+	// querying session's providers, so a running step here never leaks its
+	// scope into another session's resolution.
+	const unregisterScope = registerActiveTodoScopeProvider(sessionId, () => {
 		const bucket = runningSteps.get(sessionId)
 		if (bucket?.size !== 1) return undefined
 		const [, step] = [...bucket.entries()][0]

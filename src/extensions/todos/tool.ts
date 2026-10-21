@@ -139,15 +139,15 @@ function formatScopeLabel(scope: TodoScope): string {
 /** Validate an explicit scope, then auto-route if omitted. Rejects malformed
  *  scopes (instead of silently collapsing to global) and rejects writes to
  *  the ferment phase scope (managed by the bridge). */
-function resolveToolScope(scopeInput: unknown): { scope: TodoScope } | { error: string } {
+function resolveToolScope(scopeInput: unknown, sessionId: string): { scope: TodoScope } | { error: string } {
 	const validated = validateExplicitTodoScope(scopeInput)
 	if (validated.error) return { error: validated.error }
 	if (validated.scope) {
 		if (validated.scope.kind === "ferment") return { error: FERMENT_SCOPE_ERROR }
 		return { scope: validated.scope }
 	}
-	// Empty/omitted scope — auto-route via providers.
-	const scope = resolveTodoScope(scopeInput)
+	// Empty/omitted scope — auto-route via this session's providers.
+	const scope = resolveTodoScope(sessionId, scopeInput)
 	if (scope.kind === "ferment") return { error: FERMENT_SCOPE_ERROR }
 	return { scope }
 }
@@ -172,7 +172,7 @@ async function executeWriteTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const resolved = resolveToolScope(params.scope)
+		const resolved = resolveToolScope(params.scope, sessionId)
 		if ("error" in resolved) {
 			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
 		}
@@ -203,7 +203,7 @@ async function executeAddTodo(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const resolved = resolveToolScope(params.scope)
+		const resolved = resolveToolScope(params.scope, sessionId)
 		if ("error" in resolved) {
 			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
 		}
@@ -249,7 +249,7 @@ async function executeMarkTodo(
 	try {
 		const id = normalizeTodoId(params.id)
 		const status = normalizeTodoStatus(params.status)
-		const resolved = resolveToolScope(params.scope)
+		const resolved = resolveToolScope(params.scope, sessionId)
 		if ("error" in resolved) {
 			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
 		}
@@ -337,7 +337,7 @@ async function executeClearTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const resolved = resolveToolScope(params.scope)
+		const resolved = resolveToolScope(params.scope, sessionId)
 		if ("error" in resolved) {
 			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
 		}
@@ -402,7 +402,7 @@ async function executeConfirmTodos(
 ) {
 	const sessionId = ctx.sessionManager.getSessionId()
 	try {
-		const resolved = resolveToolScope(params.scope)
+		const resolved = resolveToolScope(params.scope, sessionId)
 		if ("error" in resolved) {
 			return { content: [{ type: "text" as const, text: resolved.error }], details: null }
 		}

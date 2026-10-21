@@ -113,8 +113,8 @@ describe("todo store", () => {
 	it("uses providers only when scope is omitted", () => {
 		const first = vi.fn(() => undefined)
 		const second = vi.fn(() => GLOBAL_TODO_SCOPE)
-		registerActiveTodoScopeProvider(first)
-		registerActiveTodoScopeProvider(second)
+		registerActiveTodoScopeProvider(TEST_SESSION_ID, first)
+		registerActiveTodoScopeProvider(TEST_SESSION_ID, second)
 
 		applyWriteTodos({ todos: [{ content: "from provider", status: "pending" }] }, TEST_SESSION_ID)
 		expect(first).toHaveBeenCalledTimes(1)
@@ -129,18 +129,18 @@ describe("todo store", () => {
 
 	it("treats empty scope placeholders as omitted and lets providers auto-scope", () => {
 		const fermentScope = { kind: "ferment-step" as const, phaseId: "phase-1", stepId: "step-1" }
-		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		const unregister = registerActiveTodoScopeProvider(TEST_SESSION_ID, () => fermentScope)
 		try {
 			// Omission resolves through the provider — baseline behaviour.
-			expect(resolveTodoScope()).toEqual(fermentScope)
+			expect(resolveTodoScope(TEST_SESSION_ID)).toEqual(fermentScope)
 			// Empty string resolves through providers as if omitted.
-			expect(resolveTodoScope("")).toEqual(fermentScope)
+			expect(resolveTodoScope(TEST_SESSION_ID, "")).toEqual(fermentScope)
 			// GLM-style literal "{}" resolves through providers as if omitted.
-			expect(resolveTodoScope("{}")).toEqual(fermentScope)
+			expect(resolveTodoScope(TEST_SESSION_ID, "{}")).toEqual(fermentScope)
 			// Empty object resolves through providers as if omitted.
-			expect(resolveTodoScope({})).toEqual(fermentScope)
+			expect(resolveTodoScope(TEST_SESSION_ID, {})).toEqual(fermentScope)
 			// A real scope argument is still honoured verbatim.
-			expect(resolveTodoScope("global")).toEqual(GLOBAL_TODO_SCOPE)
+			expect(resolveTodoScope(TEST_SESSION_ID, "global")).toEqual(GLOBAL_TODO_SCOPE)
 		} finally {
 			unregister()
 		}
@@ -152,15 +152,15 @@ describe("todo store", () => {
 			phaseId: "phase-1",
 			stepId: "step-1",
 		}
-		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		const unregister = registerActiveTodoScopeProvider(TEST_SESSION_ID, () => fermentScope)
 		try {
 			// Parent (non-worker) still resolves to the provider's scope.
-			expect(resolveTodoScope()).toEqual(fermentScope)
+			expect(resolveTodoScope(TEST_SESSION_ID)).toEqual(fermentScope)
 
 			// Inside the AsyncLocalStorage worker context the provider is
 			// skipped — scope-less resolution must stay global.
 			await runAsAgentWorker(async () => {
-				expect(resolveTodoScope()).toEqual(GLOBAL_TODO_SCOPE)
+				expect(resolveTodoScope(TEST_SESSION_ID)).toEqual(GLOBAL_TODO_SCOPE)
 			})
 		} finally {
 			unregister()
@@ -169,11 +169,34 @@ describe("todo store", () => {
 
 	it("unregisters active scope providers", () => {
 		const provider = vi.fn(() => GLOBAL_TODO_SCOPE)
-		const unregister = registerActiveTodoScopeProvider(provider)
+		const unregister = registerActiveTodoScopeProvider(TEST_SESSION_ID, provider)
 		unregister()
 
 		applyWriteTodos({ todos: [{ content: "global", status: "pending" }] }, TEST_SESSION_ID)
 		expect(provider).not.toHaveBeenCalled()
+	})
+
+	it("consults only the querying session's providers, never another session's", () => {
+		const stepScope = { kind: "ferment-step" as const, phaseId: "phase-1", stepId: "step-1" }
+		// Session A (e.g. a ferment session with one running step) registers a
+		// provider under its own session id.
+		const unregister = registerActiveTodoScopeProvider("session-a", () => stepScope)
+		try {
+			// A's own scope-less resolution targets its running step...
+			expect(resolveTodoScope("session-a")).toEqual(stepScope)
+			// ...while session B — sharing the process — still resolves global:
+			// A's ferment-step scope must never leak into B's resolution
+			// (regression: it used to suppress B's plan-submission check-in).
+			expect(resolveTodoScope("session-b")).toEqual(GLOBAL_TODO_SCOPE)
+			// B's scope-less writes stay global, not A's step scope.
+			applyWriteTodos({ todos: [{ content: "B task", status: "pending" }] }, "session-b")
+			expect(getTodosForScope(stepScope, "session-b")).toHaveLength(0)
+			expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session-b")).toHaveLength(1)
+		} finally {
+			unregister()
+		}
+		// Unregistration is scoped too: A's bucket is gone, B never had one.
+		expect(resolveTodoScope("session-a")).toEqual(GLOBAL_TODO_SCOPE)
 	})
 
 	it("notifies subscribers with write details", () => {

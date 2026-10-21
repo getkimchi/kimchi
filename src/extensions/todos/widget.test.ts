@@ -351,7 +351,7 @@ describe("todo widget helpers", () => {
 		const fermentScope: TodoScope = { kind: "ferment", phaseId: "phase-1" }
 
 		// Register a scope provider that returns the ferment scope
-		const unregister = registerActiveTodoScopeProvider(() => fermentScope)
+		const unregister = registerActiveTodoScopeProvider(TEST_SESSION_ID, () => fermentScope)
 
 		try {
 			applyWriteTodos(

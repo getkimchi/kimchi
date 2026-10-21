@@ -24,7 +24,13 @@ const stateMap = new Map<string, TodosSliceState>()
 const todoStoreListeners = new Set<
 	(details: WriteTodosDetails, sessionId: string, context?: TodoWriteContext) => void
 >()
-const activeScopeProviders: TodoScopeProvider[] = []
+/** Registered scope providers, keyed by the owning session id. Each provider
+ *  closes over its own session's running ferment steps, so a scope-less
+ *  resolve must only consult the querying session's providers — a flat
+ *  process-global list let one session's ferment-step scope leak into
+ *  another session's scope resolution (observed: session B's
+ *  plan-submission check-in suppressed by session A's running step). */
+const activeScopeProviders = new Map<string, TodoScopeProvider[]>()
 
 /** Monotonic per-session, per-scope write counter. Bumped on every committed
  *  write so consumers can detect "the list changed since I last looked"
@@ -160,7 +166,7 @@ function isEmptyScopeInput(scopeInput: unknown): boolean {
 	return false
 }
 
-export function resolveTodoScope(scopeInput?: unknown): TodoScope {
+export function resolveTodoScope(sessionId: string, scopeInput?: unknown): TodoScope {
 	if (!isEmptyScopeInput(scopeInput)) return normalizeTodoScope(scopeInput)
 
 	// In-process subagent workers never inherit the orchestrator's active
@@ -169,7 +175,7 @@ export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	// labels (label only — the store is already keyed by session id).
 	if (isAgentWorker()) return GLOBAL_TODO_SCOPE
 
-	for (const provider of activeScopeProviders) {
+	for (const provider of activeScopeProviders.get(sessionId) ?? []) {
 		const scope = provider()
 		if (scope) return scope
 	}
@@ -177,8 +183,8 @@ export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	return GLOBAL_TODO_SCOPE
 }
 
-function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
-	return resolveTodoScope(params.scope)
+function resolveWriteTodoScope(params: WriteTodosParams, sessionId: string): TodoScope {
+	return resolveTodoScope(sessionId, params.scope)
 }
 
 function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string, context?: TodoWriteContext): void {
@@ -207,7 +213,7 @@ export function applyWriteTodos(
 	sessionId: string,
 	context?: TodoWriteContext,
 ): WriteTodosDetails {
-	const scope = resolveWriteTodoScope(params)
+	const scope = resolveWriteTodoScope(params, sessionId)
 	const current = getSessionState(sessionId)
 	const result = reduceReplaceList(current, { ...params, scope })
 	setSessionState(sessionId, result.state)
@@ -297,11 +303,19 @@ export function subscribeTodoStore(
 	}
 }
 
-export function registerActiveTodoScopeProvider(provider: TodoScopeProvider): () => void {
-	activeScopeProviders.push(provider)
+export function registerActiveTodoScopeProvider(sessionId: string, provider: TodoScopeProvider): () => void {
+	const bucket = activeScopeProviders.get(sessionId)
+	if (bucket) {
+		bucket.push(provider)
+	} else {
+		activeScopeProviders.set(sessionId, [provider])
+	}
 	return () => {
-		const index = activeScopeProviders.indexOf(provider)
-		if (index >= 0) activeScopeProviders.splice(index, 1)
+		const bucket = activeScopeProviders.get(sessionId)
+		if (!bucket) return
+		const index = bucket.indexOf(provider)
+		if (index >= 0) bucket.splice(index, 1)
+		if (bucket.length === 0) activeScopeProviders.delete(sessionId)
 	}
 }
 
@@ -331,7 +345,7 @@ export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[
 
 export function __resetTodoStore(): void {
 	stateMap.clear()
-	activeScopeProviders.length = 0
+	activeScopeProviders.clear()
 	todoStoreListeners.clear()
 	toolCallsSinceTodoWrite.clear()
 	workToolCallsSinceStart.clear()

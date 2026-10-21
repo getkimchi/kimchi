@@ -376,7 +376,11 @@ describe("bounded todo cleanup", () => {
 		if (reason === "no tools") h.api.setActiveTools([])
 		const unregister =
 			reason === "worker scope"
-				? registerActiveTodoScopeProvider(() => ({ kind: "ferment-step", phaseId: "p", stepId: "s" }))
+				? registerActiveTodoScopeProvider(h.manager.getSessionId(), () => ({
+						kind: "ferment-step",
+						phaseId: "p",
+						stepId: "s",
+					}))
 				: () => {}
 		await h.work()
 		await h.end(["error", "aborted", "length", "toolUse"].includes(reason) ? reason : "stop")

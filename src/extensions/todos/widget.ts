@@ -230,7 +230,7 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
 
 	if (groups.length === 0) {
-		const scope = resolveTodoScope()
+		const scope = resolveTodoScope(sessionId)
 		return [
 			theme.fg("accent", formatScopeHeader(scope)),
 			"",

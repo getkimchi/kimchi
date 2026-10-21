@@ -637,7 +637,7 @@ describe("early todo nudge", () => {
 			const ctx = createContext("session", [])
 			await harness.fire("session_start", { reason: "new" }, ctx)
 			applyWriteTodos({ todos: [{ content: "global task", status: "pending" }] }, "session")
-			const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+			const unregister = registerActiveTodoScopeProvider("session", () => STEP_SCOPE)
 			try {
 				applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session")
 
@@ -1258,7 +1258,7 @@ describe("todo check-in gate", () => {
 		const ctx = createContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "global task", status: "in_progress" }] }, "session")
-		const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+		const unregister = registerActiveTodoScopeProvider("session", () => STEP_SCOPE)
 		try {
 			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session")
 			// Both lists are relevant and unfinished: one input arms one check
@@ -1388,7 +1388,7 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
 
 		// A step activates and its list is seeded by the background bridge.
-		const unregister = registerActiveTodoScopeProvider(() => STEP_SCOPE)
+		const unregister = registerActiveTodoScopeProvider("session", () => STEP_SCOPE)
 		try {
 			applyWriteTodos({ scope: STEP_SCOPE, todos: [{ content: "step task", status: "in_progress" }] }, "session") // bridge origin: does not reconcile
 			const result = await fireWork(harness, ctx, "w2")
@@ -1660,6 +1660,40 @@ describe("plan-submission check-in gate", () => {
 			{ origin: "tool", inputRevision: 0 },
 		)
 		expect(await fireWork(harness, ctx, "w4")).toEqual({ block: false })
+	})
+
+	it("arms the gate for this session even while another session's step is active", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "Finalize plan", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// Work completed while finalizing the plan, unreflected in the list.
+		await workAndExecute(harness, ctx, "w1")
+
+		// Another session in the same process (e.g. an ACP host) has a ferment
+		// step running, so its provider sits in the registry. It must not leak
+		// into this session's active-scope resolution: the gate would
+		// early-return on a non-global scope and the unreconciled list would
+		// freeze into the plan handoff.
+		const unregister = registerActiveTodoScopeProvider("other-session", () => STEP_SCOPE)
+		try {
+			await submitPlan(harness, ctx)
+		} finally {
+			unregister()
+		}
+
+		const pending = getPendingCheckins("session")
+		expect(pending).toHaveLength(1)
+		expect(pending[0]?.reasons.has("plan_submission")).toBe(true)
+		expect(pending[0]?.scope).toEqual({ kind: "global" })
+		expect(steerCallsByReason(harness.sendMessage, "plan_submission")).toHaveLength(1)
+
+		// The review-outcome turn's first work tool stays gated.
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
 	})
 
 	it("suppresses when the final todo write is paired with the submission", async () => {
