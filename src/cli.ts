@@ -41,7 +41,6 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
-	ensureTuiModeDefault,
 	getApiKeyMismatchWarning,
 	loadConfig,
 	RETRY_DEFAULTS,
@@ -620,7 +619,6 @@ async function cliMain(): Promise<void> {
 				const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 				let changed = ensureHideThinkingBlockDefault(existing)
 				if (ensureQuietStartupDefault(existing)) changed = true
-				if (ensureTuiModeDefault(existing)) changed = true
 				if (ensureBuiltinMcpDisabled(existing)) changed = true
 				const upgraded = upgradeLegacyRetrySettings(existing.retry)
 				if (upgraded) {

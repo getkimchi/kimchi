@@ -184,19 +184,6 @@ export function ensureQuietStartupDefault(settings: Record<string, unknown>): bo
 	return true
 }
 
-/**
- * Seed tuiMode "regular" when absent. pi ≥1.2 defaults to fullscreen
- * (alt-screen), which changes working-indicator animations, editor modals,
- * and scrollback handling relative to the 0.85-era behavior Kimchi's UX
- * (and its verification suite) was built against. Keep the upgrade
- * behavior-preserving; fullscreen stays an opt-in via settings.json.
- */
-export function ensureTuiModeDefault(settings: Record<string, unknown>): boolean {
-	if ("tuiMode" in settings) return false
-	settings.tuiMode = "regular"
-	return true
-}
-
 const DISABLE_BUILTIN_MCP_OVERRIDE = "-builtin:mcp"
 
 /**

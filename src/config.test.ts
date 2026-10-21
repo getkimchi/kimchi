@@ -9,7 +9,6 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
-	ensureTuiModeDefault,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
@@ -1588,20 +1587,6 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
-	})
-})
-
-describe("ensureTuiModeDefault", () => {
-	it("seeds tuiMode regular when the key is absent", () => {
-		const settings: Record<string, unknown> = {}
-		expect(ensureTuiModeDefault(settings)).toBe(true)
-		expect(settings.tuiMode).toBe("regular")
-	})
-
-	it("leaves an explicit tuiMode alone", () => {
-		const fullscreen = { tuiMode: "fullscreen" }
-		expect(ensureTuiModeDefault(fullscreen)).toBe(false)
-		expect(fullscreen.tuiMode).toBe("fullscreen")
 	})
 })
 
