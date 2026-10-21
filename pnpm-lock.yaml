@@ -41,6 +41,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.3.0
         version: 1.3.0
+      '@earendil-works/pi-codemode':
+        specifier: 1.3.0
+        version: 1.3.0
       '@earendil-works/pi-coding-agent':
         specifier: 1.3.0
         version: 1.3.0(patch_hash=1b1446fdfc3024d8a8b6fad6670be66c7103e9a2dbc17ba49a12b207b65bc353)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.29.0(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.20.1)(zod@4.4.3)

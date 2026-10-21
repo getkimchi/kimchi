@@ -52,6 +52,7 @@
 		"@bulkhead-ai/core": "^0.7.0",
 		"@clack/prompts": "^1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
+		"@earendil-works/pi-codemode": "1.3.0",
 		"@earendil-works/pi-tui": "1.3.0",
 		"@kimchi-dev/kimchi-workflows": "0.0.9",
 		"@modelcontextprotocol/client": "2.3.1",
