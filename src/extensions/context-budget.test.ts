@@ -79,17 +79,19 @@ const BUDGET = {
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
 	 *  Includes the redesigned bash_control schema; ~1% headroom over
-	 *  measured 5938 after upstream pi grew the upstream builtin tool definitions).
+	 *  measured 6225 after pi 1.3.0 grew the upstream builtin tool
+	 *  definitions again (master measured 5938 on 0.85).
 	 *  Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 6200,
+	toolSurface: 6300,
 	/** Print-mode slice (17 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
 	 *  runs; includes the redesigned bash_control schema and the
-	 *  confirm_todos check-in tool, with ~1% headroom over measured). */
-	printToolSurface: 5470,
+	 *  confirm_todos check-in tool, with ~1% headroom over measured 5582
+	 *  after pi 1.3.0). */
+	printToolSurface: 5650,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
