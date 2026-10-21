@@ -217,7 +217,26 @@ export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState)
 	}
 }
 
+export interface PermissionsExtensionOptions {
+	/**
+	 * Pre-approves a tool call once deny rules, the plan gate, and the read-only
+	 * checks have run — it never overrides a deny. For host-spawned agents whose
+	 * narrowly scoped operations would otherwise hit the classifier (e.g. the
+	 * Ferment V2 verifier creating new probe files).
+	 */
+	preApproved?: (toolName: string, input: Record<string, unknown>) => boolean
+}
+
+/** The permissions extension with host-specific options (the default export uses none). */
+export function createPermissionsExtension(options: PermissionsExtensionOptions = {}): (pi: ExtensionAPI) => void {
+	return (pi) => registerPermissions(pi, options)
+}
+
 export default function permissionsExtension(pi: ExtensionAPI): void {
+	registerPermissions(pi, {})
+}
+
+function registerPermissions(pi: ExtensionAPI, options: PermissionsExtensionOptions): void {
 	pi.registerFlag("plan", {
 		description: "Start in plan mode (read-only exploration).",
 		type: "boolean",
@@ -1470,6 +1489,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					emitToolDecision(pi, event, mode, "accept", "readonly")
 					return undefined
 				}
+			}
+			if (options.preApproved?.(toolName, input)) {
+				emitToolDecision(pi, event, mode, "accept", "preapproved")
+				return undefined
 			}
 
 			// Auto mode + non-promptable default mode (headless/subagents) both go

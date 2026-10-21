@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { resolveAgentInvocationConfig } from "../resolution/invocation-config.js"
 import { DEFAULT_AGENTS } from "./default-agents.js"
-import { AGENT_BUILDER, AGENT_EXPLORE, AGENT_GENERAL_PURPOSE, AGENT_PLAN, AGENT_RESEARCHER } from "./types.js"
+import {
+	AGENT_BUILDER,
+	AGENT_EXPLORE,
+	AGENT_FERMENT_VERIFIER,
+	AGENT_GENERAL_PURPOSE,
+	AGENT_PLAN,
+	AGENT_RESEARCHER,
+} from "./types.js"
 
 describe("DEFAULT_AGENTS", () => {
 	it("always includes General-Purpose, Explore, Plan, and Researcher agents", () => {
@@ -27,6 +34,26 @@ describe("DEFAULT_AGENTS", () => {
 		const plan = DEFAULT_AGENTS.get(AGENT_PLAN) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		expect(plan.builtinToolNames).not.toContain("write")
 		expect(plan.builtinToolNames).not.toContain("edit")
+	})
+
+	it("Ferment V2 Verifier persona is hidden, write-confined, extension-free and unbounded", () => {
+		const verifier = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
+		// write creates probes and baseline test copies; the host guard confines it
+		// to new repository files and the disposable baseline worktree.
+		expect(verifier.builtinToolNames).toEqual(["read", "bash", "grep", "find", "ls", "write"])
+		expect(verifier.disallowedTools).toContain("edit")
+		expect(verifier.disallowedTools).not.toContain("write")
+		expect(verifier.extensions).toBe(false)
+		expect(verifier.skills).toBe(false)
+		expect(verifier.thinking).toBe("low")
+		// Hidden from the Agent tool list: only the ferment host spawns it.
+		expect(verifier.enabled).toBe(false)
+		// No persona-level caps — the host controls limits per run.
+		expect(verifier.maxTurns).toBeUndefined()
+		expect(verifier.maxDuration).toBeUndefined()
+		expect(verifier.tokenBudget).toBeUndefined()
+		expect(verifier.systemPrompt).toContain("<ferment_v2_verifier>")
+		expect(verifier.systemPrompt).toContain("[eN]")
 	})
 
 	it("Plan agent has roles set to plan", () => {

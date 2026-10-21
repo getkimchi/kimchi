@@ -47,7 +47,13 @@ import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
-import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
+import permissionsExtension, {
+	checkCompoundCommand,
+	createPermissionsExtension,
+	handleCompoundConfirm,
+	notifyFermentActive,
+	type PermissionsExtensionOptions,
+} from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
@@ -249,6 +255,7 @@ function createPermissionsHarness(
 	toolNames: string[],
 	flags: Record<string, boolean | string | undefined> = {},
 	initialActiveTools: string[] = toolNames,
+	options?: PermissionsExtensionOptions,
 ) {
 	populateCliArgs(Object.entries(flags).flatMap(([name, value]) => (value === undefined ? [] : [`--${name}=${value}`])))
 	const handlers = new Map<string, ExtensionHandler[]>()
@@ -283,7 +290,8 @@ function createPermissionsHarness(
 		events,
 	} as unknown as ExtensionAPI
 
-	permissionsExtension(pi)
+	if (options) createPermissionsExtension(options)(pi)
+	else permissionsExtension(pi)
 
 	return {
 		pi,
@@ -324,6 +332,55 @@ async function submitPlan(
 	await new Promise<void>((resolve) => setTimeout(resolve, 0))
 	return result
 }
+
+describe("host pre-approval (createPermissionsExtension preApproved)", () => {
+	const writeEvent = {
+		type: "tool_call",
+		toolCallId: "probe-write",
+		toolName: "write",
+		input: { path: "/test/src/probe.test.ts", content: "probe" },
+	}
+	const preApproved = (toolName: string, input: Record<string, unknown>) =>
+		toolName === "write" && input.path === "/test/src/probe.test.ts"
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	it("accepts a pre-approved call in a headless session without consulting the classifier", async () => {
+		const harness = createPermissionsHarness(["write"], {}, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		const decisions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", writeEvent, ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ decision: "accept", sourceDetail: "preapproved" }))
+	})
+
+	it("still sends calls the predicate does not approve to the classifier", async () => {
+		const harness = createPermissionsHarness(["write"], {}, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", { ...writeEvent, input: { path: "/test/src/existing.ts", content: "x" } }, ctx)
+
+		expect(classifyToolCall).toHaveBeenCalledOnce()
+	})
+
+	it("never overrides the plan-mode gate", async () => {
+		const harness = createPermissionsHarness(["write"], { plan: true }, ["write"], { preApproved })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", writeEvent, ctx)
+
+		expect(result).toMatchObject({ block: true })
+	})
+})
 
 describe("classifier health reporting", () => {
 	const event = {

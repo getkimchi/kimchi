@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
 	defineTool,
@@ -21,12 +22,14 @@ import {
 	type ExtensionContext,
 	type ExtensionUIContext,
 	getAgentDir,
+	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
+import { getRawErrorMessage } from "../error-preservation.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -78,6 +81,7 @@ import {
 } from "./personas/agent-types.js"
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
+	AGENT_FERMENT_VERIFIER,
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
 	type AgentConfig,
@@ -88,6 +92,7 @@ import {
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
+	type ThinkingLevel,
 } from "./personas/types.js"
 import { findResumableRemoteRuns, persistRemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
@@ -764,6 +769,163 @@ export async function spawnGraderAgent(
 		fullText = assistantText || fullText
 	}
 	return { text: fullText, status: record.status }
+}
+
+/** Result of one Ferment V2 verifier agent run (spawn or resume). */
+export interface FermentV2VerifierAgentRun {
+	id: string
+	/** Final response text (the verdict output). */
+	text: string
+	/** Agent record status: "completed" | "steered" | "aborted" | "stopped" | "error". */
+	status: string
+	/** Error message when status is "error". */
+	error?: string
+	/** Raw abort reason when the run was aborted (e.g. "inactivity", "max_duration"). */
+	abortReason?: string
+	/** Tool calls recorded on the agent's record — cumulative across resumes (the manager never resets it). */
+	toolCalls: number
+	/** Turns used by the run. */
+	turns: number
+	/** The verifier session — usage is accumulated by the in-session guard, not folded from here. */
+	session?: AgentSession
+}
+
+function verifierRunFromRecord(record: {
+	id: string
+	result?: string
+	status: string
+	error?: string
+	abortReason?: AgentAbortReason
+	toolUses?: number
+	lastTurnCount?: number
+	session?: AgentSession
+}): FermentV2VerifierAgentRun {
+	// A record the manager marked "completed" can still have ended on a
+	// terminal assistant error (see terminalAssistantError): surface it as an
+	// error result so the evaluator's transient-failure retry policy engages
+	// instead of the invalid-output correction path.
+	const terminalError = record.status === "completed" ? terminalAssistantError(record.session) : undefined
+	const error = terminalError ?? record.error
+	return {
+		id: record.id,
+		text: record.result ?? "",
+		status: terminalError !== undefined ? "error" : record.status,
+		...(error ? { error } : {}),
+		...(record.abortReason ? { abortReason: record.abortReason } : {}),
+		toolCalls: record.toolUses ?? 0,
+		turns: record.lastTurnCount ?? 0,
+		...(record.session ? { session: record.session } : {}),
+	}
+}
+
+/**
+ * A terminal provider error (429/5xx, dropped stream) ends the child
+ * session's run by *resolving normally*: upstream retries the error
+ * in-session and, once those retries are disabled or exhausted,
+ * `_handlePostAgentRun` simply stops, so the manager marks the record
+ * "completed" and the error survives only as the session's last assistant
+ * message (`stopReason: "error"`). Translate that message into an error
+ * result for both spawn and resume. Retry layers compose deterministically:
+ * in-session auto-retries (upstream plus the kimchi retry patch) run first;
+ * the evaluator's transient-failure policy (3× with backoff) engages only
+ * after they are exhausted or disabled, never in parallel.
+ */
+function terminalAssistantError(session: AgentSession | undefined): string | undefined {
+	const messages = session?.messages ?? []
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (message.role !== "assistant") continue
+		// Only the last assistant message is the run's outcome — an earlier
+		// error that was retried in-session is followed by a later message.
+		if (message.stopReason === "error") {
+			// Prefer the preserved raw provider text: display extensions may
+			// have replaced `errorMessage` with a placeholder.
+			return getRawErrorMessage(message) ?? "unknown provider error"
+		}
+		return undefined
+	}
+	return undefined
+}
+
+/** Spawn the Ferment V2 Verifier subagent and wait for its result.
+ *
+ *  The verifier executes checks in the working tree with read-only tools and
+ *  must not be bounded by turn or duration limits: pass `maxTurns: 0` and
+ *  `maxDuration: 0` (both default here to unlimited). Inactivity is accounted
+ *  in "model_only" mode — a silent long-running tool call never counts as
+ *  inactivity. Inline `extensionFactories` (evidence guard, redaction, allowlist)
+ *  load even though the persona disables extensions.
+ *
+ *  Returns undefined when the agent system is not active (unit tests, non-agent
+ *  contexts) so the caller can surface an `agent_unavailable` verdict. */
+export async function spawnFermentV2VerifierAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	opts: {
+		model: Model<Api>
+		cwd: string
+		extensionFactories: InlineExtension[]
+		signal: AbortSignal
+		/** Wall-clock cap in seconds; 0 (default) = unlimited. */
+		maxDuration?: number
+		/** Thinking level of the verifier session; default `low`. */
+		thinkingLevel?: ThinkingLevel
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	if (!activeManager) return undefined
+
+	// Persist the verifier transcript alongside the parent session for
+	// post-mortem analysis, exactly like the grader.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, opts.cwd, AGENT_FERMENT_VERIFIER)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Best-effort: the verifier can run without a persisted transcript.
+	}
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_FERMENT_VERIFIER, prompt, {
+		description: "Ferment V2 verifier",
+		visibility: "system",
+		model: opts.model,
+		cwd: opts.cwd,
+		sessionFile,
+		sessionDir,
+		signal: opts.signal,
+		// 0 = unlimited: no turn or wall-clock limit for the verifier.
+		maxTurns: 0,
+		maxDuration: opts.maxDuration ?? 0,
+		inactivityMode: "model_only",
+		thinkingLevel: opts.thinkingLevel ?? "low",
+		extensionFactories: opts.extensionFactories,
+	})
+	return verifierRunFromRecord(record)
+}
+
+/** Resume the Ferment V2 verifier session with a correction prompt. Same
+ *  unlimited limits and model-only inactivity as the initial run. Returns
+ *  undefined when the agent system is not active or the run is unknown. */
+export async function resumeFermentV2VerifierAgent(
+	id: string,
+	prompt: string,
+	opts: { signal: AbortSignal },
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	if (!activeManager) return undefined
+	const record = await activeManager.resume(id, prompt, {
+		signal: opts.signal,
+		maxTurns: 0,
+		maxDuration: 0,
+		inactivityMode: "model_only",
+	})
+	if (!record) return undefined
+	return verifierRunFromRecord(record)
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {

@@ -7,7 +7,8 @@
  *   - reviewer: code review
  *   - explorer: codebase exploration, reading files, tracing architecture
  *   - researcher: research beyond codebase — web search, documentation lookup
- *   - judge: ferment verification and final grading calls
+ *   - judge: ferment verification and final grading calls (Ferment V1 only —
+ *     Ferment V2 uses the `fermentV2.evaluatorModels` setting instead)
  *   - compactor: context summarization model.
  *
  * Delegable roles (planner, builder, reviewer, explorer) accept either a
@@ -72,7 +73,9 @@ export interface ModelRoles {
 	explorer: RoleModelAssignment
 	/** Research model(s): research beyond codebase — web search, documentation lookup, external sources. */
 	researcher: RoleModelAssignment
-	/** Ferment judge model(s): verification triage and final grading calls. */
+	/** Ferment judge model(s): verification triage and final grading calls.
+	 *  Ferment V1 only — Ferment V2 resolves its evaluator/verifier model from
+	 *  the `fermentV2.evaluatorModels` setting, not from this role. */
 	judge: RoleModelAssignment
 	/** Context summarization model. */
 	compactor?: string

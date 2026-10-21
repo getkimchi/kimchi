@@ -3,10 +3,13 @@ import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
 	FERMENT_V2_STATUSES,
+	type FermentV2Baseline,
 	type FermentV2Evaluation,
+	type FermentV2EvaluatorUsage,
 	type FermentV2JournalEntry,
 	type FermentV2Presentation,
 	type FermentV2Status,
+	type FermentV2VerifierUsage,
 	type SessionFermentV2,
 } from "./types.js"
 
@@ -27,9 +30,10 @@ export function createFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
 	if (state) throw new Error("A Ferment V2 already exists.")
-	return newFermentV2(objective, id, now, tokenBudget, presentation)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
 }
 
 export function replaceFermentV2(
@@ -38,8 +42,9 @@ export function replaceFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
-	return newFermentV2(objective, id, now, tokenBudget, presentation)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
 }
 
 export function editFermentV2(
@@ -113,6 +118,35 @@ export function addFermentV2Accounting(
 	}
 }
 
+/** Fold one executing-verifier run's usage into the ferment's cumulative verifier accounting. */
+export function recordFermentV2VerifierUsage(
+	state: FermentV2State,
+	expectedId: string,
+	usage: FermentV2EvaluatorUsage,
+	now: string,
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 verifier accounting rejected: no current Ferment V2 exists.")
+	if (state.id !== expectedId) {
+		throw new Error(
+			`Ferment V2 verifier accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+		)
+	}
+	const previous = state.verifierUsage
+	return {
+		...state,
+		verifierUsage: {
+			runs: (previous?.runs ?? 0) + 1,
+			input: (previous?.input ?? 0) + usage.input,
+			output: (previous?.output ?? 0) + usage.output,
+			cacheRead: (previous?.cacheRead ?? 0) + usage.cacheRead,
+			cacheWrite: (previous?.cacheWrite ?? 0) + usage.cacheWrite,
+			totalTokens: (previous?.totalTokens ?? 0) + usage.totalTokens,
+			costUsd: (previous?.costUsd ?? 0) + usage.costUsd,
+		},
+		updatedAt: now,
+	}
+}
+
 export function recordFermentV2Evaluation(
 	state: FermentV2State,
 	expectedId: string,
@@ -127,6 +161,22 @@ export function recordFermentV2Evaluation(
 		lastEvaluation: evaluation,
 		updatedAt: now,
 	}
+}
+
+/**
+ * Persist that the user has been warned about the evaluator running on the
+ * implementer's model. Idempotent: the flag is never cleared once set, so the
+ * warning fires at most once per ferment (also across resume/replay).
+ */
+export function markFermentV2EvaluatorModelWarned(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	if (current.evaluatorModelWarned) return current
+	return { ...current, evaluatorModelWarned: true, updatedAt: now }
 }
 
 export function setFermentV2ConsecutiveErrorTurns(
@@ -223,6 +273,7 @@ function newFermentV2(
 	now: string,
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
+	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
 	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
@@ -239,6 +290,7 @@ function newFermentV2(
 		tokensUsed: 0,
 		...(presentation ? { presentation } : {}),
 		...(tokenBudget === undefined ? {} : { tokenBudget }),
+		...(baseline ? { baseline } : {}),
 		timeUsedMs: 0,
 		createdAt: now,
 		updatedAt: now,
@@ -276,6 +328,8 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 	)
 	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
 	const presentation = parseFermentV2Presentation(value.presentation)
+	const verifierUsage = parseFermentV2VerifierUsage(value.verifierUsage)
+	const baseline = parseFermentV2Baseline(value.baseline)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
@@ -286,6 +340,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		(value.presentation !== undefined && presentation === undefined) ||
 		(value.completionConfidence !== undefined && completionConfidence === undefined) ||
 		(value.evaluationCount !== undefined && !isNonNegativeInteger(value.evaluationCount)) ||
+		(value.evaluatorModelWarned !== undefined && value.evaluatorModelWarned !== true) ||
 		(value.consecutiveErrorTurns !== undefined && !isNonNegativeInteger(value.consecutiveErrorTurns)) ||
 		(value.unchangedContinuationTurns !== undefined && !isNonNegativeInteger(value.unchangedContinuationTurns)) ||
 		(value.tokensUsed !== undefined && !isNonNegativeInteger(value.tokensUsed)) ||
@@ -310,6 +365,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		...(completionConfidence && status === "complete" ? { completionConfidence } : {}),
 		...(value.evaluationCount === undefined ? {} : { evaluationCount: value.evaluationCount }),
 		...(lastEvaluation ? { lastEvaluation } : {}),
+		...(value.evaluatorModelWarned === true ? { evaluatorModelWarned: true } : {}),
 		...(value.consecutiveErrorTurns === undefined ? {} : { consecutiveErrorTurns: value.consecutiveErrorTurns }),
 		...(value.unchangedContinuationTurns === undefined
 			? {}
@@ -317,8 +373,46 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		tokensUsed: value.tokensUsed ?? 0,
 		...(value.tokenBudget === undefined ? {} : { tokenBudget: value.tokenBudget }),
 		timeUsedMs: value.timeUsedMs ?? 0,
+		...(verifierUsage ? { verifierUsage } : {}),
+		...(baseline ? { baseline } : {}),
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
+	}
+}
+
+function parseFermentV2Baseline(value: unknown): FermentV2Baseline | undefined {
+	if (value === undefined) return undefined
+	// A malformed baseline is dropped rather than rejecting the entry: the
+	// baseline is optional metadata, and a ferment without one simply verifies
+	// without baseline facts, flags, or a baseline worktree.
+	if (!isRecord(value) || !isNonEmptyString(value.commit) || !isNonEmptyString(value.capturedAt)) return undefined
+	return { commit: value.commit, capturedAt: value.capturedAt }
+}
+
+function parseFermentV2VerifierUsage(value: unknown): FermentV2VerifierUsage | undefined {
+	if (value === undefined) return undefined
+	if (
+		!isRecord(value) ||
+		!isNonNegativeInteger(value.runs) ||
+		!isNonNegativeInteger(value.input) ||
+		!isNonNegativeInteger(value.output) ||
+		!isNonNegativeInteger(value.cacheRead) ||
+		!isNonNegativeInteger(value.cacheWrite) ||
+		!isNonNegativeInteger(value.totalTokens) ||
+		typeof value.costUsd !== "number" ||
+		!Number.isFinite(value.costUsd) ||
+		value.costUsd < 0
+	) {
+		return undefined
+	}
+	return {
+		runs: value.runs,
+		input: value.input,
+		output: value.output,
+		cacheRead: value.cacheRead,
+		cacheWrite: value.cacheWrite,
+		totalTokens: value.totalTokens,
+		costUsd: value.costUsd,
 	}
 }
 
@@ -345,10 +439,12 @@ function parseFermentV2Evaluation(value: unknown): FermentV2Evaluation | undefin
 	const verdict = FERMENT_V2_EVALUATION_VERDICTS.find((candidate) => candidate === value.verdict)
 	if (!verdict || !isNonEmptyString(value.reason) || !isNonEmptyString(value.evaluatedAt)) return undefined
 	if (value.model !== undefined && !isNonEmptyString(value.model)) return undefined
+	if (value.sameModelAsImplementer !== undefined && value.sameModelAsImplementer !== true) return undefined
 	return {
 		verdict,
 		reason: value.reason,
 		...(typeof value.model === "string" ? { model: value.model } : {}),
+		...(value.sameModelAsImplementer === true ? { sameModelAsImplementer: true } : {}),
 		evaluatedAt: value.evaluatedAt,
 	}
 }

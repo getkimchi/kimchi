@@ -17,6 +17,8 @@ export interface FermentV2Evaluation {
 	verdict: FermentV2EvaluationVerdict
 	reason: string
 	model?: string
+	/** True when the evaluator ran on the implementer's own session model. */
+	sameModelAsImplementer?: boolean
 	evaluatedAt: string
 }
 
@@ -48,13 +50,41 @@ export interface SessionFermentV2 {
 	completionConfidence?: FermentV2CompletionConfidence
 	evaluationCount?: number
 	lastEvaluation?: FermentV2Evaluation
+	/** Set once the user has been warned that the evaluator runs on the implementer's model, so the warning fires once per ferment even across resume. */
+	evaluatorModelWarned?: boolean
 	consecutiveErrorTurns?: number
 	unchangedContinuationTurns?: number
 	tokensUsed: number
 	tokenBudget?: number
 	timeUsedMs: number
+	/** Cumulative executing-verifier usage, tracked separately from the implementer's tokens. */
+	verifierUsage?: FermentV2VerifierUsage
+	/** Working-tree snapshot the verifier's facts, flags, and baseline worktree are anchored to. */
+	baseline?: FermentV2Baseline
 	createdAt: string
 	updatedAt: string
+}
+
+export interface FermentV2VerifierUsage {
+	runs: number
+	input: number
+	output: number
+	cacheRead: number
+	cacheWrite: number
+	totalTokens: number
+	costUsd: number
+}
+
+/**
+ * Baseline snapshot of the working tree, captured when a ferment is created or
+ * replaced (approved-plan starts included): a snapshot commit of every
+ * untracked, non-ignored file alongside the tracked content. Absent outside a
+ * git repository or when the snapshot failed — verification then runs without
+ * baseline facts, flags, or a baseline worktree. Preserved on objective edit.
+ */
+export interface FermentV2Baseline {
+	commit: string
+	capturedAt: string
 }
 
 export type FermentV2JournalEntry =

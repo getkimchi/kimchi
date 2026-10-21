@@ -5,8 +5,10 @@ import {
 	AGENT_TOOL_GUIDELINES,
 	buildAutoResumeNote,
 	resolveRoleModelRef,
+	resumeFermentV2VerifierAgent,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
+	spawnFermentV2VerifierAgent,
 	spawnGraderAgent,
 	summaryForStatus,
 } from "./index.js"
@@ -924,6 +926,262 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
+	})
+})
+
+describe("spawnFermentV2VerifierAgent", () => {
+	const verifierModel = { provider: "kimchi-dev", id: "glm-5.3", name: "glm" } as Parameters<
+		typeof spawnFermentV2VerifierAgent
+	>[3]["model"]
+
+	afterEach(() => {
+		setActiveManagerForTest(undefined)
+	})
+
+	it("returns undefined without an active agent manager", async () => {
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toBeUndefined()
+	})
+
+	it("spawns the hidden Verifier persona with unlimited turns, model-only inactivity and the guard extension", async () => {
+		const spawnAndWait = vi.fn(
+			async (): Promise<{
+				id: string
+				result: string
+				status: string
+				toolUses: number
+				lastTurnCount: number
+			}> => ({ id: "verifier-1", result: '{"verdict":"met"}', status: "completed", toolUses: 3, lastTurnCount: 2 }),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const extensionFactories = [() => {}]
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories,
+			signal: new AbortController().signal,
+		})
+		expect(spawnAndWait).toHaveBeenCalledTimes(1)
+		const [, , type, prompt, options] = spawnAndWait.mock.calls[0] as unknown[]
+		expect(type).toBe("Verifier")
+		expect(prompt).toBe("verify the work")
+		expect(options).toMatchObject({
+			description: "Ferment V2 verifier",
+			visibility: "system",
+			model: verifierModel,
+			cwd: ctx.cwd,
+			// 0 = unlimited turns and wall clock for the verifier.
+			maxTurns: 0,
+			maxDuration: 0,
+			inactivityMode: "model_only",
+			thinkingLevel: "low",
+			extensionFactories,
+		})
+		// A configured thinking level replaces the low default.
+		await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify the work", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories,
+			signal: new AbortController().signal,
+			thinkingLevel: "max",
+		})
+		const [, , , , maxOptions] = spawnAndWait.mock.calls[1] as unknown[]
+		expect(maxOptions).toMatchObject({ thinkingLevel: "max" })
+		expect(run).toMatchObject({
+			id: "verifier-1",
+			text: '{"verdict":"met"}',
+			status: "completed",
+			toolCalls: 3,
+			turns: 2,
+		})
+	})
+
+	it("honours the optional wall-clock cap when one is given", async () => {
+		const spawnAndWait = vi.fn(
+			async (
+				_pi: unknown,
+				_ctx: unknown,
+				_type: string,
+				_prompt: string,
+				_options: { maxDuration?: number },
+			): Promise<{ id: string; result: string; status: string; toolUses: number; lastTurnCount: number }> => ({
+				id: "v",
+				result: "",
+				status: "completed",
+				toolUses: 0,
+				lastTurnCount: 0,
+			}),
+		)
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+			maxDuration: 120,
+		})
+		const options = spawnAndWait.mock.calls[0]?.[4]
+		expect(options?.maxDuration).toBe(120)
+	})
+
+	it("carries the error and abort reason through to the caller", async () => {
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-2",
+			result: "",
+			status: "error",
+			error: "429 rate limit",
+			toolUses: 0,
+			lastTurnCount: 0,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-2", status: "error", error: "429 rate limit" })
+	})
+
+	it("translates a terminal assistant error on a completed record into an error run", async () => {
+		// Upstream resolves a run normally after a terminal provider error (its
+		// in-session retries disabled or exhausted): the record is "completed"
+		// and the error survives only as the last assistant message.
+		const session = {
+			messages: [
+				{ role: "user", content: "verify" },
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" },
+			],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-3",
+			result: "",
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		// The evaluator's transient-failure retry policy keys off this error.
+		expect(run).toMatchObject({ id: "verifier-3", status: "error", error: "429 rate limit exceeded" })
+	})
+
+	it("keeps a completed record whose last assistant message recovered from an earlier error", async () => {
+		const session = {
+			messages: [
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "429 rate limit exceeded" },
+				{ role: "assistant", content: [{ type: "text", text: '{"verdict":"met"}' }], stopReason: "stop" },
+			],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-4",
+			result: '{"verdict":"met"}',
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 2,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-4", status: "completed" })
+		expect(run?.error).toBeUndefined()
+	})
+
+	it("keeps an aborted record even when its last assistant message is an error", async () => {
+		const session = {
+			messages: [{ role: "assistant", content: [], stopReason: "error", errorMessage: "aborted" }],
+		}
+		const spawnAndWait = vi.fn(async () => ({
+			id: "verifier-5",
+			result: "",
+			status: "aborted",
+			abortReason: "inactivity",
+			session,
+			toolUses: 0,
+			lastTurnCount: 0,
+		}))
+		setActiveManagerForTest({ spawnAndWait } as unknown as MockedAgentManager)
+		const ctx = createContext()
+		const run = await spawnFermentV2VerifierAgent(makeMockPi(), ctx, "verify", {
+			model: verifierModel,
+			cwd: ctx.cwd,
+			extensionFactories: [],
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-5", status: "aborted", abortReason: "inactivity" })
+	})
+
+	it("resumes the verifier with the same unlimited limits", async () => {
+		const resume = vi.fn(async () => ({
+			id: "verifier-1",
+			result: '{"verdict":"continue"}',
+			status: "completed",
+			toolUses: 1,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("verifier-1", "correction prompt", {
+			signal: new AbortController().signal,
+		})
+		expect(resume).toHaveBeenCalledWith(
+			"verifier-1",
+			"correction prompt",
+			expect.objectContaining({ maxTurns: 0, maxDuration: 0, inactivityMode: "model_only" }),
+		)
+		expect(run).toMatchObject({ id: "verifier-1", text: '{"verdict":"continue"}', toolCalls: 1, turns: 1 })
+	})
+
+	it("translates a terminal assistant error on a completed resume record", async () => {
+		const session = {
+			messages: [
+				{ role: "user", content: "correction" },
+				{ role: "assistant", content: [], stopReason: "error", errorMessage: "500 internal server error" },
+			],
+		}
+		const resume = vi.fn(async () => ({
+			id: "verifier-1",
+			result: "",
+			status: "completed",
+			session,
+			toolUses: 0,
+			lastTurnCount: 1,
+		}))
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("verifier-1", "correction prompt", {
+			signal: new AbortController().signal,
+		})
+		expect(run).toMatchObject({ id: "verifier-1", status: "error", error: "500 internal server error" })
+	})
+
+	it("returns undefined when the resume finds no record", async () => {
+		const resume = vi.fn(async () => undefined)
+		setActiveManagerForTest({ resume } as unknown as MockedAgentManager)
+		const run = await resumeFermentV2VerifierAgent("missing", "correction", {
+			signal: new AbortController().signal,
+		})
+		expect(run).toBeUndefined()
 	})
 })
 

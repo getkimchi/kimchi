@@ -784,6 +784,8 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			verdict: "continue",
 			count: 2,
 			model: "test/judge",
+			sameModelAsImplementer: true,
+			modelFallback: "session",
 			reason: "private evaluator rationale",
 			usage: {
 				input: 20,
@@ -812,6 +814,8 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 			verdict: "continue",
 			evaluation_count: "2",
 			evaluator_model: "test/judge",
+			same_model_as_implementer: "true",
+			model_fallback: "session",
 			duration_ms: "123",
 			timeout_ms: "600000",
 			provider_request_count: "2",

@@ -28,6 +28,7 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	plan_gate: "config",
 	builtin_safe: "config",
 	readonly: "config",
+	preapproved: "config",
 	ferment_internal: "config",
 	compound_rule: "config",
 	rule: "config",

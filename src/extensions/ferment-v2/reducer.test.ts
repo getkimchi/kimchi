@@ -5,8 +5,10 @@ import {
 	clearFermentV2Entry,
 	createFermentV2,
 	editFermentV2,
+	markFermentV2EvaluatorModelWarned,
 	putFermentV2Entry,
 	recordFermentV2Evaluation,
+	recordFermentV2VerifierUsage,
 	replaceFermentV2,
 	restoreFermentV2,
 	setFermentV2ConsecutiveErrorTurns,
@@ -16,6 +18,7 @@ import {
 
 const T1 = "2026-07-16T10:00:00.000Z"
 const T2 = "2026-07-16T10:01:00.000Z"
+const T3 = "2026-07-16T10:02:00.000Z"
 
 describe("Ferment V2 reducer", () => {
 	it("assigns a short plan name without shortening the execution objective", () => {
@@ -170,6 +173,82 @@ describe("Ferment V2 reducer", () => {
 		)
 	})
 
+	it("accumulates verifier usage per run while rejecting another Ferment V2 ID", () => {
+		const fermentV2 = createFermentV2(undefined, "old", "ferment-v2-a", T1)
+		const first = recordFermentV2VerifierUsage(
+			fermentV2,
+			"ferment-v2-a",
+			{
+				input: 10,
+				output: 5,
+				cacheRead: 2,
+				cacheWrite: 1,
+				totalTokens: 18,
+				costUsd: 0.33,
+			},
+			T2,
+		)
+		const second = recordFermentV2VerifierUsage(
+			first,
+			"ferment-v2-a",
+			{
+				input: 1,
+				output: 2,
+				cacheRead: 3,
+				cacheWrite: 4,
+				totalTokens: 10,
+				costUsd: 0.1,
+			},
+			T3,
+		)
+
+		expect(second.verifierUsage).toMatchObject({
+			runs: 2,
+			input: 11,
+			output: 7,
+			cacheRead: 5,
+			cacheWrite: 5,
+			totalTokens: 28,
+		})
+		expect(second.verifierUsage?.costUsd).toBeCloseTo(0.43, 10)
+		expect(second.updatedAt).toBe(T3)
+		// Verifier usage is tracked separately from the ferment's token accounting.
+		expect(second.tokensUsed).toBe(0)
+		expect(restoreFermentV2([putFermentV2Entry(second)])).toEqual(second)
+		expect(() =>
+			recordFermentV2VerifierUsage(
+				second,
+				"ferment-v2-b",
+				{
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					costUsd: 0,
+				},
+				T3,
+			),
+		).toThrow(/current Ferment V2 is ferment-v2-a/)
+	})
+
+	it("round-trips the baseline through the journal and preserves it on objective edit", () => {
+		const baseline = { commit: "snapshot-commit", capturedAt: T1 }
+		const run = createFermentV2(undefined, "old", "ferment-v2-a", T1, undefined, undefined, baseline)
+		expect(run.baseline).toEqual(baseline)
+		expect(restoreFermentV2([putFermentV2Entry(run)])).toEqual(run)
+		const edited = editFermentV2(run, "ferment-v2-a", 1, "new objective", T2)
+		expect(edited.baseline).toEqual(baseline)
+		const replaced = replaceFermentV2("new objective", "ferment-v2-b", T2, undefined, undefined, {
+			commit: "replacement-snapshot",
+			capturedAt: T2,
+		})
+		expect(replaced.baseline).toEqual({ commit: "replacement-snapshot", capturedAt: T2 })
+		// A malformed baseline is dropped on restore instead of rejecting the entry.
+		const restored = restoreFermentV2([{ ...putFermentV2Entry(run), fermentV2: { ...run, baseline: { commit: "" } } }])
+		expect(restored?.baseline).toBeUndefined()
+	})
+
 	it("re-applies the budget check when resuming a Ferment V2 that is already over budget", () => {
 		const fermentV2 = createFermentV2(undefined, "old", "ferment-v2-a", T1, 1_500)
 		const overBudget = addFermentV2Accounting(fermentV2, "ferment-v2-a", 1_500, 1_000, T2)
@@ -279,6 +358,43 @@ describe("Ferment V2 reducer", () => {
 				T2,
 			),
 		).toThrow(/current Ferment V2 is ferment-v2-a revision 1/)
+	})
+
+	it("persists the same-model-as-implementer evaluation flag through replay", () => {
+		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
+		const evaluated = recordFermentV2Evaluation(
+			fermentV2,
+			"ferment-v2-a",
+			1,
+			{
+				verdict: "met",
+				reason: "all checks pass",
+				model: "test/session",
+				sameModelAsImplementer: true,
+				evaluatedAt: T2,
+			},
+			T2,
+		)
+
+		expect(restoreFermentV2([putFermentV2Entry(evaluated)])).toEqual(evaluated)
+		expect(evaluated.lastEvaluation).toMatchObject({ model: "test/session", sameModelAsImplementer: true })
+	})
+
+	it("marks the evaluator-model warning once and keeps it across replay and edits", () => {
+		const fermentV2 = createFermentV2(undefined, "ship", "ferment-v2-a", T1)
+		const warned = markFermentV2EvaluatorModelWarned(fermentV2, "ferment-v2-a", 1, T2)
+		const warnedAgain = markFermentV2EvaluatorModelWarned(warned, "ferment-v2-a", 1, T3)
+
+		expect(warned).toMatchObject({ evaluatorModelWarned: true, updatedAt: T2 })
+		expect(warnedAgain).toBe(warned)
+		expect(restoreFermentV2([putFermentV2Entry(warned)])).toEqual(warned)
+
+		const edited = editFermentV2(warned, "ferment-v2-a", 1, "revised", T3)
+		expect(edited.evaluatorModelWarned).toBe(true)
+
+		expect(() => markFermentV2EvaluatorModelWarned(warned, "ferment-v2-a", 2, T3)).toThrow(
+			/current Ferment V2 is ferment-v2-a revision 1/,
+		)
 	})
 
 	it.each([

@@ -86,6 +86,19 @@ Persistent objective continuation is enabled.
 		)
 	})
 
+	it("names update_ferment_v2 as the way to finish on every continuation", () => {
+		for (const prompt of [
+			buildFermentV2Continuation(),
+			buildFermentV2Continuation(true, "More verification is required."),
+			buildFermentV2ErrorContinuation(),
+			buildFermentV2StartSteer("created"),
+		]) {
+			expect(prompt).toContain(
+				"When every objective requirement is done and verified, settle your Todos and submit the objective with update_ferment_v2",
+			)
+		}
+	})
+
 	it("keeps controller mechanics out of model-facing prose", () => {
 		const editSteer = buildFermentV2EditSteer({ ...fermentV2("ship the parser"), revision: 2 })
 		const prompts = [

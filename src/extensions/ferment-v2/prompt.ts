@@ -1,5 +1,5 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME } from "./constants.js"
+import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
 import { FERMENT_V2_STATUS, type SessionFermentV2 } from "./types.js"
 
@@ -16,6 +16,7 @@ const EXECUTION_GUIDANCE = `Working rules:
 - ${FINAL_DELIVERY_TODO_RULE}
 - If the objective asks for an artifact, create a usable version early.
 - Timebox uncertain exploration; preserve what you learn and change approach when stalled.
+- When every objective requirement is done and verified, settle your Todos and submit the objective with ${UPDATE_FERMENT_V2_TOOL_NAME}; ending a turn without submitting keeps the objective open.
 - ${TASK_ONLY_COMMUNICATION_RULE}
 - End the turn after a meaningful completed Todo or timeboxed failed approach so the next checkpoint can reassess.`
 

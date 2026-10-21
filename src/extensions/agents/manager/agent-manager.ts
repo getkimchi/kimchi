@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { basename } from "node:path"
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ExtensionAPI, ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { resolveWorkspaceSpec } from "../../../sandbox/cloud/spec.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
@@ -32,6 +32,7 @@ import type { RemoteRunState } from "../remote-run-persistence.js"
 import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { WorkerReportSubmission } from "../worker-report.js"
 import {
+	type InactivityMode,
 	MIN_FINALIZE_TOKEN_BUDGET,
 	MIN_TOKEN_BUDGET,
 	type RunResult,
@@ -76,6 +77,12 @@ interface SpawnOptions {
 	visibility?: AgentVisibility
 	model?: Model<Api>
 	maxTurns?: number
+	/** Override working directory for the child session (defaults to ctx.cwd). */
+	cwd?: string
+	/** Inline extensions appended to the child session's loader (load even with extensions disabled). */
+	extensionFactories?: InlineExtension[]
+	/** How inactivity is accounted; "model_only" keeps a running tool from counting as inactivity. */
+	inactivityMode?: InactivityMode
 	isolated?: boolean
 	inheritContext?: boolean
 	thinkingLevel?: ThinkingLevel
@@ -295,7 +302,10 @@ export class AgentManager {
 					maxTurns: options.maxTurns,
 					tokenBudget: options.tokenBudget,
 					inactivityTimeout: options.inactivityTimeout,
+					inactivityMode: options.inactivityMode,
 					maxDuration: options.maxDuration,
+					cwd: options.cwd,
+					extensionFactories: options.extensionFactories,
 					workerReport: record.taskRef
 						? {
 								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
@@ -753,6 +763,7 @@ export class AgentManager {
 			maxTurns?: number
 			tokenBudget?: number
 			inactivityTimeout?: number
+			inactivityMode?: InactivityMode
 			maxDuration?: number
 			purpose?: "continuation" | "finalize_report"
 		} = {},
@@ -829,6 +840,7 @@ export class AgentManager {
 			tokenBudget: attemptTokenBudget,
 			minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
 			inactivityTimeout: options.inactivityTimeout,
+			inactivityMode: options.inactivityMode,
 			maxDuration: attemptLimits.maxDuration,
 			hardTurnLimit: record.taskRef?.kind === "ferment_step",
 			shouldTerminateAfterTool: (toolName) =>

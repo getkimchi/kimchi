@@ -1,7 +1,7 @@
-import { formatCount } from "../format.js"
+import { formatCount, formatDuration } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import { deriveFermentV2Name } from "./name.js"
-import type { SessionFermentV2 } from "./types.js"
+import type { FermentV2Evaluation, SessionFermentV2 } from "./types.js"
 
 export type FermentV2Command =
 	| { action: "show" }
@@ -10,8 +10,13 @@ export type FermentV2Command =
 	| { action: "pause" }
 	| { action: "resume" }
 	| { action: "clear" }
+	| { action: "verify"; objectiveFile: string; out: string; baseline?: string }
 
+/** Visible completions; the headless `--verify` entry is deliberately not listed. */
 export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
+
+const VERIFY_USAGE = `Usage: /${FERMENT_V2_COMMAND_NAME} --verify --objective-file <path> [--baseline <rev>] --out <path>`
+const VERIFY_FLAGS = ["objective-file", "out", "baseline"] as const
 
 export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
 	if (!fermentV2) return undefined
@@ -23,9 +28,20 @@ export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, e
 	return `◈ ${label}: ${state} · ${title}${hint}`
 }
 
+/**
+ * Status line while the executing verifier runs: model, elapsed time, and the
+ * warning that concurrent user edits may be reverted by the integrity guard.
+ */
+export function formatFermentV2VerifyingStatus(model: string | undefined, elapsedMs: number): string {
+	return `◈ Ferment V2: verifying · ${model ?? "…"} · ${formatDuration(Math.max(0, elapsedMs))} · file edits may be reverted`
+}
+
 export function parseFermentV2Command(args: string): FermentV2Command {
 	const trimmed = args.trim()
 	if (!trimmed) return { action: "show" }
+	// Only a leading `--verify` flag selects the headless entry, so an objective
+	// such as "verify the login flow" stays an objective.
+	if (/^--verify(?:\s|$)/i.test(trimmed)) return parseVerifyCommand(trimmed.slice("--verify".length))
 	const [first, ...rest] = trimmed.split(/\s+/)
 	const action = first.toLowerCase()
 	if (action === "edit") {
@@ -57,10 +73,22 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 		approvedPlan ? `Plan: ${approvedPlan.planPath ?? "no saved file"}` : `Objective: ${fermentV2.objective}`,
 		`${approvedPlan ? "Run time" : "Fermenting time"}: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
-		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),
+		...(fermentV2.verifierUsage
+			? [
+					`Verifier: ${fermentV2.verifierUsage.runs} run${fermentV2.verifierUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.verifierUsage.totalTokens)} tokens · $${fermentV2.verifierUsage.costUsd.toFixed(2)}`,
+				]
+			: []),
+		...(evaluation
+			? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}${formatFermentV2EvaluatorModel(evaluation)}`]
+			: []),
 		"",
 		`Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
+}
+
+function formatFermentV2EvaluatorModel(evaluation: FermentV2Evaluation): string {
+	if (!evaluation.model) return ""
+	return ` (evaluator: ${evaluation.model}${evaluation.sameModelAsImplementer ? ", same as implementer" : ""})`
 }
 
 export function formatFermentV2Accounting(fermentV2: SessionFermentV2, liveElapsedMs = 0): string {
@@ -84,6 +112,47 @@ function fermentV2Commands(fermentV2: SessionFermentV2): string {
 		return `/${FERMENT_V2_COMMAND_NAME} edit, /${FERMENT_V2_COMMAND_NAME} resume, /${FERMENT_V2_COMMAND_NAME} clear`
 	}
 	return `/${FERMENT_V2_COMMAND_NAME} <objective>, /${FERMENT_V2_COMMAND_NAME} clear`
+}
+
+/**
+ * Split arguments on whitespace, shell-style: a token is a run of unquoted
+ * and single- or double-quoted segments (`--out="a b.json"`, `"a b".json`),
+ * with the quotes removed — so paths with spaces can be passed.
+ */
+function tokenizeArguments(input: string): string[] {
+	const tokens: string[] = []
+	for (const match of input.matchAll(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)) {
+		tokens.push(
+			match[0].replace(/"([^"]*)"|'([^']*)'/g, (_quoted, double: string | undefined, single: string | undefined) => {
+				return double ?? single ?? ""
+			}),
+		)
+	}
+	return tokens
+}
+
+function parseVerifyCommand(input: string): FermentV2Command {
+	const values: Partial<Record<(typeof VERIFY_FLAGS)[number], string>> = {}
+	const tokens = tokenizeArguments(input)
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]
+		const match = /^--([a-z-]+)(?:=(.*))?$/.exec(token)
+		const name = VERIFY_FLAGS.find((flag) => flag === match?.[1])
+		if (!match || !name) throw new Error(`Unknown --verify argument "${token}". ${VERIFY_USAGE}`)
+		const value = match[2] ?? tokens[++i]
+		if (!value || value.startsWith("--")) throw new Error(`--${name} needs a value. ${VERIFY_USAGE}`)
+		if (values[name] !== undefined) throw new Error(`--${name} was given more than once. ${VERIFY_USAGE}`)
+		values[name] = value
+	}
+	const objectiveFile = values["objective-file"]
+	if (!objectiveFile) throw new Error(`--objective-file is required. ${VERIFY_USAGE}`)
+	if (!values.out) throw new Error(`--out is required. ${VERIFY_USAGE}`)
+	return {
+		action: "verify",
+		objectiveFile,
+		out: values.out,
+		...(values.baseline ? { baseline: values.baseline } : {}),
+	}
 }
 
 function parseTokenBudget(input: string): { objective: string; tokenBudget?: number } {

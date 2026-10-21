@@ -212,11 +212,11 @@ Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimc
 
 Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
 
-At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an independent tool-free evaluator returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
+At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an executing verifier subagent (read/bash/grep/find/ls, unlimited turns and duration) returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
 
 Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled, and records each check in a child session. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count, latest verdict/reason, and the verifier usage breakdown; the executing verifier runs on the first usable model from `evaluatorModels` that is not the implementer's session model, in a hidden child session that executes checks in the working tree. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
 
 ### Settings
 
@@ -229,7 +229,7 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
     "maxUnchangedContinuations": 3,
     "maxConsecutiveErrors": 3,
     "defaultTokenBudget": 200000,
-    "evaluationTimeoutMs": 180000
+    "evaluatorModels": ["kimchi-dev/glm-5.3", "kimchi-dev/kimi-k3"]
   }
 }
 ```
@@ -240,9 +240,10 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
 | `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
 | `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
 | `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
-| `evaluationTimeoutMs` | `180000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+| `evaluationTimeoutMs` | unset | Optional wall-clock cap on one executing-verifier run, in milliseconds. Default: no cap. A timed-out verifier run is not retried. |
+| `evaluatorModels` | `["kimchi-dev/glm-5.3", "kimchi-dev/kimi-k3"]` | Ordered model refs for the executing verifier. The first usable entry that is not the implementer's session model wins; the session model is the fallback. |
 
-Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. The full verifier evidence, integrity-guard, and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
 ## Ferment -- cross-session project management
 

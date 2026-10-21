@@ -50,6 +50,10 @@ export type FermentV2EvaluatorFailureType =
 	| "cancelled"
 	| "truncated_output"
 	| "invalid_output"
+	| "agent_unavailable"
+	| "guard_violation"
+	| "procedure_incomplete"
+	| "uncited_verdict"
 	| "budget_exhausted"
 	| "rate_limit"
 	| "transport_failure"
@@ -71,6 +75,10 @@ export interface FermentV2EvaluatedPayload {
 	verdict: "continue" | "met" | "impossible" | "unavailable"
 	count: number
 	model?: string
+	/** True when the evaluator ran on the implementer's own session model. */
+	sameModelAsImplementer?: boolean
+	/** Set when the configured evaluator models were all unusable and the session model was used instead. */
+	modelFallback?: "session"
 	usage?: FermentV2EvaluatorUsage
 	durationMs: number
 	timeoutMs: number
@@ -79,6 +87,14 @@ export interface FermentV2EvaluatedPayload {
 	correctionCount: number
 	failureType?: FermentV2EvaluatorFailureType
 	httpStatusCode?: number
+	/** Verifier run stats: tool calls executed by the verifier session. */
+	toolCalls?: number
+	/** Verifier run stats: turns used by the verifier session. */
+	turns?: number
+	/** Working-tree files the integrity guard restored after the verifier run. */
+	restoredFiles?: readonly string[]
+	/** Working-tree files the integrity guard removed after the verifier run. */
+	removedFiles?: readonly string[]
 }
 
 export interface FermentV2ContextChangedPayload {

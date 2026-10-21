@@ -5,6 +5,7 @@ import {
 	formatFermentV2Duration,
 	formatFermentV2Status,
 	formatFermentV2Summary,
+	formatFermentV2VerifyingStatus,
 	parseFermentV2Command,
 } from "./command.js"
 import { FERMENT_V2_STATUSES, type FermentV2Status, type SessionFermentV2 } from "./types.js"
@@ -43,6 +44,37 @@ describe("Ferment V2 command", () => {
 
 	it("offers the required argument completions", () => {
 		expect(FERMENT_V2_COMMAND_COMPLETIONS).toEqual(["edit", "pause", "resume", "clear"])
+	})
+
+	it("parses the headless --verify entry and keeps verify-like objectives as objectives", () => {
+		expect(parseFermentV2Command("--verify --objective-file obj.md --out report.json")).toEqual({
+			action: "verify",
+			objectiveFile: "obj.md",
+			out: "report.json",
+		})
+		expect(
+			parseFermentV2Command('--verify --objective-file="my obj.md" --baseline HEAD~1 --out "out dir/r.json"'),
+		).toEqual({ action: "verify", objectiveFile: "my obj.md", out: "out dir/r.json", baseline: "HEAD~1" })
+		expect(parseFermentV2Command("verify the login flow")).toEqual({
+			action: "set",
+			objective: "verify the login flow",
+		})
+		expect(parseFermentV2Command("ship it --verify")).toEqual({ action: "set", objective: "ship it --verify" })
+	})
+
+	it("rejects incomplete, repeated, or unknown --verify arguments with the usage", () => {
+		expect(() => parseFermentV2Command("--verify")).toThrow("Usage: /ferment-v2 --verify --objective-file")
+		expect(() => parseFermentV2Command("--verify --out r.json")).toThrow("--objective-file is required")
+		expect(() => parseFermentV2Command("--verify --objective-file o.md")).toThrow("--out is required")
+		expect(() => parseFermentV2Command("--verify --objective-file --out r.json")).toThrow(
+			"--objective-file needs a value",
+		)
+		expect(() => parseFermentV2Command("--verify --objective-file o.md --out a --out b")).toThrow(
+			"--out was given more than once",
+		)
+		expect(() => parseFermentV2Command("--verify --objective-file o.md --out r.json --tokens 5k")).toThrow(
+			'Unknown --verify argument "--tokens"',
+		)
 	})
 
 	it("formats the empty state and every Ferment V2 status", () => {
@@ -104,6 +136,36 @@ describe("Ferment V2 command", () => {
 		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
 	})
 
+	it("shows the verifying model, elapsed time and revert warning while the verifier runs", () => {
+		expect(formatFermentV2VerifyingStatus(undefined, 0)).toBe(
+			"◈ Ferment V2: verifying · … · 0ms · file edits may be reverted",
+		)
+		expect(formatFermentV2VerifyingStatus("judge/independent", 5_000)).toBe(
+			"◈ Ferment V2: verifying · judge/independent · 5.0s · file edits may be reverted",
+		)
+		expect(formatFermentV2VerifyingStatus("judge/independent", -1_000)).toBe(
+			"◈ Ferment V2: verifying · judge/independent · 0ms · file edits may be reverted",
+		)
+	})
+
+	it("shows the verifier usage breakdown in the full command summary", () => {
+		const verified = {
+			...fermentV2("active"),
+			evaluationCount: 2,
+			verifierUsage: {
+				runs: 2,
+				input: 4_000,
+				output: 1_000,
+				cacheRead: 500,
+				cacheWrite: 200,
+				totalTokens: 5_700,
+				costUsd: 0.0512,
+			},
+		}
+		expect(formatFermentV2Summary(verified)).toContain("Verifier: 2 runs · 5.7k tokens · $0.05")
+		expect(formatFermentV2Summary(fermentV2("active"))).not.toContain("Verifier:")
+	})
+
 	it("shows evaluation details only in the full command summary", () => {
 		const evaluated = {
 			...fermentV2("active"),
@@ -116,9 +178,26 @@ describe("Ferment V2 command", () => {
 			},
 		}
 		expect(formatFermentV2Summary(evaluated)).toContain(
-			"Evaluations: 2\nLast evaluation: continue — missing smoke test",
+			"Evaluations: 2\nLast evaluation: continue — missing smoke test (evaluator: test/judge)",
 		)
+		expect(formatFermentV2Summary(evaluated)).not.toContain("same as implementer")
 		expect(formatFermentV2Accounting(evaluated)).toBe("<1m · 1.5k tokens")
+	})
+
+	it("marks the evaluator model as the implementer's in the summary", () => {
+		const evaluated = {
+			...fermentV2("active"),
+			lastEvaluation: {
+				verdict: "met" as const,
+				reason: "all checks pass",
+				model: "test/session",
+				sameModelAsImplementer: true,
+				evaluatedAt: "2026-07-16T10:02:00.000Z",
+			},
+		}
+		expect(formatFermentV2Summary(evaluated)).toContain(
+			"Last evaluation: met — all checks pass (evaluator: test/session, same as implementer)",
+		)
 	})
 
 	it("shows a bounded name in the footer and the complete objective in the summary", () => {
