@@ -19,7 +19,10 @@ function respond(status: SteeringStatus): SteeringResponse {
 	return { status }
 }
 
-function readTarget(getTarget: (sessionId: string) => SessionTurnTarget | undefined, sessionId: string): SessionTurnTarget {
+function readTarget(
+	getTarget: (sessionId: string) => SessionTurnTarget | undefined,
+	sessionId: string,
+): SessionTurnTarget {
 	const target = getTarget(sessionId)
 	if (!target) {
 		throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
