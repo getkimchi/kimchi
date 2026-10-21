@@ -83,12 +83,12 @@ const BUDGET = {
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 5911,
-	/** Print-mode slice (16 tools — the canonical surface minus questionnaire
+	toolSurface: 6200,
+	/** Print-mode slice (17 tools — the canonical surface minus questionnaire
 	 *  and set_phase, which the registration gates drop in headless --print
-	 *  runs; includes the redesigned bash_control schema, with ~1.5%
-	 *  headroom over measured 5059). */
-	printToolSurface: 5131,
+	 *  runs; includes the redesigned bash_control schema and the
+	 *  confirm_todos check-in tool, with ~1% headroom over measured). */
+	printToolSurface: 5470,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -256,6 +256,7 @@ describe("context budget", () => {
 				"mark_todo",
 				"add_todo",
 				"clear_todos",
+				"confirm_todos",
 				"web_search",
 				"web_fetch",
 				"questionnaire",
@@ -304,7 +305,7 @@ describe("context budget", () => {
 		// mode the registration gates must remove exactly these two.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
 		expect(names.has("set_phase"), "set_phase must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(16)
+		expect(tools.length).toBe(17)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

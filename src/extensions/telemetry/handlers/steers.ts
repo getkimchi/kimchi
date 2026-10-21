@@ -29,7 +29,15 @@ const FIRED_ATTR_KEYS = [
 	"is_subagent",
 	"interactive",
 ] as const
-const OUTCOME_ATTR_KEYS = ["kind", "outcome", "steer_id", "turns_to_outcome", "is_subagent", "interactive"] as const
+const OUTCOME_ATTR_KEYS = [
+	"kind",
+	"outcome",
+	"method",
+	"steer_id",
+	"turns_to_outcome",
+	"is_subagent",
+	"interactive",
+] as const
 const ABORTED_ATTR_KEYS = ["kind", "reason", "steer_id", "is_subagent", "interactive"] as const
 
 export function handleSteerFired(ctx: TelemetryContext, raw: unknown): void {
@@ -62,6 +70,7 @@ export function handleSteerOutcome(ctx: TelemetryContext, raw: unknown): void {
 	ctx.emit("steer.outcome", {
 		kind: payload.kind,
 		outcome: payload.outcome,
+		...(typeof payload.method === "string" ? { method: payload.method } : {}),
 		...(typeof payload.steer_id === "string" ? { steer_id: payload.steer_id } : {}),
 		...(typeof payload.turns_to_outcome === "number" ? { turns_to_outcome: payload.turns_to_outcome } : {}),
 		is_subagent: payload.is_subagent === true,

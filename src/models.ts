@@ -15,6 +15,7 @@ import {
 	stripDeprecationMarker,
 	writeModelDeprecations,
 } from "./model-deprecation.js"
+import { normalizeThinkingLevels } from "./thinking-levels.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -152,6 +153,12 @@ export interface ModelMetadata {
 	/** Optional human-facing description from the models endpoint; shown in the
 	 *  /model selector's DESCRIPTION column. Absent until the backend sends it. */
 	description?: string
+	/** Curation state from the models endpoint — tri-state: omitted for
+	 *  uncurated models (clients must not infer levels), the explicit empty
+	 *  array for curated models whose thinking offers no distinct levels
+	 *  (provider default, no level controls), populated with the curated
+	 *  levels otherwise (canonical rank order). */
+	thinking_levels?: string[]
 	deprecated_at?: string
 	sunset_at?: string
 	replacement_model?: string
@@ -270,6 +277,12 @@ export interface PiModelConfig {
 	 *  offline cache round-trip keeps it; pi's loader ignores the extra key
 	 *  (verified: ModelConfig tolerates unknown model fields). */
 	description?: string
+	/** Curation state from the models endpoint — tri-state, persisted for the
+	 *  offline cache round-trip: undefined for uncurated models, the explicit
+	 *  empty array for curated-none ("thinking exists but offers no distinct
+	 *  levels"), populated with the curated levels otherwise. pi's loader
+	 *  ignores the extra key (verified: ModelConfig tolerates unknown fields). */
+	thinkingLevels?: string[]
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -318,6 +331,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		provider: m.provider,
 		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
+		...(Array.isArray(m.thinking_levels) && { thinkingLevels: normalizeThinkingLevels(m.thinking_levels) }),
 		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
@@ -401,10 +415,11 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 		is_serverless: true,
 		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
 		...(m.description ? { description: m.description } : {}),
+		...(m.thinkingLevels !== undefined ? { thinking_levels: m.thinkingLevels } : {}),
 	}
 }
 
-// ─── Model description registry ─────────────────────────────────────────────
+// ─── Model metadata registries (description + thinking levels) ──────────────
 //
 // The /model selector's DESCRIPTION column reads descriptions from a process
 // global (`__kimchiModelDescriptions`) — the same channel the patched selector
@@ -412,6 +427,14 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 // modules. Keyed by "<provider block>/<model id>" — exactly what the selector
 // row sees. Fresh metadata replaces cached descriptions; Auto fallback text
 // is inserted only when the current catalog has no description.
+//
+// Curated thinking levels use a parallel process-global registry
+// (`__kimchiModelThinkingLevels`), keyed by the same refs and carrying the
+// tri-state: absent entry = not curated, empty array = curated-none
+// ("thinking exists but offers no distinct levels"), populated = curated
+// levels. The registries are populated/cleared independently: a refresh that
+// drops one field must not disturb the other, and description-only writes
+// (the Auto fallback) leave existing levels intact.
 
 type ModelDescriptionRegistry = Map<string, string>
 
@@ -455,18 +478,52 @@ export function __clearModelDescriptionsForTest(): void {
 	syntheticMarkerKeys().clear()
 }
 
-/** Register every model description found in models.json provider blocks.
- * Shared with the environment models path (KIMCHI_API_KEY sessions), which
- * bypasses updateModelsConfig and must still populate the
- * /model selector's description registry. */
-export function registerDescriptionsFromProviders(
-	providers: Record<string, { models?: Array<{ id: string; description?: string }> }>,
+type ModelThinkingLevelsRegistry = Map<string, string[]>
+
+function modelThinkingLevelsRegistry(): ModelThinkingLevelsRegistry {
+	const globals = process as typeof process & { __kimchiModelThinkingLevels?: ModelThinkingLevelsRegistry }
+	if (!(globals.__kimchiModelThinkingLevels instanceof Map)) {
+		globals.__kimchiModelThinkingLevels = new Map()
+	}
+	return globals.__kimchiModelThinkingLevels
+}
+
+/** Register authoritative thinking-level curation, replacing earlier cache
+ * data. Pass the empty array for curated-none; normalization keeps unknown
+ * levels from masquerading as curation. */
+export function registerModelThinkingLevels(key: string, levels: string[]): void {
+	modelThinkingLevelsRegistry().set(key, normalizeThinkingLevels(levels))
+}
+
+/** Thinking-level curation for a model ref — tri-state: undefined when not
+ * curated, the empty array for curated-none, the curated levels otherwise. */
+export function getModelThinkingLevels(key: string): string[] | undefined {
+	return modelThinkingLevelsRegistry().get(key)
+}
+
+/** @internal — test hook clearing the process-global registry. */
+export function __clearModelThinkingLevelsForTest(): void {
+	modelThinkingLevelsRegistry().clear()
+}
+
+/** Register every model's description and thinking levels found in models.json
+ * provider blocks. Shared with the environment models path (KIMCHI_API_KEY
+ * sessions), which bypasses updateModelsConfig and must still populate the
+ * /model selector's registries. Each field is registered or cleared
+ * independently, so a refresh that drops one preserves the other. */
+export function registerModelInfoFromProviders(
+	providers: Record<string, { models?: Array<{ id: string; description?: string; thinkingLevels?: string[] }> }>,
 ): void {
 	for (const [block, provider] of Object.entries(providers)) {
 		for (const model of provider?.models ?? []) {
 			const key = `${block}/${model.id}`
 			if (model.description) registerModelDescription(key, model.description)
 			else modelDescriptionRegistry().delete(key)
+			// Tri-state: an entry is registered whenever curation exists — the
+			// empty array included (curated-none) — and cleared when the field
+			// is absent (uncurated).
+			if (Array.isArray(model.thinkingLevels)) registerModelThinkingLevels(key, model.thinkingLevels)
+			else modelThinkingLevelsRegistry().delete(key)
 		}
 	}
 }
@@ -552,9 +609,10 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const parsed = JSON.parse(raw)
 		const providers = parsed?.providers ?? {}
-		// Restore the description registry from the persisted cache so the
-		// /model selector keeps descriptions across offline restarts.
-		registerDescriptionsFromProviders(providers)
+		// Restore the metadata registries from the persisted cache so the
+		// /model selector keeps descriptions and thinking levels across offline
+		// restarts.
+		registerModelInfoFromProviders(providers)
 		registerAutoDescriptionFallback()
 		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
@@ -664,9 +722,9 @@ export async function updateModelsConfig(
 		mkdirSync(dirname(modelsJsonPath), { recursive: true })
 		const merged = { providers: { ...readExistingProviders(modelsJsonPath), ...result.providers } }
 		writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-		// Populate the selector's description registry from the freshly written
-		// blocks (the fetch path — endpoint descriptions land here first).
-		registerDescriptionsFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
+		// Populate the selector's metadata registries from the freshly written
+		// blocks (the fetch path — endpoint descriptions and levels land here first).
+		registerModelInfoFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
 		registerAutoDescriptionFallback()
 		registerDeprecationMarkers(modelsJsonPath)
 	}

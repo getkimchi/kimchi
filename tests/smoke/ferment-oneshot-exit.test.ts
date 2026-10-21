@@ -161,6 +161,26 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 			],
 		},
 		{
+			// Starting the step seeds its todo list (title anchor); the check-in
+			// gate requires reconciling that list before work tools run, and the
+			// step-start result itself asks for a brief plan — write it into the
+			// step list (auto-scoped while exactly one step runs) before spawning
+			// the linked worker.
+			stream: ["Planning the step before spawning the worker."],
+			toolCalls: [
+				{
+					id: "call_step_plan",
+					function: {
+						name: "add_todo",
+						arguments: JSON.stringify({
+							content: "Run the lifecycle worker through the Agent tool and submit its report",
+							status: "pending",
+						}),
+					},
+				},
+			],
+		},
+		{
 			// Spawn the linked worker with task_ref so complete_ferment_step can validate it.
 			toolCalls: [
 				{

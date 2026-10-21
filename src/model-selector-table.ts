@@ -2,6 +2,8 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { humanizeContextWindow } from "./extensions/vision-support.js"
+import { getModelThinkingLevels } from "./models.js"
+import { thinkingColumnValue } from "./thinking-levels.js"
 
 export interface ModelTableRow {
 	model: Model<Api>
@@ -15,12 +17,16 @@ export interface ModelTableRow {
 }
 
 /** Shared renderer for /model and the inline vision switch, including narrow
- * terminals and Unicode cell widths. The first returned line is the header. */
+ * terminals and Unicode cell widths. The first returned line is the header.
+ * `getLevels` defaults to the curated thinking-levels registry so the patched
+ * dist selector (which calls with 4 args) still populates the THINKING
+ * column; tests can inject a lookup. */
 export function renderModelTable(
 	rows: ModelTableRow[],
 	width: number,
 	theme: Pick<Theme, "fg">,
 	vision = false,
+	getLevels: (ref: string) => string[] | undefined = getModelThinkingLevels,
 ): string[] {
 	if (rows.length === 0) return []
 	const clip = (text: string, cells: number) => truncateToWidth(text, Math.max(0, cells), "…")
@@ -32,7 +38,12 @@ export function renderModelTable(
 	const gutter = vision ? 4 : 3
 	const context = (row: ModelTableRow) => humanizeContextWindow(row.model.contextWindow)
 	const contextW = Math.max(7, ...rows.map((row) => visibleWidth(context(row))))
-	const fixed = gutter + contextW + (vision ? 6 : 0) + (vision ? 6 : 4)
+	// Capabilities always come from the underlying model: `row.id` is a display
+	// label and becomes "multi-model" for the virtual orchestrator row.
+	const thinking = (row: ModelTableRow) =>
+		thinkingColumnValue(getLevels(`${row.model.provider}/${row.model.id}`), row.model.reasoning)
+	const thinkingW = Math.max(8, ...rows.map((row) => visibleWidth(thinking(row))))
+	const fixed = gutter + contextW + thinkingW + 2 + (vision ? 6 : 0) + (vision ? 6 : 4)
 	// Compaction must stay visible even when the description column disappears.
 	const warningReserve = rows.some((row) => row.warning) ? 3 : 0
 	const available = width - fixed - warningReserve
@@ -62,6 +73,8 @@ export function renderModelTable(
 		pad("PROVIDER", providerW) +
 		"  " +
 		pad("CONTEXT", contextW) +
+		"  " +
+		pad("THINKING", thinkingW) +
 		(vision ? "  VISION" : "") +
 		(showDesc ? `  ${clip("DESCRIPTION", descW)}` : "")
 	const lines = [dim(header)]
@@ -95,6 +108,8 @@ export function renderModelTable(
 				dim(pad(row.provider, providerW)) +
 				"  " +
 				dim(pad(context(row), contextW)) +
+				"  " +
+				dim(pad(thinking(row), thinkingW)) +
 				visionCell +
 				description,
 		)

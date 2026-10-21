@@ -13,7 +13,7 @@ import {
 import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
 import { __test_renderTodoPromptBlock } from "./prompt-block.js"
 import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
-import { __resetTodoStore, applyWriteTodos, bumpToolCallsSinceTodoWrite } from "./store.js"
+import { __resetTodoStore, applyWriteTodos, bumpToolCallsSinceTodoWrite, GLOBAL_TODO_SCOPE } from "./store.js"
 import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
@@ -33,7 +33,7 @@ function writeTodoAndBump(
 	sessionId: string = TEST_SESSION_ID,
 ): void {
 	writeTodo(content, status, sessionId)
-	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(sessionId)
+	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(GLOBAL_TODO_SCOPE, sessionId)
 }
 
 /** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
@@ -322,7 +322,7 @@ describe("state markdown purity (cache-safety contract)", () => {
 		writeTodo("work", "in_progress")
 		const baseline = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
 
-		for (let i = 0; i < 30; i++) bumpToolCallsSinceTodoWrite(TEST_SESSION_ID)
+		for (let i = 0; i < 30; i++) bumpToolCallsSinceTodoWrite(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)
 
 		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBe(baseline)
 	})

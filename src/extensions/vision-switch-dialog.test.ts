@@ -220,7 +220,9 @@ describe("VisionSwitchComponent render", () => {
 
 	it("hides the DESCRIPTION column on narrow terminals but keeps the compact marker", () => {
 		const { component } = makeHarness({})
-		const text = renderText(component, 34)
+		// 40 columns fits the model ids next to the THINKING cell while the
+		// description budget drops below its 4-cell minimum.
+		const text = renderText(component, 40)
 		expect(text).not.toContain("DESCRIPTION")
 		const lines = text.split("\n")
 		const betaRow = lines.find((l) => l.includes("beta"))

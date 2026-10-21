@@ -34,6 +34,18 @@ function formatProgressSummary(todos: TodoItem[]): string {
 	return parts.join(" · ")
 }
 
+/** Render todo entries as text lines shared by every check-in surface
+ *  (instruction steers, block reasons, confirm_todos read-backs) so a list
+ *  renders the same way wherever the model sees it: `[status] #id content`.
+ *  Pure function of its inputs — safe for the cache-stability contract. */
+export function renderTodoEntries(
+	todos: readonly TodoItem[],
+	opts: { empty: string; separator: string; prefix?: string },
+): string {
+	if (todos.length === 0) return opts.empty
+	return todos.map((todo) => `${opts.prefix ?? ""}[${todo.status}] #${todo.id} ${todo.content}`).join(opts.separator)
+}
+
 /** Render the current todo store as a markdown section. Returns `undefined`
  *  when there is nothing to show (no scopes at all).
  *

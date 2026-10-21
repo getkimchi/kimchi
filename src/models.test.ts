@@ -9,12 +9,15 @@ import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
 import { modelDeprecationsPath, readModelDeprecations } from "./model-deprecation.js"
 import {
 	__clearModelDescriptionsForTest,
+	__clearModelThinkingLevelsForTest,
 	buildModelsConfig,
 	getModelDescription,
+	getModelThinkingLevels,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
 	readExperimentalModels,
+	registerAutoDescriptionFallback,
 	registerDeprecationMarkers,
 	registerModelDescription,
 	updateModelsConfig,
@@ -42,6 +45,8 @@ const KIMI: unknown = {
 	input_modalities: ["text", "image"],
 	is_serverless: true,
 	limits: { context_window: 262144, max_output_tokens: 262144 },
+	// Deliberately unsorted: the CLI must normalize to canonical rank order.
+	thinking_levels: ["low", "off", "max", "high"],
 }
 
 const GLM: unknown = {
@@ -52,6 +57,22 @@ const GLM: unknown = {
 	input_modalities: ["text"],
 	is_serverless: true,
 	limits: { context_window: 202752, max_output_tokens: 202752 },
+	// Curated without `off`: no-thinking is not part of this model's menu.
+	thinking_levels: ["low", "high", "max"],
+}
+
+const MINIMAX: unknown = {
+	slug: "minimax-m3",
+	display_name: "MiniMax M3",
+	provider: "ai-enabler",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 202752, max_output_tokens: 202752 },
+	// Curated-none: thinking exists but offers no distinct levels — the
+	// backend serves the explicit empty array (omitzero), distinct from an
+	// uncurated model's absent field.
+	thinking_levels: [],
 }
 
 const SONNET_46: unknown = {
@@ -62,6 +83,8 @@ const SONNET_46: unknown = {
 	input_modalities: ["text", "image"],
 	is_serverless: false,
 	limits: { context_window: 1_000_000, max_output_tokens: 128_000 },
+	// No thinking_levels: the model thinks (reasoning) but the catalog has no
+	// discrete levels for it — the THINKING cell falls back to `on`.
 }
 
 const OPUS_46: unknown = {
@@ -176,6 +199,8 @@ describe("updateModelsConfig", () => {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				provider: "ai-enabler",
 				thinkingLevelMap: { off: "none", max: "max" },
+				// Curated levels persist for the /model and list_models displays.
+				thinkingLevels: ["off", "low", "high", "max"],
 			},
 		])
 	})
@@ -1569,6 +1594,131 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 		vi.restoreAllMocks()
 
 		expect(getModelDescription("kimchi-dev/auto")).toBe("Backend router with vision routing.")
+	})
+})
+
+describe("model thinking levels registry (/model table THINKING column)", () => {
+	let tempDir: string
+	let modelsJsonPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-thinking-levels-test-"))
+		modelsJsonPath = join(tempDir, "models.json")
+		__clearModelDescriptionsForTest()
+		__clearModelThinkingLevelsForTest()
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		__clearModelDescriptionsForTest()
+		__clearModelThinkingLevelsForTest()
+	})
+
+	function fetchOnce(models: unknown[]): void {
+		vi.stubGlobal("fetch", vi.fn())
+		vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ models }) } as Response)
+	}
+
+	it("persists curated levels into models.json in canonical order and registers them", async () => {
+		fetchOnce([KIMI, GLM, MINIMAX, SONNET_46])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		// ai-enabler models land in the "kimchi-dev" block, anthropic ones in
+		// the "kimchi-dev/anthropic" sub-block — search all kimchi-managed blocks.
+		const byId = (id: string) =>
+			Object.entries(config.providers)
+				.filter(([name]) => name.startsWith("kimchi-dev"))
+				.flatMap(([, provider]) => (provider as { models: Array<{ id: string; thinkingLevels?: string[] }> }).models)
+				.find((m) => m.id === id)
+		// Unsorted wire data is normalized to canonical rank order.
+		expect(byId("kimi-k2.5")?.thinkingLevels).toEqual(["off", "low", "high", "max"])
+		expect(byId("glm-5-fp8")?.thinkingLevels).toEqual(["low", "high", "max"])
+		// Curated-none survives as the explicit empty array — the tri-state's
+		// "thinking exists but offers no distinct levels".
+		expect(byId("minimax-m3")?.thinkingLevels).toEqual([])
+		// Absent field stays absent (uncurated), distinct from curated-none.
+		expect(byId("claude-sonnet-4-6")?.thinkingLevels).toBeUndefined()
+
+		// Registry keyed by provider block + id — what the selector row sees.
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
+		expect(getModelThinkingLevels("kimchi-dev/glm-5-fp8")).toEqual(["low", "high", "max"])
+		expect(getModelThinkingLevels("kimchi-dev/minimax-m3")).toEqual([])
+		expect(getModelThinkingLevels("kimchi-dev/claude-sonnet-4-6")).toBeUndefined()
+	})
+
+	it("round-trips thinking_levels onto the cached ModelMetadata", async () => {
+		fetchOnce([KIMI, MINIMAX])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		// Offline cache read (no API key) restores the field for the startup
+		// context — populated levels and the curated-none empty array alike.
+		const result = await updateModelsConfig(modelsJsonPath, "")
+		const bySlug = (slug: string) =>
+			(result.models as Array<{ slug: string; thinking_levels?: string[] }>).find((m) => m.slug === slug)
+		expect(bySlug("kimi-k2.5")?.thinking_levels).toEqual(["off", "low", "high", "max"])
+		expect(bySlug("minimax-m3")?.thinking_levels).toEqual([])
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
+		expect(getModelThinkingLevels("kimchi-dev/minimax-m3")).toEqual([])
+	})
+
+	it("clears the registry entry on refresh when the model loses its levels", async () => {
+		fetchOnce([KIMI])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
+
+		const uncurated = { ...(KIMI as Record<string, unknown>) }
+		delete (uncurated as Record<string, unknown>).thinking_levels
+		fetchOnce([uncurated])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toBeUndefined()
+		// Absent levels persist as absent through the cache too.
+		expect(
+			JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["kimchi-dev"].models[0].thinkingLevels,
+		).toBeUndefined()
+	})
+
+	it('preserves a curated ["off"] (no-thinking) entry verbatim', async () => {
+		fetchOnce([{ ...(KIMI as Record<string, unknown>), thinking_levels: ["off"] }])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		expect(JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["kimchi-dev"].models[0].thinkingLevels).toEqual([
+			"off",
+		])
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off"])
+	})
+
+	it("updates description and thinking levels independently on refresh", async () => {
+		fetchOnce([{ ...(KIMI as Record<string, unknown>), description: "First description." }])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		// Description-only refresh: levels survive.
+		fetchOnce([{ ...(KIMI as Record<string, unknown>), description: "Second description." }])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		expect(getModelDescription("kimchi-dev/kimi-k2.5")).toBe("Second description.")
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
+
+		// Description-only write (the Auto fallback) must not erase levels.
+		registerAutoDescriptionFallback()
+		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
+
+		vi.restoreAllMocks()
+	})
+
+	it("keeps the description registry a plain string map for direct readers", async () => {
+		fetchOnce([{ ...(KIMI as Record<string, unknown>), description: "Flagship vision model." }])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		// The patched selector reads the process global directly and expects
+		// string values.
+		const globals = process as typeof process & { __kimchiModelDescriptions?: Map<string, string> }
+		expect(globals.__kimchiModelDescriptions?.get("kimchi-dev/kimi-k2.5")).toBe("Flagship vision model.")
 	})
 })
 

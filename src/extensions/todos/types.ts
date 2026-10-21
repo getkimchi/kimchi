@@ -77,6 +77,21 @@ export interface WriteTodosParams {
 	todos: TodoDraft[]
 }
 
+/** Origin of a todo store write. Determines whether the write can
+ *  acknowledge user input (see todos/reconciliation.ts): real assistant
+ *  (tool) and command writes reconcile their scope; unattributed writes —
+ *  no context passed, e.g. the ferment bridge's background lifecycle
+ *  sync — do not. */
+export type TodoWriteOrigin = "tool" | "command"
+
+/** Context attached to a store write so subscribers can tell real
+ *  reconciling writes from background ones. */
+export interface TodoWriteContext {
+	origin: TodoWriteOrigin
+	/** Session input revision accepted when the write was admitted. */
+	inputRevision?: number
+}
+
 export interface WriteTodosDetails {
 	schemaVersion: typeof TODO_TOOL_RESULT_SCHEMA_VERSION
 	scope: TodoScope

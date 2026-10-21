@@ -1,8 +1,16 @@
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { __resetCheckinGate, markCheckinPending, reconcileCheckinScope } from "../../extensions/todos/checkin-gate.js"
+import { __resetReconciliationBookkeeping, advanceInputRevision } from "../../extensions/todos/reconciliation.js"
 import { __resetTodoStore, applyWriteTodos, restoreTodoStoreFromDetails } from "../../extensions/todos/store.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../../extensions/todos/types.js"
-import { AcpPlanTracker, buildPlanEntries, buildPlanUpdate } from "./plans.js"
+import { AcpPlanTracker, buildPlanEntries, buildPlanUpdate, type TodoCheckinMeta } from "./plans.js"
+
+/** Type-safe read of the vendor todoCheckin metadata off a plan update. */
+function todoCheckinOf(update: { _meta?: unknown } | undefined): TodoCheckinMeta | undefined {
+	const meta = (update?._meta as { "kimchi.dev"?: { todoCheckin?: TodoCheckinMeta } } | undefined)?.["kimchi.dev"]
+	return meta?.todoCheckin
+}
 
 function planUpdates(notifications: SessionNotification[]) {
 	return notifications.map((notification) => notification.update)
@@ -107,12 +115,22 @@ describe("AcpPlanTracker", () => {
 			{
 				sessionUpdate: "plan",
 				entries: [{ content: "regular Todo", priority: "medium", status: "pending" }],
-				_meta: { "kimchi.dev": { scope: { kind: "global" } } },
+				_meta: {
+					"kimchi.dev": {
+						scope: { kind: "global" },
+						todoCheckin: { inputRevision: 0, pendingScopes: [] },
+					},
+				},
 			},
 			{
 				sessionUpdate: "plan",
 				entries: [{ content: "running Ferment Todo", priority: "medium", status: "in_progress" }],
-				_meta: { "kimchi.dev": { scope: { kind: "ferment", phaseId: "phase-1" } } },
+				_meta: {
+					"kimchi.dev": {
+						scope: { kind: "ferment", phaseId: "phase-1" },
+						todoCheckin: { inputRevision: 0, pendingScopes: [] },
+					},
+				},
 			},
 		])
 	})
@@ -152,7 +170,12 @@ describe("AcpPlanTracker", () => {
 		expect(planUpdates(notifications).at(-1)).toEqual({
 			sessionUpdate: "plan",
 			entries: [{ content: "phase work", priority: "medium", status: "pending" }],
-			_meta: { "kimchi.dev": { scope: { kind: "ferment", phaseId: "phase-1" } } },
+			_meta: {
+				"kimchi.dev": {
+					scope: { kind: "ferment", phaseId: "phase-1" },
+					todoCheckin: { inputRevision: 0, pendingScopes: [] },
+				},
+			},
 		})
 	})
 
@@ -201,17 +224,91 @@ describe("AcpPlanTracker", () => {
 				_meta: {
 					"kimchi.dev": {
 						scope: { kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" },
+						todoCheckin: { inputRevision: 0, pendingScopes: [] },
 					},
 				},
 			},
 		])
 	})
 
-	it("emits nothing when a restored session has no Todos", () => {
-		const { notifications, tracker } = makeTracker()
-		tracker.start()
-		tracker.emitRestoredSnapshot()
-		expect(notifications).toHaveLength(0)
+	describe("todo check-in metadata", () => {
+		beforeEach(() => {
+			__resetTodoStore()
+			__resetReconciliationBookkeeping()
+			__resetCheckinGate()
+		})
+
+		it("emits an update with unchanged entries when the gate opens", () => {
+			const { notifications, tracker } = makeTracker()
+			tracker.start()
+			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session-a")
+			expect(notifications).toHaveLength(1)
+
+			// A gate change with unchanged todo entries still emits — the
+			// metadata is part of the deduplication key.
+			const revision = advanceInputRevision("session-a")
+			markCheckinPending([{ kind: "global" }], "session-a", revision)
+
+			expect(notifications).toHaveLength(2)
+			expect(planUpdates(notifications).at(-1)).toEqual({
+				sessionUpdate: "plan",
+				entries: [{ content: "work", priority: "medium", status: "in_progress" }],
+				_meta: {
+					"kimchi.dev": {
+						scope: { kind: "global" },
+						todoCheckin: { inputRevision: 1, pendingScopes: [{ kind: "global" }] },
+					},
+				},
+			})
+		})
+
+		it("reports a newer revision while already pending without duplicate scope entries", () => {
+			const { notifications, tracker } = makeTracker()
+			tracker.start()
+			applyWriteTodos({ todos: [{ content: "work", status: "pending" }] }, "session-a")
+			advanceInputRevision("session-a")
+			markCheckinPending([{ kind: "global" }], "session-a", 1)
+			const revision = advanceInputRevision("session-a")
+			markCheckinPending([{ kind: "global" }], "session-a", revision)
+
+			const update = planUpdates(notifications).at(-1)
+			expect(todoCheckinOf(update)).toEqual({
+				inputRevision: 2,
+				pendingScopes: [{ kind: "global" }],
+			})
+		})
+
+		it("emits an explicit empty pendingScopes on closure", () => {
+			const { notifications, tracker } = makeTracker()
+			tracker.start()
+			applyWriteTodos({ todos: [{ content: "work", status: "pending" }] }, "session-a")
+			const revision = advanceInputRevision("session-a")
+			markCheckinPending([{ kind: "global" }], "session-a", revision)
+			expect(todoCheckinOf(notifications.at(-1)?.update)?.pendingScopes).toEqual([{ kind: "global" }])
+
+			// Reconciliation closes the gate: the entries stay as they were and
+			// pendingScopes is explicitly empty.
+			reconcileCheckinScope({ kind: "global" }, "session-a", revision)
+
+			expect(todoCheckinOf(planUpdates(notifications).at(-1))).toEqual({
+				inputRevision: 1,
+				pendingScopes: [],
+			})
+		})
+
+		it("isolates gate changes between sessions and disposes on stop", () => {
+			const { notifications, tracker } = makeTracker()
+			tracker.start()
+			applyWriteTodos({ todos: [{ content: "work", status: "pending" }] }, "session-a")
+
+			// Another session's gate change must not emit on this tracker.
+			markCheckinPending([{ kind: "global" }], "session-b", 1)
+			expect(notifications).toHaveLength(1)
+
+			tracker.stop()
+			markCheckinPending([{ kind: "global" }], "session-a", 1)
+			expect(notifications).toHaveLength(1)
+		})
 	})
 
 	it("does not let a synchronous ACP send failure break the Todo store", () => {
