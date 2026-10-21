@@ -173,7 +173,7 @@ import {
 } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
-import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
+import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
@@ -355,6 +355,14 @@ type SessionRecord = {
 		steering: string[]
 		followUp: string[]
 	}
+	/**
+	 * FIFO of steer texts the steering handler rewrote (e.g. `/skill:<name>`
+	 * expansion, LLM-4035) — see takeSteerEchoOriginal. The queue echo and
+	 * cancel-drain hand queued text back to the client, which acknowledges
+	 * pending steers by the exact text it submitted, so rewritten texts must
+	 * be translated back to their originals on those surfaces.
+	 */
+	steerEchoRewrites: SteerEchoRewrite[]
 	/**
 	 * Per-session skill commands advertised to the ACP client. Populated from
 	 * the session cwd during newSession/loadSession so command names can be
@@ -645,6 +653,7 @@ export class KimchiAcpAgent implements Agent {
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
+				steerEchoRewrites: [],
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -930,6 +939,7 @@ export class KimchiAcpAgent implements Agent {
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
+				steerEchoRewrites: [],
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -1337,7 +1347,13 @@ export class KimchiAcpAgent implements Agent {
 		followUp: string[]
 	} {
 		entry.previousQueue = undefined
-		return entry.session.clearQueue()
+		const dropped = entry.session.clearQueue()
+		// The client restores dropped steers to its composer and matches on
+		// submitted text — hand back originals for rewritten steers (LLM-4035).
+		return {
+			steering: dropped.steering.map((text) => takeSteerEchoOriginal(entry.steerEchoRewrites, text)),
+			followUp: dropped.followUp,
+		}
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
@@ -1375,7 +1391,18 @@ export class KimchiAcpAgent implements Agent {
 					steering: steering.previousQueue,
 					followUp: followUp.previousQueue,
 				}
-				for (const update of [...steering.sessionUpdates, ...followUp.sessionUpdates]) {
+				// Echo the client's original text for rewritten steers (LLM-4035):
+				// pending-steer acknowledgements match the submitted text exactly.
+				for (const update of steering.sessionUpdates) {
+					if (update.sessionUpdate === "user_message_chunk" && update.content.type === "text") {
+						update.content = {
+							...update.content,
+							text: takeSteerEchoOriginal(entry.steerEchoRewrites, update.content.text),
+						}
+					}
+					this.send({ sessionId, update })
+				}
+				for (const update of followUp.sessionUpdates) {
 					this.send({ sessionId, update })
 				}
 				return
@@ -2458,7 +2485,12 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return undefined
 		const turnActive = entry.turn !== undefined && !entry.turn.cancelled
-		return { session: entry.session, turnActive }
+		return {
+			session: entry.session,
+			turnActive,
+			skillCommands: entry.skillCommands,
+			onSteerRewritten: (original, rewritten) => entry.steerEchoRewrites.push({ original, rewritten }),
+		}
 	}
 
 	/**

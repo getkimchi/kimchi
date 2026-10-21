@@ -5,6 +5,7 @@
 
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { ImageContent } from "@earendil-works/pi-ai"
+import { buildSkillCommandPrompt, tryParseSkillCommand } from "../skill-commands.js"
 import type { SessionTurnTarget } from "../types.js"
 import { extractImages } from "../utils.js"
 
@@ -46,6 +47,14 @@ function parseSteeringImages(attachments: unknown): ImageContent[] {
  * message was queued, or "promptRequired" when no turn is in progress (this
  * handler must never start a new turn).
  *
+ * A leading `/skill:<name>` is rewritten to the injected skill content, like
+ * the prompt() path. pi's steer() would expand the skill too, but its queue
+ * would then hold pi's own expansion format — and the ACP queue echo hands
+ * queued text back to the client, where pending-steer acknowledgements match
+ * the submitted text EXACTLY (LLM-4035). Rewriting here registers the pair
+ * via `onSteerRewritten` so the echo can translate the queued text back to
+ * the client's original submission.
+ *
  * Error handling is deliberately narrow, matching steer()'s actual failure
  * surface: it only throws when the text is an extension command ("Extension
  * command ... cannot be queued") — a caller input error mapped to
@@ -63,10 +72,11 @@ export async function handleSteering(
 		throw RequestError.invalidParams(undefined, "sessionId is required and must be a non-empty string")
 	}
 
-	const prompt = params.prompt
-	if (typeof prompt !== "string" || prompt.length === 0) {
+	const promptParam = params.prompt
+	if (typeof promptParam !== "string" || promptParam.length === 0) {
 		throw RequestError.invalidParams(undefined, "prompt is required and must be a non-empty string")
 	}
+	let prompt = promptParam
 
 	const images = parseSteeringImages(params.attachments)
 
@@ -80,8 +90,21 @@ export async function handleSteering(
 		return respond("promptRequired")
 	}
 
+	// Rewrite `/skill:<name> ...` exactly like prompt() does, before steer()
+	// gets a chance to queue pi's own expansion format.
+	const originalPrompt = prompt
+	const rewrite = await tryParseSkillCommand(prompt, target.skillCommands)
+	if (rewrite) {
+		prompt = buildSkillCommandPrompt(rewrite)
+	}
+
 	try {
 		await target.session.steer(prompt, images.length > 0 ? images : undefined)
+		// Only register the pair after a successful queue: a rejected steer
+		// must not leave a stale translation the echo path could mis-apply.
+		if (prompt !== originalPrompt) {
+			target.onSteerRewritten(originalPrompt, prompt)
+		}
 		return respond("injected")
 	} catch (err) {
 		// Extension commands can't be queued; that's a caller input problem,
