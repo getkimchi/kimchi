@@ -1,4 +1,5 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { SessionNotification } from "@agentclientprotocol/sdk"
@@ -9,6 +10,14 @@ import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__m
 import { makeResourceLoader } from "../__mocks__/resource-loader.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
 import { KimchiAcpAgent } from "../server.js"
+
+// The skill-file read inside tryParseSkillCommand is the async window a
+// cancel can land in. Gate it per-test with mockImplementationOnce; every
+// other readFile call falls through to the real implementation.
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>()
+	return { ...actual, readFile: vi.fn(actual.readFile) }
+})
 
 class FakeAgentSession extends BaseFakeAgentSession {
 	steer = vi.fn(async (_text: string, _images?: ImageContent[]) => {})
@@ -389,5 +398,58 @@ describe("KimchiAcpAgent extMethod steering", () => {
 
 		session.finishTurn()
 		await promptPromise
+	})
+
+	it("returns promptRequired and queues nothing when a cancel lands during the /skill: rewrite's fs read", async () => {
+		// The SDK dispatches messages without awaiting in-flight request
+		// handlers, so a session_cancel can run to completion while the steering
+		// handler is parked on the skill-file read. Gate it deterministically.
+		let resumeRead: ((content: string) => void) | undefined
+		vi.mocked(readFile).mockImplementationOnce(
+			() =>
+				new Promise<string>((resolve) => {
+					resumeRead = resolve
+				}) as ReturnType<typeof readFile>,
+		)
+
+		const dir = mkdtempSync(join(tmpdir(), "steer-skill-race-"))
+		const filePath = join(dir, "SKILL.md")
+		writeFileSync(filePath, "---\nname: steer-skill\ndescription: d\n---\nSkill body.\n")
+
+		const session = new FakeAgentSession("sess-1")
+		session.resourceLoader = makeResourceLoader({
+			skills: [{ name: "steer-skill", description: "d", filePath }],
+		})
+		const conn = makeAcpConn()
+		conn.sessionUpdate = async () => {}
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: makeAcpSessionFactory(session),
+		})
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const promptPromise = agent.prompt({
+			sessionId: "sess-1",
+			prompt: [{ type: "text", text: "do work" }],
+		})
+		await Promise.resolve()
+
+		const steerPromise = agent.extMethod(AVAILABLE_EXT_METHODS.steering, {
+			sessionId: "sess-1",
+			prompt: "/skill:steer-skill wrap up",
+		})
+		await Promise.resolve()
+
+		// The steer is parked inside the skill-file read; land the cancel now.
+		await agent.cancel({ sessionId: "sess-1" })
+		resumeRead?.("---\nname: steer-skill\ndescription: d\n---\nSkill body.\n")
+
+		await expect(steerPromise).resolves.toEqual({ status: "promptRequired" })
+		expect(session.steer).not.toHaveBeenCalled()
+
+		session.finishTurn()
+		expect(await promptPromise).toEqual({ stopReason: "cancelled" })
 	})
 })

@@ -19,6 +19,14 @@ function respond(status: SteeringStatus): SteeringResponse {
 	return { status }
 }
 
+function readTarget(getTarget: (sessionId: string) => SessionTurnTarget | undefined, sessionId: string): SessionTurnTarget {
+	const target = getTarget(sessionId)
+	if (!target) {
+		throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
+	}
+	return target
+}
+
 /**
  * Parse and validate the optional `attachments` param into pi-ai
  * `ImageContent[]`. Blocks follow the ACP image `ContentBlock` shape
@@ -80,11 +88,7 @@ export async function handleSteering(
 
 	const images = parseSteeringImages(params.attachments)
 
-	const target = getTarget(sessionId)
-	if (!target) {
-		throw RequestError.invalidParams(undefined, `unknown sessionId ${sessionId}`)
-	}
-
+	let target = readTarget(getTarget, sessionId)
 	if (!target.turnActive) {
 		// A cancelled turn's queue has already been drained — no new steers.
 		return respond("promptRequired")
@@ -96,6 +100,16 @@ export async function handleSteering(
 	const rewrite = await tryParseSkillCommand(prompt, target.skillCommands)
 	if (rewrite) {
 		prompt = buildSkillCommandPrompt(rewrite)
+	}
+
+	// The rewrite's skill-file read is a real async fs operation, and the
+	// ACP SDK dispatches messages without awaiting in-flight request
+	// handlers: a session_cancel can arrive mid-read, drain the queue and
+	// send queue_dropped, then dispose the turn — and pi's steer() would
+	// still queue unconditionally. Re-read the target before queueing.
+	target = readTarget(getTarget, sessionId)
+	if (!target.turnActive) {
+		return respond("promptRequired")
 	}
 
 	try {
