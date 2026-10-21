@@ -286,7 +286,7 @@ describe("tags system prompt block", () => {
 		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
 	})
 
-	it("set_phase updates thinking level when performing a phase itself", async () => {
+	it("set_phase ignores a stale thinking argument and never changes the thinking level", async () => {
 		const pi = makeTagsPi()
 
 		const result = await pi.tools
@@ -295,9 +295,9 @@ describe("tags system prompt block", () => {
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "Phase changed to: plan" }],
-			details: { phase: "plan", thinking: "high" },
+			details: { phase: "plan" },
 		})
-		expect(pi.setThinkingLevel).toHaveBeenCalledWith("high")
+		expect(pi.setThinkingLevel).not.toHaveBeenCalled()
 	})
 })
 

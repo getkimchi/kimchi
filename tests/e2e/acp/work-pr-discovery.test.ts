@@ -23,16 +23,17 @@ async function expectNotification(
 	sessionId: string,
 	payload: Record<string, unknown>,
 	after = 0,
+	timeout = 10_000,
 ): Promise<void> {
 	await expect
-		.poll(() => active.client.extNotifications.slice(after), { timeout: 10_000 })
+		.poll(() => active.client.extNotifications.slice(after), { timeout })
 		.toContainEqual({
 			method: "_kimchi.dev/pi_notify",
 			params: expect.objectContaining({ sessionId, ...payload }),
 		})
 }
 
-it("shows pending and discovered GitLab MR details over ACP without a model request", async () => {
+it("keeps tracked GitLab history in /work and shows only the checked-out branch's MR over ACP", async () => {
 	apiDir = mkdtempSync(join(tmpdir(), "kimchi-acp-pr-api-"))
 	const statePath = join(apiDir, "state.json")
 	const callsPath = join(apiDir, "calls.jsonl")
@@ -104,7 +105,7 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	await expectNotification(fixture, sessionId, {
 		method: "setStatus",
 		statusKey: "work-pr",
-		statusText: "PR/MR waiting",
+		statusText: "main",
 	})
 	const beforePending = fixture.client.extNotifications.length
 	expect((await prompt(fixture, sessionId, "/work")).stopReason).toBe("end_turn")
@@ -122,16 +123,14 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 	const url = "https://gitlab.com/example/group/kimchi-lab/-/merge_requests/731"
 	writeFileSync(`${statePath}.tmp`, JSON.stringify({ mode: "open", headSha: sha }))
 	renameSync(`${statePath}.tmp`, statePath)
-	await expectNotification(fixture, sessionId, {
-		method: "setStatus",
-		statusKey: "work-pr",
-		statusText: "MR !731 open",
-	})
-	await expectNotification(fixture, sessionId, {
-		method: "setStatus",
-		statusKey: "work-pr-url",
-		statusText: url,
-	})
+	await expect
+		.poll(() => readWorkSummary(agentDir, workId)?.commits?.[0]?.prLookup?.status, { timeout: 35_000 })
+		.toBe("linked")
+	expect(fixture.client.extNotifications).not.toContainEqual(
+		expect.objectContaining({
+			params: expect.objectContaining({ statusKey: "work-pr-url", statusText: url }),
+		}),
+	)
 	expect(fixture.client.extNotifications).not.toContainEqual(
 		expect.objectContaining({
 			params: expect.objectContaining({ statusKey: "work-pr", statusText: expect.stringContaining("\x1b") }),
@@ -181,6 +180,41 @@ it("shows pending and discovered GitLab MR details over ACP without a model requ
 		},
 	])
 	expect(calls.every((call) => call.tokenMatched)).toBe(true)
+	git("switch", "-c", "feature")
+	await expectNotification(
+		fixture,
+		sessionId,
+		{
+			method: "setStatus",
+			statusKey: "work-pr",
+			statusText: "feature · MR !731 open",
+		},
+		0,
+		35_000,
+	)
+	await expectNotification(fixture, sessionId, {
+		method: "setStatus",
+		statusKey: "work-pr-url",
+		statusText: url,
+	})
+	const beforeDefault = fixture.client.extNotifications.length
+	git("switch", "main")
+	await expectNotification(
+		fixture,
+		sessionId,
+		{
+			method: "setStatus",
+			statusKey: "work-pr",
+			statusText: "main",
+		},
+		beforeDefault,
+		35_000,
+	)
+	expect(fixture.client.extNotifications.slice(beforeDefault)).not.toContainEqual(
+		expect.objectContaining({
+			params: expect.objectContaining({ statusKey: "work-pr", statusText: expect.stringContaining("MR !") }),
+		}),
+	)
 	const modelRequests = fixture.fake.requests.filter((request) => request.url.includes("/chat/completions"))
 	expect(modelRequests, "commands and background PR lookup must not ask a model").toHaveLength(0)
 })

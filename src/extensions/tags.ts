@@ -27,7 +27,6 @@ import { Type } from "typebox"
 import { readConfigSetting } from "../config/settings.js"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import { isResourceEnabled } from "../resources/store.js"
-import type { ThinkingLevel } from "./agents/personas/types.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { resolveMultiModelEnabled } from "./multi-model.js"
 import { shouldSuppressFermentModeTools } from "./print-mode.js"
@@ -472,13 +471,6 @@ const SetPhaseParams = Type.Object({
 		description: "The phase to set. Valid phases: explore, plan, build, review, research",
 		enum: ["explore", "plan", "build", "review", "research"],
 	}),
-	thinking: Type.Optional(
-		Type.String({
-			description:
-				"Optional thinking level to use when the orchestrator performs this phase itself (not delegating). Set per the Orchestration Thinking levels table.",
-			enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-		}),
-	),
 })
 
 // ─── Extension entry point ─────────────────────────────────────────────────────
@@ -580,19 +572,15 @@ export default function tagsExtension(pi: ExtensionAPI) {
 			name: "set_phase",
 			label: "Set Phase",
 			description:
-				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests. When the orchestrator decides to perform a phase itself rather than delegating, pass `thinking` to match the Orchestration Thinking levels table.",
+				"Set the current work phase for usage tracking and analytics. The session starts in explore. Call when transitioning between phases (e.g., exploration to planning, or planning to building). The phase is included as a tag in subsequent LLM requests.",
 			parameters: SetPhaseParams,
 
 			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 				const phase = params.phase as Phase
-				const thinking = params.thinking as ThinkingLevel | undefined
 				const tagManager = getExtensionTagManager(ctx)
 				const sessionId = ctx.sessionManager.getSessionId()
 
 				setCurrentPhase(sessionId, phase)
-				if (thinking) {
-					pi.setThinkingLevel(thinking)
-				}
 
 				if (ctx.hasUI) {
 					updateStatusLineTags(tagManager, ctx)
@@ -600,7 +588,7 @@ export default function tagsExtension(pi: ExtensionAPI) {
 
 				return {
 					content: [{ type: "text", text: `Phase changed to: ${phase}` }],
-					details: { phase, thinking, model: ctx.model?.id },
+					details: { phase, model: ctx.model?.id },
 				}
 			},
 
@@ -612,14 +600,13 @@ export default function tagsExtension(pi: ExtensionAPI) {
 				if (readHidePhaseChanges()) {
 					return new Text("", 0, 0)
 				}
-				const details = result.details as { phase: string; thinking?: ThinkingLevel; model?: string } | undefined
+				const details = result.details as { phase: string; model?: string } | undefined
 				const phase = details?.phase ?? "unknown"
 				const model = details?.model
-				const thinkingSuffix = details?.thinking ? theme.fg("dim", ` · thinking ${details.thinking}`) : ""
 				const dash = theme.fg("dim", "- ")
 				const label = theme.bold(theme.fg("toolTitle", `Phase changed: ${phase}`))
 				const modelSuffix = model ? theme.fg("dim", ` [${model}]`) : ""
-				return new Text(dash + label + modelSuffix + thinkingSuffix, 0, 0)
+				return new Text(dash + label + modelSuffix, 0, 0)
 			},
 		})
 

@@ -12,8 +12,9 @@
 // this response only carries the terminal outcome.
 
 import { RequestError } from "@agentclientprotocol/sdk"
-import type { AgentSession, CompactionResult } from "@earendil-works/pi-coding-agent"
+import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { isExpectedCompactionError } from "../../../extensions/compaction-thresholds.js"
+import type { SessionTurnTarget } from "../types.js"
 
 export type CompactStatus = "completed" | "cancelled" | "failed"
 
@@ -23,18 +24,6 @@ export type CompactResponse = {
 	tokensBefore?: number
 	firstKeptEntryId?: string
 	error?: string
-}
-
-/**
- * Lookup result for the session targeted by a compaction request. `turnActive`
- * mirrors the steering handler's bookkeeping: upstream compact() aborts the
- * running turn first, which would leave the in-flight ACP PromptResponse
- * settling through the non-cancelled abort path — so this server requires an
- * idle session and lets the client drive the cancel→compact sequence itself.
- */
-export type CompactTarget = {
-	session: AgentSession
-	turnActive: boolean
 }
 
 /* The bundled AgentSession d.ts declares compact(customInstructions?) only,
@@ -63,7 +52,7 @@ const COMPACTION_CANCELLED_MESSAGE = "Compaction cancelled"
  * per the steering handler's convention.
  */
 export async function handleCompact(
-	getTarget: (sessionId: string) => CompactTarget | undefined,
+	getTarget: (sessionId: string) => SessionTurnTarget | undefined,
 	params: Record<string, unknown>,
 ): Promise<CompactResponse> {
 	const sessionId = params.sessionId

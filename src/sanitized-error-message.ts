@@ -92,7 +92,8 @@ function retiredModelHint(info: ModelRetiredInfo, context: ErrorSurfaceContext):
 				: `Switch to "${info.replacement}"${context === "oneshot" ? "" : " via /model"}.`,
 		)
 	else if (info.alternatives.length > 0) {
-		parts.push(`Alternatives: ${info.alternatives.map((a) => `"${a}"`).join(", ")}.`)
+		const rendered = info.alternatives.map((a) => (a.reason ? `"${a.slug}" (${a.reason})` : `"${a.slug}"`)).join(", ")
+		parts.push(`Alternatives: ${rendered}.`)
 		if (context === "subagent") parts.push("Switch the role model via /multi-model.")
 		else if (context !== "oneshot") parts.push("Switch via /model.")
 	}

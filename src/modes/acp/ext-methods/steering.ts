@@ -5,25 +5,13 @@
 
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { ImageContent } from "@earendil-works/pi-ai"
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { SessionTurnTarget } from "../types.js"
 import { extractImages } from "../utils.js"
 
 export type SteeringStatus = "injected" | "promptRequired"
 
 export type SteeringResponse = {
 	status: SteeringStatus
-}
-
-/**
- * Lookup result for the session targeted by a steering request.
- * `turnActive` mirrors the ACP agent's turn bookkeeping
- * (SessionRecord.turn defined AND not cancelled — a cancelled turn's queue
- * has already been drained and must not accept new steers) so this handler
- * doesn't need to reach into the agent's private turn state.
- */
-export type SteeringTarget = {
-	session: AgentSession
-	turnActive: boolean
 }
 
 function respond(status: SteeringStatus): SteeringResponse {
@@ -67,7 +55,7 @@ function parseSteeringImages(attachments: unknown): ImageContent[] {
  * steer() whenever the pi dependency is upgraded.
  */
 export async function handleSteering(
-	getTarget: (sessionId: string) => SteeringTarget | undefined,
+	getTarget: (sessionId: string) => SessionTurnTarget | undefined,
 	params: Record<string, unknown>,
 ): Promise<SteeringResponse> {
 	const sessionId = params.sessionId
@@ -88,6 +76,7 @@ export async function handleSteering(
 	}
 
 	if (!target.turnActive) {
+		// A cancelled turn's queue has already been drained — no new steers.
 		return respond("promptRequired")
 	}
 

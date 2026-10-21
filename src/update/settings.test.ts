@@ -8,7 +8,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 
 // Fake agent dir shared by the mocked getAgentDir(). We rebuild it for every
 // test in beforeEach so isolation holds across the suite.
@@ -34,13 +34,13 @@ afterEach(() => {
 })
 
 describe("loadAutoUpdateSetting", () => {
-	it("returns false when the settings file is missing (opt-in default)", () => {
-		expect(loadAutoUpdateSetting()).toBe(false)
+	it("returns true when the settings file is missing (opt-out default)", () => {
+		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it("returns false when the file exists but has no autoUpdate key", () => {
+	it("returns true when the file exists but has no autoUpdate key", () => {
 		writeFileSync(statePath(), JSON.stringify({ theme: "dark" }))
-		expect(loadAutoUpdateSetting()).toBe(false)
+		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
 	it("returns false when autoUpdate is explicitly false", () => {
@@ -53,22 +53,24 @@ describe("loadAutoUpdateSetting", () => {
 		expect(loadAutoUpdateSetting()).toBe(true)
 	})
 
-	it("returns false (defensive default) when autoUpdate is the wrong type", () => {
-		writeFileSync(statePath(), JSON.stringify({ autoUpdate: "yes" }))
-		expect(loadAutoUpdateSetting()).toBe(false)
+	it.each([["yes"], ["false"], [0], [null]])("falls back to the default and warns when autoUpdate is %j", (value) => {
+		writeFileSync(statePath(), JSON.stringify({ autoUpdate: value }))
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		onTestFinished(() => warn.mockRestore())
+
+		expect(loadAutoUpdateSetting()).toBe(true)
+		expect(warn).toHaveBeenCalledOnce()
+		expect(warn.mock.calls[0]?.[0]).toContain("non-boolean autoUpdate")
 	})
 
-	it("returns false and warns when the file contains malformed JSON", () => {
+	it("falls back to the default and warns when the file contains malformed JSON", () => {
 		writeFileSync(statePath(), "{not valid json")
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		try {
-			expect(loadAutoUpdateSetting()).toBe(false)
-			expect(warn).toHaveBeenCalledOnce()
-			const msg = warn.mock.calls[0]?.[0] as string
-			expect(msg).toContain("[kimchi-update]")
-		} finally {
-			warn.mockRestore()
-		}
+		onTestFinished(() => warn.mockRestore())
+
+		expect(loadAutoUpdateSetting()).toBe(true)
+		expect(warn).toHaveBeenCalledOnce()
+		expect(warn.mock.calls[0]?.[0]).toContain("[kimchi-update]")
 	})
 })
 
@@ -90,6 +92,14 @@ describe("saveAutoUpdateSetting", () => {
 		expect(round.autoUpdate).toBe(false)
 		expect(round.theme).toBe("dark")
 		expect(round.autoUpdateNoticeShown).toBe(false)
+	})
+
+	it("enabling marks the one-time notice as shown; disabling leaves it alone", () => {
+		saveAutoUpdateSetting(false)
+		expect(loadAutoUpdateNoticeShown()).toBe(false)
+
+		saveAutoUpdateSetting(true)
+		expect(loadAutoUpdateNoticeShown()).toBe(true)
 	})
 
 	it("survives two consecutive writes — the last value wins", () => {

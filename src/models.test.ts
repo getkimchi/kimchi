@@ -6,7 +6,7 @@ import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.mode
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION } from "./extensions/auto-model/constants.js"
-import { readModelDeprecations } from "./model-deprecation.js"
+import { modelDeprecationsPath, readModelDeprecations } from "./model-deprecation.js"
 import {
 	__clearModelDescriptionsForTest,
 	buildModelsConfig,
@@ -15,6 +15,8 @@ import {
 	isTransientModelsError,
 	ModelsFetchError,
 	readExperimentalModels,
+	registerDeprecationMarkers,
+	registerModelDescription,
 	updateModelsConfig,
 } from "./models.js"
 
@@ -1306,6 +1308,95 @@ describe("model description registry (/model table DESCRIPTION column)", () => {
 	afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true })
 		__clearModelDescriptionsForTest()
+	})
+
+	it("prefixes descriptions with deprecation markers from the sidecar, without stacking", () => {
+		// Real wall clock: deprecated 3 days ago, sunset 10 days out — the
+		// "past deprecation, in window" state the picker marker exists for.
+		const day = 86_400_000
+		const deprecatedAt = new Date(Date.now() - 3 * day).toISOString()
+		const sunsetAt = new Date(Date.now() + 10 * day).toISOString()
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": { deprecated_at: deprecatedAt, sunset_at: sunsetAt },
+				"kimi-k3": {},
+			}),
+			"utf-8",
+		)
+		registerModelDescription("kimchi-dev/kimi-k2.7", "MoE coding model.")
+		registerModelDescription("kimchi-dev/kimi-k3", "Newest Kimi generation.")
+		registerDeprecationMarkers(modelsJsonPath)
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")).toBe(
+			`[Deprecated — retires ${sunsetAt.slice(0, 10)}] MoE coding model.`,
+		)
+		expect(getModelDescription("kimchi-dev/kimi-k3")).toBe("Newest Kimi generation.")
+		expect(readModelDeprecations(modelsJsonPath).size).toBe(2)
+	})
+
+	it("registers the marker as the description when the model has none", () => {
+		const day = 86_400_000
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": {
+					deprecated_at: new Date(Date.now() - 3 * day).toISOString(),
+					sunset_at: new Date(Date.now() + 10 * day).toISOString(),
+				},
+			}),
+			"utf-8",
+		)
+		// kimi-k2.7 has no backend description — the common serverless case.
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")?.startsWith("[Deprecated — retires")).toBe(true)
+		expect(getModelDescription("kimchi-experimental/kimi-k2.7")?.startsWith("[Deprecated — retires")).toBe(true)
+	})
+
+	it("does not mark other providers' rows that share the slug", () => {
+		const day = 86_400_000
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": {
+					deprecated_at: new Date(Date.now() - 3 * day).toISOString(),
+					sunset_at: new Date(Date.now() + 10 * day).toISOString(),
+				},
+			}),
+			"utf-8",
+		)
+		registerModelDescription("kimchi-dev/kimi-k2.7", "MoE coding model.")
+		// Same model id under an unmanaged provider block: never marked.
+		registerModelDescription("openai/kimi-k2.7", "OpenAI-hosted twin.")
+		// Model id whose last segment coincides with the slug: never marked.
+		registerModelDescription("openrouter/anthropic/kimi-k2.7", "Routed twin.")
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")?.startsWith("[Deprecated")).toBe(true)
+		expect(getModelDescription("openai/kimi-k2.7")).toBe("OpenAI-hosted twin.")
+		expect(getModelDescription("openrouter/anthropic/kimi-k2.7")).toBe("Routed twin.")
+	})
+
+	it("drops the marker and ghost entries when the sidecar stops listing the model", () => {
+		const day = 86_400_000
+		writeFileSync(
+			modelDeprecationsPath(modelsJsonPath),
+			JSON.stringify({
+				"kimi-k2.7": {
+					deprecated_at: new Date(Date.now() - 3 * day).toISOString(),
+					sunset_at: new Date(Date.now() + 10 * day).toISOString(),
+				},
+			}),
+			"utf-8",
+		)
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")?.startsWith("[Deprecated")).toBe(true)
+
+		// Model crossed into sunset / entry removed: re-registration must
+		// clear the stale marker and remove the synthetic fallback keys.
+		writeFileSync(modelDeprecationsPath(modelsJsonPath), JSON.stringify({}), "utf-8")
+		registerDeprecationMarkers(modelsJsonPath)
+		expect(getModelDescription("kimchi-dev/kimi-k2.7")).toBeUndefined()
+		expect(getModelDescription("kimchi-experimental/kimi-k2.7")).toBeUndefined()
 	})
 
 	it("replaces fallback and stale descriptions on refresh and removes withdrawn descriptions", async () => {

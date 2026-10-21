@@ -9,6 +9,7 @@ export interface Repository {
 	name: string
 	id?: number
 	token?: string
+	defaultBranch?: string
 }
 
 /** `retry` and `unsupported` failures are expected; they never need the user's attention. */

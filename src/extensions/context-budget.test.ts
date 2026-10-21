@@ -56,12 +56,15 @@ const CHARS_PER_TOKEN = 4
 const BUDGET = {
 	/** buildSystemPrompt, interactive variant (hasUserLoop: true — TUI/ACP).
 	 *  Measures the full user-presence prompt (Consent, Harness Notes,
-	 *  orient-the-user). ~7% headroom over measured 1430. */
-	systemPromptInteractive: 1530,
+	 *  orient-the-user). Raised from 1530 for the #1474 product-identity
+	 *  intro after trimming it to the bone; measured 1544 — near-cap by
+	 *  design, trim before growing further. */
+	systemPromptInteractive: 1550,
 	/** buildSystemPrompt, headless variant (hasUserLoop: false — --print, json,
-	 *  piped IO; what TB2.1 exercises). ~5% headroom over measured 1071
+	 *  piped IO; what TB2.1 exercises). Raised from 1120 for the #1474
+	 *  product-identity intro; measured 1132
 	 *  (includes the ## Language section). */
-	systemPromptHeadless: 1120,
+	systemPromptHeadless: 1140,
 	/** Sum of name + description chars across resources/skills frontmatter,
 	 * including create-skill (gh/glab guidance lives in behaviour bodies, not
 	 * bundled skills). Rendered as a Codex-style markdown catalog (name +
@@ -69,8 +72,8 @@ const BUDGET = {
 	 * authored lengths, capped only at render time. ~13% headroom over
 	 * measured (97). */
 	skillsCatalog: 110,
-	/** Total canonical system-prompt + skills surface (~4% headroom over
-	 *  measured 1580 — includes the ## Language section). */
+	/** Total canonical system-prompt + skills surface (measured 1641 after
+	 *  the #1474 product-identity intro — includes the ## Language section). */
 	total: 1650,
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp

@@ -3,7 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { type AllowedPermissionModes, fetchOrgPolicy } from "../../api/org-settings.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
-import { clampMode, getAllowedModes, highestAllowedHighMode, isFermentRunnable, isModeAllowed } from "./policy.js"
+import {
+	clampMode,
+	getAllowedModes,
+	hasExecutableMode,
+	highestAllowedHighMode,
+	isFermentRunnable,
+	isModeAllowed,
+	releaseTargetForPlanApproval,
+} from "./policy.js"
 
 vi.mock("../../api/org-settings.js", () => ({
 	fetchOrgPolicy: vi.fn(),
@@ -89,6 +97,52 @@ describe("clampMode", () => {
 		await seedOrgPolicy(undefined)
 		expect(clampMode("plan")).toBe("plan")
 		expect(clampMode("yolo")).toBe("yolo")
+	})
+})
+
+describe("hasExecutableMode", () => {
+	it("fails open with no policy", async () => {
+		await seedOrgPolicy(undefined)
+		expect(hasExecutableMode()).toBe(true)
+	})
+
+	it("is false for a plan-only policy", async () => {
+		await allow(modes({ plan: true }))
+		expect(hasExecutableMode()).toBe(false)
+	})
+
+	it("is true when only default is allowed", async () => {
+		await allow(modes({ default: true }))
+		expect(hasExecutableMode()).toBe(true)
+	})
+})
+
+describe("releaseTargetForPlanApproval", () => {
+	it("preserves the historical release to auto with no policy", async () => {
+		await seedOrgPolicy(undefined)
+		expect(releaseTargetForPlanApproval()).toBe("auto")
+	})
+
+	it("prefers the highest allowed high mode", async () => {
+		await allow(modes({ plan: true, auto: true, yolo: true }))
+		expect(releaseTargetForPlanApproval()).toBe("yolo")
+	})
+
+	it("returns auto when only auto is allowed", async () => {
+		await allow(modes({ plan: true, auto: true }))
+		expect(releaseTargetForPlanApproval()).toBe("auto")
+	})
+
+	it("falls back to default when no high mode is allowed", async () => {
+		await allow(modes({ plan: true, default: true }))
+		expect(releaseTargetForPlanApproval()).toBe("default")
+		await allow(modes({ default: true }))
+		expect(releaseTargetForPlanApproval()).toBe("default")
+	})
+
+	it("returns undefined for a plan-only policy", async () => {
+		await allow(modes({ plan: true }))
+		expect(releaseTargetForPlanApproval()).toBeUndefined()
 	})
 })
 

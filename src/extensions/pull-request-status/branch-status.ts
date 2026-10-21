@@ -1,4 +1,4 @@
-/** The checked-out branch and its PR or MR, shown before a work records a commit. */
+/** The checked-out branch and its PR or MR, independent of recorded-work associations. */
 
 import { object } from "../work-attribution/summary.js"
 import { api, command, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -32,48 +32,74 @@ export async function lookupBranchPullRequest(
 	let failure: unknown
 	try {
 		const remote = await repositoryIdentity(cwd, signal, deadline, new Map(), branch)
-		const url = api(remote, remote.provider === "github" ? "pulls" : "merge_requests")
-		url.search = new URLSearchParams(
-			remote.provider === "github"
-				? {
-						state: "all",
-						head: `${remote.name.split("/")[0]}:${branch}`,
-						sort: "updated",
-						direction: "desc",
-						per_page: "1",
-					}
-				: {
-						scope: "all",
-						state: "all",
-						source_branch: branch,
-						// Forks often reuse branch names such as main; older GitLab ignores this filter, so results are checked below.
-						source_project_id: String(remote.id),
-						order_by: "updated_at",
-						sort: "desc",
-						per_page: "100",
-					},
-		).toString()
-		const values =
-			remote.provider === "gitlab"
-				? await pages(remote, url, signal, deadline)
-				: (await requestJSON(remote, url, signal, deadline)).value
-		if (!Array.isArray(values)) throw new LookupError(`${label(remote)} returned invalid pull requests.`)
-		const value =
-			remote.provider === "gitlab"
-				? values.find(
-						(value) => object(value) && value.source_project_id === remote.id && value.source_branch === branch,
-					)
-				: values[0]
-		if (value !== undefined) {
-			const head = object(value)
-				? remote.provider === "gitlab"
-					? value.source_branch
-					: object(value.head)
-						? value.head.ref
-						: undefined
-				: undefined
-			if (head !== branch) throw new LookupError(`${label(remote)} returned a pull request for a different branch.`)
-			pull = pullRequest(value, remote, new Date().toISOString())
+		// Default branches are shared, so a branch-name match cannot identify the current work.
+		if (remote.defaultBranch && remote.defaultBranch !== branch) {
+			const url = api(remote, remote.provider === "github" ? "pulls" : "merge_requests")
+			url.search = new URLSearchParams(
+				remote.provider === "github"
+					? {
+							state: "all",
+							head: `${remote.name.split("/")[0]}:${branch}`,
+							sort: "updated",
+							direction: "desc",
+							per_page: "30",
+						}
+					: {
+							scope: "all",
+							state: "all",
+							source_branch: branch,
+							// Forks often reuse branch names such as main; older GitLab ignores this filter, so results are checked below.
+							source_project_id: String(remote.id),
+							order_by: "updated_at",
+							sort: "desc",
+							per_page: "100",
+						},
+			).toString()
+			const values =
+				remote.provider === "gitlab"
+					? await pages(remote, url, signal, deadline)
+					: (await requestJSON(remote, url, signal, deadline)).value
+			if (!Array.isArray(values)) throw new LookupError(`${label(remote)} returned invalid pull requests.`)
+			const checkedAt = new Date().toISOString()
+			let invalid: unknown
+			const pulls = (
+				remote.provider === "gitlab"
+					? values.filter(
+							(value) => object(value) && value.source_project_id === remote.id && value.source_branch === branch,
+						)
+					: values
+			).flatMap((value) => {
+				const head = object(value)
+					? remote.provider === "gitlab"
+						? value.source_branch
+						: object(value.head)
+							? value.head.ref
+							: undefined
+					: undefined
+				if (head !== branch) throw new LookupError(`${label(remote)} returned a pull request for a different branch.`)
+				try {
+					return [pullRequest(value, remote, checkedAt)]
+				} catch (error) {
+					// One malformed old record must not hide a valid PR; it fails the lookup only when nothing is shown.
+					invalid ??= error
+					return []
+				}
+			})
+			pull = pulls.find((item) => item.state === "open")
+			if (!pull && pulls.length) {
+				// A branch name can be reused after its PR closes, even from that PR's head after a fast-forward merge.
+				// Show a closed or merged PR only if it closed after this local branch was created: the oldest reflog entry.
+				const history = await command(
+					"git",
+					["-C", cwd, "reflog", "show", "--date=unix", "--format=%gd", `refs/heads/${branch}`, "--"],
+					cwd,
+					signal,
+					Date.now() + 2000,
+				)
+				const created = Number(/@\{(\d+)\}$/.exec(history?.split("\n").at(-1) ?? "")?.[1]) * 1000
+				pull = pulls.find((item) => Date.parse(item.closedAt ?? item.mergedAt ?? "") >= created)
+			}
+			if (!pull && invalid) throw invalid
 		}
 	} catch (error) {
 		failure = error
