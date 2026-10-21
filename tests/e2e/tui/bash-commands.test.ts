@@ -62,9 +62,6 @@ test("processes preserves the fresh session position and history", async ({ term
 		terminal,
 		{
 			artifactName: "bash-commands-fresh",
-			// These tests assert linear scrollback content; fullscreen (alt-screen)
-			// keeps the transcript out of the terminal scrollback in pi 1.3.
-			sessionTuiMode: "regular",
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "default" },
 			responses: [],
@@ -110,9 +107,6 @@ test("commands replaces the input in a tall terminal without leaving a second ed
 		terminal,
 		{
 			artifactName: "bash-commands-tall",
-			// These tests assert linear scrollback content; fullscreen (alt-screen)
-			// keeps the transcript out of the terminal scrollback in pi 1.3.
-			sessionTuiMode: "regular",
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "default" },
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000 }],
@@ -215,9 +209,6 @@ test("inspect a running Bash command without interrupting it or asking the model
 		terminal,
 		{
 			artifactName: "bash-commands",
-			// These tests assert linear scrollback content; fullscreen (alt-screen)
-			// keeps the transcript out of the terminal scrollback in pi 1.3.
-			sessionTuiMode: "regular",
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "default" },
 			seedHome: (_home, workDir) => {

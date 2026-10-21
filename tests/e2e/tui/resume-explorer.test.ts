@@ -298,9 +298,6 @@ test("page and cancel deletion without losing the resume controls in an 80 by 24
 		{
 			artifactName: "resume-explorer-small-terminal",
 			seedHome: (home, work) => seedSessions(home, work, 14),
-			// Scrollback-order overlay assertions (pager position); fullscreen
-			// alt-screen keeps overlay state out of the linear buffer in pi 1.3.
-			sessionTuiMode: "regular",
 			responses: [],
 		},
 		async (_fixture, trace) => {
