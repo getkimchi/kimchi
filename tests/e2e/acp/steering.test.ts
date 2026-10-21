@@ -168,10 +168,15 @@ describe("ACP integration — /skill: steer echo", () => {
 
 		// The model side of the turn, though, must carry the expanded skill
 		// content — the steer informed the agent, not just the transcript.
-		const continuation = fixture.fake.requests.at(-1)?.body as { messages?: Array<{ content?: unknown }> } | undefined
-		const transcript = JSON.stringify(continuation?.messages ?? [])
-		expect(transcript).toContain("Skill body marker.")
-		expect(transcript).toContain("Invoking skill: e2e-steer-skill")
+		// Scan every request rather than just the last: pipelined requests
+		// can out-of-order which one is at(-1) at assertion time.
+		const transcripts = fixture.fake.requests.map((r) =>
+			JSON.stringify((r.body as { messages?: Array<{ content?: unknown }> } | undefined)?.messages ?? []),
+		)
+		const sawExpandedSkill = transcripts.some(
+			(t) => t.includes("Skill body marker.") && t.includes("Invoking skill: e2e-steer-skill"),
+		)
+		expect(sawExpandedSkill, "model transcript must contain the expanded skill content").toBe(true)
 
 		// The echoed user message must be the original text only — no expanded
 		// skill block leaking into the client transcript.
