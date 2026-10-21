@@ -73,7 +73,6 @@ import {
 	writeApiKey,
 } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
-import { declaredArtifactPaths } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import {
@@ -1764,9 +1763,10 @@ export class KimchiAcpAgent implements Agent {
 					})
 					// Tool-declared artifacts are deliverables the user may need
 					// MID-turn (a submitted plan chips before its review
-					// questionnaire opens) — emit immediately; turn-end flush
-					// can't double-chip (emitNow removes them).
-					const paths = declaredArtifactPaths(event.result, entry.cwd)
+					// questionnaire opens) — emit immediately. emitNow marks them
+					// emitted, so turn-end flush can't double-chip; the buffer
+					// keys come from this one collect (no re-parse).
+					const paths = turn.artifactBuffer.getDeclaredPaths()
 					if (paths.length > 0) {
 						for (const update of turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta))
 							this.send({ sessionId, update })

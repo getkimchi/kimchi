@@ -59,7 +59,6 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): DetectedArtifact[] {
 	for (const result of event.toolResults) {
 		const toolCall = toolCalls.get(result.toolCallId)
 		if (!toolCall) continue
-		const sniffed = toolCall.name === "bash" || toolCall.name === "powershell"
 		for (const artifact of artifactsFromToolCall(
 			toolCall.name,
 			toolCall.arguments,
@@ -68,6 +67,7 @@ function turnArtifacts(event: TurnEndEvent, cwd: string): DetectedArtifact[] {
 			cwd,
 			{ windowStart },
 		)) {
+			const sniffed = artifact.origin === "sniffed"
 			const existing = seen.has(artifact.path) ? out.findIndex((a) => a.path === artifact.path) : -1
 			if (sniffed && existing >= 0) continue
 			if (!sniffed && existing >= 0) {

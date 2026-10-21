@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { buildArtifactLinkChunks, TurnArtifactBuffer } from "./artifact-links.js"
@@ -15,12 +14,26 @@ const chunkOf = (u: SessionUpdate) =>
 // merge, attachment point, drop rule, dedupe). End-to-end coverage of the
 // live/replay paths is in server.test.ts.
 describe("buildArtifactLinkChunks", () => {
-	const artifact = { path: "/a/slides.pptx", name: "slides.pptx", uri: "file:///a/slides.pptx" }
+	const artifact = {
+		path: "/a/slides.pptx",
+		name: "slides.pptx",
+		uri: "file:///a/slides.pptx",
+		origin: "write" as const,
+	}
 
 	it("emits one resource_link chunk per artifact, marked type=artifact", () => {
 		const chunks = buildArtifactLinkChunks({
 			messageId: "km.3",
-			artifacts: [artifact, { path: "/a/b.pdf", name: "b.pdf", uri: "file:///a/b.pdf", mimeType: "application/pdf" }],
+			artifacts: [
+				artifact,
+				{
+					path: "/a/b.pdf",
+					name: "b.pdf",
+					uri: "file:///a/b.pdf",
+					mimeType: "application/pdf",
+					origin: "write" as const,
+				},
+			],
 		})
 		expect(chunks).toHaveLength(2)
 		expect(chunks[0]).toMatchObject({
@@ -101,6 +114,49 @@ describe("TurnArtifactBuffer > emitNow", () => {
 		collect(buf)
 		expect(buf.emitNow([join(tmpDir, "not-here.md")])).toEqual([])
 		expect(buf.size).toBe(2)
+	})
+
+	it("does not re-chip a path re-declared after emitNow", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		expect(links(buf.emitNow([plan]))).toHaveLength(1)
+		// A later tool echoes the same path (cumulative declarations, review round-trip).
+		collect(buf)
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "emit-note.pdf" } })
+	})
+
+	it("keeps labels unique across mid-turn and turn-end batches (same basename)", () => {
+		mkdirSync(join(tmpDir, "docs"), { recursive: true })
+		mkdirSync(join(tmpDir, "archive"), { recursive: true })
+		const first = join(tmpDir, "docs", "plan.md")
+		const second = join(tmpDir, "archive", "plan.md")
+		writeFileSync(first, "one")
+		writeFileSync(second, "two")
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.7")
+		buf.collectFromToolCall({
+			toolName: "custom_doc_tool",
+			args: {},
+			result: { content: [{ type: "text", text: "ok" }], details: { artifacts: [{ path: first }] } },
+			cwd: tmpDir,
+		})
+		buf.collectFromToolCall({
+			toolName: "write",
+			args: { path: second, content: "two" },
+			result: { content: [{ type: "text", text: "ok" }] },
+			cwd: tmpDir,
+		})
+		// Mid-turn batch takes the bare name...
+		const mid = links(buf.emitNow([first]))
+		expect(mid).toHaveLength(1)
+		expect(mid[0]).toMatchObject({ content: { name: "plan.md" } })
+		// ...so the turn-end batch deepens instead of colliding.
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "archive/plan.md" } })
 	})
 })
 
