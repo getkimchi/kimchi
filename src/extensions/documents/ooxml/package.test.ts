@@ -116,6 +116,29 @@ describe("openOoxml", () => {
 	it("rejects a zip whose central directory lies about uncompressed size", async () => {
 		await expect(openOoxml(makeLyingZip())).rejects.toMatchObject({ code: "safety-limit" })
 	})
+
+	it("save→reopen preserves untouched parts byte-for-byte", async () => {
+		const pristine = new Uint8Array([0, 1, 2, 3, 255, 254, 253, 252])
+		const data = await makeZip({
+			"ppt/media/image1.bin": pristine,
+			"ppt/presentation.xml": '<p:presentation xmlns:p="urn:x"><p:sldIdLst/></p:presentation>',
+		})
+		const pkg = await openOoxml(data)
+		pkg.putXml("ppt/presentation.xml", pkg.getXml("ppt/presentation.xml"))
+		const reopened = await openOoxml(await pkg.save())
+		expect([...reopened.getBytes("ppt/media/image1.bin")!]).toEqual([...pristine])
+		expect(reopened.getBytes("ppt/presentation.xml")).toBeTruthy()
+	})
+
+	it("rejects a structurally corrupt archive as corrupt (library-owned validation)", async () => {
+		// Truncate the central directory of a valid archive: yauzl owns
+		// structure validation, so any truncation it rejects must surface as
+		// a typed corrupt error, never a crash or raw exception.
+		const data = await makeZip({ "a.txt": "hello" })
+		const truncated = data.subarray(0, data.length - 10)
+		await expect(openOoxml(truncated)).rejects.toMatchObject({ name: "DocumentError" })
+		await expect(listZipEntries(truncated)).rejects.toMatchObject({ name: "DocumentError" })
+	})
 })
 
 // --- hostile-input: declared size vs real inflation --------------------------
