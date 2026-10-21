@@ -108,6 +108,12 @@ export class TelemetryContext {
 	lastTraceContext: { traceId: string; spanId: string } | undefined
 	sentMessages = new Set<string>()
 	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
+	/** Tool call ids of subagent bash calls whose timeout the budget clamp
+	 *  reduced below the resolved value (populated by the subagent-bash-clamp
+	 *  channel handler). Their timeout-shaped tool errors are reclassified as
+	 *  the `subagent.bash_clamped` lifecycle event instead of a generic
+	 *  `tool_failure` error — expected containment, not a failure. */
+	clampedBashCalls = new Set<string>()
 	messageStartTimes = new Map<string, number>()
 	toolStartTimes = new Map<string, number>()
 	cumulative: CumulativeState
@@ -170,6 +176,7 @@ export class TelemetryContext {
 		this.lastTraceContext = undefined
 		this.sentMessages.clear()
 		this.pendingArgs.clear()
+		this.clampedBashCalls.clear()
 		this.messageStartTimes.clear()
 		this.toolStartTimes.clear()
 		this.lastSessionType = undefined

@@ -254,6 +254,105 @@ describe("handlers/tools", () => {
 			expect(error?.attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
 			expect(error?.attrs["request.span_id"]).toBe("1122334455667788")
 		})
+
+		it("suppresses the error record for a clamp-killed bash timeout (lifecycle, not a failure)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-clamped"
+			// The clamp channel handler records the id before the tool executes.
+			ctx.clampedBashCalls.add(toolCallId)
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 5" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			// The run is still recorded as a measurement…
+			const toolResult = events.find((e) => e.eventName === "tool_result")
+			expect(toolResult).toBeDefined()
+			expect(toolResult?.attrs.success).toBe("false")
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec).toBeDefined()
+			expect(cmdExec?.attrs.exit_code).toBe("1")
+			// …but not as an error — subagent.bash_clamped already reports the clamp.
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			// The clamp marker is released with the call.
+			expect(ctx.clampedBashCalls.size).toBe(0)
+		})
+
+		it("suppresses the error record for a clamp-killed timeout with verbose output (status line beyond the 300-char truncation)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-clamped-verbose"
+			ctx.clampedBashCalls.add(toolCallId)
+
+			// Upstream appends the timeout status AFTER the command output; a
+			// verbose command pushes it past the 300-char telemetry truncation.
+			// The clamp match must run against the full text, not the truncated
+			// message, or this emits a spurious tool_failure.
+			const verboseOutput = "x".repeat(400)
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "verbose" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: `${verboseOutput}\n\nCommand timed out after 1 seconds` }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("still emits the error record for a non-timeout failure on a clamped call", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-clamped-exit"
+			ctx.clampedBashCalls.add(toolCallId)
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "command failed with exit code 1" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const error = events.find((e) => e.eventName === "error")
+			expect(error).toBeDefined()
+			expect(error?.attrs.error_type).toBe("tool_failure")
+		})
+
+		it("still emits the error record for a bash timeout that was NOT clamped (model-requested)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-model-timeout"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 5", timeout: 1 } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const error = events.find((e) => e.eventName === "error")
+			expect(error).toBeDefined()
+			expect(error?.attrs.error_type).toBe("tool_failure")
+		})
 	})
 
 	// -----------------------------------------------------------------------

@@ -428,8 +428,19 @@ ${skillLines}`
 	const MIN_TOKEN_BUDGET = 1024
 	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
-	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
-		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+	// Wall-clock budget (max_duration), resolved here so both the prompt's
+	// budget block and the bash clamp extension below see the same value.
+	// Computed before extras.budget so the agent is told its time limit up
+	// front — without it, a time-based clamp firing later is unexplainable
+	// to the agent (see subagent-bash-clamp.ts).
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+	if (effectiveMaxTurns != null || effectiveTokenBudget != null || effectiveMaxDuration > 0) {
+		extras.budget = {
+			maxTurns: effectiveMaxTurns,
+			tokenBudget: effectiveTokenBudget,
+			// 0 means unlimited — no time limit to communicate.
+			...(effectiveMaxDuration > 0 ? { maxDurationSeconds: effectiveMaxDuration } : {}),
+		}
 	}
 
 	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
@@ -464,10 +475,10 @@ ${skillLines}`
 	const agentDir = getAgentDir()
 
 	// The subagent budget clamp must be wired with the deadline computed
-	// at run time (startTimeMs + maxDuration). Resolve the effective
-	// max_duration here so the bash clamp extension sees it at registration.
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
-
+	// at run time (startTimeMs + maxDuration); effectiveMaxDuration was
+	// resolved above (with the budget block) so the bash clamp extension
+	// sees it at registration.
+	//
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
 	// safety hook explicitly so worker bash calls get a deterministic upper
@@ -475,7 +486,7 @@ ${skillLines}`
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now(), type)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.

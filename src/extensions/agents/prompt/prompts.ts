@@ -14,6 +14,10 @@ import type { AgentConfig, EnvInfo } from "../personas/types.js"
 export interface BudgetInfo {
 	maxTurns?: number
 	tokenBudget?: number
+	/** Wall-clock time budget in seconds (max_duration). Communicated so the
+	 *  agent understands time-based limits before one fires — subagent bash
+	 *  calls are clamped to the remaining budget near the deadline. */
+	maxDurationSeconds?: number
 }
 
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
@@ -24,7 +28,7 @@ export interface PromptExtras {
 	skillListBlock?: string
 	/** Model-specific phase guidelines resolved from the model registry. */
 	guidelinesBlock?: string
-	/** Turn and token budget limits for agent self-regulation. */
+	/** Turn, token, and wall-clock time budget limits for agent self-regulation. */
 	budget?: BudgetInfo
 	/** Project context files (AGENTS.md, CLAUDE.md) to inject. */
 	contextFiles?: ContextFile[]
@@ -126,6 +130,8 @@ function buildBudgetBlock(budget?: BudgetInfo): string | undefined {
 	const lines: string[] = []
 	if (budget.maxTurns != null) lines.push(`- Turn limit: ${budget.maxTurns} turns`)
 	if (budget.tokenBudget != null) lines.push(`- Output token budget: ~${formatTokenBudget(budget.tokenBudget)}`)
+	if (budget.maxDurationSeconds != null && budget.maxDurationSeconds > 0)
+		lines.push(`- Time limit: ${budget.maxDurationSeconds}s (wall-clock)`)
 	if (lines.length === 0) return undefined
 	return `<budget>
 You are operating under the following resource budget. Plan your work accordingly — prioritize the most important changes first and avoid unnecessary exploration.

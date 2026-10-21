@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto"
 import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
+import { SUBAGENT_BASH_CLAMP_EVENTS, type SubagentBashClampedPayload } from "../agents/subagent-bash-clamp-events.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -817,6 +818,23 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 	})
 }
 
+function onSubagentBashClamped(ctx: TelemetryContext, raw: unknown): void {
+	if (!isEnabled()) return
+	const payload = raw as Partial<SubagentBashClampedPayload> | undefined
+	if (typeof payload?.toolCallId !== "string") return
+	// Record the id first so the error reclassification in handlers/tools.ts
+	// holds even when the rest of the payload is malformed — the clamp fact
+	// stands on its own.
+	ctx.clampedBashCalls.add(payload.toolCallId)
+	ctx.emit("subagent.bash_clamped", {
+		...(typeof payload.agentType === "string" && payload.agentType ? { agent_type: payload.agentType } : {}),
+		reason: payload.reason === "budget_exhausted" ? "budget_exhausted" : "budget_tail",
+		...(typeof payload.requestedTimeoutS === "number" ? { requested_timeout_s: payload.requestedTimeoutS } : {}),
+		...(typeof payload.clampedToS === "number" ? { clamped_to_s: payload.clampedToS } : {}),
+		...(typeof payload.remainingMs === "number" ? { remaining_ms: payload.remainingMs } : {}),
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Steer/nudge domain event handlers (subscribed via pi.events)
 // ---------------------------------------------------------------------------
@@ -929,6 +947,14 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		// telemetry translates them into OTLP records for analytics.
 		pi.events.on(LOOP_GUARD_EVENTS.WARN, onLoopGuardWarn)
 		pi.events.on(LOOP_GUARD_EVENTS.SUBAGENT_ABORT, onLoopGuardSubagentAbort)
+
+		// Subscribe to the subagent bash-clamp channel. The clamp publishes a
+		// fact whenever it reduces a bash timeout below the resolved value;
+		// telemetry translates it into the `subagent.bash_clamped` lifecycle
+		// event and records the call id so handlers/tools.ts reclassifies the
+		// resulting tool error instead of emitting a generic tool_failure
+		// (expected containment, not an anomaly).
+		pi.events.on(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, (raw) => onSubagentBashClamped(telemetryCtx, raw))
 
 		// Subscribe to steer/nudge domain events. Guard/nudge
 		// extensions publish fire/outcome facts; telemetry forwards them
