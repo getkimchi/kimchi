@@ -45,7 +45,8 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 import { redactText } from "../pii-redaction/redactor.js"
 import {
@@ -1347,6 +1348,24 @@ export async function runCaptureWorkerMain(argv: string[]): Promise<number> {
 }
 
 // Executed directly via `bun run .../capture-worker.ts` (dev spawn path).
-if (import.meta.main) {
-	process.exit(await runCaptureWorkerMain(process.argv.slice(2)))
+// argv-comparison instead of import.meta.main: the compile-pipeline's cjs
+// wrapper (--compile, required for --bytecode/--minify) rejects surviving
+// import.meta.* and top-level await, and in the compiled binary this module
+// is never the main module anyway (kimchi memory-capture routes via cli.ts).
+const isWorkerMain = (() => {
+	try {
+		return typeof process.argv[1] === "string" && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+	} catch {
+		// Defensive: argv missing / mid-replacement binary state — never treat as main.
+		return false
+	}
+})()
+if (isWorkerMain) {
+	runCaptureWorkerMain(process.argv.slice(2)).then(
+		(code) => process.exit(code),
+		(err: unknown) => {
+			console.error("[memory-capture] failed:", err instanceof Error ? err.message : err)
+			process.exit(1)
+		},
+	)
 }

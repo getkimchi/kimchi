@@ -144,6 +144,20 @@ export function resolveInitialPermissionMode(
 	cliFlag: PermissionMode | undefined,
 	config: LoadedConfig,
 ): PermissionModeState {
+	return resolveInitialPermissionModeDetailed(sessionManager, permissionsEnvFlag, cliFlag, config).state
+}
+
+/**
+ * Same resolution as resolveInitialPermissionMode, plus the pre-clamp mode so
+ * callers can tell the user when the org policy silently downgraded their
+ * requested startup mode (CLI flag, env, persisted entry, config default).
+ */
+export function resolveInitialPermissionModeDetailed(
+	sessionManager: Pick<SessionManager, "getSessionId" | "getEntries">,
+	permissionsEnvFlag: string | undefined,
+	cliFlag: PermissionMode | undefined,
+	config: LoadedConfig,
+): { state: PermissionModeState; requested: PermissionMode } {
 	const sessionId = sessionManager.getSessionId()
 	const runtimeMode = getPermissionMode(sessionId)
 
@@ -167,5 +181,5 @@ export function resolveInitialPermissionMode(
 	})
 	// Org-policy clamp: a disallowed initial mode (CLI flag, env, persisted entry,
 	// config default) starts clamped to the nearest allowed mode.
-	return { ...resolved, mode: clampMode(resolved.mode), initiatedBy: "user" }
+	return { state: { ...resolved, mode: clampMode(resolved.mode), initiatedBy: "user" }, requested: resolved.mode }
 }

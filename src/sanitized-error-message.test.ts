@@ -203,7 +203,15 @@ describe("model retired surfacing", () => {
 		)
 	})
 
-	it("falls back to alternatives when no replacement is named", () => {
+	it("falls back to alternatives when no replacement is named (proxy object shape, reasons rendered)", () => {
+		const raw =
+			'{"error": {"type": "model_gone", "message": "Model kimi-k2.7 has been removed.", "suggested_alternatives": [{"id": "glm-5.3", "reason": "Closest to K2.7 pricing"}, {"id": "kimi-k3"}]}}'
+		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(
+			'The request could not be completed (model retired). Alternatives: "glm-5.3" (Closest to K2.7 pricing), "kimi-k3". Switch via /model.',
+		)
+	})
+
+	it("falls back to alternatives with the legacy string-array shape", () => {
 		const raw =
 			'{"error": {"type": "model_gone", "message": "Model kimi-k2.5 has been retired.", "suggested_alternatives": ["kimi-k2.7", "glm-5.3"]}}'
 		expect(formatSanitizedErrorMessage(raw, "interactive", { exhausted: true })).toBe(

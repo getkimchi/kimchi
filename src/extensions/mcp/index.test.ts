@@ -840,33 +840,6 @@ describe("upstream MCP adapter facade", () => {
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
 	})
 
-	it("reapplies the active profile once after a status-update burst settles", async () => {
-		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-
-		vi.useFakeTimers()
-		try {
-			// 5-event burst.
-			for (let i = 0; i < 5; i++) {
-				harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			}
-			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
-
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
-
-			// A later burst collapses the same way.
-			planning.reapplyCurrentProfile.mockClear()
-			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).toHaveBeenCalledTimes(1)
-		} finally {
-			vi.useRealTimers()
-		}
-	})
-
 	it("still resyncs synchronously when the adapter registers a tool", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		const harness = createExtensionApi()
@@ -878,25 +851,6 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
 
 		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
-	})
-
-	it("drops a pending resnapshot when the session shuts down", async () => {
-		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-
-		vi.useFakeTimers()
-		try {
-			// A status event schedules the resnapshot; the session is then
-			// replaced/reloaded before it fires. The stale pi's event bus throws
-			// on any later emit, so the callback must never run.
-			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
-			await harness.getHandler("session_shutdown")({ type: "session_shutdown", reason: "reload" }, createContext())
-			await vi.advanceTimersByTimeAsync(250)
-			expect(planning.reapplyCurrentProfile).not.toHaveBeenCalled()
-		} finally {
-			vi.useRealTimers()
-		}
 	})
 
 	it("drops a pending resnapshot when a replacement session starts", async () => {

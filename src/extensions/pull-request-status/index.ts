@@ -29,15 +29,14 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let draining = Promise.resolve()
 	let timer: ReturnType<typeof setInterval> | undefined
 	let branchName: string | undefined
-	let branchPull: WorkPullRequest | undefined
 	let branchCheckedAt = 0
 	let branchRun: { controller: AbortController; promise: Promise<void> } | undefined
-	let shellRefreshAt = 0
+	let branchRefreshPending = false
 	/** The footer last written to this context; ACP sends a notification for every write. */
 	let shown: string | undefined
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
 	const warnings = new Set<string>()
-	// Failures saved before this session started stay in the footer and /work without a new warning.
+	// Failures saved before this session started stay in /work without a new warning.
 	const startedAt = Date.now()
 
 	function contextKey(ctx: ExtensionContext): string {
@@ -110,7 +109,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			pending: latest.filter(
 				([key, row]) => !linked.has(key) && !stopped.has(key) && row.prLookup?.reason !== "unsupported",
 			).length,
-			// Only actionable failures reach the footer and warnings; /work also lists retries and stopped checks.
+			// Only actionable failures trigger warnings; /work also lists retries and stopped checks.
 			errors: messages(false),
 			lookupErrors: [
 				...messages(true),
@@ -119,16 +118,6 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 					: []),
 			],
 		}
-	}
-
-	function renderWork(): void {
-		const { links, pending, errors } = details()
-		if (errors.length) footer("PR/MR check /work")
-		else if (links.length === 1 && !pending) footer(pullRequestLabel(links[0]), links[0].url)
-		else if (links.length) footer(`PRs/MRs ${links.length} linked${pending ? `, ${pending} waiting` : ""}`)
-		else if (pending) footer("PR/MR waiting")
-		// Orientation only: the branch PR's cost is tracked once this work records a commit.
-		else footer(branchPull && pullRequestLabel(branchPull), branchPull?.url)
 	}
 
 	function receive(update: WorkPullRequestUpdate): void {
@@ -143,8 +132,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 				if (workId === update.workId && details().errors.includes(error)) warnOnce(error)
 			})
 		}
-		// Every reconciliation pass delivers all recorded commits; only the current work's rows change its footer.
-		if (started && tracking && update.workId === workId) renderWork()
+		// Commit associations belong in /work; they may refer to another branch sharing the same commit.
 	}
 
 	function releaseWork(): void {
@@ -184,63 +172,53 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	/** Records the current branch and reports whether its PR should be looked up. */
 	function branchLookupDue(branch: string | undefined): boolean {
 		if (branch === branchName && Date.now() - branchCheckedAt < BRANCH_REFRESH_MS) return false
-		if (branch !== branchName) branchPull = undefined
 		branchName = branch
 		branchCheckedAt = Date.now()
 		return true
 	}
 
-	function pollBranchForWork(): void {
-		const { links, pending, errors } = details()
-		if (links.length || pending || errors.length) return
-		startBranchRun(
-			() => tracking,
-			(ctx, signal, current) =>
-				currentBranch(ctx.cwd, signal, Date.now() + 2000)
-					.then(async (branch) => {
-						if (!current() || !branchLookupDue(branch)) return
-						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
-						if (current()) branchPull = result?.pullRequest
-					})
-					// The work's own commit lookups report failures; this orientation-only status stays quiet.
-					.catch(() => {}),
-			(current) => {
-				if (current()) renderWork()
-			},
-		)
-	}
-
 	function pollBranch(): void {
-		if (tracking) {
-			pollBranchForWork()
+		if (branchRun) {
+			branchRefreshPending = true
 			return
 		}
+		branchRefreshPending = false
+		let checkoutChanged = false
 		startBranchRun(
-			() => !tracking,
+			() => true,
 			(ctx, signal, current) =>
 				currentBranch(ctx.cwd, signal, Date.now() + 2000)
 					.then(async (branch) => {
 						if (!current()) return
 						// Clear the previous branch's link before waiting for its replacement.
-						if (branch !== branchName) footer()
+						if (branch !== branchName) footer(branch)
 						if (!branchLookupDue(branch)) return
 						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
 						if (!current()) return
+						if (branch && result?.branch !== branch) {
+							branchCheckedAt = 0
+							branchName = undefined
+							const latest = await currentBranch(ctx.cwd, signal, Date.now() + 2000)
+							if (current()) {
+								checkoutChanged = latest !== branch
+								footer(latest)
+							}
+							return
+						}
 						const pr = result?.pullRequest
-						footer(pr ? pullRequestLabel(pr) : undefined, pr?.url)
+						footer(pr ? `${branch} · ${pullRequestLabel(pr)}` : branch, pr?.url)
 					})
 					.catch((error) => {
 						if (!current()) return
 						// A retryable outage keeps the last result; a repository without GitHub or GitLab has none.
 						const reason = lookupFailureReason(error)
 						if (reason === "retry") return
-						if (reason === "unsupported") return footer()
-						footer("PR/MR unavailable")
-						warnOnce(error)
+						footer(branchName)
+						if (reason !== "unsupported" && !tracking) warnOnce(error)
 					}),
 			// A lookup replaced by a new session hands over to that session's first check.
-			(_current, key) => {
-				if (started && !tracking && context && contextKey(context) !== key) pollBranch()
+			(current) => {
+				if (started && context && (!current() || checkoutChanged || branchRefreshPending)) pollBranch()
 			},
 		)
 	}
@@ -259,7 +237,6 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 			shown = undefined
 			footer()
 			branchName = undefined
-			branchPull = undefined
 			branchCheckedAt = 0
 			branchRun?.controller.abort()
 		}
@@ -271,7 +248,6 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 				return
 			}
 			stopReconciliation ??= subscribePullRequestReconciliation({ onPullRequest: receive, onError: warnOnce })
-			renderWork()
 		} else releaseWork()
 		if (!timer) {
 			timer = setInterval(pollBranch, RECONCILIATION_INTERVAL_MS)
@@ -310,9 +286,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		const published = publishing.delete(event.toolCallId)
 		if (published) branchCheckedAt = 0
 		// Only shell commands switch branches or open PRs; the interval poll covers the rest.
-		if (tracking || event.toolName !== "bash") return
-		if (!published && Date.now() - shellRefreshAt < RECONCILIATION_INTERVAL_MS) return
-		shellRefreshAt = Date.now()
+		if (event.toolName !== "bash") return
 		synchronize(ctx)
 	})
 

@@ -609,8 +609,8 @@ function buildCreditsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "credits", text, width: visibleWidth(text) }
 }
 
-/** `PR #7 open` or `MR !7 merged`, as the PR status extension sets it. */
-const WORK_PR_STATUS = /^(PR|MR) ([#!]\d+)(?: (.+))?$/
+/** `feature · PR #7 open` or a legacy PR/MR status without the branch prefix. */
+const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
 
 /**
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
@@ -621,6 +621,16 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	const status = statuses.get("work-pr")
 	if (!status) return null
 	const match = WORK_PR_STATUS.exec(status)
+	const statusBranch = match?.[1] ?? (!status.includes(" ") ? status : undefined)
+	if (statusBranch) {
+		// Git's watcher updates before the next provider poll; never render a link for the old checkout.
+		const branch = statusLineData.getGitBranch()
+		if (!branch || branch === "detached") return null
+		if (branch !== statusBranch) {
+			const text = accentText(theme, branch)
+			return { id: "work-pr", text, width: visibleWidth(text) }
+		}
+	}
 	if (!match) {
 		// Waiting, several links or a lookup problem: a muted label and an accented value.
 		const space = status.indexOf(" ")
@@ -630,9 +640,10 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 				: `${dimText(theme, status.slice(0, space))} ${accentText(theme, status.slice(space + 1))}`
 		return { id: "work-pr", text, width: visibleWidth(text) }
 	}
-	const [, label, number, state] = match
+	const [, branch, label, number, state] = match
 	const url = statuses.get("work-pr-url")
-	const compact = `${dimText(theme, label)} ${theme.underline(accentText(theme, url ? hyperlink(number, url) : number))}`
+	const prefix = branch ? `${accentText(theme, branch)} ${dimText(theme, "·")} ` : ""
+	const compact = `${prefix}${dimText(theme, label)} ${theme.underline(accentText(theme, url ? hyperlink(number, url) : number))}`
 	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
 	const text = `${compact} ${dimText(theme, state)}`
 	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }

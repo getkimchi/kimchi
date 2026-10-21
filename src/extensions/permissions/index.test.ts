@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
@@ -27,6 +28,7 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { seedOrgPolicy } from "../__mocks__/org-policy.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
@@ -100,6 +102,10 @@ vi.mock("../model-catalog/classifier-models.js", async (importOriginal) => {
 		})),
 	}
 })
+
+vi.mock("../../api/org-settings.js", () => ({
+	fetchOrgPolicy: vi.fn(),
+}))
 
 vi.mock("../../resources/store.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../resources/store.js")>()
@@ -4727,6 +4733,266 @@ describe("plan review closed notification", () => {
 			expect(closed).toEqual([])
 		} finally {
 			unsubscribe()
+		}
+	})
+})
+
+describe("adhoc submit_plan org-policy dead-ends", () => {
+	const PLAN =
+		"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
+
+	function collectClosed() {
+		const closed: string[] = []
+		const unsubscribe = subscribePlanReviewClosed((sessionId) => closed.push(sessionId))
+		return { closed, unsubscribe }
+	}
+
+	/** TUI menu select that stays pending until a plannotator decision aborts it. */
+	function hangingMenuSelect(ctx: ExtensionContext): void {
+		ctx.ui.select = vi.fn(
+			(_title: string, _options: string[], selectOpts?: { signal?: AbortSignal }) =>
+				new Promise<string | undefined>((resolve) => {
+					selectOpts?.signal?.addEventListener("abort", () => resolve(undefined))
+				}),
+		)
+	}
+
+	beforeEach(() => {
+		runCloudAgentMock.mockClear()
+	})
+
+	afterEach(() => {
+		resetPlanReviewClosedListenersForTests()
+		resetOrgPolicyForTests()
+	})
+
+	it("plan-only policy: menu hides execution options with an up-front explanation", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-only-menu-"))
+		try {
+			const ctx = createMockContext(["Rework the plan"])
+			ctx.cwd = tmpDir
+			const result = await submitPlan(harness, PLAN, ctx)
+			expect((result as { details?: { submitted?: boolean } }).details?.submitted).toBe(true)
+
+			await vi.waitFor(() => {
+				expect(ctx.ui.select).toHaveBeenCalledWith(
+					"Plan complete. How would you like to proceed?",
+					["Rework the plan"],
+					expect.anything(),
+				)
+			})
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("only allows plan mode"), "warning")
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("plan-only policy: a disallowed startup mode is clamped with a warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining('mode "yolo" is not allowed by your organization\'s policy'),
+			"warning",
+		)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("permissions-warning", expect.stringContaining("plan-only"))
+	})
+
+	it("an allowed startup mode produces no clamp warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: true })
+		const harness = createPermissionsHarness(["read", "bash"], { yolo: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("not allowed"), "warning")
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("yolo")
+	})
+
+	it("plan-only policy: session start sets a persistent status warning", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("permissions-warning", expect.stringContaining("plan-only"))
+	})
+
+	it("a policy with an executable mode leaves the warning status empty", async () => {
+		await seedOrgPolicy({ plan: true, default: true, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+		// expect.anything() does not match the undefined clear-call.
+		expect(ctx.ui.setStatus).not.toHaveBeenCalledWith("permissions-warning", expect.anything())
+	})
+
+	it("plan-only policy: a forced plannotator execute warns, closes the review, and stays in plan mode", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const { closed, unsubscribe } = collectClosed()
+		try {
+			const ctx = createMockContext([])
+			hangingMenuSelect(ctx)
+			await submitPlan(harness, PLAN, ctx)
+			emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+			await vi.waitFor(() => {
+				expect(ctx.ui.notify).toHaveBeenCalledWith(
+					"Your organization's policy only allows plan mode, so the approved plan cannot be executed.",
+					"warning",
+				)
+			})
+			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			// The blocked approve is the review's only close event: a hanging
+			// ACP prompt unblocks exactly once.
+			expect(closed).toEqual([TEST_SESSION_ID])
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(closed).toEqual([TEST_SESSION_ID])
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	it("plan+default policy: approval releases plan mode into default and executes with per-tool approvals", async () => {
+		await seedOrgPolicy({ plan: true, default: true, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const modeChanged = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.MODE_CHANGED, modeChanged)
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-default-release-"))
+		try {
+			const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, PLAN, ctx)
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN) }),
+					expect.anything(),
+				)
+			})
+			expect(modeChanged).toHaveBeenCalledWith(
+				expect.objectContaining({ to: expect.objectContaining({ mode: "default" }), reason: "plan_approval" }),
+			)
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("plan+default policy: start as ferment runs degraded and lands in default, not plan mode", async () => {
+		await seedOrgPolicy({ plan: true, default: true, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-default-ferment-"))
+		try {
+			const ctx = createMockContext(["Start as ferment"])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, PLAN, ctx)
+			await vi.waitFor(() => {
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "ferment_handoff" }),
+					expect.anything(),
+				)
+			})
+			// The elevation gate has nothing to elevate to: degraded straight away.
+			expect(ctx.ui.select).toHaveBeenCalledTimes(1)
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("ferment-degraded", expect.anything())
+			// The release into default leaves plan mode, so before_agent_start no
+			// longer re-applies the read-only planning profile over the ferment
+			// implementation tools.
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("plan-only policy: a forced start_cloud blocks before slug-clear and PLAN_APPROVED", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planApproved = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, planApproved)
+		const { closed, unsubscribe } = collectClosed()
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-only-cloud-"))
+		try {
+			const ctx = createMockContext([])
+			ctx.cwd = tmpDir
+			hangingMenuSelect(ctx)
+			await submitPlan(harness, PLAN, ctx)
+			emitPlanReviewDecision(harness.pi, { decision: "start_cloud", source: "plannotator", planReviewSource: "adhoc" })
+			await vi.waitFor(() => {
+				expect(ctx.ui.notify).toHaveBeenCalledWith(
+					"Your organization's policy only allows plan mode, so the approved plan cannot be executed.",
+					"warning",
+				)
+			})
+			// The release is checked BEFORE the cloud path clears state: no spawn,
+			// no approval event, slug retained for the next round.
+			expect(runCloudAgentMock).not.toHaveBeenCalled()
+			expect(planApproved).not.toHaveBeenCalled()
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(closed).toEqual([TEST_SESSION_ID])
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(closed).toEqual([TEST_SESSION_ID])
+
+			const ctx2 = createMockContext(["Rework the plan"])
+			ctx2.cwd = tmpDir
+			await submitPlan(harness, PLAN, ctx2)
+			await vi.waitFor(() => {
+				expect(ctx2.ui.select).toHaveBeenCalled()
+			})
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			unsubscribe()
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it("plan-only policy: a blocked approve keeps the slug — the next review round reopens on the same plan file", async () => {
+		await seedOrgPolicy({ plan: true, default: false, auto: false, yolo: false })
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-only-retry-"))
+		try {
+			const ctx1 = createMockContext([])
+			ctx1.cwd = tmpDir
+			hangingMenuSelect(ctx1)
+			await submitPlan(harness, PLAN, ctx1)
+			emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+			await vi.waitFor(() => {
+				expect(ctx1.ui.notify).toHaveBeenCalledWith(
+					"Your organization's policy only allows plan mode, so the approved plan cannot be executed.",
+					"warning",
+				)
+			})
+
+			const ctx2 = createMockContext(["Rework the plan"])
+			ctx2.cwd = tmpDir
+			await submitPlan(harness, PLAN, ctx2)
+			await vi.waitFor(() => {
+				expect(ctx2.ui.select).toHaveBeenCalledWith(
+					"Plan complete. How would you like to proceed?",
+					["Rework the plan"],
+					expect.anything(),
+				)
+			})
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans"))).toEqual(["plan-cache-layer.md"])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
 		}
 	})
 })

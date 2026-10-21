@@ -247,16 +247,18 @@ With work tracking loaded, the match starts with a **repository and commit hash*
 
 ```mermaid
 flowchart TD
-    T{"Work tracking loaded?"} -->|Yes| C["Use each recorded repository and commit"]
-    T -->|No| B["Use the current repository and branch"]
+    T["Work tracking loaded"] --> C["Use each recorded repository and commit"]
     C --> G["Find its PRs on GitHub or MRs on GitLab"]
-    B --> H["Find the branch's PR or MR"]
-    G -->|Found| L["Save links under the work ID and show status"]
+    G -->|Found| L["Save links under the work ID; list them in /work"]
     G -->|None yet| P["Keep the commit waiting"]
-    H -->|Found| F["Show a footer link; create no work records"]
-    H -->|None| Q["Hide the footer link"]
-    G -->|Failed| E["Keep saved links; show the reason; retry later"]
-    H -->|Failed| E
+    G -->|Failed| E["Keep saved links; show the reason in /work; retry later"]
+    S["Footer, in every session"] --> B{"Checked-out branch"}
+    B -->|Default branch| D["Show the branch name"]
+    B -->|Other branch| H["Find the branch's PR or MR"]
+    B -->|Detached HEAD| N["Show nothing"]
+    H -->|Found| F["Show the branch and a PR link; create no work records"]
+    H -->|None or other failure| D
+    H -->|Timeout, outage, rate limit or malformed PR record| K["Keep the last footer until the next lookup"]
 ```
 
 Once a link is known, Kimchi also checks that PR or MR by number to refresh its state. Rate-limit responses delay further calls to that host until the retry time.
@@ -268,9 +270,17 @@ Once a link is known, Kimchi also checks that PR or MR by number to refresh its 
 | A commit is rewritten or removed | Kimchi still checks a saved link by number. An empty commit lookup does not erase it. |
 | A repository is renamed or transferred | The provider's PR or MR ID keeps one link, with the latest repository name and URL. |
 | The provider returns several associations | All returned links are saved, across every result page. |
-| Another Kimchi process does the lookup | This session reads the saved result and updates its footer too. |
+| Another Kimchi process does the lookup | This session reads the saved result, and `/work` shows it. |
 
-The footer shows `PR/MR waiting`, a link such as `PR #7 open` or `MR !7 merged`, a count such as `PRs/MRs 2 linked` for several links, or `PR/MR check /work` when lookup fails. A commit no longer checked after 32 days counts as neither waiting nor failed; `/work` says so. Only the number is accented and underlined as the link; when the status line runs out of room, the state goes first (`PR #7`). Before the current work records a commit, it shows the current branch's PR the same way for orientation; its cost is tracked once Kimchi records a commit for it. Kimchi asks GitHub or GitLab about the branch again only after a branch change, a `git push`, `gh pr create` or `glab mr create` run by the agent's Bash tool, or five minutes, and lookup failures for this status stay quiet. This branch lookup, like the branch status without work tracking, asks only the branch's own remote. It therefore does not find a PR or MR opened from a fork to its parent repository. The number is a terminal hyperlink; use your terminal's link gesture, usually Cmd-click or Ctrl-click. `/work` lists the current work's links, states, waiting commits and errors. ACP clients receive plain status text and the URL separately; how they display them depends on the client.
+`/work` lists the current work's links, states, waiting commits and errors. A lookup failure that needs your action also shows once as a warning. A commit no longer checked after 32 days counts as neither waiting nor failed; `/work` says so.
+
+The footer follows the checked-out branch, not the work's commits, because a commit can also belong to another branch's PR or MR. It shows the branch and that branch's PR or MR, such as `feature · PR #7 open` or `feature · MR !7 merged`. Only the number is accented and underlined as the link; when the status line runs out of room, the state goes first (`feature · PR #7`).
+
+- On the repository's default branch, as GitHub or GitLab reports it, the footer shows only the branch name: unrelated PRs and MRs share that branch. If the provider reports no default branch, every branch shows only its name.
+- On a detached HEAD, the footer shows nothing.
+- A PR or MR matches when its source branch has the same name and, on GitLab, comes from the same project. An open one is shown first. A closed or merged one is shown only when it closed after the local branch was created, which Git records as the branch's oldest reflog entry. A new branch that reuses an old name therefore does not show the old branch's PR. Only deleting and re-creating the branch starts a new reflog; `git checkout -B`, `git branch -f`, a rename or a copy keeps the old one, and with it the old PR. A branch checked out after its PR closed, or one whose reflog Git does not keep, shows no closed PR.
+
+Kimchi asks GitHub or GitLab about the branch again only after a branch change, a `git push`, `gh pr create` or `glab mr create` run by the agent's Bash tool, or five minutes. In the terminal, the link disappears as soon as Git reports another branch; ACP clients get the new branch at the next check, at most 30 seconds later. This lookup asks only the branch's own remote. It therefore does not find a PR or MR opened from a fork to its parent repository. The number is a terminal hyperlink; use your terminal's link gesture, usually Cmd-click or Ctrl-click. ACP clients receive plain status text and the URL separately; how they display them depends on the client.
 
 Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows after `pullRequests[]` describe the fields of each saved link:
 

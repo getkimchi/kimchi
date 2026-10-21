@@ -26,9 +26,10 @@ function autoUpdateStatePath(): string {
 }
 
 interface AutoUpdateState {
-	/** Opt-in (default false) for the initial rollout. */
+	/** Opt-out (default true). Only an explicit `false` disables. */
 	autoUpdate?: boolean
-	/** One-time onboarding toast shown flag. */
+	/** One-time onboarding toast shown flag. The launch auto-update waits
+	 *  for it, so nobody is updated before being told. */
 	autoUpdateNoticeShown?: boolean
 }
 
@@ -49,25 +50,34 @@ function readState(path: string): AutoUpdateState {
 	}
 }
 
-/** Default for autoUpdate is `false` (opt-in) for the initial rollout.
- *  Plan: ship opt-in first, monitor for regressions, then flip to `true`
- *  (opt-out) to match Claude Code's native-install default. */
+/** Default for autoUpdate is `true` (opt-out). Only an explicit `false`
+ *  disables it. Fails open on a malformed file or non-boolean value: the
+ *  file is machine-written by /update, so bad content means corruption, not
+ *  intent, and failing closed would silently strand users on old versions.
+ *  The launch path still waits for the one-time notice (see auto-update.ts). */
 export function loadAutoUpdateSetting(): boolean {
-	const state = readState(autoUpdateStatePath())
-	// Missing or wrong type → opt-in default. Only an explicit `true` opts in.
-	if (typeof state.autoUpdate !== "boolean") return false
+	const path = autoUpdateStatePath()
+	const state = readState(path)
+	if (state.autoUpdate === undefined) return true
+	if (typeof state.autoUpdate !== "boolean") {
+		console.warn(`[kimchi-update] Ignoring non-boolean autoUpdate value in ${path}; using the default (on).`)
+		return true
+	}
 	return state.autoUpdate
 }
 
 /** Default for the one-time onboarding toast is `false` — we haven't shown it yet. */
 export function loadAutoUpdateNoticeShown(): boolean {
-	const state = readState(autoUpdateStatePath())
-	return state.autoUpdateNoticeShown === true
+	return readState(autoUpdateStatePath()).autoUpdateNoticeShown === true
 }
 
+/** Turning auto-update on explicitly also counts as having seen the
+ *  onboarding notice: the user already knows, and the launch path waits
+ *  for that notice before its first update (see auto-update.ts). */
 export function saveAutoUpdateSetting(enabled: boolean): void {
 	const path = autoUpdateStatePath()
-	const next = { ...readState(path), autoUpdate: enabled }
+	const next: AutoUpdateState = { ...readState(path), autoUpdate: enabled }
+	if (enabled) next.autoUpdateNoticeShown = true
 	writeJson(path, next)
 }
 

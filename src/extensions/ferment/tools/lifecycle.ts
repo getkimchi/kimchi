@@ -1190,7 +1190,10 @@ ${renderGateGuidance("scope_ferment")}`,
 
 			const formatPlanEntry = (suffix?: string): string => (suffix ? `${planEntry}\n\n${suffix}` : planEntry)
 			const planToolOk = (message: string, options: { includePlan?: boolean; suffix?: string } = {}) =>
-				toolOk(options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message)
+				toolOk(
+					options.includePlan ? `${formatPlanEntry(options.suffix)}\n\n${message}` : message,
+					planPath !== undefined ? { artifacts: [{ path: planPath }] } : undefined,
+				)
 
 			// 5. Headless path.
 			if (!ctx.hasUI) {

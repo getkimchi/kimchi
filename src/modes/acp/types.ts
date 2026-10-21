@@ -1,4 +1,19 @@
 import type { PromptResponse } from "@agentclientprotocol/sdk"
+import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { TurnArtifactBuffer } from "./artifact-links.js"
+
+/**
+ * The session targeted by a turn-scoped ext method, plus whether a turn is
+ * truly active. `turnActive` is `SessionRecord.turn` defined AND not
+ * cancelled: a cancelled turn stays defined until the prompt settles, but
+ * cancel() has already resolved its outcome — it is not "a turn in
+ * progress". Handlers gate on this instead of reaching into the agent's
+ * private turn bookkeeping.
+ */
+export type SessionTurnTarget = {
+	session: AgentSession
+	turnActive: boolean
+}
 
 export type TurnContext = {
 	cancelled: boolean
@@ -28,6 +43,19 @@ export type TurnContext = {
 	 * event resolves add-vs-modify from preWriteContents.
 	 */
 	pendingFileChanges: Map<string, PendingFileChange[]>
+	/**
+	 * toolName+args stashed at tool_execution_start per toolCallId so
+	 * tool_execution_end (which carries no args) can run generated-artifact
+	 * detection against args+result together. Same lifecycle as
+	 * pendingFileChanges: set at start, deleted at end / retireToolCall.
+	 */
+	toolCallArgs: Map<string, { toolName: string; args: unknown; startedAt: number }>
+	/**
+	 * Per-turn artifact accumulator (artifact-links.ts): detected files plus
+	 * the attachment point (last text block id). finalizeTurn flushes it as
+	 * `resource_link` chunks; a text-less turn drops its artifacts.
+	 */
+	artifactBuffer: TurnArtifactBuffer
 	usage: TurnUsage
 	resolve: (res: PromptResponse) => void
 	reject: (err: unknown) => void

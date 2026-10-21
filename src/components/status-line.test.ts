@@ -117,6 +117,7 @@ function createMockStatusLineData(opts?: {
 	dap?: string
 	workPr?: string
 	workPrUrl?: string
+	gitBranch?: string | null
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
@@ -128,10 +129,90 @@ function createMockStatusLineData(opts?: {
 	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
+		getGitBranch: vi.fn(() => (opts?.gitBranch === undefined ? "feature" : opts.gitBranch)),
 	} as unknown as ReadonlyFooterDataProvider
 }
 
 describe("buildScriptPayload", () => {
+	it.each(["PR #7 open", "MR !7 closed"])("keeps the checked-out branch beside a linked %s", (label) => {
+		const status = `fix/current-branch · ${label}`
+		const url = "https://github.com/example/repo/pull/7"
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: status, workPrUrl: url, gitBranch: "fix/current-branch" }),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			const number = label.split(" ")[1]
+			expect(stripAnsi(segment?.text ?? "").replace(hyperlink(number, url), number)).toBe(status)
+			expect(segment?.text).toContain(hyperlink(number, url))
+			expect(segment?.width).toBe(visibleWidth(status))
+			expect(visibleWidth(renderFittedLine(segments, 40, context.theme))).toBeLessThanOrEqual(40)
+		}
+	})
+	it.each(["master", "main", "develop", "feature/without-pr"])("shows only branch %s without a PR", (branch) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: branch, gitBranch: branch }),
+		}
+		const segment = buildStatusLineSegments(context, new Set()).find((item) => item.id === "work-pr")
+		expect(stripAnsi(segment?.text ?? "")).toBe(branch)
+		expect(segment?.text).not.toContain("\x1b]8;")
+	})
+	it.each([
+		"main",
+		"master",
+		"other-feature",
+		"develop",
+	])("hides a stale PR as soon as Git reports checkout %s", (branch) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({
+				workPr: "feature · PR #7 open",
+				workPrUrl: "https://github.com/example/repo/pull/7",
+				gitBranch: branch,
+			}),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			expect(stripAnsi(segment?.text ?? "")).toBe(branch)
+			expect(segment?.text).not.toContain("\x1b]8;")
+		}
+	})
+	it.each([
+		"feature\u00a0topic",
+		"feature\u2028topic",
+	])("hides a stale PR from Git-valid Unicode branch %s", (branch) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({
+				workPr: `${branch} · PR #7 open`,
+				workPrUrl: "https://github.com/example/repo/pull/7",
+				gitBranch: "main",
+			}),
+		}
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const segment = segments.find((item) => item.id === "work-pr")
+			expect(stripAnsi(segment?.text ?? "")).toBe("main")
+			expect(segment?.text).not.toContain("\x1b]8;")
+		}
+	})
+	it.each([
+		["feature", null],
+		["feature", "detached"],
+		["detached", "detached"],
+	])("hides a %s branch PR when Git reports %s", (statusBranch, branch) => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workPr: `${statusBranch} · PR #7 open`, gitBranch: branch }),
+		}
+		expect(buildStatusLineSegments(context, new Set()).some((item) => item.id === "work-pr")).toBe(false)
+	})
 	it.each([
 		["PR #7 open", "#7", "https://github.com/example/repo/pull/7"],
 		["MR !7 open", "!7", "https://gitlab.com/example/team/repo/-/merge_requests/7"],

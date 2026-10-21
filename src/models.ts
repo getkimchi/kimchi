@@ -7,7 +7,14 @@ import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
 import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
-import { deriveDeprecationState, type ModelAlternative, writeModelDeprecations } from "./model-deprecation.js"
+import {
+	collectDeprecationMarkers,
+	deriveDeprecationState,
+	isDeprecationMarked,
+	type ModelAlternative,
+	stripDeprecationMarker,
+	writeModelDeprecations,
+} from "./model-deprecation.js"
 import { normalizeThinkingLevels } from "./thinking-levels.js"
 import { getVersion } from "./utils.js"
 
@@ -431,6 +438,23 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 
 type ModelDescriptionRegistry = Map<string, string>
 
+/** Keys this module synthetically created for sidecar slugs absent from the
+ *  provider payload — removed again when the slug stops being marked, so the
+ *  long-lived ACP server's registry never accumulates ghost entries. */
+function syntheticMarkerKeys(): Set<string> {
+	const globals = process as typeof process & { __kimchiSyntheticMarkerKeys?: Set<string> }
+	if (!(globals.__kimchiSyntheticMarkerKeys instanceof Set)) {
+		globals.__kimchiSyntheticMarkerKeys = new Set()
+	}
+	return globals.__kimchiSyntheticMarkerKeys
+}
+
+/** Provider blocks kimchi owns; deprecation markers only apply to models
+ *  under these — a sidecar slug must never mark another provider's rows. */
+function isKimchiManagedKey(key: string): boolean {
+	return key.startsWith("kimchi-dev/") || key.startsWith("kimchi-experimental/")
+}
+
 function modelDescriptionRegistry(): ModelDescriptionRegistry {
 	const globals = process as typeof process & { __kimchiModelDescriptions?: ModelDescriptionRegistry }
 	if (!(globals.__kimchiModelDescriptions instanceof Map)) {
@@ -451,6 +475,7 @@ export function getModelDescription(key: string): string | undefined {
 /** @internal — test hook clearing the process-global registry. */
 export function __clearModelDescriptionsForTest(): void {
 	modelDescriptionRegistry().clear()
+	syntheticMarkerKeys().clear()
 }
 
 type ModelThinkingLevelsRegistry = Map<string, string[]>
@@ -503,6 +528,62 @@ export function registerModelInfoFromProviders(
 	}
 }
 
+/** Prefix registered descriptions with deprecation markers from the sidecar,
+ * so /model warns before a deprecated model is selected rather than after
+ * (the toast only fires on selection/session start). Window-gated like the
+ * toast; markers never stack on refreshes — a previously applied marker is
+ * stripped before the current set is applied, so a model crossing into
+ * sunset mid-session loses its marker too. Models without a backend
+ * description (most serverless rows) get the marker as their whole
+ * description under the standard kimchi blocks — an unmarked empty row is
+ * exactly the gap this closes. Synthetic fallback keys are tracked and
+ * removed once their slug is no longer marked, so the long-lived ACP
+ * server's registry never accumulates stale ghost entries. */
+export function registerDeprecationMarkers(modelsJsonPath: string): void {
+	const registry = modelDescriptionRegistry()
+	const markers = collectDeprecationMarkers(modelsJsonPath)
+
+	// Strip previously applied markers everywhere, so re-registration
+	// reflects the current sidecar instead of stacking prefixes.
+	for (const [key, description] of registry) {
+		const stripped = stripDeprecationMarker(description)
+		if (stripped !== description) registry.set(key, stripped)
+	}
+
+	// Remove synthetic fallback keys whose slug is no longer marked. Only
+	// keys still carrying (a stripped) marker text are ours — a real provider
+	// description registered later under the same key must survive.
+	const synthetic = syntheticMarkerKeys()
+	for (const key of synthetic) {
+		if (markers.has(key.slice(key.indexOf("/") + 1))) continue
+		const current = registry.get(key)
+		if (current === undefined || current === "" || isDeprecationMarked(current)) {
+			registry.delete(key)
+			synthetic.delete(key)
+		}
+	}
+
+	for (const [slug, marker] of markers) {
+		let matched = false
+		for (const [key, description] of registry) {
+			// Identity is the model id within a kimchi-managed block only —
+			// matching every provider's last path segment would let one
+			// backend's deprecation mark unrelated providers' rows.
+			if (!isKimchiManagedKey(key)) continue
+			if (key.slice(key.lastIndexOf("/") + 1) !== slug) continue
+			matched = true
+			if (isDeprecationMarked(description)) continue
+			registry.set(key, `${marker} ${description}`.trim())
+		}
+		if (!matched) {
+			for (const key of [`kimchi-dev/${slug}`, `kimchi-experimental/${slug}`]) {
+				registry.set(key, marker)
+				synthetic.add(key)
+			}
+		}
+	}
+}
+
 /** Fill the selector's Auto fallback description when the current catalog
  * has none. The backend owns the `auto` entry, but not every catalog ships a
  * description for it — the /model table should never render a bare Auto row.
@@ -533,6 +614,7 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		// restarts.
 		registerModelInfoFromProviders(providers)
 		registerAutoDescriptionFallback()
+		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
 		for (const [name, provider] of Object.entries(providers)) {
 			if (!name.startsWith("kimchi-dev")) continue
@@ -644,6 +726,7 @@ export async function updateModelsConfig(
 		// blocks (the fetch path — endpoint descriptions and levels land here first).
 		registerModelInfoFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
 		registerAutoDescriptionFallback()
+		registerDeprecationMarkers(modelsJsonPath)
 	}
 	return {
 		models: result.models,

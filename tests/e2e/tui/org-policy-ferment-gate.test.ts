@@ -118,7 +118,7 @@ test("ferment gate offers the highest allowed mode and proceeds on accept", asyn
 			// Stage 6: accept (first option) — the session elevates to auto and
 			// the ferment proceeds to execution.
 			terminal.submit("")
-			await waitForText(terminal, "auto → shift+tab", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, /^auto(?: → shift\+tab)? ·/m, { full: false, timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("accepted elevation — session mode is auto")
 
 			// Stage 7: the scoped ferment artifact was persisted and the scheduler
@@ -205,7 +205,7 @@ test("ferment gate decline runs degraded with manual continuation", async ({ ter
 			trace.step("declined elevation — degraded warning visible")
 
 			// Stage 7: no elevation — the status line still shows the default mode.
-			await waitForText(terminal, "default → shift+tab", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, /^default(?: → shift\+tab)? ·/m, { full: false, timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("status line still default — no elevation")
 		},
 	)

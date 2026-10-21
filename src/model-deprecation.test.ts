@@ -3,7 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	collectDeprecationMarkers,
+	deprecationMarker,
 	deriveDeprecationState,
+	isWithinDeprecationNotifyWindow,
 	modelDeprecationsPath,
 	pickReplacementSlug,
 	readModelDeprecations,
@@ -24,6 +27,108 @@ describe("pickReplacementSlug", () => {
 
 	it("returns undefined when no replacement is recorded", () => {
 		expect(pickReplacementSlug({ deprecated_at: "2026-09-20T00:00:00Z" })).toBeUndefined()
+	})
+})
+
+describe("deprecationMarker", () => {
+	it("marks past deprecations with the sunset date", () => {
+		expect(
+			deprecationMarker({ deprecated_at: "2026-09-01T00:00:00Z", sunset_at: "2026-10-20T09:00:00Z" }, "kimi-k2.7", NOW),
+		).toBe("[Deprecated — retires 2026-10-20]")
+	})
+
+	it("marks past deprecations without a sunset plainly", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-09-01T00:00:00Z" }, "kimi-k2.7", NOW)).toBe("[Deprecated]")
+	})
+
+	it("marks announced deprecations inside the notify window", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-09-20T00:00:00Z" }, "kimi-k2.7", NOW)).toBe(
+			"[Deprecated — retires 2026-09-20]",
+		)
+	})
+
+	it("marks an announced deprecation landing exactly at the 30-day window edge", () => {
+		// Regression: the window cutoff is UTC-midnight-truncated, but a
+		// sidecar timestamp carries a time of day. A deprecation dated exactly
+		// 30 days out at 18:00Z (raw instant past the midnight cutoff) must still
+		// be inside the window — comparisons are day-granular on both sides.
+		expect(deprecationMarker({ deprecated_at: "2026-10-10T18:00:00Z" }, "kimi-k2.7", NOW)).toBe(
+			"[Deprecated — retires 2026-10-10]",
+		)
+	})
+
+	it("stays silent for announcements beyond the notify window", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-12-01T00:00:00Z" }, "kimi-k2.7", NOW)).toBeUndefined()
+	})
+
+	it("stays silent one day past the window edge", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-10-11T00:00:00Z" }, "kimi-k2.7", NOW)).toBeUndefined()
+	})
+
+	it("isWithinDeprecationNotifyWindow is day-granular at the edge", () => {
+		// Raw instant just past the midnight-truncated cutoff, same UTC day:
+		// inside the window. One day later: outside.
+		expect(isWithinDeprecationNotifyWindow(Date.parse("2026-10-10T18:00:00Z"), NOW)).toBe(true)
+		expect(isWithinDeprecationNotifyWindow(Date.parse("2026-10-11T00:00:00Z"), NOW)).toBe(false)
+	})
+
+	it("never marks Claude models from stale vendor deprecated_at dates", () => {
+		expect(deprecationMarker({ deprecated_at: "2026-09-01T00:00:00Z" }, "claude-sonnet-4-5", NOW)).toBeUndefined()
+	})
+
+	it("never marks sunset models", () => {
+		expect(
+			deprecationMarker({ deprecated_at: "2026-08-01T00:00:00Z", sunset_at: "2026-09-01T00:00:00Z" }, "kimi-k2.5", NOW),
+		).toBeUndefined()
+	})
+
+	it("does not crash on a non-string sunset_at and renders no date", () => {
+		// Regression: `sunset_at: 12345` + past deprecated_at used to throw
+		// `TypeError: …slice is not a function` from startup and per-request
+		// ACP marker reads.
+		const info = { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: 12345 } as unknown as {
+			deprecated_at?: string
+			sunset_at?: string
+		}
+		expect(deprecationMarker(info, "kimi-k2.7", NOW)).toBe("[Deprecated]")
+	})
+})
+
+describe("sidecar field validation", () => {
+	it("drops non-date and non-string date fields when reading the sidecar", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-deprecation-validate-"))
+		const path = join(dir, "models.json")
+		writeFileSync(
+			modelDeprecationsPath(path),
+			JSON.stringify({
+				"kimi-a": { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: "\u001b[2J2026-10-20" },
+				"kimi-b": { deprecated_at: "2026-09-01T00:00:00Z", sunset_at: 12345 },
+			}),
+			"utf-8",
+		)
+		const read = readModelDeprecations(path)
+		expect(read.get("kimi-a")?.sunset_at).toBeUndefined()
+		expect(read.get("kimi-b")?.sunset_at).toBeUndefined()
+		// Valid fields survive.
+		expect(read.get("kimi-a")?.deprecated_at).toBe("2026-09-01T00:00:00Z")
+	})
+})
+
+describe("collectDeprecationMarkers", () => {
+	it("collects markers by slug from the sidecar and skips unmarked models", () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-deprecation-markers-"))
+		try {
+			const path = join(dir, "models.json")
+			writeModelDeprecations(path, [
+				{ slug: "kimi-k2.7", deprecated_at: "2026-09-01T00:00:00Z", sunset_at: "2026-09-20T09:00:00Z" },
+				{ slug: "kimi-k3" },
+			])
+			const markers = collectDeprecationMarkers(path, NOW)
+			expect(markers.get("kimi-k2.7")).toBe("[Deprecated — retires 2026-09-20]")
+			expect(markers.has("kimi-k3")).toBe(false)
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
 	})
 })
 

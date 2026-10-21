@@ -34,6 +34,7 @@ export const AVAILABLE_EXT_METHODS = {
 	// Session-scoped inbound — require a live session, routed by sessionId.
 	set_session_title: `_${CAPABILITIES_KEY}/set_session_title`,
 	steering: `_${CAPABILITIES_KEY}/steering`,
+	feedback: `_${CAPABILITIES_KEY}/feedback`,
 	compact: `_${CAPABILITIES_KEY}/compact`,
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,

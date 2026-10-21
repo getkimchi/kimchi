@@ -1,10 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
+import { IS_ACP_MODE } from "../modes/acp/state.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting, markAutoUpdateNoticeShown } from "../update/settings.js"
 import { checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
 const UPDATE_STATUS_KEY = "update-available"
+const AUTO_UPDATE_NOTICE_ENTRY = "auto-update-notice"
+
+export const AUTO_UPDATE_NOTICE =
+	"Auto-update is now on by default: from the next launch, kimchi installs new versions in the background when it starts. Run `/update` to turn it off."
 
 /**
  * Startup-time check for new kimchi versions. Uses cache (24h) and displays
@@ -13,13 +19,28 @@ const UPDATE_STATUS_KEY = "update-available"
  *
  * The message is displayed via setStatus and read by the status line renderer.
  *
- * When auto-update is enabled (opt-in default — the toggle defaults to
- * off, so most users land here), the footer hint is suppressed — users
- * get updates silently on next launch. The first launch after a user
- * enables the toggle also emits a one-time onboarding toast explaining
- * the behavior and how to opt out via `/update`.
+ * When auto-update is enabled (opt-out default — the toggle defaults
+ * to on, so most users land here), the footer hint is suppressed — users
+ * get updates silently on next launch. The first launch with the toggle
+ * on also emits a one-time announcement of the default change and how to
+ * opt out via `/update` — a persistent transcript entry in the TUI (the
+ * notify() toast would auto-dismiss). The launch auto-update
+ * (auto-update.ts) waits for this announcement, so upgraded users hear
+ * about it before their first update.
+ *
+ * ACP sessions neither show nor mark the announcement: the launch
+ * auto-update never runs in protocol modes — ACP clients (e.g. Studio)
+ * own harness updates themselves — so a "updates on next launch" notice
+ * would be false there. Leaving the flag unmarked also keeps the accurate
+ * TUI notice pending for the user's first TUI session.
  */
 export default function startupUpdateExtension(pi: ExtensionAPI) {
+	// A custom entry stays visible in the transcript (notify() is a
+	// transient toast that auto-dismisses) and stays out of model context.
+	pi.registerEntryRenderer<string>(AUTO_UPDATE_NOTICE_ENTRY, (entry, _options, theme) =>
+		typeof entry.data === "string" ? new Text(theme.fg("dim", entry.data), 1, 0) : undefined,
+	)
+
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return
 
@@ -37,9 +58,12 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 			// nor the `brew upgrade kimchi` hint.
 			if (autoUpdateEnabled && !isHomebrewInstall()) {
 				// Auto-update is on: no nag (next launch applies silently).
-				// First launch only: explain the new behavior and how to opt out.
-				if (!loadAutoUpdateNoticeShown()) {
-					ctx.ui.notify("kimchi now updates itself in the background. Run `/update` to disable.")
+				// First TUI launch only: announce the default change and how to
+				// opt out. Excluded in ACP (see the extension comment above) —
+				// IS_ACP_MODE is checked first so ACP sessions never even read
+				// the notice flag.
+				if (!IS_ACP_MODE && !loadAutoUpdateNoticeShown()) {
+					pi.appendEntry(AUTO_UPDATE_NOTICE_ENTRY, AUTO_UPDATE_NOTICE)
 					markAutoUpdateNoticeShown()
 				}
 				return

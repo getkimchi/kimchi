@@ -31,10 +31,19 @@ const LLM_GATEWAY_REASON_POLICIES: Record<
 	model_retired: { retryable: false, isInfrastructure: false, exitCode: LLM_GATEWAY_REQUEST_EXIT_CODE },
 }
 
+/** A suggested_alternatives entry from a model_gone verdict: the gateway's
+ * deprecation service serves objects shaped {"id": "glm-5.3", "reason": "..."}
+ * (reason omitted when unset). Legacy string entries ("glm-5.3") are tolerated
+ * when parsing; the normalized shape here is objects. */
+export interface ModelRetiredAlternative {
+	readonly slug: string
+	readonly reason?: string
+}
+
 /** Replacement hints extracted from a model_retired gateway verdict (Scenario B). */
 export interface ModelRetiredInfo {
 	readonly replacement?: string
-	readonly alternatives: string[]
+	readonly alternatives: ModelRetiredAlternative[]
 	readonly docs?: string
 }
 
@@ -133,12 +142,92 @@ function parseGoneStatusCode(rawMessage: string): number | undefined {
 	return undefined
 }
 
+// Per-entry shapes in suggested_alternatives: the current object form
+// ({"id":"...","reason":"..."} — reason optional, key omitted when unset),
+// matched entry-by-entry so a missing/reordered reason never swallows a slug.
+const ALTERNATIVE_OBJECT_RE =
+	/\{[^{}]*?"id"\s*:\s*"((?:[^"\\]|\\.)+)"(?:[^{}]*?"reason"\s*:\s*"((?:[^"\\]|\\.)*)")?[^{}]*?\}/g
+
+/** Gateway-supplied free text (slugs, reasons, replacement, docs) is
+ *  interpolated into user-facing terminal output. Strip C0/C1 control
+ *  characters — including ANSI escape introducers — so a crafted
+ *  model_gone body cannot repaint or clear the user's screen. Newlines and
+ *  tabs have no business in a slug/reason either, so they go too. */
+function stripControlChars(value: string): string {
+	// Built from a string pattern: biome's noControlCharactersInRegex only
+	// applies to literals, and the ranges here are the whole point.
+	return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g"), "")
+}
+
+interface ParsedAlternative {
+	slug: string
+	reason?: string
+	priority?: number
+}
+
+function parseAlternativesArray(raw: string): ModelRetiredAlternative[] | undefined {
+	try {
+		const parsed: unknown = JSON.parse(`[${raw}]`)
+		if (!Array.isArray(parsed)) return undefined
+		const withPriority: ParsedAlternative[] = []
+		for (const entry of parsed) {
+			if (typeof entry === "string") {
+				const slug = stripControlChars(entry)
+				if (slug !== "") withPriority.push({ slug })
+				continue
+			}
+			if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+				const e = entry as Record<string, unknown>
+				const rawSlug = typeof e.id === "string" ? e.id : typeof e.slug === "string" ? e.slug : undefined
+				if (rawSlug === undefined) continue
+				const slug = stripControlChars(rawSlug)
+				if (slug === "") continue
+				const reason = typeof e.reason === "string" ? stripControlChars(e.reason) : undefined
+				const priority = typeof e.priority === "number" ? e.priority : undefined
+				withPriority.push({ slug, reason, priority })
+			}
+		}
+		if (withPriority.length === 0) return undefined
+		withPriority.sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity))
+		return withPriority.map(({ slug, reason }) => ({ slug, reason }))
+	} catch {
+		return undefined
+	}
+}
+
 /** Extract replacement hints from a model_retired error body, when present. */
 export function parseModelRetiredInfo(rawMessage: string): ModelRetiredInfo | undefined {
-	const replacement = /"replacement"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
-	const docs = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
-	const alternativesRaw = /"suggested_alternatives"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)?.[1]
-	const alternatives = alternativesRaw ? Array.from(alternativesRaw.matchAll(/"([^"]+)"/g), (m) => m[1]) : []
+	// Either key ("replacement" from the proxy envelope, "replacementModel"
+	// from the deprecation service); the first occurrence in the body wins,
+	// and an empty string means "no replacement" — the deprecation service
+	// sends replacementModel: "" when it only has alternatives.
+	const replacementRaw = /"replacement(?:Model)?"\s*:\s*"([^"]*)"/.exec(rawMessage)?.[1]
+	const replacement = replacementRaw ? stripControlChars(replacementRaw) : undefined
+	const docsRaw = /"docs"\s*:\s*"([^"]+)"/.exec(rawMessage)?.[1]
+	const docs = docsRaw ? stripControlChars(docsRaw) : undefined
+	const alternativesMatch = /"(?:suggested_alternatives|alternatives)"\s*:\s*\[([^\]]*)\]/.exec(rawMessage)
+	let alternatives: ModelRetiredAlternative[] = []
+	if (alternativesMatch) {
+		const parsed = parseAlternativesArray(alternativesMatch[1])
+		if (parsed) {
+			alternatives = parsed
+		} else {
+			// Fall back to regex parsing for the legacy id/reason object form.
+			alternatives = Array.from(alternativesMatch[1].matchAll(ALTERNATIVE_OBJECT_RE), (m) => ({
+				slug: stripControlChars(m[1]),
+				reason: m[2] !== undefined ? stripControlChars(m[2]) : undefined,
+			})).filter((a) => a.slug !== "")
+			if (alternatives.length === 0) {
+				// Legacy string-array shape: ["glm-5.3", "kimi-k3"]. Escapes are
+				// deliberately NOT unescaped here — captured text renders as-is
+				// once control characters are stripped, so a crafted body can
+				// neither inject ANSI sequences nor smuggle newlines through.
+				alternatives = Array.from(alternativesMatch[1].matchAll(/"([^"\\]+)"/g), (m) => ({
+					slug: stripControlChars(m[1]),
+				})).filter((a) => a.slug !== "")
+			}
+		}
+	}
 	if (!replacement && !docs && alternatives.length === 0) return undefined
 	return { replacement, alternatives, docs }
 }

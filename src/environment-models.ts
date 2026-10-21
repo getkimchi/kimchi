@@ -8,6 +8,7 @@ import {
 	isTransientModelsError,
 	type ModelMetadata,
 	registerAutoDescriptionFallback,
+	registerDeprecationMarkers,
 	registerModelInfoFromProviders,
 } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
@@ -47,6 +48,7 @@ export async function discoverEnvironmentModels(
 	// keeps a description even when the endpoint sends none.
 	registerModelInfoFromProviders(providers)
 	registerAutoDescriptionFallback()
+	registerDeprecationMarkers(modelsPath)
 	return {
 		providers,
 		models: [...models, ...ollamaModelsToMetadata(ollama.models)],

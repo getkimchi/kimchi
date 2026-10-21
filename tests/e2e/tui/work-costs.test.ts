@@ -56,6 +56,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 			responses: [],
 			seedHome(home, cwd, fakeBaseUrl) {
 				const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim()
+				git("branch", "-M", "main")
 				git("config", "user.name", "PR Cost Test")
 				git("config", "user.email", "costs@example.invalid")
 				git("config", "commit.gpgSign", "false")
@@ -134,7 +135,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 			},
 		},
 		async (_fixture, trace) => {
-			await waitForText(terminal, "PR #731 open", { full: false, timeoutMs: 10_000 })
+			await waitForText(terminal, /ctrl\+p.*· main/, { full: false, timeoutMs: 10_000 })
 			await waitForTotals(totalsPath, (totals) => totals.requests?.total === 1)
 			terminal.submit("/work")
 			await waitForText(terminal, "Cost so far: unknown; $0.00 priced (open)")

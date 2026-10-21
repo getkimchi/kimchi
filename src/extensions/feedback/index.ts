@@ -5,16 +5,17 @@ import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackFeedback, trackModelSwitchFeedback } from "../telemetry/index.js"
+import { trackModelSwitchFeedback } from "../telemetry/index.js"
 import { isVisionGateDialogOpen } from "../vision-gate.js"
-import { type FeedbackSentiment, isPredefinedReason, showFeedbackDetailsDialog } from "./dialog.js"
+import { type FeedbackSentiment, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
 import { showRatingSelectorDialog } from "./rating-dialog.js"
 import { usesLegacyRatingPrompt } from "./rating-keys.js"
-import { type FeedbackSummaryDetails, feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
+import { armRatingWindow, clearRatingWindow, consumeRatingWindow } from "./rating-window.js"
+import { FEEDBACK_SUMMARY_CUSTOM_TYPE, recordRating } from "./record-rating.js"
+import { feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
-const FEEDBACK_SUMMARY_CUSTOM_TYPE = "feedback-summary"
 const MODEL_SWITCH_SUMMARY_CUSTOM_TYPE = "model-switch-feedback"
 
 type FeedbackState = "idle" | "inviting" | "collecting"
@@ -129,13 +130,34 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		})
 	}
 
+	// Mirror the invitation window so the ACP ext-method can observe and
+	// consume it. Lifecycle events on a disposed runtime deliver a stale ctx
+	// — the clear is best-effort (that session is gone either way).
+	const clearWindowForCtx = (ctx: ExtensionContext) => {
+		try {
+			clearRatingWindow(ctx.sessionManager.getSessionId())
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
 	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
 	// session_start. Reset on both so a stale invitation from the previous
-	// session can never leak into the new one.
-	pi.on("session_shutdown", reset)
-	pi.on("session_start", reset)
+	// session can never leak into the new one. Each reset also clears the
+	// cross-surface rating window the ACP ext-method consults.
+	pi.on("session_shutdown", (_event, ctx) => {
+		clearWindowForCtx(ctx)
+		reset()
+	})
+	pi.on("session_start", (_event, ctx) => {
+		clearWindowForCtx(ctx)
+		reset()
+	})
 
-	pi.on("turn_start", reset)
+	pi.on("turn_start", (_event, ctx) => {
+		clearWindowForCtx(ctx)
+		reset()
+	})
 
 	// `agent_settled`, not `agent_end`: after `agent_end` Pi may still auto-retry,
 	// auto-compact and retry, or run queued follow-up messages, so rating there
@@ -160,6 +182,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			state = "inviting"
 			autoModelUsed = usedAutoModel
 			routedUsedId = resolvedModelId
+			armRatingWindow(sessionId, { autoModelUsed: usedAutoModel, routedModelId: resolvedModelId })
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}
@@ -343,20 +366,26 @@ async function handleRating(
 	// Esc cancels: no summary entry and no telemetry. Caller keeps the
 	// invitation alive so the user can try again.
 	if (result === undefined) return false
-	const reason = result.reason
-	const payload: FeedbackSummaryDetails = { sentiment, reason }
 	// Guarded for the same reason as the model-switch branch: report the
 	// failure instead of rejecting, and report the rating as un-submitted so
-	// the caller keeps the invitation alive for a retry.
+	// the caller keeps the invitation (and the cross-surface window) alive
+	// for a retry. The window is consumed only after the record succeeds —
+	// one rating per settled response.
 	try {
-		pi.appendEntry(FEEDBACK_SUMMARY_CUSTOM_TYPE, payload)
-		trackFeedback({
+		recordRating({
+			appendEntry: (customType, details) => pi.appendEntry(customType, details),
 			sentiment,
-			reason,
-			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
-			routingModelId: autoModelUsed ? routedUsedId : undefined,
+			reason: result.reason,
+			window: { autoModelUsed, routedModelId: routedUsedId },
 		})
+		consumeRatingWindow(ctx.sessionManager.getSessionId())
 	} catch (err) {
+		// A stale ctx here means the runtime tore down AFTER the record
+		// succeeded (entry + telemetry written) — report success so the
+		// invitation is not resurrected for a retry that would double-record
+		// the rating. Mirrors clearWindowForCtx's stale guard; the session is
+		// gone either way, so the unconsumed window is unreachable.
+		if (isStaleCtxError(err)) return true
 		ctx.ui.notify(`[feedback] Failed to record rating: ${err}`, "error")
 		return false
 	}
