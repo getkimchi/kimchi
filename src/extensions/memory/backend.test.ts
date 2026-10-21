@@ -117,9 +117,11 @@ describe("buildMemoryConfig", () => {
 		await expect(embedder.embedBatch(["ab", "cde"])).resolves.toEqual([[2], [3]])
 	})
 
-	it("sets the embedding dimension the store schema requires", () => {
+	it("sizes the store schema only — the embeddings API never gets a dimensions param", () => {
 		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+		// bge-m3 rejects the OpenAI `dimensions` (Matryoshka) request
+		// parameter; its native output already matches the store schema.
+		expect(config.embedder.config.embeddingDims).toBeUndefined()
 		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
 	})
 
@@ -147,7 +149,7 @@ describe("embedding endpoint configuration", () => {
 			expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
 			expect(config.embedder.config.apiKey).toBe("test-key")
 			expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
-			expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+			expect(config.embedder.config.embeddingDims).toBeUndefined()
 			expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
 		} finally {
 			delete process.env.MEMORY_EMBEDDING_MODEL
@@ -164,7 +166,7 @@ describe("embedding endpoint configuration", () => {
 			testConfig({ memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
 		)
 		expect(config.embedder.config.model).toBe("text-embedding-3-large")
-		expect(config.embedder.config.embeddingDims).toBe(3072)
+		expect(config.embedder.config.embeddingDims).toBeUndefined()
 		expect(config.vectorStore.config.dimension).toBe(3072)
 		// The gateway base URL and key are unchanged.
 		expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
@@ -184,7 +186,7 @@ describe("embedding endpoint configuration", () => {
 	it("falls back to the pinned defaults without the config section", () => {
 		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
 		expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
-		expect(config.embedder.config.embeddingDims).toBe(MEMORY_EMBEDDING_DIMS)
+		expect(config.embedder.config.embeddingDims).toBeUndefined()
 		expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
 	})
 
@@ -194,8 +196,10 @@ describe("embedding endpoint configuration", () => {
 			testConfig({ memoryEmbedding: { model: "text-embedding-3-large", dims: 3072 } }),
 		)
 		expect(config.embedder.config.model).toBe("stub-model")
-		// Dims have no programmatic seam — the config file still supplies them.
-		expect(config.embedder.config.embeddingDims).toBe(3072)
+		// Dims have no programmatic seam — the config file still supplies them
+		// (to the vector store schema; never to the API request).
+		expect(config.embedder.config.embeddingDims).toBeUndefined()
+		expect(config.vectorStore.config.dimension).toBe(3072)
 	})
 })
 
@@ -217,7 +221,7 @@ describe("config-file values reach the memory backend", () => {
 			const loaded = loadConfig({ configPath })
 			const memConfig = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, loaded)
 			expect(memConfig.embedder.config.model).toBe("text-embedding-3-large")
-			expect(memConfig.embedder.config.embeddingDims).toBe(3072)
+			expect(memConfig.embedder.config.embeddingDims).toBeUndefined()
 			expect(memConfig.vectorStore.config.dimension).toBe(3072)
 			expect(memConfig.llm.config.model).toBe("glm-5.3-flash")
 		} finally {

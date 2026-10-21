@@ -108,7 +108,7 @@ The embedder defaults to `bge-m3` at 1024 dims — the phase-1 embedding study's
 }
 ```
 
-Both fields are optional and validated (model: non-empty string; dims: positive integer — invalid values fall back to the defaults). The pair must move together — the vector store schema is built from the dims — so stores created with one dimension cannot be searched with another; reset them (`kimchi memory reset`) when switching. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed and is ignored if set; stores created with the old 1536-dim default must be reset.
+Both fields are optional and validated (model: non-empty string; dims: positive integer — invalid values fall back to the defaults). The pair must move together — the vector store schema is built from the dims — so stores created with one dimension cannot be searched with another; reset them (`kimchi memory reset`) when switching. The dims size the store schema only: the embeddings request never carries OpenAI's `dimensions` truncation parameter (bge-m3 rejects it), so the configured dims must equal the model's native output. The A/B testing surface from the study (`MEMORY_EMBEDDING_*`, `OPENROUTER_API_KEY`) has been removed and is ignored if set; stores created with the old 1536-dim default must be reset.
 
 The usage-tracking tag (`memory:embedding`) is gateway-only — requests are matched by origin, so a request to any other host never receives it. The extraction LLM defaults to `deepseek-v4-flash-0731` and is overridable via the config file's `memoryExtraction.model` (authoritative — used as-is, without the gateway-list check the pinned default gets).
 
