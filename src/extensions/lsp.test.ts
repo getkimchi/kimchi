@@ -171,6 +171,7 @@ function makeClient(
 
 const FAKE_SERVER = {
 	name: "typescript-language-server",
+	language: "TypeScript",
 	command: "typescript-language-server",
 	args: ["--stdio"],
 	extensions: ["ts", "tsx"],
@@ -179,6 +180,7 @@ const FAKE_SERVER = {
 
 const FAKE_GO_SERVER = {
 	name: "gopls",
+	language: "Go",
 	command: "gopls",
 	args: [],
 	extensions: ["go"],
@@ -188,11 +190,23 @@ const FAKE_GO_SERVER = {
 /** TypeScript 7 native server: pull-model diagnostics, no $/progress waits. */
 const FAKE_NATIVE_SERVER = {
 	name: "typescript-native",
+	language: "TypeScript",
 	command: "/project/node_modules/typescript/bin/tsc",
 	args: ["--lsp", "--stdio"],
 	extensions: ["ts", "tsx"],
 	skipProjectLoadWait: true,
 	pullDiagnostics: true,
+}
+
+/** Python via pyright — the server added in #1385 after which the system
+ *  prompt's hardcoded "currently TypeScript and Go" line went stale. */
+const FAKE_PYRIGHT_SERVER = {
+	name: "pyright",
+	language: "Python",
+	command: "pyright-langserver",
+	args: ["--stdio"],
+	extensions: ["py", "pyw"],
+	installHint: "npm i -g pyright",
 }
 
 async function callTool(
@@ -437,6 +451,41 @@ describe("system prompt block", () => {
 		expect(rendered).toContain("lsp_definition")
 		expect(rendered).toContain("lsp_references")
 		expect(rendered).toContain("lsp_rename")
+	})
+
+	it("availability line lists the active server's language, not a hardcoded set", async () => {
+		// Regression: the line used to hardcode "currently TypeScript and
+		// Go", telling a TypeScript session that Go was covered and a Python
+		// session (pyright) that nothing was. It must derive from the active
+		// servers instead.
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		const rendered = block?.render() ?? ""
+		expect(rendered).toContain("this session: TypeScript")
+		expect(rendered).not.toContain("TypeScript and Go")
+	})
+
+	it("names Python when pyright is the active server", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_PYRIGHT_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		const rendered = block?.render() ?? ""
+		expect(rendered).toContain("this session: Python")
+	})
+
+	it("names Go when gopls is the active server", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_GO_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: false })
+		const block = pi.capturedBlocks.find((b) => b.id === "lsp-tools")
+		const rendered = block?.render() ?? ""
+		expect(rendered).toContain("this session: Go")
 	})
 })
 

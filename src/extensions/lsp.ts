@@ -2,8 +2,8 @@
 /**
  * LSP Extension
  *
- * Gives the agent type-aware code intelligence via LSP.
- * Supports TypeScript (typescript-language-server) and Go (gopls).
+ * Gives the agent type-aware code intelligence via LSP. Supported servers are
+ * declared in lsp/servers.ts — one ServerConfig per language.
  *
  * Usage: kimchi -e extensions/lsp.ts
  */
@@ -70,16 +70,33 @@ export const LSP_TOOL_NAMES = [
 	"lsp_rename",
 ] as const
 
-const LSP_SYSTEM_PROMPT = `## Language Server Protocol (LSP)
+const LSP_SYSTEM_PROMPT_BODY = `## Language Server Protocol (LSP)
 
 LSP tools provide type-aware code intelligence. Prefer them over text-based alternatives:
 - Use \`lsp_diagnostics\` after editing a file to check for type errors — more precise than running the compiler manually.
 - Use \`lsp_hover\` to inspect types and documentation — faster than reading source.
 - Use \`lsp_definition\` to navigate to symbol definitions — more accurate than grep.
 - Use \`lsp_references\` before renaming or deleting a symbol to understand full impact.
-- Use \`lsp_rename\` for atomic cross-file renames — safer than find-and-replace.
+- Use \`lsp_rename\` for atomic cross-file renames — safer than find-and-replace.`
 
-LSP tools are available when language servers are detected on PATH (currently TypeScript and Go).`
+/** The block's availability line, derived from the session's active servers.
+ *  Hardcoding the language list drifted once already (pyright shipped in
+ *  #1385 while the prompt still said "currently TypeScript and Go"), so the
+ *  languages are computed from each ServerConfig.language — the required
+ *  field makes the compiler force a label for every future server entry.
+ *  Detection activates at most one server per session, so this names
+ *  exactly the languages the five lsp_* tools can act on now.
+ *  Runtime fallback: every current ServerConfig is an in-repo literal so the
+ *  compiler guarantees `language` today, but a future config built from
+ *  parsed input (user settings, plugins) would ship `undefined` to the
+ *  model. `s.name` is always present, so it keeps the prompt truthful when
+ *  the new field hasn't been plumbed through yet. */
+function lspSystemPrompt(servers: ServerConfig[]): string {
+	const languages = servers.map((s) => s.language || s.name).join(", ")
+	return `${LSP_SYSTEM_PROMPT_BODY}
+
+LSP tools are available when a language server is detected on PATH (this session: ${languages}).`
+}
 
 export default function (pi: ExtensionAPI) {
 	let cwd = ""
@@ -210,7 +227,7 @@ export default function (pi: ExtensionAPI) {
 
 	createSystemPromptBlocks(pi, "lsp").register({
 		id: "lsp-tools",
-		render: () => (activeServers.length > 0 ? LSP_SYSTEM_PROMPT : undefined),
+		render: () => (activeServers.length > 0 ? lspSystemPrompt(activeServers) : undefined),
 	})
 
 	// ── Session start: detect servers, hook file sync, shutdown on exit ─────────

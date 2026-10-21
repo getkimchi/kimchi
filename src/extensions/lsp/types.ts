@@ -167,6 +167,10 @@ export interface LspClient {
 
 export interface ServerConfig {
 	name: string
+	/** Human language label (e.g. "TypeScript") for the system prompt's
+	 *  availability line — required so every server entry declares it and
+	 *  the prompt can never drift from the actual server list. */
+	language: string
 	command: string
 	args?: string[]
 	extensions: string[]

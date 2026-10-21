@@ -11,6 +11,7 @@ const TS_EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"]
 // a non-null `as` on a SERVERS.find()).
 const TYPESCRIPT_LANGUAGE_SERVER: ServerConfig = {
 	name: "typescript-language-server",
+	language: "TypeScript",
 	command: "typescript-language-server",
 	args: ["--stdio"],
 	extensions: TS_EXTENSIONS,
@@ -21,6 +22,7 @@ const SERVERS: ServerConfig[] = [
 	TYPESCRIPT_LANGUAGE_SERVER,
 	{
 		name: "gopls",
+		language: "Go",
 		command: "gopls",
 		// -remote=auto: connect to (or lazily spawn) gopls's own shared daemon
 		// instead of a full engine per kimchi session. N sessions on one repo
@@ -35,6 +37,7 @@ const SERVERS: ServerConfig[] = [
 	},
 	{
 		name: "pyright",
+		language: "Python",
 		command: "pyright-langserver",
 		args: ["--stdio"],
 		extensions: ["py", "pyw"],
@@ -290,6 +293,7 @@ export function resolveTsNativeServerPath(cwd: string): string | undefined {
 function tsNativeConfig(tscPath: string): ServerConfig {
 	return {
 		name: "typescript-native",
+		language: "TypeScript",
 		command: tscPath,
 		args: ["--lsp", "--stdio"],
 		extensions: TS_EXTENSIONS,
