@@ -62,10 +62,10 @@
 		"@shikijs/cli": "^4.0.2",
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ssh2": "^1.15.5",
+		"@xmldom/xmldom": "^0.9.12",
 		"@xterm/headless": "^6.0.0",
 		"better-sqlite3": "link:shims/better-sqlite3",
 		"chokidar": "^5.0.0",
-		"@xmldom/xmldom": "^0.9.12",
 		"diff": "^9.0.0",
 		"jszip": "^3.10.2",
 		"marked": "^18.1.0",
@@ -87,6 +87,7 @@
 		"uuid": "^14.0.0",
 		"wcwidth": "^1.0.1",
 		"yaml": "^2.8.4",
+		"yauzl": "^3.4.0",
 		"zod": "^4.4.3"
 	},
 	"optionalDependencies": {
@@ -112,6 +113,7 @@
 		"@types/shell-quote": "^1.7.5",
 		"@types/turndown": "^5.0.6",
 		"@types/ws": "^8.18.1",
+		"@types/yauzl": "^3.4.0",
 		"husky": "^9.1.7",
 		"node-pty": "^1.1.0",
 		"playwright": "1.59.1",

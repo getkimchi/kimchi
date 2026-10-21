@@ -151,7 +151,7 @@ try {
 	// only on the already-staged jszip/image-size. image-size isn't hoisted
 	// to node_modules root (pnpm nests it under pptxgenjs), so resolve it
 	// through pptxgenjs's own package context.
-	for (const dep of ["@xmldom/xmldom", "pptxgenjs", "marked"]) {
+	for (const dep of ["@xmldom/xmldom", "pptxgenjs", "marked", "yauzl"]) {
 		cpSync(join(projectRoot, "node_modules", dep), join(pptxStaging, "node_modules", dep), {
 			dereference: true,
 			recursive: true,
@@ -162,6 +162,10 @@ try {
 	const pptxgenjsRequire = createRequire(pptxgenjsPkg)
 	const imageSizePath = dirname(dirname(pptxgenjsRequire.resolve("image-size/package.json")))
 	cpSync(imageSizePath, join(pptxStaging, "node_modules", "image-size"), { dereference: true, recursive: true })
+	// yauzl's one dep lives under yauzl's own pnpm context, same pattern.
+	const yauzlRequire = createRequire(realpathSync(join(projectRoot, "node_modules", "yauzl", "package.json")))
+	const pendPath = dirname(yauzlRequire.resolve("pend/package.json"))
+	cpSync(pendPath, join(pptxStaging, "node_modules", "pend"), { dereference: true, recursive: true })
 	const stagedOut = join(pptxStaging, "pptx.mjs")
 	execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
 		stdio: "inherit",

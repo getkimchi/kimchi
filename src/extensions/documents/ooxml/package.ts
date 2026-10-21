@@ -1,27 +1,27 @@
 /**
- * OOXML/ODS package layer over jszip.
+ * OOXML/ODS package layer over yauzl (read) and jszip (write).
  *
- * Hostile-input caps are enforced from the zip CENTRAL DIRECTORY (parsed
- * here, not via jszip internals): jszip collapses `__proto__` entry names
- * into the plain-object prototype and exposes sizes only on an internal
- * field, so the census of "what is in this archive and how big will it
- * inflate" must come from the raw bytes.
+ * All zip parsing is delegated to the libraries — no byte-level zip code
+ * here. yauzl reads metadata strictly from the central directory (the only
+ * spec-reliable source), validates entry sizes while streaming, and rejects
+ * absolute/`..`/backslash names before emitting entries. On top of that
+ * metadata this module enforces the hostile-input POLICY:
  *
  *   - entry-count and total-uncompressed caps (POI analogy)
  *   - per-entry 100:1 inflate-ratio rejection over the 100 KB grace size
- *   - symlink entries (Unix mode in external attributes) and absolute/../
- *     names rejected up front
- *   - ZIP64 size fields honored via the 0x0001 extra record
+ *   - symlink entries (Unix mode in `externalFileAttributes`) and
+ *     prototype-shadowing names (`__proto__` etc.) rejected up front
  *
- * Parts are inflated with jszip only after the census passes; untouched
- * parts are carried through save() unchanged. Inflation itself is bounded:
- * entries are streamed with a running byte counter and aborted when actual
- * output exceeds the declared uncompressed size (LIES-in-the-central-
- * directory defense), plus a global cumulative cap.
+ * Parts are inflated only after the census passes; untouched parts are
+ * carried through save() unchanged. Inflation is bounded: bytes are counted
+ * while streaming (yauzl aborts a stream whose actual size contradicts the
+ * central directory — defense against a lying directory), plus a global
+ * cumulative cap, plus a per-entry grace abort.
  */
 
 import type { Document as XmlDocument } from "@xmldom/xmldom"
 import JSZip from "jszip"
+import { type Entry, fromBufferPromise, type ZipFile } from "yauzl"
 import {
 	ZIP_GRACE_ENTRY_BYTES,
 	ZIP_MAX_ENTRIES,
@@ -34,7 +34,7 @@ import { parseXml, serializeXml } from "./xml.js"
 const UTF8_DECODER = new TextDecoder("utf-8")
 const UTF8_ENCODER = new TextEncoder()
 
-// --- central-directory census ------------------------------------------------
+// --- census (library-parsed) --------------------------------------------------
 
 export interface ZipRecord {
 	name: string
@@ -44,94 +44,65 @@ export interface ZipRecord {
 	dir: boolean
 }
 
-const EOCD_SIG = 0x06054b50
-const CDIR_SIG = 0x02014b50
-
-function u32(view: DataView, off: number): number {
-	return view.getUint32(off, true)
-}
-
-function u16(view: DataView, off: number): number {
-	return view.getUint16(off, true)
-}
-
-function decodeName(bytes: Uint8Array, utf8: boolean): string {
-	if (utf8) return UTF8_DECODER.decode(bytes)
-	// CP437 ~ high-half mapping; exact for ASCII (the common case), lossy for
-	// exotic archives — entry names here only feed discrimination, not writes.
-	let out = ""
-	for (const b of bytes) out += b < 0x80 ? String.fromCharCode(b) : String.fromCodePoint(0x2500 + b - 0x80)
-	return out
+/**
+ * Map a yauzl error to our typed codes: unsafe filenames and declared-vs-
+ * actual size violations are hostile-input rejections (safety-limit);
+ * everything else is structural breakage (corrupt).
+ */
+function classifyZipError(err: Error, entry?: string): DocumentError {
+	const msg = err.message
+	if (
+		/absolute path|invalid relative path|invalid characters in fileName/.test(msg) ||
+		/too many bytes|too few bytes/.test(msg)
+	) {
+		return new DocumentError(
+			"safety-limit",
+			entry ? `Zip entry ${entry} rejected: ${msg}` : `Zip archive rejected: ${msg}`,
+		)
+	}
+	return new DocumentError(
+		"corrupt",
+		entry ? `Zip entry ${entry} failed to inflate: ${msg}` : `Not a readable zip package: ${msg}`,
+	)
 }
 
 /**
- * Parse the central directory: names, sizes, and mode bits for every entry.
- * Throws DocumentError("corrupt") when the structure does not parse.
+ * Central-directory census via yauzl: names, sizes, and mode bits for every
+ * entry, paired with the live Entry objects (needed to open read streams).
+ * Any yauzl parse/structure error maps to DocumentError("corrupt").
  */
-export function scanZip(data: Uint8Array): ZipRecord[] {
-	const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-	// EOCD: scan backwards from the end (comment may be up to 64 KB).
-	const scanStart = Math.max(0, data.length - (22 + 0xffff + 1))
-	let eocd = -1
-	for (let i = data.length - 22; i >= scanStart; i--) {
-		if (u32(view, i) === EOCD_SIG) {
-			eocd = i
-			break
-		}
+export async function censusZip(data: Uint8Array): Promise<{
+	records: ZipRecord[]
+	zipfile: ZipFile
+	entriesByName: Map<string, Entry>
+}> {
+	let zipfile: ZipFile
+	try {
+		zipfile = await fromBufferPromise(Buffer.from(data))
+	} catch (err) {
+		throw classifyZipError(err as Error)
 	}
-	if (eocd < 0) throw new DocumentError("corrupt", "Not a readable zip package (no end-of-central-directory)")
-	const entryCount = u16(view, eocd + 10)
-	let offset = u32(view, eocd + 16)
-
 	const records: ZipRecord[] = []
-	for (let i = 0; i < entryCount; i++) {
-		if (offset + 46 > data.length || u32(view, offset) !== CDIR_SIG) {
-			throw new DocumentError("corrupt", "Bad central directory record")
+	const entriesByName = new Map<string, Entry>()
+	try {
+		for await (const entry of zipfile.eachEntry()) {
+			const name = entry.fileName
+			// Unix mode lives in the high 16 bits when present; on DOS hosts
+			// those bits are 0, so testing them unconditionally is safe.
+			const mode = entry.externalFileAttributes >>> 16
+			records.push({
+				name,
+				compressedSize: entry.compressedSize,
+				uncompressedSize: entry.uncompressedSize,
+				symlink: (mode & 0o170000) === 0o120000,
+				dir: name.endsWith("/"),
+			})
+			entriesByName.set(name, entry)
 		}
-		const versionMadeBy = u16(view, offset + 4)
-		const flags = u16(view, offset + 8)
-		let compressedSize = u32(view, offset + 20)
-		let uncompressedSize = u32(view, offset + 24)
-		const nameLen = u16(view, offset + 28)
-		const extraLen = u16(view, offset + 30)
-		const commentLen = u16(view, offset + 32)
-		const externalAttrs = u32(view, offset + 38)
-
-		const extraStart = offset + 46 + nameLen
-		if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
-			// ZIP64 extra record 0x0001: uncompressed then compressed, 8 bytes each.
-			let p = extraStart
-			while (p + 4 <= extraStart + extraLen) {
-				const id = u16(view, p)
-				const size = u16(view, p + 2)
-				if (id === 0x0001) {
-					let q = p + 4
-					if (uncompressedSize === 0xffffffff) {
-						uncompressedSize = Number(view.getBigUint64(q, true))
-						q += 8
-					}
-					if (compressedSize === 0xffffffff && q + 8 <= p + 4 + size) {
-						compressedSize = Number(view.getBigUint64(q, true))
-					}
-					break
-				}
-				p += 4 + size
-			}
-		}
-
-		const nameBytes = data.subarray(offset + 46, offset + 46 + nameLen)
-		const name = decodeName(nameBytes, (flags & 0x800) !== 0)
-		// Unix mode lives in the high 16 bits when present; on DOS hosts those
-		// bits are 0, so testing them unconditionally is safe (Archivers that
-		// only write DOS attrs never set S_IFLNK there).
-		void versionMadeBy
-		const mode = externalAttrs >>> 16
-		const symlink = (mode & 0o170000) === 0o120000
-		const dir = name.endsWith("/")
-		records.push({ name, compressedSize, uncompressedSize, symlink, dir })
-		offset += 46 + nameLen + extraLen + commentLen
+	} catch (err) {
+		throw classifyZipError(err as Error)
 	}
-	return records
+	return { records, zipfile, entriesByName }
 }
 
 function validateEntryName(name: string): void {
@@ -181,7 +152,9 @@ function enforceCaps(records: ZipRecord[]): ZipRecord[] {
 /** Entry names (files only) with all caps enforced — detect.ts uses this
  *  before any inflation happens. */
 export async function listZipEntries(data: Uint8Array): Promise<string[]> {
-	return enforceCaps(scanZip(data)).map((r) => r.name)
+	const { records, zipfile } = await censusZip(data)
+	zipfile.close()
+	return enforceCaps(records).map((r) => r.name)
 }
 
 export interface OoxmlPackage {
@@ -198,101 +171,79 @@ export interface OoxmlPackage {
 }
 
 /**
- * Inflate one verified entry, aborting once actual output exceeds the
- * declared uncompressed size past a small grace window (declared sizes are
- * attacker-controlled); also enforces the per-entry inflated cap.
+ * Inflate one verified entry through yauzl's read stream. yauzl (with
+ * validateEntrySizes, the default) errors mid-stream when actual output
+ * contradicts the declared uncompressed size; we additionally abort once
+ * output exceeds declared + a small grace window, so a hostile entry can
+ * never buffer more than a handful of KB past its declared size. Size
+ * mismatches map to safety-limit; structural failures to corrupt.
  */
-interface InflateWorker {
-	on(event: "data", cb: (chunk: unknown) => void): this
-	on(event: "end", cb: () => void): this
-	on(event: "error", cb: (err: Error) => void): this
-	pause?(): void
-	resume?(): void
-}
-
-/** jszip's .d.ts doesn't declare internalStream on JSZipObject; runtime has it. */
-function internalStream(file: JSZip.JSZipObject): InflateWorker {
-	return (file as unknown as { internalStream(type: "uint8array"): InflateWorker }).internalStream("uint8array")
-}
-
-async function inflateBounded(file: JSZip.JSZipObject, entry: zipEntryName): Promise<Uint8Array> {
-	// Declared sizes are attacker-controlled; honest entries never grow past
-	// what the central directory says. Grace covers deflator rounding quirks.
+async function inflateBounded(zipfile: ZipFile, entry: Entry): Promise<Uint8Array> {
 	const perEntryCap = entry.uncompressedSize + 4096
+	let stream: NodeJS.ReadableStream
+	try {
+		stream = await zipfile.openReadStreamPromise(entry)
+	} catch (err) {
+		throw new DocumentError("corrupt", `Cannot open zip entry ${entry.fileName}: ${(err as Error).message}`)
+	}
 	return new Promise<Uint8Array>((resolve, reject) => {
 		const chunks: Uint8Array[] = []
 		let actual = 0
 		let settled = false
-		const worker = internalStream(file)
-		worker
-			.on("data", (chunk) => {
-				if (settled) return
-				const buf = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayLike<number>)
-				actual += buf.length
-				if (actual > perEntryCap) {
-					settled = true
-					worker.pause?.()
-					reject(
-						new DocumentError(
-							"safety-limit",
-							`Zip entry ${entry.name} inflates past its declared size (${entry.uncompressedSize} bytes declared, aborted at ${actual})`,
-						),
-					)
-					return
-				}
-				chunks.push(buf)
-			})
-			.on("end", () => {
-				if (settled) return
+		stream.on("data", (chunk: Uint8Array) => {
+			if (settled) return
+			const buf = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayLike<number>)
+			actual += buf.length
+			if (actual > perEntryCap) {
 				settled = true
-				const out = new Uint8Array(actual)
-				let off = 0
-				for (const c of chunks) {
-					out.set(c, off)
-					off += c.length
-				}
-				resolve(out)
-			})
-			.on("error", (err) => {
-				if (settled) return
-				settled = true
-				reject(err)
-			})
-		// jszip workers start paused; events only flow after resume().
-		worker.resume?.()
+				;(stream as { destroy?: () => void }).destroy?.()
+				reject(
+					new DocumentError(
+						"safety-limit",
+						`Zip entry ${entry.fileName} inflates past its declared size (${entry.uncompressedSize} bytes declared, aborted at ${actual})`,
+					),
+				)
+				return
+			}
+			chunks.push(buf)
+		})
+		stream.on("end", () => {
+			if (settled) return
+			settled = true
+			const out = new Uint8Array(actual)
+			let off = 0
+			for (const c of chunks) {
+				out.set(c, off)
+				off += c.length
+			}
+			resolve(out)
+		})
+		stream.on("error", (err: Error) => {
+			if (settled) return
+			settled = true
+			// yauzl's validateEntrySizes fires when actual != declared bytes.
+			reject(classifyZipError(err, entry.fileName))
+		})
 	})
-}
-
-interface zipEntryName {
-	name: string
-	uncompressedSize: number
 }
 
 export async function openOoxml(data: Uint8Array): Promise<OoxmlPackage> {
 	if (!(data[0] === 0x50 && data[1] === 0x4b)) {
 		throw new DocumentError("corrupt", "Not a zip package")
 	}
-	const entries = enforceCaps(scanZip(data))
-
-	let zip: JSZip
-	try {
-		zip = await JSZip.loadAsync(data)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Not a readable zip package: ${(err as Error).message}`)
-	}
+	const { records, zipfile, entriesByName } = await censusZip(data)
+	const entries = enforceCaps(records)
 
 	const cache = new Map<string, { data: Uint8Array; dirty: boolean }>()
 	const removed = new Set<string>()
 	// Prime every (capped) part so getBytes/getXml stay synchronous for
-	// readers. STREAM, counting actual inflated bytes: a hostile archive can
-	// lie about sizes in the central directory (jszip validates only at end-
-	// of-stream, after buffering everything), so any entry whose real output
-	// runs past its declared size + grace is rejected mid-stream.
+	// readers. Streams are counted live; any entry whose real output runs
+	// past its declared size + grace is rejected by yauzl or the cap.
 	let totalActual = 0
-	for (const entry of entries) {
-		const file = zip.file(entry.name)
-		if (!file) throw new DocumentError("corrupt", `Central directory lists missing entry: ${entry.name}`)
-		const data = await inflateBounded(file, entry)
+	for (const record of entries) {
+		const entry = entriesByName.get(record.name)
+		if (!entry) throw new DocumentError("corrupt", `Central directory lists missing entry: ${record.name}`)
+		const data = await inflateBounded(zipfile, entry)
 		totalActual += data.length
 		if (totalActual > ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES) {
 			throw new DocumentError(
@@ -300,8 +251,9 @@ export async function openOoxml(data: Uint8Array): Promise<OoxmlPackage> {
 				`Zip total inflated size exceeds cap (${ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} bytes)`,
 			)
 		}
-		cache.set(entry.name, { data, dirty: false })
+		cache.set(record.name, { data, dirty: false })
 	}
+	zipfile.close()
 
 	const pkg: OoxmlPackage = {
 		names: () => [...cache.keys()],
@@ -330,9 +282,11 @@ export async function openOoxml(data: Uint8Array): Promise<OoxmlPackage> {
 			}
 		},
 		save: async () => {
-			for (const name of removed) zip.remove(name)
+			// Fresh archive from the (capped, verified) cache — jszip is used
+			// for writing only, never for parsing untrusted input.
+			const zip = new JSZip()
 			for (const [name, state] of cache) {
-				if (state.dirty) zip.file(name, state.data)
+				if (!removed.has(name)) zip.file(name, state.data)
 			}
 			return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 		},
