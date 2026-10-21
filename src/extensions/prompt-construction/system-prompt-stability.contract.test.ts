@@ -79,7 +79,12 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 		owner: "behaviours",
 		blockId: "triggered:*",
 		expectedStability: "dynamic",
-		reason: "triggered behaviour bodies are loaded/unloaded based on runtime signals",
+		reason:
+			"triggered behaviour bodies load/unload based on runtime signals; render is source- and " +
+			"flag-aware — session-loaded bodies render their block from turn 0 (stable after the first " +
+			"build), standing: true bodies render on every load path (explicit opt-in accepting the " +
+			"one-time cache invalidation), and default tool-loaded bodies never render a block at all " +
+			"(steer-delivered, re-steered after compaction) so they cannot invalidate the prompt cache",
 	},
 	{
 		file: "src/extensions/lsp.ts",

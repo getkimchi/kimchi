@@ -86,4 +86,26 @@ body b
 	it("returns an empty array for an empty source list", () => {
 		expect(buildBehaviours([])).toEqual([])
 	})
+
+	it("preserves the standing flag on the built behaviour", () => {
+		const sources: BehaviourSource[] = [
+			{ raw: validBody("standing-one"), kind: "triggered", triggers: { tool: tool("bash") }, standing: true },
+		]
+		const result = buildBehaviours(sources)
+		expect(result).toHaveLength(1)
+		expect(result[0].kind).toBe("triggered")
+		expect((result[0] as { standing?: boolean }).standing).toBe(true)
+	})
+
+	it("round-trips the standing flag as unset by default", () => {
+		const sources: BehaviourSource[] = [
+			{ raw: validBody("habit-one"), kind: "triggered", triggers: { tool: tool("bash") } },
+		]
+		const result = buildBehaviours(sources)
+		expect(result).toHaveLength(1)
+		expect(result[0].kind).toBe("triggered")
+		// Default delivery (steer + re-steer) — the flag must stay absent, not
+		// coerced, so the wiring can distinguish unset from false.
+		expect((result[0] as { standing?: boolean }).standing).toBeUndefined()
+	})
 })
