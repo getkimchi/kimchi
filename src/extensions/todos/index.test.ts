@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionToolContext,
+	SessionEntry,
+	Theme,
+} from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { isResourceEnabled } from "../../resources/store.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -87,6 +93,20 @@ function createContext(
 			getBranch: () => branch,
 		},
 	} as unknown as ExtensionContext
+}
+
+/** createContext plus the tool-execution surface; required when a test invokes
+ *  registeredTool(...).execute(..., ctx) directly (pi passes an ExtensionToolContext). */
+function createToolContext(
+	sessionId: string,
+	branch: SessionEntry[],
+	options: { hasPendingMessages?: boolean; hasUI?: boolean; ui?: ExtensionContext["ui"] } = {},
+): ExtensionToolContext {
+	return {
+		...(createContext(sessionId, branch, options) as unknown as object),
+		tools: [],
+		executeTool: () => Promise.reject(new Error("executeTool not supported by this mock")),
+	} as unknown as ExtensionToolContext
 }
 
 function terminalTurn(stopReason = "end_turn"): unknown {
@@ -785,7 +805,7 @@ describe("todo check-in gate", () => {
 
 	it("releases work after a real write and after a successful confirmation", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
@@ -809,7 +829,7 @@ describe("todo check-in gate", () => {
 
 	it("a mismatched or stale-revision confirmation keeps work blocked", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
@@ -828,7 +848,7 @@ describe("todo check-in gate", () => {
 
 	it("a write admitted before newer user input cannot satisfy the newer check", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
@@ -846,7 +866,7 @@ describe("todo check-in gate", () => {
 
 	it("a reconciliation tool admitted in the same batch passes while work tools stay blocked", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
@@ -1197,7 +1217,7 @@ describe("todo check-in gate", () => {
 
 	it("check-in outcomes are attributed once, carrying the opening's steer_id", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
@@ -1467,7 +1487,7 @@ describe("todo check-in gate", () => {
 
 	it("a successful confirmation without a pending check still resets the reminder schedule", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "pending" }] }, "session", {
 			origin: "tool",
@@ -1570,7 +1590,7 @@ describe("plan-submission check-in gate", () => {
 
 	it("blocks submit_plan while a check is pending and releases it after reconciliation", async () => {
 		const harness = createTodosHarness()
-		const ctx = createContext("session", [])
+		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
 			origin: "tool",
