@@ -26,6 +26,14 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-coding-agent`
 
+- **PORTED + EXTENDED (2026-10-21, post-rebase) — compaction-history display now
+  also covers pi 1.3's event-driven `entry_appended` compaction redraw.** 1.3
+  added a streaming compaction event that renders via `buildContextEntries()`
+  independently of the legacy `compaction_end` handler the patch had covered;
+  the new site now prefers `buildDisplayEntries()` via the same capability
+  probe. Detected by the `memd1` TUI e2e (pre-compaction history vanished
+  from the transcript under fullscreen alt-screen).
+
 - **NEW — context-overflow recovery id fallback (`_findPersistedMessageEntryId`).**
   0.85.1 removed the failed overflow assistant by slicing it from
   `agent.state.messages` before compacting; the new core replaced that with an

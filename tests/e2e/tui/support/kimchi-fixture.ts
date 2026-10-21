@@ -152,6 +152,14 @@ export interface CreateKimchiFixtureOptions {
 	 * project-trust-gate scenarios answer the live prompt instead).
 	 */
 	trustWorkDir?: boolean
+	/**
+	 * Pin upstream's `tuiMode` in the seeded settings.json (default: unset,
+	 * so the binary default applies). Tests asserting linear scrollback content
+	 * (e.g. transcript lines found in the captured buffer) should pin "regular":
+	 * in fullscreen mode pi's alt-screen renderer keeps the transcript out of
+	 * the terminal scrollback.
+	 */
+	sessionTuiMode?: "regular" | "fullscreen"
 }
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
@@ -211,6 +219,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 				{
 					statusLine: { pinned: [] },
 					hideThinkingBlock: true,
+					...(options.sessionTuiMode ? { tuiMode: options.sessionTuiMode } : {}),
 					// On the first boot of a fresh HOME the adapter has not yet written
 					// its own `-builtin:mcp` disable, so pi's built-in MCP extension
 					// would load alongside the adapter for that boot (double tool

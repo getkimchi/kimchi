@@ -176,6 +176,13 @@
 #     PR's own promise ("provider/id still prefers the named provider's exact
 #     match"). Removal: when upstream supports multi-segment provider ids
 #     (longest-prefix or canonical pass) upstream.
+#   - Interactive-mode compaction redraw covers the 1.3 event-driven
+#     `entry_appended` compaction case in addition to `compaction_end`: pi
+#     1.3 introduced the streaming compaction event for the auto/threshold
+#     path, which still rendered via buildContextEntries() and so truncated
+#     pre-compaction history; it now prefers buildDisplayEntries() with the
+#     same capability probe. (Fixes memd1 after the 1.3 rebase.)
+
 diff --git a/dist/cli/args.js b/dist/cli/args.js
 index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c57bf64c8a 100644
 --- a/dist/cli/args.js
@@ -1529,7 +1536,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cce5a1f8d9 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..fb2940b3e49af7bd2361e5c22976fc160d5873da 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1432,8 +1432,64 @@ export class InteractiveMode {
@@ -1624,7 +1631,35 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
          };
      }
      /**
-@@ -3007,15 +3074,24 @@ export class InteractiveMode {
+@@ -2791,14 +2858,24 @@ export class InteractiveMode {
+                     this.ui.requestRender();
+                 }
+                 else if (event.entry.type === "compaction") {
+-                    const entries = this.sessionManager.buildContextEntries();
+-                    if (entries[0]?.id !== event.entry.id)
++                    // Kimchi patch: render the full path so the
++                    // transcript keeps pre-compaction history (the display source keeps the
++                    // whole leaf path; the context source starts at the compaction entry).
++                    const displaySource = typeof this.sessionManager.buildDisplayEntries === "function"
++                        ? this.sessionManager.buildDisplayEntries()
++                        : undefined;
++                    const entries = displaySource ?? this.sessionManager.buildContextEntries();
++                    if (!displaySource && entries[0]?.id !== event.entry.id)
+                         break;
+                     this.chatContainer.clear();
+                     const branch = this.sessionManager.getBranch();
+                     const compactionIndex = branch.findIndex((entry) => entry.id === event.entry.id);
+                     const entriesAfterCompaction = new Set(branch.slice(compactionIndex + 1).map((entry) => entry.id));
+-                    const retainedEntries = entries.slice(1);
++                    // The display source includes the compaction entry itself (rendered
++                    // via the summary message below); the context source has it at index 0.
++                    const retainedEntries = displaySource
++                        ? entries.filter((entry) => entry.id !== event.entry.id)
++                        : entries.slice(1);
+                     this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
+                     this.addMessageToChat(createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp));
+                     if (event.entry.usage) {
+@@ -3007,15 +3084,24 @@ export class InteractiveMode {
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -1658,7 +1693,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
                      }
                      this.footer.invalidate();
                  }
-@@ -3420,7 +3496,9 @@ export class InteractiveMode {
+@@ -3420,7 +3506,9 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
      }
      renderInitialMessages() {
@@ -1669,7 +1704,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3441,7 +3519,7 @@ export class InteractiveMode {
+@@ -3441,7 +3529,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -1678,7 +1713,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3457,7 +3535,8 @@ export class InteractiveMode {
+@@ -3457,7 +3545,8 @@ export class InteractiveMode {
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -1688,7 +1723,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
      }
      // =========================================================================
      // Key handlers
-@@ -4322,6 +4401,34 @@ export class InteractiveMode {
+@@ -4322,6 +4411,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -1723,7 +1758,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4453,6 +4560,8 @@ export class InteractiveMode {
+@@ -4453,6 +4570,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -1732,7 +1767,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4470,10 +4579,13 @@ export class InteractiveMode {
+@@ -4470,10 +4589,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -1748,7 +1783,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..ec6efe0ff9f32f1793e4aabf3748c5cc
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5446,7 +5558,12 @@ export class InteractiveMode {
+@@ -5446,7 +5568,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

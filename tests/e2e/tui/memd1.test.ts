@@ -43,6 +43,9 @@ test("memd1: history visible after compaction", async ({ terminal }) => {
 		responses,
 		// contextWindow 30k, reserve 16.4k → compaction threshold 13.6k tokens.
 		models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 30_000, maxTokens: 1024 }],
+		// The acceptance check reads linear scrollback; fullscreen (alt-screen)
+		// keeps the transcript out of the terminal scrollback in pi 1.3.
+		sessionTuiMode: "regular",
 	})
 	try {
 		launchKimchi(terminal, fixture, [], {
