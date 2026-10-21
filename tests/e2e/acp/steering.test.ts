@@ -105,7 +105,7 @@ describe("ACP integration — injected steer echo", () => {
 	})
 })
 
-describe("ACP integration — /skill: steer echo (LLM-4035)", () => {
+describe("ACP integration — /skill: steer echo", () => {
 	let fixture: AcpFixture
 
 	beforeEach(async () => {

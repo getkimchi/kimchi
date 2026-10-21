@@ -103,7 +103,7 @@ describe("reconcileQueue", () => {
 	})
 })
 
-describe("takeSteerEchoOriginal (LLM-4035)", () => {
+describe("takeSteerEchoOriginal", () => {
 	it("translates the front pair's rewritten text back to the original and consumes it", () => {
 		const rewrites = [
 			{ rewritten: "Invoking skill: demo\n\nbody\n\nwrap up", original: "/skill:demo wrap up" },

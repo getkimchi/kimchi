@@ -357,7 +357,7 @@ type SessionRecord = {
 	}
 	/**
 	 * FIFO of steer texts the steering handler rewrote (e.g. `/skill:<name>`
-	 * expansion, LLM-4035) — see takeSteerEchoOriginal. The queue echo and
+	 * expansion) — see takeSteerEchoOriginal. The queue echo and
 	 * cancel-drain hand queued text back to the client, which acknowledges
 	 * pending steers by the exact text it submitted, so rewritten texts must
 	 * be translated back to their originals on those surfaces.
@@ -1349,7 +1349,7 @@ export class KimchiAcpAgent implements Agent {
 		entry.previousQueue = undefined
 		const dropped = entry.session.clearQueue()
 		// The client restores dropped steers to its composer and matches on
-		// submitted text — hand back originals for rewritten steers (LLM-4035).
+		// submitted text — hand back originals for rewritten steers.
 		return {
 			steering: dropped.steering.map((text) => takeSteerEchoOriginal(entry.steerEchoRewrites, text)),
 			followUp: dropped.followUp,
@@ -1391,7 +1391,7 @@ export class KimchiAcpAgent implements Agent {
 					steering: steering.previousQueue,
 					followUp: followUp.previousQueue,
 				}
-				// Echo the client's original text for rewritten steers (LLM-4035):
+				// Echo the client's original text for rewritten steers:
 				// pending-steer acknowledgements match the submitted text exactly.
 				for (const update of steering.sessionUpdates) {
 					if (update.sessionUpdate === "user_message_chunk" && update.content.type === "text") {

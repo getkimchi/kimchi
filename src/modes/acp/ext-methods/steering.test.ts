@@ -317,7 +317,7 @@ describe("KimchiAcpAgent extMethod steering", () => {
 		expect(meta?.steering).toBeUndefined()
 	})
 
-	it("rewrites a /skill: steer like prompt() and echoes the client's original text (LLM-4035)", async () => {
+	it("rewrites a /skill: steer like prompt() and echoes the client's original text", async () => {
 		// Real skill file so tryParseSkillCommand can read its body.
 		const dir = mkdtempSync(join(tmpdir(), "steer-skill-ext-"))
 		const filePath = join(dir, "SKILL.md")

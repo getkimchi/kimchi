@@ -34,8 +34,8 @@ export function notifyDroppedQueue(
 	})
 }
 /**
- * A steer whose text the handler rewrote (e.g. `/skill:<name>` expansion,
- * LLM-4035): the queue holds `rewritten`, but the client submitted (and
+ * A steer whose text the handler rewrote (e.g. a `/skill:<name>` command):
+ * the queue holds `rewritten`, but the client submitted (and
  * acknowledges pending steers by) `original`. FIFO — steers are consumed
  * from the front of pi's queue, so the front pair matches the next echoed
  * or dropped rewritten text.

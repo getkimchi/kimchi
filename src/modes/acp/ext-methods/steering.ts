@@ -51,7 +51,7 @@ function parseSteeringImages(attachments: unknown): ImageContent[] {
  * the prompt() path. pi's steer() would expand the skill too, but its queue
  * would then hold pi's own expansion format — and the ACP queue echo hands
  * queued text back to the client, where pending-steer acknowledgements match
- * the submitted text EXACTLY (LLM-4035). Rewriting here registers the pair
+ * the submitted text EXACTLY. Rewriting here registers the pair
  * via `onSteerRewritten` so the echo can translate the queued text back to
  * the client's original submission.
  *

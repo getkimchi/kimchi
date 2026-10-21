@@ -17,7 +17,7 @@ export type SessionTurnTarget = {
 	/**
 	 * Skill commands advertised for this session (may be empty). The steering
 	 * handler rewrites a leading `/skill:<name>` the same way prompt() does
-	 * (LLM-4035) rather than letting pi's steer() queue its own expansion
+	 * rather than letting pi's steer() queue its own expansion
 	 * format, which would never match the client's submitted text on the
 	 * queue echo.
 	 */
