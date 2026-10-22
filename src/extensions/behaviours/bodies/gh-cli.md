@@ -9,6 +9,8 @@ description: Use the GitHub CLI (`gh`) for PRs, reviews, issues, releases, and A
 
 Consent: posting reviews/comments, merging, releasing, and any `gh api` write are external actions — explicit approval first (the user's; in an Autonomous Session, the task prompt's); read-only commands are fine.
 
+Labels: when you open a PR, add one category label for the task — feature, bug fix, maintenance or exploration — under the repo's own name for it (`gh label list`, e.g. `new feature`, `bug`). A known Jira issue type decides it: Bug → bug fix, Story/Feature → feature, Task/Chore → maintenance, Spike → exploration. If no label fits, don't create one; name the category in your reply. Labeling an existing PR (`gh pr edit --add-label`) is a write that needs approval. The repo's own AGENTS.md rules come first.
+
 Output: `gh run view --log` and `--paginate` on large result sets are huge — default to `--log-failed`, cap with `--jq`/`--limit`, pipe through `tail -N`. For big PR diffs, list changed paths first (`gh pr diff <N> --name-only`), then read targeted files.
 
 Auth: `gh auth status`. If logged out, ask the user to run `gh auth login`. Repo: inferred from cwd; pass `-R OWNER/REPO` when outside it.
