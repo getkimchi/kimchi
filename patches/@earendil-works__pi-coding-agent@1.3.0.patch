@@ -1539,7 +1539,7 @@ diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive
 index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..fb2940b3e49af7bd2361e5c22976fc160d5873da 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1432,8 +1432,64 @@ export class InteractiveMode {
+@@ -1432,8 +1432,69 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -1596,7 +1596,12 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..fb2940b3e49af7bd2361e5c22976fc16
 +                    render(width) {
 +                        const lines = [this.headerLine(width)];
 +                        if (this.expanded)
-+                            lines.push(...this.details.split("\n"));
++                            // Kimchi: every detail line must be width-bound —
++                            // skipped-skill paths (worktree sessions, deep
++                            // roots) overflow narrow terminals and pi-tui's
++                            // renderer throws on over-wide lines, killing the
++                            // process on ctrl+o.
++                            lines.push(...this.details.split("\n").map((line) => TuiLayouts.truncateToWidth(line, width)));
 +                        return lines;
 +                    }
 +                    invalidate() {
