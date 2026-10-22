@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { createRequire } from "node:module"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
@@ -266,27 +265,16 @@ describe("createMemoryBackend", () => {
 		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(/API key/)
 	})
 
-	it.skipIf(process.versions.bun !== undefined)(
-		"requires the Bun runtime when constructing under Node (vitest)",
-		async () => {
-			// The SQLite store loads better-sqlite3, which pnpm maps to
-			// shims/better-sqlite3 — loadable under Node, but it can only construct
-			// databases under Bun (bun:sqlite). Assert the shim's clear-error
-			// contract via a direct require: the resolution mem0ai's bundle performs
-			// internally depends on the install state, and on CI trees where a real
-			// native better-sqlite3 is present (never built — pnpm's
-			// onlyBuiltDependencies excludes it) the guard is unreachable and the
-			// dynamic import below rejects with a bindings error instead. The real
-			// round-trip is backend.check.ts under `pnpm run memory:check`.
-			const nodeRequire = createRequire(import.meta.url)
-			const ShimDatabase = nodeRequire("better-sqlite3")
-			expect(() => new ShimDatabase(":memory:")).toThrow(/Bun runtime \(bun:sqlite\)/)
-
-			// End to end: under Node the backend must still never construct,
-			// whatever error the installed dependency tree produces.
-			await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig())).rejects.toThrow()
-		},
-	)
+	it("requires the Bun runtime when constructing under Node (vitest)", async () => {
+		// The SQLite store constructs better-sqlite3, which resolves to
+		// shims/better-sqlite3 — loadable under Node, but it can only
+		// construct databases under Bun (bun:sqlite). This asserts the
+		// clear-error contract; the real round-trip is backend.check.ts
+		// under `pnpm run memory:check`.
+		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig())).rejects.toThrow(
+			/Bun runtime \(bun:sqlite\)/,
+		)
+	})
 
 	describe("mem0 telemetry opt-out", () => {
 		const restore = (prev: string | undefined): void => {
