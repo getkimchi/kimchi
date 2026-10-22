@@ -16,11 +16,14 @@ import { commandNames, newSession, prompt, waitFor } from "./support/scenarios.j
 const USER_DESC = "USER_PPTX_SKILL: python-pptx based deck editing."
 const USER_BODY = "OFFICE_PPTX_GUIDANCE: edit decks with python-pptx."
 const USER_PDF_DESC = "USER_PDF_SKILL: pypdf based merging."
+const USER_DOCX_DESC = "USER_DOCX_SKILL: python-docx based report editing."
+const USER_DOCX_BODY = "OFFICE_DOCX_GUIDANCE: edit documents with python-docx."
 
 function seedClaudeSkills(homeDir: string): void {
 	const skills: Array<[string, string]> = [
 		["pptx", `---\nname: pptx\ndescription: ${USER_DESC}\n---\n# PPTX\n${USER_BODY}\n`],
 		["pdf", `---\nname: pdf\ndescription: ${USER_PDF_DESC}\n---\n# PDF\nUse pypdf.\n`],
+		["docx", `---\nname: docx\ndescription: ${USER_DOCX_DESC}\n---\n# DOCX\n${USER_DOCX_BODY}\n`],
 		[
 			"verify-this",
 			"---\nname: verify-this\ndescription: Verify a claim with fresh evidence.\n---\n# Verify this\nRestate it falsifiably.\n",
@@ -111,6 +114,7 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 				responses: [
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pptx" }) } }] },
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pdf" }) } }] },
+					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "docx" }) } }] },
 					{ stream: ["Refused as expected."] },
 				],
 				pretrustWorkDir: true,
@@ -129,10 +133,17 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 			expect(second).not.toContain(USER_BODY)
 			const first = JSON.stringify(chats[0].body)
 			expect(first).not.toContain(USER_PDF_DESC)
+			expect(first).not.toContain(USER_DOCX_DESC)
 			// A same-named user pdf skill is refused by the bundled pdf skill.
 			const thirdBody = chats[2].body as { messages?: Array<{ role: string; content: unknown }> }
 			const thirdTools = (thirdBody.messages ?? []).filter((m) => m.role === "tool")
 			expect(String(thirdTools.at(-1)?.content ?? "")).toContain('disabled by the enabled "pdf" skill')
+			// And a same-named user docx skill is refused by the bundled docx skill.
+			const fourthBody = chats[3].body as { messages?: Array<{ role: string; content: unknown }> }
+			const fourthTools = (fourthBody.messages ?? []).filter((m) => m.role === "tool")
+			const docxResult = String(fourthTools.at(-1)?.content ?? "")
+			expect(docxResult).toContain('disabled by the enabled "docx" skill')
+			expect(docxResult).not.toContain(USER_DOCX_BODY)
 		},
 		PROMPT_TIMEOUT_MS * 3,
 	)

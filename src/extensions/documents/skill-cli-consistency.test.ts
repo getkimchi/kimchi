@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
+import { runDocxCli } from "./docx-cli.js"
 import { runPdfCli } from "./pdf-cli.js"
 import { runPptxCli } from "./pptx-cli.js"
 
@@ -65,6 +66,11 @@ describe("skill SKILL.md ↔ CLI contract", () => {
 			skill: "pdf",
 			cli: "pdf",
 			run: (argv, io) => runPdfCli(argv, io),
+		},
+		{
+			skill: "docx",
+			cli: "docx",
+			run: (argv, io) => runDocxCli(argv, io),
 		},
 	]
 
