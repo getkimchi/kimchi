@@ -820,6 +820,15 @@ function onLoopGuardSubagentAbort(raw: unknown): void {
 
 function onSubagentBashClamped(ctx: TelemetryContext, raw: unknown): void {
 	if (!isEnabled()) return
+	// Only the bound telemetry instance emits. agent-runner reloads the child
+	// loader twice around bindExtensions (active-tools resolution), and each
+	// reload re-invokes the inline extension factories against the loader's
+	// SHARED event bus — the orphaned instance keeps its channel subscription
+	// but is never bound to the session (it never receives session_start).
+	// Without this guard every clamp would emit 2× subagent.bash_clamped.
+	// Channel events can only fire after binding, so no legitimate emission is
+	// suppressed (piSessionId is set by the session_start handler at bind).
+	if (!ctx.piSessionId) return
 	const payload = raw as Partial<SubagentBashClampedPayload> | undefined
 	if (typeof payload?.toolCallId !== "string") return
 	// Record the id first so the error reclassification in handlers/tools.ts

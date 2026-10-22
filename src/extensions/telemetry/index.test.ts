@@ -2064,6 +2064,17 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 		return { handlers, events }
 	}
 
+	/** Like setup(), but the instance is never bound (no session_start fired) —
+	 *  reproduces the orphaned telemetry instance that agent-runner's second
+	 *  loader.reload() creates: its pi.on handlers never dispatch, but its
+	 *  pi.events channel subscription survives on the shared bus. */
+	async function setupUnbound() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		return { handlers, events }
+	}
+
 	function extractRecords() {
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
 		return logCalls.flatMap(([, opts]: unknown[]) => {
@@ -2152,6 +2163,39 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 			remainingMs: 9_000,
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("does not double-emit when the telemetry factory is loaded twice (orphaned instance never bound)", async () => {
+		// agent-runner reloads the child loader twice around bindExtensions; each
+		// reload re-invokes the inline extension factories against the loader's
+		// shared event bus. The first instance is bound to the session
+		// (session_start fired); the second is orphaned — its pi.on handlers
+		// never dispatch, but its channel subscription survives. One clamp
+		// emission must produce exactly one record: the bound-instance guard
+		// suppresses the orphan's copy.
+		const bound = await setup()
+		const orphan = await setupUnbound()
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+
+		bound.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-bound",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		orphan.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-orphan",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		await getHandler(bound.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(orphan.handlers, "session_shutdown")({ reason: "test" })
+
+		const clamped = extractRecords().filter((r) => r.eventName === "subagent.bash_clamped")
+		expect(clamped).toHaveLength(1)
 	})
 })
 
