@@ -14,6 +14,7 @@
  * with the 1900/1904 rule; never toLocaleString (TZ-independent).
  */
 
+import type { Element as XmlElement } from "@xmldom/xmldom"
 import { MAX_OUTPUT_CHARS } from "../limits.js"
 import { DocumentError } from "../model.js"
 import { type OoxmlPackage, openOoxml } from "../ooxml/package.js"
@@ -290,12 +291,12 @@ function parseRow(
 	return cells
 }
 
-export function serializeInnerText(el: import("@xmldom/xmldom").Element): string {
+export function serializeInnerText(el: XmlElement): string {
 	let out = ""
 	for (let i = 0; i < el.childNodes.length; i++) {
 		const n = el.childNodes.item(i)
 		if (n?.nodeType === 3 || n?.nodeType === 4) out += n.nodeValue ?? ""
-		else if (n) out += serializeInnerText(n as import("@xmldom/xmldom").Element)
+		else if (n) out += serializeInnerText(n as XmlElement)
 	}
 	return out
 }
@@ -336,6 +337,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 	// Scan each sheet's row spans once, drop raw bytes afterwards.
 	const spansBySheet: Array<Array<{ row: number; start: number; end: number }>> = []
 	const sheetXmlBySheet: string[] = []
+	const mergedBySheet: string[][] = []
 	const infos: SheetInfo[] = []
 	for (const sh of wbSheets) {
 		const bytes = pkg.getBytes(sh.part)
@@ -345,6 +347,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 		sheetXmlBySheet.push(xml)
 		const spans = scanRowSpans(xml)
 		spansBySheet.push(spans)
+		mergedBySheet.push([...xml.matchAll(/<mergeCell\s+ref="([A-Za-z0-9:]+)"/g)].map((m) => m[1]).sort())
 		let lastRow = 0
 		let lastCol = 0
 		const dim = /<dimension\s+ref="[^"]*?([A-Z]{1,3})(\d+)"/.exec(xml)
@@ -374,8 +377,6 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 				.map((s) => s.name)
 				.join(", ")}`,
 		)
-	const mergedBySheet: string[][] = []
-
 	return {
 		format: "xlsx",
 		sheets: infos,

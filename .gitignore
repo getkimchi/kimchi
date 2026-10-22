@@ -97,3 +97,6 @@ vendor/superpowers/
 /resources/skills/pdf/scripts/pdf.mjs
 .pnpm-store/
 /live-acp-*.log
+
+/resources/skills/docx/scripts/docx.mjs
+/resources/skills/xlsx/scripts/xlsx.mjs

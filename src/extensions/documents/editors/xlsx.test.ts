@@ -150,3 +150,93 @@ describe("package preservation", () => {
 		expect(styles).toBeDefined()
 	})
 })
+
+describe("review fixes", () => {
+	it("drops a hostile s= attribute instead of re-emitting it", async () => {
+		const data = await makeCustomXlsx([
+			{
+				name: "S",
+				inner: `<sheetData><row r="1"><c r="A1" s="1\x22/>\x3cev:x \x66oo=\x22"><v>7</v></c></row></sheetData>`,
+			},
+		])
+		const { pkg } = await apply(data, [{ kind: "set-cells", cells: { A1: 8 } }])
+		const xml = new TextDecoder().decode(sheetXml(pkg))
+		expect(xml).not.toContain("ev:x")
+		// The digit-only part of the preserved style survives; the payload after the
+		// closing quote never reaches an attribute — and nothing is re-emitted raw.
+		expect(xml).toContain('<c r="A1" s="1"><v>8</v></c>')
+	})
+
+	it("rejects non-numeric set-column-width and extreme values", async () => {
+		await expect(
+			applyAwait(makeSimpleXlsx(), [
+				{ kind: "set-column-width", columns: { A: '12"/><x' } as unknown as Record<string, number> },
+			]),
+		).rejects.toThrow(/width must be a finite number/)
+		await expect(applyAwait(makeSimpleXlsx(), [{ kind: "set-column-width", columns: { A: 9999 } }])).rejects.toThrow(
+			/width must be a finite number/,
+		)
+	})
+
+	it("rename-sheet updates the workbook entry and formula references", async () => {
+		const { bytes } = await apply(
+			await makeCustomXlsx([
+				{ name: "Data", inner: `<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>` },
+				{
+					name: "Calc",
+					inner: `<sheetData><row r="1"><c r="A1"><f>Data!A1*2</f><v>2</v></c><c r="B1"><f>'Data'!$A$1+1</f><v>2</v></c></row></sheetData>`,
+				},
+			]),
+			[{ kind: "rename-sheet", sheet: "Data", name: "Raw Data" }],
+		)
+		const doc = await extractXlsx(bytes)
+		expect(doc.sheets.map((s) => s.name)).toEqual(["Raw Data", "Calc"])
+		const pkg = await openOoxml(bytes)
+		const calc = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet2.xml")!)
+		expect(calc).toContain("<f>Raw Data!A1*2</f>")
+		expect(calc).toContain("<f>'Raw Data'!$A$1+1</f>")
+	})
+
+	it("rename-sheet rejects duplicates and bad names", async () => {
+		await expect(
+			applyAwait(makeSimpleXlsx(), [{ kind: "rename-sheet", sheet: "Scratch", name: "data" }]),
+		).rejects.toThrow(/already exists/)
+		await expect(
+			applyAwait(makeSimpleXlsx(), [{ kind: "rename-sheet", sheet: "Scratch", name: "bad/name" }]),
+		).rejects.toThrow(/bad sheet name/)
+	})
+
+	it("delete-sheet removes the part, rel, workbook and content-types entries", async () => {
+		const { bytes, pkg } = await apply(await makeSimpleXlsx(), [{ kind: "delete-sheet", sheet: "Scratch" }])
+		expect(pkg.getBytes("xl/worksheets/sheet2.xml")).toBeUndefined()
+		const doc = await extractXlsx(bytes)
+		expect(doc.sheets.map((s) => s.name)).toEqual(["Data"])
+		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		expect(wb).not.toContain("Scratch")
+		const ct = new TextDecoder().decode(pkg.getBytes("[Content_Types].xml")!)
+		expect(ct).not.toContain("sheet2.xml")
+	})
+
+	it("delete-sheet refuses when another sheet's formulas reference it, naming the referrer", async () => {
+		await expect(
+			applyAwait(
+				makeCustomXlsx([
+					{ name: "Data", inner: `<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>` },
+					{ name: "Scratch", inner: `<sheetData><row r="1"><c r="A1"><v>2</v></c></row></sheetData>` },
+					{
+						name: "Ref",
+						inner: `<sheetData><row r="1"><c r="A1"><f>Data!A1+Scratch!A1</f><v>3</v></c></row></sheetData>`,
+					},
+				]),
+				[{ kind: "delete-sheet", sheet: "Scratch" }],
+			),
+		).rejects.toThrow(/referenced by formulas in "Ref"/)
+	})
+
+	it("soft lint findings surface as warnings while hard ones fail", async () => {
+		const { result } = await apply(await makeSimpleXlsx(), [
+			{ kind: "set-cells", cells: { E9: { f: "SUM(A1:A99999)" }, B3: 1 } },
+		])
+		expect(result.warnings.some((w) => w.includes("out-of-range-ref"))).toBe(true)
+	})
+})

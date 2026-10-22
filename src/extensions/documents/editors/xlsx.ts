@@ -31,6 +31,8 @@ export type XlsxOp =
 	| { kind: "append-rows"; sheet?: SheetSelector; rows: EditCell[][] }
 	| { kind: "set-column-width"; sheet?: SheetSelector; columns: Record<string, number> }
 	| { kind: "add-sheet"; name: string; after?: SheetSelector; rows?: EditCell[][] }
+	| { kind: "rename-sheet"; sheet?: SheetSelector; name: string }
+	| { kind: "delete-sheet"; sheet: SheetSelector }
 	| { kind: "fill-formula"; sheet?: SheetSelector; range: string; formula: string }
 
 export interface XlsxEditResult {
@@ -39,6 +41,8 @@ export interface XlsxEditResult {
 	formulasWritten: number
 	/** True if any formula existed/was written — dependent values may be stale. */
 	formulasAlert: boolean
+	/** Non-blocking lint findings (out-of-range refs, spill functions) — surfaced in summaries. */
+	warnings: string[]
 	/** Macros present round-trip untouched. */
 	macrosPreserved: boolean
 }
@@ -77,6 +81,25 @@ export function listSheetParts(pkg: OoxmlPackage): SheetLoc[] {
 	return out
 }
 
+/** Lint shapes with REAL last-row/last-column per sheet (row-span scan + last cell letter). */
+function sheetShapes(pkg: OoxmlPackage): Array<{ name: string; lastRow: number; lastColumn: number }> {
+	return listSheetParts(pkg).map((s) => {
+		const bytes = pkg.getBytes(s.part)
+		if (!bytes) return { name: s.name, lastRow: 1, lastColumn: 1 }
+		const xml = new TextDecoder().decode(bytes)
+		const spans = scanRowSpans(xml)
+		const lastRow = spans.length > 0 ? spans[spans.length - 1].row : 1
+		const lastSpan = spans[spans.length - 1]
+		let lastColumn = 1
+		if (lastSpan) {
+			const refMatches = [...xml.slice(lastSpan.start, lastSpan.end).matchAll(/<c\b[^>]*\br="([A-Za-z]{1,3})/g)]
+			const lastRef = refMatches[refMatches.length - 1]
+			if (lastRef?.[1]) lastColumn = columnIndex(lastRef[1]) ?? 1
+		}
+		return { name: s.name, lastRow: Math.max(lastRow, 1), lastColumn }
+	})
+}
+
 function unescName(s: string): string {
 	return s
 		.replace(/&lt;/g, "<")
@@ -100,7 +123,7 @@ function resolveSheet(pkg: OoxmlPackage, selector: SheetSelector | undefined): S
 	if (!sheet) {
 		throw new DocumentError(
 			"corrupt",
-			`No sheet named ${JSON.stringify(selector)} — sheets: ${sheets.map((s) => s.name).join(", ")}`,
+			`No sheet named ${JSON.stringify(selector)} — sheets: ${sheets.map((s) => JSON.stringify(s.name)).join(", ")}`,
 			"xlsx",
 		)
 	}
@@ -159,7 +182,9 @@ function scanCells(rowFrag: string): CellSpan[] {
 function renderCell(ref: string, cell: EditCell, keepAttrs: string, addStyle?: number): string {
 	const styleAttr = (() => {
 		if (addStyle !== undefined) return ` s="${addStyle}"`
-		const s = /\bs="([^"]*)"/.exec(keepAttrs)?.[1]
+		// The preserved s= is digit-only; anything else from the (untrusted,
+		// string-scanned) sheet is dropped rather than re-emitted raw.
+		const s = /\bs="(\d+)"/.exec(keepAttrs)?.[1]
 		return s !== undefined ? ` s="${s}"` : ""
 	})()
 	if (cell === null || cell === undefined) return ""
@@ -332,6 +357,7 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 		applied: [],
 		formulasWritten: 0,
 		formulasAlert: false,
+		warnings: [],
 		macrosPreserved: pkg.hasXml("xl/vbaProject.bin"),
 	}
 	let formulasTouched = false
@@ -358,8 +384,12 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 						throw new DocumentError("corrupt", `op ${opIndex + 1}: bad cell ref ${JSON.stringify(key)}`, "xlsx")
 					const hasFormula = typeof cell === "object" && cell !== null && cell.f !== undefined
 					if (hasFormula) {
-						const shapes = listSheetParts(pkg).map((s) => ({ name: s.name, lastRow: 1, lastColumn: 1 }))
-						const findings = lintFormula((cell as { f: string }).f, ref, shapes, shapes[sheet.index])
+						const findings = lintFormula(
+							(cell as { f: string }).f,
+							ref,
+							sheetShapes(pkg),
+							sheetShapes(pkg)[sheet.index],
+						)
 						const hard = findings.filter(
 							(f) => f.rule === "unbalanced-syntax" || f.rule === "unknown-sheet" || f.rule === "unknown-function",
 						)
@@ -369,6 +399,11 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 								`op ${opIndex + 1} ${ref}: ${hard.map((f) => `[${f.rule}] ${f.message}`).join("; ")}`,
 								"xlsx",
 							)
+						}
+						for (const soft of findings) {
+							if (soft.rule === "out-of-range-ref" || soft.rule === "spill-function") {
+								result.warnings.push(`op ${opIndex + 1} ${ref} (${soft.rule}): ${soft.message}`)
+							}
 						}
 						formulasTouched = true
 						result.formulasWritten++
@@ -479,6 +514,13 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 					const col = columnIndex(letter.toUpperCase())
 					if (col === undefined)
 						throw new DocumentError("corrupt", `bad column letter ${JSON.stringify(letter)}`, "xlsx")
+					if (typeof width !== "number" || !Number.isFinite(width) || width <= 0 || width > 256) {
+						throw new DocumentError(
+							"corrupt",
+							`column ${letter}: width must be a finite number in (0, 256], got ${JSON.stringify(width)}`,
+							"xlsx",
+						)
+					}
 					newCols.set(col, width)
 				}
 				const existing: Array<{ min: number; max: number; width: number }> = []
@@ -510,6 +552,97 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 					addSheet(pkg, op, () => {
 						formulasTouched = true
 					}),
+				)
+				break
+			}
+			case "rename-sheet": {
+				const sheet = resolveSheet(pkg, op.sheet)
+				const newName = op.name?.trim()
+				if (!newName)
+					throw new DocumentError("corrupt", `op ${opIndex + 1}: rename-sheet needs a non-empty "name"`, "xlsx")
+				if (newName.length > 31 || /[[\]:*?/\\]/.test(newName)) {
+					throw new DocumentError("corrupt", `op ${opIndex + 1}: bad sheet name ${JSON.stringify(op.name)}`, "xlsx")
+				}
+				const sheets = listSheetParts(pkg)
+				if (sheets.some((s) => s.name.toLowerCase() === newName.toLowerCase())) {
+					throw new DocumentError(
+						"corrupt",
+						`op ${opIndex + 1}: a sheet named ${JSON.stringify(newName)} already exists`,
+						"xlsx",
+					)
+				}
+				const oldName = sheet.name
+				let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
+				wb = wb.replace(/(<sheet\b[^>]*\bname=")([^"]*)(")/g, (m, pre, name, post) =>
+					unescName(name) === oldName ? `${pre}${esc(newName)}${post}` : m,
+				)
+				pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
+				// Rewrite formula references in every sheet part ('Old'! / Old!).
+				const quotedOld = `'${oldName.replace(/'/g, "''")}'`
+				const quotedNew = `'${newName.replace(/'/g, "''")}'`
+				const bareOldEscaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+				for (const loc of listSheetParts(pkg)) {
+					const bytes = pkg.getBytes(loc.part)
+					if (!bytes) continue
+					let partXml = new TextDecoder().decode(bytes)
+					let changed = false
+					if (partXml.includes(`${quotedOld}!`)) {
+						partXml = partXml.split(`${quotedOld}!`).join(`${quotedNew}!`)
+						changed = true
+					}
+					const bare = new RegExp(`(?<![A-Za-z0-9_'!.])${bareOldEscaped}!`, "g")
+					const next = partXml.replace(bare, () => {
+						changed = true
+						return `${newName}!`
+					})
+					if (changed) {
+						pkg.putBytes(loc.part, new TextEncoder().encode(next))
+						formulasTouched = true
+					}
+				}
+				result.applied.push(
+					`op ${opIndex + 1} rename-sheet: ${JSON.stringify(oldName)} -> ${JSON.stringify(newName)} (formula references updated)`,
+				)
+				break
+			}
+			case "delete-sheet": {
+				const sheet = resolveSheet(pkg, op.sheet)
+				const sheets = listSheetParts(pkg)
+				if (sheets.length <= 1) throw new DocumentError("corrupt", "cannot delete the only sheet", "xlsx")
+				// Refuse when any remaining formula references it — the formula would go #REF!.
+				const quotedOld = `'${sheet.name.replace(/'/g, "''")}'`
+				const bareOldEscaped = sheet.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+				const referring: string[] = []
+				for (const loc of sheets) {
+					if (loc.part === sheet.part) continue
+					const xml = new TextDecoder().decode(pkg.getBytes(loc.part) ?? new Uint8Array())
+					if (xml.includes(`${quotedOld}!`) || new RegExp(`(?<![A-Za-z0-9_'!.])${bareOldEscaped}!`).test(xml)) {
+						referring.push(loc.name)
+					}
+				}
+				if (referring.length > 0) {
+					throw new DocumentError(
+						"corrupt",
+						`op ${opIndex + 1}: sheet ${JSON.stringify(sheet.name)} is referenced by formulas in ${referring.map((s) => JSON.stringify(s)).join(", ")} — clear those refs first`,
+						"xlsx",
+					)
+				}
+				// workbook.xml: drop the <sheet> tag
+				let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
+				wb = wb.replace(/<sheet\b[^>]*\/>/g, (m) => (m.includes(`name="${esc(sheet.name)}"`) ? "" : m))
+				pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
+				// rels: drop the relationship; content types: drop the override; then remove the part.
+				let rels = new TextDecoder().decode(pkg.getBytes("xl/_rels/workbook.xml.rels") ?? new Uint8Array())
+				rels = rels.replace(/<Relationship\b[^>]*\/>/g, (m) =>
+					m.includes(`Target="${sheet.part.replace(/^xl\//, "").replace(/\//g, "/")}"`) ? "" : m,
+				)
+				pkg.putBytes("xl/_rels/workbook.xml.rels", new TextEncoder().encode(rels))
+				let ct = new TextDecoder().decode(pkg.getBytes("[Content_Types].xml") ?? new Uint8Array())
+				ct = ct.replace(/<Override\b[^>]*\/>/g, (m) => (m.includes(`PartName="/${sheet.part}"`) ? "" : m))
+				pkg.putBytes("[Content_Types].xml", new TextEncoder().encode(ct))
+				pkg.remove(sheet.part)
+				result.applied.push(
+					`op ${opIndex + 1} delete-sheet: ${JSON.stringify(sheet.name)} (part ${sheet.part} removed)`,
 				)
 				break
 			}
@@ -578,14 +711,18 @@ function addSheet(
 		throw new DocumentError("corrupt", `bad sheet name ${JSON.stringify(op.name)} (forbidden chars or >31)`, "xlsx")
 	}
 	const newIndex = sheets.length
+	// The generated part path must not collide with an existing member —
+	// hostile rel targets can point sheets anywhere, so pick a free name.
+	let partOrdinal = newIndex + 1
+	while (pkg.getBytes(`xl/worksheets/sheet${partOrdinal}.xml`) !== undefined) partOrdinal++
 	// Relationships: next free rId
 	let rels = new TextDecoder().decode(pkg.getBytes("xl/_rels/workbook.xml.rels") ?? new Uint8Array())
 	const ids = [...rels.matchAll(/Id="rId(\d+)"/g)].map((m) => Number(m[1]))
 	const newId = `rId${Math.max(sheets.length, 0, ...ids) + 1}`
-	const partName = `xl/worksheets/sheet${newIndex + 1}.xml`
+	const partName = `xl/worksheets/sheet${partOrdinal}.xml`
 	rels = rels.replace(
 		/<\/Relationships>/,
-		`<Relationship Id="${newId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${newIndex + 1}.xml"/></Relationships>`,
+		`<Relationship Id="${newId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${partOrdinal}.xml"/></Relationships>`,
 	)
 	pkg.putBytes("xl/_rels/workbook.xml.rels", new TextEncoder().encode(rels))
 
@@ -618,7 +755,7 @@ function addSheet(
 	let ct = new TextDecoder().decode(pkg.getBytes("[Content_Types].xml") ?? new Uint8Array())
 	ct = ct.replace(
 		/<\/Types>/,
-		`<Override PartName="/xl/worksheets/sheet${newIndex + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+		`<Override PartName="/xl/worksheets/sheet${partOrdinal}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
 	)
 	pkg.putBytes("[Content_Types].xml", new TextEncoder().encode(ct))
 

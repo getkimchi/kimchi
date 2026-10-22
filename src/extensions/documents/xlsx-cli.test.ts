@@ -147,3 +147,50 @@ describe("runXlsxCli edit", () => {
 		expect(err4[0]).toContain("ops array is empty")
 	})
 })
+
+describe("typed errors and new commands", () => {
+	it("rejects .xls and OLE2 containers with unsupported-format and a hint", async () => {
+		const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 1, 2, 3, 4])
+		const { io, err } = testIo({ "book.xls": ole })
+		expect(await runXlsxCli(["read", "book.xls"], io)).toBe(2)
+		expect(err[0]).toContain("error [unsupported-format]")
+		expect(err[0]).toContain("soffice --convert-to")
+		const { io: io2, err: err2 } = testIo({ "weird.xlsx": ole })
+		expect(await runXlsxCli(["read", "weird.xlsx"], io2)).toBe(2)
+		expect(err2[0]).toContain("encrypted workbook")
+	})
+
+	it("caps oversized ops files before parsing", async () => {
+		// Valid JSON, ~1.5 MB — over a 1 MB cap, under the default.
+		const huge = new TextEncoder().encode(JSON.stringify([{ kind: "set-cells", cells: { A1: "x".repeat(1_500_000) } }]))
+		const { io, err } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": huge })
+		const prev = process.env.KIMCHI_DOCUMENT_MAX_MB
+		try {
+			process.env.KIMCHI_DOCUMENT_MAX_MB = "1"
+			expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json"], io)).toBe(2)
+			expect(err[0]).toContain("too-large")
+		} finally {
+			if (prev === undefined) delete process.env.KIMCHI_DOCUMENT_MAX_MB
+			else process.env.KIMCHI_DOCUMENT_MAX_MB = prev
+		}
+	})
+
+	it("recalc degrades to tool-missing without LibreOffice", async () => {
+		const { io, err } = testIo({ "in.xlsx": await makeSimpleXlsx() })
+		const prev = process.env.KIMCHI_SOFFICE
+		try {
+			process.env.KIMCHI_SOFFICE = "/nonexistent/soffice"
+			expect(await runXlsxCli(["recalc", "in.xlsx", "--out", "o.xlsx"], io)).toBe(2)
+			expect(err[0]).toContain("error [tool-missing]")
+		} finally {
+			if (prev === undefined) delete process.env.KIMCHI_SOFFICE
+			else process.env.KIMCHI_SOFFICE = prev
+		}
+	})
+
+	it("recalc refuses .xlsm up front (LibreOffice drops macros)", async () => {
+		const { io, err } = testIo({ "m.xlsm": await makeSimpleXlsx() })
+		expect(await runXlsxCli(["recalc", "m.xlsm", "--out", "o.xlsx"], io)).toBe(2)
+		expect(err[0]).toContain("recalc of .xlsm loses macros")
+	})
+})

@@ -26,7 +26,7 @@ Two tiers. **Core** commands work everywhere, on every install. The only **enhan
 | Fix text, fill placeholders, small rewrites | `edit` (replace-text, insert, delete) | rebuild with `create`; say what was lost |
 | Change table cells | `edit` with set-table-cell | rebuild with `create` |
 | Review-style annotations | `edit` add-comment | — |
-| Visual check of layout | `render` via LibreOffice — not bundled yet; open the file in Word/LibreOffice and ask the user to confirm, or rebuild simpler | — |
+| Visual check of layout | `render` — docx→pdf via LibreOffice (fails `tool-missing` when absent); view the pdf with the pdf skill | — |
 | Legacy `.doc` | not supported — ask the user to save as .docx (LibreOffice: `soffice --convert-to docx file.doc`) | — |
 
 **Tell the user which route produced the file.** After any write, `read` the output windows you changed back before calling the work done.
@@ -71,6 +71,12 @@ Surgical edits on the existing file: styles, images, numbering, fields and every
 - insert/append Markdown support: paragraphs, headings, bold/italic/code, links (shown as text with the URL), simple lists, page breaks. Images and tables are rejected — create a new document for those.
 - The summary after a successful edit lists per-op results and any leftover placeholder text (lorem, xxx, `[insert ...`, TODO, "click to add") — always read it.
 
+## render `<doc.docx> --out <out.pdf>`
+
+Convert to PDF via LibreOffice headless for a visual check (then read the PDF with the pdf skill). Needs LibreOffice (`brew install --cask libreoffice` or `KIMCHI_SOFFICE`) — without it the command fails `tool-missing`; `read`/`create`/`edit`/`info` never need it.
+
+Legacy `.doc` files (and OLE2-wrapped encrypted documents) fail `unsupported-format` up front with a conversion hint; they are never parsed.
+
 ## Error language
 
 Errors are typed (`error [code]: message`, exit 2):
@@ -78,7 +84,8 @@ Errors are typed (`error [code]: message`, exit 2):
 - `corrupt` — unreadable file, bad range, bad JSON, ambiguous or missing anchor, wrong path.
 - `too-large` — over the size cap.
 - `safety-limit` — hostile zip (bombs, symlinks, oversized parts); stop and tell the user.
-- `unsupported-format` — a `.doc` file or another legacy format; ask for `.docx`.
+- `unsupported-format` — a `.doc` file, OLE2/encrypted container, or another legacy format; the message names the conversion command.
+- `tool-missing` — `render` without LibreOffice installed; the message names the install command.
 
 ## Secure handling
 

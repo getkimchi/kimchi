@@ -9,7 +9,19 @@
  *                                        build a workbook from a spec (never in place)
  */
 
-import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { RealClock } from "./clock.js"
 import { applyXlsxOps, type XlsxOp } from "./editors/xlsx.js"
@@ -17,7 +29,9 @@ import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.
 import { maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { openOoxml } from "./ooxml/package.js"
+import { requireNoProblems, validateContentTypes } from "./ooxml/validate.js"
 import { sameFile } from "./paths.js"
+import { defaultWhich, findSoffice } from "./soffice.js"
 import { writeXlsx, type XlsxSpec } from "./writers/xlsx.js"
 
 export interface CliIo {
@@ -34,7 +48,8 @@ commands:
                                                   one sheet as a Markdown table, windowed by rows (≤50 KB/call)
   info <file.xlsx|file.xlsm>                    sheets (names, hidden state, dimensions), macros/links notes
   create <spec.json> --out <out.xlsx>           build a workbook from a JSON spec (never in place)
-  edit <in.xlsx> --out <out.xlsx> --ops <ops.json>   apply ops, never in place`
+  edit <in.xlsx> --out <out.xlsx> --ops <ops.json>   apply ops, never in place
+  recalc <in.xlsx> --out <out.xlsx>                recalculate formulas (needs LibreOffice; errors grouped by type)`
 
 function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
 	try {
@@ -64,11 +79,34 @@ function flagsUsed(flags: string[]): string[] {
 	return flags.filter((f) => f.startsWith("--"))
 }
 
+const OLE2_MAGIC = [0xd0, 0xcf, 0x11, 0xe0]
+
+/** Legacy .xls/.doc/.ppt extensions and the OLE2 container (also the wrapper
+ *  of encrypted OOXML) — one typed error instead of a zip parse failure. */
+function rejectLegacyOrEncrypted(input: string, data: Uint8Array): void {
+	const lower = input.toLowerCase()
+	if (lower.endsWith(".xls")) {
+		throw new DocumentError(
+			"unsupported-format",
+			`${input} is a legacy binary spreadsheet (.xls) — convert it first (LibreOffice: soffice --convert-to xlsx "${input}")`,
+			"xlsx",
+		)
+	}
+	if (data.length >= 4 && OLE2_MAGIC.every((b, i) => data[i] === b)) {
+		throw new DocumentError(
+			"unsupported-format",
+			`${input} is an OLE2 container — a legacy binary file or an encrypted workbook; open it in Excel/LibreOffice and save unencrypted .xlsx`,
+			"xlsx",
+		)
+	}
+}
+
 async function load(input: string, data: Uint8Array): Promise<XlsxExtraction> {
 	const lower = input.toLowerCase()
 	if (lower.endsWith(".csv")) {
 		return extractCsv(new TextDecoder().decode(data))
 	}
+	rejectLegacyOrEncrypted(input, data)
 	if (!lower.endsWith(".xlsx") && !lower.endsWith(".xlsm")) {
 		throw new DocumentError("corrupt", `expected .xlsx, .xlsm or .csv — got ${input}`, "xlsx")
 	}
@@ -114,6 +152,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				io.stdout(
 					`# ${path} — sheet "${w.sheet}" rows ${w.fromRow}-${w.toRow}${w.truncated ? " (truncated, continue with --start-row)" : ""}\n\n${w.markdown}`,
 				)
+				if (w.merged.length > 0) io.stdout(`\nmerged cells on this sheet: ${w.merged.join(", ")}`)
 				for (const note of doc.notes) io.stderr(`note: ${note}`)
 				return 0
 			}
@@ -145,7 +184,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				const [specPath, ...flags] = args
 				if (!specPath)
 					throw new DocumentError("corrupt", "create needs a spec: xlsx.mjs create <spec.json> --out <out.xlsx>")
-				const known = ["--out", "--force"]
+				const known = ["--out"]
 				for (const f of flagsUsed(flags)) {
 					if (!known.includes(f)) throw new DocumentError("corrupt", `unknown flag ${f} — options: ${known.join(", ")}`)
 				}
@@ -156,7 +195,9 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					throw new DocumentError("corrupt", `output path must end in .xlsx: ${out}`, "xlsx")
 				let spec: XlsxSpec
 				try {
-					spec = JSON.parse(new TextDecoder().decode(readBytes(readFile, specPath))) as XlsxSpec
+					const specBytes = readBytes(readFile, specPath)
+					enforceSizeCap(specPath, specBytes)
+					spec = JSON.parse(new TextDecoder().decode(specBytes)) as XlsxSpec
 				} catch {
 					throw new DocumentError("corrupt", `spec is not valid JSON: ${specPath}`, "xlsx")
 				}
@@ -192,15 +233,23 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "xlsx")
 				const data = readBytes(readFile, input)
 				enforceSizeCap(input, data)
+				const opsBytes = readBytes(readFile, opsPath)
+				enforceSizeCap(opsPath, opsBytes)
 				let raw: unknown
 				try {
-					raw = JSON.parse(new TextDecoder().decode(readBytes(readFile, opsPath)))
+					raw = JSON.parse(new TextDecoder().decode(opsBytes))
 				} catch {
 					throw new DocumentError("corrupt", `ops file is not valid JSON: ${opsPath}`, "xlsx")
 				}
 				const ops = parseXlsxOps(raw)
 				const pkg = await openOoxml(data)
+				const inputProblems = validateContentTypes(pkg, pkg.getXml("[Content_Types].xml"))
 				const result = applyXlsxOps(pkg, ops)
+				// Fail only on defects WE introduced — third-party packaging quirks are preserved.
+				requireNoProblems(
+					validateContentTypes(pkg, pkg.getXml("[Content_Types].xml")).filter((p) => !inputProblems.includes(p)),
+					`post-edit package validation for ${input} — fix the op and retry; the input is unchanged`,
+				)
 				const bytes = await pkg.save()
 				const writeFile = io.writeFile ?? atomicWrite
 				writeFile(out, bytes)
@@ -208,6 +257,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`,
 					...result.applied,
 				]
+				for (const warning of result.warnings) lines.push(`warning: ${warning}`)
 				if (result.formulasAlert) {
 					lines.push(
 						"note: formulas written without cached values — the workbook recalculates on open in Excel/LibreOffice",
@@ -216,6 +266,79 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				if (result.macrosPreserved) lines.push("note: macros preserved untouched")
 				io.stdout(lines.join("\n"))
 				return 0
+			}
+			case "recalc": {
+				const [input, ...flags] = args
+				if (!input)
+					throw new DocumentError("corrupt", "recalc needs an input: xlsx.mjs recalc <in.xlsx> --out <out.xlsx>")
+				const known = ["--out"]
+				for (const f of flagsUsed(flags)) {
+					if (!known.includes(f)) throw new DocumentError("corrupt", `unknown flag ${f} — options: ${known.join(", ")}`)
+				}
+				const out = flagValue(flags, "--out")
+				if (!out) throw new DocumentError("corrupt", "recalc needs --out <out.xlsx> — never writes in place")
+				if (sameFile(out, input)) throw new DocumentError("corrupt", "--out must differ from the input", "xlsx")
+				if (input.toLowerCase().endsWith(".xlsm")) {
+					throw new DocumentError(
+						"corrupt",
+						"recalc of .xlsm loses macros — LibreOffice does not re-save them; export to .xlsx first",
+						"xlsx",
+					)
+				}
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				rejectLegacyOrEncrypted(input, data)
+				const soffice = findSoffice(
+					{ which: defaultWhich, fileExists: existsSync },
+					{ format: "xlsx", commands: "recalc", core: "read/create/edit" },
+				)
+				const tmpDir = mkdtempSync(join(tmpdir(), "kimchi-xlsx-recalc-"))
+				try {
+					const staged = join(tmpDir, basename(input))
+					writeFileSync(staged, data)
+					const run = spawnSync(soffice, [
+						"--headless",
+						"--convert-to",
+						"xlsx:Calc MS Excel 2007 XML",
+						"--outdir",
+						tmpDir,
+						staged,
+					])
+					if (run.status !== 0) {
+						throw new DocumentError(
+							"corrupt",
+							`libreoffice failed (${run.status}): ${String(run.stderr).slice(0, 400)}`,
+							"xlsx",
+						)
+					}
+					const converted = new Uint8Array(readFileSync(staged))
+					const writeFile = io.writeFile ?? atomicWrite
+					writeFile(out, converted)
+					const doc = await extractXlsx(converted)
+					const errorCounts = new Map<string, number>()
+					for (const sheet of doc.sheets) {
+						let from = 1
+						while (from <= sheet.lastRow) {
+							const w = doc.window({ sheet: sheet.name, startRow: from, endRow: sheet.lastRow, maxChars: 4_500_000 })
+							for (const m of w.markdown.matchAll(/#(?:REF!|DIV\/0!|NAME\?|VALUE!|NUM!|N\/A|NULL!)/g)) {
+								errorCounts.set(m[0], (errorCounts.get(m[0]) ?? 0) + 1)
+							}
+							if (w.toRow < from) break
+							from = w.toRow + 1
+						}
+					}
+					io.stdout(`recalculated ${input} -> ${out} via LibreOffice`)
+					if (errorCounts.size > 0) {
+						io.stdout(`error cells: ${[...errorCounts.entries()].map(([k, v]) => `${k} ×${v}`).join(", ")}`)
+					}
+					return 0
+				} finally {
+					try {
+						rmSync(tmpDir, { recursive: true, force: true })
+					} catch {
+						// temp reclaim
+					}
+				}
 			}
 			case undefined:
 			case "--help":
@@ -235,7 +358,16 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 	}
 }
 
-const OP_KINDS = ["set-cells", "clear-range", "append-rows", "set-column-width", "add-sheet", "fill-formula"] as const
+const OP_KINDS = [
+	"set-cells",
+	"clear-range",
+	"append-rows",
+	"set-column-width",
+	"add-sheet",
+	"rename-sheet",
+	"delete-sheet",
+	"fill-formula",
+] as const
 
 /** Strict ops validation — messages tell the model the missing/typoed key. */
 function parseXlsxOps(raw: unknown): XlsxOp[] {
@@ -279,6 +411,12 @@ function parseXlsxOps(raw: unknown): XlsxOp[] {
 				break
 			case "add-sheet":
 				requireField("name")
+				break
+			case "rename-sheet":
+				requireField("name")
+				break
+			case "delete-sheet":
+				requireField("sheet")
 				break
 			case "fill-formula":
 				requireField("range")

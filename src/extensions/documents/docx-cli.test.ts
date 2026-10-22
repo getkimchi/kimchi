@@ -144,3 +144,26 @@ describe("docx-cli usage", () => {
 		expect(b.err[0]).toContain('unknown command "frobnicate"')
 	})
 })
+
+describe("typed errors and render", () => {
+	it("rejects .doc and OLE2 containers with unsupported-format and a hint", async () => {
+		const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 1, 2, 3, 4])
+		const { io, err } = ioCapture({ "old.doc": ole })
+		expect(await runDocxCli(["read", "old.doc"], io)).toBe(2)
+		expect(err[0]).toContain("error [unsupported-format]")
+		expect(err[0]).toContain("soffice --convert-to docx")
+	})
+
+	it("render degrades to tool-missing without LibreOffice", async () => {
+		const { io, err } = ioCapture({ "a.docx": await makeSimpleDocx() })
+		const prev = process.env.KIMCHI_SOFFICE
+		try {
+			process.env.KIMCHI_SOFFICE = "/nonexistent/soffice"
+			expect(await runDocxCli(["render", "a.docx", "--out", "a.pdf"], io)).toBe(2)
+			expect(err[0]).toContain("error [tool-missing]")
+		} finally {
+			if (prev === undefined) delete process.env.KIMCHI_SOFFICE
+			else process.env.KIMCHI_SOFFICE = prev
+		}
+	})
+})

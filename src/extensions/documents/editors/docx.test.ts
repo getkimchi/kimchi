@@ -102,15 +102,19 @@ describe("applyDocxOps", () => {
 		const input = await makeSimpleDocx()
 		const inPkg = await openOoxml(input)
 		const before = new Map<string, Uint8Array>()
-		for (const name of inPkg.names()) before.set(name, inPkg.getBytes(name)!)
+		for (const name of inPkg.names()) {
+			const bytes = inPkg.getBytes(name)
+			if (!bytes) throw new Error(`fixture part ${name} unreadable`)
+			before.set(name, bytes)
+		}
 		applyDocxOps(inPkg, parseDocxOps([{ type: "replace-text", anchor: "Revenue grew", value: "Revenue soared" }]))
 		const out = await inPkg.save()
 		const outPkg = await openOoxml(out)
 		for (const [name, bytes] of before) {
 			if (name === "word/document.xml") continue
 			const after = outPkg.getBytes(name)
-			expect(after, `part ${name}`).toBeDefined()
-			expect(Buffer.from(after!).equals(Buffer.from(bytes)), `part ${name} changed`).toBe(true)
+			if (!after) throw new Error(`part ${name} missing after edit`)
+			expect(Buffer.from(after).equals(Buffer.from(bytes)), `part ${name} changed`).toBe(true)
 		}
 	})
 

@@ -21,7 +21,8 @@ Do NOT use openpyxl, ExcelJS, or SheetJS directly — the bundled CLI is the sup
 | New workbook | `create` from a spec |
 | Change values / add rows / fill formulas / widths / new sheet | `edit` |
 | Visual check of layout | ask the user to open the file — this skill has no renderer |
-| Recalculate formulas, build charts or pivot tables | not supported — open in Excel/LibreOffice |
+| Recalculate formulas | `recalc` (needs LibreOffice; degrades with a clear error if absent) — or use Excel |
+| Build charts or pivot tables | not supported — open in Excel/LibreOffice |
 | Legacy `.xls` | not supported — ask the user to save as .xlsx first |
 
 **Formulas are never recalculated by this skill.** Written formulas are stored without cached values and the workbook marks itself `fullCalcOnLoad` — Excel/LibreOffice computes values on open. Any numbers the file already cached may be stale after an edit; the command warns you either way. Always `read` the windows you changed back before calling the work done, and tell the user which route produced the file.
@@ -72,6 +73,8 @@ One sheet as a Markdown table: a leading row-number column, column letters as th
   {"kind": "append-rows", "rows": [["tail", 1, {"f": "=SUM(B1:B4)"}]]},
   {"kind": "set-column-width", "columns": {"B": 18}},
   {"kind": "add-sheet", "name": "Summary", "after": "Data", "rows": [["k", "v"]]},
+  {"kind": "rename-sheet", "sheet": "Data", "name": "Raw Data"},
+  {"kind": "delete-sheet", "sheet": "Scratch"},
   {"kind": "fill-formula", "range": "F3:F44", "formula": "{col}{row}/B{row}"}
 ]
 ```
@@ -79,8 +82,16 @@ One sheet as a Markdown table: a leading row-number column, column letters as th
 - `set-cells` writes values/formulas (per-cell `"B4"` keys; ref-qualified `Sheet!B4` allowed), `null` clears. Changed number formats are refused — rebuild with `create` for style changes.
 - `clear-range` refuses ranges intersecting merged cells and names them.
 - `fill-formula` expands `{col}`/`{row}` over the range.
-- `add-sheet` inserts after a sheet (title or 1-based index, default: at the end).
-- The summary lists per-op results, the recalculation note when formulas were written, and `macros preserved` for .xlsm — macros are never touched.
+- `add-sheet` inserts after a sheet (title or 1-based index, default: at the end); `rename-sheet` updates every formula reference in the workbook; `delete-sheet` is refused when other sheets' formulas reference it (they are named).
+- The summary lists per-op results, lint warnings, the recalculation note when formulas were written, and `macros preserved` for .xlsm — macros are never touched. The edited package is schema-validated before save; if an op would corrupt the package, the input stays unchanged.
+
+## recalc `<in.xlsx> --out <out.xlsx>`
+
+Recalculate all cached formula values via LibreOffice headless and write the recalculated workbook; error cells are grouped by type (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`, …). Needs LibreOffice (`brew install --cask libreoffice` or `KIMCHI_SOFFICE`) — without it the command fails `tool-missing`; `read`/`create`/`edit` never need it. Refuses `.xlsm` because LibreOffice drops macros on save. External links are never resolved by recalc.
+
+Merges: `read` prints them as "merged cells on this sheet: B4:C4".
+
+Legacy `.xls` files and encrypted workbooks fail `unsupported-format` up front with a conversion hint; they are never parsed.
 
 ## Error language
 
