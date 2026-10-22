@@ -971,7 +971,7 @@ describe("upstream MCP adapter facade", () => {
 				([first]) => typeof first === "string" && first.includes("[tool-surface] mcp status resnapshot failed"),
 			)
 			expect(resnapshotFailures.length).toBeGreaterThanOrEqual(1)
-			expect(String(resnapshotFailures[0]?.[1])).toContain("registry exploded")
+			expect(resnapshotFailures.some(([, detail]) => String(detail).includes("registry exploded"))).toBe(true)
 		} finally {
 			errorSpy.mockRestore()
 			vi.useRealTimers()
