@@ -95,6 +95,7 @@ vendor/superpowers/
 /resources/skills/pdf/scripts/pdf.mjs
 /resources/skills/pdf/scripts/pdfium.wasm
 /resources/skills/docx/scripts/docx.mjs
+/resources/skills/xlsx/scripts/xlsx.mjs
 
 # E2E failure artifacts (written by the test fixtures on failure)
 *.fail.*.log

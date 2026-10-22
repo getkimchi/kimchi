@@ -26,6 +26,8 @@ const USER_BODY = "OFFICE_PPTX_GUIDANCE: edit decks with python-pptx."
 const USER_PDF_DESC = "USER_PDF_SKILL: pypdf based merging."
 const USER_DOCX_DESC = "USER_DOCX_SKILL: python-docx based report editing."
 const USER_DOCX_BODY = "OFFICE_DOCX_GUIDANCE: edit documents with python-docx."
+const USER_XLSX_DESC = "USER_XLSX_SKILL: openpyxl based spreadsheet editing."
+const USER_XLSX_BODY = "OFFICE_XLSX_GUIDANCE: edit workbooks with openpyxl."
 
 /** Conversation turns only: the fake server also records warmup, title
  * generation, and other aux chat calls. */
@@ -52,6 +54,12 @@ function seedSkills(homeDir: string, workDir: string): void {
 		`---\nname: docx\ndescription: ${USER_DOCX_DESC}\n---\n# DOCX\n${USER_DOCX_BODY}\n`,
 		"utf-8",
 	)
+	mkdirSync(join(homeDir, ".claude", "skills", "xlsx"), { recursive: true })
+	writeFileSync(
+		join(homeDir, ".claude", "skills", "xlsx", "SKILL.md"),
+		`---\nname: xlsx\ndescription: ${USER_XLSX_DESC}\n---\n# XLSX\n${USER_XLSX_BODY}\n`,
+		"utf-8",
+	)
 	mkdirSync(join(homeDir, ".claude", "skills", "verify-this"), { recursive: true })
 	writeFileSync(
 		join(homeDir, ".claude", "skills", "verify-this", "SKILL.md"),
@@ -76,6 +84,8 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 				{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pdf" }) } }] },
 				// Turn 3: tries the shadowed user docx skill.
 				{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "docx" }) } }] },
+				// Turn 4: tries the shadowed user xlsx skill.
+				{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "xlsx" }) } }] },
 				{ stream: ["Understood, using the bundled pptx skill instead."] },
 			],
 		},
@@ -94,6 +104,7 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 			expect(first).not.toContain(USER_DESC)
 			expect(first).not.toContain(USER_PDF_DESC)
 			expect(first).not.toContain(USER_DOCX_DESC)
+			expect(first).not.toContain(USER_XLSX_DESC)
 			trace.step("system prompt advertises bundled skills + verify-this, not the user pptx/pdf/docx skills")
 
 			// The refusal — not the user skill body — is what reached the model as
@@ -114,6 +125,12 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 			const docxToolResult = String((fourth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "")
 			expect(docxToolResult).toContain('is unavailable: it is disabled by the enabled "docx" skill')
 			expect(docxToolResult).not.toContain(USER_DOCX_BODY)
+
+			// And a same-named user xlsx skill is refused by the bundled xlsx skill.
+			const fifth = turns[4].body as { messages?: Array<{ role: string; content: unknown }> }
+			const xlsxToolResult = String((fifth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "")
+			expect(xlsxToolResult).toContain('is unavailable: it is disabled by the enabled "xlsx" skill')
+			expect(xlsxToolResult).not.toContain(USER_XLSX_BODY)
 			trace.step("Skill tool refusals for all declarers reached model context")
 		},
 	)
