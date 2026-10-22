@@ -8,7 +8,13 @@ import {
 	TUI_TEST_CONFIG,
 } from "./support/kimchi-fixture.js"
 
-test.use(TUI_TEST_CONFIG)
+// The /session info block (~25 rows) stacks on top of startup warnings, the
+// replayed turn, and the branch box. At 40 rows the asserted Name:/ID: lines can
+// land just above the viewport fold, and these waits intentionally assert on the
+// visible screen (full: false) because the pre-resume /session output for the
+// same session is still in scrollback after the -r relaunch and would false-match
+// a full-buffer scan. Extra rows keep the block on screen.
+test.use({ ...TUI_TEST_CONFIG, rows: 60 })
 
 test("branch creates a named resumable session for -r", async ({ terminal }) => {
 	const exitMarker = "__KIMCHI_BRANCH_FIRST_SESSION_EXITED__"
