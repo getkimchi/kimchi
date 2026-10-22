@@ -20,7 +20,7 @@ export interface RecordedArtifact {
 	path: string
 	name: string
 	mimeType: string | null
-	/** bash/powershell-sniffed: eviction-eligible at the turn cap. */
+	/** bash/powershell-sniffed: eviction-eligible at the run cap. */
 	sniffed: boolean
 }
 
@@ -30,8 +30,10 @@ export interface ArtifactsEntry {
 }
 
 // Mirrors MAX_TURN_ARTIFACTS (ACP layer, not exported): the recorder
-// applies the same bound so a burst turn can't write an oversized row.
-const MAX_TURN_RECORDED = 32
+// applies the same run-scoped bound — live's TurnArtifactBuffer is
+// turn(prompt)-scoped the same way — so a burst run can't write an
+// oversized row.
+const MAX_RUN_RECORDED = 32
 
 // Slack between the tool result timestamp and the artifact mtime —
 // mirrors the ACP live path's clock-skew allowance.
@@ -40,11 +42,11 @@ const CLOCK_SKEW_MS = 5000
 type DetectedArtifact = Artifact & { sniffed: boolean }
 
 // Run-scoped artifact accumulator: detection runs per turn_end, but the
-// row is written once per agent run (agent_end) so it lands AFTER the
-// run's last assistant message in the session log — matching the live ACP
-// flush, which emits artifact chunks after the last agent message. Writing
-// at the first producing turn_end misplaced the row between that turn's
-// tool results and the run's final agent message.
+// row is written once per prompt (agent_settled) so it lands AFTER the
+// prompt's last assistant message in the session log — matching the live
+// ACP flush, which emits artifact chunks after the last agent message.
+// Writing at the first producing turn_end misplaced the row between that
+// turn's tool results and the run's final agent message.
 class RunArtifactAccumulator {
 	private readonly seen = new Set<string>()
 	private readonly sniffedKeys: string[] = []
@@ -64,7 +66,7 @@ class RunArtifactAccumulator {
 		this.seen.add(artifact.path)
 		if (sniffed) {
 			this.sniffedKeys.push(artifact.path)
-			if (this.sniffedKeys.length > MAX_TURN_RECORDED) {
+			if (this.sniffedKeys.length > MAX_RUN_RECORDED) {
 				const evicted = this.sniffedKeys.shift()
 				if (evicted !== undefined) {
 					this.seen.delete(evicted)
@@ -78,8 +80,14 @@ class RunArtifactAccumulator {
 		this.out.push(artifact)
 	}
 
-	list(): DetectedArtifact[] {
-		return this.out
+	/** Snapshot and reset atomically — returning the live array here
+	 * previously let a clear() empty the caller's copy (snapshot bug). */
+	drain(): DetectedArtifact[] {
+		const out = this.out.slice()
+		this.seen.clear()
+		this.sniffedKeys.length = 0
+		this.out.length = 0
+		return out
 	}
 
 	clear(): void {
@@ -128,25 +136,34 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 		}
 	})
 
-	// The row lands after the run's final assistant message: pi dispatches
-	// events serially and the message is persisted on its message_end, which
-	// precedes agent_end. Rows stay one-per-run even when several turns
-	// produced artifacts, mirroring the live per-turn flush.
-	pi.on("agent_end", () => {
-		// Snapshot: list() exposes the live buffer; clearing before the map
-		// would empty the very array being serialized.
-		const artifacts = [...acc.list()]
-		if (!artifacts.length) return
-		acc.clear()
-		const entry: ArtifactsEntry = {
-			v: 1,
-			artifacts: artifacts.map((a) => ({
-				path: a.path,
-				name: a.name,
-				mimeType: a.mimeType ?? null,
-				sniffed: a.sniffed,
-			})),
+	// Defensive reset: if the previous run somehow ended without
+	// agent_settled, its buffer must not bleed into this run's row.
+	pi.on("agent_start", () => acc.clear())
+
+	// `agent_settled`, not `agent_end`: after `agent_end` Pi may still
+	// auto-retry, auto-compact and retry, or run queued follow-up messages —
+	// each chained run emits its own agent_end (see the feedback extension
+	// for the same trap). agent_settled fires once per prompt, serially
+	// after the last assistant message's message_end persistence, so the row
+	// lands after the prompt's final agent message — the exact position the
+	// live ACP flush (finalizeTurn) emits artifact chunks. One row per
+	// prompt even when several turns produced artifacts.
+	pi.on("agent_settled", () => {
+		try {
+			const artifacts = acc.drain()
+			if (!artifacts.length) return
+			const entry: ArtifactsEntry = {
+				v: 1,
+				artifacts: artifacts.map((a) => ({
+					path: a.path,
+					name: a.name,
+					mimeType: a.mimeType ?? null,
+					sniffed: a.sniffed,
+				})),
+			}
+			pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)
+		} catch {
+			// Persistence must never break turn settle.
 		}
-		pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)
 	})
 }

@@ -167,8 +167,8 @@ export class TurnArtifactBuffer {
 
 	/**
 	 * Replay: fold a recorded artifact row (written live by the recorder
-	 * extension) into the buffer. One row per agent run (written at
-	 * agent_end, after the run's final assistant message); merge by resolved
+	 * extension) into the buffer. One row per prompt (written at
+	 * agent_settled, after the prompt's final assistant message); merge by resolved
 	 * path, never clear: the clear existed to discard replay-side
 	 * re-derivation, which replay no longer does at all.
 	 */
