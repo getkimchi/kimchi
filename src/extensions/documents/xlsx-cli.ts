@@ -296,14 +296,18 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				try {
 					const staged = join(tmpDir, basename(input))
 					writeFileSync(staged, data)
-					const run = spawnSync(soffice, [
-						"--headless",
-						"--convert-to",
-						"xlsx:Calc MS Excel 2007 XML",
-						"--outdir",
-						tmpDir,
-						staged,
-					])
+					const run = spawnSync(
+						soffice,
+						["--headless", "--convert-to", "xlsx:Calc MS Excel 2007 XML", "--outdir", tmpDir, staged],
+						{ timeout: 180_000, killSignal: "SIGKILL" },
+					)
+					if (run.error) {
+						throw new DocumentError(
+							"corrupt",
+							"LibreOffice timed out after 180s — close every LibreOffice instance and retry",
+							"xlsx",
+						)
+					}
 					if (run.status !== 0) {
 						throw new DocumentError(
 							"corrupt",

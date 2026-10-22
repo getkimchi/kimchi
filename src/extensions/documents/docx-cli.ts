@@ -295,7 +295,17 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 				try {
 					const staged = join(tmpDir, basename(input))
 					writeFileSync(staged, data)
-					const run = spawnSync(soffice, ["--headless", "--convert-to", "pdf", "--outdir", tmpDir, staged])
+					const run = spawnSync(soffice, ["--headless", "--convert-to", "pdf", "--outdir", tmpDir, staged], {
+						timeout: 120_000,
+						killSignal: "SIGKILL",
+					})
+					if (run.error) {
+						throw new DocumentError(
+							"corrupt",
+							"LibreOffice timed out after 120s — close every LibreOffice instance and retry",
+							"docx",
+						)
+					}
 					if (run.status !== 0) {
 						throw new DocumentError(
 							"corrupt",
