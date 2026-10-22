@@ -35,6 +35,7 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { backgroundNotificationsReachUser } from "../agents/background-delivery.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
@@ -904,6 +905,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				customConfigs,
 				sessionId,
 				hasUserLoop: hasUserLoop(),
+				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

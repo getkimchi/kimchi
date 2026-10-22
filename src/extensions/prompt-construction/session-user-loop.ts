@@ -17,6 +17,11 @@
  * Computed once at first use and cached — the system prompt must stay static
  * within a session or the provider KV cache invalidates.
  *
+ * The same inputs answer a second question: is this the interactive TUI?
+ * `isTuiSession()` gates surface-specific guidance (e.g. background-subagent
+ * completion notifications only reach the user in the TUI — every other
+ * surface must join backgrounded agents before ending its turn).
+ *
  * Ported from simplification/cost-parity `645de3c3`, adapted to read
  * `getParsedCliArgs()` (the hard rule: no `process.argv` outside cli.ts)
  * instead of scanning raw argv.
@@ -60,4 +65,36 @@ export function hasUserLoop(): boolean {
 		})
 	}
 	return cachedHasUserLoop
+}
+
+/**
+ * Is this process running the interactive TUI? True only for a real terminal
+ * session: TTY stdin and stdout, no `--print`, no protocol `--mode` (json / rpc /
+ * acp), and not an ACP server process. Unlike `resolveHasUserLoop`, rpc counts
+ * as NOT TUI — a human may be driving an IDE frontend, but the TUI's
+ * post-turn rendering loop (which delivers background-agent completion
+ * notifications) only exists in the terminal app.
+ */
+export function resolveIsTuiSession(inputs: UserLoopInputs): boolean {
+	if (inputs.acpMode) return false
+	if (isProtocolCliMode(inputs.mode)) return false
+	if (inputs.print === true) return false
+	if (!inputs.stdinIsTTY || !inputs.stdoutIsTTY) return false
+	return true
+}
+
+let cachedIsTuiSession: boolean | undefined
+
+export function isTuiSession(): boolean {
+	if (cachedIsTuiSession === undefined) {
+		const { options } = getParsedCliArgs()
+		cachedIsTuiSession = resolveIsTuiSession({
+			print: options.print,
+			mode: options.mode,
+			stdinIsTTY: Boolean(process.stdin.isTTY),
+			stdoutIsTTY: Boolean(process.stdout.isTTY),
+			acpMode: IS_ACP_MODE,
+		})
+	}
+	return cachedIsTuiSession
 }
