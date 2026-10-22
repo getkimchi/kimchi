@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
 
-// Artifact recorder: one custom session entry per agent run, so replay
+// Artifact recorder: one custom session entry per prompt, so replay
 // (any client) can re-emit exactly what live detected — stat-gated, run-
 // capped, no re-derivation from raw output. The row is written on
 // agent_settled (once per prompt), so tests must emit it for rows to appear.

@@ -1,5 +1,5 @@
 // Artifact recorder: persists artifact detection as a session custom
-// entry, one row per agent run, so any client that replays the session
+// entry, one row per prompt, so any client that replays the session
 // log can re-emit exactly the artifacts the live run produced instead of
 // re-deriving them from raw tool output (which can only approximate live:
 // files may be deleted and data-shaped tokens masquerade as paths). See
