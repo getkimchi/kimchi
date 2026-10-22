@@ -63,7 +63,7 @@ export interface DocxExtraction {
 	blockText(index: number): string
 }
 
-interface BlockSpan {
+export interface BlockSpan {
 	kind: "p" | "tbl"
 	start: number
 	end: number
@@ -88,7 +88,7 @@ function decodePart(pkg: OoxmlPackage, name: string): string | undefined {
 
 /** Scan `document.xml` once: top-level body block spans. String-scanning
  *  only — no DOM, so memory stays flat on huge files. */
-function scanBlocks(documentXml: string): BlockSpan[] {
+export function scanBlocks(documentXml: string): BlockSpan[] {
 	const bodyOpen = /<w:body\b[^>]*>/.exec(documentXml)
 	if (!bodyOpen) throw new DocumentError("corrupt", "Missing w:body in word/document.xml", "docx")
 	const bodyStart = bodyOpen.index + bodyOpen[0].length
@@ -129,7 +129,7 @@ function scanBlocks(documentXml: string): BlockSpan[] {
 }
 
 /** Cheap tag-strip for outline text (no DOM): remove elements, unescape. */
-function stripTags(fragment: string): string {
+export function stripTags(fragment: string): string {
 	return fragment
 		.replace(/<w:tab\b[^>]*>/g, "\t")
 		.replace(/<w:br\b[^>]*>/g, " ")

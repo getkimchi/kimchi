@@ -16,6 +16,7 @@ import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } fro
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { RealClock } from "./clock.js"
+import { applyDocxOps, parseDocxOps } from "./editors/docx.js"
 import { extractDocx } from "./extractors/docx.js"
 import { maxFileBytes } from "./limits.js"
 import { parseMarkdownBlocks } from "./markdown/blocks.js"
@@ -37,7 +38,8 @@ commands:
   read <doc.docx> [start-end]                     body blocks as Markdown (window of paragraphs)
   info <doc.docx>                                 paragraph/table/image counts, outline, core props
   create <out.docx> --content <file.md> [--template <tpl.docx|tpl.dotx>] [--page-size A4|Letter]
-                                                  build a docx from Markdown (never in place)`
+                                                  build a docx from Markdown (never in place)
+  edit <in.docx> --out <out.docx> --ops <ops.json>   apply ops, never in place`
 
 function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
 	try {
@@ -154,6 +156,56 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 				io.stdout(`created ${out} (${blocks.length} block${blocks.length === 1 ? "" : "s"})`)
 				return 0
 			}
+			case "edit": {
+				const [input, ...flags] = args
+				if (!input)
+					throw new DocumentError("corrupt", "edit needs an input: docx.mjs edit <in.docx> --out <out.docx> --ops <ops.json>")
+				const out = flagValue(flags, "--out")
+				const opsPath = flagValue(flags, "--ops")
+				if (!out) throw new DocumentError("corrupt", "edit needs --out <out.docx> — edits never write in place")
+				if (!opsPath) throw new DocumentError("corrupt", "edit needs --ops <ops.json> (a JSON array of ops)")
+				if (!out.toLowerCase().endsWith(".docx"))
+					throw new DocumentError("corrupt", `output path must end in .docx: ${out}`)
+				if (sameFile(out, input)) {
+					throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "docx")
+				}
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				const opsJson = new TextDecoder().decode(readBytes(readFile, opsPath))
+				let raw: unknown
+				try {
+					raw = JSON.parse(opsJson)
+				} catch {
+					throw new DocumentError("corrupt", `ops file is not valid JSON: ${opsPath}`)
+				}
+				const ops = parseDocxOps(raw)
+				const pkg = await openOoxml(data)
+				const result = applyDocxOps(pkg, ops)
+				const bytes = await pkg.save()
+				const writeFile = io.writeFile ?? atomicWrite
+				writeFile(out, bytes)
+
+				// Post-write summary: re-read the output, list per-op results and
+				// flag leftover placeholder text — a silent template fill failure
+				// must be visible.
+				const reread = await extractDocx(bytes)
+				const fullText: string[] = []
+				const scanLimit = Math.min(reread.totalBlocks, 2000)
+				for (let b = 1; b <= scanLimit; b++) fullText.push(reread.blockText(b))
+				const leftovers = findPlaceholders(fullText.join("\n"))
+				const lines = [
+					`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`,
+					...result.applied,
+				]
+				if (result.trackedChangesPresent) {
+					lines.push("note: the document contains tracked changes — they were preserved, not applied")
+				}
+				if (leftovers.length > 0) {
+					lines.push(`leftover placeholder text: ${leftovers.join(", ")}`)
+				}
+				io.stdout(lines.join("\n"))
+				return 0
+			}
 			case undefined:
 			case "--help":
 			case "-h":
@@ -170,6 +222,23 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 		}
 		throw err
 	}
+}
+
+const PLACEHOLDER_PATTERNS: ReadonlyArray<{ re: RegExp; label: string }> = [
+	{ re: /\blorem\b/i, label: "lorem" },
+	{ re: /\bxxx+\b/i, label: "xxx" },
+	{ re: /\[insert[^\]]*\]/i, label: "[insert …]" },
+	{ re: /\bTODO\b/, label: "TODO" },
+	{ re: /click to add/i, label: "click to add" },
+]
+
+/** Placeholder phrases left in the output (labels, deduped, capped). */
+function findPlaceholders(text: string): string[] {
+	const found = new Set<string>()
+	for (const { re, label } of PLACEHOLDER_PATTERNS) {
+		if (re.test(text)) found.add(label)
+	}
+	return [...found]
 }
 
 /**
