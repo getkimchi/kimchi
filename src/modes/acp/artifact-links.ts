@@ -167,10 +167,10 @@ export class TurnArtifactBuffer {
 
 	/**
 	 * Replay: fold a recorded artifact row (written live by the recorder
-	 * extension) into the buffer. One row per producing assistant message,
-	 * so a turn may carry several — merge by resolved path, never clear:
-	 * the clear existed to discard replay-side re-derivation, which replay
-	 * no longer does at all.
+	 * extension) into the buffer. One row per agent run (written at
+	 * agent_end, after the run's final assistant message); merge by resolved
+	 * path, never clear: the clear existed to discard replay-side
+	 * re-derivation, which replay no longer does at all.
 	 */
 	adoptRecorded(artifacts: RecordedArtifact[]): void {
 		for (const artifact of artifacts) {

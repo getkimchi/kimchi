@@ -1875,8 +1875,9 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
 				// Recorded artifact row (extension): adopt it for this turn — the
-				// row arrives after the turn's tool results and replaces what
-				// re-derivation sniffed (exact: live detection was stat-gated).
+				// row is written once per agent run, after the run's last assistant
+				// message (live parity), and replaces what re-derivation sniffed
+				// (exact: live detection was stat-gated).
 				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
