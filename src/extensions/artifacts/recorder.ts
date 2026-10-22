@@ -136,21 +136,17 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 	// live ACP flush (finalizeTurn) emits artifact chunks. One row per
 	// prompt even when several turns produced artifacts.
 	pi.on("agent_settled", () => {
-		try {
-			const artifacts = acc.drain()
-			if (!artifacts.length) return
-			const entry: ArtifactsEntry = {
-				v: 1,
-				artifacts: artifacts.map((a) => ({
-					path: a.path,
-					name: a.name,
-					mimeType: a.mimeType ?? null,
-					sniffed: a.sniffed,
-				})),
-			}
-			pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)
-		} catch {
-			// Persistence must never break turn settle.
+		const artifacts = acc.drain()
+		if (!artifacts.length) return
+		const entry: ArtifactsEntry = {
+			v: 1,
+			artifacts: artifacts.map((a) => ({
+				path: a.path,
+				name: a.name,
+				mimeType: a.mimeType ?? null,
+				sniffed: a.sniffed,
+			})),
 		}
+		pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)
 	})
 }
