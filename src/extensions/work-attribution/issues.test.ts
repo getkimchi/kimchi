@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { lockSync } from "proper-lockfile"
@@ -26,34 +26,30 @@ afterEach(() => {
 	for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true })
 })
 
-/** The work's saved revisions, one parsed object per line. */
-function savedRevisions() {
-	return readFileSync(workIssuePath(agentDir, workId), "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line))
+/** The work's saved issue file. */
+function saved() {
+	return JSON.parse(readFileSync(workIssuePath(agentDir, workId), "utf8"))
 }
 
-/** A revision line as another session saves it. */
-function revisionLine(revision: number, issueKey?: string, fields: Record<string, unknown> = {}): string {
-	const status = issueKey ? { status: "selected", issueKey } : { status: "cleared" }
-	return `${JSON.stringify({
-		version: 1,
-		workId,
-		revision,
-		...status,
-		source: "work-command",
-		sessionId: "other",
-		recordedAt: "2026-10-15T10:00:00.000Z",
-		...fields,
-	})}\n`
-}
-
-function saveLines(text: string): string {
+/** Writes the work's issue file as another session or version would. */
+function saveFile(text: string): string {
 	const path = workIssuePath(agentDir, workId)
 	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, text)
 	return path
+}
+
+/** An issue file as another session saves it. */
+function savedFile(revision: number, issueKey?: string, fields: Record<string, unknown> = {}): string {
+	return `${JSON.stringify({
+		version: 1,
+		workId,
+		revision,
+		...(issueKey ? { issueKey } : {}),
+		sessionId: "other",
+		recordedAt: "2026-10-15T10:00:00.000Z",
+		...fields,
+	})}\n`
 }
 
 function git(cwd: string, ...args: string[]): void {
@@ -117,7 +113,7 @@ describe("Jira issue keys", () => {
 })
 
 describe("a work's issue relation", () => {
-	it("saves selections and clears as new revisions beside the immutable scope", async () => {
+	it("saves each selection and clear as the next revision beside the immutable scope", async () => {
 		const scope = join(agentDir, "work", workId, "scope.json")
 		mkdirSync(dirname(scope), { recursive: true })
 		writeFileSync(scope, '{"version":1}\n')
@@ -136,78 +132,22 @@ describe("a work's issue relation", () => {
 		// So does clearing a work without an issue.
 		await changeWorkIssue(agentDir, workId, "first", undefined)
 
-		const saved = savedRevisions()
-		expect(saved).toEqual([
-			{
-				version: 1,
-				workId,
-				revision: 1,
-				status: "selected",
-				issueKey: "ABC-123",
-				source: "work-command",
-				sessionId: "first",
-				recordedAt: expect.any(String),
-			},
-			expect.objectContaining({ revision: 2, status: "selected", issueKey: "ABC-124", sessionId: "second" }),
-			expect.objectContaining({ revision: 3, status: "cleared", sessionId: "first" }),
-		])
-		expect(saved[2]).not.toHaveProperty("issueKey")
+		expect(saved()).toEqual({ version: 1, workId, revision: 3, sessionId: "first", recordedAt: expect.any(String) })
 		expect(readFileSync(scope, "utf8")).toBe('{"version":1}\n')
 	})
 
-	it("skips an append cut short and starts the next revision on a new line", async () => {
-		await changeWorkIssue(agentDir, workId, "first", "ABC-1")
-		const path = workIssuePath(agentDir, workId)
-		// Another session crashed in the middle of its append.
-		appendFileSync(path, revisionLine(2, "ABC-2").slice(0, 60))
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1, selected: { key: "ABC-1", revision: 1 } })
-
-		await changeWorkIssue(agentDir, workId, "first", "ABC-3")
-
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2, selected: { key: "ABC-3", revision: 2 } })
-		const lines = readFileSync(path, "utf8").split("\n")
-		expect(lines).toHaveLength(4)
-		expect(lines[1]).toBe(revisionLine(2, "ABC-2").slice(0, 60))
-		expect(JSON.parse(lines[2])).toMatchObject({ revision: 2, issueKey: "ABC-3" })
-	})
-
-	it("reads a complete last revision that is missing only its line break", () => {
-		saveLines(revisionLine(1, "ABC-1") + revisionLine(2, "ABC-2").trimEnd())
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2, selected: { key: "ABC-2", revision: 2 } })
-	})
-
 	it.each([
-		["a damaged line", "not json\n"],
-		["a cut-off record nothing followed", `${revisionLine(2, "ABC-2").slice(0, 60)}\n`],
-		["a record of a newer format", revisionLine(2, "ABC-2", { version: 2 })],
-		["another work's record", revisionLine(2, "ABC-2", { workId: randomUUID() })],
-	])("keeps the selection unknown after %s until a new revision", async (_case, tail) => {
-		const path = saveLines(revisionLine(1, "ABC-1") + tail)
+		["a damaged file", "not json\n"],
+		["a file cut short", savedFile(1, "ABC-1").slice(0, 40)],
+		["a file of a newer format", savedFile(1, "ABC-1", { version: 2 })],
+		["another work's file", savedFile(1, "ABC-1", { workId: randomUUID() })],
+		["a file naming no valid key", savedFile(1, "abc")],
+	])("keeps the selection unknown with %s until the next change", async (_case, text) => {
+		const path = saveFile(text)
 
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1, unreadable: `${path}:2` })
+		expect(readWorkIssue(agentDir, workId)).toMatchObject({ unreadable: path })
 		expect((await changeWorkIssue(agentDir, workId, "first", undefined)).changed).toBe(true)
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2 })
-	})
-
-	it("ignores damage that a later revision followed", () => {
-		saveLines(`${revisionLine(1, "ABC-1")}not json\n${revisionLine(2, "ABC-2")}`)
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2, selected: { key: "ABC-2", revision: 2 } })
-	})
-
-	it("shows disagreeing revisions of one number as unsettled until the next change", async () => {
-		// Two writers that each missed the other's revision 2, for example after a stale lock was taken over.
-		saveLines(revisionLine(1, "ABC-1") + revisionLine(2, "ABC-2") + revisionLine(2) + revisionLine(2, "ABC-2"))
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2, conflicting: ["ABC-2", null] })
-
-		// Choosing one of them still saves a revision, which settles it.
-		await changeWorkIssue(agentDir, workId, "first", "ABC-2")
-
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 3, selected: { key: "ABC-2", revision: 3 } })
-	})
-
-	it("treats agreeing revisions of one number as one", () => {
-		saveLines(revisionLine(1, "ABC-1") + revisionLine(1, "ABC-1", { sessionId: "replayed" }))
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1, selected: { key: "ABC-1", revision: 1 } })
+		expect(readWorkIssue(agentDir, workId)).not.toHaveProperty("unreadable")
 	})
 
 	it("gives sessions in separate processes consecutive revisions without losing a change", async () => {
@@ -255,13 +195,11 @@ for (let i = 1; i <= 4; i++) await changeWorkIssue(${JSON.stringify(agentDir)}, 
 		release = undefined
 		await Promise.all(children.map((child) => child.done))
 
-		const saved = savedRevisions()
-		expect(saved.map((row) => row.revision)).toEqual(Array.from({ length: 12 }, (_, index) => index + 1))
-		expect(new Set(saved.map((row) => row.issueKey)).size).toBe(12)
-		expect(readWorkIssue(agentDir, workId)).toEqual({
-			revision: 12,
-			selected: { key: saved[11].issueKey, revision: 12 },
-		})
+		// Each of the 12 selections read the revision before it, so a lost change would leave fewer.
+		const issue = readWorkIssue(agentDir, workId)
+		expect(issue.revision).toBe(12)
+		// The last change is some writer's last selection.
+		expect(issue.selected?.key.endsWith("-4")).toBe(true)
 	}, 60_000)
 })
 
@@ -335,18 +273,15 @@ describe("/work issue", () => {
 			changed: true,
 		})
 		expect(await command(cwd, "clear")).toEqual({ lines: ["No Jira issue is selected for this work."], changed: false })
-		expect(savedRevisions().map((row) => [row.revision, row.status, row.issueKey])).toEqual([
-			[1, "selected", "ABC-123"],
-			[2, "selected", "ABC-124"],
-			[3, "cleared", undefined],
-		])
+		expect(saved()).toMatchObject({ revision: 3 })
+		expect(saved()).not.toHaveProperty("issueKey")
 	})
 
 	it("saves and shows a lowercase key in uppercase", async () => {
 		expect((await command(agentDir, "abc-123")).lines[0].startsWith("Jira issue ABC-123 selected for this work.")).toBe(
 			true,
 		)
-		expect(savedRevisions()[0].issueKey).toBe("ABC-123")
+		expect(saved().issueKey).toBe("ABC-123")
 	})
 
 	it.each([
@@ -365,8 +300,8 @@ describe("/work issue", () => {
 		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
 	})
 
-	it("clears an unsettled selection", async () => {
-		saveLines(revisionLine(1, "ABC-1") + revisionLine(1, "ABC-2"))
+	it("clears an unreadable selection", async () => {
+		saveFile("not json\n")
 
 		expect(await command(agentDir, "clear")).toEqual({
 			lines: [
@@ -374,20 +309,17 @@ describe("/work issue", () => {
 			],
 			changed: true,
 		})
-		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2 })
+		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1 })
 	})
 })
 
 describe("the /work issue line", () => {
-	it("names the selected issue, an unsettled or unreadable selection, and nothing without one", () => {
+	it("names the selected issue or an unreadable selection, and nothing without one", () => {
 		expect(workIssueLines({ revision: 0 })).toEqual([])
 		expect(workIssueLines({ revision: 2 })).toEqual([])
 		expect(workIssueLines({ revision: 1, selected: { key: "ABC-123", revision: 1 } })).toEqual(["Jira issue: ABC-123"])
-		expect(workIssueLines({ revision: 2, conflicting: ["ABC-1", "ABC-2", null] })).toEqual([
-			"Jira issue: unsettled; simultaneous changes chose ABC-1, ABC-2 and no issue. Choose with: /work issue <KEY> or /work issue clear",
-		])
-		expect(workIssueLines({ revision: 1, unreadable: "/agent/work/issue.jsonl:2" })).toEqual([
-			"Jira issue: unknown; /agent/work/issue.jsonl:2 is unreadable. Choose with: /work issue <KEY> or /work issue clear",
+		expect(workIssueLines({ revision: 0, unreadable: "/agent/work/issue.json" })).toEqual([
+			"Jira issue: unknown; /agent/work/issue.json is unreadable. Choose with: /work issue <KEY> or /work issue clear",
 		])
 	})
 })

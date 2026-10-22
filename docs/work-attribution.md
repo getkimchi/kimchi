@@ -24,7 +24,7 @@ The result is a summary in `~/.config/kimchi/harness/work/<workId>/` in the user
 ~/.config/kimchi/harness/work/<workId>/intent.json
 
 # User: the Jira issue chosen with /work issue
-~/.config/kimchi/harness/work/<workId>/issue.jsonl
+~/.config/kimchi/harness/work/<workId>/issue.json
 
 # User: source history used to rebuild summaries and match later commits
 ~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
@@ -80,7 +80,7 @@ The selection applies from the next prompt. Each request records the issue its w
 
 `/work issue` also checks the current branch. A branch name with exactly one Jira-key-shaped token other than the selected issue, such as `feature/ABC-123-add-jira`, is suggested with the command that selects it; a name with several keys lists them. A detached HEAD or a folder outside Git suggests nothing. Kimchi never selects an issue from a branch name or from prompt text. `/work` and the work list show the selected issue under the work ID.
 
-Each selection or clear appends a revision to `work/<workId>/issue.jsonl`; earlier revisions stay. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read it and append, so sessions that select at the same time get consecutive revisions and the later one wins. A line cut short by a crash is skipped, as in the journals. If two revisions ever share a number, or the last line cannot be read, `/work` says the selection is unsettled or unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira. PR cost reports send the selection with each PR the work's requests went to, as a `work` key, so its cost counts for the issue.
+Each selection or clear saves the next revision in `work/<workId>/issue.json`, which holds the current one. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read and replace it, as the work summary's writers do, so sessions that select at the same time get consecutive revisions and the later one wins. If the file cannot be read, `/work` says the selection is unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira. PR cost reports send the selection with each PR the work's requests went to, as a `work` key, so its cost counts for the issue.
 
 ## How Kimchi matches things
 
@@ -380,7 +380,7 @@ All paths below are inside the agent directory.
 | `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
 | `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
 | `work/<workId>/intent.json` | Saved task text for model matching, bound to its original account and repository. Not written while matching is off. |
-| `work/<workId>/issue.jsonl` | The Jira issue chosen with `/work issue`: one revision per selection or clear, newest last. The file is not uploaded; PR cost reports send the issue each request recorded with the PRs it went to. |
+| `work/<workId>/issue.json` | The Jira issue chosen with `/work issue`: the current revision, replaced by each selection or clear. The file is not uploaded; PR cost reports send the issue each request recorded with the PRs it went to. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
 | `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |

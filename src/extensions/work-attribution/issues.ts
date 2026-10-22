@@ -1,31 +1,30 @@
 import { mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { lock } from "proper-lockfile"
+import { writeFileDurably } from "../../config/json.js"
 import { branchIssueKeys, isIssueKey } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { currentBranch } from "../pull-request-status/branch-status.js"
-import { appendJournalLine, LOCK_RETRIES, LOCK_STALE_MS, object, truncated } from "./summary.js"
+import { LOCK_RETRIES, LOCK_STALE_MS, object } from "./summary.js"
 
 /*
- * The Jira issue chosen for a work with `/work issue`. Each selection or clear appends a revision to
- * `work/<workId>/issue.jsonl`, written and read like the session journals; the newest revision is current and earlier
- * ones stay as history. It is separate from the work's immutable `scope.json`. It is not a journal record: a selection
- * belongs to a work and is read before every input, while journals are per session, and an older Kimchi's PR cost
- * reporting stops on journal record types it does not know. Request rows copy the selection their input began with.
+ * The Jira issue chosen for a work with `/work issue`, in `work/<workId>/issue.json`. Writers hold the file's lock while
+ * they read and replace it, as the work summary's writers do, so simultaneous sessions get consecutive revisions. It is
+ * separate from the work's immutable `scope.json`. It is not a journal record: a selection belongs to a work and is read
+ * before every input, while journals are per session, and an older Kimchi's PR cost reporting stops on journal record
+ * types it does not know. Request rows copy the selection their input began with.
  */
 
 const BRANCH_TIMEOUT_MS = 2000
 const CHOOSE = "Choose with: /work issue <KEY> or /work issue clear"
 
-/** One line of `issue.jsonl`. */
-interface WorkIssueRevision {
+/** `issue.json`: the work's selection, or the clear that ended it. */
+interface SavedWorkIssue {
 	version: 1
 	workId: string
 	revision: number
-	status: "selected" | "cleared"
-	/** Set exactly when the revision selects an issue. */
+	/** Set while the work has an issue; a clear saves the next revision without one. */
 	issueKey?: string
-	source: "work-command"
 	sessionId: string
 	recordedAt: string
 }
@@ -36,15 +35,13 @@ export interface WorkIssueBinding {
 	revision: number
 }
 
-/** A work's issue, folded from its revisions. */
+/** A work's issue. */
 export interface WorkIssue {
-	/** The newest revision number; 0 before the first. */
+	/** The saved revision number; 0 before the first. */
 	revision: number
-	/** Set when the newest revision selects an issue. */
+	/** Set when the saved revision selects an issue. */
 	selected?: WorkIssueBinding
-	/** Disagreeing newest revisions, saved by writers that missed each other; null stands for a clear. */
-	conflicting?: (string | null)[]
-	/** `path:line` of an unreadable line after the newest readable revision: the selection is unknown until the next. */
+	/** The path of a file this version cannot read: the selection is unknown until the next change. */
 	unreadable?: string
 }
 
@@ -59,70 +56,33 @@ export function parseIssueKey(text: string): string | undefined {
 
 export function workIssuePath(agentDir: string, workId: string): string {
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
-	return join(agentDir, "work", workId, "issue.jsonl")
-}
-
-/** A saved revision's number and issue (null for a clear), or undefined for a line this version cannot read. */
-function readRevision(value: unknown, workId: string): { revision: number; key: string | null } | undefined {
-	if (!object(value) || value.version !== 1 || value.workId !== workId) return
-	const { revision, status, issueKey, source, sessionId, recordedAt } = value
-	if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) return
-	if (typeof source !== "string" || typeof sessionId !== "string" || typeof recordedAt !== "string") return
-	if (status === "cleared" && issueKey === undefined) return { revision, key: null }
-	if (status === "selected" && typeof issueKey === "string" && isIssueKey(issueKey)) return { revision, key: issueKey }
+	return join(agentDir, "work", workId, "issue.json")
 }
 
 /** The work's issue. A missing file is a work without one; reading never throws. */
 export function readWorkIssue(agentDir: string, workId: string): WorkIssue {
 	if (!isWorkId(workId)) return { revision: 0 }
 	const path = workIssuePath(agentDir, workId)
-	let text: string
+	let value: unknown
 	try {
-		text = readFileSync(path, "utf8")
+		value = JSON.parse(readFileSync(path, "utf8"))
 	} catch (error) {
 		return object(error) && error.code === "ENOENT" ? { revision: 0 } : { revision: 0, unreadable: path }
 	}
-	const lines = text.split("\n")
-	const revisions: { revision: number; key: string | null }[] = []
-	// Line numbers of the newest readable revision and of the newest damage.
-	let readable = 0
-	let damaged = 0
-	// Cut-off records that no later line has followed yet.
-	let cut: number[] = []
-	for (const [index, line] of lines.entries()) {
-		if (!line.trim()) continue
-		// A later line shows that the cut-off records before it were interrupted appends.
-		cut = []
-		let value: unknown
-		try {
-			value = JSON.parse(line)
-		} catch {
-			// Text after the last line break may still be being written.
-			if (index === lines.length - 1) continue
-			if (truncated(line)) cut.push(index + 1)
-			else damaged = index + 1
-			continue
-		}
-		const revision = readRevision(value, workId)
-		if (revision) {
-			revisions.push(revision)
-			readable = index + 1
-		} else damaged = index + 1
-	}
-	// A cut-off record that nothing followed may have been the newest revision.
-	damaged = Math.max(damaged, ...cut)
-	const newest = revisions.reduce((highest, row) => Math.max(highest, row.revision), 0)
-	// A revision saved after damage was chosen with the damage in view, so it decides.
-	if (damaged > readable) return { revision: newest, unreadable: `${path}:${damaged}` }
-	const keys = [...new Set(revisions.filter((row) => row.revision === newest).map((row) => row.key))]
-	if (keys.length > 1) return { revision: newest, conflicting: keys }
-	return keys[0] ? { revision: newest, selected: { key: keys[0], revision: newest } } : { revision: newest }
+	if (!object(value) || value.version !== 1 || value.workId !== workId) return { revision: 0, unreadable: path }
+	const { revision, issueKey } = value
+	if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1)
+		return { revision: 0, unreadable: path }
+	if (issueKey === undefined) return { revision }
+	return typeof issueKey === "string" && isIssueKey(issueKey)
+		? { revision, selected: { key: issueKey, revision } }
+		: { revision, unreadable: path }
 }
 
 /**
- * Saves `issueKey`, or a clear when it is undefined, as the work's next revision unless it is already current.
- * Writers hold the work's issue lock while they read and append, so simultaneous sessions get consecutive revisions.
- * Two revisions with one number, which only a lost lock can produce, read as unsettled until the next change.
+ * Saves `issueKey`, or a clear when it is undefined, as the work's next revision unless it is already current. Writers
+ * hold the file's lock while they read and replace it, so simultaneous sessions get consecutive revisions; a writer
+ * whose lock was taken over saves nothing.
  */
 export async function changeWorkIssue(
 	agentDir: string,
@@ -142,22 +102,21 @@ export async function changeWorkIssue(
 			compromised = error
 		},
 	})
+	const assertLease = () => {
+		if (compromised) throw compromised
+	}
 	try {
 		const previous = readWorkIssue(agentDir, workId)
-		if (!previous.conflicting && !previous.unreadable && previous.selected?.key === issueKey)
-			return { previous, changed: false }
-		if (compromised) throw compromised
-		const record: WorkIssueRevision = {
+		if (!previous.unreadable && previous.selected?.key === issueKey) return { previous, changed: false }
+		const saved: SavedWorkIssue = {
 			version: 1,
 			workId,
 			revision: previous.revision + 1,
-			status: issueKey ? "selected" : "cleared",
 			...(issueKey ? { issueKey } : {}),
-			source: "work-command",
 			sessionId,
 			recordedAt: new Date().toISOString(),
 		}
-		appendJournalLine(path, record)
+		await writeFileDurably(path, `${JSON.stringify(saved)}\n`, assertLease)
 		return { previous, changed: true }
 	} finally {
 		// A compromised lease has already been removed from proper-lockfile's ownership map.
@@ -165,18 +124,9 @@ export async function changeWorkIssue(
 	}
 }
 
-/** "a", "a and b", "a, b and c". */
-function list(items: string[]): string {
-	return items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join("")
-}
-
 /** What `/work` prints about a work's issue; nothing for a work without one. */
 export function workIssueLines(issue: WorkIssue): string[] {
 	if (issue.unreadable) return [`Jira issue: unknown; ${issue.unreadable} is unreadable. ${CHOOSE}`]
-	if (issue.conflicting)
-		return [
-			`Jira issue: unsettled; simultaneous changes chose ${list(issue.conflicting.map((key) => key ?? "no issue"))}. ${CHOOSE}`,
-		]
 	return issue.selected ? [`Jira issue: ${issue.selected.key}`] : []
 }
 

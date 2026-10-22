@@ -1418,7 +1418,7 @@ describe("Jira issue selection", () => {
 		await input("Plan ABC-123, see https://example.atlassian.net/browse/ABC-124")
 		const planning = await send()
 		const history = readFileSync(workLedgerPath(ctx), "utf8")
-		expect(existsSync(join(dir, "work", getWorkId(ctx), "issue.jsonl"))).toBe(false)
+		expect(existsSync(join(dir, "work", getWorkId(ctx), "issue.json"))).toBe(false)
 
 		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
 		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
