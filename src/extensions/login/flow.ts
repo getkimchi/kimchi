@@ -375,7 +375,7 @@ async function configureKimchiToken(
 		refreshError = error
 	}
 
-	// Key-based logins carry no organization: drop a stale X-Organization-ID
+	// Key-based logins carry no organization: drop a stale X-CastAi-Organization-Id
 	// a previous CAST AI SSO login left in models.json (no-op when absent —
 	// also covers the cached-fallback path that skips the rewrite).
 	{
@@ -477,7 +477,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 
 	// Stamp the selected organization onto every Kimchi provider entry — the
-	// gateway routes SSO requests by X-Organization-ID. Covers the cached-fallback
+	// gateway routes SSO requests by X-CastAi-Organization-Id. Covers the cached-fallback
 	// path where the refresh above did not rewrite models.json.
 	applyOrganizationHeader(modelsPath, organizationId)
 

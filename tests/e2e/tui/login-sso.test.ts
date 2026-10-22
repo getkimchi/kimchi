@@ -238,10 +238,10 @@ test("login via CAST AI SSO completes the OAuth code exchange and stores a refre
 				) as { providers?: Record<string, { headers?: Record<string, string> }> }
 				for (const [providerId, provider] of Object.entries(modelsJson.providers ?? {})) {
 					if (!providerId.startsWith("kimchi")) continue
-					const orgHeader = provider.headers?.["X-Organization-ID"]
+					const orgHeader = provider.headers?.["X-CastAi-Organization-Id"]
 					expect(`${providerId}: ${orgHeader ?? "<missing>"}`).toBe(`${providerId}: org-beta`)
 				}
-				trace.step("models.json carries X-Organization-ID on Kimchi providers")
+				trace.step("models.json carries X-CastAi-Organization-Id on Kimchi providers")
 
 				// Exactly one authorization_code grant was made (no refresh yet).
 				expect(mockAs.grants).toEqual([{ grantType: "authorization_code", refreshToken: undefined }])

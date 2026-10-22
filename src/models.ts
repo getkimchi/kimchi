@@ -124,7 +124,7 @@ export interface FetchModelsOptions {
 	allowCachedFallback?: boolean
 	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
 	requireActiveModels?: boolean
-	/** CAST AI SSO: organization id sent as `X-Organization-ID` on the metadata
+	/** CAST AI SSO: organization id sent as `X-CastAi-Organization-Id` on the metadata
 	 * fetch and stamped into every Kimchi provider's models.json headers. */
 	organizationId?: string
 }
@@ -207,7 +207,7 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 			response = await fetch(metadataUrl, {
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
-					...(options.organizationId ? { "X-Organization-ID": options.organizationId } : {}),
+					...(options.organizationId ? { "X-CastAi-Organization-Id": options.organizationId } : {}),
 				},
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
@@ -369,12 +369,12 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, or
 	}
 
 	// CAST AI SSO credentials are organization-scoped: the gateway routes by
-	// `X-Organization-ID`. Key-based logins pass no org (undefined) so a
+	// `X-CastAi-Organization-Id`. Key-based logins pass no org (undefined) so a
 	// provider rebuilt after a key login drops any stale SSO header.
 	const providerHeaders = (upstreamProvider: string) => ({
 		"User-Agent": `kimchi/${getVersion()}`,
 		"X-Provider-Type": upstreamProvider,
-		...(organizationId ? { "X-Organization-ID": organizationId } : {}),
+		...(organizationId ? { "X-CastAi-Organization-Id": organizationId } : {}),
 	})
 
 	const providers: Record<string, ProviderConfig> = {
@@ -682,9 +682,9 @@ export function syncProviderModels(
 }
 
 /** The org header every Kimchi-managed provider entry may carry. */
-const ORGANIZATION_HEADER = "X-Organization-ID"
+const ORGANIZATION_HEADER = "X-CastAi-Organization-Id"
 
-/** Merge (or strip) the `X-Organization-ID` header on every Kimchi-managed
+/** Merge (or strip) the `X-CastAi-Organization-Id` header on every Kimchi-managed
  * provider entry in models.json WITHOUT touching anything else (models, base
  * URL, credentials). Used after an SSO login (set the selected org) and after
  * an API-key login (clear a stale org from a previous SSO session) — covers

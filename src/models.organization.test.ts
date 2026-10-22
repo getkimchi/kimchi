@@ -34,18 +34,18 @@ const metadata: ModelMetadata = {
 }
 
 describe("buildModelsConfig organization header", () => {
-	it("omits X-Organization-ID when no organization is given (key login)", () => {
+	it("omits X-CastAi-Organization-Id when no organization is given (key login)", () => {
 		const { providers } = buildModelsConfig([metadata], "https://example.invalid")
 		for (const provider of Object.values(providers)) {
-			expect(provider.headers?.["X-Organization-ID"]).toBeUndefined()
+			expect(provider.headers?.["X-CastAi-Organization-Id"]).toBeUndefined()
 		}
 	})
 
-	it("stamps X-Organization-ID on every Kimchi provider when given (SSO login)", () => {
+	it("stamps X-CastAi-Organization-Id on every Kimchi provider when given (SSO login)", () => {
 		const { providers } = buildModelsConfig([metadata], "https://example.invalid", "org-123")
 		for (const [providerId, provider] of Object.entries(providers)) {
 			expect(providerId.startsWith("kimchi")).toBe(true)
-			expect(provider.headers?.["X-Organization-ID"]).toBe("org-123")
+			expect(provider.headers?.["X-CastAi-Organization-Id"]).toBe("org-123")
 		}
 	})
 })
@@ -82,20 +82,20 @@ describe("applyOrganizationHeader", () => {
 		applyOrganizationHeader(modelsPath, "org-9")
 
 		const providers = readModels()
-		expect(providers["kimchi-dev"]?.headers?.["X-Organization-ID"]).toBe("org-9")
-		expect(providers["kimchi-dev/openai"]?.headers?.["X-Organization-ID"]).toBe("org-9")
+		expect(providers["kimchi-dev"]?.headers?.["X-CastAi-Organization-Id"]).toBe("org-9")
+		expect(providers["kimchi-dev/openai"]?.headers?.["X-CastAi-Organization-Id"]).toBe("org-9")
 		// Existing headers survive the merge.
 		expect(providers["kimchi-dev/openai"]?.headers?.["X-Provider-Type"]).toBe("openai")
 		// Non-Kimchi providers are untouched.
-		expect(providers["kimi-coding"]?.headers?.["X-Organization-ID"]).toBeUndefined()
-		expect(providers.ollama?.headers?.["X-Organization-ID"]).toBeUndefined()
+		expect(providers["kimi-coding"]?.headers?.["X-CastAi-Organization-Id"]).toBeUndefined()
+		expect(providers.ollama?.headers?.["X-CastAi-Organization-Id"]).toBeUndefined()
 		// Untouched model entries survive.
 		expect(providers["kimchi-dev"]).toMatchObject({ models: [{ id: "m" }] })
 	})
 
 	it("is a no-op write when every Kimchi provider already carries the org", () => {
 		writeModels({
-			"kimchi-dev": { headers: { "X-Organization-ID": "org-1" } },
+			"kimchi-dev": { headers: { "X-CastAi-Organization-Id": "org-1" } },
 		})
 		const before = readFileSync(modelsPath, "utf-8")
 		applyOrganizationHeader(modelsPath, "org-1")
@@ -104,8 +104,8 @@ describe("applyOrganizationHeader", () => {
 
 	it("strips a stale header when called without an organization (key login)", () => {
 		writeModels({
-			"kimchi-dev": { headers: { "X-Organization-ID": "org-old", "X-Provider-Type": "ai-enabler" } },
-			"kimchi-experimental": { headers: { "X-Organization-ID": "org-old" } },
+			"kimchi-dev": { headers: { "X-CastAi-Organization-Id": "org-old", "X-Provider-Type": "ai-enabler" } },
+			"kimchi-experimental": { headers: { "X-CastAi-Organization-Id": "org-old" } },
 			ollama: { headers: { "X-Provider-Type": "ollama" } },
 		})
 
