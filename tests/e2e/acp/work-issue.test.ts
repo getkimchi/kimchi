@@ -42,7 +42,9 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 	execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/ABC-123-add-jira"], { cwd: active.workDir })
 	const sessionId = await newSession(active, active.workDir)
 
-	const workId = /^Work ID: (\S+)/.exec(await notice(active, sessionId, "/work"))?.[1]
+	const [workLine] = (await notice(active, sessionId, "/work")).split("\n")
+	expect(workLine.startsWith("Work ID: ")).toBe(true)
+	const workId = workLine.slice("Work ID: ".length)
 	// The work's cost lines follow; they depend on whether a background cost pass has run yet.
 	expect((await notice(active, sessionId, "/work issue")).split("\n").slice(0, 3)).toEqual([
 		"Jira issue: none",
@@ -69,7 +71,12 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 		rows.find((row) => row.type === "request" && row.requestId === chats[0].headers["x-request-id"]),
 	).toMatchObject({ issue: { key: "ABC-123", revision: 1 } })
 
-	expect(await notice(active, sessionId, "/work")).toMatch(/^Work ID: \S+\nJira issue: ABC-123\n/)
-	expect(await notice(active, sessionId, "/work issue clear")).toMatch(/^Jira issue ABC-123 cleared from this work\./)
+	expect((await notice(active, sessionId, "/work")).split("\n").slice(0, 2)).toEqual([
+		`Work ID: ${workId}`,
+		"Jira issue: ABC-123",
+	])
+	expect(
+		(await notice(active, sessionId, "/work issue clear")).startsWith("Jira issue ABC-123 cleared from this work."),
+	).toBe(true)
 	expect(await notice(active, sessionId, "/work")).not.toContain("Jira issue")
 })

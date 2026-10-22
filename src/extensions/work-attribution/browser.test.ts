@@ -561,7 +561,11 @@ describe("work browser rows", () => {
 		expect(row(other)?.details).toBe(
 			[`Work ID: ${other}`, "Jira issue: ABC-12", ...workCostDetails(agentDir, other)].join("\n"),
 		)
-		expect(row(other)?.description).toMatch(/\nLast activity: [^\n]+\nJira issue: ABC-12\n/)
+		// The issue sits right below the work's last activity, with more lines after it.
+		const description = row(other)?.description?.split("\n") ?? []
+		const activity = description.findIndex((line) => line.startsWith("Last activity: "))
+		expect(activity).toBeGreaterThan(0)
+		expect(description.slice(activity + 1, activity + 3)).toEqual(["Jira issue: ABC-12", expect.any(String)])
 		expect(row(none)?.label).toBe("  00000003 kimchi")
 		expect(row(none)?.description).not.toContain("Jira issue")
 	})

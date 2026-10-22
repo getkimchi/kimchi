@@ -1525,9 +1525,9 @@ describe("Jira issue selection", () => {
 		expect(view.join("\n")).toContain(`● ${getWorkId(ctx).slice(0, 8)} ABC-123`)
 		panels[0].handleInput?.("\r")
 		await browsing
-		expect(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).toMatch(
-			new RegExp(`^Work ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: unknown`),
-		)
+		const notice = String(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).split("\n")
+		expect(notice.slice(0, 2)).toEqual([`Work ID: ${getWorkId(ctx)}`, "Jira issue: ABC-123"])
+		expect(notice[2].startsWith("Cost: unknown")).toBe(true)
 	})
 })
 
