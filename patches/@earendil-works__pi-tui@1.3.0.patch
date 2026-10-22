@@ -1,12 +1,26 @@
-# Patch: Kimchi stroke rendering and narrow-terminal hardening for pi-tui 1.3.0
+# Patch: Kimchi stroke rendering, narrow-terminal hardening, and selection
+# soft-wrap glue tracking for pi-tui 1.3.0
 #
 # Tracking: https://github.com/getkimchi/kimchi/issues/863
+# Upstream: none yet. No matching upstream issue exists for the selection
+#   soft-wrap copy behavior; report it to https://github.com/earendil-works/pi
+#   before the next pi-tui upgrade.
 # Changes:
 #   - Account for stroke width in Box/Text/Markdown rendering (applyStrokeToLine),
 #     including Box.handleMouse() so mouse hit-testing matches render().
 #   - Hard-truncate all emitted lines to `width` in Text/Box/Markdown no-bg paths
 #     so that no component can emit a line wider than the terminal (prevents
 #     crashes at widths 1-2 where paddingX margins alone exceed width).
+#   - Soft-wrap glue tracking for selection copy (2026-10-22):
+#     wrapTextWithAnsi records, per wrapped continuation line, the whitespace
+#     the wrap consumed ("" for mid-word breaks, clamped to 16 chars);
+#     Text/Markdown (and quote/list prefixes) publish every padded line with
+#     the carried glue (null for hard starts) plus the component's structural
+#     left margin; containers and scroll views pass those lines through
+#     verbatim; TuiAltScreen.getActiveSelectionText joins a marked row with
+#     the recorded glue (dropping only the recorded margin, so genuine code
+#     indentation survives) instead of a hard "\n", and a fullscreen selection
+#     across a soft wrap pastes as one logical line again.
 #   - (Removed 2026-10-15: the KIMCHI_WHEEL_SCROLL_LINES env fallback matched
 #     upstream pi-tui's native WheelScrollAccelerator/"auto" mode plus the
 #     fullscreenWheelScrollLines setting, making the branch unreachable.)
@@ -15,7 +29,12 @@
 #     renders.)
 # Careful: text.js layers on upstream's own paddingX clamp - keep the clamp and
 #   thread the clamped local paddingX through the stroke sites when rebasing.
-# Removal: delete when the pinned Pi TUI release provides all four behaviors.
+#   The glue marks must stay in a value-keyed Map: string primitives cannot be
+#   WeakMap keys (a WeakMap variant crashed the TUI at startup — WeakMap keys
+#   must be objects). Value collisions are expected; they MUST downgrade via
+#   the ambiguity rule (conflicting marks fall back to the "\n" join) — never
+#   simplify back to last-writer-wins, which can delete a real newline.
+# Removal: delete when the pinned Pi TUI release provides these behaviors.
 # History: see patches/CHANGELOG.md.
 #
 diff --git a/dist/components/box.js b/dist/components/box.js
@@ -72,7 +91,7 @@ index 1146b95e5c5b2a2d4ff21153364bbf4d3ba8cc71..3cfb694052f9385a7d36386e44facf96
  //# sourceMappingURL=box.js.map
 \ No newline at end of file
 diff --git a/dist/components/markdown.js b/dist/components/markdown.js
-index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..82fd1d6f2fd0fea70161bcedf4be1a74221d8707 100644
+index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..f1ed467920cbdad665174458fc7c93f21068ff96 100644
 --- a/dist/components/markdown.js
 +++ b/dist/components/markdown.js
 @@ -1,7 +1,7 @@
@@ -80,7 +99,7 @@ index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..82fd1d6f2fd0fea70161bcedf4be1a74
  import { renderLatex } from "../latex.js";
  import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 -import { applyBackgroundToLine, flattenLines, visibleWidth, wrapTextWithAnsi } from "../utils.js";
-+import { STROKE_WIDTH, applyStrokeToLine, flattenLines, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, carrySoftWrapMark, flattenLines, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
  const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
  class StrictStrikethroughTokenizer extends Tokenizer {
      del(src) {
@@ -94,24 +113,30 @@ index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..82fd1d6f2fd0fea70161bcedf4be1a74
          const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
          // Don't render anything if there's no actual text
          if (!text || text.trim() === "") {
-@@ -240,21 +241,22 @@ export class Markdown {
+@@ -240,21 +241,24 @@ export class Markdown {
                  continue;
              }
              const lineWithMargins = leftMargin + line + rightMargin;
-+            const visibleLen = visibleWidth(lineWithMargins);
-+            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
-+            const padded = lineWithMargins + " ".repeat(paddingNeeded);
-             if (bgFn) {
+-            if (bgFn) {
 -                contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-+                contentLines.push(applyStrokeToLine(padded, width, this.paddingX, bgFn));
-             }
-             else {
+-            }
+-            else {
 -                // No background - just pad to width
 -                const visibleLen = visibleWidth(lineWithMargins);
 -                const paddingNeeded = Math.max(0, width - visibleLen);
 -                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-+                contentLines.push(truncateToWidth(padded, width));
-             }
+-            }
++            const visibleLen = visibleWidth(lineWithMargins);
++            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
++            const padded = lineWithMargins + " ".repeat(paddingNeeded);
++            // Kimchi: padding rebuilds the string — publish the final line,
++            // carrying any soft-wrap glue from the wrapped piece (hard-start
++            // lines register with null glue so value collisions turn ambiguous).
++            const final = bgFn
++                ? applyStrokeToLine(padded, width, this.paddingX, bgFn)
++                : truncateToWidth(padded, width);
++            contentLines.push(final);
++            carrySoftWrapMark(line, final, leftMargin);
          }
          // Add top/bottom padding (empty lines)
          const emptyLine = " ".repeat(width);
@@ -123,13 +148,37 @@ index 28709ba4553d4fd3620040d5d23cf7e37b5bd77b..82fd1d6f2fd0fea70161bcedf4be1a74
              emptyLines.push(line);
          }
          // Combine top padding, content, and bottom padding
+@@ -457,7 +461,10 @@ export class Markdown {
+                     const styledLine = applyQuoteStyle(quoteLine);
+                     const wrappedLines = wrapTextWithAnsi(styledLine, quoteContentWidth);
+                     for (const wrappedLine of wrappedLines) {
+-                        lines.push(this.theme.quoteBorder("│ ") + wrappedLine);
++                        // Kimchi: the border prefix rebuilds the string — carry the soft-wrap mark.
++                        const out = this.theme.quoteBorder("│ ") + wrappedLine;
++                        lines.push(out);
++                        carrySoftWrapMark(wrappedLine, out);
+                     }
+                 }
+                 if (nextTokenType && nextTokenType !== "space") {
+@@ -627,7 +634,10 @@ export class Markdown {
+                 for (const line of itemLines) {
+                     for (const wrappedLine of wrapTextWithAnsi(line, itemWidth)) {
+                         const linePrefix = renderedAnyLine ? continuationPrefix : firstPrefix;
+-                        lines.push(linePrefix + wrappedLine);
++                        // Kimchi: the list prefix rebuilds the string — carry the soft-wrap mark.
++                        const out = linePrefix + wrappedLine;
++                        lines.push(out);
++                        carrySoftWrapMark(wrappedLine, out);
+                         renderedAnyLine = true;
+                     }
+                 }
 diff --git a/dist/components/text.js b/dist/components/text.js
-index 3572668c677bd4d449aff9622273440c8bb103b0..8b0041393be4d813ba6913abf780264d3b38c662 100644
+index 3572668c677bd4d449aff9622273440c8bb103b0..903fd11259306157bc1d1522dbb1c2af46cb8f53 100644
 --- a/dist/components/text.js
 +++ b/dist/components/text.js
 @@ -1,4 +1,4 @@
 -import { applyBackgroundToLine, flattenLines, visibleWidth, wrapTextWithAnsi } from "../utils.js";
-+import { STROKE_WIDTH, applyStrokeToLine, flattenLines, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
++import { STROKE_WIDTH, applyStrokeToLine, carrySoftWrapMark, flattenLines, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
  /**
   * Text component - displays multi-line text with word wrapping
   */
@@ -143,25 +192,31 @@ index 3572668c677bd4d449aff9622273440c8bb103b0..8b0041393be4d813ba6913abf780264d
          // Wrap text (this preserves ANSI codes but does NOT pad)
          const wrappedLines = wrapTextWithAnsi(normalizedText, contentWidth);
          // Add margins and background to each line
-@@ -65,22 +66,22 @@ export class Text {
+@@ -65,22 +66,24 @@ export class Text {
          for (const line of wrappedLines) {
              // Add margins
              const lineWithMargins = leftMargin + line + rightMargin;
 -            // Apply background if specified (this also pads to full width)
-+            const visibleLen = visibleWidth(lineWithMargins);
-+            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
-+            const padded = lineWithMargins + " ".repeat(paddingNeeded);
-             if (this.customBgFn) {
+-            if (this.customBgFn) {
 -                contentLines.push(applyBackgroundToLine(lineWithMargins, width, this.customBgFn));
-+                contentLines.push(applyStrokeToLine(padded, width, paddingX, this.customBgFn));
-             }
-             else {
+-            }
+-            else {
 -                // No background - just pad to width with spaces
 -                const visibleLen = visibleWidth(lineWithMargins);
 -                const paddingNeeded = Math.max(0, width - visibleLen);
 -                contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-+                contentLines.push(truncateToWidth(padded, width));
-             }
+-            }
++            const visibleLen = visibleWidth(lineWithMargins);
++            const paddingNeeded = Math.max(0, width - visibleLen - strokeWidth);
++            const padded = lineWithMargins + " ".repeat(paddingNeeded);
++            // Kimchi: padding rebuilds the string — publish the final line,
++            // carrying any soft-wrap glue from the wrapped piece (hard-start
++            // lines register with null glue so value collisions turn ambiguous).
++            const final = this.customBgFn
++                ? applyStrokeToLine(padded, width, paddingX, this.customBgFn)
++                : truncateToWidth(padded, width);
++            contentLines.push(final);
++            carrySoftWrapMark(line, final, leftMargin);
          }
          // Add top/bottom padding (empty lines)
          const emptyLine = " ".repeat(width);
@@ -173,11 +228,169 @@ index 3572668c677bd4d449aff9622273440c8bb103b0..8b0041393be4d813ba6913abf780264d
              emptyLines.push(line);
          }
          const result = [...emptyLines, ...contentLines, ...emptyLines];
+diff --git a/dist/tui-alt-screen.js b/dist/tui-alt-screen.js
+index cc41fea6df832f87b45bf054b5b8db0370885fc1..5e8ecdc106782562c759d7944497988925d6a818 100644
+--- a/dist/tui-alt-screen.js
++++ b/dist/tui-alt-screen.js
+@@ -7,7 +7,7 @@ import { getLayoutBoxesAt, getScrollbarGeometry, getScrollViewBox, getScrollView
+ import { getLayoutNode } from "./layout-node.js";
+ import { deleteAllKittyImages, deleteAllKittyPlacements, deleteKittyImage, getCapabilities, getKittyImagePlacement, getKittyImagePlacementRows, isImageLine, setCapabilities, } from "./terminal-image.js";
+ import { Container, CURSOR_MARKER, compositeTuiLine, dispatchMouseEvent, retargetMouseEvent, TuiBase, VIEWPORT_TUI, } from "./tui.js";
+-import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getWordSegmenter, sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, } from "./utils.js";
++import { extractAnsiCode, getGraphemeCellRange, getOsc8LinkAtColumn, getWordSegmenter, sliceByColumn, softWrapJoin, stripTerminalSequences, truncateToWidth, visibleWidth, } from "./utils.js";
+ import { WheelScrollAccelerator } from "./wheel-scroll.js";
+ const ENTER_ALT_SCREEN = "\x1b[?1049h";
+ const EXIT_ALT_SCREEN = "\x1b[?1049l";
+@@ -1208,13 +1208,27 @@ export class TuiAltScreen extends TuiBase {
+                 return undefined;
+             sourceLines = box.scrollContentLines;
+         }
+-        const lines = [];
++        let text = "";
+         for (let row = selection.start.row; row <= selection.end.row; row++) {
+             const line = sourceLines[row] ?? "";
+             const columns = this.getSelectionColumns(line, row, selection);
+-            lines.push(stripTerminalSequences(sliceByColumn(line, columns.start, Math.max(0, columns.end - columns.start), true)).trimEnd());
++            const piece = stripTerminalSequences(sliceByColumn(line, columns.start, Math.max(0, columns.end - columns.start), true)).trimEnd();
++            if (row === selection.start.row) {
++                text = piece;
++                continue;
++            }
++            // Kimchi: a row born of a soft wrap carries the glue the wrap
++            // consumed — rejoin it with that glue instead of a hard newline,
++            // and drop only the component's recorded structural left margin
++            // (genuine indentation, e.g. inside wrapped code, survives).
++            const join = softWrapJoin(line);
++            if (join === undefined) {
++                text += "\n" + piece;
++                continue;
++            }
++            const unpadded = join.strip !== "" && piece.startsWith(join.strip) ? piece.slice(join.strip.length) : piece;
++            text += (join.glue && !text.endsWith(" ") ? join.glue : "") + unpadded;
+         }
+-        const text = lines.join("\n");
+         return text.length === 0 ? undefined : text;
+     }
+     async copySelectionToClipboard() {
 diff --git a/dist/utils.js b/dist/utils.js
-index 946da9df9f098c55272410a78e31363623fdc219..606b58ce0223177388ec89d125bae5117e30be3f 100644
+index 946da9df9f098c55272410a78e31363623fdc219..cc857df7298d5820acf32ab4ecb95e7fe66e4b1a 100644
 --- a/dist/utils.js
 +++ b/dist/utils.js
-@@ -1004,6 +1004,34 @@ export function applyBackgroundToLine(line, width, bgFn) {
+@@ -820,6 +820,58 @@ export function flattenLines(lines) {
+     for (const line of lines)
+         Number(line);
+ }
++// Kimchi soft-wrap tracking for copy-without-line-breaks (see
++// patches/@earendil-works__pi-tui@1.3.0.patch). Every line produced by a soft
++// wrap keeps the glue that rejoins it with the previous line: the whitespace
++// the wrap consumed, or "" for mid-word breaks. Components publish their final
++// padded lines with the carried glue (null for hard-start lines); the
++// alt-screen reads the mark off its stored rows and rejoins selections without
++// inventing hard "\n"s at wrap points.
++//
++// Keyed by string VALUE because primitives cannot be WeakMap keys, so values
++// can alias: a wrapped continuation fragment can equal an unrelated hard-start
++// line elsewhere. Rather than letting the last writer win (which could delete
++// a real newline), a value seen with conflicting marks — glue vs hard-start,
++// or two different glues — turns "ambiguous" and the reader falls back to the
++// upstream "\n" join: collisions degrade to the pre-fix paste, never to wrong
++// content. Bounded with a crude wipe; a wiped or ambiguous mark degrades the
++// same way.
++const SOFT_WRAP_GLUE_LIMIT = 50000;
++// Glue runs longer than this are pathological; clamp so a mega whitespace run
++// can't amplify retained memory. Real wrap breaks are single spaces.
++const SOFT_WRAP_GLUE_MAX_CHARS = 16;
++const SOFT_WRAP_GLUE = new Map();
++// glue: the whitespace that rejoins this line with the previous one ("" for
++// mid-word breaks); null for hard-start lines. strip: the component's
++// structural left margin — the only prefix the joiner may drop, so genuine
++// code indentation survives the rejoin.
++function markRenderedLine(line, glue, strip = "") {
++    if (SOFT_WRAP_GLUE.size >= SOFT_WRAP_GLUE_LIMIT)
++        SOFT_WRAP_GLUE.clear();
++    const clampedGlue = glue !== null && glue.length > SOFT_WRAP_GLUE_MAX_CHARS ? glue.slice(0, SOFT_WRAP_GLUE_MAX_CHARS) : glue;
++    const existing = SOFT_WRAP_GLUE.get(line);
++    if (existing === undefined) {
++        SOFT_WRAP_GLUE.set(line, { glue: clampedGlue, strip, ambiguous: false });
++        return;
++    }
++    if (existing.glue !== clampedGlue || existing.strip !== strip)
++        existing.ambiguous = true;
++}
++function lookupWrapGlue(line) {
++    const entry = SOFT_WRAP_GLUE.get(line);
++    return entry !== undefined && !entry.ambiguous ? entry.glue : undefined;
++}
++/** Join info for rejoining `line` to the previous row; undefined when unmarked, hard-start, or ambiguous. */
++export function softWrapJoin(line) {
++    const entry = SOFT_WRAP_GLUE.get(line);
++    return entry !== undefined && !entry.ambiguous && entry.glue !== null
++        ? { glue: entry.glue, strip: entry.strip }
++        : undefined;
++}
++/** Publish a component's final (padded/stroked) line, carrying the wrap-time mark forward. */
++export function carrySoftWrapMark(from, to, strip = "") {
++    markRenderedLine(to, lookupWrapGlue(from) ?? null, strip);
++}
+ export function wrapTextWithAnsi(text, width) {
+     if (!text) {
+         return [""];
+@@ -850,6 +902,13 @@ function wrapSingleLine(line, width) {
+         return [line];
+     }
+     const wrapped = [];
++    const gluesPerLine = [];
++    // Kimchi: record the rejoin glue for the line about to be appended (its
++    // future index is wrapped.length at set time); a segment's first line
++    // never carries one, so hard boundaries stay distinguishable.
++    const markNext = (glue) => {
++        if (wrapped.length > 0) gluesPerLine[wrapped.length] = glue;
++    };
+     const tracker = new AnsiCodeTracker();
+     const tokens = splitIntoTokensWithAnsi(line);
+     let currentLine = "";
+@@ -872,8 +931,10 @@ function wrapSingleLine(line, width) {
+             // Break long token - breakLongWord handles its own resets
+             const broken = breakLongWord(token, width, tracker);
+             for (let i = 0; i < broken.length - 1; i++) {
++                markNext("");
+                 wrapped.push(broken[i]);
+             }
++            markNext("");
+             currentLine = broken[broken.length - 1];
+             currentVisibleLength = visibleWidth(currentLine);
+             continue;
+@@ -888,6 +949,9 @@ function wrapSingleLine(line, width) {
+                 lineToWrap += lineEndReset;
+             }
+             wrapped.push(lineToWrap);
++            // Kimchi: glue = the whitespace the wrap consumed (exact token for
++            // whitespace breaks, the trimmed trailing run otherwise).
++            markNext(isWhitespace ? token : (currentLine.match(/\s+$/)?.[0] ?? " "));
+             if (isWhitespace) {
+                 // Don't start new line with whitespace
+                 currentLine = tracker.getActiveCodes();
+@@ -909,8 +973,18 @@ function wrapSingleLine(line, width) {
+         // No reset at end of final line - let caller handle it
+         wrapped.push(currentLine);
+     }
++    if (wrapped.length === 0) {
++        return [""];
++    }
+     // Trailing whitespace can cause lines to exceed the requested width
+-    return wrapped.length > 0 ? wrapped.map((line) => line.trimEnd()) : [""];
++    const trimmed = wrapped.map((line) => line.trimEnd());
++    // Kimchi: attach rejoin glues AFTER the trim rebuild so the marks key on
++    // the strings callers actually receive. Every line past the first is a
++    // soft continuation of its predecessor within this one segment.
++    for (let i = 1; i < trimmed.length; i++) {
++        markRenderedLine(trimmed[i], gluesPerLine[i] ?? "");
++    }
++    return trimmed;
+ }
+ export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+ /**
+@@ -1004,6 +1078,34 @@ export function applyBackgroundToLine(line, width, bgFn) {
      const withPadding = line + padding;
      return bgFn(withPadding);
  }
