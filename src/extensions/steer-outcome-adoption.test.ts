@@ -9,6 +9,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetSteerOutcomeWatches, steerOutcomeWatcherExtension } from "./steer-outcome-watcher.js"
+import { TODO_TOOL_NAMES } from "./todos/tool.js"
 
 type Handler = (...args: unknown[]) => Promise<unknown> | unknown
 
@@ -59,7 +60,22 @@ describe("steer outcome watcher — site adoptions", () => {
 
 		await fire("tool_execution_end", { toolName: "read" })
 		expect(outcomes(emitted)).toHaveLength(0)
-		await fire("tool_execution_end", { toolName: "todo" })
+		await fire("tool_execution_end", { toolName: "mark_todo" })
+		expect(outcomes(emitted)).toEqual([expect.objectContaining({ kind: "todo_staleness", outcome: "complied" })])
+	})
+
+	// Regression: the classifier must recognize every tool the todos
+	// extension actually registers (plus the legacy upstream write_todos
+	// name). It previously mirrored upstream-style names ("todo",
+	// "todo_write", "todowrite") that kimchi never registers, so real
+	// compliance — e.g. a mark_todo call following a staleness steer — was
+	// misclassified: the window expired and emitted "expired" instead.
+	it.each([...TODO_TOOL_NAMES, "write_todos"])("todo_staleness: a %s write counts as compliance", async (name) => {
+		const { pi, emitted, fire } = makePi()
+		const { sendHiddenSteer } = await import("./todos/staleness-steers.js")
+		sendHiddenSteer(pi, "todo-staleness", "refresh the list", {}, { steerKind: "todo_staleness", sessionId: "session" })
+
+		await fire("tool_execution_end", { toolName: name })
 		expect(outcomes(emitted)).toEqual([expect.objectContaining({ kind: "todo_staleness", outcome: "complied" })])
 	})
 

@@ -3,6 +3,7 @@ import { emitSteerFired, isSteerDisabled, type SteerKind, type SteerReason } fro
 import { markHarnessSteer } from "../steer-marker.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { getOrCreateInnerMap } from "./nested-maps.js"
+import { isTodoWriteToolName } from "./session.js"
 import type { TodoScope } from "./types.js"
 
 /**
@@ -83,8 +84,10 @@ export function sendHiddenSteer(
 		})
 		// Complied = a todo write within the next few non-todo tool calls;
 		// repeated = the window closes on more non-todo work. Mirrors the
-		// todo_early_nudge bespoke window (5). isTodoWriteToolName is imported
-		// lazily to avoid a cycle back into todos/index.ts.
+		// todo_early_nudge bespoke window (5). The classifier reuses
+		// isTodoWriteToolName from session.js — the same predicate the
+		// staleness gate applies to these events (importing from index.ts
+		// would cycle; session.js does not import this module).
 		watchSteerOutcome({
 			kind: opts.steerKind,
 			steerId,
@@ -92,21 +95,12 @@ export function sendHiddenSteer(
 			interactive: opts.interactive === true,
 			windowToolCalls: 5,
 			classify: (event) =>
-				event.type === "tool_execution_end" && event.toolName !== undefined && isTodoWriteTool(event.toolName)
+				event.type === "tool_execution_end" && event.toolName !== undefined && isTodoWriteToolName(event.toolName)
 					? "complied"
 					: undefined,
 		})
 	}
 	return true
-}
-
-/** Local mirror of todos/index.ts's isTodoWriteToolName — importing it would
- *  pull this module back into the extension it lives in. Todo-tool names are
- *  stable (the upstream todo tool is built-in), so a small constant is the
- *  safe seam. */
-const TODO_WRITE_TOOL_NAMES = new Set(["todo", "todo_write", "todowrite"])
-function isTodoWriteTool(toolName: string): boolean {
-	return TODO_WRITE_TOOL_NAMES.has(toolName.toLowerCase())
 }
 
 /** State for one session+scope: the highest interval boundary successfully
