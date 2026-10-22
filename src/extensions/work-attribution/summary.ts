@@ -22,9 +22,10 @@ import { mergePullRequestLinks } from "../pull-request-status/links.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 import { type Collection, ROW_KEYS, updateWorkRows, validWorkFiles } from "./row-log.js"
 
-const LOCK_STALE_MS = 5000
+/** The lock timing of work files; a writer holds a lock only to read a file and append to it. */
+export const LOCK_STALE_MS = 5000
+export const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const MERGE_BATCH_SIZE = 1000
-const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const RECOVERY_STAMP = ".recovered.json"
 const RECOVERY_VERSION = 5
 // Coarse filesystem timestamps and small clock differences must not hide an append.

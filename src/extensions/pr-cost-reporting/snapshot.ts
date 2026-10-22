@@ -1,4 +1,4 @@
-import { ISSUE_KEY, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
+import { isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
@@ -82,7 +82,7 @@ function validIssueKeys(keys: unknown): boolean {
 		const id = `${entry.source}:${entry.key}`
 		if (
 			typeof entry.key !== "string" ||
-			!ISSUE_KEY.test(entry.key) ||
+			!isIssueKey(entry.key) ||
 			(entry.source !== "work" && entry.source !== "branch") ||
 			seen.has(id)
 		)
@@ -754,7 +754,7 @@ export function buildSnapshots(
 				const keys = issueKeys.get(`${key}\n${pr.id}`) ?? { work: new Set<string>(), branch: new Set<string>() }
 				for (const branchKey of pr.branchIssueKeys ?? []) keys.branch.add(branchKey)
 				for (const row of original.get(request.requestId) ?? [])
-					if (object(row.issue) && typeof row.issue.key === "string" && ISSUE_KEY.test(row.issue.key))
+					if (object(row.issue) && typeof row.issue.key === "string" && isIssueKey(row.issue.key))
 						keys.work.add(row.issue.key)
 				issueKeys.set(`${key}\n${pr.id}`, keys)
 			}

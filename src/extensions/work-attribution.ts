@@ -1095,7 +1095,10 @@ export function createWorkAttributionExtension(
 						notifyWorkChanged()
 						return
 					}
-					const issueArgs = /^issue(?:\s|$)/.test(value) ? value.slice("issue".length) : undefined
+					const issueArgs =
+						value.startsWith("issue") && (value.length === "issue".length || value["issue".length].trim() === "")
+							? value.slice("issue".length)
+							: undefined
 					// What /work issue says before the work's details.
 					let notice: string[] = []
 					if (issueArgs !== undefined) {

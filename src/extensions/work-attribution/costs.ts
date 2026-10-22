@@ -1,4 +1,4 @@
-import { ISSUE_KEY, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
+import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
 import {
@@ -198,13 +198,7 @@ function storedPullRequest(row: unknown): { identity: PullIdentity; pullRequest:
 	// Display metadata never affects allocation: a malformed title or author is only left out, and so are branch keys.
 	const title = pullRequestTitle(row.title)
 	const author = pullRequestAuthor(row.author)
-	const keys = row.branchIssueKeys
-	const branchIssueKeys =
-		Array.isArray(keys) &&
-		keys.length <= MAX_PULL_REQUEST_ISSUE_KEYS &&
-		keys.every((key): key is string => typeof key === "string" && ISSUE_KEY.test(key))
-			? keys
-			: []
+	const branchIssueKeys = savedBranchIssueKeys(row.branchIssueKeys)
 	return {
 		identity,
 		pullRequest: {

@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { lock } from "proper-lockfile"
-import { branchIssueKeys, ISSUE_KEY } from "../../shared/issue-keys.js"
+import { branchIssueKeys, isIssueKey } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { currentBranch } from "../pull-request-status/branch-status.js"
-import { appendJournalLine, object, truncated } from "./summary.js"
+import { appendJournalLine, LOCK_RETRIES, LOCK_STALE_MS, object, truncated } from "./summary.js"
 
 /*
  * The Jira issue chosen for a work with `/work issue`. Each selection or clear appends a revision to
@@ -14,9 +14,6 @@ import { appendJournalLine, object, truncated } from "./summary.js"
  * reporting stops on journal record types it does not know. Request rows copy the selection their input began with.
  */
 
-/** The lock timing of work summaries; a writer holds this lock only to read the file and append one line. */
-const LOCK_STALE_MS = 5000
-const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 const BRANCH_TIMEOUT_MS = 2000
 const CHOOSE = "Choose with: /work issue <KEY> or /work issue clear"
 
@@ -53,8 +50,11 @@ export interface WorkIssue {
 
 /** The key `text` names, with ASCII letters uppercased, or undefined when it is not exactly one Jira key. */
 export function parseIssueKey(text: string): string | undefined {
-	const key = text.replace(/[a-z]/g, (letter) => letter.toUpperCase())
-	return ISSUE_KEY.test(key) ? key : undefined
+	// Only ASCII letters: toUpperCase would also turn ı and ſ into I and S.
+	const key = Array.from(text, (character) =>
+		character >= "a" && character <= "z" ? character.toUpperCase() : character,
+	).join("")
+	return isIssueKey(key) ? key : undefined
 }
 
 export function workIssuePath(agentDir: string, workId: string): string {
@@ -69,8 +69,7 @@ function readRevision(value: unknown, workId: string): { revision: number; key: 
 	if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1) return
 	if (typeof source !== "string" || typeof sessionId !== "string" || typeof recordedAt !== "string") return
 	if (status === "cleared" && issueKey === undefined) return { revision, key: null }
-	if (status === "selected" && typeof issueKey === "string" && ISSUE_KEY.test(issueKey))
-		return { revision, key: issueKey }
+	if (status === "selected" && typeof issueKey === "string" && isIssueKey(issueKey)) return { revision, key: issueKey }
 }
 
 /** The work's issue. A missing file is a work without one; reading never throws. */
@@ -130,7 +129,7 @@ export async function changeWorkIssue(
 	workId: string,
 	sessionId: string,
 	issueKey: string | undefined,
-): Promise<{ previous: WorkIssue; current: WorkIssue; changed: boolean }> {
+): Promise<{ previous: WorkIssue; changed: boolean }> {
 	const path = workIssuePath(agentDir, workId)
 	// The lock is a directory beside the file.
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
@@ -146,7 +145,7 @@ export async function changeWorkIssue(
 	try {
 		const previous = readWorkIssue(agentDir, workId)
 		if (!previous.conflicting && !previous.unreadable && previous.selected?.key === issueKey)
-			return { previous, current: previous, changed: false }
+			return { previous, changed: false }
 		if (compromised) throw compromised
 		const record: WorkIssueRevision = {
 			version: 1,
@@ -159,7 +158,7 @@ export async function changeWorkIssue(
 			recordedAt: new Date().toISOString(),
 		}
 		appendJournalLine(path, record)
-		return { previous, current: readWorkIssue(agentDir, workId), changed: true }
+		return { previous, changed: true }
 	} finally {
 		// A compromised lease has already been removed from proper-lockfile's ownership map.
 		if (!compromised) await release()

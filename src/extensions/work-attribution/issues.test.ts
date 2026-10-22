@@ -127,7 +127,8 @@ describe("a work's issue relation", () => {
 		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1, selected: { key: "ABC-123", revision: 1 } })
 		// Selecting the selected issue again changes nothing.
 		const repeated = await changeWorkIssue(agentDir, workId, "second", "ABC-123")
-		expect(repeated).toMatchObject({ changed: false, current: repeated.previous })
+		expect(repeated.changed).toBe(false)
+		expect(readWorkIssue(agentDir, workId)).toEqual(repeated.previous)
 		await changeWorkIssue(agentDir, workId, "second", "ABC-124")
 		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2, selected: { key: "ABC-124", revision: 2 } })
 		await changeWorkIssue(agentDir, workId, "first", undefined)
@@ -184,7 +185,8 @@ describe("a work's issue relation", () => {
 		const path = saveLines(revisionLine(1, "ABC-1") + tail)
 
 		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 1, unreadable: `${path}:2` })
-		expect((await changeWorkIssue(agentDir, workId, "first", undefined)).current).toEqual({ revision: 2 })
+		expect((await changeWorkIssue(agentDir, workId, "first", undefined)).changed).toBe(true)
+		expect(readWorkIssue(agentDir, workId)).toEqual({ revision: 2 })
 	})
 
 	it("ignores damage that a later revision followed", () => {
@@ -341,7 +343,9 @@ describe("/work issue", () => {
 	})
 
 	it("saves and shows a lowercase key in uppercase", async () => {
-		expect((await command(agentDir, "abc-123")).lines[0]).toMatch(/^Jira issue ABC-123 selected for this work\./)
+		expect((await command(agentDir, "abc-123")).lines[0].startsWith("Jira issue ABC-123 selected for this work.")).toBe(
+			true,
+		)
 		expect(savedRevisions()[0].issueKey).toBe("ABC-123")
 	})
 
