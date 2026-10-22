@@ -159,7 +159,7 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 					id: 42,
 					full_name: github[1],
 					// GitHub.com and GHE.com serve their API from an api. subdomain of the web host.
-					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host.replace(/^api\.(?=[^.]+\.ghe\.com$)/, "")}/${github[1]}`,
+					html_url: `https://${url.host.startsWith("api.") ? url.host.slice("api.".length) : url.host}/${github[1]}`,
 				}
 			: gitlab
 				? {
@@ -383,6 +383,8 @@ describe("native provider credentials", () => {
 		remote("https://octocorp.ghe.com/team/repo.git")
 		vi.stubEnv("GH_TOKEN", "tenant-token")
 		vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-server-secret")
+		// The Enterprise Server token would win if this host were treated as GH_HOST's Server host.
+		vi.stubEnv("GH_HOST", "octocorp.ghe.com")
 		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
 		await lookup()
 		expect(saved().at(-1).prLookup).toMatchObject({ status: "linked" })

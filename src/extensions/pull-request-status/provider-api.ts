@@ -102,7 +102,8 @@ function gitlabHost(): string | undefined {
 
 /** GitHub Enterprise Cloud with data residency gives each enterprise one subdomain of ghe.com. */
 function gheComHost(host: string): boolean {
-	return /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?\.ghe\.com$/.test(host)
+	const subdomain = host.endsWith(".ghe.com") ? host.slice(0, -".ghe.com".length) : ""
+	return subdomain !== "" && !subdomain.includes(".")
 }
 
 function environmentToken(repository: Pick<Repository, "provider" | "host">): string | undefined {
