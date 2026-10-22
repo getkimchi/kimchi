@@ -169,15 +169,6 @@ export function createRegionSelector(options: {
 	)
 }
 
-/**
- * Whether the region selector presents an actual choice. Callers skip the
- * selector UI when false and use the configured region directly (e.g. `eu`
- * experimental-gated and the configured region already the default).
- */
-export function regionChoiceRequired(currentRegion: RegionId): boolean {
-	return selectableRegions().some((region) => region.id !== currentRegion)
-}
-
 export function createLoginChoiceSelector(options: {
 	onKimchiAccount: () => void
 	onKimchiApiKey?: () => void

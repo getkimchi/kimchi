@@ -25,7 +25,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-	// EU region selection is gated behind experimental features; these login
+	// The self-hosted region is gated behind experimental features; these login
 	// tests exercise the ungated (flag-on) behaviour unless stated otherwise.
 	setExperimentalFeaturesEnabled(true)
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
@@ -359,10 +359,10 @@ it("returns to the auth-method selector when Esc is pressed on the region select
 	expect(authSpy).toHaveBeenCalledOnce()
 })
 
-it("skips the region selector and logs in with the configured region when EU is experimental-gated", async () => {
+it("shows the region selector without the experimental flag and logs in to the chosen EU region", async () => {
 	setExperimentalFeaturesEnabled(false)
 	const cliAuthModule = await import("./cli-auth/index.js")
-	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "us-token" })
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "eu-token" })
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -371,13 +371,18 @@ it("skips the region selector and logs in with the configured region when EU is 
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
-	// Auth-method selector: "Use a Kimchi account" — no region selector follows.
+	// Auth-method selector: "Use a Kimchi account". The region selector follows
+	// even with the flag off — EU is generally available.
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+	// Region selector: move down to Europe and confirm.
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(authSpy)
 	await flushAsyncLogin()
 
-	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.kimchi.dev")
-	expect(configModule.writeApiKey).toHaveBeenCalledWith("us-token", undefined, { region: "us" })
+	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://app.eu.kimchi.dev")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("eu-token", undefined, { region: "eu" })
 })
 
 it("falls back to browser login in the configured region without a selector UI", async () => {
@@ -513,6 +518,34 @@ it("selecting Europe for API-key login defaults the endpoint to the EU gateway",
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith("/tmp/kimchi-api-login-test/models.json", "eu-key-789", {
 		allowCachedFallback: false,
 		endpoint: "https://llm.eu.kimchi.dev",
+	})
+})
+
+it("shows the region selector for API-key login without the experimental flag and defaults the endpoint to the EU gateway", async () => {
+	setExperimentalFeaturesEnabled(false)
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("eu-key-789").mockResolvedValueOnce("")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	// The region selector follows even with the flag off — EU is generally available.
+	await selectApiKeyLoginOption(fakeIm, 1) // Europe region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		2,
+		"Kimchi endpoint (press Enter to use https://llm.eu.kimchi.dev):",
+		"",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("eu-key-789", undefined, {
+		llmEndpoint: "https://llm.eu.kimchi.dev",
+		region: "eu",
 	})
 })
 
