@@ -40,7 +40,16 @@ describe("DEFAULT_AGENTS", () => {
 		const verifier = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER) as NonNullable<ReturnType<typeof DEFAULT_AGENTS.get>>
 		// write creates probes and baseline test copies; the host guard confines it
 		// to new repository files and the disposable baseline worktree.
-		expect(verifier.builtinToolNames).toEqual(["read", "bash", "grep", "find", "ls", "write"])
+		expect(verifier.builtinToolNames).toEqual([
+			"read",
+			"bash",
+			"grep",
+			"find",
+			"ls",
+			"write",
+			"record_requirements",
+			"run_original_test",
+		])
 		expect(verifier.disallowedTools).toContain("edit")
 		expect(verifier.disallowedTools).not.toContain("write")
 		expect(verifier.extensions).toBe(false)
@@ -54,6 +63,35 @@ describe("DEFAULT_AGENTS", () => {
 		expect(verifier.tokenBudget).toBeUndefined()
 		expect(verifier.systemPrompt).toContain("<ferment_v2_verifier>")
 		expect(verifier.systemPrompt).toContain("[eN]")
+	})
+
+	it("Verifier requires sourced expectations, combination coverage, and production entry points", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain("Call record_requirements ALONE before validating candidate behavior")
+		expect(prompt).toContain("evidence for one combination does not establish another")
+		expect(prompt).toContain("expected result, and source for the expectation BEFORE executing")
+		expect(prompt).toContain("specification data, schemas, fixtures, or documented contracts")
+		expect(prompt).toContain("Confirm the production caller reaches it")
+		expect(prompt).toContain('remains method "implementer_test" regardless of the command used')
+	})
+
+	it("Verifier preserves observed failures until their expectations are disproved", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain("presume a regression")
+		expect(prompt).toContain("quoting the requirement that necessarily contradicts it")
+		expect(prompt).toContain("executing a check demonstrating the required replacement behaviour")
+		expect(prompt).toContain("Ambiguity or a new implementation strategy does not authorize an exception")
+		expect(prompt).toContain("Report the observed failure in its own check")
+		expect(prompt).toContain("Passing checks elsewhere do not cancel a failure")
+	})
+
+	it("Verifier requires verified completion while separating missing evidence from defects", () => {
+		const prompt = DEFAULT_AGENTS.get(AGENT_FERMENT_VERIFIER)?.systemPrompt
+		expect(prompt).toContain('an "unverifiable" requirement prevents completion')
+		expect(prompt).toContain("Missing verification is not evidence of a product defect")
+		expect(prompt).toContain('an "unverifiable" check whose missing verification can be resolved')
+		expect(prompt).toContain("Tie findings to an objective requirement, repository rule, or attributable regression")
+		expect(prompt).not.toContain('"unverifiable" with a reason')
 	})
 
 	it("Plan agent has roles set to plan", () => {

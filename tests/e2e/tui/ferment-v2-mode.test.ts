@@ -1,8 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
+import type { VerifierRequirement } from "../../../src/extensions/ferment-v2/requirements.js"
 import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest, FakeResponseScript } from "./support/fake-openai-server.js"
+import { isRequirementsRequest, verifierRequirements } from "./support/ferment-v2-verifier.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -89,9 +91,51 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 			],
 			responses: [
 				// The verifier session: one executing bash check (stamped [e1]), then a met verdict citing it.
-				verifierBashCheck("verifier-plan-mode-check", `cat ${outputFile}`),
+				...verifierBashCheck("verifier-plan-mode-check", `test "$(cat ${outputFile})" = done`, [
+					{
+						id: "r1",
+						requirement: "File contains exactly done",
+						source: "Objective: containing exactly done",
+						acceptance: "Reading the output returns exactly done",
+						category: "behavior",
+					},
+					{
+						id: "r2",
+						requirement: "Use the requested output path",
+						source: `Objective: create ${outputFile}`,
+						acceptance: `${outputFile} exists`,
+						category: "constraint",
+					},
+				]),
 				verifierVerdict(
-					'{"verdict":"met","reason":"The file exists with the exact required content.","checks":[{"kind":"work","method":"command","requirement":"Create and verify plan-mode-ferment.txt containing exactly done","status":"pass","failureMode":"the file could contain different data; the read confirms the exact content","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The file exists with the exact required content.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Create and verify plan-mode-ferment.txt containing exactly done","status":"pass","failureMode":"the file could contain different data; the read confirms the exact content","evidence":["e1"]}]}',
+				),
+				verifierVerdict(
+					JSON.stringify({
+						verdict: "met",
+						reason: "The requested file and its content are verified",
+						checks: [
+							{
+								requirementId: "r1",
+								kind: "work",
+								method: "command",
+								requirement: "File contains exactly done",
+								status: "pass",
+								failureMode: "Incorrect file contents",
+								evidence: ["e1"],
+							},
+							{
+								requirementId: "r2",
+								kind: "work",
+								category: "constraint",
+								method: "inspection",
+								requirement: "Use the requested output path",
+								status: "pass",
+								failureMode: "File written to a different path",
+								evidence: ["e1"],
+							},
+						],
+					}),
 				),
 				{
 					stream: ["Creating the requested file."],
@@ -168,7 +212,10 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 				"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			)
 			expect(fullText(terminal)).not.toContain("Plan mode: tool write is not available")
-			trace.step("manual Ferment V2 left Plan mode, wrote the exact file, and completed")
+			const verifierRequests = fixture.fake.requests.filter(isFermentV2VerifierRequest)
+			expect(verifierRequests).toHaveLength(4)
+			expect(JSON.stringify(verifierRequests[3]?.body)).toContain("Recorded requirement r2")
+			trace.step("completion waited for the evaluator to cover its omitted requirement")
 		},
 	)
 })
@@ -226,9 +273,9 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 		],
 	}
 	const metEvaluationResponse: FakeResponseScript[] = [
-		verifierBashCheck("verifier-compaction-check", "pwd"),
+		...verifierBashCheck("verifier-compaction-check", "pwd"),
 		verifierVerdict(
-			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"kind":"work","method":"command","requirement":"Implement feature A","status":"pass","failureMode":"the feature could be unverified; the executed check confirms it","evidence":["e1"]}]}',
+			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Implement feature A","status":"pass","failureMode":"the feature could be unverified; the executed check confirms it","evidence":["e1"]}]}',
 		),
 	]
 	const finalAnswerResponse: FakeResponseScript = { stream: ["Feature A is complete."] }
@@ -299,9 +346,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			artifactName: "ferment-v2-mode-manual-compaction",
 			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
 			responses: [
-				verifierBashCheck("verifier-manual-compaction-check", "pwd"),
+				...verifierBashCheck("verifier-manual-compaction-check", "pwd"),
 				verifierVerdict(
-					'{"verdict":"met","reason":"The resumed turn completed the verified work.","checks":[{"kind":"work","method":"command","requirement":"Finish after manual compaction","status":"pass","failureMode":"the resumed work could be incomplete; the executed check confirms completion","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The resumed turn completed the verified work.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Finish after manual compaction","status":"pass","failureMode":"the resumed work could be incomplete; the executed check confirms completion","evidence":["e1"]}]}',
 				),
 				{
 					stream: ["Creating the manual-compaction Todo."],
@@ -545,15 +592,15 @@ test("experimental Ferment V2 evaluates an explicit completion claim without ext
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
 				// Verifier run 1: an executing bash check, then a cited continue verdict.
-				verifierBashCheck("verifier-claim-check-1", "pwd"),
+				...verifierBashCheck("verifier-claim-check-1", "pwd"),
 				verifierVerdict(
-					'{"verdict":"continue","reason":"The verifier wants a concise final synthesis.","checks":[{"kind":"work","requirement":"Write a concise final synthesis","status":"fail","failureMode":"the synthesis is missing from the delivered work","evidence":["e1"]}]}',
+					'{"verdict":"continue","reason":"The verifier wants a concise final synthesis.","checks":[{"requirementId":"r1","kind":"work","requirement":"Write a concise final synthesis","status":"fail","failureMode":"the synthesis is missing from the delivered work","evidence":["e1"]}]}',
 					5_500,
 				),
 				// Verifier run 2: an executing bash check, then a cited met verdict.
-				verifierBashCheck("verifier-claim-check-2", "pwd"),
+				...verifierBashCheck("verifier-claim-check-2", "pwd"),
 				verifierVerdict(
-					'{"verdict":"met","reason":"The verified work and concise synthesis satisfy the objective.","checks":[{"kind":"work","method":"command","requirement":"Finish the task","status":"pass","failureMode":"the result could omit the synthesis; the executed check records the verified work","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The verified work and concise synthesis satisfy the objective.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Finish the task","status":"pass","failureMode":"the result could omit the synthesis; the executed check records the verified work","evidence":["e1"]}]}',
 				),
 				{
 					stream: ["Creating the task Todo."],
@@ -659,16 +706,20 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true, contextWindow: 200_000 }],
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
-				// Verifier run 1: bash check (stamped [e1]), then a cited continue verdict.
-				verifierBashCheck("verifier-gate-check-1", "pwd"),
+				// Missing verification cannot approve completion; the corrected verdict
+				// asks for further verification without claiming a product defect.
+				...verifierBashCheck("verifier-gate-check-1", "pwd"),
 				verifierVerdict(
-					'{"verdict":"continue","reason":"Verify the remaining verifier concern.","checks":[{"kind":"work","requirement":"Finish behind the evaluator gate","status":"fail","failureMode":"the remaining concern is unverified","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"Verification is incomplete.","checks":[{"requirementId":"r1","kind":"work","requirement":"Finish behind the evaluator gate","status":"unverifiable","evidence":["e1"]}]}',
+				),
+				verifierVerdict(
+					'{"verdict":"continue","reason":"Verify the remaining verifier concern.","checks":[{"requirementId":"r1","kind":"work","requirement":"Finish behind the evaluator gate","status":"unverifiable","evidence":["e1"]}]}',
 					1_500,
 				),
 				// Verifier run 2: bash check, then a cited met verdict.
-				verifierBashCheck("verifier-gate-check-2", "pwd"),
+				...verifierBashCheck("verifier-gate-check-2", "pwd"),
 				verifierVerdict(
-					'{"verdict":"met","reason":"The verified work satisfies the objective.","checks":[{"kind":"work","method":"command","requirement":"Finish behind the evaluator gate","status":"pass","failureMode":"the result could be unverified; the executed check records verification","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The verified work satisfies the objective.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Finish behind the evaluator gate","status":"pass","failureMode":"the result could be unverified; the executed check records verification","evidence":["e1"]}]}',
 				),
 				{
 					thinking: [visibleThinking],
@@ -792,11 +843,13 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
 			trace.step("completion candidate stayed hidden while evaluation was pending")
 
-			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 7)
+			const correctionRequest = await waitForChatRequest(fixture.fake.requests, 7)
+			expect(JSON.stringify(correctionRequest.body)).toContain("is unverifiable, so completion is not established")
+			const continuationRequest = await waitForChatRequest(fixture.fake.requests, 8)
 			expect(JSON.stringify(continuationRequest.body)).toContain(
 				"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list.",
 			)
-			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 8)
+			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 9)
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Finish behind the evaluator gate")
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Verify the remaining evaluator concern")
 			await waitForText(terminal, "Reopening tactical work after the rejected completion.", { timeoutMs: 5_000 })
@@ -804,6 +857,11 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 5_000 })
 			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			const requirementRequests = fixture.fake.requests.filter(isRequirementsRequest)
+			expect(requirementRequests).toHaveLength(2)
+			expect(JSON.stringify(requirementRequests)).not.toContain(privateEmail)
+			expect(JSON.stringify(requirementRequests)).not.toContain("Implementer's current Todos")
+			trace.step("independent requirements preceded validation in each evaluator session")
 			expect(fullText(terminal)).toContain("Thought for")
 			expect(fullText(terminal)).not.toContain(earlyHiddenCandidate)
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
@@ -872,9 +930,9 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 			artifactName: "ferment-v2-mode-final-delivery-error",
 			seedHome: enableFermentV2Mode,
 			responses: [
-				verifierBashCheck("verifier-delivery-check", "pwd"),
+				...verifierBashCheck("verifier-delivery-check", "pwd"),
 				verifierVerdict(
-					'{"verdict":"met","reason":"The verified work satisfies the objective.","checks":[{"kind":"work","method":"command","requirement":"Finish before delivery","status":"pass","failureMode":"the work could be unverified; the executed check records verification","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The verified work satisfies the objective.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"Finish before delivery","status":"pass","failureMode":"the work could be unverified; the executed check records verification","evidence":["e1"]}]}',
 				),
 				{
 					stream: ["Creating the delivery Todo."],
@@ -988,7 +1046,7 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 						},
 					],
 				},
-				verifierBashCheck(`verifier-repeated-gap-${index + 1}`, "pwd"),
+				...verifierBashCheck(`verifier-repeated-gap-${index + 1}`, "pwd"),
 				{
 					match: isFermentV2VerifierRequest,
 					stream: [
@@ -997,6 +1055,7 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 							reason: repeatedGap,
 							checks: [
 								{
+									requirementId: "r1",
 									kind: "work",
 									requirement: "Verify the same requirement",
 									status: "fail",
@@ -1164,7 +1223,9 @@ async function waitForChatRequest(requests: FakeResponseRequest[], count: number
 }
 
 function chatRequests(requests: FakeResponseRequest[]): FakeResponseRequest[] {
-	return requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+	return requests.filter(
+		(request) => request.url.startsWith("/openai/v1/chat/completions") && !isRequirementsRequest(request),
+	)
 }
 
 function fermentV2Snapshot(request: FakeResponseRequest): {
@@ -1190,12 +1251,19 @@ function isFermentV2VerifierRequest(request: FakeResponseRequest): boolean {
 }
 
 /** First verifier turn: one executing bash check whose result the guard stamps as [e1]. */
-function verifierBashCheck(id: string, command = "pwd"): FakeResponseScript {
-	return {
-		match: isFermentV2VerifierRequest,
-		stream: ["Running the verification check."],
-		toolCalls: [{ id, function: { name: "bash", arguments: JSON.stringify({ command }) } }],
-	}
+function verifierBashCheck(
+	id: string,
+	command = "pwd",
+	requirement: string | VerifierRequirement[] = "Complete the requested task",
+): FakeResponseScript[] {
+	return [
+		verifierRequirements(requirement),
+		{
+			match: isFermentV2VerifierRequest,
+			stream: ["Running the verification check."],
+			toolCalls: [{ id, function: { name: "bash", arguments: JSON.stringify({ command }) } }],
+		},
+	]
 }
 
 /** Second verifier turn: the verdict JSON citing the [e1] evidence the bash check produced. */

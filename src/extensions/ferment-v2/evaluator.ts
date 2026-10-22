@@ -39,7 +39,14 @@ import type { TodoItem } from "../todos/types.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { objectiveText } from "./objective-file.js"
+import { createOriginalTestRunner, type OriginalTestReceipt } from "./original-test.js"
 import { isRecord } from "./reducer.js"
+import {
+	createRequirementLedger,
+	RECORD_REQUIREMENTS_TOOL,
+	REQUIREMENT_CATEGORIES,
+	type RequirementSnapshot,
+} from "./requirements.js"
 import { getFermentV2Settings } from "./settings.js"
 import type { FermentV2Baseline, FermentV2CompletionConfidence, FermentV2EvaluatorUsage } from "./types.js"
 import {
@@ -52,7 +59,11 @@ import {
 	type VerifierGuardOptions,
 } from "./verifier-guard.js"
 import { resolveFermentV2VerifierModel } from "./verifier-model.js"
-import { buildVerifierTaskPrompt, type FermentV2VerifierFacts } from "./verifier-prompt.js"
+import {
+	buildVerifierTaskPrompt,
+	buildVerifierValidationContext,
+	type FermentV2VerifierFacts,
+} from "./verifier-prompt.js"
 import {
 	type BaselineWorktree,
 	detectGitWorkspace,
@@ -86,10 +97,20 @@ const TRANSIENT_FAILURE_REASONS = new Set(["rate_limit", "transport_failure", "s
  * missing work with its tools, not just relabel the checks.
  */
 const INCOMPLETE_PROCEDURE_CORRECTION_PROMPT =
-	"Host validation found the verification incomplete: {reason} Do the missing checks now with your tools — write and run the probes or baseline test copies — then end with exactly one JSON object matching the output contract, citing the new [eN] results."
+	"Host validation found the verification incomplete: {reason} Complete the missing steps with your tools: record or revise requirements when needed, and write and run the probes that are missing, and use run_original_test for flagged original tests. Then return exactly one JSON object matching the output contract, referencing requirementId and citing the [eN] results."
+
+/**
+ * Correction prompt for a verdict whose only defect is its citations — a
+ * supporting reference that cannot be tied to this run's stamped evidence.
+ * The verifier returns the same verdict with repaired references; no
+ * verification work is requested, so a valid result is never spent rerunning
+ * probes or original tests for a formatting repair.
+ */
+const CITATION_REPAIR_CORRECTION_PROMPT =
+	"The previous response was rejected by host validation: {reason} Return exactly one JSON object matching the output contract with the same verdict and checks, repairing only the citations: every reference must be one bare [eN] ID string that appears in your tool results. Do not run new verification for this repair; cite the existing evidence or drop the reference."
 
 /** Check categories: only `behavior` passes need independent evidence. A missing category counts as `behavior`. */
-const CHECK_CATEGORIES = ["behavior", "constraint", "delivery"] as const
+const CHECK_CATEGORIES = REQUIREMENT_CATEGORIES
 
 /** How a check was verified; `implementer_test` and `inspection` are not independent evidence for a behaviour. */
 const CHECK_METHODS = ["probe", "existing_test", "baseline_test", "command", "implementer_test", "inspection"] as const
@@ -101,9 +122,6 @@ const INDEPENDENT_METHODS: ReadonlySet<FermentV2VerifierCheckMethod> = new Set([
 	"command",
 ])
 
-/** How many procedure gaps one correction prompt lists. */
-const MAX_PROCEDURE_GAPS = 8
-
 /** Flag kinds whose pre-existing test file must be run in its baseline version (`baseline_test`). */
 const BASELINE_TEST_FLAG_KINDS: ReadonlySet<string> = new Set([
 	"test_file_modified",
@@ -112,11 +130,16 @@ const BASELINE_TEST_FLAG_KINDS: ReadonlySet<string> = new Set([
 ])
 
 const INVALID_OUTPUT_CORRECTION_PROMPT =
-	'The previous response was rejected by host validation: {reason} Return exactly one valid JSON object matching the output contract and nothing else. Cite only [eN] evidence IDs that appear in your tool results. Every "pass" check needs cited evidence and a failureMode; a "continue" verdict needs at least one cited "fail" check; an "impossible" verdict needs at least one check citing executed evidence; when the task lists test-inventory flag IDs, a met verdict needs every flag addressed in some check\'s flags array.'
+	'The previous response was rejected by host validation: {reason} Return exactly one valid JSON object matching the output contract and nothing else. Cite only [eN] evidence IDs that appear in your tool results. Every "pass" check needs cited evidence and a failureMode; a "met" verdict requires every check to pass; a "continue" verdict needs at least one cited "fail" check or a cited "unverifiable" check whose verification can be resolved by further work here; an "impossible" verdict needs at least one check citing executed evidence; when the task lists test-inventory flag IDs, a met verdict needs every flag addressed in some check\'s flags array.'
 
 export type FermentV2EvaluatorVerdict = "continue" | "met" | "impossible"
 
 export interface FermentV2EvaluatorDiagnostics {
+	/** Initial requirements followed by source-grounded revisions, from this evaluator session. */
+	requirements?: readonly RequirementSnapshot[]
+	/** Full host validation gaps, including those summarized in the bounded correction prompt. */
+	validationGaps?: readonly string[]
+	originalTests?: readonly OriginalTestReceipt[]
 	durationMs: number
 	timeoutMs: number
 	providerRequestCount: number
@@ -145,6 +168,7 @@ export type FermentV2EvaluationResult =
 			integrity?: IntegrityResult
 			/** The verifier's checks behind the verdict (as returned, before host downgrades). */
 			checks?: readonly FermentV2VerifierCheck[]
+			supportingEvidence?: readonly string[]
 			/** The host-gathered facts the verifier was given. */
 			facts?: FermentV2VerifierFacts
 	  }
@@ -216,6 +240,7 @@ export type FermentV2VerifierCheckCategory = (typeof CHECK_CATEGORIES)[number]
 export type FermentV2VerifierCheckMethod = (typeof CHECK_METHODS)[number]
 
 export interface FermentV2VerifierCheck {
+	requirementId?: string
 	kind?: "work" | "final_answer"
 	category?: FermentV2VerifierCheckCategory
 	method?: FermentV2VerifierCheckMethod
@@ -234,6 +259,7 @@ interface ParsedFermentV2EvaluatorOutput {
 	verdict: FermentV2EvaluatorVerdict
 	reason: string
 	checks?: FermentV2VerifierCheck[]
+	supportingEvidence?: string[]
 }
 
 function errorMessage(error: unknown): string {
@@ -268,9 +294,26 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
 	})
 }
 
+/**
+ * The one bounded parser for annotated evidence references, shared by both
+ * reference fields (`checks[].evidence` and `supportingEvidence`). Accepts,
+ * case-insensitively, a bare or bracketed host ID optionally followed by an
+ * annotation — `e25`, `[e25]`, `e25: explanation`, `[e25]: explanation`,
+ * `e25 explanation`, `e25 (explanation)` — so a valid verification result
+ * never fails on citation formatting alone. The reference must be whole:
+ * brackets must balance and a delimiter (end, whitespace, `:`, or `(`) must
+ * follow the complete ID, so merged (`e25e3`, `e25foo`) or unbalanced
+ * (`[e25`) values stay unparsed. The requested output format stays the bare
+ * ID; normalization never touches provenance — an unparsed value is kept
+ * verbatim for host validation to report, and a parsed ID must still exist
+ * in the guard's ledger of this run (IDs from another review do not count).
+ */
+const EVIDENCE_REFERENCE = /^\[(e\d+)\](?=$|[\s:(])|^(e\d+)(?=$|[\s:(])/i
+
 function normalizeEvidenceId(evidence: string): string {
 	const normalized = evidence.trim()
-	return normalized.match(/^\[?(e\d+)\]?(?:\s|$)/i)?.[1]?.toLowerCase() ?? normalized
+	const match = normalized.match(EVIDENCE_REFERENCE)
+	return (match?.[1] ?? match?.[2])?.toLowerCase() ?? normalized
 }
 
 export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2EvaluatorOutput | undefined {
@@ -279,6 +322,12 @@ export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2Evalu
 		if (!isRecord(value)) continue
 		if (value.verdict !== "continue" && value.verdict !== "met" && value.verdict !== "impossible") continue
 		if (typeof value.reason !== "string" || !value.reason.trim()) continue
+		const supporting = value.supportingEvidence
+		if (
+			supporting !== undefined &&
+			(!Array.isArray(supporting) || supporting.some((id) => typeof id !== "string" || !id.trim()))
+		)
+			continue
 		const hasChecks = Object.hasOwn(value, "checks")
 		const checks = parseChecks(value.checks)
 		if (hasChecks && checks === undefined) continue
@@ -289,6 +338,7 @@ export function parseFermentV2EvaluatorOutput(raw: string): ParsedFermentV2Evalu
 			verdict: value.verdict,
 			reason: value.reason.trim().slice(0, MAX_REASON_CHARS),
 			...(checks ? { checks } : {}),
+			...(Array.isArray(supporting) ? { supportingEvidence: supporting.map(normalizeEvidenceId) } : {}),
 		}
 	}
 	return undefined
@@ -333,7 +383,9 @@ function parseChecks(value: unknown): FermentV2VerifierCheck[] | undefined {
 		}
 		const category = CHECK_CATEGORIES.find((value) => value === normalizeLabel(candidate.category))
 		const method = CHECK_METHODS.find((value) => value === normalizeLabel(candidate.method))
+		if (candidate.requirementId !== undefined && typeof candidate.requirementId !== "string") return undefined
 		checks.push({
+			...(typeof candidate.requirementId === "string" ? { requirementId: candidate.requirementId.trim() } : {}),
 			...(candidate.kind ? { kind: candidate.kind } : {}),
 			...(category ? { category } : {}),
 			...(method ? { method } : {}),
@@ -393,18 +445,57 @@ function* jsonObjects(raw: string): Generator<unknown> {
 	}
 }
 
-/** Evidence IDs cited by the verdict that the guard never stamped — hallucinated citations. */
-function unknownEvidenceIds(
+/**
+ * References cited by the verdict's checks that the guard never stamped —
+ * hallucinated or foreign IDs, kept verbatim when the syntax is malformed.
+ */
+function uncitedEvidenceReferences(
 	checks: readonly FermentV2VerifierCheck[] | undefined,
 	evidence: ReadonlyMap<string, VerifierEvidence>,
 ): string[] {
-	const unknown: string[] = []
+	const uncited: string[] = []
 	for (const check of checks ?? []) {
 		for (const id of check.evidence) {
-			if (!evidence.has(id) && !unknown.includes(id)) unknown.push(id)
+			if (!evidence.has(id) && !uncited.includes(id)) uncited.push(id)
 		}
 	}
-	return unknown
+	return uncited
+}
+
+/** A host evidence ID exactly as normalization leaves it (`e25`). */
+const EVIDENCE_ID = /^e\d+$/
+
+/**
+ * Host text for cited references that cannot be tied to this run's stamped
+ * evidence, distinguishing the two causes so the correction asks for the
+ * right repair: malformed syntax (merged, unbalanced, or otherwise unreadable
+ * values — a citation repair, never implying the execution itself is missing)
+ * versus a syntactically valid ID the guard never stamped (no execution in
+ * this run backs it). Every message names the offending field and values.
+ */
+function invalidReferenceReason(field: string, references: readonly string[], unknownAdvice: string): string {
+	const malformed: string[] = []
+	const unknown: string[] = []
+	for (const reference of references) {
+		if (EVIDENCE_ID.test(reference)) unknown.push(reference)
+		else malformed.push(reference)
+	}
+	const parts: string[] = []
+	if (malformed.length > 0) {
+		parts.push(
+			`${field} contains malformed reference${malformed.length > 1 ? "s" : ""} ${malformed
+				.map((reference) => JSON.stringify(reference))
+				.join(
+					", ",
+				)}; cite each reference as one bare [eN] ID string per array entry (for example "e25") so it can be tied to an executed tool result`,
+		)
+	}
+	if (unknown.length > 0) {
+		parts.push(
+			`${field} cites evidence ID${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")} that match no executed tool result; ${unknownAdvice}`,
+		)
+	}
+	return parts.join("; ")
 }
 
 /** Host reason when a `met` verdict is not backed by the verifier's own evidence. */
@@ -490,7 +581,8 @@ function citedCommands(check: FermentV2VerifierCheck, evidence: ReadonlyMap<stri
 	const commands: string[] = []
 	for (const id of check.evidence) {
 		const item = evidence.get(id)
-		if (item?.toolName === "bash" && typeof item.input.command === "string") commands.push(item.input.command)
+		if (item?.originalTest) commands.push(item.originalTest.command)
+		else if (item?.toolName === "bash" && typeof item.input.command === "string") commands.push(item.input.command)
 	}
 	return commands
 }
@@ -499,6 +591,7 @@ function citedCommands(check: FermentV2VerifierCheck, evidence: ReadonlyMap<stri
  * Host reason when a `met` verdict's verification procedure is incomplete —
  * routed to the verifier as a correction, never to the implementer:
  *
+ * - every requirement must be verified: an unverifiable check prevents `met`;
  * - every modified, deleted, or renamed pre-existing test file (flag) must be
  *   covered by a `baseline_test` check that ran something: the baseline version
  *   of the file against the current code;
@@ -516,15 +609,24 @@ function incompleteProcedureReason(
 ): string | undefined {
 	// Every gap is reported at once: the verifier gets a single correction round.
 	const gaps: string[] = []
+	for (const check of checks) {
+		if (check.status === "unverifiable") {
+			gaps.push(
+				`Requirement ${JSON.stringify(check.requirement.slice(0, 200))} is unverifiable, so completion is not established. Try another verification method; return continue with a cited unverifiable check if further work here can resolve it, or impossible with evidence of the external blocker.`,
+			)
+		}
+	}
 	for (const flag of testInventoryFlags) {
 		if (!BASELINE_TEST_FLAG_KINDS.has(flag.kind)) continue
 		const covered = checks.some(
 			(check) =>
-				check.method === "baseline_test" && check.flags?.includes(flag.id) && citedCommands(check, evidence).length > 0,
+				check.method === "baseline_test" &&
+				check.flags?.includes(flag.id) &&
+				check.evidence.some((id) => evidence.get(id)?.originalTest?.flag === flag.id),
 		)
 		if (!covered) {
 			gaps.push(
-				`Flag ${flag.id} (${flag.kind.replaceAll("_", " ")}: ${flag.path}) has no baseline_test check: write the baseline version of that file (git show <baseline>:${flag.path}) as a new test file, run it against the current code, and report it as a check with method "baseline_test" and flags ["${flag.id}"].`,
+				`Flag ${flag.id} (${flag.kind.replaceAll("_", " ")}: ${flag.path}) has no baseline_test check with a matching host receipt: call run_original_test for ${flag.id}, then cite its result with method "baseline_test" and flags ["${flag.id}"].`,
 			)
 		}
 	}
@@ -534,7 +636,7 @@ function incompleteProcedureReason(
 		const requirement = JSON.stringify(check.requirement.slice(0, 200))
 		if (!check.method || !INDEPENDENT_METHODS.has(check.method)) {
 			gaps.push(
-				`Behaviour check ${requirement} passes on ${check.method ?? "unlabelled"} evidence; the implementer's own tests are context, not proof. Verify it independently — write and run your own probe for it and each edge the objective names (method "probe"), or run a pre-existing test that asserts it ("existing_test") — and label the check's category and method.`,
+				`Behaviour check ${requirement} passes on ${check.method ?? "unlabelled"} evidence; the implementer's own tests are context, not proof. Move auxiliary suite/typecheck/non-vacuity citations to top-level supportingEvidence; they cannot fulfill a requirement. Verify the requirement independently — write and run your own probe for it and each edge the objective names (method "probe"), or run a pre-existing test that asserts it ("existing_test") — and label the check's category and method.`,
 			)
 			continue
 		}
@@ -552,17 +654,20 @@ function incompleteProcedureReason(
 		}
 	}
 	if (gaps.length === 0) return undefined
-	const shown = gaps.slice(0, MAX_PROCEDURE_GAPS)
-	const more = gaps.length > shown.length ? ` (+${gaps.length - shown.length} more of the same kind)` : ""
-	return `${gaps.length} gap${gaps.length === 1 ? "" : "s"}: ${shown.join(" ")}${more}`
+	return `${gaps.length} gap${gaps.length === 1 ? "" : "s"}: ${gaps.join(" ")}`
 }
 
-/** A `continue` verdict needs at least one `fail` check citing evidence the guard stamped. */
-function hasCitedFail(
+/** A `continue` verdict needs evidence of a failure or a remaining verification obligation. */
+function hasCitedRemainingWork(
 	checks: readonly FermentV2VerifierCheck[] | undefined,
 	evidence: ReadonlyMap<string, VerifierEvidence>,
 ): boolean {
-	return checks?.some((check) => check.status === "fail" && check.evidence.some((id) => evidence.has(id))) ?? false
+	return (
+		checks?.some(
+			(check) =>
+				(check.status === "fail" || check.status === "unverifiable") && check.evidence.some((id) => evidence.has(id)),
+		) ?? false
+	)
 }
 
 /** An `impossible` verdict blocks the ferment only with a check citing stamped evidence (design: ≥ 1 cited check). */
@@ -616,7 +721,15 @@ function failingCheckReason(
 
 type ValidatedVerdict =
 	| { kind: "ok"; verdict: FermentV2EvaluatorVerdict; reason: string; acceptedFinalAnswer?: string }
-	| { kind: "correct"; reason: string; failureType: FermentV2EvaluatorFailureType; procedure?: true }
+	| {
+			kind: "correct"
+			reason: string
+			failureType: FermentV2EvaluatorFailureType
+			/** The correction asks for missing verification work (probes, original tests). */
+			procedure?: true
+			/** The correction asks only for reference repair, never for verification work. */
+			citation?: true
+	  }
 
 /** The first test-inventory flag no check addresses (in its flags array) — a `met` verdict must cover every flag. */
 function unaddressedTestInventoryFlag(
@@ -631,23 +744,32 @@ function validateParsedVerdict(
 	evidence: ReadonlyMap<string, VerifierEvidence>,
 	proposedAnswer: string | undefined,
 	testInventoryFlags: readonly TestInventoryFlag[],
-	created: VerifierCreatedFiles,
 ): ValidatedVerdict {
-	// Every cited ID must match a stamped tool result before any verdict is
-	// accepted — a hallucinated [eN] citation rejects the verdict.
-	const unknown = unknownEvidenceIds(parsed.checks, evidence)
-	if (unknown.length > 0) {
+	// Every cited reference must match a stamped tool result before any verdict
+	// is accepted — a hallucinated [eN] citation rejects the verdict. A
+	// malformed reference is a citation-format defect: the messages ask for
+	// reference repair, never implying the execution itself is missing.
+	const uncited = uncitedEvidenceReferences(parsed.checks, evidence)
+	if (uncited.length > 0) {
 		if (parsed.verdict === "met") {
 			// Mirrors an uncited `met`: downgraded to a host-authored `continue`.
 			return {
 				kind: "ok",
 				verdict: "continue",
-				reason: `The verdict cites evidence ID${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")} that match no executed tool result; run the supporting check and cite its [eN] result.`,
+				reason: `The verdict cannot be accepted as written: ${invalidReferenceReason(
+					"checks[].evidence",
+					uncited,
+					"run the supporting check and cite its [eN] result",
+				)}.`,
 			}
 		}
 		return {
 			kind: "correct",
-			reason: `the verdict cited unknown evidence ID${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}.`,
+			reason: `the verdict could not be tied to executed evidence: ${invalidReferenceReason(
+				"checks[].evidence",
+				uncited,
+				"cite only [eN] IDs stamped on your tool results",
+			)}.`,
 			failureType: "uncited_verdict",
 		}
 	}
@@ -675,12 +797,7 @@ function validateParsedVerdict(
 			// An uncited `met` is downgraded to a host-authored `continue`.
 			return { kind: "ok", verdict: "continue", reason: unsupported }
 		}
-		// A `met` whose procedure skipped independent verification goes back to
-		// the verifier — the gap is in the verification, not the implementation.
-		const incomplete = incompleteProcedureReason(parsed.checks ?? [], testInventoryFlags, evidence, created)
-		if (incomplete) {
-			return { kind: "correct", reason: incomplete, failureType: "procedure_incomplete", procedure: true }
-		}
+
 		return {
 			kind: "ok",
 			verdict: "met",
@@ -690,10 +807,10 @@ function validateParsedVerdict(
 				: {}),
 		}
 	}
-	if (parsed.verdict === "continue" && !hasCitedFail(parsed.checks, evidence)) {
+	if (parsed.verdict === "continue" && !hasCitedRemainingWork(parsed.checks, evidence)) {
 		return {
 			kind: "correct",
-			reason: "the verdict had no cited failing check.",
+			reason: "the verdict had no cited failing or unverifiable check.",
 			failureType: "uncited_verdict",
 		}
 	}
@@ -763,6 +880,8 @@ export async function evaluateFermentV2(
 	let guard: VerifierGuard | undefined
 	let worktree: BaselineWorktree | undefined
 	let gatheredFacts: FermentV2VerifierFacts | undefined
+	let requirements: ReturnType<typeof createRequirementLedger> | undefined
+	const validationGaps: string[] = []
 	let modelRef: string | undefined
 	let sameModelAsImplementer: boolean | undefined
 	let modelFallback: "session" | undefined
@@ -772,6 +891,13 @@ export async function evaluateFermentV2(
 		failureType?: FermentV2EvaluatorFailureType,
 		httpStatusCode?: number,
 	): FermentV2EvaluatorDiagnostics => ({
+		...(requirements?.history.length ? { requirements: requirements.history } : {}),
+		...(validationGaps.length ? { validationGaps } : {}),
+		...(guard
+			? {
+					originalTests: [...guard.evidence.values()].flatMap((item) => (item.originalTest ? [item.originalTest] : [])),
+				}
+			: {}),
 		durationMs: Math.max(0, Date.now() - startedAt),
 		timeoutMs: evaluationTimeoutMs ?? 0,
 		providerRequestCount,
@@ -900,18 +1026,6 @@ export async function evaluateFermentV2(
 				? (deps?.reserveWorktree ?? reserveBaselineWorktree)(input.cwd, input.baseline.commit)
 				: undefined
 		worktree = reserved
-		guard = (deps?.createGuard ?? createVerifierGuard)({
-			cwd: input.cwd,
-			...(reserved ? { baselineWorktree: { path: reserved.path, ensure: () => reserved.ensure(input.signal) } } : {}),
-		})
-		// New probe files in the repository and anything inside the disposable
-		// worktree are pre-approved, so they never wait on the classifier; every
-		// other call follows the session's permission mode.
-		const writableRoots = { cwd: input.cwd, ...(reserved ? { worktree: reserved.path } : {}) }
-		const permissions = createPermissionsExtension({
-			preApproved: (toolName, toolInput) =>
-				toolName === "write" && isVerifierWritablePath(toolInput.path, writableRoots),
-		})
 		const facts = await gatherVerifierFacts({
 			cwd: input.cwd,
 			gitProbe,
@@ -922,8 +1036,36 @@ export async function evaluateFermentV2(
 			signal: input.signal,
 		})
 		gatheredFacts = facts
+		const originalTests =
+			"workspace" in facts
+				? createOriginalTestRunner({
+						cwd: input.cwd,
+						commit: facts.workspace.baseline,
+						flags: facts.workspace.testInventoryFlags,
+					})
+				: undefined
+		guard = (deps?.createGuard ?? createVerifierGuard)({
+			cwd: input.cwd,
+			originalTestReceipt: originalTests?.receipt,
+			...(reserved ? { baselineWorktree: { path: reserved.path, ensure: () => reserved.ensure(input.signal) } } : {}),
+		})
+		// New probe files in the repository and anything inside the disposable
+		// worktree are pre-approved, so they never wait on the classifier; every
+		// other call follows the session's permission mode.
+		const writableRoots = { cwd: input.cwd, ...(reserved ? { worktree: reserved.path } : {}) }
+		const permissions = createPermissionsExtension({
+			normalizeToolCall: originalTests?.normalizeToolCall,
+			preApproved: (toolName, toolInput) =>
+				toolName === RECORD_REQUIREMENTS_TOOL ||
+				(toolName === "write" && isVerifierWritablePath(toolInput.path, writableRoots)),
+		})
 
 		const proposedAnswer = latestFinalAnswerDraft(input.messages)
+		let validationContext = buildVerifierValidationContext({
+			todos: input.todos,
+			proposedAnswer,
+			previousGap: input.previousGap,
+		})
 		let prompt = buildVerifierTaskPrompt({
 			objective: objectiveText(input.objective, ctx.cwd),
 			cwd: input.cwd,
@@ -931,18 +1073,9 @@ export async function evaluateFermentV2(
 			...(reserved ? { baselineWorktree: reserved.path } : {}),
 			...(integrityUnenforced ? { integrityUnenforced } : {}),
 			todos: input.todos,
-			...(input.completionConfidence ? { completionConfidence: input.completionConfidence } : {}),
 			...(proposedAnswer !== undefined ? { proposedAnswer } : {}),
 			...(input.previousGap ? { previousGap: input.previousGap } : {}),
 		})
-		if (getRedactionConfig().enabled) {
-			try {
-				prompt = await (deps?.redact ?? redactTextOrThrow)(prompt)
-			} catch {
-				return unavailable("Verifier input redaction failed.", "redaction_failed")
-			}
-		}
-
 		const timeoutSignal = evaluationTimeoutMs ? AbortSignal.timeout(evaluationTimeoutMs) : undefined
 		const runSignal = timeoutSignal
 			? input.signal
@@ -953,6 +1086,14 @@ export async function evaluateFermentV2(
 		const maxDuration = evaluationTimeoutMs ? Math.ceil(evaluationTimeoutMs / 1000) : 0
 
 		input.onVerifierStart?.({ model: modelRef })
+		if (getRedactionConfig().enabled) {
+			try {
+				prompt = await (deps?.redact ?? redactTextOrThrow)(prompt)
+				validationContext = await (deps?.redact ?? redactTextOrThrow)(validationContext)
+			} catch {
+				return unavailable("Verifier input redaction failed.", "redaction_failed")
+			}
+		}
 		const spawn = deps?.spawn ?? defaultSpawn
 		let run: FermentV2VerifierAgentRun | undefined
 		for (let attempt = 0; ; attempt++) {
@@ -974,11 +1115,20 @@ export async function evaluateFermentV2(
 			// records as evidence excerpts for verdict reasons — already-redacted
 			// content; permissions gate verifier bash by the session's mode (the
 			// child cannot prompt, so non-read-only commands go to the classifier).
+			// A transport retry starts a fresh session: it must record its own
+			// expectations and receive implementation context after acceptance.
+			requirements = createRequirementLedger(validationContext)
 			run = await spawn({
 				model,
 				prompt,
 				cwd: input.cwd,
-				extensionFactories: [piiRedactionExtension, permissions, guard.extension],
+				extensionFactories: [
+					piiRedactionExtension,
+					permissions,
+					guard.extension,
+					...(originalTests ? [originalTests.extension] : []),
+					requirements.extension,
+				],
 				signal: runSignal,
 				maxDuration,
 				thinkingLevel: settings.verifierThinking,
@@ -1018,6 +1168,8 @@ export async function evaluateFermentV2(
 			break
 		}
 		const verifierRun = run
+		const recordedRequirements = requirements
+		const verifierEvidence = guard.evidence
 
 		// Collected flags must be addressed; missing or incomplete inventories
 		// are reported in the prompt and do not block `met`.
@@ -1033,19 +1185,68 @@ export async function evaluateFermentV2(
 			...(beforeRun ? { beforeRun } : {}),
 		}
 
+		function validateWithRequirements(parsed: ParsedFermentV2EvaluatorOutput): ValidatedVerdict {
+			const canonical = {
+				...parsed,
+				checks: parsed.checks?.map((check) => ({
+					...check,
+					category: recordedRequirements.category(check.requirementId) ?? check.category,
+				})),
+			}
+			const coverage = recordedRequirements.coverageGap(canonical.checks)
+			const result = validateParsedVerdict(canonical, verifierEvidence, proposedAnswer, testInventoryFlags)
+			const invalidSupporting = canonical.supportingEvidence?.filter((id) => !verifierEvidence.has(id))
+			const supportingGap = invalidSupporting?.length
+				? `${invalidReferenceReason("supportingEvidence", invalidSupporting, "cite only [eN] IDs stamped on your tool results")}.`
+				: undefined
+			const gaps = [coverage]
+			if (canonical.verdict === "met")
+				gaps.push(incompleteProcedureReason(canonical.checks ?? [], testInventoryFlags, verifierEvidence, created))
+			if (supportingGap) gaps.push(supportingGap)
+			// A final-answer check cannot substitute for executing a behavioral obligation.
+			if (
+				canonical.checks?.some(
+					(check) => check.kind === "final_answer" && recordedRequirements.category(check.requirementId) === "behavior",
+				)
+			)
+				gaps.push("Behavior requirements need work checks; final_answer cannot establish executed behavior.")
+			const actionable = gaps.filter((gap): gap is string => Boolean(gap))
+			if (actionable.length) validationGaps.push(...actionable)
+			// Preserve task-facing downgrades for concrete failures and unsupported claims.
+			if (!coverage && !invalidSupporting?.length && result.kind === "ok" && result.verdict !== "met") return result
+			if (actionable.length) {
+				// Citations are the sole defect when the verdict itself validated and
+				// the supporting-reference gap is the only one: the correction asks for
+				// reference repair, never for probes or original tests.
+				if (result.kind === "ok" && actionable.length === 1 && actionable[0] === supportingGap) {
+					return {
+						kind: "correct",
+						reason: actionable.join(" "),
+						failureType: "uncited_verdict",
+						citation: true,
+					}
+				}
+				return { kind: "correct", reason: actionable.join(" "), failureType: "procedure_incomplete", procedure: true }
+			}
+			return result
+		}
+
 		const parsed = parseFermentV2EvaluatorOutput(verifierRun.text)
 		let checks = parsed?.checks
+		let supportingEvidence = parsed?.supportingEvidence
 		let validated: ValidatedVerdict = parsed
-			? validateParsedVerdict(parsed, guard.evidence, proposedAnswer, testInventoryFlags, created)
+			? validateWithRequirements(parsed)
 			: { kind: "correct", reason: "no valid JSON verdict was returned.", failureType: "invalid_output" }
 		if (validated.kind === "correct") {
 			correctionCount++
+			const correctionPrompt = validated.procedure
+				? INCOMPLETE_PROCEDURE_CORRECTION_PROMPT
+				: validated.citation
+					? CITATION_REPAIR_CORRECTION_PROMPT
+					: INVALID_OUTPUT_CORRECTION_PROMPT
 			const corrected = await resumeWithRetries(
 				verifierRun.id,
-				(validated.procedure ? INCOMPLETE_PROCEDURE_CORRECTION_PROMPT : INVALID_OUTPUT_CORRECTION_PROMPT).replace(
-					"{reason}",
-					validated.reason,
-				),
+				correctionPrompt.replace("{reason}", validated.reason.slice(0, 16_000)),
 				runSignal,
 				verifierRun.toolCalls,
 			)
@@ -1069,8 +1270,9 @@ export async function evaluateFermentV2(
 			}
 			const reparsed = parseFermentV2EvaluatorOutput(corrected.text)
 			checks = reparsed?.checks
+			supportingEvidence = reparsed?.supportingEvidence
 			validated = reparsed
-				? validateParsedVerdict(reparsed, guard.evidence, proposedAnswer, testInventoryFlags, created)
+				? validateWithRequirements(reparsed)
 				: {
 						kind: "correct",
 						reason: "no valid JSON verdict was returned after the correction.",
@@ -1089,6 +1291,7 @@ export async function evaluateFermentV2(
 			diagnostics: diagnostics(),
 			...(validated.acceptedFinalAnswer ? { acceptedFinalAnswer: validated.acceptedFinalAnswer } : {}),
 			...(checks ? { checks } : {}),
+			...(supportingEvidence ? { supportingEvidence } : {}),
 			...baseResultFields(),
 		}
 	}

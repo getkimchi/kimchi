@@ -12,6 +12,12 @@ import {
 	startFakeOpenAiServer,
 } from "../e2e/tui/support/fake-openai-server.js"
 
+import {
+	originalTestVerificationResponses,
+	seedOriginalTestRepository,
+} from "../e2e/tui/support/ferment-v2-original-test.js"
+import { verifierRequirements } from "../e2e/tui/support/ferment-v2-verifier.js"
+
 const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
@@ -75,10 +81,10 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 						},
 					],
 				},
-				verifierBashCheck("verifier-no-todo-draft-check"),
+				...verifierBashCheck("verifier-no-todo-draft-check", "Reply exactly NO_TODO_DRAFT", "delivery"),
 				verifierResponse('{"verdict":"met","checks":[{"failureMode":"quoted "text" breaks JSON"}]}'),
 				verifierResponse(
-					'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","status":"pass","failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","expectedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
+					'{"verdict":"met","checks":[{"requirementId":"r1","kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","status":"pass","failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","expectedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
 				),
 				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
 			],
@@ -97,8 +103,8 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 			expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
 			expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests, failure).toHaveLength(7)
-			expect(chatRequests.filter(isFermentV2VerifierRequest), failure).toHaveLength(3)
+			expect(chatRequests, failure).toHaveLength(8)
+			expect(chatRequests.filter(isFermentV2VerifierRequest), failure).toHaveLength(4)
 			expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("no valid JSON verdict was returned")
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
 				'Return this evaluated draft verbatim: \\"NO_TODO_DRAFT\\"',
@@ -129,13 +135,13 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 			expect(result.stdout, failure).toBe("VERIFIED_FINAL_AFTER_EVALUATION\n")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
 			const verifierRequests = chatRequests.filter(isFermentV2VerifierRequest)
-			expect(verifierRequests, failure).toHaveLength(4)
+			expect(verifierRequests, failure).toHaveLength(6)
 			// The verifier is transcript-free: the hidden claim candidate never reaches it.
 			expect(JSON.stringify(verifierRequests.at(-1)?.body), failure).not.toContain(
 				"UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN",
 			)
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).not.toContain("Return this evaluated draft verbatim")
-			expect(chatRequests, failure).toHaveLength(9)
+			expect(chatRequests, failure).toHaveLength(11)
 		},
 	)
 })
@@ -177,12 +183,12 @@ it("exits --print with code 0 when the verifier returns no parseable verdict, in
 			expect(result.code, failure).toBe(0)
 			expect(fermentV2Runs.at(-1)?.status, failure).toBe("paused")
 			expect(fermentV2Runs.at(-1)?.lastEvaluation?.verdict, failure).toBe("unavailable")
-			// Todo setup, claim, then the verifier's bash check and two unparseable
-			// verdicts (the original plus the one correction prompt).
+			// Todo setup, claim, requirements, then the evaluator's bash check and two
+			// unparseable verdicts (the original plus the one correction prompt).
 			expect(
 				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 				failure,
-			).toHaveLength(5)
+			).toHaveLength(6)
 		},
 	)
 })
@@ -309,13 +315,15 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 	)
 })
 
-it("verifies an objective file headlessly with --print and writes the JSON report", { timeout: 25_000 }, async () => {
+it("verifies an objective file headlessly with default permissions and writes the JSON report", {
+	timeout: 25_000,
+}, async () => {
 	await withFermentV2PrintFixture(
 		{
 			responses: [
-				verifierBashCheck("verify-entry-check"),
+				...verifierBashCheck("verify-entry-check", "The README must exist"),
 				verifierResponse(
-					'{"verdict":"met","reason":"The README exists.","checks":[{"kind":"work","method":"command","requirement":"the README exists","status":"pass","failureMode":"the README could be missing","evidence":["e1"]}]}',
+					'{"verdict":"met","reason":"The README exists.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"the README exists","status":"pass","failureMode":"the README could be missing","evidence":["e1"]}]}',
 				),
 			],
 		},
@@ -335,6 +343,7 @@ it("verifies an objective file headlessly with --print and writes the JSON repor
 				workDir,
 				sessionPath,
 				"/ferment-v2 --verify --objective-file objective.md --out reports/verify.json",
+				"default",
 			)
 			const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
@@ -349,12 +358,50 @@ it("verifies an objective file headlessly with --print and writes the JSON repor
 				checks: [{ requirement: "the README exists", status: "pass", evidence: ["e1"] }],
 				facts: { basis: "baseline", workspace: { changedFiles: [{ status: "A", path: "objective.md" }] } },
 				integrity: { violated: false },
+				diagnostics: { requirements: [{ requirements: [{ id: "r1" }] }] },
 			})
-			// Headless and stateless: no ferment was created and only the verifier talked to the model.
+			// Headless and stateless: only the evaluator talked to the model.
 			expect(readFermentV2Journal(sessionPath), failure).toEqual([])
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests, failure).toHaveLength(2)
-			expect(chatRequests.every(isFermentV2VerifierRequest), failure).toBe(true)
+			expect(chatRequests, failure).toHaveLength(3)
+			expect(chatRequests.filter(isFermentV2VerifierRequest), failure).toHaveLength(3)
+		},
+	)
+})
+
+it.each([false, true])("records original-test provenance headlessly and respects bash denial (%s)", {
+	timeout: 25_000,
+}, async (deny) => {
+	await withFermentV2PrintFixture(
+		{ responses: originalTestVerificationResponses(false) },
+		async ({ homeDir, workDir, sessionPath }) => {
+			const baseline = seedOriginalTestRepository(workDir)
+			writeFileSync(join(workDir, "value.cjs"), "module.exports = 2")
+			writeFileSync(join(workDir, "value.test.cjs"), "require('node:assert/strict').ok(true)")
+			writeFileSync(join(workDir, "objective.md"), "Preserve value.cjs returning 1")
+			writeFileSync(
+				join(homeDir, ".config/kimchi/harness/permissions.json"),
+				JSON.stringify(deny ? { deny: ["bash"] } : { allow: ["bash"] }),
+			)
+			const result = await runFermentV2Print(
+				homeDir,
+				workDir,
+				sessionPath,
+				`/ferment-v2 --verify --baseline ${baseline} --objective-file objective.md --out report.json`,
+				"default",
+			)
+			const failure = JSON.stringify(result)
+			expect(result.timedOut, failure).toBe(false)
+			const report = JSON.parse(readFileSync(join(workDir, "report.json"), "utf8"))
+			if (deny) {
+				expect(report.diagnostics.originalTests, failure).toEqual([])
+			} else {
+				expect(report, failure).toMatchObject({
+					verdict: "continue",
+					supportingEvidence: ["e1"],
+					diagnostics: { originalTests: [{ flag: "f1", commit: baseline, path: "value.test.cjs", exitCode: 1 }] },
+				})
+			}
 		},
 	)
 })
@@ -399,9 +446,9 @@ function resumedActiveFermentV2CompletionResponses(): FakeResponseScript[] {
 				},
 			],
 		},
-		verifierBashCheck("verifier-met-check"),
+		...verifierBashCheck("verifier-met-check"),
 		verifierResponse(
-			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"kind":"work","method":"command","requirement":"feature A is complete","status":"pass","failureMode":"the feature could be unverified; the executed check records verification","evidence":["e1"]}]}',
+			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"feature A is complete","status":"pass","failureMode":"the feature could be unverified; the executed check records verification","evidence":["e1"]}]}',
 		),
 		{
 			match: (request) => JSON.stringify(request.body).includes("Give the user only the final answer"),
@@ -543,9 +590,9 @@ function fermentV2Responses(
 				},
 			],
 		},
-		verifierBashCheck("verifier-continue-check"),
+		...verifierBashCheck("verifier-continue-check"),
 		verifierResponse(
-			'{"verdict":"continue","reason":"Implementation is not evidenced yet.","checks":[{"kind":"work","requirement":"Implement feature A","status":"fail","failureMode":"the implementation is not verified","evidence":["e1"]}]}',
+			'{"verdict":"continue","reason":"Implementation is not evidenced yet.","checks":[{"requirementId":"r1","kind":"work","requirement":"Implement feature A","status":"fail","failureMode":"the implementation is not verified","evidence":["e1"]}]}',
 		),
 		{
 			stream: ["UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN"],
@@ -559,9 +606,9 @@ function fermentV2Responses(
 				},
 			],
 		},
-		verifierBashCheck("verifier-met-check"),
+		...verifierBashCheck("verifier-met-check"),
 		verifierResponse(
-			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"kind":"work","method":"command","requirement":"feature A is complete","status":"pass","failureMode":"the feature could be unverified; the executed check records verification","evidence":["e1"]}]}',
+			'{"verdict":"met","reason":"The implemented feature is verified.","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"feature A is complete","status":"pass","failureMode":"the feature could be unverified; the executed check records verification","evidence":["e1"]}]}',
 		),
 		finalAnswer,
 	]
@@ -572,12 +619,19 @@ function isFermentV2VerifierRequest(request: FakeResponseRequest): boolean {
 }
 
 /** First verifier turn: one executing bash check whose result the guard stamps as [e1]. */
-function verifierBashCheck(id: string): FakeResponseScript {
-	return {
-		match: isFermentV2VerifierRequest,
-		stream: ["Running the verification check."],
-		toolCalls: [{ id, function: { name: "bash", arguments: JSON.stringify({ command: "pwd" }) } }],
-	}
+function verifierBashCheck(
+	id: string,
+	requirement = "Complete the requested task",
+	category: "behavior" | "constraint" | "delivery" = "behavior",
+): FakeResponseScript[] {
+	return [
+		verifierRequirements(requirement, category),
+		{
+			match: isFermentV2VerifierRequest,
+			stream: ["Running the verification check."],
+			toolCalls: [{ id, function: { name: "bash", arguments: JSON.stringify({ command: "pwd" }) } }],
+		},
+	]
 }
 
 /** A verifier turn returning arbitrary text (verdict JSON or an unparseable response). */
@@ -613,7 +667,7 @@ function unparseableEvaluatorResponses() {
 				},
 			],
 		},
-		verifierBashCheck("verifier-unparseable-check"),
+		...verifierBashCheck("verifier-unparseable-check"),
 		verifierResponse(
 			"Looking over the todo list and the recent changes, the work looks finished and every planning step appears satisfied to me.",
 		),
@@ -662,6 +716,7 @@ function runFermentV2Print(
 	workDir: string,
 	sessionPath: string,
 	prompt = "/ferment-v2 implement feature A",
+	permissionMode: "default" | "yolo" = "yolo",
 ) {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise) => {
 		const child = spawn(
@@ -674,7 +729,7 @@ function runFermentV2Print(
 					HOME: homeDir,
 					PI_PACKAGE_DIR: PACKAGE_DIR,
 					KIMCHI_API_KEY: "fake",
-					KIMCHI_PERMISSIONS: "yolo",
+					KIMCHI_PERMISSIONS: permissionMode,
 					KIMCHI_TELEMETRY_ENABLED: "0",
 				},
 			},

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import type { TodoItem } from "../todos/types.js"
-import { buildVerifierTaskPrompt, type FermentV2VerifierFacts } from "./verifier-prompt.js"
+import {
+	buildVerifierTaskPrompt,
+	buildVerifierValidationContext,
+	type FermentV2VerifierFacts,
+} from "./verifier-prompt.js"
 import type { WorkspaceFacts } from "./workspace.js"
 
 const todos: TodoItem[] = [
@@ -27,7 +31,7 @@ function workspace(overrides: Partial<WorkspaceFacts> = {}): WorkspaceFacts {
 const facts: FermentV2VerifierFacts = { basis: "baseline", workspace: workspace() }
 
 describe("buildVerifierTaskPrompt", () => {
-	it("carries the objective, facts, and todos", () => {
+	it("carries objective facts while withholding implementer context", () => {
 		const prompt = buildVerifierTaskPrompt({
 			objective: "Implement the login flow",
 			cwd: "/workspace",
@@ -38,8 +42,8 @@ describe("buildVerifierTaskPrompt", () => {
 		expect(prompt).toContain("modified: src/a.ts")
 		expect(prompt).toContain("added: src/new.test.ts")
 		expect(prompt).toContain("branch main")
-		expect(prompt).toContain("Implement feature A")
-		expect(prompt).toContain("Write tests")
+		expect(prompt).not.toContain("Implement feature A")
+		expect(prompt).not.toContain("Write tests")
 		expect(prompt).toContain("derive every check from this")
 		expect(prompt).toContain("[eN] evidence IDs")
 	})
@@ -52,7 +56,7 @@ describe("buildVerifierTaskPrompt", () => {
 			todos: [],
 		})
 		expect(prompt).toContain("not a git repository")
-		expect(prompt).toContain("(no Todos)")
+		expect(prompt).not.toContain("Todos")
 		expect(prompt).not.toContain("Baseline worktree")
 	})
 
@@ -69,24 +73,19 @@ describe("buildVerifierTaskPrompt", () => {
 		expect(prompt).not.toContain("Test-inventory flags")
 	})
 
-	it("includes the proposed answer, confidence and previous gap when present", () => {
-		const prompt = buildVerifierTaskPrompt({
-			objective: "Return the uppercase form",
-			cwd: "/workspace",
-			facts,
+	it("includes the proposed answer and previous gap when present", () => {
+		const prompt = buildVerifierValidationContext({
 			todos,
-			completionConfidence: "proven",
 			proposedAnswer: "THE ANSWER",
 			previousGap: "Remaining requirement: exact output.",
 		})
-		expect(prompt).toContain("proven (low trust")
 		expect(prompt).toContain("THE ANSWER")
 		expect(prompt).toContain("Previous verifier gap")
 		expect(prompt).toContain("Remaining requirement: exact output.")
 	})
 
 	it("includes Todo notes so the verifier sees the implementer's recorded evidence", () => {
-		const prompt = buildVerifierTaskPrompt({ objective: "Do it", cwd: "/workspace", facts, todos })
+		const prompt = buildVerifierValidationContext({ todos })
 		expect(prompt).toContain("(note: Evidence: ran vitest)")
 	})
 
@@ -185,20 +184,14 @@ describe("buildVerifierTaskPrompt", () => {
 		})
 		expect(prompt).toContain("Baseline worktree (host-provided, disposable): /tmp/kimchi-ferment-v2-baseline-x")
 		expect(prompt).toContain("checked out on first use")
-		expect(prompt).toContain("pre-existing, not caused by the implementer's changes")
-		expect(prompt).toContain("they must FAIL there")
-		expect(prompt).toContain("does not verify the change")
-		// The verifier must be able to transfer the implementer's new tests into
-		// the worktree (they do not exist at the baseline) while the production
-		// code stays pre-change, and must tell assertion failures from setup ones.
-		expect(prompt).toContain("copy the implementer's new or changed test files into the baseline worktree")
-		expect(prompt).toContain("never commit anything inside the worktree")
-		expect(prompt).toContain("an assertion failure is the strong evidence")
+		expect(prompt).toContain("Execution there is NOT isolated")
+		expect(prompt).toContain("workspace links")
 		expect(prompt).toContain("inconclusive")
-		expect(prompt).toContain("editable install")
-		expect(prompt).toContain("generated files")
-		expect(prompt).toContain("nested ones up to three levels deep) are already linked")
-		expect(prompt).toContain("never delete or replace them")
+		expect(prompt).toContain("editable installs")
+		expect(prompt).toContain("generated artifacts")
+		expect(prompt).toContain("use run_original_test")
+		expect(prompt).toContain("cannot satisfy original-test obligations")
+		expect(prompt).toContain("Never install dependencies")
 	})
 
 	it("asks for a baseline_test run of every flagged pre-existing test file, naming the full baseline commit", () => {
@@ -213,9 +206,9 @@ describe("buildVerifierTaskPrompt", () => {
 			},
 			todos: [],
 		})
-		expect(prompt).toContain('a "baseline_test" check that ran its baseline version')
-		expect(prompt).toContain("git show baseline-1234567890:<path>")
-		expect(prompt).toContain("the implementer's tests are context only")
+		expect(prompt).toContain('a "baseline_test" check citing a matching host receipt')
+		expect(prompt).toContain("run_original_test")
+		expect(prompt).toContain("Then verify the recorded requirements independently")
 	})
 
 	it("explains a missing baseline worktree when a ferment baseline exists", () => {

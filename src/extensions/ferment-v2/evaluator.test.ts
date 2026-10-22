@@ -18,6 +18,7 @@ import {
 	type FermentV2VerifierSpawnInput,
 	parseFermentV2EvaluatorOutput,
 } from "./evaluator.js"
+import { RECORD_REQUIREMENTS_TOOL, type VerifierRequirement } from "./requirements.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 import type { FermentV2Baseline, FermentV2EvaluatorUsage } from "./types.js"
 import {
@@ -73,7 +74,7 @@ const reserveWorktreeMock = vi.mocked(reserveBaselineWorktree)
 const listSnapshotPathsMock = vi.mocked(listSnapshotPaths)
 
 const CITED_CONTINUE =
-	'{"verdict":"continue","reason":"more work","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}'
+	'{"verdict":"continue","reason":"more work","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}'
 const sessionModel = model("session", "main")
 const verifierModel = model("judge", "independent")
 const rawUsage: Usage = {
@@ -114,14 +115,31 @@ function guardWithEvidence(
 }
 
 function makeRun(overrides: Partial<FermentV2VerifierAgentRun> = {}): FermentV2VerifierAgentRun {
-	return {
+	const run = {
 		id: "verifier-run-1",
 		text: CITED_CONTINUE,
-		status: "completed",
+		status: "completed" as const,
 		toolCalls: 2,
 		turns: 1,
 		...overrides,
 	}
+	try {
+		const value = JSON.parse(run.text)
+		if (Array.isArray(value.checks)) {
+			for (const check of value.checks) {
+				check.requirementId ??=
+					check.kind === "final_answer" || check.category === "delivery"
+						? "r3"
+						: check.category === "constraint"
+							? "r2"
+							: "r1"
+			}
+			run.text = JSON.stringify(value)
+		}
+	} catch {
+		/* Deliberately malformed outputs remain malformed. */
+	}
+	return run
 }
 
 function fakeSession(assistantUsage: Usage[] = [rawUsage]): NonNullable<FermentV2VerifierAgentRun["session"]> {
@@ -152,7 +170,7 @@ function reservedWorktree(path = "/tmp/baseline-wt") {
 }
 
 const MET_ALL_GOOD =
-	'{"verdict":"met","reason":"all good","checks":[{"kind":"work","category":"behavior","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"]}]}'
+	'{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","category":"behavior","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"]}]}'
 
 function workspaceFactsWithFlags(
 	flags: readonly TestInventoryFlag[],
@@ -227,6 +245,8 @@ async function evaluate(
 		settings?: Partial<ReturnType<typeof getFermentV2Settings>>
 		baseline?: FermentV2Baseline
 		keptProbes?: readonly { path: string; requirementId: string }[]
+		requirements?: VerifierRequirement[]
+		recordRequirements?: boolean
 	} = {},
 ) {
 	const evidence = input.evidence ?? ["e1"]
@@ -240,6 +260,51 @@ async function evaluate(
 		createGuard: vi.fn(() => guardWithEvidence(evidence)),
 		sleep: vi.fn(async () => {}),
 		...input.deps,
+	}
+	const spawn = deps.spawn
+	deps.spawn = async (options) => {
+		if (input.recordRequirements !== false) {
+			const child = createExtensionApi()
+			const extension = options.extensionFactories.at(-1)
+			if (typeof extension === "function") await extension(child.api)
+			else if (extension) await extension.factory(child.api)
+			const checks = parseFermentV2EvaluatorOutput(makeRun({ text }).text)?.checks ?? []
+			const first = checks[0]
+			const requirement: VerifierRequirement = {
+				id: "r1",
+				requirement: first?.requirement ?? "ship it",
+				source: "Objective: ship it",
+				acceptance: "The requested observable behavior holds",
+				category: first?.kind === "final_answer" ? "delivery" : (first?.category ?? "behavior"),
+			}
+			await child.getRegisteredTool(RECORD_REQUIREMENTS_TOOL).execute(
+				"record",
+				{
+					requirements:
+						input.requirements ??
+						(checks.length
+							? [
+									...new Map(
+										checks.map((check) => [
+											check.requirementId,
+											{
+												...requirement,
+												id: check.requirementId ?? "r1",
+												requirement: check.requirement,
+												category:
+													check.kind === "final_answer" ? ("delivery" as const) : (check.category ?? "behavior"),
+											},
+										]),
+									).values(),
+								]
+							: [requirement]),
+				},
+				undefined,
+				undefined,
+				evaluatorContext(),
+			)
+		}
+		return spawn?.(options)
 	}
 	fermentV2SettingsMock.mockReturnValue({
 		...DEFAULT_FERMENT_V2_SETTINGS,
@@ -287,9 +352,128 @@ describe("Ferment V2 executing verifier", () => {
 		vi.restoreAllMocks()
 	})
 
+	describe("record requirements before validation", () => {
+		const initial: VerifierRequirement[] = [
+			{
+				id: "r1",
+				requirement: "Export JSON",
+				source: "Objective: export JSON",
+				acceptance: "Export parses as JSON",
+				category: "behavior",
+			},
+			{
+				id: "r2",
+				requirement: "Include every report field",
+				source: "Objective: include every field",
+				acceptance: "Export includes every report field",
+				category: "behavior",
+			},
+		]
+
+		it("rejects a verdict that skipped recording requirements", async () => {
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text: MET_ALL_GOOD }))
+			const result = await evaluate({ text: MET_ALL_GOOD, recordRequirements: false, deps: { resume } })
+			expect(resume.mock.calls[0]?.[1]).toContain("Call record_requirements")
+			expect(result).toMatchObject({ verdict: "unavailable", diagnostics: { failureType: "procedure_incomplete" } })
+		})
+
+		it("resumes the same evaluator when a passing verdict omits a requirement", async () => {
+			const spawn = spawnFn(async () => makeRun({ text: MET_ALL_GOOD }))
+			const resume = vi.fn(async (_id: string, _prompt: string) =>
+				makeRun({
+					text: JSON.stringify({
+						verdict: "continue",
+						reason: "Include the missing report fields",
+						checks: [
+							{
+								requirementId: "r1",
+								requirement: "Export JSON",
+								status: "pass",
+								method: "command",
+								failureMode: "Invalid JSON",
+								evidence: ["e1"],
+							},
+							{ requirementId: "r2", requirement: "Include every report field", status: "fail", evidence: ["e2"] },
+						],
+					}),
+				}),
+			)
+			const result = await evaluate({
+				text: MET_ALL_GOOD,
+				requirements: initial,
+				evidence: ["e1", "e2"],
+				deps: { spawn, resume },
+			})
+			expect(spawn).toHaveBeenCalledOnce()
+			expect(resume.mock.calls[0]?.[0]).toBe("verifier-run-1")
+			expect(resume.mock.calls[0]?.[1]).toContain("Recorded requirement r2")
+			expect(result).toMatchObject({
+				verdict: "continue",
+				diagnostics: { correctionCount: 1, requirements: [{ requirements: initial }] },
+			})
+			expect(result.diagnostics).not.toHaveProperty("challenge")
+		})
+
+		it("releases context after requirement recording in each fresh transport-retry session", async () => {
+			const contexts: string[] = []
+			const spawn = spawnFn(async (options) => {
+				const child = createExtensionApi()
+				const extension = options.extensionFactories.at(-1)
+				if (typeof extension === "function") await extension(child.api)
+				const result = await child
+					.getRegisteredTool(RECORD_REQUIREMENTS_TOOL)
+					.execute("record", { requirements: [initial[0]] }, undefined, undefined, evaluatorContext())
+				contexts.push(JSON.stringify(result))
+				return contexts.length === 1
+					? makeRun({ status: "error", error: "429 rate limit exceeded" })
+					: makeRun({ text: MET_ALL_GOOD })
+			})
+			expect(await evaluate({ recordRequirements: false, deps: { spawn } })).toMatchObject({ verdict: "met" })
+			expect(contexts).toHaveLength(2)
+			for (const context of contexts) expect(context).toContain("Implementer's current Todos")
+		})
+
+		it("preserves explained revisions without spawning another reviewer", async () => {
+			const revised = {
+				...initial[0],
+				id: "r1",
+				requirement: "Use the existing export API",
+				source: "README: exportReport",
+				acceptance: "exportReport returns parseable JSON",
+				category: "behavior" as const,
+			}
+			const spawn = spawnFn(async (options) => {
+				const child = createExtensionApi()
+				const extension = options.extensionFactories.at(-1)
+				if (typeof extension === "function") await extension(child.api)
+				const tool = child.getRegisteredTool(RECORD_REQUIREMENTS_TOOL)
+				await tool.execute("initial", { requirements: [initial[0]] }, undefined, undefined, evaluatorContext())
+				await tool.execute(
+					"revision",
+					{ requirements: [revised], reason: "README identifies the established public API" },
+					undefined,
+					undefined,
+					evaluatorContext(),
+				)
+				return makeRun({ text: MET_ALL_GOOD })
+			})
+			const result = await evaluate({ recordRequirements: false, deps: { spawn } })
+			expect(result).toMatchObject({
+				verdict: "met",
+				diagnostics: {
+					requirements: [
+						{ requirements: [initial[0]] },
+						{ requirements: [revised], reason: "README identifies the established public API" },
+					],
+				},
+			})
+			expect(spawn).toHaveBeenCalledOnce()
+		})
+	})
+
 	it("accepts a met verdict whose every check cites stamped evidence", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","method":"existing_test","requirement":"ship it","status":"pass","failureMode":"untested path","evidence":["e1"]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","method":"existing_test","requirement":"ship it","status":"pass","failureMode":"untested path","evidence":["e1"]}]}',
 		})
 		expect(result).toMatchObject({ verdict: "met", reason: "all good", model: "judge/independent" })
 		if (result.verdict === "met") {
@@ -302,7 +486,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("downgrades a met verdict with no cited evidence to a host-authored continue", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","requirement":"ship it","status":"pass","failureMode":"fm","evidence":[]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"pass","failureMode":"fm","evidence":[]}]}',
 		})
 		expect(result.verdict).toBe("continue")
 		if (result.verdict === "continue") {
@@ -312,7 +496,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("downgrades a met verdict citing an unknown evidence ID even when a valid one is also cited", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1","e999"]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1","e999"]}]}',
 		})
 		expect(result.verdict).toBe("continue")
 		if (result.verdict === "continue") {
@@ -357,7 +541,7 @@ describe("Ferment V2 executing verifier", () => {
 		expect(spawn.mock.calls[0]?.[0].prompt).toContain("unavailable for this run — git failed")
 	})
 
-	it("accepts a met verdict that addresses every test-inventory flag", async () => {
+	it("requires host receipts even when a met verdict labels every original-test flag", async () => {
 		gatherWorkspaceFactsMock.mockResolvedValue(
 			workspaceFactsWithFlags([
 				{ id: "f1", kind: "test_file_deleted", path: "src/a.test.ts" },
@@ -365,9 +549,278 @@ describe("Ferment V2 executing verifier", () => {
 			]),
 		)
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","method":"baseline_test","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"],"flags":["f1","f2"]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","method":"baseline_test","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"],"flags":["f1","f2"]}]}',
 		})
-		expect(result).toMatchObject({ verdict: "met", reason: "all good" })
+		expect(result.verdict).not.toBe("met")
+	})
+
+	it("accepts supporting citations without inventing additional requirement outcomes", async () => {
+		const text = JSON.stringify({ ...JSON.parse(MET_ALL_GOOD), supportingEvidence: ["[e2]"] })
+		const result = await evaluate({ text, evidence: ["e1", "e2"] })
+		expect(result).toMatchObject({ verdict: "met", supportingEvidence: ["e2"], diagnostics: { correctionCount: 0 } })
+	})
+	it("rejects fabricated supporting citations", async () => {
+		const text = JSON.stringify({ ...JSON.parse(MET_ALL_GOOD), supportingEvidence: ["e99"] })
+		const resume = vi.fn(async () => makeRun({ text }))
+		expect(await evaluate({ text, deps: { resume } })).toMatchObject({ verdict: "unavailable" })
+		expect(resume.mock.calls).toHaveLength(1)
+	})
+
+	describe("citation resilience (annotated references)", () => {
+		it("accepts colon-annotated known IDs in checks and supporting evidence without a correction", async () => {
+			const text = JSON.stringify({
+				verdict: "met",
+				reason: "all good",
+				checks: [
+					{
+						requirementId: "r1",
+						kind: "work",
+						category: "behavior",
+						method: "command",
+						requirement: "ship it",
+						status: "pass",
+						failureMode: "fm",
+						evidence: ["e1: probe passes", "[E2] (suite green)"],
+					},
+				],
+				supportingEvidence: ["e3: full pre-existing mocha suite passes", "e4"],
+			})
+			const result = await evaluate({ text, evidence: ["e1", "e2", "e3", "e4"] })
+			expect(result).toMatchObject({
+				verdict: "met",
+				supportingEvidence: ["e3", "e4"],
+				diagnostics: { correctionCount: 0 },
+			})
+			if (result.verdict === "met") expect(result.checks?.[0]?.evidence).toEqual(["e1", "e2"])
+		})
+
+		it("still rejects an annotated reference whose ID the guard never stamped", async () => {
+			const result = await evaluate({
+				text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1: probe passes","e77: not stamped"]}]}',
+			})
+			expect(result.verdict).toBe("continue")
+			if (result.verdict === "continue") {
+				expect(result.reason).toContain("e77")
+				expect(result.reason).toContain("match no executed tool result")
+				expect(result.reason).toContain("run the supporting check")
+			}
+		})
+
+		it("downgrades a met verdict with a malformed reference to a reference-repair continue", async () => {
+			const result = await evaluate({
+				text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1","e25e3"]}]}',
+			})
+			expect(result.verdict).toBe("continue")
+			if (result.verdict === "continue") {
+				expect(result.reason).toContain("malformed reference")
+				expect(result.reason).toContain('"e25e3"')
+				expect(result.reason).toContain("bare [eN] ID")
+				expect(result.reason).not.toContain("run the supporting check")
+			}
+		})
+
+		it("corrects a continue verdict naming the field and distinguishing malformed from unknown references", async () => {
+			const text =
+				'{"verdict":"continue","reason":"fix things","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1","e9x","e999"]}]}'
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text }))
+			const result = await evaluate({ text, deps: { resume } })
+			expect(resume).toHaveBeenCalledOnce()
+			const prompt = resume.mock.calls[0]?.[1] ?? ""
+			expect(prompt).toContain("checks[].evidence contains malformed reference")
+			expect(prompt).toContain('"e9x"')
+			expect(prompt).toContain("e999")
+			expect(prompt).toContain("match no executed tool result")
+			expect(result).toMatchObject({
+				verdict: "unavailable",
+				diagnostics: { failureType: "uncited_verdict", correctionCount: 1 },
+			})
+		})
+
+		it("names the supportingEvidence field and distinguishes malformed from unknown supporting references", async () => {
+			const met = JSON.parse(MET_ALL_GOOD)
+			met.supportingEvidence = ["e1: suite green", "e9x", "e999"]
+			const text = JSON.stringify(met)
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text }))
+			const result = await evaluate({ text, evidence: ["e1", "e2"], deps: { resume } })
+			const prompt = resume.mock.calls[0]?.[1] ?? ""
+			expect(prompt).toContain("supportingEvidence contains malformed reference")
+			expect(prompt).toContain('"e9x"')
+			expect(prompt).toContain("e999")
+			expect(prompt).toContain("match no executed tool result")
+			expect(result).toMatchObject({ verdict: "unavailable", diagnostics: { correctionCount: 1 } })
+		})
+
+		it("requests only citation repair when citations are the sole defect", async () => {
+			const met = JSON.parse(MET_ALL_GOOD)
+			met.supportingEvidence = ["e1]"]
+			const corrected = JSON.parse(MET_ALL_GOOD)
+			corrected.supportingEvidence = ["e1"]
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text: JSON.stringify(corrected) }))
+			const result = await evaluate({ text: JSON.stringify(met), deps: { resume } })
+			expect(resume).toHaveBeenCalledOnce()
+			// The full correction prompt: reference repair only.
+			const prompt = resume.mock.calls[0]?.[1] ?? ""
+			expect(prompt).toBe(
+				'The previous response was rejected by host validation: supportingEvidence contains malformed reference "e1]"; cite each reference as one bare [eN] ID string per array entry (for example "e25") so it can be tied to an executed tool result. Return exactly one JSON object matching the output contract with the same verdict and checks, repairing only the citations: every reference must be one bare [eN] ID string that appears in your tool results. Do not run new verification for this repair; cite the existing evidence or drop the reference.',
+			)
+			// No execution instructions ride along.
+			expect(prompt).not.toContain("run_original_test")
+			expect(prompt).not.toContain("probes")
+			expect(prompt).not.toContain("record or revise requirements")
+			expect(result).toMatchObject({
+				verdict: "met",
+				supportingEvidence: ["e1"],
+				diagnostics: { correctionCount: 1 },
+			})
+		})
+
+		it("keeps the procedure correction when a genuine verification gap accompanies bad citations", async () => {
+			const requirement: VerifierRequirement = {
+				id: "r1",
+				requirement: "ship it",
+				source: "Objective",
+				acceptance: "The behavior works",
+				category: "behavior",
+			}
+			const met = JSON.parse(MET_ALL_GOOD)
+			met.supportingEvidence = ["e1]"]
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text: JSON.stringify(met) }))
+			const result = await evaluate({
+				text: JSON.stringify(met),
+				requirements: [requirement, { ...requirement, id: "r2" }],
+				deps: { resume },
+			})
+			const prompt = resume.mock.calls[0]?.[1] ?? ""
+			expect(prompt).toContain("Recorded requirement r2")
+			expect(prompt).toContain('malformed reference "e1]"')
+			expect(prompt).toContain("Complete the missing steps with your tools")
+			expect(result).toMatchObject({
+				verdict: "unavailable",
+				diagnostics: { failureType: "procedure_incomplete", correctionCount: 1 },
+			})
+		})
+
+		it("still corrects an uncovered requirement even when every supporting reference is valid and annotated", async () => {
+			const requirement: VerifierRequirement = {
+				id: "r1",
+				requirement: "ship it",
+				source: "Objective",
+				acceptance: "The behavior works",
+				category: "behavior",
+			}
+			const corrected = JSON.parse(MET_ALL_GOOD)
+			corrected.checks.push({ ...corrected.checks[0], requirementId: "r2", requirement: "second behavior" })
+			corrected.supportingEvidence = ["e1: suite green"]
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text: JSON.stringify(corrected) }))
+			const result = await evaluate({
+				text: JSON.stringify({ ...JSON.parse(MET_ALL_GOOD), supportingEvidence: ["e1: suite green"] }),
+				requirements: [requirement, { ...requirement, id: "r2" }],
+				deps: { resume },
+			})
+			expect(resume.mock.calls[0]?.[1]).toContain("Recorded requirement r2")
+			expect(result).toMatchObject({ verdict: "met", diagnostics: { correctionCount: 1 } })
+		})
+	})
+	it("reports omitted outcomes and auxiliary evidence misuse in the first correction", async () => {
+		const requirement: VerifierRequirement = {
+			id: "r1",
+			requirement: "ship it",
+			source: "Objective",
+			acceptance: "The behavior works",
+			category: "behavior",
+		}
+		const initial = JSON.parse(MET_ALL_GOOD)
+		initial.checks.push({
+			...initial.checks[0],
+			category: "constraint",
+			method: "implementer_test",
+			requirement: "Auxiliary suite succeeds",
+		})
+		const corrected = JSON.parse(MET_ALL_GOOD)
+		corrected.checks.push({ ...corrected.checks[0], requirementId: "r2", requirement: "second behavior" })
+		corrected.supportingEvidence = ["e1"]
+		const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text: JSON.stringify(corrected) }))
+		const result = await evaluate({
+			text: JSON.stringify(initial),
+			requirements: [requirement, { ...requirement, id: "r2" }],
+			deps: { resume },
+		})
+		expect(result).toMatchObject({ verdict: "met", diagnostics: { correctionCount: 1 } })
+		expect(resume.mock.calls[0]?.[1]).toContain("Recorded requirement r2")
+		expect(resume.mock.calls[0]?.[1]).toContain("supportingEvidence")
+		expect(resume.mock.calls[0]?.[1]).toContain("implementer's own tests")
+	})
+	it("does not let another passing edge or a constraint label excuse unsupported behavior", async () => {
+		const initial = JSON.parse(MET_ALL_GOOD)
+		initial.checks.push({
+			...initial.checks[0],
+			category: "constraint",
+			method: "inspection",
+			requirement: "another edge",
+		})
+		const text = JSON.stringify(initial)
+		const requirement: VerifierRequirement = {
+			id: "r1",
+			requirement: "ship it",
+			source: "Objective",
+			acceptance: "Every edge holds",
+			category: "behavior",
+		}
+		const resume = vi.fn(async () => makeRun({ text }))
+		expect(await evaluate({ text, requirements: [requirement], deps: { resume } })).toMatchObject({
+			verdict: "unavailable",
+		})
+	})
+	it("accepts a matching host original-test receipt and rejects a different flag receipt", async () => {
+		gatherWorkspaceFactsMock.mockResolvedValue(
+			workspaceFactsWithFlags([{ id: "f1", kind: "test_file_modified", path: "src/a.test.ts" }]),
+		)
+		const check = { ...JSON.parse(MET_ALL_GOOD).checks[0], method: "baseline_test", flags: ["f1"] }
+		const text = JSON.stringify({ verdict: "met", reason: "verified", checks: [check] })
+		const receipt = {
+			flag: "f1",
+			commit: "base",
+			path: "src/a.test.ts",
+			sha256: "hash",
+			preparedPath: "/workspace/src/original.test.ts",
+			cwd: "/workspace",
+			command: "node original.test.ts",
+			exitCode: 0,
+		}
+		const guard: VerifierGuard = {
+			...guardWithEvidence([]),
+			evidence: new Map([
+				[
+					"e1",
+					{
+						id: "e1",
+						toolName: "run_original_test",
+						input: {},
+						isError: false,
+						excerpt: "passed",
+						originalTest: receipt,
+					},
+				],
+			]),
+		}
+		expect(await evaluate({ text, deps: { createGuard: () => guard } })).toMatchObject({ verdict: "met" })
+		const wrongGuard: VerifierGuard = {
+			...guard,
+			evidence: new Map([
+				[
+					"e1",
+					{
+						id: "e1",
+						toolName: "run_original_test",
+						input: {},
+						isError: false,
+						excerpt: "passed",
+						originalTest: { ...receipt, flag: "f2" },
+					},
+				],
+			]),
+		}
+		expect((await evaluate({ text, deps: { createGuard: () => wrongGuard } })).verdict).not.toBe("met")
 	})
 
 	describe("independent verification (procedure rules)", () => {
@@ -379,6 +832,59 @@ describe("Ferment V2 executing verifier", () => {
 					{ kind: "work", requirement: "ship it", status: "pass", failureMode: "fm", evidence: ["e1"], ...check },
 				],
 			})
+
+		it.each([
+			"behavior",
+			"constraint",
+			"delivery",
+		])("sends an unverifiable %s requirement back for correction instead of accepting completion", async (category) => {
+			const text = met({ category, status: "unverifiable" })
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text }))
+			const result = await evaluate({ text, deps: { resume } })
+			expect(resume.mock.calls[0]?.[1]).toContain("is unverifiable, so completion is not established")
+			expect(result).toMatchObject({
+				verdict: "unavailable",
+				diagnostics: { failureType: "procedure_incomplete" },
+			})
+		})
+
+		it("accepts a corrected continue with a cited verification obligation without inventing a defect", async () => {
+			const text = met({ status: "unverifiable" })
+			const resume = vi.fn(async () =>
+				makeRun({
+					text: JSON.stringify({
+						verdict: "continue",
+						reason: "Verify the public entry point with a runnable integration probe.",
+						checks: [{ requirement: "ship it", status: "unverifiable", evidence: ["e1"] }],
+					}),
+				}),
+			)
+			expect(await evaluate({ text, deps: { resume } })).toMatchObject({
+				verdict: "continue",
+				reason: "Verify the public entry point with a runnable integration probe.",
+			})
+		})
+
+		it("accepts completion after an unverifiable requirement is actually verified", async () => {
+			const resume = vi.fn(async () => makeRun({ text: MET_ALL_GOOD }))
+			expect(await evaluate({ text: met({ status: "unverifiable" }), deps: { resume } })).toMatchObject({
+				verdict: "met",
+			})
+		})
+
+		it("rejects an uncited verification obligation as grounds for continuation", async () => {
+			const text = JSON.stringify({
+				verdict: "continue",
+				reason: "Need more evidence.",
+				checks: [{ requirement: "ship it", status: "unverifiable", evidence: [] }],
+			})
+			const resume = vi.fn(async (_id: string, _prompt: string) => makeRun({ text }))
+			expect(await evaluate({ text, deps: { resume } })).toMatchObject({
+				verdict: "unavailable",
+				diagnostics: { failureType: "uncited_verdict" },
+			})
+			expect(resume.mock.calls[0]?.[1]).toContain('a cited "unverifiable" check whose verification can be resolved')
+		})
 
 		it("sends a behaviour pass resting on the implementer's tests back to the verifier as a procedure correction", async () => {
 			const resume = vi.fn(async (_id: string, _prompt: string) =>
@@ -504,8 +1010,8 @@ describe("Ferment V2 executing verifier", () => {
 			const result = await evaluate({ text: met({ method: "command", flags: ["f1", "f2"] }), deps: { resume } })
 			const prompt = resume.mock.calls[0]?.[1] ?? ""
 			expect(prompt).toContain("Flag f1 (test file modified: src/a.test.ts) has no baseline_test check")
-			expect(prompt).toContain("git show <baseline>:src/a.test.ts")
-			expect(result).toMatchObject({ verdict: "met" })
+			expect(prompt).toContain("call run_original_test for f1")
+			expect(result.verdict).not.toBe("met")
 		})
 	})
 
@@ -562,7 +1068,7 @@ describe("Ferment V2 executing verifier", () => {
 		const prompt = spawn.mock.calls[0]?.[0].prompt ?? ""
 		expect(prompt).toContain("Baseline worktree (host-provided, disposable): /tmp/baseline-wt")
 		expect(prompt).toContain("checked out on first use")
-		expect(prompt).toContain("they must FAIL there")
+		expect(prompt).toContain("Execution there is NOT isolated")
 		expect(prompt).toContain("editable install")
 		// Nothing referenced the worktree, so it was never checked out.
 		expect(worktree.ensure).not.toHaveBeenCalled()
@@ -643,11 +1149,11 @@ describe("Ferment V2 executing verifier", () => {
 	it("corrects a continue verdict citing an unknown evidence ID once, then reports unavailable", async () => {
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"continue","reason":"still hallucinating","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1","e999"]}]}',
+				text: '{"verdict":"continue","reason":"still hallucinating","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1","e999"]}]}',
 			}),
 		)
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"fix things","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1","e999"]}]}',
+			text: '{"verdict":"continue","reason":"fix things","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1","e999"]}]}',
 			deps: { resume },
 		})
 		expect(resume).toHaveBeenCalledOnce()
@@ -660,11 +1166,11 @@ describe("Ferment V2 executing verifier", () => {
 	it("corrects an impossible verdict citing an unknown evidence ID, then reports unavailable", async () => {
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"impossible","reason":"still hallucinating","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e999"]}]}',
+				text: '{"verdict":"impossible","reason":"still hallucinating","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e999"]}]}',
 			}),
 		)
 		const result = await evaluate({
-			text: '{"verdict":"impossible","reason":"blocked forever","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e999"]}]}',
+			text: '{"verdict":"impossible","reason":"blocked forever","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e999"]}]}',
 			deps: { resume },
 		})
 		expect(resume).toHaveBeenCalledOnce()
@@ -674,20 +1180,20 @@ describe("Ferment V2 executing verifier", () => {
 		}
 	})
 
-	it("blocks an impossible verdict without a cited check, then reports unavailable/uncited_verdict", async () => {
+	it("rejects an impossible verdict omitting recorded requirement outcomes", async () => {
 		const resume = vi.fn(async () => makeRun({ text: '{"verdict":"impossible","reason":"need user input"}' }))
 		const result = await evaluate({ text: '{"verdict":"impossible","reason":"need user input"}', deps: { resume } })
 		expect(resume).toHaveBeenCalledOnce()
 		expect(result.verdict).toBe("unavailable")
 		if (result.verdict === "unavailable") {
-			expect(result.diagnostics.failureType).toBe("uncited_verdict")
+			expect(result.diagnostics.failureType).toBe("procedure_incomplete")
 			expect(result.diagnostics.correctionCount).toBe(1)
 		}
 	})
 
 	it("accepts an impossible verdict backed by a cited check", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"impossible","reason":"needs the credentials","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"impossible","reason":"needs the credentials","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 		})
 		expect(result).toMatchObject({
 			verdict: "impossible",
@@ -697,7 +1203,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("downgrades a met verdict whose check names no failure mode", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","requirement":"ship it","status":"pass","evidence":["e1"]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"pass","evidence":["e1"]}]}',
 		})
 		expect(result.verdict).toBe("continue")
 		if (result.verdict === "continue") {
@@ -707,7 +1213,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("downgrades a met verdict with a failing check to a continue naming the requirement", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"all good","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"met","reason":"all good","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 		})
 		expect(result.verdict).toBe("continue")
 		if (result.verdict === "continue") {
@@ -718,7 +1224,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("keeps a continue verdict with at least one cited failing check", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 		})
 		expect(result).toMatchObject({
 			verdict: "continue",
@@ -728,7 +1234,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("keeps the verifier's own summary when the failing check's cited evidence has no text excerpt", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 			deps: {
 				// A tool result with no text content stamps an empty excerpt: the
 				// composed gap has nothing to show, so the verifier's summary stands.
@@ -745,7 +1251,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("embeds the failing check's evidence excerpt, flattened and clipped, in the task-facing reason", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 			deps: {
 				createGuard: () => ({
 					extension: () => {},
@@ -777,11 +1283,11 @@ describe("Ferment V2 executing verifier", () => {
 	it("corrects an uncited continue verdict once, then reports unavailable/uncited_verdict", async () => {
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"continue","reason":"still uncited","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
+				text: '{"verdict":"continue","reason":"still uncited","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
 			}),
 		)
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"fix things","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
+			text: '{"verdict":"continue","reason":"fix things","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
 			deps: { resume },
 		})
 		expect(resume).toHaveBeenCalledOnce()
@@ -795,11 +1301,11 @@ describe("Ferment V2 executing verifier", () => {
 	it("accepts a continue verdict after the correction supplies a cited failing check", async () => {
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"continue","reason":"now cited","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+				text: '{"verdict":"continue","reason":"now cited","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 			}),
 		)
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"fix things","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
+			text: '{"verdict":"continue","reason":"fix things","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e7"]}]}',
 			deps: { resume },
 		})
 		expect(result).toMatchObject({
@@ -822,7 +1328,7 @@ describe("Ferment V2 executing verifier", () => {
 	it("accepts the verdict after the correction returns a valid one", async () => {
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"impossible","reason":"needs the credentials","checks":[{"kind":"work","requirement":"ship it","status":"unverifiable","evidence":["e1"]}]}',
+				text: '{"verdict":"impossible","reason":"needs the credentials","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"unverifiable","evidence":["e1"]}]}',
 			}),
 		)
 		const result = await evaluate({ text: "not json at all", deps: { resume } })
@@ -833,7 +1339,7 @@ describe("Ferment V2 executing verifier", () => {
 		const spawn = vi.fn(async () => makeRun({ text: "not json at all" }))
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"continue","reason":"now cited","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+				text: '{"verdict":"continue","reason":"now cited","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 				// The resume returns the child record's cumulative count: 2 initial + 1 correction.
 				toolCalls: 3,
 			}),
@@ -847,7 +1353,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("compares final-answer checks against the exact proposed answer", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"done","checks":[{"kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"paraphrase of the answer","expectedAnswer":null,"evidence":[]}]}',
+			text: '{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"paraphrase of the answer","expectedAnswer":null,"evidence":[]}]}',
 			messages: conversationWithAnswer("THE ANSWER"),
 		})
 		expect(result.verdict).toBe("continue")
@@ -858,7 +1364,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("rejects a final answer that differs from the exact expected answer", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"done","checks":[{"kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"THE ANSWER","expectedAnswer":"THE OTHER ANSWER","evidence":[]}]}',
+			text: '{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"THE ANSWER","expectedAnswer":"THE OTHER ANSWER","evidence":[]}]}',
 			messages: conversationWithAnswer("THE ANSWER"),
 		})
 		expect(result.verdict).toBe("continue")
@@ -869,7 +1375,7 @@ describe("Ferment V2 executing verifier", () => {
 
 	it("accepts a final-answer check that matches the proposed answer literally", async () => {
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"done","checks":[{"kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"THE ANSWER","expectedAnswer":null,"evidence":[]}]}',
+			text: '{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"final_answer","requirement":"exact output","status":"pass","candidateRef":"last_assistant","observedAnswer":"THE ANSWER","expectedAnswer":null,"evidence":[]}]}',
 			messages: conversationWithAnswer("THE ANSWER"),
 		})
 		expect(result).toMatchObject({ verdict: "met" })
@@ -1087,7 +1593,7 @@ describe("Ferment V2 executing verifier", () => {
 			removed: ["scratch.txt"],
 		})
 		const result = await evaluate({
-			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+			text: '{"verdict":"continue","reason":"Fix the parser","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 		})
 		expect(result).toMatchObject({
 			verdict: "continue",
@@ -1150,7 +1656,7 @@ describe("Ferment V2 executing verifier", () => {
 		gitProbeMock.mockResolvedValue("outside_git")
 		snapshotMock.mockResolvedValue(undefined)
 		const result = await evaluate({
-			text: '{"verdict":"met","reason":"ok","checks":[{"kind":"work","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"]}]}',
+			text: '{"verdict":"met","reason":"ok","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"ship it","status":"pass","failureMode":"fm","evidence":["e1"]}]}',
 		})
 		expect(result).toMatchObject({ verdict: "met" })
 		expect(enforceIntegrityMock).not.toHaveBeenCalled()
@@ -1206,7 +1712,7 @@ describe("Ferment V2 executing verifier", () => {
 		}
 		const resume = vi.fn(async () =>
 			makeRun({
-				text: '{"verdict":"continue","reason":"now cited","checks":[{"kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+				text: '{"verdict":"continue","reason":"now cited","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
 				session: fakeSession([]),
 			}),
 		)
@@ -1283,7 +1789,7 @@ describe("Ferment V2 executing verifier", () => {
 		expect(input?.prompt).toContain("ship it")
 		expect(input?.prompt).toContain("src/feature.ts")
 		expect(input?.cwd).toBe("/workspace")
-		expect(input?.extensionFactories).toHaveLength(3)
+		expect(input?.extensionFactories).toHaveLength(5)
 		expect(input?.maxDuration).toBe(0)
 	})
 
@@ -1303,7 +1809,7 @@ describe("Ferment V2 executing verifier", () => {
 		// content and the evidence excerpts recorded for verdict reasons are
 		// already redacted; permissions (with the verifier's write pre-approval)
 		// gate verifier tool calls by the session mode.
-		expect(input?.extensionFactories).toHaveLength(3)
+		expect(input?.extensionFactories).toHaveLength(4)
 		expect(input?.extensionFactories?.[0]).toBe(piiRedactionExtension)
 		expect(typeof input?.extensionFactories?.[1]).toBe("function")
 		expect(input?.extensionFactories?.[1]).not.toBe(permissionsExtension)
@@ -1362,7 +1868,7 @@ describe("Ferment V2 executing verifier", () => {
 describe("parseFermentV2EvaluatorOutput", () => {
 	it("parses the verifier output contract", () => {
 		const parsed = parseFermentV2EvaluatorOutput(
-			'{"verdict":"continue","reason":"Fix the parser","checks":[{"kind":"work","requirement":"parser handles empty input","status":"fail","failureMode":"crashes on empty","evidence":["e3"]}]}',
+			'{"verdict":"continue","reason":"Fix the parser","checks":[{"requirementId":"r1","kind":"work","requirement":"parser handles empty input","status":"fail","failureMode":"crashes on empty","evidence":["e3"]}]}',
 		)
 		expect(parsed).toMatchObject({
 			verdict: "continue",
@@ -1379,15 +1885,58 @@ describe("parseFermentV2EvaluatorOutput", () => {
 
 	it("normalizes bracketed evidence ids", () => {
 		const parsed = parseFermentV2EvaluatorOutput(
-			'{"verdict":"met","reason":"done","checks":[{"kind":"work","requirement":"r","status":"pass","failureMode":"fm","evidence":["[E12]"]}]}',
+			'{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"work","requirement":"r","status":"pass","failureMode":"fm","evidence":["[E12]"]}]}',
 		)
 		expect(parsed?.checks?.[0]?.evidence).toEqual(["e12"])
+	})
+
+	describe("annotated evidence references", () => {
+		const verdictWith = (reference: unknown) =>
+			`{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"work","requirement":"r","status":"pass","failureMode":"fm","evidence":[${JSON.stringify(
+				reference,
+			)}]}],"supportingEvidence":[${JSON.stringify(reference)}]}`
+
+		it.each([
+			"e25",
+			"[e25]",
+			"e25: full pre-existing mocha suite passes",
+			"[e25]: git show confirms the source",
+			"e25 full pre-existing mocha suite passes",
+			"e25 (full pre-existing mocha suite passes)",
+			"E25",
+			"[E25]: annotated",
+			"  e25  ",
+		])("normalizes %s identically in both reference fields", (reference) => {
+			const parsed = parseFermentV2EvaluatorOutput(verdictWith(reference))
+			expect(parsed?.checks?.[0]?.evidence).toEqual(["e25"])
+			expect(parsed?.supportingEvidence).toEqual(["e25"])
+		})
+
+		it.each([
+			"e25foo",
+			"e25e3",
+			"[e25",
+			"e25]",
+			"[e25][e26]",
+		])("keeps the malformed reference %s verbatim for host validation", (reference) => {
+			const parsed = parseFermentV2EvaluatorOutput(verdictWith(reference))
+			expect(parsed?.checks?.[0]?.evidence).toEqual([reference])
+			expect(parsed?.supportingEvidence).toEqual([reference])
+		})
+
+		it("still rejects non-string and blank evidence scalars", () => {
+			expect(parseFermentV2EvaluatorOutput(verdictWith(25))).toBeUndefined()
+			expect(parseFermentV2EvaluatorOutput(verdictWith("   "))).toBeUndefined()
+			expect(
+				parseFermentV2EvaluatorOutput('{"verdict":"met","reason":"done","supportingEvidence":[7]}'),
+			).toBeUndefined()
+		})
 	})
 
 	it("rejects unknown check statuses", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"met","reason":"done","checks":[{"kind":"work","requirement":"r","status":"maybe"}]}',
+				'{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"work","requirement":"r","status":"maybe"}]}',
 			),
 		).toBeUndefined()
 	})

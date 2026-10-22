@@ -5,7 +5,8 @@
  * The guard runs as an inline extension inside the verifier subagent's child
  * session (it loads even though the Verifier persona disables extensions):
  *
- * - every `tool_result` is prefixed with a host-stamped evidence ID `[eN]`;
+ * - verification `tool_result`s receive host evidence IDs `[eN]`;
+ *   requirement-recording metadata is excluded;
  *   verdicts may cite only these IDs (host validation rejects unknown IDs);
  * - assistant usage is accumulated per `message_end`, and summarization usage
  *   per `session_compact` (the compaction completion produces no assistant
@@ -31,7 +32,9 @@ import { lstatSync, realpathSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { InlineExtension } from "@earendil-works/pi-coding-agent"
+import type { OriginalTestReceipt } from "./original-test.js"
 import { isRecord } from "./reducer.js"
+import { RECORD_REQUIREMENTS_TOOL } from "./requirements.js"
 import type { FermentV2EvaluatorUsage } from "./types.js"
 import {
 	createGitRunner,
@@ -48,6 +51,7 @@ import {
 const EVIDENCE_EXCERPT_CHARS = 2_000
 
 export interface VerifierEvidence {
+	originalTest?: OriginalTestReceipt
 	id: string
 	toolName: string
 	input: Record<string, unknown>
@@ -62,6 +66,7 @@ export interface LazyBaselineWorktree {
 }
 
 export interface VerifierGuardOptions {
+	originalTestReceipt?: (toolCallId: string) => OriginalTestReceipt | undefined
 	baselineWorktree?: LazyBaselineWorktree
 	/** The repository the verifier runs in; `write` may create new files inside it. Without it, writes are confined to the worktree. */
 	cwd?: string
@@ -196,13 +201,17 @@ export function createVerifierGuard(options: VerifierGuardOptions = {}): Verifie
 			}
 		})
 		pi.on("tool_result", (event) => {
+			// Recording expectations is metadata, never evidence of task completion.
+			if (event.toolName === RECORD_REQUIREMENTS_TOOL) return undefined
 			if (event.toolName === "write" && !event.isError && typeof event.input.path === "string") {
 				const base = options.cwd ?? worktree?.path
 				if (base) createdFiles.add(resolve(base, event.input.path))
 			}
 			const id = `e${nextEvidenceId++}`
+			const originalTest = options.originalTestReceipt?.(event.toolCallId)
 			evidence.set(id, {
 				id,
+				...(originalTest ? { originalTest } : {}),
 				toolName: event.toolName,
 				input: event.input,
 				isError: event.isError,

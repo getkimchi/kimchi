@@ -211,6 +211,9 @@ export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState)
 }
 
 export interface PermissionsExtensionOptions {
+	/** Host wrappers must be authorized as their underlying operation, before all policy checks. */
+	normalizeToolCall?: (event: ToolCallEvent) => ToolCallEvent
+
 	/**
 	 * Pre-approves a tool call once deny rules, the plan gate, and the read-only
 	 * checks have run — it never overrides a deny. For host-spawned agents whose
@@ -1285,7 +1288,14 @@ function registerPermissions(pi: ExtensionAPI, options: PermissionsExtensionOpti
 		}
 	})
 
-	pi.on("tool_call", async (event, ctx) => {
+	pi.on("tool_call", async (rawEvent, ctx) => {
+		let event: ToolCallEvent
+		try {
+			event = options.normalizeToolCall?.(rawEvent) ?? rawEvent
+		} catch (error) {
+			emitToolDecision(pi, rawEvent, getRuntimePermissionMode().mode, "reject", "deny")
+			return { block: true, reason: error instanceof Error ? error.message : String(error) }
+		}
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
@@ -1378,6 +1388,15 @@ function registerPermissions(pi: ExtensionAPI, options: PermissionsExtensionOpti
 			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) {
 				emitToolDecision(pi, event, mode, "accept", "ferment_internal")
 				return undefined
+			}
+
+			// A wrapper may be denied by name as well as by its underlying operation.
+			if (rawEvent.toolName !== event.toolName) {
+				const wrapperRule = evaluateRules(allRules(), rawEvent.toolName.toLowerCase(), rawEvent.input)
+				if (wrapperRule.decision === "deny") {
+					emitToolDecision(pi, rawEvent, mode, "reject", ruleSourceDetail(wrapperRule.rule))
+					return { block: true, reason: `Denied by rule ${formatRule(wrapperRule.rule)}` }
+				}
 			}
 
 			// Compound bash commands: early gate for deny/allow only.

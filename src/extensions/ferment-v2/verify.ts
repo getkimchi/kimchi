@@ -38,6 +38,7 @@ export type FermentV2VerifyReport =
 			verdict: FermentV2EvaluationResult["verdict"]
 			reason: string
 			checks: readonly FermentV2VerifierCheck[]
+			supportingEvidence: readonly string[]
 			model: string | null
 			sameModelAsImplementer: boolean
 			modelFallback: "session" | null
@@ -101,6 +102,7 @@ function buildReport(
 		verdict: result.verdict,
 		reason: result.reason,
 		checks: result.verdict === "unavailable" ? [] : (result.checks ?? []),
+		supportingEvidence: result.verdict === "unavailable" ? [] : (result.supportingEvidence ?? []),
 		model: result.model ?? null,
 		sameModelAsImplementer: result.sameModelAsImplementer === true,
 		modelFallback: result.modelFallback ?? null,

@@ -1,18 +1,16 @@
 /**
  * verifier-prompt.ts — the Ferment V2 verifier's per-run task prompt.
  *
- * Until requirements exist (the drafting slice), the verifier derives its
- * checks from the objective; the prompt therefore carries the objective, the
- * host-gathered workspace facts — against the ferment **baseline** when one
+ * The verifier records requirements before validating them. The initial
+ * prompt carries the objective and host-gathered workspace facts — against the ferment **baseline** when one
  * exists, against HEAD otherwise (changed files, diff stat, test-inventory
  * flags with `f1…` IDs) — the path of the host-reserved baseline worktree
  * with the attribution and vacuous-test steps and the known worktree traps,
- * the implementer's Todos (low-trust context), the proposed final answer,
- * and the previous verifier gap.
+ * while implementer context is released by record_requirements after the
+ * initial requirement list has been accepted.
  */
 
 import type { TodoItem } from "../todos/types.js"
-import type { FermentV2CompletionConfidence } from "./types.js"
 import type { TestInventoryFlag, WorkspaceChangedFile, WorkspaceFacts } from "./workspace.js"
 
 /**
@@ -88,7 +86,7 @@ function formatFactsSection(facts: FermentV2VerifierFacts): string {
 	if (workspace.testInventoryFlags.length > 0) {
 		lines.push(
 			[
-				`Test-inventory flags (host-detected changes to the pre-existing test suite; a met verdict requires every flag ID addressed by some check's flags array, and every modified, deleted, or renamed test file a "baseline_test" check that ran its baseline version — git show ${workspace.baseline}:<path>):`,
+				`Test-inventory flags (host-detected changes to the pre-existing test suite; a met verdict requires every flag ID addressed by some check's flags array, and every modified, deleted, or renamed test file a "baseline_test" check citing a matching host receipt from run_original_test):`,
 				...workspace.testInventoryFlags.map(formatTestInventoryFlag),
 			].join("\n"),
 		)
@@ -106,11 +104,9 @@ function formatBaselineWorktreeSection(path: string): string {
 	return [
 		`Baseline worktree (host-provided, disposable): ${path}`,
 		[
-			"The working tree exactly as it was when the objective started, including files that were untracked then. It is checked out on first use: the first command that references this path may take a moment. Run code there to:",
-			"- Attribute test failures: run the same failing test in the baseline worktree — a failure that also fails there is pre-existing, not caused by the implementer's changes; a failure that passes there is a regression.",
-			"- Vacuous-test check: copy the implementer's new or changed test files into the baseline worktree, then run them there — they must FAIL there. A new test that passes without the implementer's changes does not verify the change. Distinguish how they fail: an assertion failure is the strong evidence; a test that only fails with a setup or import error (a module that did not exist at baseline, a missing fixture) is weaker, and a test that cannot run at all is inconclusive — treat it as unverified and look for an assertion-level failure instead.",
-			"The worktree is disposable and always deleted after this run: you may copy the implementer's new or changed test files into it and run whatever setup those tests need (installs, generators, configuration), but keep the pre-change production code intact — never edit, add, or delete its source files, and never commit anything inside the worktree.",
-			"Known traps: a Python editable install (pip -e) points at the main tree, not the worktree — reinstall inside the worktree or treat its baseline results as unreliable; generated files (build output, snapshots, lockfile-derived artifacts) may be stale or absent — regenerate them inside the worktree when cheap; node_modules directories of the main tree (the root one and nested ones up to three levels deep) are already linked into the worktree — deeper ones are not; never delete or replace them.",
+			"Baseline source is available for inspection and optional comparisons; it is checked out on first use. Execution there is NOT isolated: shared node_modules/workspace links, Python editable installs, and generated artifacts can resolve current implementation code. A baseline cwd alone does not establish which code ran. Treat an unconfirmed comparison as inconclusive.",
+			"For changed/deleted/renamed test flags, use run_original_test to run host-retrieved original assertions against current code. New tests run against baseline code only assess non-vacuity; they cannot satisfy original-test obligations.",
+			"Keep baseline production code intact. Never install dependencies, delete or replace shared node_modules, or commit in this disposable worktree. Leave cleanup to the host.",
 		].join("\n"),
 	].join("\n")
 }
@@ -124,8 +120,6 @@ export interface FermentV2VerifierTaskInput {
 	/** True when the host could not snapshot the working tree, so verifier changes will not be reverted. */
 	integrityUnenforced?: boolean
 	todos: readonly TodoItem[]
-	/** The implementer's self-reported completion confidence (low trust). */
-	completionConfidence?: FermentV2CompletionConfidence
 	/** The proposed final answer (last tool-free assistant entry), when one exists. */
 	proposedAnswer?: string
 	/** The task-facing reason of the previous verifier `continue` verdict, when one exists. */
@@ -143,7 +137,7 @@ export function buildVerifierTaskPrompt(input: FermentV2VerifierTaskInput): stri
 		// A baseline exists but no worktree could be reserved: the verifier
 		// must know attribution cannot lean on a clean pre-change checkout.
 		sections.push(
-			"Baseline worktree: unavailable for this run (creation failed) — attribute pre-existing failures by reverting the implementer's changes by hand only when that is cheap and safe, and treat attribution as uncertain otherwise.",
+			"Baseline worktree: unavailable for this run (creation failed) — inspect original source with git show; treat runtime attribution as uncertain without evidence of which code ran.",
 		)
 	}
 	if (input.integrityUnenforced) {
@@ -151,12 +145,27 @@ export function buildVerifierTaskPrompt(input: FermentV2VerifierTaskInput): stri
 			"Integrity guard: unavailable for this run (the host could not snapshot the working tree) — any file you create, modify, or delete in the working tree will NOT be reverted. Do not write to the working tree at all.",
 		)
 	}
+	const hasFlags = "workspace" in input.facts && input.facts.workspace.testInventoryFlags.length > 0
+	sections.push(
+		[
+			"First derive observable requirements from the objective and relevant repository contracts. Call record_requirements alone before validating candidate behavior; its result supplies the implementer context. Then verify the recorded requirements independently and reference their IDs in your checks",
+			'and end with exactly one JSON object matching the output contract. Cite only [eN] evidence IDs stamped on your tool results, one bare ID string per array entry (for example "e25" in the JSON evidence arrays).',
+			...(hasFlags
+				? [
+						"Every test-inventory flag ID listed above must be addressed by some check's flags array before a met verdict is accepted.",
+					]
+				: []),
+		].join(" "),
+	)
+	return sections.join("\n\n")
+}
+
+/** Released to the same session only after its initial requirements are recorded. */
+export function buildVerifierValidationContext(
+	input: Pick<FermentV2VerifierTaskInput, "todos" | "proposedAnswer" | "previousGap">,
+): string {
+	const sections: string[] = []
 	sections.push(`Implementer's current Todos (context only, self-reported):\n${formatTodoState(input.todos)}`)
-	if (input.completionConfidence) {
-		sections.push(
-			`Implementer's self-reported completion confidence: ${input.completionConfidence} (low trust — verify everything).`,
-		)
-	}
 	if (input.proposedAnswer !== undefined) {
 		sections.push(
 			`Proposed final answer (the complete last tool-free assistant message; compare final-answer requirements against it literally):\n${input.proposedAnswer}`,
@@ -165,17 +174,5 @@ export function buildVerifierTaskPrompt(input: FermentV2VerifierTaskInput): stri
 	if (input.previousGap) {
 		sections.push(`Previous verifier gap (already reported to the implementer):\n${input.previousGap}`)
 	}
-	const hasFlags = "workspace" in input.facts && input.facts.workspace.testInventoryFlags.length > 0
-	sections.push(
-		[
-			"Now execute your verification procedure: derive the requirements and their edges from the objective, verify every behaviour independently — your own probes, pre-existing tests, or direct commands; the implementer's tests are context only —",
-			"and end with exactly one JSON object matching the output contract. Cite only [eN] evidence IDs stamped on your tool results.",
-			...(hasFlags
-				? [
-						"Every test-inventory flag ID listed above must be addressed by some check's flags array before a met verdict is accepted.",
-					]
-				: []),
-		].join(" "),
-	)
 	return sections.join("\n\n")
 }

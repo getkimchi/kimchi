@@ -10,6 +10,12 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
+import {
+	ORIGINAL_TEST_OBJECTIVE,
+	originalTestRepairResponses,
+	seedOriginalTestRepository,
+} from "../tui/support/ferment-v2-original-test.js"
+import { verifierRequirements } from "../tui/support/ferment-v2-verifier.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, type ScenarioResult, waitFor } from "./support/scenarios.js"
 
@@ -39,7 +45,10 @@ function isFermentV2VerifierRequest(request: FakeLikeRequest): boolean {
 	return collectStrings(request.body).some((value) => value.includes("<ferment_v2_verifier>"))
 }
 
-it("runs the executing verifier after a completion claim and completes the Ferment V2", async () => {
+it.each([
+	false,
+	true,
+])("verifies every recorded requirement before completing (initial omission: %s)", async (omitRequirement) => {
 	const outputFile = "acp-ferment.txt"
 	const acceptedFinal = "ACP_FERMENT_VERIFIED_COMPLETE"
 	const metVerdict = JSON.stringify({
@@ -47,6 +56,7 @@ it("runs the executing verifier after a completion claim and completes the Ferme
 		reason: "The file exists with the exact required content.",
 		checks: [
 			{
+				requirementId: "r1",
 				kind: "work",
 				method: "command",
 				requirement: "Create and verify acp-ferment.txt containing exactly done",
@@ -54,13 +64,60 @@ it("runs the executing verifier after a completion claim and completes the Ferme
 				failureMode: "the file could contain different data; the read confirms the exact content",
 				evidence: ["e1"],
 			},
+			...(omitRequirement
+				? [
+						{
+							requirementId: "r2",
+							kind: "work",
+							category: "constraint",
+							method: "inspection",
+							requirement: "Use the requested output path",
+							status: "pass",
+							failureMode: "The content might be written to a different path",
+							evidence: ["e1"],
+						},
+					]
+				: []),
 		],
 	})
 	const active = await startAcpFixture({
-		artifactName: "ferment-v2-verifier",
+		artifactName: `ferment-v2-verifier-${omitRequirement ? "omission" : "pass"}`,
 		extraArgs: ["--yolo"],
 		settings: { resources: { "extensions.ferment-v2": true } },
 		responses: [
+			...(omitRequirement
+				? [
+						{
+							match: isFermentV2VerifierRequest,
+							toolCalls: [
+								{
+									id: "record-acp-requirements",
+									function: {
+										name: "record_requirements",
+										arguments: JSON.stringify({
+											requirements: [
+												{
+													id: "r1",
+													requirement: "Create and verify acp-ferment.txt containing exactly done",
+													source: "Objective: containing exactly done",
+													acceptance: "File contains exactly done",
+													category: "behavior",
+												},
+												{
+													id: "r2",
+													requirement: "Use the requested output path",
+													source: "Objective: create acp-ferment.txt",
+													acceptance: "File exists at acp-ferment.txt",
+													category: "constraint",
+												},
+											],
+										}),
+									},
+								},
+							],
+						},
+					]
+				: [verifierRequirements("Create and verify acp-ferment.txt containing exactly done")]),
 			// The verifier session: one executing bash check (stamped [e1]), then a met verdict citing it.
 			{
 				match: (request) =>
@@ -69,10 +126,20 @@ it("runs the executing verifier after a completion claim and completes the Ferme
 				toolCalls: [
 					{
 						id: "verifier-bash-check",
-						function: { name: "bash", arguments: JSON.stringify({ command: `cat ${outputFile}` }) },
+						function: { name: "bash", arguments: JSON.stringify({ command: `test "$(cat ${outputFile})" = done` }) },
 					},
 				],
 			},
+			...(omitRequirement
+				? [
+						{
+							match: isFermentV2VerifierRequest,
+							stream: [
+								JSON.stringify({ ...JSON.parse(metVerdict), checks: JSON.parse(metVerdict).checks.slice(0, 1) }),
+							],
+						},
+					]
+				: []),
 			{
 				match: (request) =>
 					isFermentV2VerifierRequest(request) && collectStrings(request.body).some((v) => v.includes("[e1]")),
@@ -142,11 +209,21 @@ it("runs the executing verifier after a completion claim and completes the Ferme
 	// The completion claim spawned the verifier, which executed one bash check…
 	const verifierRequests = await waitFor(
 		() => chatRequests(active).filter(isFermentV2VerifierRequest),
-		(requests) => requests.length >= 2,
+		(requests) => requests.length >= 3,
 	)
 	// …and its tool result came back stamped with the evidence ID the verdict cites,
 	// with the implementer's write intact.
-	expect(collectStrings(verifierRequests[1]?.body).some((value) => value.includes("[e1]"))).toBe(true)
+	expect(collectStrings(verifierRequests[2]?.body).some((value) => value.includes("[e1]"))).toBe(true)
+	expect(collectStrings(verifierRequests[0]?.body).join("\n")).not.toContain("Implementer's current Todos")
+	expect(collectStrings(verifierRequests[1]?.body).join("\n")).toContain("Requirements recorded (revision 1)")
+	expect(collectStrings(verifierRequests[1]?.body).join("\n")).toContain("Implementer's current Todos")
+	if (omitRequirement) {
+		const corrected = await waitFor(
+			() => chatRequests(active).filter(isFermentV2VerifierRequest),
+			(requests) => requests.length >= 4,
+		)
+		expect(collectStrings(corrected[3]?.body).join("\n")).toContain("Recorded requirement r2")
+	}
 	expect(readFileSync(join(active.workDir, outputFile), "utf-8")).toBe("done")
 	// The accepted verdict delivered the final answer and completed the Ferment V2.
 	// (Ferment-driven turns are queued by the extension, not an ACP `session/prompt`,
@@ -164,4 +241,29 @@ it("runs the executing verifier after a completion claim and completes the Ferme
 	// The verifier's read-only bash check left the workspace otherwise untouched
 	// after the accepted final-answer turn completed the Ferment V2.
 	expect(readFileSync(join(active.workDir, outputFile), "utf-8")).toBe("done")
+})
+
+it("repairs a failure exposed by original assertions despite weakened candidate tests", async () => {
+	const active = await startAcpFixture({
+		artifactName: "ferment-v2-original-test",
+		extraArgs: ["--yolo"],
+		settings: { resources: { "extensions.ferment-v2": true } },
+		responses: originalTestRepairResponses(),
+	})
+	fixture = active
+	seedOriginalTestRepository(active.workDir)
+	const session = await newSession(active, active.workDir)
+	await prompt(active, session, `/ferment-v2 ${ORIGINAL_TEST_OBJECTIVE}`)
+	await waitFor(
+		() => active.client.extNotifications,
+		(rows) => rows.some((row) => JSON.stringify(row.params).includes("Ferment V2 complete.")),
+	)
+	expect(readFileSync(join(active.workDir, "value.cjs"), "utf8")).toBe("module.exports = 1")
+	expect(readFileSync(join(active.workDir, "value.test.cjs"), "utf8")).toContain("ok(true)")
+	const requests = chatRequests(active).filter(isFermentV2VerifierRequest)
+	const trace = requests.flatMap((row) => collectStrings(row.body)).join("\n")
+	expect(trace).toContain("AssertionError")
+	expect(trace).toContain("Original-test receipt")
+	expect(trace).toContain('"exitCode":1')
+	expect(trace).toContain('"exitCode":0')
 })

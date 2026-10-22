@@ -327,6 +327,55 @@ async function submitPlan(
 	return result
 }
 
+describe("host tool permission normalization", () => {
+	const event: ToolCallEvent = {
+		type: "tool_call",
+		toolCallId: "original",
+		toolName: "run_original_test",
+		input: { flag: "f1" },
+	}
+	const normalizeToolCall = (event: ToolCallEvent): ToolCallEvent => ({
+		...event,
+		toolName: "bash",
+		input: { command: "node original.test.cjs", timeout: 5 },
+	})
+	it("uses the underlying bash command for headless classification", async () => {
+		vi.mocked(classifyToolCall).mockClear()
+		const harness = createPermissionsHarness(["bash", "run_original_test"], {}, ["bash"], { normalizeToolCall })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
+		expect(classifyToolCall).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			{ toolName: "bash", input: { command: "node original.test.cjs", timeout: 5 }, cwd: ctx.cwd },
+			expect.anything(),
+			undefined,
+		)
+	})
+	it.each([
+		{ plan: true },
+		{ "deny-tool": "bash" },
+		{ "deny-tool": "run_original_test" },
+	])("enforces existing bash restrictions (%j)", async (flags) => {
+		const harness = createPermissionsHarness(["bash", "run_original_test"], flags, ["bash"], { normalizeToolCall })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		expect(await harness.fire("tool_call", event, ctx)).toMatchObject({ block: true })
+	})
+	it("blocks invalid wrapper arguments before any approval path", async () => {
+		const harness = createPermissionsHarness(["run_original_test"], {}, [], {
+			normalizeToolCall: () => {
+				throw new Error("invalid flag")
+			},
+		})
+		const decisions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+		expect(await harness.fire("tool_call", event)).toEqual({ block: true, reason: "invalid flag" })
+		expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "original", decision: "reject" }))
+	})
+})
+
 describe("host pre-approval (createPermissionsExtension preApproved)", () => {
 	const writeEvent = {
 		type: "tool_call",

@@ -85,6 +85,30 @@ async function initFreshRepo(): Promise<string> {
 }
 
 describe("createVerifierGuard evidence stamping", () => {
+	it("does not turn recorded expectations into execution evidence", async () => {
+		const guard = createVerifierGuard()
+		const ext = bindGuard(guard)
+		const metadata = await await0(ext, {
+			type: "tool_result",
+			toolCallId: "requirements",
+			toolName: "record_requirements",
+			input: {},
+			content: [{ type: "text", text: "Requirements recorded (revision 1)" }],
+			isError: false,
+		})
+		expect(metadata).toBeUndefined()
+		expect(guard.evidence.size).toBe(0)
+		const check = await await0(ext, {
+			type: "tool_result",
+			toolCallId: "check",
+			toolName: "bash",
+			input: { command: "test -f report.json" },
+			content: [{ type: "text", text: "passed" }],
+			isError: false,
+		})
+		expect(check?.content[0]?.text).toBe("[e1] passed")
+	})
+
 	it("prefixes every tool result with a sequential [eN] id and records evidence", async () => {
 		const guard = createVerifierGuard()
 		const ext = bindGuard(guard)

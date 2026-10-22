@@ -93,6 +93,7 @@ describe("runFermentV2Verify", () => {
 			verdict: "met",
 			reason: "All requirements verified.",
 			checks: MET.checks,
+			supportingEvidence: [],
 			model: "judge/independent",
 			sameModelAsImplementer: false,
 			modelFallback: null,
