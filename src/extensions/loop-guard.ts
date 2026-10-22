@@ -8,7 +8,7 @@ import type {
 	LoopGuardWarnPayload,
 } from "./loop-guard-events.js"
 import { LOOP_GUARD_EVENTS } from "./loop-guard-events.js"
-import { emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
+import { emitSteerFired, emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 export interface ToolHistoryRecord {
@@ -700,7 +700,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		if (signal === "warn") {
 			if (pendingLoopOutcomeWindows.has(sessionId)) {
 				pendingLoopOutcomeWindows.delete(sessionId)
-				emitSteerOutcome(pi, "loop_guard", "repeated", { interactive: ctx?.hasUI })
+				emitSteerOutcome(pi, "loop_guard", "repeated", { interactive: ctx?.hasUI, sessionId })
 			}
 			pendingLoopOutcomeWindows.set(sessionId, LOOP_OUTCOME_WINDOW)
 			return
@@ -709,7 +709,7 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 		if (remaining === undefined) return
 		if (remaining <= 1) {
 			pendingLoopOutcomeWindows.delete(sessionId)
-			emitSteerOutcome(pi, "loop_guard", "complied", { interactive: ctx?.hasUI })
+			emitSteerOutcome(pi, "loop_guard", "complied", { interactive: ctx?.hasUI, sessionId })
 			return
 		}
 		pendingLoopOutcomeWindows.set(sessionId, remaining - 1)
@@ -816,6 +816,13 @@ export default function loopGuardExtension(pi: ExtensionAPI) {
 				},
 				{ deliverAs: "steer" },
 			)
+			// After tickLoopOutcome (so the superseded window's "repeated"
+			// attributes to the previous fire) and after the steer is sent:
+			// register this fire for the fresh window's self-attribution.
+			emitSteerFired(pi, "loop_guard", "warn", {
+				interactive: ctx?.hasUI,
+				sessionId: resultSessionId,
+			})
 			// Subagent: schedule an abort on the next turn_end. The subagent
 			// gets one more turn to produce a summary; that text becomes the
 			// output the orchestrator receives.

@@ -604,6 +604,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 				emitSteerOutcome(pi, "todo_checkin", "complied", {
 					method: "write",
 					steerId,
+					sessionId: emitterSessionId,
 					interactive: sessionCtx?.hasUI ?? false,
 				})
 			}
@@ -630,6 +631,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 					emitSteerOutcome(pi, "todo_checkin", "complied", {
 						method: "confirm",
 						steerId,
+						sessionId,
 						interactive: sessionCtx?.hasUI ?? false,
 					})
 					checkinSteerIds.delete(sessionId)
@@ -639,6 +641,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 				emitSteerOutcome(pi, "todo_checkin", "repeated", {
 					method: change.method,
 					steerId: checkinSteerIds.get(sessionId),
+					sessionId,
 					interactive: sessionCtx?.hasUI ?? false,
 				})
 			}
@@ -661,7 +664,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (isTodoWriteToolName(event.toolName)) {
 			if (getEarlyNudgeFiredAt(sessionId) !== undefined) {
 				clearEarlyNudgeFired(sessionId)
-				emitSteerOutcome(pi, "todo_early_nudge", "complied", { interactive: ctx.hasUI })
+				emitSteerOutcome(pi, "todo_early_nudge", "complied", {
+					interactive: ctx.hasUI,
+					sessionId,
+				})
 			}
 			return
 		}
@@ -710,7 +716,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (nudgeFiredAt !== undefined && !hasEverHadTodos(sessionId)) {
 			if (getWorkToolCalls(sessionId) - nudgeFiredAt >= EARLY_NUDGE_OUTCOME_WINDOW) {
 				clearEarlyNudgeFired(sessionId)
-				emitSteerOutcome(pi, "todo_early_nudge", "repeated", { interactive: ctx.hasUI })
+				emitSteerOutcome(pi, "todo_early_nudge", "repeated", {
+					interactive: ctx.hasUI,
+					sessionId,
+				})
 			}
 		}
 

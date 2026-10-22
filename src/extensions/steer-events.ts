@@ -13,10 +13,11 @@
  * session-shape flags). Never raw tool args, command text, file paths, or
  * free-text reason strings — mirroring loop-guard-events.ts.
  *
- * Note: the two guard kinds (`bash_tool_guard`, `loop_guard`) already own
- * dedicated channels (`bash-tool-guard-events.ts`, `loop-guard-events.ts`).
- * Fire events for those two continue on their own channels; this file only
- * carries their *outcome* events, plus fire events for every other site.
+ * Note: the two guard kinds (`bash_tool_guard`, `loop_guard`) also own
+ * dedicated domain channels (`bash-tool-guard-events.ts`,
+ * `loop-guard-events.ts`) for guard-specific payloads; their `steer:fired`
+ * events land here too (warn sites call emitSteerFired after sending the
+ * steer), and this file carries their *outcome* events.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -80,10 +81,13 @@ export interface SteerOutcomePayload {
 	 *  and failed confirmation attempts (wrong expected set, stale input
 	 *  revision). Closed vocabulary — no free text. */
 	method?: "write" | "confirm" | "mismatch" | "stale_revision"
-	/** steer_id of the fire this outcome belongs to, when the emitting site
-	 *  tracks it (the guard-kinds with bespoke windows do not yet). */
+	/** steer_id of the fire this outcome belongs to. Emitters that track the
+	 *  fire pass it explicitly (the watcher-based kinds); everyone else is
+	 *  attributed automatically to the most recent fire of the same kind in
+	 *  the session (see `lastFireBySessionKind`). */
 	steer_id?: string
-	/** Turns between the fire and this outcome, when the emitter tracks it. */
+	/** Turns between the fire and this outcome, when the emitter tracks it.
+	 *  Also stamped by the self-attribution fallback in emitSteerOutcome. */
 	turns_to_outcome?: number
 	/** True when the outcome was observed inside an agent worker (subagent). */
 	is_subagent: boolean
@@ -175,6 +179,7 @@ export function emitSteerFired(
 	try {
 		pi.events.emit(STEER_EVENTS.FIRED, payload)
 		trackLastSteerFired(shape.sessionId ?? "", kind, reason, payload.steer_id, payload.interactive)
+		trackLastFire(shape.sessionId ?? "", kind, payload.steer_id)
 	} catch {
 		// pi.events may be unavailable on older hosts or lightweight test
 		// mocks. The steer still functions without telemetry (precedent:
@@ -183,24 +188,81 @@ export function emitSteerFired(
 	return payload.steer_id
 }
 
+// ---------------------------------------------------------------------------
+// Outcome self-attribution — the last fire per (session, kind)
+// ---------------------------------------------------------------------------
+// Emitters with bespoke outcome windows (bash_tool_guard, loop_guard,
+// todo_early_nudge, check-in reconciliations without an opening id) do not
+// hold the fire id their emitSteerFired returned. This registry bridges that
+// gap: every fire records itself here, and emitSteerOutcome attributes id-less
+// outcomes to the most recent same-kind fire in the same session. Unlike the
+// abort tracker below, entries survive user input (a conversation turn
+// between the steer and its outcome is normal) and are only cleared on
+// session shutdown. The empty session key is the ctx-less fallback (single-
+// session hosts), mirroring trackLastSteerFired below.
+
+interface LastFire {
+	steerId: string
+	/** Session turn count at fire time; turns_to_outcome = now - turnAtFire. */
+	turnAtFire: number
+}
+
+const lastFireBySessionKind = new Map<string, Map<SteerKind, LastFire>>()
+
+/** Completed turns per session, incremented by steerAbortTrackerExtension on
+ *  every turn_end. Registration order in cli.ts places this extension before
+ *  the outcome watcher, so by the time the watcher classifies a turn_end the
+ *  counter is already incremented — matching the watcher's turnsElapsed. */
+const turnCountBySession = new Map<string, number>()
+
+function trackLastFire(sessionId: string, kind: SteerKind, steerId: string): void {
+	let byKind = lastFireBySessionKind.get(sessionId)
+	if (!byKind) {
+		byKind = new Map()
+		lastFireBySessionKind.set(sessionId, byKind)
+	}
+	byKind.set(kind, { steerId, turnAtFire: turnCountBySession.get(sessionId) ?? 0 })
+}
+
 export function emitSteerOutcome(
 	pi: ExtensionAPI,
 	kind: SteerKind,
 	outcome: SteerOutcomePayload["outcome"],
 	shape: {
 		interactive?: boolean
+		sessionId?: string
 		steerId?: string
 		turnsToOutcome?: number
 		method?: SteerOutcomePayload["method"]
 	} = {},
 ): void {
 	if (isSteerDisabled(kind)) return
+	// Self-attribution fallback: attribute id-less outcomes to the most recent
+	// same-kind fire in the session, and stamp turns for emitters that know
+	// the fire id but not the turn count (todo_checkin). Explicit shape values
+	// always win, and turns are only stamped when the explicit id matches the
+	// registry fire — a mismatch means the outcome belongs to an older fire,
+	// so the registry's turn count would be wrong.
+	const sessionId = shape.sessionId ?? ""
+	const fallback =
+		shape.steerId === undefined || shape.turnsToOutcome === undefined
+			? lastFireBySessionKind.get(sessionId)?.get(kind)
+			: undefined
+	const fallbackApplies = fallback !== undefined && (shape.steerId === undefined || shape.steerId === fallback.steerId)
+	const steerId = shape.steerId ?? (fallbackApplies && fallback ? fallback.steerId : undefined)
+	// The ctx-less "" key has no turn counter (it only ticks via a session ctx),
+	// so elapsed turns are unknowable there — omit rather than stamp a wrong 0.
+	const turnsToOutcome =
+		shape.turnsToOutcome ??
+		(fallbackApplies && fallback && sessionId !== ""
+			? (turnCountBySession.get(sessionId) ?? 0) - fallback.turnAtFire
+			: undefined)
 	const payload: SteerOutcomePayload = {
 		kind,
 		outcome,
 		...(shape.method !== undefined ? { method: shape.method } : {}),
-		...(shape.steerId !== undefined ? { steer_id: shape.steerId } : {}),
-		...(shape.turnsToOutcome !== undefined ? { turns_to_outcome: shape.turnsToOutcome } : {}),
+		...(steerId !== undefined ? { steer_id: steerId } : {}),
+		...(turnsToOutcome !== undefined ? { turns_to_outcome: turnsToOutcome } : {}),
 		is_subagent: isAgentWorker(),
 		interactive: shape.interactive ?? defaultInteractive(),
 	}
@@ -329,9 +391,12 @@ function trackLastSteerFired(
 	lastSteerFiredBySession.set(sessionId, { kind, reason, steerId, interactive })
 }
 
-/** Test-only: clear the module-level abort tracker between tests. */
+/** Test-only: clear the module-level trackers between tests (abort tracker,
+ *  fire registry, turn counters). */
 export function resetSteerAbortTracker(): void {
 	lastSteerFiredBySession.clear()
+	lastFireBySessionKind.clear()
+	turnCountBySession.clear()
 }
 
 /**
@@ -349,6 +414,9 @@ export function steerAbortTrackerExtension(pi: ExtensionAPI): void {
 
 	pi.on("turn_end", (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId()
+		// Turn counter first (feeds turns_to_outcome on self-attributed
+		// outcomes), then the abort-attribution check.
+		turnCountBySession.set(sessionId, (turnCountBySession.get(sessionId) ?? 0) + 1)
 		const steer = lastSteerFiredBySession.get(sessionId)
 		if (!steer) return
 		lastSteerFiredBySession.delete(sessionId)
@@ -367,5 +435,17 @@ export function steerAbortTrackerExtension(pi: ExtensionAPI): void {
 		} catch {
 			// pi.events may be unavailable on older hosts or lightweight mocks.
 		}
+	})
+
+	pi.on("session_shutdown", (_event, ctx) => {
+		// Scoped to the shutting-down session only — concurrent sessions on
+		// multi-session hosts (ACP) keep their trackers and counters. Runs before
+		// the outcome watcher's shutdown expiry (registration order), so an
+		// id-less watch's terminal "expired" outcome loses fallback attribution —
+		// fine: every production watch passes the fire's steer_id.
+		const sessionId = ctx.sessionManager.getSessionId()
+		lastSteerFiredBySession.delete(sessionId)
+		lastFireBySessionKind.delete(sessionId)
+		turnCountBySession.delete(sessionId)
 	})
 }

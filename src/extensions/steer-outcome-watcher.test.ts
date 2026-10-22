@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { emitSteerFired, resetSteerAbortTracker } from "./steer-events.js"
 import {
 	resetSteerOutcomeWatches,
 	type SteerObservedEvent,
@@ -43,9 +44,31 @@ const outcomes = (emitted: { channel: string; payload: unknown }[]) =>
 describe("steer-outcome-watcher", () => {
 	beforeEach(() => {
 		resetSteerOutcomeWatches()
+		resetSteerAbortTracker()
 	})
 	afterEach(() => {
 		resetSteerOutcomeWatches()
+		resetSteerAbortTracker()
+	})
+
+	it("watch registered without a steer_id still joins via the fire registry fallback", async () => {
+		const { pi, emitted, fire } = makePi()
+		const fireId = emitSteerFired(pi, "review_write_guard", "steer", { sessionId: "session" })
+		watchSteerOutcome({
+			kind: "review_write_guard",
+			sessionId: "session",
+			interactive: true,
+			windowToolCalls: 3,
+			classify: (e: SteerObservedEvent) =>
+				e.type === "tool_execution_end" && e.toolName === "edit" ? "repeated" : undefined,
+		})
+		await fire("tool_execution_end", { toolName: "edit" })
+
+		// steer_id comes from the fire registry fallback; turns_to_outcome stays
+		// the watcher's own turnsElapsed (explicit shape values win).
+		expect(outcomes(emitted)).toEqual([
+			expect.objectContaining({ kind: "review_write_guard", steer_id: fireId, turns_to_outcome: 0 }),
+		])
 	})
 
 	it("complied on first classify hit, exactly one outcome, watch removed", async () => {
