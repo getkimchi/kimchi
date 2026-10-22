@@ -23,6 +23,12 @@ vi.mock("./admin.js", async (importOriginal) => {
 	}
 })
 
+// Unit tests never hit the real gateway: the default gate resolution path
+// reads the env, so tests that don't inject a decision dep must see
+// "everything off". Gate-logic tests inject their own decision dep, which
+// bypasses the env entirely.
+vi.stubEnv("KIMCHI_MEMORY_DECISION_GATE", "off")
+
 const BASE_PROMPT = "You are kimchi."
 
 // Handler ctx: the shared mock factory (repo testing rule — no hand-rolled
@@ -610,6 +616,185 @@ describe("memory extension", () => {
 			// Drop the real-implementation bridge so later tests keep the
 			// file-wide mock semantics.
 			vi.mocked(admin.runAdminCommand).mockReset()
+		}
+	})
+})
+
+// Digest selection (E3/E6/E8): the decision model selects among the
+// retrieved candidates; failures fall back to the threshold rule.
+describe("memory extension — digest selection gate", () => {
+	/** Extract the judged fact text from the valuation/digest question body. */
+	function parseCandidate(instructions: string): string {
+		return instructions.split('" — ')[0]?.split('"')[1] ?? ""
+	}
+
+	function selectorFetchImpl(injectTexts: string[]): typeof fetch {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, { instructions: string }> }
+			const answers = Object.fromEntries(
+				Object.entries(body.questions).map(([key, q]) => {
+					const inject = injectTexts.includes(parseCandidate(q.instructions))
+					return [
+						key,
+						{
+							type: "choice",
+							choice: inject ? "inject" : "skip",
+							probabilities: { inject: inject ? 0.95 : 0.05, skip: inject ? 0.05 : 0.95 },
+							confidence: 0.9,
+						},
+					]
+				}),
+			)
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		return fetchImpl
+	}
+
+	const searchable = () => [
+		{ memory: "retire the gateway md5 greplier", score: 0.92 }, // rank-1 echo of the prompt
+		{ memory: "the user's dog is named Freya", score: 0.71 },
+		{ memory: "the user keeps herbs on the kitchen counter", score: 0.66 },
+	]
+
+	it("the selector drops the rank-1 echo and keeps the needle", async () => {
+		const decisionFetch = selectorFetchImpl(["the user's dog is named Freya"])
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["digest"]),
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("how do I retire the gateway md5 greplier?"), fakeCtx)
+		expect(turn1?.systemPrompt).toContain("the user's dog is named Freya")
+		expect(turn1?.systemPrompt).not.toContain("greplier")
+		expect(turn1?.systemPrompt).not.toContain("kitchen counter")
+	})
+
+	it("a selector failure falls back to the threshold rule for this digest", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+			const { start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
+					decision: () => ({
+						gate: {
+							endpoint: "https://gw.test/typesafe/v1/systemone",
+							apiKey: "k",
+							fetchImpl: down,
+							maxRetries: 0,
+						},
+						enabled: new Set(["digest"]),
+					}),
+				}),
+			)
+			const turn1 = await start(startEvent("memory check"), fakeCtx)
+			// Threshold rule keeps all three (all above 0.2) — pre-gate behavior.
+			expect(turn1?.systemPrompt).toContain("greplier")
+			expect(turn1?.systemPrompt).toContain("Freya")
+			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("digest selection failed"))).toBe(true)
+		} finally {
+			consoleError.mockRestore()
+		}
+	})
+
+	it("the digest gate off (subset env): no selector call, threshold rule applies", async () => {
+		const decisionFetch = vi.fn(async () => {
+			throw new Error("must not be called")
+		})
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search: vi.fn(async () => searchable()) }),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(["triage"]), // digest NOT enabled
+				}),
+			}),
+		)
+		const turn1 = await start(startEvent("memory check"), fakeCtx)
+		expect(turn1?.systemPrompt).toContain("greplier")
+		expect(decisionFetch).not.toHaveBeenCalled()
+	})
+
+	/** Recall-gate stub: sequence of lookup verdicts, one per call. */
+	function recallFetchImpl(verdicts: Array<"search" | "skip">): { fetchImpl: typeof fetch; calls: string[] } {
+		const calls: string[] = []
+		let index = 0
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { state: string }
+			calls.push(body.state)
+			const verdict = verdicts[Math.min(index, verdicts.length - 1)] ?? "search"
+			index += 1
+			return new Response(
+				JSON.stringify({
+					answers: {
+						lookup: {
+							type: "choice",
+							choice: verdict,
+							probabilities: { search: verdict === "search" ? 0.9 : 0.1, skip: verdict === "skip" ? 0.9 : 0.1 },
+							confidence: 0.9,
+						},
+					},
+					usage: { input_tokens: 100, output_tokens: 0 },
+				}),
+				{ status: 200 },
+			)
+		}
+		return { fetchImpl, calls }
+	}
+
+	it("recall gating (E4): an uncovered turn skips the search when the gate says skip", async () => {
+		const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }]) // never clears the bar
+		const gate = recallFetchImpl(["skip", "search"])
+		const { start } = await setup(
+			createMemoryExtension({
+				isEnabled: () => true,
+				createSearcher: async () => ({ search }),
+				decision: () => ({
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: gate.fetchImpl },
+					enabled: new Set(["recall"]),
+				}),
+			}),
+		)
+		await start(startEvent("turn 1 - hi"), fakeCtx)
+		expect(search).toHaveBeenCalledTimes(1) // the digest search
+		// Turn 2 drifts out of (empty) delivered territory; the gate says skip.
+		await start(startEvent("turn 2 - new topic about latency"), fakeCtx)
+		expect(search).toHaveBeenCalledTimes(1)
+		expect(gate.calls).toHaveLength(1)
+		expect(gate.calls[0]).toContain("(none injected)")
+		// Turn 3: the gate says search — retrieval pays despite prior skip.
+		await start(startEvent("turn 3 - another fresh topic"), fakeCtx)
+		expect(search).toHaveBeenCalledTimes(2)
+	})
+
+	it("a recall-gate failure falls back to searching (fail-open)", async () => {
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const search = vi.fn(async () => [{ memory: "weak", score: 0.1 }])
+			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+			const { start } = await setup(
+				createMemoryExtension({
+					isEnabled: () => true,
+					createSearcher: async () => ({ search }),
+					decision: () => ({
+						gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: down, maxRetries: 0 },
+						enabled: new Set(["recall"]),
+					}),
+				}),
+			)
+			await start(startEvent("turn 1"), fakeCtx)
+			await start(startEvent("turn 2 - drift"), fakeCtx)
+			expect(search).toHaveBeenCalledTimes(2)
+			expect(consoleError.mock.calls.some((call) => String(call[0]).includes("recall gating failed"))).toBe(true)
+		} finally {
+			consoleError.mockRestore()
 		}
 	})
 })

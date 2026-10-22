@@ -46,11 +46,27 @@ Extraction runs at temperature 0 — at the gateway's default temperature, the s
 
 Auto-injected context must earn its tokens:
 
-- **Value gate.** The retrieval query is the session's opening prompt. Facts below the 0.2 relevance threshold never enter the digest; at most 5 facts and 2,000 estimated tokens. An empty digest is the normal outcome for unrelated sessions.
+- **Value gate.** The retrieval query is the session's opening prompt. With the decision gates on (the default), the d3 selector's per-candidate inject/skip judgment is the relevance check (embedding rank alone admitted rank-1 echoes and topic twins — the 0.2 threshold stays as the fallback when the selector is unavailable); at most 5 facts and 2,000 estimated tokens regardless. An empty digest is the normal outcome for unrelated sessions.
 - **Enabled notice.** A constant `## Memory` section goes out on every start whenever memory is enabled — even when the digest is empty — telling the model that capture is automatic (it has no write tool, so it must not claim it cannot remember) and that `memory_search` is the retrieval path. Constant bytes, so the prefix stays stable.
 - **Cache contract.** The digest is computed on turn 1 (awaited) and appended with identical bytes on every subsequent turn, so the provider-facing prefix is stable from the first request and memory causes zero mid-session cache breaks. It is recomputed only after compaction, where the prefix breaks anyway.
 - **Progressive recall.** From turn 2, each new prompt plus the tail of the last assistant response (400 chars, 1,000 total — code-heavy bodies stay out of the embedding payload) is a drift signal. A free lexical-coverage gate (≥30% of content words already covered by delivered facts means skip) decides whether a retrieval is worth an embedding call; new facts deliver as hidden steer messages appended to the conversation tail — never the prefix. Recall runs on every drifted user message — no per-session evaluation cap; a hard retrieval failure is the only valve. One shared deduping embedder serves the personal and project stores, so each lookup embeds its query once.
 - **`memory_search`.** The pull-based supplement for anything the digest did not surface; results carry a `[project]` provenance label when they come from the project store.
+
+## Decision gates (d3)
+
+Five judgment calls run on the platform decision model (`d3` via `/typesafe/v1/systemone`): non-generative (per-option probabilities, `output_tokens=0`), questions batched ≤30 per call, usage tag `memory:decision`. The division of labor is unchanged — extraction facts still come from the chat model, retrieval still from embeddings; d3 only judges each candidate against a fixed, verbatim criteria text. Production wiring: `decision-gate.ts` (client), `gates.ts` (flag parsing + criteria builders — criteria text is pinned by `gates.test.ts` and changes only with a fresh calibration run; the spike was burned twice by paraphrasing).
+
+| Gate | Insertion point | Judgment | Rule | Degrade on gate failure |
+| --- | --- | --- | --- | --- |
+| triage | capture, after windowing | window contains ≥1 durable fact? | skip extraction when p(durable) < 0.3 (`TRIAGE_DURABLE_MIN_P`) | extract the window (fail-open) |
+| valuation | capture, after redaction + durability filter, before store adds | keep this extracted fact? | discard only when d3 says `discard` at p ≥ 0.9 (`VALUATION_DISCARD_MIN_P`) | keep the job's facts |
+| supersede | capture, one batched judge per store | does a new fact explicitly replace this memory? | d3 judge replaces the chat judge (E7: matched it 4/5 and caught the preference reversal it missed) | per-batch catch keeps all |
+| digest | turn 1, after retrieval | does this candidate earn an injection slot for this prompt? | selector replaces the score threshold among retrieved candidates | threshold rule |
+| recall | turns 2+, after the lexical coverage gate | is an archive search worth this drift signal? | skip the search when d3 says skip (E4: 9 searches → 1) | search anyway |
+
+The gates are pure filters over the pre-gate rules, so rollback is exact. `KIMCHI_MEMORY_DECISION_GATE`: absent/empty = all on, `off` = all off, a comma subset (`valuation,digest`) = exactly those (unknown names are logged and ignored). A session without a configured API key resolves as "gates unavailable" rather than hammering the gateway with an empty Bearer. Calibration and the E1–E8 evidence live in the spike documents (REPORT.md); thresholds are validated at chain level — needle survival through triage → extraction → valuation → digest selection — not per-gate scores.
+
+A sixth, manual surface is `kimchi memory consolidate`: one-shot store cleanup classifying every fact as unique / complementary / exact_twin / near_twin (E7 Part B: every twin group recovered, zero false positives). It reports first and deletes only with `--yes` or an interactive confirmation; verdicts of unique or complementary never delete, and a sweep that would empty a store keeps the oldest fact instead.
 
 ## Security framing
 
@@ -75,6 +91,8 @@ Memory never breaks a session:
 | Gateway call fails | retried per the shared retry contract, then the window's hashes stay unmarked for the next spawn |
 | Duplicate guard (`getAll`) fails | logged, adds proceed without dedupe |
 | Lock held by a crashed worker | stealable after 15 min; merge-on-save keeps ledger marks |
+| Decision gate call fails or times out | logged once per call site; that gate degrades to its pre-gate rule for the call (triage/valuation/supersede keep, digest/recall fall back to their threshold/coverage rules) |
+| Decision gate with no API key configured | resolves as “gates unavailable” at resolution time — every gate behaves as disabled; the gateway is never called with an empty key |
 
 ## Tuning constants
 
@@ -91,6 +109,8 @@ All in `src/extensions/memory/config.ts`.
 | `MEMORY_CAPTURE_ASSISTANT_MAX_CHARS` | 1,000 | an answer's key statement sits at its start — truncate, don't exclude |
 | `TURN_RECALL_RESPONSE_CHARS` / `QUERY_MAX_CHARS` / `MAX_FACTS` / `MAX_FACT_CHARS` | 400 / 1,000 / 3 / 400 | drift-query bounds (response tail, total query) and steer size |
 | `GATE_MIN_COVERAGE` | 0.3 | below this coverage, retrieval is likely to add value |
+| `TRIAGE_DURABLE_MIN_P` / `VALUATION_DISCARD_MIN_P` (gates.ts) | 0.3 / 0.9 | triage floor and valuation discard bar — chain-calibrated on LongMemEval; 0.35+ started dropping needle windows |
+| `DECISION_BATCH_SIZE` / `DECISION_QUESTION_CAP` (decision-gate.ts) | 30 / 64 | questions per d3 call; the gateway hard-rejects >64 (spike-verified) |
 | `MEMORY_SEARCH_TIMEOUT_MS` | 10,000 | user-visible critical-path bound |
 | `CAPTURE_LOCK_STALE_MS` / `CAPTURE_LOCK_UPDATE_MS` | 15 min / 30 s | staleness must exceed the worst-case legitimate drain |
 | `PENDING_JOB_MAX_AGE_MS` | 7 days | the reaper |
@@ -125,6 +145,7 @@ kimchi memory list [--scope local|personal|project|all] [--project <owner/name>]
 kimchi memory search <query>        [--scope ...] [--json]
 kimchi memory delete <id> [...]
 kimchi memory reset --scope all|personal|project [--project <owner/name>] [--yes]
+kimchi memory consolidate [--scope ...] [--yes]   d3-assisted twin/trivial-redundancy cleanup — report first
 kimchi memory enable | disable      (in-session /memory only — see the session toggle)
 ```
 
@@ -132,6 +153,7 @@ kimchi memory enable | disable      (in-session /memory only — see the session
 - `list` shows the newest 50 facts, scope-labeled, with the ids that `delete` takes; `--limit all` lists everything.
 - `delete` resolves ids across all stores, so no `--scope` is needed.
 - `reset --scope personal` or `--scope project` wipes that store via mem0 `deleteAll` (the hash ledger is kept — already-captured sessions never re-capture). `--scope all` wipes the whole memory root — stores, history, ledger, pending — under the capture lock, keeping only the lock artifacts. Interactive confirmation unless `--yes`.
+- `consolidate` runs the manual redundancy sweep from the decision-gates section: classification under the same criteria set, report-first, deletion only on `--yes`/confirmation, under the capture lock.
 - Deletion is user-only: the model has no write tool, and the enabled notice points users at `/memory` when they ask to forget or review something.
 - In-session, `list` and `search` open an interactive browser: page through facts with ↑↓/j/k (PgUp/PgDn, g/G), delete the selected fact with `d`, quit with q/Esc/Ctrl+C — no need to copy ids for a separate delete. Other output renders as a read-only widget capped at the TUI's widget height; single-line results appear as notifications, and the view clears when you resume chatting. Over rpc (ACP) the browser is skipped — output renders as text through the UI bridge.
 

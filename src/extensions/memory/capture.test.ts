@@ -1245,6 +1245,338 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(searchTopKs.length).toBeGreaterThan(0)
 		for (const topK of searchTopKs) expect(topK).toBe(8)
 	})
+
+	/** Extraction stub returning two fixed facts; the d3 fetch decides keep/discard. */
+	function twoFactLlm(): { baseURL: string; apiKey: string; model: string; fetchImpl: typeof fetch } {
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					choices: [
+						{
+							message: {
+								content: JSON.stringify({
+									personal: ["I keep an RGB keyboard on my desk", "Rebased the memory-gates branch onto master"],
+									project: [],
+								}),
+							},
+						},
+					],
+				}),
+				{ status: 200 },
+			)
+		return { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl }
+	}
+
+	/** d3 stub: discards only "Rebased the memory-gates branch onto master". */
+	function decisionAnswers(discards: Array<{ fact: string; probability: number }>) {
+		return (facts: string[]): Record<string, unknown> => ({
+			answers: Object.fromEntries(
+				facts.map((fact, i) => {
+					const d = discards.find((x) => x.fact === fact)
+					return [
+						`item_${i + 1}`,
+						d
+							? {
+									type: "choice",
+									choice: "discard",
+									probabilities: { keep: 1 - d.probability, discard: d.probability },
+									confidence: d.probability,
+								}
+							: { type: "choice", choice: "keep", probabilities: { keep: 0.95, discard: 0.05 }, confidence: 0.9 },
+					]
+				}),
+			),
+			usage: { input_tokens: 100, output_tokens: 0 },
+		})
+	}
+
+	type DecisionFetchRecorder = { fetchImpl: typeof fetch; fetches: string[][] }
+	/** d3 stub: parses the fact texts out of the valuation question bodies. */
+	function decisionFetchImpl(responder: (facts: string[]) => Record<string, unknown>): DecisionFetchRecorder {
+		const fetches: string[][] = []
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, { instructions: string }> }
+			// The valuation question embeds the fact text in its instructions.
+			const facts = Object.values(body.questions).map((q) =>
+				q.instructions.replace(
+					/^Candidate memory fact \d+: "|" — should a long-term memory system KEEP this fact\?$/g,
+					"",
+				),
+			)
+			fetches.push(facts)
+			return new Response(JSON.stringify(responder(facts)), { status: 200 })
+		}
+		return { fetchImpl, fetches }
+	}
+
+	it("valuation discards a high-confidence junk fact after the regex floor (E2 shape)", async () => {
+		const fake = makeFakeBackend()
+		const decision = decisionFetchImpl(
+			decisionAnswers([{ fact: "Rebased the memory-gates branch onto master", probability: 0.95 }]),
+		)
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job", [msg("user", "work update")]), "--db", dbPath()],
+			{
+				llm: twoFactLlm(),
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: {
+					gate: {
+						endpoint: "https://gw.test/typesafe/v1/systemone",
+						apiKey: "k",
+						fetchImpl: decision.fetchImpl,
+					},
+					enabled: new Set(["valuation"]),
+				},
+			},
+		)
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["I keep an RGB keyboard on my desk"])
+		// Both extracted facts were judged in one batched d3 call.
+		expect(decision.fetches).toEqual([
+			["I keep an RGB keyboard on my desk", "Rebased the memory-gates branch onto master"],
+		])
+	})
+
+	it("a sub-0.9 discard probability keeps the fact (the calibrated bar)", async () => {
+		const fake = makeFakeBackend()
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job", [msg("user", "work update")]), "--db", dbPath()],
+			{
+				llm: twoFactLlm(),
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: {
+					gate: {
+						endpoint: "https://gw.test/typesafe/v1/systemone",
+						apiKey: "k",
+						fetchImpl: decisionFetchImpl(
+							decisionAnswers([{ fact: "Rebased the memory-gates branch onto master", probability: 0.5 }]),
+						).fetchImpl,
+					},
+					enabled: new Set(["valuation"]),
+				},
+			},
+		)
+		expect(captured).toBe(2)
+		expect(fake.added).toHaveLength(2)
+	})
+
+	it("a valuation endpoint failure keeps all facts (fail-open) and logs", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const fake = makeFakeBackend()
+			const decisionDown = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+			const captured = await runCaptureWorker(
+				["--job", writeJob("job", [msg("user", "work update")]), "--db", dbPath()],
+				{
+					llm: twoFactLlm(),
+					createBackend: () => Promise.resolve(fake.backend),
+					decision: {
+						gate: {
+							endpoint: "https://gw.test/typesafe/v1/systemone",
+							apiKey: "k",
+							fetchImpl: decisionDown,
+							maxRetries: 0,
+						},
+						enabled: new Set(["valuation"]),
+					},
+				},
+			)
+			expect(captured).toBe(2)
+			expect(fake.added).toHaveLength(2)
+			expect(
+				errorSpy.mock.calls.some((call) => String(call[0]).includes("valuation gate failed, keeping this job's facts")),
+			).toBe(true)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("gates disabled: no d3 call even with facts to judge (pre-gate behavior)", async () => {
+		const fake = makeFakeBackend()
+		const decisionFetch = vi.fn(async () => {
+			throw new Error("must not be called")
+		})
+		const captured = await runCaptureWorker(
+			["--job", writeJob("job", [msg("user", "work update")]), "--db", dbPath()],
+			{
+				llm: twoFactLlm(),
+				createBackend: () => Promise.resolve(fake.backend),
+				decision: {
+					gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: decisionFetch },
+					enabled: new Set(),
+				},
+			},
+		)
+		expect(captured).toBe(2)
+		expect(decisionFetch).not.toHaveBeenCalled()
+	})
+
+	it("supersede with the d3 judge deletes the stale value across sessions (E7 shape)", async () => {
+		const fake = makeFakeBackend()
+		const older = writeJob("older", [msg("user", "I have 17 new postcards")])
+		const newer = writeJob("newer", [msg("user", "I now have 25 new postcards, up from 17")])
+		const now = Date.now()
+		utimesSync(older, new Date(now - 10_000), new Date(now - 10_000))
+		// Extraction-only chat stub: a chat-side judge hit would mean the gate
+		// wiring fell back — fail loudly in the test.
+		const llmFetch: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { messages: Array<{ role: string; content: string }> }
+			const system = body.messages[0]?.content ?? ""
+			if (system.includes("must decide which stored memories")) {
+				throw new Error("chat supersede judge must not run when the d3 judge is enabled")
+			}
+			const transcript = body.messages[1]?.content ?? ""
+			const fact = (transcript.split("\n\n")[0] ?? "").replace(/^user: /, "")
+			return new Response(
+				JSON.stringify({ choices: [{ message: { content: JSON.stringify({ personal: [fact], project: [] }) } }] }),
+				{ status: 200 },
+			)
+		}
+		// d3: delete only the memory whose text carries the older count.
+		const d3Fetch: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, { instructions: string }> }
+			const answers = Object.fromEntries(
+				Object.entries(body.questions).map(([key, q]) => {
+					const isStale = q.instructions.includes("have 17 new postcards")
+					return [
+						key,
+						{
+							type: "choice",
+							choice: isStale ? "delete" : "keep",
+							probabilities: { delete: isStale ? 0.96 : 0.05, keep: isStale ? 0.04 : 0.95 },
+							confidence: 0.9,
+						},
+					]
+				}),
+			)
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		await runCaptureWorker(["--job", newer, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: llmFetch },
+			createBackend: () => Promise.resolve(fake.backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: d3Fetch },
+				enabled: new Set(["supersede"]),
+			},
+		})
+		expect(fake.deleted).toEqual(["m1"])
+		expect(fake.items.map((item) => item.memory)).toEqual(["I now have 25 new postcards, up from 17"])
+	})
+
+	/** Triage stub: answers every window's durable-fact question with the given pYes. */
+	function triageFetchImpl(pYes: number): typeof fetch {
+		const fetchImpl: typeof fetch = async () =>
+			new Response(
+				JSON.stringify({
+					answers: {
+						has_durable_fact: {
+							type: "choice",
+							choice: pYes >= 0.5 ? "yes" : "no",
+							probabilities: { yes: pYes, no: 1 - pYes },
+							confidence: 0.9,
+						},
+					},
+					usage: { input_tokens: 100, output_tokens: 0 },
+				}),
+				{ status: 200 },
+			)
+		return fetchImpl
+	}
+
+	it("triage skips a non-durable window: no extraction call, but the window is hash-marked", async () => {
+		const fake = makeFakeBackend()
+		const extractionFetch = vi.fn(async () => {
+			throw new Error("extraction must not run when triage says non-durable")
+		})
+		const jobFile = writeJob("job", [msg("user", "ok sounds good, thanks")])
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl: extractionFetch },
+			createBackend: () => Promise.resolve(fake.backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetchImpl(0.05) },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(extractionFetch).not.toHaveBeenCalled()
+		expect(captured).toBe(0)
+		expect(fake.added).toEqual([])
+		// The window is hash-marked like an extracted-empty window — and the
+		// job is removed, so a future drain never re-triages it.
+		expect(existsSync(jobFile)).toBe(false)
+		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
+		expect(ledger).toHaveLength(1)
+	})
+
+	it("triage failure is fail-open: the window still gets extracted", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const fake = makeFakeBackend()
+			const transcripts: string[] = []
+			const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+			const captured = await runCaptureWorker(
+				["--job", writeJob("job", [msg("user", "my dog is named Fred")]), "--db", dbPath()],
+				{
+					llm: makeFakeLlm(transcripts),
+					createBackend: () => Promise.resolve(fake.backend),
+					decision: {
+						gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: down, maxRetries: 0 },
+						enabled: new Set(["triage"]),
+					},
+				},
+			)
+			expect(captured).toBe(1)
+			expect(fake.added).toEqual(["my dog is named Fred"])
+			expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("triage gate failed"))).toBe(true)
+		} finally {
+			errorSpy.mockRestore()
+		}
+	})
+
+	it("one drain triages and extracts per window across jobs (outcome mapping preserved)", async () => {
+		const fake = makeFakeBackend()
+		const transcripts: string[] = []
+		const now = Date.now()
+		const durable = writeJob("durable", [msg("user", "my dog is named Freya")])
+		writeJob("smalltalk", [msg("user", "ok thanks, that works")]) // side effect: it sits in the pending dir and gets drained
+		utimesSync(durable, new Date(now - 10_000), new Date(now - 10_000)) // durable drains first
+		// Triage per window: first call (durable window) durable, second not.
+		const pYesSeq = [0.9, 0.05]
+		let triageCalls = 0
+		const triageFetch: typeof fetch = async () => {
+			const pYes = pYesSeq[Math.min(triageCalls, pYesSeq.length - 1)] as number
+			triageCalls += 1
+			return new Response(
+				JSON.stringify({
+					answers: {
+						has_durable_fact: {
+							type: "choice",
+							choice: pYes >= 0.5 ? "yes" : "no",
+							probabilities: { yes: pYes, no: 1 - pYes },
+							confidence: 0.9,
+						},
+					},
+					usage: { input_tokens: 100, output_tokens: 0 },
+				}),
+				{ status: 200 },
+			)
+		}
+		const captured = await runCaptureWorker(["--job", durable, "--db", dbPath()], {
+			llm: makeFakeLlm(transcripts),
+			createBackend: () => Promise.resolve(fake.backend),
+			decision: {
+				gate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl: triageFetch },
+				enabled: new Set(["triage"]),
+			},
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["my dog is named Freya"])
+		// Extraction ran exactly once (the durable window), triage judged both.
+		expect(transcripts).toHaveLength(1)
+		expect(triageCalls).toBe(2)
+		// Both jobs committed their windows — the ledger holds both hashes.
+		const ledger = JSON.parse(readFileSync(ledgerPath(), "utf-8")) as string[]
+		expect(ledger).toHaveLength(2)
+	})
 })
 
 describe("wireMemoryCapture — session shutdown job files", () => {
