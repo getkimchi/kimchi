@@ -228,3 +228,95 @@ export async function makeTemplatedPptx(): Promise<Uint8Array> {
 		"ppt/slides/_rels/slide1.xml.rels": slideRels,
 	}).generateAsync({ type: "uint8array", compression: "DEFLATE" })
 }
+
+// --- DOCX builders -----------------------------------------------------------
+
+const DOCX_MAIN = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+/**
+ * Minimal self-authored DOCX honoring the ground truth its consumers assert:
+ * a heading, a plain paragraph, two nested bullets, a tracked insertion and
+ * deletion, a commented phrase, and a 2x2 table; side parts for numbering,
+ * comments and one footnote are real parts Word would write.
+ */
+export function makeSimpleDocx(): Promise<Uint8Array> {
+	const body = `
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Quarterly Report</w:t></w:r></w:p>
+<w:p><w:r><w:t>Revenue grew in Q3.</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>First bullet</w:t></w:r></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Nested bullet</w:t></w:r></w:p>
+<w:p><w:ins w:id="10" w:author="Alice" w:date="2026-01-01"><w:r><w:t>Inserted sentence.</w:t></w:r></w:ins></w:p>
+<w:p><w:del w:id="11" w:author="Bob" w:date="2026-01-02"><w:r><w:delText>Deleted words.</w:delText></w:r></w:del></w:p>
+<w:p><w:commentRangeStart w:id="0"/><w:r><w:t>Commented phrase</w:t></w:r><w:commentRangeEnd w:id="0"/><w:commentReference w:id="0"/></w:p>
+<w:p><w:r><w:t>With footnote</w:t></w:r><w:footnoteReference w:id="1"/></w:p>
+<w:tbl>
+<w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:t>A2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>`
+	return makeCustomDocx(body, {
+		"word/numbering.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="${DOCX_MAIN}">
+<w:abstractNum w:abstractNumId="0">
+<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="\u2022"/></w:lvl>
+<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="o"/></w:lvl>
+</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+</w:numbering>`,
+		"word/comments.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:comments xmlns:w="${DOCX_MAIN}">
+<w:comment w:id="0" w:author="Alice" w:date="2026-01-01T10:00:00Z"><w:p><w:r><w:t>Fix this.</w:t></w:r></w:p></w:comment>
+</w:comments>`,
+		"word/footnotes.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="${DOCX_MAIN}">
+<w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>
+<w:footnote w:id="1"><w:p><w:r><w:t>Source: internal data.</w:t></w:r></w:p></w:footnote>
+</w:footnotes>`,
+		"word/styles.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${DOCX_MAIN}">
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+</w:styles>`,
+		"docProps/core.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<dc:title>Simple fixture</dc:title><dc:creator>kimchi-tests</dc:creator>
+</cp:coreProperties>`,
+	})
+}
+
+/** Generic DOCX: caller supplies the `w:body` inner XML and any side parts. */
+export function makeCustomDocx(bodyInner: string, extraParts: Record<string, string> = {}): Promise<Uint8Array> {
+	const zip = new JSZip()
+	zip.file(
+		"[Content_Types].xml",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`,
+	)
+	zip.file(
+		"_rels/.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"word/_rels/document.xml.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdC" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>
+  <Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>
+  <Relationship Id="rIdN" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+  <Relationship Id="rIdS" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"word/document.xml",
+		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="${DOCX_MAIN}"><w:body>${bodyInner}<w:sectPr/></w:body></w:document>`,
+	)
+	for (const [name, content] of Object.entries(extraParts)) zip.file(name, content)
+	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+}
