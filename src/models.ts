@@ -6,7 +6,7 @@ import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
-import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import {
 	collectDeprecationMarkers,
 	deriveDeprecationState,
@@ -124,6 +124,9 @@ export interface FetchModelsOptions {
 	allowCachedFallback?: boolean
 	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
 	requireActiveModels?: boolean
+	/** CAST AI SSO: organization id sent as `X-Organization-ID` on the metadata
+	 * fetch and stamped into every Kimchi provider's models.json headers. */
+	organizationId?: string
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -202,7 +205,10 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 		let response: Response
 		try {
 			response = await fetch(metadataUrl, {
-				headers: { Authorization: `Bearer ${apiKey}` },
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					...(options.organizationId ? { "X-Organization-ID": options.organizationId } : {}),
+				},
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
 		} catch (err) {
@@ -337,7 +343,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	}
 }
 
-export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
+export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, organizationId?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
 
@@ -362,9 +368,13 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 		byProvider.set(m.provider, group)
 	}
 
+	// CAST AI SSO credentials are organization-scoped: the gateway routes by
+	// `X-Organization-ID`. Key-based logins pass no org (undefined) so a
+	// provider rebuilt after a key login drops any stale SSO header.
 	const providerHeaders = (upstreamProvider: string) => ({
 		"User-Agent": `kimchi/${getVersion()}`,
 		"X-Provider-Type": upstreamProvider,
+		...(organizationId ? { "X-Organization-ID": organizationId } : {}),
 	})
 
 	const providers: Record<string, ProviderConfig> = {
@@ -671,6 +681,49 @@ export function syncProviderModels(
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 
+/** The org header every Kimchi-managed provider entry may carry. */
+const ORGANIZATION_HEADER = "X-Organization-ID"
+
+/** Merge (or strip) the `X-Organization-ID` header on every Kimchi-managed
+ * provider entry in models.json WITHOUT touching anything else (models, base
+ * URL, credentials). Used after an SSO login (set the selected org) and after
+ * an API-key login (clear a stale org from a previous SSO session) — covers
+ * the cached-fallback paths where updateModelsConfig does not rewrite the
+ * file. */
+export function applyOrganizationHeader(modelsJsonPath: string, organizationId: string | undefined): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, { headers?: Record<string, string> }> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		// A models.json that does not parse is surfaced by upstream startup
+		// warnings; do not make the org header the thing that crashes login.
+		return
+	}
+	let changed = false
+	for (const providerId of Object.keys(config.providers ?? {})) {
+		if (!isKimchiProvider(providerId)) continue
+		const entry = config.providers?.[providerId]
+		if (!entry) continue
+		const headers = { ...(entry.headers ?? {}) }
+		const hasHeader = Object.hasOwn(headers, ORGANIZATION_HEADER)
+		if (organizationId) {
+			if (headers[ORGANIZATION_HEADER] !== organizationId) {
+				headers[ORGANIZATION_HEADER] = organizationId
+				entry.headers = headers
+				changed = true
+			}
+		} else if (hasHeader) {
+			// biome-ignore lint/performance/noDelete: explicit removal keeps the
+			// entry shape identical to a never-SSO'd provider
+			delete headers[ORGANIZATION_HEADER]
+			entry.headers = headers
+			changed = true
+		}
+	}
+	if (changed) writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
 export function injectExperimentalProvider(modelsJsonPath: string, apiKey: string): void {
 	if (!existsSync(modelsJsonPath)) return
 	let config: { providers?: Record<string, unknown> }
@@ -745,7 +798,7 @@ export async function discoverModelsConfig(
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			providers: buildModelsConfig(cached, options.endpoint).providers,
+			providers: buildModelsConfig(cached, options.endpoint, options.organizationId).providers,
 			refreshed: false,
 		}
 	}
@@ -769,7 +822,7 @@ export async function discoverModelsConfig(
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			providers: buildModelsConfig(cached, options.endpoint).providers,
+			providers: buildModelsConfig(cached, options.endpoint, options.organizationId).providers,
 			refreshed: false,
 		}
 	}
@@ -804,7 +857,7 @@ export async function discoverModelsConfig(
 	const models = sortModels(activeModels)
 	return {
 		models: sortModels([...activeModels, ...otherModels]),
-		providers: buildModelsConfig(models, options.endpoint).providers,
+		providers: buildModelsConfig(models, options.endpoint, options.organizationId).providers,
 		refreshed: true,
 	}
 }

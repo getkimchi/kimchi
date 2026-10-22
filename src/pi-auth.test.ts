@@ -15,7 +15,7 @@ import { join } from "node:path"
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { syncKimchiAuth } from "./extensions/login/flow.js"
-import { clearPiAuth, syncPiAuth } from "./pi-auth.js"
+import { clearPiAuth, syncOAuthCredentialToKimchiProviders, syncPiAuth } from "./pi-auth.js"
 
 const tempDirs: string[] = []
 
@@ -371,5 +371,76 @@ describe("clearPiAuth", () => {
 		const authPath = join(dir, "auth.json")
 
 		await expect(clearPiAuth(authPath)).resolves.toBeUndefined()
+	})
+})
+
+describe("syncOAuthCredentialToKimchiProviders", () => {
+	const oauthCredential = {
+		type: "oauth",
+		access: "id-1",
+		refresh: "rt-1",
+		expires: Date.now() + 3600_000,
+		region: "us",
+		tokenUrl: "https://login.cast.ai/oauth/token",
+		clientId: "kimchi-cli-us",
+		useIdToken: true,
+	}
+
+	it("fans the OAuth credential out to every Kimchi-managed provider, replacing stale entries", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-oauth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				anthropic: { type: "api_key", key: "keep-me" },
+				"kimchi-dev": { type: "api_key", key: "stale-key" },
+				"kimchi-dev/openai": { type: "api_key", key: "stale-key" },
+			}),
+		)
+		writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: { "kimchi-dev": {}, "kimchi-dev/openai": {}, "kimchi-experimental": {}, ollama: {} },
+			}),
+		)
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)
+
+		const credentials = JSON.parse(readFileSync(authPath, "utf-8"))
+		expect(credentials.anthropic).toEqual({ type: "api_key", key: "keep-me" })
+		expect(credentials.ollama).toBeUndefined()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai", "kimchi-experimental"]) {
+			expect(credentials[providerId]).toEqual(oauthCredential)
+		}
+		expect(statSync(authPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("always includes the base kimchi-dev provider even without models.json", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-oauth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)
+
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({ "kimchi-dev": oauthCredential })
+	})
+
+	it("is a no-op when the credential is already fanned out", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-oauth-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		writeFileSync(modelsPath, JSON.stringify({ providers: { "kimchi-dev": {} } }))
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)
+		const first = statSync(authPath).mtimeMs
+		// Push mtime into the past so a rewrite would be observable.
+		utimesSync(authPath, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)
+		expect(statSync(authPath).mtimeMs).toBeLessThan(first)
 	})
 })

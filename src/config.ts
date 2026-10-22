@@ -1152,6 +1152,20 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 	invalidateResolvedEndpoints()
 }
 
+/**
+ * Persist only the selected region (SSO login path): browser SSO stores its
+ * credential in Pi's auth.json, not in config.json, so it must not go through
+ * writeApiKey (which would also set apiKey — the marker every
+ * getApiKeySource()/startup-sync consumer treats as "API-key login").
+ */
+export function writeRegion(region: RegionId, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.region = region
+	})
+	invalidateResolvedEndpoints()
+}
+
 export function writeDeviceId(id: string, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {

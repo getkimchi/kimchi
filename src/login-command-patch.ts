@@ -17,6 +17,7 @@ import { Spacer, Text } from "@earendil-works/pi-tui"
 import { clearApiKey, endpointsForRegion, loadConfig } from "./config.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import {
+	completeKimchiSsoLogin,
 	createLoginChoiceSelector,
 	createRegionSelector,
 	formatBrowserLoginMessage,
@@ -28,6 +29,7 @@ import {
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { setPendingOAuthRegion, ssoAvailableRegions } from "./oauth-config.js"
 import type { RegionId } from "./regions.js"
 
 // ---------------------------------------------------------------------------
@@ -65,7 +67,7 @@ type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>
 type LoginModeLike = {
 	showSelector?: ShowSelector
 	showStatus?: (msg: string) => void
-	showLoginDialog?: (providerId: string, providerName: string) => Promise<void>
+	showLoginDialog?: (providerId: string, providerName: string, onBack?: () => void) => Promise<void>
 	showExtensionInput?: (title: string, placeholder?: string) => Promise<string | undefined>
 	getLoginProviderOptions?: (authType: "oauth" | "api_key") => AuthSelectorProvider[]
 	getLogoutProviderOptions?: () => Promise<AuthSelectorProvider[]>
@@ -395,8 +397,17 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 		return
 	}
 
+	// SSO is offered wherever a region has an Auth0 tenant (always: US + EU).
+	const ssoAvailable = ssoAvailableRegions().length > 0
+
 	modeLike.showSelector((done) => {
 		const selector = createLoginChoiceSelector({
+			onKimchiSso: ssoAvailable
+				? () => {
+						done()
+						void handleKimchiSsoLogin(im)
+					}
+				: undefined,
 			onKimchiAccount: () => {
 				done()
 				void handleKimchiLogin(im)
@@ -416,6 +427,69 @@ function showLoginChoiceSelector(im: InteractiveMode): void {
 		})
 		return { component: selector, focus: selector }
 	})
+}
+
+/** CAST AI SSO: region (with OAuth tenant) first, then the upstream login
+ * dialog driving the provider's OAuth login. */
+async function handleKimchiSsoLogin(im: InteractiveMode): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	const currentRegion = loadConfig().region
+	const ssoRegions = ssoAvailableRegions()
+
+	if (!modeLike.showSelector || ssoRegions.length <= 1) {
+		await runKimchiSsoLogin(im, ssoRegions[0]?.id ?? currentRegion)
+		return
+	}
+
+	modeLike.showSelector((done) => {
+		const selector = createRegionSelector({
+			currentRegion,
+			regions: ssoRegions,
+			onSelect: (region) => {
+				done()
+				void runKimchiSsoLogin(im, region)
+			},
+			onBack: () => {
+				done()
+				showLoginChoiceSelector(im)
+			},
+		})
+		return { component: selector, focus: selector }
+	})
+}
+
+async function runKimchiSsoLogin(im: InteractiveMode, region: RegionId): Promise<void> {
+	const modeLike = im as unknown as LoginModeLike
+	const showError = im.showError.bind(im)
+	const session = modeLike.session
+	const runtime = session?.modelRuntime
+	if (!runtime) {
+		showError("CAST AI SSO login failed: model registry is unavailable")
+		return
+	}
+	if (!modeLike.showLoginDialog) {
+		showError("CAST AI SSO login failed: the login dialog is unavailable on this surface")
+		return
+	}
+
+	// The dialog drives the provider's registered OAuth login; the region the
+	// user just picked is handed over through the pending-region slot.
+	setPendingOAuthRegion(region)
+	await modeLike.showLoginDialog(KIMCHI_PROVIDER_ID, "CAST AI", () => showLoginChoiceSelector(im))
+
+	// The dialog returns after login completes (or is cancelled — then
+	// completeKimchiSsoLogin finds no OAuth credential and no-ops).
+	const ok = await completeKimchiSsoLogin({
+		modelRegistry: asLoginRegistry(runtime),
+		setModel: (model) => session.setModel(model, { persist: true }),
+		showStatus: modeLike.showStatus?.bind(modeLike),
+		showError,
+		addFeedback: (message) => addLoginFeedback(im, message),
+	})
+	if (ok) {
+		void refreshBillingStatusFromConfig({ mode: "forced" })
+		await modeLike.updateAvailableProviderCount?.()
+	}
 }
 
 async function patchedShowOAuthSelector(this: InteractiveMode, mode: "login" | "logout") {

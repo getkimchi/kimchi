@@ -21,6 +21,7 @@ const configMock = vi.hoisted(() => ({
 const modelsMock = vi.hoisted(() => ({
 	updateModelsConfig: vi.fn(),
 	syncProviderModels: vi.fn(),
+	applyOrganizationHeader: vi.fn(),
 	isTransientModelsError: vi.fn((error: unknown) => (error as { transient?: boolean })?.transient === true),
 }))
 
@@ -228,6 +229,21 @@ describe("startup auth gate", () => {
 		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
 	})
 
+	it("treats a stored Kimchi OAuth credential as usable auth when no key is configured", async () => {
+		configMock.loadConfig.mockReturnValue({ apiKey: "", region: "us" })
+		const registry = createModelRegistry([createModel("kimi-k2.6", "kimchi-dev")])
+		registry.getProviderAuthStatus.mockReturnValue({ configured: true })
+		expect(await hasUsableAuth(createContext({ modelRegistry: registry }))).toBe(true)
+		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
+	})
+
+	it("still gates startup when neither a key nor an OAuth credential is configured", async () => {
+		configMock.loadConfig.mockReturnValue({ apiKey: "", region: "us" })
+		const registry = createModelRegistry([createModel("kimi-k2.6", "kimchi-dev")])
+		registry.getProviderAuthStatus.mockReturnValue({ configured: false })
+		expect(await hasUsableAuth(createContext({ modelRegistry: registry }))).toBe(false)
+	})
+
 	it.each(["custom", "kimchi-dev/openai"])("syncs the saved key while checking %s authentication", async (provider) => {
 		configMock.loadConfig.mockReturnValue({ apiKey: "rejected-key", region: "us" })
 		const registry = {
@@ -252,6 +268,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account
 		await harness.waitForCustomPrompts(2)
 		harness.input("\n") // region: default US
@@ -282,6 +299,7 @@ describe("startup auth gate", () => {
 			const started = harness.start()
 
 			await harness.settle()
+			harness.input("j") // SSO is the first option; account is one down
 			harness.input("\n") // Kimchi account
 			await harness.waitForCustomPrompts(2)
 			harness.input("\n") // region: default US
@@ -315,6 +333,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // past the SSO option
 		harness.input("\n")
 		await harness.waitForCustomPrompts(2)
 		harness.input("\n") // region: default US
@@ -355,18 +374,21 @@ describe("startup auth gate", () => {
 			// region selector, then the login dialog. So auth selectors land on prompts
 			// #1, #4, #7 (regions are #2, #5; dialogs are #3, #6).
 			await harness.settle()
+			harness.input("j") // past the SSO option
 			harness.input("\n")
 			await harness.waitForCustomPrompts(2)
 			harness.input("\n")
 			await harness.waitForCustomPrompts(4)
+			harness.input("j") // past the SSO option
 			harness.input("\n")
 			await harness.waitForCustomPrompts(5)
+			harness.input("j") // past the SSO option
 			harness.input("\n")
 			await harness.waitForCustomPrompts(7)
 			harness.input("\x1b")
 			await started
 
-			expect(authMock.authenticateViaBrowser).toHaveBeenCalledOnce()
+			expect(authMock.authenticateViaBrowser).toHaveBeenCalledTimes(2)
 			expect(modelsMock.updateModelsConfig).toHaveBeenCalledTimes(2)
 			expect(modelsMock.updateModelsConfig.mock.calls.map((call) => call[1])).toEqual(["kimchi-token", "kimchi-token"])
 			expect(harness.state.authenticated).toBe(false)
@@ -399,6 +421,7 @@ describe("startup auth gate", () => {
 			const started = harness.start()
 
 			await harness.settle()
+			harness.input("j") // past the SSO option
 			harness.input("\n")
 			await harness.waitForCustomPrompts(2)
 			harness.input("\n")
@@ -452,6 +475,7 @@ describe("startup auth gate", () => {
 
 		expect(harness.ctx.ui.custom).toHaveBeenCalledOnce()
 
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account
 		await harness.waitForCustomPrompts(2)
 		harness.input("\n") // region: default US
@@ -525,6 +549,8 @@ describe("startup auth gate", () => {
 		await harness.settle()
 
 		// Select the API key option (second item: j then Enter)
+		// Select the API key option (third item: SSO, account, then API key)
+		harness.input("j")
 		harness.input("j")
 		harness.input("\n")
 		await harness.waitForCustomPrompts(2)
@@ -560,7 +586,9 @@ describe("startup auth gate", () => {
 		await harness.settle()
 
 		// Select API key option, then confirm the default region
-		harness.input("j")
+		harness.input("j") // past SSO
+		harness.input("j") // past account
+
 		harness.input("\n")
 		await harness.waitForCustomPrompts(2)
 		harness.input("\n")
@@ -579,6 +607,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account
 		await harness.waitForCustomPrompts(2)
 		harness.input("j") // Europe
@@ -607,6 +636,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account
 		await harness.waitForCustomPrompts(2)
 		harness.input("j") // Europe
@@ -625,6 +655,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account — no region prompt follows
 		await harness.waitForCustomPrompts(2)
 		await started
@@ -642,6 +673,7 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 
 		await harness.settle()
+		harness.input("j") // SSO is the first option; account is one down
 		harness.input("\n") // Kimchi account
 		await harness.waitForCustomPrompts(2)
 		harness.input("\x1b") // back to auth methods
@@ -664,7 +696,8 @@ describe("startup auth gate", () => {
 		const started = harness.start()
 		await harness.settle()
 
-		harness.input("j")
+		harness.input("j") // past SSO
+		harness.input("j") // past account
 		harness.input("\n") // API key option
 		await harness.waitForCustomPrompts(2)
 		harness.input("j")

@@ -5,7 +5,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import {
+	AgentSession,
+	type ExtensionAPI,
+	parseArgs as parsePiArgs,
+	readStoredCredential,
+} from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
@@ -505,6 +510,14 @@ async function cliMain(): Promise<void> {
 			const modelsJsonPath = resolve(agentDir, "models.json")
 
 			let currentApiKey = apiKey
+			// SSO login keeps its credential in auth.json (type: "oauth"), not in
+			// config.json. Use the stored access token for the startup model
+			// metadata refresh so OAuth users get fresh models like key users;
+			// request-time token refresh is owned by the provider's OAuth config.
+			const authJsonPath = resolve(agentDir, "auth.json")
+			const storedOAuth = readStoredCredential("kimchi-dev", authJsonPath)
+			const oauthAccessToken = storedOAuth?.type === "oauth" ? storedOAuth.access : undefined
+			const oauthOrganizationId = storedOAuth?.type === "oauth" ? (storedOAuth as { orgId?: string }).orgId : undefined
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
@@ -521,8 +534,9 @@ async function cliMain(): Promise<void> {
 					environmentOllamaModels = discovered.ollamaModels
 					installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 				} else {
-					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || oauthAccessToken || "", {
 						endpoint: config.customLlmEndpoint,
+						organizationId: currentApiKey ? undefined : oauthOrganizationId,
 					}))
 					if (experimentalFeatures) {
 						injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
@@ -580,8 +594,10 @@ async function cliMain(): Promise<void> {
 				}
 			}
 			// Keep saved Kimchi credentials aligned with config.json, including after
-			// cached-model fallback. Environment keys remain session-only.
-			if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+			// cached-model fallback. Environment keys remain session-only. SSO
+			// (OAuth) credentials live only in auth.json: never sync config's
+			// (empty) key over them.
+			if (!envKey && (currentApiKey || !oauthAccessToken)) await syncPiAuth(authJsonPath, modelsJsonPath, currentApiKey)
 
 			// Must run before main() so the keybindings file is loaded with the
 			// override in place.
