@@ -106,3 +106,38 @@ describe("runXlsxCli create", () => {
 		expect(err[0]).toContain("at least one sheet")
 	})
 })
+
+describe("runXlsxCli edit", () => {
+	it("applies ops to a fresh output with a per-op summary", async () => {
+		const ops = [
+			{ kind: "set-cells", cells: { B1: 10 } },
+			{ kind: "append-rows", rows: [["tail", { f: "B1*2" }]] },
+		]
+		const files = {
+			"in.xlsx": await makeSimpleXlsx(),
+			"ops.json": new TextEncoder().encode(JSON.stringify(ops)),
+		}
+		const { io, out, written } = testIo(files)
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "out.xlsx", "--ops", "ops.json"], io)).toBe(0)
+		expect(written["out.xlsx"]).toBeDefined()
+		expect(out[0]).toContain("edited in.xlsx -> out.xlsx (2 ops applied)")
+		expect(out[0]).toContain("op 1 set-cells")
+		expect(out[0]).toContain("op 2 append-rows")
+		expect(out[0]).toContain("recalculates on open")
+	})
+
+	it("rejects in-place edits, unknown flags and bad ops", async () => {
+		const { io, err } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "in.xlsx", "--ops", "ops.json"], io)).toBe(2)
+		expect(err[0]).toContain("--out must differ from the input")
+		const { io: io2, err: err2 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json", "--wat"], io2)).toBe(2)
+		expect(err2[0]).toContain("unknown flag --wat")
+		const { io: io3, err: err3 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode(JSON.stringify([{ kind: "nope" }])) })
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json"], io3)).toBe(2)
+		expect(err3[0]).toContain("unknown kind")
+		const { io: io4, err: err4 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json"], io4)).toBe(2)
+		expect(err4[0]).toContain("ops array is empty")
+	})
+})

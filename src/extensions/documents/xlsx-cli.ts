@@ -12,7 +12,9 @@
 import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { RealClock } from "./clock.js"
+import { applyXlsxOps, type XlsxOp } from "./editors/xlsx.js"
 import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.js"
+import { openOoxml } from "./ooxml/package.js"
 import { maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { sameFile } from "./paths.js"
@@ -31,7 +33,8 @@ commands:
   read <file.xlsx|file.csv> [--sheet S] [--start-row N] [--end-row N] [--max-chars N] [--show-formulas]
                                                   one sheet as a Markdown table, windowed by rows (≤50 KB/call)
   info <file.xlsx|file.xlsm>                    sheets (names, hidden state, dimensions), macros/links notes
-  create <spec.json> --out <out.xlsx>           build a workbook from a JSON spec (never in place)`
+  create <spec.json> --out <out.xlsx>           build a workbook from a JSON spec (never in place)
+  edit <in.xlsx> --out <out.xlsx> --ops <ops.json>   apply ops, never in place`
 
 function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
 	try {
@@ -162,6 +165,46 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				for (const warning of warnings) io.stderr(`warning: ${warning}`)
 				return 0
 			}
+			case "edit": {
+				const [input, ...flags] = args
+				if (!input) throw new DocumentError("corrupt", "edit needs an input: xlsx.mjs edit <in.xlsx> --out <out.xlsx> --ops <ops.json>")
+				const known = ["--out", "--ops"]
+				for (const f of flagsUsed(flags)) {
+					if (!known.includes(f)) throw new DocumentError("corrupt", `unknown flag ${f} — options: ${known.join(", ")}`)
+				}
+				const out = flagValue(flags, "--out")
+				const opsPath = flagValue(flags, "--ops")
+				if (!out) throw new DocumentError("corrupt", "edit needs --out <out.xlsx> — edits never write in place")
+				if (!opsPath) throw new DocumentError("corrupt", "edit needs --ops <ops.json> (a JSON array of ops)")
+				if (!input.toLowerCase().endsWith(".xlsx") && !input.toLowerCase().endsWith(".xlsm")) {
+					throw new DocumentError("corrupt", `edit expects .xlsx/.xlsm input, got ${input}`, "xlsx")
+				}
+				if (!out.toLowerCase().endsWith(".xlsx") && !out.toLowerCase().endsWith(".xlsm")) {
+					throw new DocumentError("corrupt", `output path must end in .xlsx/.xlsm: ${out}`, "xlsx")
+				}
+				if (sameFile(out, input)) throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "xlsx")
+				const data = readBytes(readFile, input)
+				enforceSizeCap(input, data)
+				let raw: unknown
+				try {
+					raw = JSON.parse(new TextDecoder().decode(readBytes(readFile, opsPath)))
+				} catch {
+					throw new DocumentError("corrupt", `ops file is not valid JSON: ${opsPath}`, "xlsx")
+				}
+				const ops = parseXlsxOps(raw)
+				const pkg = await openOoxml(data)
+				const result = applyXlsxOps(pkg, ops)
+				const bytes = await pkg.save()
+				const writeFile = io.writeFile ?? atomicWrite
+				writeFile(out, bytes)
+				const lines = [`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`, ...result.applied]
+				if (result.formulasAlert) {
+					lines.push("note: formulas written without cached values — the workbook recalculates on open in Excel/LibreOffice")
+				}
+				if (result.macrosPreserved) lines.push("note: macros preserved untouched")
+				io.stdout(lines.join("\n"))
+				return 0
+			}
 			case undefined:
 			case "--help":
 			case "-h":
@@ -178,6 +221,50 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 		}
 		throw err
 	}
+}
+
+const OP_KINDS = ["set-cells", "clear-range", "append-rows", "set-column-width", "add-sheet", "fill-formula"] as const
+
+/** Strict ops validation — messages tell the model the missing/typoed key. */
+function parseXlsxOps(raw: unknown): XlsxOp[] {
+	if (!Array.isArray(raw)) throw new DocumentError("corrupt", "ops must be a JSON array", "xlsx")
+	if (raw.length === 0) throw new DocumentError("corrupt", "ops array is empty", "xlsx")
+	return raw.map((op, i) => {
+		if (op === null || typeof op !== "object") throw new DocumentError("corrupt", `op ${i + 1} is not an object`, "xlsx")
+		const kind = (op as { kind?: string }).kind
+		if (!(OP_KINDS as readonly string[]).includes(kind ?? "")) {
+			throw new DocumentError("corrupt", `op ${i + 1}: unknown kind ${JSON.stringify(kind)} — allowed: ${OP_KINDS.join(", ")}`, "xlsx")
+		}
+		const o = op as Record<string, unknown>
+		const requireField = (name: string): void => {
+			if (o[name] === undefined) throw new DocumentError("corrupt", `op ${i + 1} (${kind}) needs "${name}"`, "xlsx")
+		}
+		switch (kind) {
+			case "set-cells":
+				requireField("cells")
+				if (typeof o.cells !== "object" || o.cells === null || Array.isArray(o.cells))
+					throw new DocumentError("corrupt", `op ${i + 1} (set-cells): "cells" must be an object keyed by cell ref`, "xlsx")
+				break
+				case "clear-range":
+				requireField("range")
+				break
+			case "append-rows":
+				requireField("rows")
+				if (!Array.isArray(o.rows)) throw new DocumentError("corrupt", `op ${i + 1} (append-rows): "rows" must be an array`, "xlsx")
+				break
+			case "set-column-width":
+				requireField("columns")
+				break
+			case "add-sheet":
+				requireField("name")
+				break
+			case "fill-formula":
+				requireField("range")
+				requireField("formula")
+				break
+		}
+		return op as XlsxOp
+	})
 }
 
 /** Write via temp + rename so an interrupted create never leaves a half file. */

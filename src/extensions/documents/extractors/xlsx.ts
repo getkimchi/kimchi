@@ -214,8 +214,8 @@ function loadSheets(pkg: OoxmlPackage): { sheets: WorkbookSheet[]; epoch1904: bo
 	return { sheets, epoch1904 }
 }
 
-/** Row spans in a sheet's XML string: [{row, start, end}] — string scan only. */
-function scanRowSpans(sheetXml: string): Array<{ row: number; start: number; end: number }> {
+/** Row spans in a sheet's XML string (string scan only) — shared with the editor. */
+export function scanRowSpans(sheetXml: string): Array<{ row: number; start: number; end: number }> {
 	const out: Array<{ row: number; start: number; end: number }> = []
 	const openTag = /<row\s+([^>]*?)(\/?)>/g
 	for (let m = openTag.exec(sheetXml); m !== null; m = openTag.exec(sheetXml)) {
@@ -284,7 +284,7 @@ function parseRow(
 	return cells
 }
 
-function serializeInnerText(el: import("@xmldom/xmldom").Element): string {
+export function serializeInnerText(el: import("@xmldom/xmldom").Element): string {
 	let out = ""
 	for (let i = 0; i < el.childNodes.length; i++) {
 		const n = el.childNodes.item(i)

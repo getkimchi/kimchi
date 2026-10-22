@@ -36,7 +36,7 @@ describe("writeXlsx", () => {
 		// Written formulas have no cached values — recalculated on open.
 		expect(w.markdown).toContain("| 2 | alpha | 42.5 | 2024-01-01 | =B2*2 →  |")
 		expect(w.markdown).toContain("| 3 | beta | -3 | 2025-12-31 | =B3*2 →  |")
-		expect(w.markdown).toContain("| 4 | total | =_xlfn.SUM(B2:B3) →  |  | TRUE |")
+		expect(w.markdown).toContain("| 4 | total | =SUM(B2:B3) →  |  | TRUE |")
 	})
 
 	it("is byte-identical across two runs with the clock pinned", async () => {
