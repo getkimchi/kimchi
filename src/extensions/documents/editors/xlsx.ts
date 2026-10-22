@@ -18,7 +18,12 @@ import { columnIndex, columnLetter, parseCellRef, parseRangeRef, splitSheetRef }
 export type SheetSelector = number | string
 
 /** Same cell shape as the writer spec (value, formula, fmt, bold). */
-export type EditCell = string | number | boolean | null | { v?: string | number | boolean | null; f?: string; fmt?: string }
+export type EditCell =
+	| string
+	| number
+	| boolean
+	| null
+	| { v?: string | number | boolean | null; f?: string; fmt?: string }
 
 export type XlsxOp =
 	| { kind: "set-cells"; sheet?: SheetSelector; cells: Record<string, EditCell> }
@@ -73,7 +78,12 @@ export function listSheetParts(pkg: OoxmlPackage): SheetLoc[] {
 }
 
 function unescName(s: string): string {
-	return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&")
+	return s
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'")
+		.replace(/&amp;/g, "&")
 }
 
 function resolveSheet(pkg: OoxmlPackage, selector: SheetSelector | undefined): SheetLoc {
@@ -88,7 +98,11 @@ function resolveSheet(pkg: OoxmlPackage, selector: SheetSelector | undefined): S
 	const lower = selector.toLowerCase()
 	const sheet = sheets.find((s) => s.name.toLowerCase() === lower)
 	if (!sheet) {
-		throw new DocumentError("corrupt", `No sheet named ${JSON.stringify(selector)} — sheets: ${sheets.map((s) => s.name).join(", ")}`, "xlsx")
+		throw new DocumentError(
+			"corrupt",
+			`No sheet named ${JSON.stringify(selector)} — sheets: ${sheets.map((s) => s.name).join(", ")}`,
+			"xlsx",
+		)
 	}
 	return sheet
 }
@@ -115,7 +129,15 @@ function scanCells(rowFrag: string): CellSpan[] {
 		if (!ref) continue
 		const fullOpen = m[0]
 		if (fullOpen.endsWith("/>")) {
-			spans.push({ ref, full: fullOpen, start: m.index, end: m.index + fullOpen.length, attrs, selfClosed: true, inner: "" })
+			spans.push({
+				ref,
+				full: fullOpen,
+				start: m.index,
+				end: m.index + fullOpen.length,
+				attrs,
+				selfClosed: true,
+				inner: "",
+			})
 		} else {
 			const close = rowFrag.indexOf("</c>", m.index)
 			if (close < 0) throw new DocumentError("corrupt", `Unclosed <c r="${ref}">`, "xlsx")
@@ -205,9 +227,7 @@ function applyRowEdits(sheetXml: string, edits: RowEdit[]): { xml: string; touch
 	// Brand-new rows (row numbers the sheet doesn't have): append in order inside sheetData.
 	const missing = [...byRow.values()].sort((a, b) => a.row - b.row)
 	if (missing.length > 0) {
-		const insertion = missing
-			.map((e) => `<row r="${e.row}">${rewriteRowCells([], e.replacements)}</row>`)
-			.join("")
+		const insertion = missing.map((e) => `<row r="${e.row}">${rewriteRowCells([], e.replacements)}</row>`).join("")
 		const closeIdx = xml.lastIndexOf("</sheetData>")
 		const openSelfclose = /<sheetData\s*\/>/.exec(xml)
 		if (closeIdx >= 0) {
@@ -222,11 +242,20 @@ function applyRowEdits(sheetXml: string, edits: RowEdit[]): { xml: string; touch
 	return { xml, touched }
 }
 
-function rewriteRow(openTag: string, inner: string, replacements: Map<number, { ref: string; cell: EditCell }>): string {
+function rewriteRow(
+	openTag: string,
+	inner: string,
+	replacements: Map<number, { ref: string; cell: EditCell }>,
+): string {
 	return `${openTag}${rewriteRowCells(scanCellsFromInner(inner), replacements)}</row>`
 }
 
-interface CellLike { ref: string; attrs: string; inner: string; full: string }
+interface CellLike {
+	ref: string
+	attrs: string
+	inner: string
+	full: string
+}
 
 function scanCellsFromInner(inner: string): CellLike[] {
 	// inner is a row's cell sequence, e.g. <c …/><c …>…</c>.
@@ -239,27 +268,25 @@ function rewriteRowCells(existing: CellLike[], replacements: Map<number, { ref: 
 	const byRef = new Map(existing.map((c) => [c.ref.toUpperCase(), c]))
 	const output: Array<{ col: number; xml: string; empty: boolean }> = []
 	const handled = new Set<string>()
-	for (const [, rep] of [...replacements.entries()].sort((a, b) => a[0] - b[0])) {
+	for (const [col, rep] of [...replacements.entries()].sort((a, b) => a[0] - b[0])) {
 		const ref = rep.ref.toUpperCase()
 		const old = byRef.get(ref)
-		if (old) {
-			const xml = renderCell(ref, rep.cell, old.attrs)
-			output.push({ col: replacements.get(parseCellRef(ref)!.column) ? parseCellRef(ref)!.column : parseCellRef(ref)!.column, xml, empty: xml === "" })
-			handled.add(ref)
-		} else {
-			const xml = renderCell(ref, rep.cell, "")
-			output.push({ col: parseCellRef(ref)!.column, xml, empty: xml === "" })
-			handled.add(ref)
-		}
+		const xml = renderCell(ref, rep.cell, old?.attrs ?? "")
+		output.push({ col, xml, empty: xml === "" })
+		handled.add(ref)
 	}
 	// Untouched existing cells stay, in original column order.
 	for (const cell of existing) {
 		if (!handled.has(cell.ref.toUpperCase())) {
-			output.push({ col: parseCellRef(cell.ref)!.column, xml: cell.full, empty: false })
+			const col = parseCellRef(cell.ref)?.column
+			if (col !== undefined) output.push({ col, xml: cell.full, empty: false })
 		}
 	}
 	output.sort((a, b) => a.col - b.col)
-	return output.filter((o) => !o.empty).map((o) => o.xml).join("")
+	return output
+		.filter((o) => !o.empty)
+		.map((o) => o.xml)
+		.join("")
 }
 
 /** Recompute the <dimension> from the cells present in the sheet xml. */
@@ -272,9 +299,11 @@ function updateDimension(sheetXml: string): string {
 		maxRow = Math.max(maxRow, Number(m[2] ?? 0))
 	}
 	for (const m of sheetXml.matchAll(/<row\b[^>]*\br="(\d+)"/g)) maxRow = Math.max(maxRow, Number(m[1] ?? 0))
-	const dim = maxRow === 0 ? `<dimension ref="A1"/>` : `<dimension ref="A1:${columnLetter(Math.max(maxCol, 1))}${maxRow}"/>`
+	const dim =
+		maxRow === 0 ? `<dimension ref="A1"/>` : `<dimension ref="A1:${columnLetter(Math.max(maxCol, 1))}${maxRow}"/>`
 	if (/<dimension\b[^>]*\/>/.test(sheetXml)) return sheetXml.replace(/<dimension\b[^>]*\/>/, dim)
-	if (/<dimension\b[^>]*>.*?<\/dimension>/.test(sheetXml)) return sheetXml.replace(/<dimension\b[^>]*>.*?<\/dimension>/, dim)
+	if (/<dimension\b[^>]*>.*?<\/dimension>/.test(sheetXml))
+		return sheetXml.replace(/<dimension\b[^>]*>.*?<\/dimension>/, dim)
 	return sheetXml.replace(/<worksheet\b([^>]*)>/, `<worksheet$1>${dim}`)
 }
 
@@ -282,9 +311,9 @@ function ensureFullCalcOnLoad(pkg: OoxmlPackage): void {
 	const wbBytes = pkg.getBytes("xl/workbook.xml")
 	if (!wbBytes) return
 	let wb = new TextDecoder().decode(wbBytes)
-	if ( /<calcPr\b[^>]*\/>/.test(wb)) {
+	if (/<calcPr\b[^>]*\/>/.test(wb)) {
 		wb = wb.replace(/<calcPr\b[^>]*\/>/, (m) => {
-			return m.includes("fullCalcOnLoad") ? m : m.replace("/>", "") + ' fullCalcOnLoad="1"/>'
+			return m.includes("fullCalcOnLoad") ? m : `${m.replace("/>", "")} fullCalcOnLoad="1"/>`
 		})
 	} else {
 		wb = wb.replace(/<\/workbook>/, `<calcPr fullCalcOnLoad="1"/></workbook>`)
@@ -299,7 +328,12 @@ function removeCalcChain(pkg: OoxmlPackage): void {
 // --- ops --------------------------------------------------------------------------------
 
 export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
-	const result: XlsxEditResult = { applied: [], formulasWritten: 0, formulasAlert: false, macrosPreserved: pkg.hasXml("xl/vbaProject.bin") }
+	const result: XlsxEditResult = {
+		applied: [],
+		formulasWritten: 0,
+		formulasAlert: false,
+		macrosPreserved: pkg.hasXml("xl/vbaProject.bin"),
+	}
 	let formulasTouched = false
 
 	for (const [opIndex, op] of ops.entries()) {
@@ -313,17 +347,28 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				for (const [key, cell] of Object.entries(op.cells)) {
 					const { sheet: sheetName, ref } = splitSheetRef(key)
 					if (sheetName !== undefined && sheetName.toLowerCase() !== sheet.name.toLowerCase()) {
-						throw new DocumentError("corrupt", `op ${opIndex + 1}: cell ${key} names a different sheet than --sheet`, "xlsx")
+						throw new DocumentError(
+							"corrupt",
+							`op ${opIndex + 1}: cell ${key} names a different sheet than --sheet`,
+							"xlsx",
+						)
 					}
 					const parsed = parseCellRef(ref)
-					if (!parsed) throw new DocumentError("corrupt", `op ${opIndex + 1}: bad cell ref ${JSON.stringify(key)}`, "xlsx")
+					if (!parsed)
+						throw new DocumentError("corrupt", `op ${opIndex + 1}: bad cell ref ${JSON.stringify(key)}`, "xlsx")
 					const hasFormula = typeof cell === "object" && cell !== null && cell.f !== undefined
 					if (hasFormula) {
 						const shapes = listSheetParts(pkg).map((s) => ({ name: s.name, lastRow: 1, lastColumn: 1 }))
 						const findings = lintFormula((cell as { f: string }).f, ref, shapes, shapes[sheet.index])
-						const hard = findings.filter((f) => f.rule === "unbalanced-syntax" || f.rule === "unknown-sheet" || f.rule === "unknown-function")
+						const hard = findings.filter(
+							(f) => f.rule === "unbalanced-syntax" || f.rule === "unknown-sheet" || f.rule === "unknown-function",
+						)
 						if (hard.length > 0) {
-							throw new DocumentError("corrupt", `op ${opIndex + 1} ${ref}: ${hard.map((f) => `[${f.rule}] ${f.message}`).join("; ")}`, "xlsx")
+							throw new DocumentError(
+								"corrupt",
+								`op ${opIndex + 1} ${ref}: ${hard.map((f) => `[${f.rule}] ${f.message}`).join("; ")}`,
+								"xlsx",
+							)
 						}
 						formulasTouched = true
 						result.formulasWritten++
@@ -336,7 +381,10 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 						)
 					}
 					let rowEdit = edits.get(parsed.row)
-					if (!rowEdit) edits.set(parsed.row, (rowEdit = { row: parsed.row, replacements: new Map() }))
+					if (!rowEdit) {
+						rowEdit = { row: parsed.row, replacements: new Map() }
+						edits.set(parsed.row, rowEdit)
+					}
 					rowEdit.replacements.set(parsed.column, { ref, cell })
 				}
 				const { xml: newXml, touched } = applyRowEdits(xml, [...edits.values()])
@@ -352,10 +400,16 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const { sheet: rangeSheet, ref } = splitSheetRef(op.range)
 				if (rangeSheet !== undefined) {
 					const other = resolveSheet(pkg, rangeSheet)
-					if (other.name !== sheet.name) throw new DocumentError("corrupt", `op ${opIndex + 1}: range names ${other.name}, sheet is ${sheet.name}`, "xlsx")
+					if (other.name !== sheet.name)
+						throw new DocumentError(
+							"corrupt",
+							`op ${opIndex + 1}: range names ${other.name}, sheet is ${sheet.name}`,
+							"xlsx",
+						)
 				}
 				const range = parseRangeRef(ref)
-				if (!range) throw new DocumentError("corrupt", `op ${opIndex + 1}: bad range ${JSON.stringify(op.range)}`, "xlsx")
+				if (!range)
+					throw new DocumentError("corrupt", `op ${opIndex + 1}: bad range ${JSON.stringify(op.range)}`, "xlsx")
 				let xml = new TextDecoder().decode(pkg.getBytes(sheet.part) ?? new Uint8Array())
 				const { merges } = readGeometry(xml)
 				for (const merge of merges) {
@@ -385,7 +439,9 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const { xml: newXml, touched } = applyRowEdits(xml, edits)
 				xml = updateDimension(newXml)
 				pkg.putBytes(sheet.part, new TextEncoder().encode(xml))
-				result.applied.push(`op ${opIndex + 1} clear-range: sheet ${JSON.stringify(sheet.name)}, ${touched} row(s) trimmed`)
+				result.applied.push(
+					`op ${opIndex + 1} clear-range: sheet ${JSON.stringify(sheet.name)}, ${touched} row(s) trimmed`,
+				)
 				break
 			}
 			case "append-rows": {
@@ -410,7 +466,9 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const { xml: newXml } = applyRowEdits(xml, edits)
 				xml = updateDimension(newXml)
 				pkg.putBytes(sheet.part, new TextEncoder().encode(xml))
-				result.applied.push(`op ${opIndex + 1} append-rows: sheet ${JSON.stringify(sheet.name)}, ${op.rows.length} row(s) starting at ${lastRow + 1}`)
+				result.applied.push(
+					`op ${opIndex + 1} append-rows: sheet ${JSON.stringify(sheet.name)}, ${op.rows.length} row(s) starting at ${lastRow + 1}`,
+				)
 				break
 			}
 			case "set-column-width": {
@@ -419,7 +477,8 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const newCols = new Map<number, number>()
 				for (const [letter, width] of Object.entries(op.columns)) {
 					const col = columnIndex(letter.toUpperCase())
-					if (col === undefined) throw new DocumentError("corrupt", `bad column letter ${JSON.stringify(letter)}`, "xlsx")
+					if (col === undefined)
+						throw new DocumentError("corrupt", `bad column letter ${JSON.stringify(letter)}`, "xlsx")
 					newCols.set(col, width)
 				}
 				const existing: Array<{ min: number; max: number; width: number }> = []
@@ -434,17 +493,24 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 					}
 				}
 				for (const [col, width] of newCols) existing.push({ min: col, max: col, width })
-				const colsXml = `<cols>${existing.sort((a, b) => a.min - b.min).map((c) => `<col min="${c.min}" max="${c.max}" width="${c.width}" customWidth="1"/>`).join("")}</cols>`
+				const colsXml = `<cols>${existing
+					.sort((a, b) => a.min - b.min)
+					.map((c) => `<col min="${c.min}" max="${c.max}" width="${c.width}" customWidth="1"/>`)
+					.join("")}</cols>`
 				if (colsMatch) xml = xml.replace(colsMatch[0], colsXml)
 				else xml = xml.replace(/(<sheetFormatPr\b[^>]*\/>|<dimension\b[^>]*\/>)/, `$1${colsXml}`)
 				pkg.putBytes(sheet.part, new TextEncoder().encode(xml))
-				result.applied.push(`op ${opIndex + 1} set-column-width: sheet ${JSON.stringify(sheet.name)}, ${[...newCols.keys()].map(columnLetter).join(", ")}`)
+				result.applied.push(
+					`op ${opIndex + 1} set-column-width: sheet ${JSON.stringify(sheet.name)}, ${[...newCols.keys()].map(columnLetter).join(", ")}`,
+				)
 				break
 			}
 			case "add-sheet": {
-				result.applied.push(addSheet(pkg, op, () => {
-					formulasTouched = true
-				}))
+				result.applied.push(
+					addSheet(pkg, op, () => {
+						formulasTouched = true
+					}),
+				)
 				break
 			}
 			case "fill-formula": {
@@ -452,11 +518,17 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const { sheet: rangeSheet, ref } = splitSheetRef(op.range)
 				if (rangeSheet !== undefined) {
 					const other = resolveSheet(pkg, rangeSheet)
-					if (other.name !== sheet.name) throw new DocumentError("corrupt", `op ${opIndex + 1}: range names ${other.name}, sheet is ${sheet.name}`, "xlsx")
+					if (other.name !== sheet.name)
+						throw new DocumentError(
+							"corrupt",
+							`op ${opIndex + 1}: range names ${other.name}, sheet is ${sheet.name}`,
+							"xlsx",
+						)
 				}
 				let xml = new TextDecoder().decode(pkg.getBytes(sheet.part) ?? new Uint8Array())
 				const range = parseRangeRef(ref)
-				if (!range) throw new DocumentError("corrupt", `op ${opIndex + 1}: bad range ${JSON.stringify(op.range)}`, "xlsx")
+				if (!range)
+					throw new DocumentError("corrupt", `op ${opIndex + 1}: bad range ${JSON.stringify(op.range)}`, "xlsx")
 				let count = 0
 				const edits: RowEdit[] = []
 				for (let r = range.start.row; r <= range.end.row; r++) {
@@ -475,7 +547,9 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				xml = updateDimension(newXml)
 				pkg.putBytes(sheet.part, new TextEncoder().encode(xml))
 				formulasTouched = true
-				result.applied.push(`op ${opIndex + 1} fill-formula: sheet ${JSON.stringify(sheet.name)}, ${count} formula(s) in ${op.range}`)
+				result.applied.push(
+					`op ${opIndex + 1} fill-formula: sheet ${JSON.stringify(sheet.name)}, ${count} formula(s) in ${op.range}`,
+				)
 				break
 			}
 			default:
@@ -491,7 +565,11 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 	return result
 }
 
-function addSheet(pkg: OoxmlPackage, op: { name: string; after?: SheetSelector; rows?: EditCell[][] }, onFormula: () => void): string {
+function addSheet(
+	pkg: OoxmlPackage,
+	op: { name: string; after?: SheetSelector; rows?: EditCell[][] },
+	onFormula: () => void,
+): string {
 	const sheets = listSheetParts(pkg)
 	if (sheets.some((s) => s.name.toLowerCase() === op.name.toLowerCase())) {
 		throw new DocumentError("corrupt", `a sheet named ${JSON.stringify(op.name)} already exists`, "xlsx")
@@ -513,17 +591,26 @@ function addSheet(pkg: OoxmlPackage, op: { name: string; after?: SheetSelector; 
 
 	// workbook.xml — insert after the requested sheet (default: at the end).
 	let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
-	const afterIndex = op.after === undefined ? sheets.length : sheets.findIndex((s) => (typeof op.after === "number" ? s.index === (op.after as number) - 1 : s.name.toLowerCase() === String(op.after).toLowerCase())) + 1
+	const afterIndex =
+		op.after === undefined
+			? sheets.length
+			: sheets.findIndex((s) =>
+					typeof op.after === "number"
+						? s.index === (op.after as number) - 1
+						: s.name.toLowerCase() === String(op.after).toLowerCase(),
+				) + 1
 	const newSheetTag = `<sheet name="${esc(op.name)}" sheetId="${newIndex + 1}" r:id="${newId}"/>`
 	const sheetTags = [...wb.matchAll(/<sheet\b[^>]*\/>/g)]
 	if (afterIndex <= 0 || sheetTags.length === 0) {
 		wb = wb.replace(/<sheets>/, `<sheets>${newSheetTag}`)
 	} else if (afterIndex >= sheetTags.length) {
 		const last = sheetTags[sheetTags.length - 1]
-		wb = `${wb.slice(0, last.index! + last[0].length)}${newSheetTag}${wb.slice(last.index! + last[0].length)}`
+		const at = (last.index ?? 0) + last[0].length
+		wb = `${wb.slice(0, at)}${newSheetTag}${wb.slice(at)}`
 	} else {
 		const prev = sheetTags[afterIndex - 1]
-		wb = `${wb.slice(0, prev.index! + prev[0].length)}${newSheetTag}${wb.slice(prev.index! + prev[0].length)}`
+		const at = (prev.index ?? 0) + prev[0].length
+		wb = `${wb.slice(0, at)}${newSheetTag}${wb.slice(at)}`
 	}
 	pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
 
@@ -556,5 +643,5 @@ function addSheet(pkg: OoxmlPackage, op: { name: string; after?: SheetSelector; 
 	const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:${columnLetter(lastCol)}${Math.max(lastRow, 1)}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData>${rowsXml}</sheetData></worksheet>`
 	pkg.putBytes(partName, new TextEncoder().encode(sheetXml))
-	return `add-sheet: ${JSON.stringify(op.name)} at position ${Math.min(afterIndex, sheetTags.length + 1)}${formulas > 0 ? `, ${formulas} formula(s)` : ""} (op)` 
+	return `add-sheet: ${JSON.stringify(op.name)} at position ${Math.min(afterIndex, sheetTags.length + 1)}${formulas > 0 ? `, ${formulas} formula(s)` : ""} (op)`
 }

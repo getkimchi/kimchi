@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomXlsx, makeSimpleXlsx } from "../fixtures/builders.js"
 import { extractXlsx } from "../extractors/xlsx.js"
+import { makeCustomXlsx, makeSimpleXlsx } from "../fixtures/builders.js"
 import { openOoxml } from "../ooxml/package.js"
 import { applyXlsxOps, type XlsxOp } from "./xlsx.js"
 
@@ -35,11 +35,18 @@ describe("set-cells", () => {
 
 	it("keeps untouched cells and arbitrary attributes byte-preserved", async () => {
 		const { pkg } = await apply(await makeSimpleXlsx(), [{ kind: "set-cells", cells: { B1: 5 } }])
-		const xml = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet1.xml")!)
+		const xml = new TextDecoder().decode(sheetXml(pkg))
 		expect(xml).toContain('t="inlineStr"><is><t>inline note</t></is>')
-		expect(xml).toContain("<mergeCell ref=\"B4:C4\"/>")
+		expect(xml).toContain('<mergeCell ref="B4:C4"/>')
 	})
 })
+
+/** Sheet part bytes — test files have them or the fixture is wrong, fail loudly. */
+function sheetXml(pkg: Awaited<ReturnType<typeof openOoxml>>): Uint8Array {
+	const bytes = pkg.getBytes("xl/worksheets/sheet1.xml")
+	if (!bytes) throw new Error("fixture sheet1.xml missing")
+	return bytes
+}
 
 async function applyAwait(data: Promise<Uint8Array> | Uint8Array, ops: XlsxOp[]) {
 	const pkg = await openOoxml(await data)
@@ -49,9 +56,7 @@ async function applyAwait(data: Promise<Uint8Array> | Uint8Array, ops: XlsxOp[])
 
 describe("clear-range", () => {
 	it("clears cells and updates the dimension", async () => {
-		const { bytes } = await apply(await makeSimpleXlsx(), [
-			{ kind: "clear-range", sheet: "Data", range: "A1:D2" },
-		])
+		const { bytes } = await apply(await makeSimpleXlsx(), [{ kind: "clear-range", sheet: "Data", range: "A1:D2" }])
 		const doc = await extractXlsx(bytes)
 		const w = doc.window({ sheet: 1, startRow: 1, endRow: 3 })
 		expect(w.markdown).toContain("| 1 |  |  |")
@@ -60,9 +65,9 @@ describe("clear-range", () => {
 	})
 
 	it("refuses ranges intersecting merged cells", async () => {
-		await expect(
-			applyAwait(makeSimpleXlsx(), [{ kind: "clear-range", range: "B3:C5" }]),
-		).rejects.toThrow(/merged cells/)
+		await expect(applyAwait(makeSimpleXlsx(), [{ kind: "clear-range", range: "B3:C5" }])).rejects.toThrow(
+			/merged cells/,
+		)
 	})
 })
 
@@ -79,10 +84,8 @@ describe("append-rows", () => {
 
 describe("set-column-width", () => {
 	it("writes <cols> into the part", async () => {
-		const { pkg } = await apply(await makeSimpleXlsx(), [
-			{ kind: "set-column-width", columns: { B: 20 } },
-		])
-		const xml = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet1.xml")!)
+		const { pkg } = await apply(await makeSimpleXlsx(), [{ kind: "set-column-width", columns: { B: 20 } }])
+		const xml = new TextDecoder().decode(sheetXml(pkg))
 		expect(xml).toContain('<col min="2" max="2" width="20" customWidth="1"/>')
 	})
 })
@@ -104,12 +107,14 @@ describe("fill-formula", () => {
 		])
 		expect(result.formulasWritten).toBe(2)
 		expect(result.formulasAlert).toBe(true)
-		const sheet = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet1.xml")!)
-		expect(sheet).toContain('<f>A1*10</f>')
-		expect(sheet).toContain('<f>A2*10</f>')
+		const sheet = new TextDecoder().decode(sheetXml(pkg))
+		expect(sheet).toContain("<f>A1*10</f>")
+		expect(sheet).toContain("<f>A2*10</f>")
 		expect(sheet).not.toContain("<v>2</v>") // stale cached value removed
 		expect(pkg.hasXml("xl/calcChain.xml")).toBe(false)
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wbBytes = pkg.getBytes("xl/workbook.xml")
+		if (!wbBytes) throw new Error("workbook.xml missing")
+		const wb = new TextDecoder().decode(wbBytes)
 		expect(wb).toContain('fullCalcOnLoad="1"')
 	})
 })
@@ -126,9 +131,9 @@ describe("add-sheet", () => {
 	})
 
 	it("rejects duplicate names", async () => {
-		await expect(
-			applyAwait(makeSimpleXlsx(), [{ kind: "add-sheet", name: "data", rows: [] }]),
-		).rejects.toThrow(/already exists/)
+		await expect(applyAwait(makeSimpleXlsx(), [{ kind: "add-sheet", name: "data", rows: [] }])).rejects.toThrow(
+			/already exists/,
+		)
 	})
 })
 

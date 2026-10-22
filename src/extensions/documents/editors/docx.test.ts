@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { extractDocx } from "../extractors/docx.js"
 import { makeCustomDocx, makeSimpleDocx } from "../fixtures/builders.js"
 import { openOoxml } from "../ooxml/package.js"
 import { applyDocxOps, markdownToBodyXml, parseDocxOps } from "./docx.js"
-import { extractDocx } from "../extractors/docx.js"
 
 async function openDocx(data: Uint8Array) {
 	return openOoxml(data)
@@ -33,7 +33,10 @@ describe("parseDocxOps", () => {
 describe("applyDocxOps", () => {
 	it("replace-text edits a unique anchor run-aware", async () => {
 		const pkg = await openDocx(await makeSimpleDocx())
-		const result = applyDocxOps(pkg, parseDocxOps([{ type: "replace-text", anchor: "Revenue grew", value: "Revenue soared" }]))
+		const result = applyDocxOps(
+			pkg,
+			parseDocxOps([{ type: "replace-text", anchor: "Revenue grew", value: "Revenue soared" }]),
+		)
 		expect(result.trackedChangesPresent).toBe(true)
 		const out = await extractDocx(await saved(pkg))
 		expect(out.blockText(2)).toBe("Revenue soared in Q3.")
@@ -57,7 +60,9 @@ describe("applyDocxOps", () => {
 		const pkg = await openDocx(
 			await makeCustomDocx(`<w:p><w:r><w:t>apple pie</w:t></w:r></w:p><w:p><w:r><w:t>apple tart</w:t></w:r></w:p>`),
 		)
-		expect(() => applyDocxOps(pkg, parseDocxOps([{ type: "replace-text", anchor: "apple", value: "pear" }]))).toThrow(/matches 2 paragraphs/)
+		expect(() => applyDocxOps(pkg, parseDocxOps([{ type: "replace-text", anchor: "apple", value: "pear" }]))).toThrow(
+			/matches 2 paragraphs/,
+		)
 	})
 
 	it("replace-text --all replaces every occurrence", async () => {
@@ -185,7 +190,10 @@ describe("applyDocxOps", () => {
 
 	it("add-comment appends to an existing comments part with the next id", async () => {
 		const pkg = await openOoxml(await makeSimpleDocx()) // already has comment id 0
-		applyDocxOps(pkg, parseDocxOps([{ type: "add-comment", anchor: "Revenue grew", value: "Second comment.", author: "Me" }]))
+		applyDocxOps(
+			pkg,
+			parseDocxOps([{ type: "add-comment", anchor: "Revenue grew", value: "Second comment.", author: "Me" }]),
+		)
 		const comments = new TextDecoder().decode(pkg.getBytes("word/comments.xml"))
 		expect(comments).toContain('w:id="1"')
 		expect(comments).toContain("Fix this.") // original preserved

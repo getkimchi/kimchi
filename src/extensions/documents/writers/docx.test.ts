@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createPinnedClock } from "../clock.js"
-import { parseMarkdownBlocks } from "../markdown/blocks.js"
 import { extractDocx } from "../extractors/docx.js"
+import { parseMarkdownBlocks } from "../markdown/blocks.js"
 import { writeDocx } from "./docx.js"
 
 const clock = createPinnedClock()
@@ -25,7 +25,7 @@ describe("writeDocx", () => {
 			"| beta | 7 |",
 			"",
 			"```ts",
-			'const x: number = 1',
+			"const x: number = 1",
 			'console.log("hi")',
 			"```",
 		].join("\n")
@@ -45,10 +45,7 @@ describe("writeDocx", () => {
 
 	it("is byte-identical across two runs with the clock pinned", async () => {
 		const blocks = parseMarkdownBlocks("# Same\nText with\na line break.")
-		const [a, b] = await Promise.all([
-			writeDocx({ blocks }, { clock }),
-			writeDocx({ blocks }, { clock }),
-		])
+		const [a, b] = await Promise.all([writeDocx({ blocks }, { clock }), writeDocx({ blocks }, { clock })])
 		expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
 	})
 

@@ -122,17 +122,13 @@ test("bundled pptx skill shadows the user pptx skill: unadvertised and refused b
 
 			// And a same-named user docx skill is refused by the bundled docx skill.
 			const fourth = turns[3].body as { messages?: Array<{ role: string; content: unknown }> }
-			const docxToolResult = String(
-				(fourth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "",
-			)
+			const docxToolResult = String((fourth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "")
 			expect(docxToolResult).toContain('is unavailable: it is disabled by the enabled "docx" skill')
 			expect(docxToolResult).not.toContain(USER_DOCX_BODY)
 
 			// And a same-named user xlsx skill is refused by the bundled xlsx skill.
 			const fifth = turns[4].body as { messages?: Array<{ role: string; content: unknown }> }
-			const xlsxToolResult = String(
-				(fifth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "",
-			)
+			const xlsxToolResult = String((fifth.messages ?? []).filter((m) => m.role === "tool").at(-1)?.content ?? "")
 			expect(xlsxToolResult).toContain('is unavailable: it is disabled by the enabled "xlsx" skill')
 			expect(xlsxToolResult).not.toContain(USER_XLSX_BODY)
 			trace.step("Skill tool refusals for all declarers reached model context")

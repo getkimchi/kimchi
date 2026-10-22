@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { basename, dirname, join, resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { applyPptxOps, parsePptxOps } from "./editors/pptx.js"
 import { extractPptx } from "./extractors/pptx.js"

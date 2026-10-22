@@ -21,9 +21,9 @@
  */
 
 import type { Element as XmlElement } from "@xmldom/xmldom"
-import { scanBlocks, stripTags } from "../extractors/docx.js"
 import { XMLSerializer } from "@xmldom/xmldom"
-import { parseMarkdownBlocks, type Block, type Inline } from "../markdown/blocks.js"
+import { scanBlocks, stripTags } from "../extractors/docx.js"
+import { type Block, type Inline, parseMarkdownBlocks } from "../markdown/blocks.js"
 import { DocumentError } from "../model.js"
 import type { OoxmlPackage } from "../ooxml/package.js"
 import { byTag, childElements, parseXml, setTextPreservingSpace } from "../ooxml/xml.js"
@@ -110,7 +110,7 @@ function inlineToRunXml(inline: Inline[]): string {
 		if (i.code) props.push('<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/>')
 		const rPr = props.length > 0 ? `<w:rPr>${props.join("")}</w:rPr>` : ""
 		let hrefNote = ""
-		let text = i.text
+		const text = i.text
 		if (i.href && !i.image) hrefNote = ` (${i.href})`
 		const full = text + hrefNote
 		const space = /^\s|\s$/.test(full) ? ' xml:space="preserve"' : ""
@@ -187,7 +187,6 @@ export function markdownToBodyXml(markdown: string): string {
 	for (const b of blocks) emit(b, 0)
 	return pieces.join("\n")
 }
-
 
 // --- Fragment DOM helpers ------------------------------------------------------
 
@@ -356,7 +355,11 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 			case "replace-text": {
 				const occurrences = op.all ? findAnchorBlocks(op.anchor).indices : [requireUniqueAnchor(op.anchor, label)]
 				if (occurrences.length === 0 && op.all) {
-					throw new DocumentError("corrupt", `${label}: anchor not found: ${JSON.stringify(op.anchor.slice(0, 80))}`, "docx")
+					throw new DocumentError(
+						"corrupt",
+						`${label}: anchor not found: ${JSON.stringify(op.anchor.slice(0, 80))}`,
+						"docx",
+					)
 				}
 				let count = 0
 				for (const blockIndex of [...occurrences].sort((a, b) => b - a)) {
@@ -398,7 +401,9 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 						documentXml = documentXml.slice(0, span.end) + "\n" + xml + documentXml.slice(span.end)
 					}
 				}
-				result.applied.push(`${label}: inserted content ${op.type === "insert-before" ? "before" : "after"} block ${blockIndex + 1}`)
+				result.applied.push(
+					`${label}: inserted content ${op.type === "insert-before" ? "before" : "after"} block ${blockIndex + 1}`,
+				)
 				break
 			}
 			case "append": {
@@ -424,7 +429,11 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				const rows = byTag(dom, "tr")
 				const row = rows[op.row - 1]
 				if (!row) {
-					throw new DocumentError("corrupt", `${label}: table ${op.table} has ${rows.length} rows, no row ${op.row}`, "docx")
+					throw new DocumentError(
+						"corrupt",
+						`${label}: table ${op.table} has ${rows.length} rows, no row ${op.row}`,
+						"docx",
+					)
 				}
 				const cells = childElements(row).filter((c) => c.tagName === "w:tc")
 				const cell = cells[op.column - 1]
@@ -459,7 +468,8 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				const fragment = documentXml.slice(span.start, span.end)
 				const openMatch = /^<w:p\b[^>]*>/.exec(fragment)
 				const closeIdx = fragment.lastIndexOf("</w:p>")
-				if (!openMatch || closeIdx < 0) throw new DocumentError("corrupt", `${label}: cannot anchor a comment here`, "docx")
+				if (!openMatch || closeIdx < 0)
+					throw new DocumentError("corrupt", `${label}: cannot anchor a comment here`, "docx")
 				// Range markers must sit INSIDE the paragraph so the extractor
 				// (and Word) associates the comment with this paragraph.
 				const wrapped =
@@ -506,8 +516,16 @@ function appendCommentPart(pkg: OoxmlPackage, id: number, author: string, text: 
 		commentsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${commentXml}</w:comments>`
 		// Register the part: [Content_Types] override + document.xml.rels entry.
-		ensureContentTypeOverride(pkg, "/word/comments.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml")
-		ensureDocumentRel(pkg, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments", "comments.xml")
+		ensureContentTypeOverride(
+			pkg,
+			"/word/comments.xml",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
+		)
+		ensureDocumentRel(
+			pkg,
+			"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+			"comments.xml",
+		)
 	}
 	pkg.putBytes("word/comments.xml", new TextEncoder().encode(commentsXml))
 }

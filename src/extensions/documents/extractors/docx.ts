@@ -18,11 +18,11 @@
  *   - footnotes: `[^id]` inline, texts listed under a footnotes heading
  */
 
+import type { Document as XmldDocument, Element as XmlElement } from "@xmldom/xmldom"
 import { MAX_OUTPUT_CHARS } from "../limits.js"
 import { renderMarkdownTable } from "../markdown-table.js"
 import { DocumentError } from "../model.js"
-import { openOoxml, type OoxmlPackage } from "../ooxml/package.js"
-import type { Element as XmlElement, Document as XmldDocument } from "@xmldom/xmldom"
+import { type OoxmlPackage, openOoxml } from "../ooxml/package.js"
 import { byTag, parseXml } from "../ooxml/xml.js"
 
 /** Raw cap for OOXML side parts parsed fully into memory (document.xml and

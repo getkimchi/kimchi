@@ -119,8 +119,14 @@ describe("extractDocx — adversarial", () => {
 	it("rejects a document.xml without a body", async () => {
 		const JSZip = (await import("jszip")).default
 		const zip = new JSZip()
-		zip.file("word/document.xml", `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:document>`)
-		zip.file("[Content_Types].xml", `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`)
+		zip.file(
+			"word/document.xml",
+			`<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"></w:document>`,
+		)
+		zip.file(
+			"[Content_Types].xml",
+			`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`,
+		)
 		await expect(extractDocx(await zip.generateAsync({ type: "uint8array" }))).rejects.toMatchObject({
 			code: "corrupt",
 			format: "docx",

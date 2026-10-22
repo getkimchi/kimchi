@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { columnIndex, columnLetter, formatCellRef, parseCellRef, parseRangeRef, quoteSheetName, splitSheetRef } from "./xlsx-refs.js"
+import {
+	columnIndex,
+	columnLetter,
+	formatCellRef,
+	parseCellRef,
+	parseRangeRef,
+	quoteSheetName,
+	splitSheetRef,
+} from "./xlsx-refs.js"
 
 describe("column letters", () => {
 	it("roundtrips A..XFD", () => {

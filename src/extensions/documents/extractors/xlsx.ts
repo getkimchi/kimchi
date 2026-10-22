@@ -16,7 +16,7 @@
 
 import { MAX_OUTPUT_CHARS } from "../limits.js"
 import { DocumentError } from "../model.js"
-import { openOoxml, type OoxmlPackage } from "../ooxml/package.js"
+import { type OoxmlPackage, openOoxml } from "../ooxml/package.js"
 import { byTag, parseXml } from "../ooxml/xml.js"
 import { columnLetter, parseCellRef } from "../xlsx-refs.js"
 
@@ -58,7 +58,13 @@ export interface XlsxExtraction {
 	 * Render a row window of a sheet (1-based, inclusive, clamped).
 	 * `showFormulas` renders `=…` with the cached value instead of the value alone.
 	 */
-	window(opts: { sheet?: number | string; startRow?: number; endRow?: number; maxChars?: number; showFormulas?: boolean }): XlsxWindow
+	window(opts: {
+		sheet?: number | string
+		startRow?: number
+		endRow?: number
+		maxChars?: number
+		showFormulas?: boolean
+	}): XlsxWindow
 	/** Sheet lookup used by the CLI and editor messages. */
 	sheetIndex(sheet: number | string): number
 }
@@ -200,7 +206,11 @@ function loadSheets(pkg: OoxmlPackage): { sheets: WorkbookSheet[]; epoch1904: bo
 		const relId = s.getAttribute("r:id")
 		const part = relId ? targets[relId] : undefined
 		if (!part || !pkg.hasXml(part)) {
-			throw new DocumentError("corrupt", `Sheet ${JSON.stringify(s.getAttribute("name"))} points at a missing part`, "xlsx")
+			throw new DocumentError(
+				"corrupt",
+				`Sheet ${JSON.stringify(s.getAttribute("name"))} points at a missing part`,
+				"xlsx",
+			)
 		}
 		const stateAttr = s.getAttribute("state")
 		sheets.push({
@@ -274,11 +284,7 @@ function parseRow(
 		else if (v !== "" && styleDateKind(styles, s)) {
 			value = serialToIso(Number(v), epoch1904, styleDateKind(styles, s)!)
 		}
-		let display = f
-			? showFormulas
-				? `=${f} → ${value}`
-				: value
-			: value
+		const display = f ? (showFormulas ? `=${f} → ${value}` : value) : value
 		cells.push({ ref, row: parsed.row, column: parsed.column, display })
 	}
 	return cells
@@ -362,7 +368,12 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 	if (hasMacros) notes.push("contains macros (vbaProject.bin) — read-only, preserved untouched by edits")
 	if (hasExternalLinks) notes.push("has external links — never recalculated by this skill")
 	if (infos.some((s) => s.state !== "visible"))
-		notes.push(`hidden sheets: ${infos.filter((s) => s.state !== "visible").map((s) => s.name).join(", ")}`)
+		notes.push(
+			`hidden sheets: ${infos
+				.filter((s) => s.state !== "visible")
+				.map((s) => s.name)
+				.join(", ")}`,
+		)
 	const mergedBySheet: string[][] = []
 
 	return {
@@ -397,7 +408,10 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 			const byRow = new Map<number, Map<number, string>>()
 			for (const c of allCells) {
 				let m = byRow.get(c.row)
-				if (!m) byRow.set(c.row, (m = new Map()))
+				if (!m) {
+					m = new Map()
+					byRow.set(c.row, m)
+				}
 				m.set(c.column, c.display)
 			}
 

@@ -14,9 +14,9 @@
  */
 
 import JSZip from "jszip"
-import { RealClock, type DocumentClock } from "../clock.js"
-import { DocumentError } from "../model.js"
+import { type DocumentClock, RealClock } from "../clock.js"
 import { applyXlfnPrefixes, lintFormula, type SheetShape } from "../formula-lint.js"
+import { DocumentError } from "../model.js"
 import { columnLetter } from "../xlsx-refs.js"
 
 /** Spec cell: a plain scalar, or an object with explicit parts. */
@@ -54,8 +54,7 @@ export interface WriteXlsxResult {
 	formulas: number
 }
 
-const esc = (s: string) =>
-	s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 
 function validateSpec(spec: XlsxSpec): void {
 	if (!Array.isArray(spec.sheets) || spec.sheets.length === 0) {
@@ -70,12 +69,17 @@ function validateSpec(spec: XlsxSpec): void {
 			throw new DocumentError("corrupt", `sheet name ${JSON.stringify(sheet.name)} exceeds 31 characters`, "xlsx")
 		}
 		if (/[[\]:*?/\\]/.test(sheet.name)) {
-			throw new DocumentError("corrupt", `sheet name ${JSON.stringify(sheet.name)} contains a forbidden character ([ ] : * ? / \\)`, "xlsx")
+			throw new DocumentError(
+				"corrupt",
+				`sheet name ${JSON.stringify(sheet.name)} contains a forbidden character ([ ] : * ? / \\)`,
+				"xlsx",
+			)
 		}
 		const key = sheet.name.toLowerCase()
 		if (seen.has(key)) throw new DocumentError("corrupt", `duplicate sheet name ${JSON.stringify(sheet.name)}`, "xlsx")
 		seen.add(key)
-		if (!Array.isArray(sheet.rows)) throw new DocumentError("corrupt", `sheet ${sheet.name}: rows must be an array`, "xlsx")
+		if (!Array.isArray(sheet.rows))
+			throw new DocumentError("corrupt", `sheet ${sheet.name}: rows must be an array`, "xlsx")
 	}
 }
 
@@ -172,7 +176,7 @@ function sheetXml(
 	shapes: SheetShape,
 	lint: (formula: string, cell: string) => void,
 ): { xml: string; formulas: number } {
-	let formulas = 0
+	const formulas = 0
 	const rowsXml: string[] = []
 	for (const [ri, row] of sheet.rows.entries()) {
 		const r = ri + 1
@@ -232,7 +236,8 @@ function writeCell(
 	}
 	const s = cell.fmt !== undefined ? styleIndexFor(styles, String(cell.fmt), cell.bold === true) : cell.bold ? 1 : 0
 	if (cell.v !== undefined && cell.v !== null) {
-		if (typeof cell.v === "number") return { xml: `<c r="${ref}"${s ? ` s="${s}"` : ""}><v>${cell.v}</v></c>`, empty: false }
+		if (typeof cell.v === "number")
+			return { xml: `<c r="${ref}"${s ? ` s="${s}"` : ""}><v>${cell.v}</v></c>`, empty: false }
 		if (typeof cell.v === "boolean")
 			return { xml: `<c r="${ref}"${s ? ` s="${s}"` : ""} t="b"><v>${cell.v ? 1 : 0}</v></c>`, empty: false }
 		return {
@@ -291,7 +296,9 @@ export async function writeXlsx(spec: XlsxSpec, options: { clock?: DocumentClock
 		const lint = (formula: string, cell: string) => {
 			formulas++
 			const findings = lintFormula(formula, cell, shapes, shapes[i])
-			const hard = findings.filter((f) => f.rule === "unbalanced-syntax" || f.rule === "unknown-sheet" || f.rule === "unknown-function")
+			const hard = findings.filter(
+				(f) => f.rule === "unbalanced-syntax" || f.rule === "unknown-sheet" || f.rule === "unknown-function",
+			)
 			if (hard.length > 0) {
 				throw new DocumentError(
 					"corrupt",

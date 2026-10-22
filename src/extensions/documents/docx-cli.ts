@@ -78,7 +78,11 @@ function parseBlockRange(arg: string | undefined, total: number): { start: numbe
 	if (start < 1 || end < start)
 		throw new DocumentError("corrupt", `Invalid block range "${arg}" — start must be ≥1 and end ≥ start.`)
 	if (end - start + 1 > BLOCKS_PER_CALL)
-		throw new DocumentError("corrupt", `Block windows are capped at ${BLOCKS_PER_CALL} blocks (${start}-${end} asked).`, "docx")
+		throw new DocumentError(
+			"corrupt",
+			`Block windows are capped at ${BLOCKS_PER_CALL} blocks (${start}-${end} asked).`,
+			"docx",
+		)
 	return { start, end: Math.min(end, total) }
 }
 
@@ -89,7 +93,8 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 		switch (command) {
 			case "read": {
 				const [path, rangeArg] = args
-				if (!path) throw new DocumentError("corrupt", "read needs a document path: docx.mjs read <doc.docx> [start-end]")
+				if (!path)
+					throw new DocumentError("corrupt", "read needs a document path: docx.mjs read <doc.docx> [start-end]")
 				const data = readBytes(readFile, path)
 				enforceSizeCap(path, data)
 				const doc = await extractDocx(data)
@@ -97,7 +102,9 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 				const w = doc.window({ start, end })
 				io.stdout(`# ${path} (docx — blocks ${w.from}-${w.to} of ${doc.totalBlocks})\n\n${w.markdown}`.trim())
 				if (w.to < doc.totalBlocks || w.truncated) {
-					io.stderr(`showing blocks ${w.from}-${w.to} of ${doc.totalBlocks}; continue with: read ${path} ${w.to + 1}-${doc.totalBlocks}`)
+					io.stderr(
+						`showing blocks ${w.from}-${w.to} of ${doc.totalBlocks}; continue with: read ${path} ${w.to + 1}-${doc.totalBlocks}`,
+					)
 				}
 				return 0
 			}
@@ -127,7 +134,10 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 			case "create": {
 				const [out, ...flags] = args
 				if (!out)
-					throw new DocumentError("corrupt", "create needs an output path: docx.mjs create <out.docx> --content <file.md>")
+					throw new DocumentError(
+						"corrupt",
+						"create needs an output path: docx.mjs create <out.docx> --content <file.md>",
+					)
 				if (!out.toLowerCase().endsWith(".docx"))
 					throw new DocumentError("corrupt", `output path must end in .docx: ${out}`)
 				const contentPath = flagValue(flags, "--content")
@@ -145,7 +155,11 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 					{ baseDir: dirname(resolve(contentPath)), pageSize, clock: RealClock },
 				)
 				const templatePath = flagValue(flags, "--template")
-				if (templatePath && !templatePath.toLowerCase().endsWith(".docx") && !templatePath.toLowerCase().endsWith(".dotx")) {
+				if (
+					templatePath &&
+					!templatePath.toLowerCase().endsWith(".docx") &&
+					!templatePath.toLowerCase().endsWith(".dotx")
+				) {
 					throw new DocumentError("corrupt", `template must be a .docx or .dotx: ${templatePath}`, "docx")
 				}
 				const finalBytes = templatePath
@@ -159,7 +173,10 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 			case "edit": {
 				const [input, ...flags] = args
 				if (!input)
-					throw new DocumentError("corrupt", "edit needs an input: docx.mjs edit <in.docx> --out <out.docx> --ops <ops.json>")
+					throw new DocumentError(
+						"corrupt",
+						"edit needs an input: docx.mjs edit <in.docx> --out <out.docx> --ops <ops.json>",
+					)
 				const out = flagValue(flags, "--out")
 				const opsPath = flagValue(flags, "--ops")
 				if (!out) throw new DocumentError("corrupt", "edit needs --out <out.docx> — edits never write in place")

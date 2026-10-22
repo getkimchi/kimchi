@@ -38,9 +38,9 @@ import {
 	WidthType,
 } from "docx"
 import JSZip from "jszip"
-import { RealClock, type DocumentClock } from "../clock.js"
-import { DocumentError } from "../model.js"
+import { type DocumentClock, RealClock } from "../clock.js"
 import type { Block, Inline } from "../markdown/blocks.js"
+import { DocumentError } from "../model.js"
 import { enforceDocxPitfalls } from "./docx-pitfalls.js"
 
 export const PAGE_SIZES = {
@@ -188,7 +188,11 @@ function imageFor(block: Extract<Block, { type: "image" }>, baseDir: string): Pa
 				// Sensible bounded default; the alternative is measuring every
 				// image first (image-size) — kept out of v1.
 				transformation: { width: 480, height: 320 },
-				altText: { title: block.title ?? basename(block.href), description: block.alt || block.href, name: basename(block.href) },
+				altText: {
+					title: block.title ?? basename(block.href),
+					description: block.alt || block.href,
+					name: basename(block.href),
+				},
 			}),
 		],
 	})
@@ -200,7 +204,12 @@ function buildBody(blocks: Block[], baseDir: string, contentWidthDxa: number): A
 	for (const b of blocks) {
 		switch (b.type) {
 			case "heading":
-				out.push(new Paragraph({ heading: HEADING_LEVELS[b.level] ?? HeadingLevel.HEADING_6, children: inlineChildren(b.inline) }))
+				out.push(
+					new Paragraph({
+						heading: HEADING_LEVELS[b.level] ?? HeadingLevel.HEADING_6,
+						children: inlineChildren(b.inline),
+					}),
+				)
 				break
 			case "paragraph":
 				out.push(new Paragraph({ children: inlineChildren(b.inline) }))
@@ -293,7 +302,13 @@ export async function writeDocx(spec: DocxSpec, options: WriteDocxOptions = {}):
 
 function firstHeading(blocks: Block[]): string {
 	for (const b of blocks) {
-		if (b.type === "heading") return b.inline.map((i) => i.text).join("").trim() || "Untitled"
+		if (b.type === "heading")
+			return (
+				b.inline
+					.map((i) => i.text)
+					.join("")
+					.trim() || "Untitled"
+			)
 	}
 	return "Untitled"
 }

@@ -152,7 +152,12 @@ const MAX_COLS = 16_384
  * Lint one formula. `sheets` are the writer's sheet shapes (lastRow/lastColumn
  * of what will exist); `cell` is where the formula lands.
  */
-export function lintFormula(formula: string, cell: string, sheets: SheetShape[], currentSheet?: SheetShape): LintFinding[] {
+export function lintFormula(
+	formula: string,
+	cell: string,
+	sheets: SheetShape[],
+	currentSheet?: SheetShape,
+): LintFinding[] {
 	const findings: LintFinding[] = []
 	const body = formula.startsWith("=") ? formula.slice(1) : formula
 	if (!syntaxOk(body)) {

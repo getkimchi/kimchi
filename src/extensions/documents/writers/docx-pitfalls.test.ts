@@ -25,7 +25,7 @@ describe("docx pitfalls", () => {
 	})
 
 	it("rejects chart blocks with a named error", () => {
-		const chart: Block = { type: "chart", spec: '{}' }
+		const chart: Block = { type: "chart", spec: "{}" }
 		expect(() => enforceDocxPitfalls({ blocks: [chart], contentWidthDxa: letterContentDxa })).toThrow(
 			/chart-not-supported-in-docx/,
 		)
@@ -45,7 +45,7 @@ describe("docx pitfalls", () => {
 			type: "table",
 			header: [[{ text: "A" }], [{ text: "B" }]],
 			align: [null, null],
-			rows: [[[ { text: "1" }], [ { text: "2" }]]],
+			rows: [[[{ text: "1" }], [{ text: "2" }]]],
 		}
 		expect(() => enforceDocxPitfalls({ blocks: [table], contentWidthDxa: letterContentDxa })).not.toThrow()
 	})

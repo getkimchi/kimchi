@@ -14,9 +14,9 @@ import { fileURLToPath } from "node:url"
 import { RealClock } from "./clock.js"
 import { applyXlsxOps, type XlsxOp } from "./editors/xlsx.js"
 import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.js"
-import { openOoxml } from "./ooxml/package.js"
 import { maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
+import { openOoxml } from "./ooxml/package.js"
 import { sameFile } from "./paths.js"
 import { writeXlsx, type XlsxSpec } from "./writers/xlsx.js"
 
@@ -100,7 +100,8 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					const v = flagValue(flags, name)
 					if (v === undefined) return undefined
 					const n = Number.parseInt(v, 10)
-					if (!Number.isFinite(n) || n < 1) throw new DocumentError("corrupt", `${name} wants a positive integer, got ${v}`)
+					if (!Number.isFinite(n) || n < 1)
+						throw new DocumentError("corrupt", `${name} wants a positive integer, got ${v}`)
 					return n
 				}
 				const w = doc.window({
@@ -110,14 +111,17 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					maxChars: parseRowFlag("--max-chars"),
 					showFormulas: flags.includes("--show-formulas"),
 				})
-				io.stdout(`# ${path} — sheet "${w.sheet}" rows ${w.fromRow}-${w.toRow}${w.truncated ? " (truncated, continue with --start-row)" : ""}\n\n${w.markdown}`)
+				io.stdout(
+					`# ${path} — sheet "${w.sheet}" rows ${w.fromRow}-${w.toRow}${w.truncated ? " (truncated, continue with --start-row)" : ""}\n\n${w.markdown}`,
+				)
 				for (const note of doc.notes) io.stderr(`note: ${note}`)
 				return 0
 			}
 			case "info": {
 				const [path] = args
 				if (!path) throw new DocumentError("corrupt", "info needs a file: xlsx.mjs info <file.xlsx|file.xlsm>")
-				if (args.length > 1) throw new DocumentError("corrupt", `info takes exactly one file (${args.slice(1).join(" ")}?)`)
+				if (args.length > 1)
+					throw new DocumentError("corrupt", `info takes exactly one file (${args.slice(1).join(" ")}?)`)
 				const lower = path.toLowerCase()
 				if (!lower.endsWith(".xlsx") && !lower.endsWith(".xlsm")) {
 					throw new DocumentError("corrupt", `info expects .xlsx/.xlsm, got ${path}`, "xlsx")
@@ -159,15 +163,17 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				const { bytes, warnings, formulas } = await writeXlsx(spec, { clock: RealClock })
 				const writeFile = io.writeFile ?? atomicWrite
 				writeFile(out, bytes)
-				io.stdout(
-					`created ${out} (${spec.sheets.length} sheet(s)${formulas > 0 ? `, ${formulas} formula(s)` : ""})`,
-				)
+				io.stdout(`created ${out} (${spec.sheets.length} sheet(s)${formulas > 0 ? `, ${formulas} formula(s)` : ""})`)
 				for (const warning of warnings) io.stderr(`warning: ${warning}`)
 				return 0
 			}
 			case "edit": {
 				const [input, ...flags] = args
-				if (!input) throw new DocumentError("corrupt", "edit needs an input: xlsx.mjs edit <in.xlsx> --out <out.xlsx> --ops <ops.json>")
+				if (!input)
+					throw new DocumentError(
+						"corrupt",
+						"edit needs an input: xlsx.mjs edit <in.xlsx> --out <out.xlsx> --ops <ops.json>",
+					)
 				const known = ["--out", "--ops"]
 				for (const f of flagsUsed(flags)) {
 					if (!known.includes(f)) throw new DocumentError("corrupt", `unknown flag ${f} — options: ${known.join(", ")}`)
@@ -182,7 +188,8 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				if (!out.toLowerCase().endsWith(".xlsx") && !out.toLowerCase().endsWith(".xlsm")) {
 					throw new DocumentError("corrupt", `output path must end in .xlsx/.xlsm: ${out}`, "xlsx")
 				}
-				if (sameFile(out, input)) throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "xlsx")
+				if (sameFile(out, input))
+					throw new DocumentError("corrupt", "--out must differ from the input — edits never write in place", "xlsx")
 				const data = readBytes(readFile, input)
 				enforceSizeCap(input, data)
 				let raw: unknown
@@ -197,9 +204,14 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				const bytes = await pkg.save()
 				const writeFile = io.writeFile ?? atomicWrite
 				writeFile(out, bytes)
-				const lines = [`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`, ...result.applied]
+				const lines = [
+					`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`,
+					...result.applied,
+				]
 				if (result.formulasAlert) {
-					lines.push("note: formulas written without cached values — the workbook recalculates on open in Excel/LibreOffice")
+					lines.push(
+						"note: formulas written without cached values — the workbook recalculates on open in Excel/LibreOffice",
+					)
 				}
 				if (result.macrosPreserved) lines.push("note: macros preserved untouched")
 				io.stdout(lines.join("\n"))
@@ -230,10 +242,15 @@ function parseXlsxOps(raw: unknown): XlsxOp[] {
 	if (!Array.isArray(raw)) throw new DocumentError("corrupt", "ops must be a JSON array", "xlsx")
 	if (raw.length === 0) throw new DocumentError("corrupt", "ops array is empty", "xlsx")
 	return raw.map((op, i) => {
-		if (op === null || typeof op !== "object") throw new DocumentError("corrupt", `op ${i + 1} is not an object`, "xlsx")
+		if (op === null || typeof op !== "object")
+			throw new DocumentError("corrupt", `op ${i + 1} is not an object`, "xlsx")
 		const kind = (op as { kind?: string }).kind
 		if (!(OP_KINDS as readonly string[]).includes(kind ?? "")) {
-			throw new DocumentError("corrupt", `op ${i + 1}: unknown kind ${JSON.stringify(kind)} — allowed: ${OP_KINDS.join(", ")}`, "xlsx")
+			throw new DocumentError(
+				"corrupt",
+				`op ${i + 1}: unknown kind ${JSON.stringify(kind)} — allowed: ${OP_KINDS.join(", ")}`,
+				"xlsx",
+			)
 		}
 		const o = op as Record<string, unknown>
 		const requireField = (name: string): void => {
@@ -243,14 +260,19 @@ function parseXlsxOps(raw: unknown): XlsxOp[] {
 			case "set-cells":
 				requireField("cells")
 				if (typeof o.cells !== "object" || o.cells === null || Array.isArray(o.cells))
-					throw new DocumentError("corrupt", `op ${i + 1} (set-cells): "cells" must be an object keyed by cell ref`, "xlsx")
+					throw new DocumentError(
+						"corrupt",
+						`op ${i + 1} (set-cells): "cells" must be an object keyed by cell ref`,
+						"xlsx",
+					)
 				break
-				case "clear-range":
+			case "clear-range":
 				requireField("range")
 				break
 			case "append-rows":
 				requireField("rows")
-				if (!Array.isArray(o.rows)) throw new DocumentError("corrupt", `op ${i + 1} (append-rows): "rows" must be an array`, "xlsx")
+				if (!Array.isArray(o.rows))
+					throw new DocumentError("corrupt", `op ${i + 1} (append-rows): "rows" must be an array`, "xlsx")
 				break
 			case "set-column-width":
 				requireField("columns")

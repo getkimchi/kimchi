@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomXlsx, makeSimpleXlsx, makeSimplePptx } from "../fixtures/builders.js"
+import { makeCustomXlsx, makeSimplePptx, makeSimpleXlsx } from "../fixtures/builders.js"
 import { extractCsv, extractXlsx, isDateFormatCode, parseCsv, serialToIso } from "./xlsx.js"
 
 describe("extractXlsx", () => {
@@ -32,7 +32,8 @@ describe("extractXlsx", () => {
 	it("windows by rows with truncation at the character cap", async () => {
 		const rows = Array.from(
 			{ length: 50 },
-			(_, i) => `<row r="${i + 1}"><c r="A${i + 1}" t="inlineStr"><is><t>row ${i + 1} filler filler filler</t></is></c></row>`,
+			(_, i) =>
+				`<row r="${i + 1}"><c r="A${i + 1}" t="inlineStr"><is><t>row ${i + 1} filler filler filler</t></is></c></row>`,
 		).join("")
 		const doc = await extractXlsx(await makeCustomXlsx([{ name: "S", inner: `<sheetData>${rows}</sheetData>` }]))
 		const w = doc.window({ sheet: 1, startRow: 1, endRow: 50, maxChars: 800 })
@@ -44,11 +45,18 @@ describe("extractXlsx", () => {
 	})
 
 	it("honors the 1904 date system", async () => {
-		const doc1900 = await extractXlsx(await makeCustomXlsx([{ name: "S", inner: `<sheetData><row r="1"><c r="A1" s="1"><v>45292</v></c></row></sheetData>` }]))
+		const doc1900 = await extractXlsx(
+			await makeCustomXlsx([
+				{ name: "S", inner: `<sheetData><row r="1"><c r="A1" s="1"><v>45292</v></c></row></sheetData>` },
+			]),
+		)
 		const doc1904 = await extractXlsx(
-			await makeCustomXlsx([{ name: "S", inner: `<sheetData><row r="1"><c r="A1" s="1"><v>45292</v></c></row></sheetData>` }], {
-				date1904: true,
-			}),
+			await makeCustomXlsx(
+				[{ name: "S", inner: `<sheetData><row r="1"><c r="A1" s="1"><v>45292</v></c></row></sheetData>` }],
+				{
+					date1904: true,
+				},
+			),
 		)
 		expect(doc1900.window({}).markdown).toContain("2024-01-01")
 		expect(doc1904.window({}).markdown).toContain("2028-01-02")
@@ -61,7 +69,7 @@ describe("extractXlsx", () => {
 				const zip = await JSZip.loadAsync(data)
 				zip.file("xl/vbaProject.bin", new Uint8Array([1, 2, 3]))
 				return zip.generateAsync({ type: "uint8array" })
-			}) as Uint8Array),
+			})) as Uint8Array,
 		)
 		expect(doc.info.hasMacros).toBe(true)
 		expect(doc.notes.some((n) => n.includes("macros"))).toBe(true)

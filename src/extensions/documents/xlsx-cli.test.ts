@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { makeSimpleXlsx } from "./fixtures/builders.js"
-import { runXlsxCli, type CliIo } from "./xlsx-cli.js"
+import { type CliIo, runXlsxCli } from "./xlsx-cli.js"
 
 function testIo(files: Record<string, Uint8Array> = {}) {
 	const out: string[] = []
@@ -25,7 +25,7 @@ describe("runXlsxCli read", () => {
 	it("renders the first sheet as a Markdown table with row numbers", async () => {
 		const { io, out, err } = testIo({ "a.xlsx": await makeSimpleXlsx() })
 		expect(await runXlsxCli(["read", "a.xlsx"], io)).toBe(0)
-		expect(out[0]).toContain("# a.xlsx — sheet \"Data\" rows 1-3")
+		expect(out[0]).toContain('# a.xlsx — sheet "Data" rows 1-3')
 		expect(out[0]).toContain("| 1 | padding cell | 2.5 | 2024-01-01 | 0 |")
 		expect(err[0]).toContain("hidden sheets: Scratch")
 	})
@@ -73,10 +73,7 @@ describe("runXlsxCli create", () => {
 				{
 					name: "Data",
 					freezeHeader: true,
-					rows: [
-						[{ v: "H", bold: true }],
-						["lorem ipsum", { f: "A1:A1".replace("A1:A1", "SUM(A1:A1)") }],
-					],
+					rows: [[{ v: "H", bold: true }], ["lorem ipsum", { f: "A1:A1".replace("A1:A1", "SUM(A1:A1)") }]],
 				},
 			],
 		}
@@ -130,13 +127,22 @@ describe("runXlsxCli edit", () => {
 		const { io, err } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
 		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "in.xlsx", "--ops", "ops.json"], io)).toBe(2)
 		expect(err[0]).toContain("--out must differ from the input")
-		const { io: io2, err: err2 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
+		const { io: io2, err: err2 } = testIo({
+			"in.xlsx": await makeSimpleXlsx(),
+			"ops.json": new TextEncoder().encode("[]"),
+		})
 		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json", "--wat"], io2)).toBe(2)
 		expect(err2[0]).toContain("unknown flag --wat")
-		const { io: io3, err: err3 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode(JSON.stringify([{ kind: "nope" }])) })
+		const { io: io3, err: err3 } = testIo({
+			"in.xlsx": await makeSimpleXlsx(),
+			"ops.json": new TextEncoder().encode(JSON.stringify([{ kind: "nope" }])),
+		})
 		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json"], io3)).toBe(2)
 		expect(err3[0]).toContain("unknown kind")
-		const { io: io4, err: err4 } = testIo({ "in.xlsx": await makeSimpleXlsx(), "ops.json": new TextEncoder().encode("[]") })
+		const { io: io4, err: err4 } = testIo({
+			"in.xlsx": await makeSimpleXlsx(),
+			"ops.json": new TextEncoder().encode("[]"),
+		})
 		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "o.xlsx", "--ops", "ops.json"], io4)).toBe(2)
 		expect(err4[0]).toContain("ops array is empty")
 	})

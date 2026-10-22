@@ -14,7 +14,12 @@ const spec: XlsxSpec = {
 			freezeHeader: true,
 			columnWidths: { 1: 24, 2: 12 },
 			rows: [
-				[{ v: "Name", bold: true }, { v: "Amount", bold: true }, { v: "Date", bold: true }, { v: "Doubled", bold: true }],
+				[
+					{ v: "Name", bold: true },
+					{ v: "Amount", bold: true },
+					{ v: "Date", bold: true },
+					{ v: "Doubled", bold: true },
+				],
 				["alpha", 42.5, { v: 45292, fmt: "yyyy-mm-dd" }, { f: "B2*2" }],
 				["beta", -3, { v: 46022, fmt: "yyyy-mm-dd" }, { f: "B3*2" }],
 				["total", { f: "SUM(B2:B3)" }, null, true],
@@ -62,21 +67,29 @@ describe("writeXlsx", () => {
 	})
 
 	it("rejects invalid sheet names and non-finite numbers", async () => {
+		await expect(writeXlsx({ sheets: [{ name: "bad/name", rows: [[1]] }] }, { clock })).rejects.toMatchObject({
+			code: "corrupt",
+		})
+		await expect(writeXlsx({ sheets: [{ name: "ok", rows: [[Number.NaN]] }] }, { clock })).rejects.toMatchObject({
+			code: "corrupt",
+		})
 		await expect(
-			writeXlsx({ sheets: [{ name: "bad/name", rows: [[1]] }] }, { clock }),
-		).rejects.toMatchObject({ code: "corrupt" })
-		await expect(
-			writeXlsx({ sheets: [{ name: "ok", rows: [[Number.NaN]] }] }, { clock }),
-		).rejects.toMatchObject({ code: "corrupt" })
-		await expect(
-			writeXlsx({ sheets: [{ name: "one", rows: [[1]] }, { name: "ONE", rows: [[2]] }] }, { clock }),
+			writeXlsx(
+				{
+					sheets: [
+						{ name: "one", rows: [[1]] },
+						{ name: "ONE", rows: [[2]] },
+					],
+				},
+				{ clock },
+			),
 		).rejects.toMatchObject({ code: "corrupt" })
 	})
 
 	it("formula-lint rejects unknown sheets and functions, prefixes _xlfn", async () => {
-		await expect(
-			writeXlsx({ sheets: [{ name: "S", rows: [[1, { f: "Nope!B2" }]] }] }, { clock }),
-		).rejects.toThrow(/unknown-sheet/)
+		await expect(writeXlsx({ sheets: [{ name: "S", rows: [[1, { f: "Nope!B2" }]] }] }, { clock })).rejects.toThrow(
+			/unknown-sheet/,
+		)
 		await expect(
 			writeXlsx({ sheets: [{ name: "S", rows: [[1, { f: "FROBNICATE(B2)" }]] }] }, { clock }),
 		).rejects.toThrow(/unknown-function/)
@@ -85,7 +98,7 @@ describe("writeXlsx", () => {
 				sheets: [
 					{
 						name: "S",
-						rows: [[["a", "b"].length, { f: "TEXTJOIN(\",\",TRUE,A1,B1)" }, { f: "XLOOKUP(A1,A1:B1,B1:B1)" }]],
+						rows: [[["a", "b"].length, { f: 'TEXTJOIN(",",TRUE,A1,B1)' }, { f: "XLOOKUP(A1,A1:B1,B1:B1)" }]],
 					},
 				],
 			},
@@ -99,10 +112,7 @@ describe("writeXlsx", () => {
 	})
 
 	it("warns on out-of-range refs but still writes", async () => {
-		const { warnings } = await writeXlsx(
-			{ sheets: [{ name: "S", rows: [[1, { f: "SUM(A1:A99)" }]] }] },
-			{ clock },
-		)
+		const { warnings } = await writeXlsx({ sheets: [{ name: "S", rows: [[1, { f: "SUM(A1:A99)" }]] }] }, { clock })
 		expect(warnings.some((w) => w.includes("out-of-range-ref"))).toBe(true)
 	})
 
