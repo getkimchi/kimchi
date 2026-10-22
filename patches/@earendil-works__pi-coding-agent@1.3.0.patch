@@ -77,7 +77,10 @@
 #     collision listing via the shared app.tools.expand toggle, instead of a
 #     full warning-colored listing on every session start. Prompt conflicts
 #     keep upstream's rendering (rare, and genuinely actionable when they
-#     happen). (Upstream candidate.)
+#     happen). Expanded detail lines are width-bound via
+#     TuiLayouts.truncateToWidth — skipped-skill paths (worktree sessions,
+#     deep roots) overflow narrow panes and pi-tui's renderer throws on
+#     over-wide lines, killing the process on ctrl+o. (Upstream candidate.)
 #   - Extension setModel accepts { persist } and threads it to AgentSession's
 #     ModelMutationOptions, restoring the persistence channel upstream made
 #     opt-in. setThinkingLevel is deliberately NOT threaded: Kimchi's only
