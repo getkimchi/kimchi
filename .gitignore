@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.pnpm-store/
 
 # pnpm is the only supported package manager (see AGENTS.md) — keep stray npm/yarn locks out
 package-lock.json
