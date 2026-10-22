@@ -13,6 +13,7 @@ import type { ResourceDefinition, ResourceId, ResourceKind } from "./types.js"
 export const PPTX_SKILL_RESOURCE_ID: ResourceId = "skills.pptx"
 export const PDF_SKILL_RESOURCE_ID: ResourceId = "skills.pdf"
 export const DOCX_SKILL_RESOURCE_ID: ResourceId = "skills.docx"
+export const XLSX_SKILL_RESOURCE_ID: ResourceId = "skills.xlsx"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
@@ -39,6 +40,15 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		label: "DOCX skill",
 		description:
 			"Ship the bundled Word skill for reading, creating, and editing .docx files. While on, it takes precedence over a user-installed docx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: XLSX_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "XLSX skill",
+		description:
+			"Ship the bundled Excel skill for reading, creating, and editing .xlsx/.xlsm/.csv files. While on, it takes precedence over a user-installed xlsx skill.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},

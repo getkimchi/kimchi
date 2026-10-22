@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest"
 import { runDocxCli } from "./docx-cli.js"
 import { runPdfCli } from "./pdf-cli.js"
 import { runPptxCli } from "./pptx-cli.js"
+import { runXlsxCli } from "./xlsx-cli.js"
 
 const here = dirname(fileURLToPath(import.meta.url))
 const skillDir = (name: string) => join(here, "..", "..", "..", "resources", "skills", name, "SKILL.md")
@@ -71,6 +72,11 @@ describe("skill SKILL.md ↔ CLI contract", () => {
 			skill: "docx",
 			cli: "docx",
 			run: (argv, io) => runDocxCli(argv, io),
+		},
+		{
+			skill: "xlsx",
+			cli: "xlsx",
+			run: (argv, io) => runXlsxCli(argv, io),
 		},
 	]
 
