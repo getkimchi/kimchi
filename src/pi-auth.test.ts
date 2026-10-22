@@ -381,7 +381,7 @@ describe("syncOAuthCredentialToKimchiProviders", () => {
 		refresh: "rt-1",
 		expires: Date.now() + 3600_000,
 		region: "us",
-		tokenUrl: "https://login.cast.ai/oauth/token",
+		tokenUrl: "https://login.kimchi.dev/oauth/token",
 		clientId: "kimchi-cli-us",
 		useIdToken: true,
 	}

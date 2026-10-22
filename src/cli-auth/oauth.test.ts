@@ -106,7 +106,7 @@ function startMockTokenServer(): Promise<MockTokenServer> {
 function configFor(tokenUrl: string, overrides: Partial<KimchiOAuthConfig> = {}): KimchiOAuthConfig {
 	return {
 		region: "us",
-		authorizeUrl: "https://login.cast.ai/authorize",
+		authorizeUrl: "https://login.kimchi.dev/authorize",
 		tokenUrl: `${tokenUrl}/token`,
 		organizationsUrl: `${tokenUrl}/v1/organizations`,
 		clientId: "test-client",
@@ -187,7 +187,7 @@ describe("buildAuthorizeUrl", () => {
 				redirectUri: "http://127.0.0.1:1234/callback",
 			}),
 		)
-		expect(url.origin).toBe("https://login.cast.ai")
+		expect(url.origin).toBe("https://login.kimchi.dev")
 		expect(url.pathname).toBe("/authorize")
 		expect(url.searchParams.get("response_type")).toBe("code")
 		expect(url.searchParams.get("client_id")).toBe("test-client")

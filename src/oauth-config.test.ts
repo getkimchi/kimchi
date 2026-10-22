@@ -29,8 +29,8 @@ describe("oauthConfigForRegion", () => {
 		const cfg = oauthConfigForRegion(REGIONS.us)
 		expect(cfg).toEqual({
 			region: "us",
-			authorizeUrl: "https://login.cast.ai/authorize",
-			tokenUrl: "https://login.cast.ai/oauth/token",
+			authorizeUrl: "https://login.kimchi.dev/authorize",
+			tokenUrl: "https://login.kimchi.dev/oauth/token",
 			clientId: "rG3I0gwpiMzjzv1qC2W5s21UMQlNzSlS",
 			audience: undefined,
 			organizationsUrl: "https://api.cast.ai/v1/organizations",
@@ -40,8 +40,8 @@ describe("oauthConfigForRegion", () => {
 
 	it("returns the EU Auth0 tenant defaults", () => {
 		const cfg = oauthConfigForRegion(REGIONS.eu)
-		expect(cfg?.authorizeUrl).toBe("https://login.eu.cast.ai/authorize")
-		expect(cfg?.tokenUrl).toBe("https://login.eu.cast.ai/oauth/token")
+		expect(cfg?.authorizeUrl).toBe("https://login.eu.kimchi.dev/authorize")
+		expect(cfg?.tokenUrl).toBe("https://login.eu.kimchi.dev/oauth/token")
 		expect(cfg?.clientId).toBe("Bw2sA2DJyUAN2wpGiHU72Wh2Xenw6xma")
 		expect(cfg?.organizationsUrl).toBe("https://api.eu.cast.ai/v1/organizations")
 	})

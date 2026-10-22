@@ -49,13 +49,13 @@ interface RegionOAuthDefaults {
 // refresh token across providers (see src/pi-auth.ts).
 const REGION_OAUTH_DEFAULTS: Partial<Record<RegionId, RegionOAuthDefaults>> = {
 	us: {
-		authorizeUrl: "https://login.cast.ai/authorize",
-		tokenUrl: "https://login.cast.ai/oauth/token",
+		authorizeUrl: "https://login.kimchi.dev/authorize",
+		tokenUrl: "https://login.kimchi.dev/oauth/token",
 		clientId: "rG3I0gwpiMzjzv1qC2W5s21UMQlNzSlS",
 	},
 	eu: {
-		authorizeUrl: "https://login.eu.cast.ai/authorize",
-		tokenUrl: "https://login.eu.cast.ai/oauth/token",
+		authorizeUrl: "https://login.eu.kimchi.dev/authorize",
+		tokenUrl: "https://login.eu.kimchi.dev/oauth/token",
 		clientId: "Bw2sA2DJyUAN2wpGiHU72Wh2Xenw6xma",
 	},
 }
