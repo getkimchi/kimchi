@@ -52,7 +52,7 @@ glab api projects/:fullpath/merge_requests/123/discussions/DISCUSSION_ID/notes \
 
 Approve with SHA pinning: `glab mr approve 123 -s abc1234`. MR-create shortcut: `glab mr create -f` fills title/description from commits.
 
-Labels: when you open an MR, add one category label for the task — feature, bug fix, maintenance or exploration — under the project's own name for it (`glab label list`, then `glab mr create --label`). A known Jira issue type decides it: Bug → bug fix, Story/Feature → feature, Task/Chore → maintenance, Spike → exploration. If no label fits, don't create one (GitLab creates unknown labels silently); name the category in your reply. Labeling an existing MR (`glab mr update --label`) is a write that needs approval. The repo's own AGENTS.md rules come first.
+Labels: when you open an MR, add one category label for the task — feature, bug fix, maintenance or exploration — under the project's own name for it (`glab label list`, then `glab mr create --label`). A known Jira issue type decides it: Bug → bug fix, Story/Feature → feature, Chore → maintenance, Spike → exploration; judge a plain Task, or work with no issue, by what the change does. If no label fits, don't create one (GitLab creates unknown labels silently); name the category in your reply. Labeling an existing MR (`glab mr update --label`) is a write that needs approval. The repo's own AGENTS.md rules come first.
 
 ## Pipelines & jobs
 

@@ -20,7 +20,9 @@ describe("PR category labels", () => {
 			const text = body(name)
 			expect(text).toContain("add one category label for the task — feature, bug fix, maintenance or exploration")
 			expect(text).toContain(create)
-			expect(text).toContain("Bug → bug fix, Story/Feature → feature, Task/Chore → maintenance, Spike → exploration")
+			expect(text).toContain("Bug → bug fix, Story/Feature → feature, Chore → maintenance, Spike → exploration")
+			// Jira's default Task is often feature work, and the Kimchi reviewer keeps a label the agent already set.
+			expect(text).toContain("judge a plain Task, or work with no issue, by what the change does")
 			expect(text).toContain("If no label fits, don't create one")
 		})
 	}
