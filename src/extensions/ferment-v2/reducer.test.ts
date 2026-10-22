@@ -4,14 +4,18 @@ import {
 	addFermentV2Accounting,
 	applyFermentV2Requirements,
 	applyFermentV2RequirementsAdditions,
+	applyFermentV2RequirementsAmendment,
 	clearFermentV2,
 	clearFermentV2Entry,
 	createFermentV2,
 	createPendingFermentV2Requirements,
 	editFermentV2,
+	FERMENT_V2_MAX_REJECTED_AMENDMENTS,
 	markFermentV2EvaluatorModelWarned,
 	markFermentV2RequirementsRetried,
 	putFermentV2Entry,
+	recordFermentV2AmendmentRejection,
+	recordFermentV2AmendmentUsage,
 	recordFermentV2Evaluation,
 	recordFermentV2RequirementsUsage,
 	recordFermentV2VerifierUsage,
@@ -1032,6 +1036,225 @@ describe("Ferment V2 requirements record", () => {
 			cacheWrite: 0,
 			totalTokens: 6,
 			costUsd: 0.02,
+		})
+		expect(restoreFermentV2([putFermentV2Entry(charged)])).toEqual(charged)
+	})
+})
+
+describe("Ferment V2 requirements amendments", () => {
+	const ITEMS = [
+		{
+			id: "r1",
+			requirement: "The greeter returns hello",
+			source: "Objective: return hello",
+			acceptance: "Output equals hello",
+			category: "behavior" as const,
+		},
+		{
+			id: "r2",
+			requirement: "The greeter logs each greeting",
+			source: "Repository: existing logger contract",
+			acceptance: "A log line appears per greeting",
+			category: "constraint" as const,
+		},
+	]
+	const digest = (text: string) => createHash("sha256").update(text, "utf8").digest("hex")
+
+	function readyRun() {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"amend-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			createPendingFermentV2Requirements({
+				objectiveRevision: 1,
+				objectiveText: "ship the greeter",
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+			}),
+		)
+		return applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+				actor: "requirements_draft",
+			},
+			T2,
+		)
+	}
+
+	it("applies an accepted amendment atomically with stable IDs, advanced watermark, and history", () => {
+		const ready = readyRun()
+		const amended = applyFermentV2RequirementsAmendment(
+			ready,
+			ready.id,
+			1,
+			1,
+			{
+				items: [
+					ITEMS[0],
+					{ ...ITEMS[1], acceptance: "A structured log line appears per greeting" },
+					{ ...ITEMS[0], id: "r3", requirement: "The greeter supports names" },
+				],
+				reason: "Objective: greet by name; the repository logger emits structured lines",
+				rulingReason: "The objective's greeting clause names named input; the criteria under-specified it.",
+			},
+			T3,
+		)
+		const record = amended.requirements
+		if (!record) throw new Error("missing record")
+		expect(record.contractVersion).toBe(2)
+		expect(record.items).toHaveLength(3)
+		expect(record.idWatermark).toBe(3)
+		expect(record.history[1]).toMatchObject({
+			version: 2,
+			actor: "requirements_amendment",
+			objectiveRevision: 1,
+			acceptedAt: T3,
+		})
+		expect(record.history[1]?.reason).toContain("greeting clause")
+		// The ferment revision is untouched: an interpretation change is not an objective edit.
+		expect(amended.revision).toBe(1)
+		expect(restoreFermentV2([putFermentV2Entry(amended)])).toEqual(amended)
+	})
+
+	it("is an idempotent no-op for an identical list and rejects reuse of retired IDs", () => {
+		const ready = readyRun()
+		expect(
+			applyFermentV2RequirementsAmendment(
+				ready,
+				ready.id,
+				1,
+				1,
+				{ items: [...ITEMS].reverse(), reason: "same", rulingReason: "same" },
+				T3,
+			),
+		).toBe(ready)
+		// r2 retired by removing it, then re-proposed at the same ID: rejected.
+		const removed = applyFermentV2RequirementsAmendment(
+			ready,
+			ready.id,
+			1,
+			1,
+			{ items: [ITEMS[0]], reason: "drop logging", rulingReason: "no source requires logging" },
+			T3,
+		)
+		expect(() =>
+			applyFermentV2RequirementsAmendment(
+				removed,
+				removed.id,
+				1,
+				2,
+				{
+					items: [ITEMS[0], ITEMS[1]],
+					reason: "re-add logging at its old ID",
+					rulingReason: "changed mind",
+				},
+				T3,
+			),
+		).toThrow(/retired/)
+	})
+
+	it("rejects stale fences, non-ready records, and proposals that remove every current obligation", () => {
+		const ready = readyRun()
+		const application = { items: [ITEMS[0]], reason: "drop logging", rulingReason: "superseded" }
+		expect(() => applyFermentV2RequirementsAmendment(ready, ready.id, 1, 99, application, T3)).toThrow(
+			/stale|version 99/,
+		)
+		expect(() => applyFermentV2RequirementsAmendment(ready, ready.id, 2, 1, application, T3)).toThrow(/revision 2/)
+		const pendingRun = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"pending-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			createPendingFermentV2Requirements({
+				objectiveRevision: 1,
+				objectiveText: "ship the greeter",
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+			}),
+		)
+		expect(() => applyFermentV2RequirementsAmendment(pendingRun, pendingRun.id, 1, 0, application, T3)).toThrow(
+			/not ready/,
+		)
+		expect(() =>
+			applyFermentV2RequirementsAmendment(
+				ready,
+				ready.id,
+				1,
+				1,
+				{
+					items: [{ ...ITEMS[0], id: "r3", requirement: "total replacement" }],
+					reason: "rebuild",
+					rulingReason: "rebuild",
+				},
+				T3,
+			),
+		).toThrow(/at least one current obligation/)
+	})
+
+	it("retains rejected proposals in a bounded cache and round-trips them through the journal", () => {
+		const ready = readyRun()
+		let state = ready
+		for (let index = 0; index < FERMENT_V2_MAX_REJECTED_AMENDMENTS + 2; index++) {
+			state = recordFermentV2AmendmentRejection(
+				state,
+				state.id,
+				1,
+				digest(`proposal-${index}`),
+				1,
+				`reason ${index}`,
+				T3,
+			)
+		}
+		const record = state.requirements
+		if (!record) throw new Error("missing record")
+		expect(record.rejectedProposals).toHaveLength(FERMENT_V2_MAX_REJECTED_AMENDMENTS)
+		// Newest kept, oldest evicted.
+		expect(record.rejectedProposals?.at(-1)).toMatchObject({
+			reason: `reason ${FERMENT_V2_MAX_REJECTED_AMENDMENTS + 1}`,
+		})
+		expect(record.rejectedProposals?.[0]).toMatchObject({ reason: "reason 2" })
+		expect(restoreFermentV2([putFermentV2Entry(state)])).toEqual(state)
+		// An invalid cache is dropped without rejecting the whole entry.
+		const broken = {
+			...state,
+			requirements: { ...record, rejectedProposals: [{ digest: "nothex" }] },
+		} as unknown as typeof state
+		const restored = restoreFermentV2([putFermentV2Entry(broken)])
+		expect(restored).toBeDefined()
+		expect(restored?.requirements).toBeUndefined()
+	})
+
+	it("accounts amendment rulings separately from drafts and round-trips the totals", () => {
+		const ready = readyRun()
+		const charged = recordFermentV2AmendmentUsage(
+			ready,
+			ready.id,
+			{ input: 7, output: 3, cacheRead: 1, cacheWrite: 0, totalTokens: 10, costUsd: 0.03 },
+			T3,
+		)
+		expect(charged.amendmentsUsage).toEqual({
+			runs: 1,
+			input: 7,
+			output: 3,
+			cacheRead: 1,
+			cacheWrite: 0,
+			totalTokens: 10,
+			costUsd: 0.03,
 		})
 		expect(restoreFermentV2([putFermentV2Entry(charged)])).toEqual(charged)
 	})

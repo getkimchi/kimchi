@@ -1,5 +1,6 @@
 import { deriveFermentV2Name } from "./name.js"
 import {
+	diffRequirementsAmendment,
 	FERMENT_V2_MAX_REQUIREMENTS,
 	isFermentV2ObjectiveDigest,
 	nextRequirementIdWatermark,
@@ -19,6 +20,7 @@ import {
 	type FermentV2EvaluatorUsage,
 	type FermentV2JournalEntry,
 	type FermentV2Presentation,
+	type FermentV2RejectedAmendment,
 	type FermentV2Requirements,
 	type FermentV2RequirementsProvenance,
 	type FermentV2RequirementsRevision,
@@ -386,6 +388,150 @@ function sameRequirementItem(a: VerifierRequirement, b: VerifierRequirement | un
 	return b !== undefined && sharedSameRequirementItem(a, b)
 }
 
+/** Upper bound on retained rejected amendment proposals (newest kept). */
+export const FERMENT_V2_MAX_REJECTED_AMENDMENTS = 8
+
+export interface FermentV2RequirementsAmendmentApplication {
+	/** The complete proposed replacement list (already syntax-validated). */
+	items: readonly VerifierRequirement[]
+	/** The implementer's source-grounded evidence for the batch. */
+	reason: string
+	/** The ruling's source-grounded rationale for accepting. */
+	rulingReason: string
+}
+
+/**
+ * Apply an accepted requirements amendment, atomically and fenced by the
+ * ferment identity, the ferment revision (an objective edit bumps it; a
+ * requirements interpretation change must not), and the contract version the
+ * ruling was captured against. The proposed list is a complete replacement:
+ * existing IDs keep their obligations (unchanged or changed in place), new
+ * obligations need fresh IDs above the watermark, retired IDs are never
+ * reused, and removing every current obligation is rejected (an amendment
+ * corrects the contract; rebuilding it requires the objective's own flow).
+ * The acceptance appends one immutable history entry and bumps the contract
+ * version by one. An identical list is an idempotent no-op.
+ */
+export function applyFermentV2RequirementsAmendment(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	expectedContractVersion: number,
+	application: FermentV2RequirementsAmendmentApplication,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const record = current.requirements
+	if (!record) throw new Error("Ferment V2 requirements amendment rejected: no requirements record exists.")
+	if (record.availability !== "ready") {
+		throw new Error("Ferment V2 requirements amendment rejected: the requirements contract is not ready.")
+	}
+	if (record.contractVersion !== expectedContractVersion) {
+		throw new Error(
+			`Ferment V2 requirements amendment rejected: expected contract version ${expectedContractVersion}, but the current contract version is ${record.contractVersion}. The ruling is stale.`,
+		)
+	}
+	const items = parseVerifierRequirements(application.items)
+	if (!items) {
+		throw new Error(
+			"Ferment V2 requirements amendment rejected: the proposed list must contain 1–64 items with distinct IDs and nonempty requirement, source, acceptance, and a valid category.",
+		)
+	}
+	const diff = diffRequirementsAmendment(record.items, items, record.idWatermark)
+	if (!diff) {
+		throw new Error(
+			`Ferment V2 requirements amendment rejected: a retired requirement ID cannot be reused; allocate fresh IDs above r${record.idWatermark}.`,
+		)
+	}
+	if (diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0) return current
+	if (diff.removed.length === record.items.length) {
+		throw new Error(
+			"Ferment V2 requirements amendment rejected: an amendment must preserve at least one current obligation; rebuilding the contract requires the objective's own edit flow.",
+		)
+	}
+	const watermark = nextRequirementIdWatermark(record.idWatermark, items, record.items)
+	const version = record.contractVersion + 1
+	const reason = application.rulingReason.trim() || application.reason.trim()
+	return {
+		...current,
+		requirements: {
+			...record,
+			contractVersion: version,
+			items,
+			idWatermark: watermark,
+			history: [
+				...record.history,
+				{
+					version,
+					items,
+					actor: "requirements_amendment",
+					reason,
+					objectiveRevision: record.objectiveRevision,
+					acceptedAt: now,
+				},
+			],
+		},
+		updatedAt: now,
+	}
+}
+
+/**
+ * Retain one rejected amendment proposal so an exact duplicate (same contract
+ * version, same list, same evidence) is answered from the cache instead of
+ * spending another ruling. Bounded: the oldest entries fall off.
+ */
+export function recordFermentV2AmendmentRejection(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	digest: string,
+	contractVersion: number,
+	reason: string,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const record = current.requirements
+	if (!record) throw new Error("Ferment V2 requirements amendment rejected: no requirements record exists.")
+	const rejectedProposals = [
+		...(record.rejectedProposals ?? []).filter((entry) => entry.digest !== digest),
+		{ digest, contractVersion, reason: reason.slice(0, MAX_BLOCKED_REASON_LENGTH), decidedAt: now },
+	].slice(-FERMENT_V2_MAX_REJECTED_AMENDMENTS)
+	return {
+		...current,
+		requirements: { ...record, rejectedProposals },
+		updatedAt: now,
+	}
+}
+
+/** Fold one requirements-amendment ruling's usage into the ferment's cumulative stage accounting. */
+export function recordFermentV2AmendmentUsage(
+	state: FermentV2State,
+	expectedId: string,
+	usage: FermentV2EvaluatorUsage,
+	now: string,
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 amendment accounting rejected: no current Ferment V2 exists.")
+	if (state.id !== expectedId) {
+		throw new Error(
+			`Ferment V2 amendment accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+		)
+	}
+	const previous = state.amendmentsUsage
+	return {
+		...state,
+		amendmentsUsage: {
+			runs: (previous?.runs ?? 0) + 1,
+			input: (previous?.input ?? 0) + usage.input,
+			output: (previous?.output ?? 0) + usage.output,
+			cacheRead: (previous?.cacheRead ?? 0) + usage.cacheRead,
+			cacheWrite: (previous?.cacheWrite ?? 0) + usage.cacheWrite,
+			totalTokens: (previous?.totalTokens ?? 0) + usage.totalTokens,
+			costUsd: (previous?.costUsd ?? 0) + usage.costUsd,
+		},
+		updatedAt: now,
+	}
+}
+
 export function setFermentV2Status(
 	state: FermentV2State,
 	expectedId: string,
@@ -646,6 +792,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 	const presentation = parseFermentV2Presentation(value.presentation)
 	const verifierUsage = parseFermentV2VerifierUsage(value.verifierUsage)
 	const requirementsUsage = parseFermentV2VerifierUsage(value.requirementsUsage)
+	const amendmentsUsage = parseFermentV2VerifierUsage(value.amendmentsUsage)
 	const baseline = parseFermentV2Baseline(value.baseline)
 	const requirements = parseFermentV2Requirements(value.requirements, value, baseline)
 	if (
@@ -693,6 +840,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		timeUsedMs: value.timeUsedMs ?? 0,
 		...(verifierUsage ? { verifierUsage } : {}),
 		...(requirementsUsage ? { requirementsUsage } : {}),
+		...(amendmentsUsage ? { amendmentsUsage } : {}),
 		...(baseline ? { baseline } : {}),
 		...(requirements ? { requirements } : {}),
 		createdAt: value.createdAt,
@@ -742,6 +890,8 @@ function parseFermentV2Requirements(
 	if (availability === "ready" && !items) return undefined
 	const history = parseFermentV2RequirementsHistory(value.history)
 	if (!history) return undefined
+	const rejectedProposals = parseFermentV2RejectedAmendments(value.rejectedProposals)
+	if (rejectedProposals === undefined) return undefined
 	const maxItemId = (items ?? []).reduce((max, item) => Math.max(max, Number(item.id.slice(1))), 0)
 	if (value.idWatermark < maxItemId) return undefined
 	const baselineCommit = typeof value.baselineCommit === "string" ? value.baselineCommit : undefined
@@ -762,7 +912,37 @@ function parseFermentV2Requirements(
 		idWatermark: value.idWatermark,
 		history,
 		...(value.draftRetried === true ? { draftRetried: true } : {}),
+		...(rejectedProposals.length ? { rejectedProposals } : {}),
 	}
+}
+
+/**
+ * Parse the retained rejected amendment proposals. Bounded; each entry needs
+ * a hex digest, a positive contract version, a reason, and a timestamp.
+ */
+function parseFermentV2RejectedAmendments(value: unknown): FermentV2RejectedAmendment[] | undefined {
+	if (value === undefined) return []
+	if (!Array.isArray(value) || value.length > FERMENT_V2_MAX_REJECTED_AMENDMENTS) return undefined
+	const entries: FermentV2RejectedAmendment[] = []
+	for (const candidate of value) {
+		if (
+			!isRecord(candidate) ||
+			typeof candidate.digest !== "string" ||
+			!/^[0-9a-f]{64}$/.test(candidate.digest) ||
+			!isPositiveInteger(candidate.contractVersion) ||
+			!isNonEmptyString(candidate.reason) ||
+			!isNonEmptyString(candidate.decidedAt)
+		) {
+			return undefined
+		}
+		entries.push({
+			digest: candidate.digest,
+			contractVersion: candidate.contractVersion,
+			reason: candidate.reason,
+			decidedAt: candidate.decidedAt,
+		})
+	}
+	return entries
 }
 
 function parseFermentV2RequirementsHistory(value: unknown): FermentV2RequirementsRevision[] | undefined {

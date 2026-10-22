@@ -87,6 +87,7 @@ export const AGENT_GRADER = "Grader"
 export const AGENT_DEBUGGER = "Debugger"
 export const AGENT_FERMENT_VERIFIER = "Verifier"
 export const AGENT_FERMENT_REQUIREMENTS_DRAFT = "Requirements Drafter"
+export const AGENT_FERMENT_REQUIREMENTS_AMENDMENT = "Requirements Ruler"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -101,6 +102,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_DEBUGGER,
 	AGENT_FERMENT_VERIFIER,
 	AGENT_FERMENT_REQUIREMENTS_DRAFT,
+	AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
 ] as const
 
 /** Isolation mode for agent execution. */

@@ -61,6 +61,22 @@ export interface FermentV2RequirementsRevision {
 }
 
 /**
+ * One rejected amendment proposal, retained so an exact duplicate (same
+ * contract version, same list, same evidence) is answered from the cache
+ * instead of spending another ruling; changed evidence or a changed version
+ * permits reconsideration.
+ */
+export interface FermentV2RejectedAmendment {
+	/** sha256 over {contractVersion, items, reason} — the exact proposal identity. */
+	digest: string
+	/** The contract version the proposal targeted. */
+	contractVersion: number
+	/** The ruling's source-grounded rejection reason (truncated). */
+	reason: string
+	decidedAt: string
+}
+
+/**
  * The one durable requirements record for a goal. `objectiveText` and
  * `objectiveDigest` pin the exact objective the contract was drafted for, so
  * editing an objective file cannot silently rewrite the criteria; a contract
@@ -88,6 +104,8 @@ export interface FermentV2Requirements {
 	history: readonly FermentV2RequirementsRevision[]
 	/** The one degraded-outage retry at a completion claim has been spent. */
 	draftRetried?: boolean
+	/** Recent rejected amendment proposals (bounded, newest last); exact duplicates short-circuit without a new ruling. */
+	rejectedProposals?: readonly FermentV2RejectedAmendment[]
 }
 
 export interface SessionFermentV2 {
@@ -113,6 +131,8 @@ export interface SessionFermentV2 {
 	verifierUsage?: FermentV2VerifierUsage
 	/** Cumulative requirements-draft stage usage, tracked separately from the implementer's tokens. */
 	requirementsUsage?: FermentV2VerifierUsage
+	/** Cumulative requirements-amendment ruling stage usage, tracked separately from the implementer's tokens. */
+	amendmentsUsage?: FermentV2VerifierUsage
 	/** The goal-owned durable requirements record; absent on sessions created before it existed. */
 	requirements?: FermentV2Requirements
 	/** Working-tree snapshot the verifier's facts, flags, and baseline worktree are anchored to. */

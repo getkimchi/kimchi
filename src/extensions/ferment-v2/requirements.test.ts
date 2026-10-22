@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { createRequirementLedger, RECORD_REQUIREMENTS_TOOL, type VerifierRequirement } from "./requirements.js"
+import {
+	createRequirementLedger,
+	diffRequirementsAmendment,
+	digestRequirementsAmendmentProposal,
+	isSameRequirementSet,
+	RECORD_REQUIREMENTS_TOOL,
+	type VerifierRequirement,
+} from "./requirements.js"
 
 const requirement: VerifierRequirement = {
 	id: "r1",
@@ -309,5 +316,70 @@ describe("seeded evaluator requirements (persisted contract)", () => {
 		})
 		expect(accepted).not.toMatchObject({ isError: true })
 		expect(ledger.additions).toHaveLength(2)
+	})
+})
+
+describe("requirements amendment helpers", () => {
+	const base: VerifierRequirement = {
+		id: "r1",
+		requirement: "Export the report as JSON",
+		source: "Objective: export the report as JSON",
+		acceptance: "The public export command emits parseable JSON",
+		category: "behavior",
+	}
+
+	it("computes the host-side diff with additions, changes, and removals", () => {
+		const current = [
+			base,
+			{ ...base, id: "r2", requirement: "Validate input before export" },
+			{ ...base, id: "r3", requirement: "Log each export" },
+		]
+		const proposed = [
+			base,
+			{ ...base, id: "r2", requirement: "Reject invalid input before export", acceptance: "Invalid input is refused" },
+			{ ...base, id: "r9", requirement: "Support CSV export" },
+		]
+		const diff = diffRequirementsAmendment(current, proposed, 3)
+		expect(diff).toEqual({
+			added: [{ ...base, id: "r9", requirement: "Support CSV export" }],
+			changed: [
+				{
+					current: current[1],
+					proposed: proposed[1],
+				},
+			],
+			removed: [{ ...base, id: "r3", requirement: "Log each export" }],
+		})
+	})
+
+	it("rejects a proposal that reuses a retired ID and accepts fresh IDs above the watermark", () => {
+		const current = [base]
+		// r2 was allocated before (watermark 2) but is absent from current: reuse is invalid.
+		expect(
+			diffRequirementsAmendment(current, [base, { ...base, id: "r2", requirement: "Retired reuse" }], 2),
+		).toBeUndefined()
+		// A genuinely fresh ID above the watermark is fine.
+		expect(
+			diffRequirementsAmendment(current, [base, { ...base, id: "r3", requirement: "Fresh obligation" }], 2),
+		).toMatchObject({ added: [{ ...base, id: "r3", requirement: "Fresh obligation" }], changed: [], removed: [] })
+	})
+
+	it("reports an unchanged proposal as an empty diff", () => {
+		const diff = diffRequirementsAmendment([base, { ...base, id: "r2" }], [{ ...base, id: "r2" }, base], 2)
+		expect(diff).toMatchObject({ added: [], changed: [], removed: [] })
+	})
+
+	it("digests a proposal from its version, list, and evidence", () => {
+		const a = digestRequirementsAmendmentProposal(1, [base], "objective clause")
+		expect(a).toMatch(/^[0-9a-f]{64}$/)
+		expect(a).not.toBe(digestRequirementsAmendmentProposal(1, [base], "different evidence"))
+		expect(a).not.toBe(digestRequirementsAmendmentProposal(2, [base], "objective clause"))
+		expect(a).not.toBe(digestRequirementsAmendmentProposal(1, [{ ...base, id: "r2" }], "objective clause"))
+		// Order-insensitive: the same set in a different order is the same proposal.
+		expect(digestRequirementsAmendmentProposal(1, [base, { ...base, id: "r2" }], "e")).toBe(
+			digestRequirementsAmendmentProposal(1, [{ ...base, id: "r2" }, base], "e"),
+		)
+		expect(isSameRequirementSet([base, { ...base, id: "r2" }], [{ ...base, id: "r2" }, base])).toBe(true)
+		expect(isSameRequirementSet([base], [{ ...base, id: "r2" }])).toBe(false)
 	})
 })

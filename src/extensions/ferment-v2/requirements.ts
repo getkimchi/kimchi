@@ -21,8 +21,14 @@ const requirementSchema = Type.Object({
 	category: Type.Union(REQUIREMENT_CATEGORIES.map((category) => Type.Literal(category))),
 })
 
+/** The shared complete-list schema (tool input and stored state share one parser). */
+export const REQUIREMENTS_LIST_PARAMETER = Type.Array(requirementSchema, {
+	minItems: 1,
+	maxItems: FERMENT_V2_MAX_REQUIREMENTS,
+})
+
 export const REQUIREMENT_PARAMETERS = Type.Object({
-	requirements: Type.Array(requirementSchema, { minItems: 1, maxItems: FERMENT_V2_MAX_REQUIREMENTS }),
+	requirements: REQUIREMENTS_LIST_PARAMETER,
 	reason: Type.Optional(field()),
 	/** The contract version an addition extends; required whenever the list grows. */
 	expectedVersion: Type.Optional(Type.Integer({ minimum: 1, maximum: 1_000_000 })),
@@ -112,6 +118,24 @@ export function digestFermentV2ObjectiveText(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex")
 }
 
+/**
+ * Stable digest identifying one exact amendment proposal against one contract
+ * version: the complete replacement list (order-insensitive, sorted by ID)
+ * plus the implementer's evidence. Rejected-proposal caching keys on it, so
+ * identical retries for the same version short-circuit without a ruling while
+ * changed evidence or a changed version permits reconsideration.
+ */
+export function digestRequirementsAmendmentProposal(
+	contractVersion: number,
+	items: readonly VerifierRequirement[],
+	reason: string,
+): string {
+	const sorted = [...items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+	return createHash("sha256")
+		.update(JSON.stringify({ contractVersion, items: sorted, reason }))
+		.digest("hex")
+}
+
 /** Order-insensitive equality by ID with exact field equality per item. */
 function sameRequirementList(a: readonly VerifierRequirement[], b: readonly VerifierRequirement[]): boolean {
 	if (a.length !== b.length) return false
@@ -120,6 +144,11 @@ function sameRequirementList(a: readonly VerifierRequirement[], b: readonly Veri
 		const other = byId.get(item.id)
 		return other !== undefined && sameRequirementItem(item, other)
 	})
+}
+
+/** Order-insensitive whole-list equality by ID with exact field equality per item. */
+export function isSameRequirementSet(a: readonly VerifierRequirement[], b: readonly VerifierRequirement[]): boolean {
+	return sameRequirementList(a, b)
 }
 
 /** Exact field equality for one requirement item. */
@@ -154,6 +183,44 @@ function diffRequirementList(
 	const currentIds = new Set(current.map((item) => item.id))
 	const added = submitted.filter((item) => !currentIds.has(item.id))
 	return { added, changed, missing }
+}
+
+/** One computed difference between the current contract and a proposed amendment. */
+export interface RequirementsAmendmentDiff {
+	added: readonly VerifierRequirement[]
+	changed: readonly { current: VerifierRequirement; proposed: VerifierRequirement }[]
+	removed: readonly VerifierRequirement[]
+}
+
+/**
+ * Compute the host-side diff between the current contract and a complete
+ * proposed replacement, enforcing the amendment ID rules: an existing ID may
+ * keep its obligation (unchanged or changed in place), a new obligation must
+ * use a fresh ID above the allocation watermark, and a retired ID (at or
+ * below the watermark, absent from the current items) is never reused.
+ * Returns `undefined` for an invalid proposal (retired-ID reuse); the caller
+ * reports the reason.
+ */
+export function diffRequirementsAmendment(
+	current: readonly VerifierRequirement[],
+	proposed: readonly VerifierRequirement[],
+	idWatermark: number,
+): RequirementsAmendmentDiff | undefined {
+	const currentById = new Map(current.map((item) => [item.id, item]))
+	const added: VerifierRequirement[] = []
+	const changed: { current: VerifierRequirement; proposed: VerifierRequirement }[] = []
+	for (const item of proposed) {
+		const existing = currentById.get(item.id)
+		if (existing) {
+			if (!sameRequirementItem(existing, item)) changed.push({ current: existing, proposed: item })
+			continue
+		}
+		if (Number(item.id.slice(1)) <= idWatermark) return undefined
+		added.push(item)
+	}
+	const proposedIds = new Set(proposed.map((item) => item.id))
+	const removed = current.filter((item) => !proposedIds.has(item.id))
+	return { added, changed, removed }
 }
 
 /** One addition a final review accepted against the contract it was seeded with. */

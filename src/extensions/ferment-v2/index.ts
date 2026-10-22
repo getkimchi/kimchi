@@ -33,6 +33,7 @@ import {
 	parseFermentV2Command,
 } from "./command.js"
 import {
+	AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME,
 	FERMENT_V2_COMMAND_NAME,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
@@ -77,6 +78,7 @@ import {
 	addFermentV2Accounting,
 	applyFermentV2Requirements,
 	applyFermentV2RequirementsAdditions,
+	applyFermentV2RequirementsAmendment,
 	clearFermentV2,
 	clearFermentV2Entry,
 	createFermentV2,
@@ -87,6 +89,8 @@ import {
 	markFermentV2EvaluatorModelWarned,
 	markFermentV2RequirementsRetried,
 	putFermentV2Entry,
+	recordFermentV2AmendmentRejection,
+	recordFermentV2AmendmentUsage,
 	recordFermentV2Evaluation,
 	recordFermentV2RequirementsUsage,
 	recordFermentV2VerifierUsage,
@@ -96,8 +100,20 @@ import {
 	setFermentV2Status,
 	setFermentV2UnchangedContinuationTurns,
 } from "./reducer.js"
-import { digestFermentV2ObjectiveText } from "./requirements.js"
-import { type FermentV2RequirementsDraftOutcome, runFermentV2RequirementsDraft } from "./requirements-agent.js"
+import {
+	diffRequirementsAmendment,
+	digestFermentV2ObjectiveText,
+	digestRequirementsAmendmentProposal,
+	parseVerifierRequirements,
+	REQUIREMENTS_LIST_PARAMETER,
+	type VerifierRequirement,
+} from "./requirements.js"
+import {
+	type FermentV2RequirementsAmendmentOutcome,
+	type FermentV2RequirementsDraftOutcome,
+	runFermentV2RequirementsAmendmentRuling,
+	runFermentV2RequirementsDraft,
+} from "./requirements-agent.js"
 import {
 	deriveContinuationDecision,
 	deriveHostContinuationDecision,
@@ -143,8 +159,53 @@ const UPDATE_FERMENT_V2_PARAMETERS = Type.Object({
 
 type UpdateFermentV2Params = Static<typeof UPDATE_FERMENT_V2_PARAMETERS>
 
+const AMEND_FERMENT_V2_REQUIREMENTS_PARAMETERS = Type.Object({
+	/** The contract version this proposal was written against; a stale proposal is rejected without a ruling. */
+	expectedVersion: Type.Integer({ minimum: 1, maximum: 1_000_000 }),
+	requirements: REQUIREMENTS_LIST_PARAMETER,
+	reason: Type.String({
+		minLength: 1,
+		maxLength: 4_000,
+		description:
+			"Evidence covering every addition, change, and removal: quote the deciding objective clause or repository contract. Difficulty, candidate output, or a failing assertion alone never justify a change.",
+	}),
+})
+
+type AmendFermentV2RequirementsParams = Static<typeof AMEND_FERMENT_V2_REQUIREMENTS_PARAMETERS>
+
 type FermentV2CompletionClaim = PendingFermentV2Continuation & {
 	completionConfidence?: FermentV2CompletionConfidence
+	/** The ready contract version the claim observed; a claim against a moved contract needs a fresh claim. */
+	requirementsContractVersion?: number
+}
+
+/**
+ * Whether a completion claim is still evaluation-grade for `fermentV2`: same
+ * goal identity/session AND the ready contract version it captured is still
+ * current. A claim against a moved contract (an accepted amendment applied
+ * after the claim) is stale: evaluation would run against criteria the claim
+ * never observed, so a fresh claim is required instead.
+ */
+function claimMatchesCurrentRequirements(
+	claim: FermentV2CompletionClaim | undefined,
+	fermentV2: SessionFermentV2,
+): boolean {
+	if (!claim || claim.requirementsContractVersion === undefined) return true
+	const record = fermentV2.requirements
+	return record?.availability === "ready" && record.contractVersion === claim.requirementsContractVersion
+}
+
+/** The claim for this goal only when it is still evaluation-grade (identity and requirements version). */
+function evaluationGradeClaim(
+	claim: FermentV2CompletionClaim | undefined,
+	fermentV2: SessionFermentV2,
+	sessionId: string,
+): FermentV2CompletionClaim | undefined {
+	return claim !== undefined &&
+		matchesFermentV2(claim, fermentV2, sessionId) &&
+		claimMatchesCurrentRequirements(claim, fermentV2)
+		? claim
+		: undefined
 }
 
 class StaleFermentV2CommandError extends Error {}
@@ -223,6 +284,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	// user mutations abort it, stale results cannot apply, usage settles once.
 	let requirementsDraftAbort: AbortController | undefined
 	let requirementsDraftSettled: Promise<void> | undefined
+	// The in-flight requirements amendment ruling: same fencing discipline as
+	// the draft. The tool call awaits it outside the mutation lock.
+	let amendmentRulingAbort: AbortController | undefined
+	let amendmentRulingSettled: Promise<void> | undefined
+	// Set when an accepted amendment moved the contract during the current
+	// agent turn: a completion claim captured in that same turn was decided
+	// against criteria the implementer had not seen, so it is refused; the
+	// model re-claims after reviewing the new criteria.
+	let requirementsAmendedPendingClaim = false
 	// Marker for the first implementer turn of the current goal, so a later
 	// re-draft can honestly report provenance (pre-implementation vs recovery).
 	let implementationStartedMarker: PendingFermentV2Continuation | undefined
@@ -1016,9 +1086,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return evaluationSettled ?? Promise.resolve()
 	}
 
-	function abortRequirementsDraft(): Promise<void> {
+	async function abortRequirementsDraft(): Promise<void> {
 		requirementsDraftAbort?.abort()
-		return requirementsDraftSettled ?? Promise.resolve()
+		// An in-flight amendment ruling fences the same way: user mutations
+		// (pause, clear, edit, replace, shutdown) cancel it; its usage still
+		// settles exactly once when the tool call's await resumes.
+		amendmentRulingAbort?.abort()
+		await Promise.all([requirementsDraftSettled, amendmentRulingSettled].filter(Boolean))
 	}
 
 	/** Whether any implementer turn already ran for this goal in this runtime. */
@@ -1327,7 +1401,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			status: fermentV2.status,
 		}
 		const count = (fermentV2.evaluationCount ?? 0) + 1
-		const claim = matchesFermentV2(completionClaim, fermentV2, conversation.sessionId) ? completionClaim : undefined
+		const claim = evaluationGradeClaim(completionClaim, fermentV2, conversation.sessionId)
 		const previousGap = fermentV2.lastEvaluation?.verdict === "continue" ? fermentV2.lastEvaluation.reason : undefined
 		const requirementsInput = fermentV2RequirementsEvaluationInput(fermentV2)
 		const evaluation = evaluateFermentV2(
@@ -2024,7 +2098,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					if (
 						params.status === "complete" &&
 						current?.status === "active" &&
-						matchesFermentV2(completionClaim, current, sessionId)
+						matchesFermentV2(completionClaim, current, sessionId) &&
+						claimMatchesCurrentRequirements(completionClaim, current)
 					) {
 						return current
 					}
@@ -2038,10 +2113,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					}
 					const completionConfidence = params.status === "complete" ? params.completion_confidence : undefined
 					if (params.status === "complete") {
+						if (requirementsAmendedPendingClaim) {
+							// The batch decided completion before the amendment result
+							// existed: the claim must be made against criteria the
+							// implementer has actually seen.
+							const amendedVersion = current.requirements?.contractVersion
+							throw new Error(
+								`Ferment V2 update rejected: the requirements contract was amended this turn (now version ${amendedVersion ?? "unavailable"}). Review the updated criteria, then claim complete in a new turn.`,
+							)
+						}
 						completionClaim = {
 							sessionId,
 							fermentV2Id: current.id,
 							revision: current.revision,
+							...(current.requirements?.availability === "ready"
+								? { requirementsContractVersion: current.requirements.contractVersion }
+								: {}),
 							...(completionConfidence ? { completionConfidence } : {}),
 						}
 						// A completion claim is not progress.
@@ -2087,6 +2174,364 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					content: [{ type: "text" as const, text: message }],
 					details: { fermentV2: currentFermentV2 ?? null, error: message },
 				}
+			}
+		},
+	})
+
+	/**
+	 * Evidence-backed requirements amendments during execution. The implementer
+	 * proposes a complete replacement list against the expected contract
+	 * version; the host computes the diff, routes it through one read-only
+	 * ruling by the same evaluator role, and applies an accepted batch
+	 * atomically. Rejections, unavailable rulings, and stale fences all leave
+	 * the current contract intact and the goal active — no human gate, no
+	 * pause. The tool call awaits the ruling outside the user-mutation lock.
+	 */
+	pi.registerTool({
+		name: AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME,
+		label: "Amend Ferment V2 Requirements",
+		description:
+			"Propose a sourced correction to the requirements contract: submit the complete replacement list, the expected contract version, and a reason citing objective or repository evidence for every addition, change, and removal. An independent evaluator ruling accepts or rejects the whole batch; accepted changes become the final verification criteria; rejections keep the current criteria and never pause the goal. Todos never need an amendment; the user's objective changes only through the user's edit flow.",
+		promptSnippet: "Propose an evidence-backed requirements amendment",
+		promptGuidelines: [
+			"Propose an amendment only when objective or repository evidence shows a criterion misstates the task — a corrected interpretation, a superseded compatibility expectation, or a missing obligation. Implementation difficulty, candidate output, or a failing assertion alone never justify one.",
+			"Submit the complete replacement list: unchanged obligations verbatim with their IDs, new obligations with fresh IDs, and removals explicit. An identical list returns the current version without a ruling.",
+		],
+		parameters: AMEND_FERMENT_V2_REQUIREMENTS_PARAMETERS,
+		async execute(_toolCallId, params: AmendFermentV2RequirementsParams, signal, _onUpdate, ctx) {
+			const sessionId = bindSession(ctx)
+			type AmendmentPlan = {
+				fence: { fermentV2Id: string; revision: number; objectiveDigest: string; contractVersion: number }
+				items: readonly VerifierRequirement[]
+				diff: NonNullable<ReturnType<typeof diffRequirementsAmendment>>
+				reason: string
+				digest: string
+			}
+			let noOpVersion: number | undefined
+			let cachedRejection: { reason: string; contractVersion: number } | undefined
+			let plan: AmendmentPlan | undefined
+			try {
+				plan = await serializeFermentV2Mutation(sessionId, () => {
+					assertCurrentSession(ctx, sessionId)
+					const current = currentFermentV2
+					if (current?.status !== "active" || (activeTurn && !matchesFermentV2(activeTurn, current, sessionId))) {
+						throw new Error(
+							`Ferment V2 requirements amendment rejected: the Ferment V2 changed or stopped during this turn. Continue against the current active Ferment V2 before calling ${AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME}.`,
+						)
+					}
+					const record = current.requirements
+					if (
+						record?.availability !== "ready" ||
+						record.objectiveRevision !== current.revision ||
+						record.contractVersion === 0
+					) {
+						throw new Error(
+							"Ferment V2 requirements amendment rejected: there is no current ready requirements contract for this objective revision. Work continues against the objective; the contract is being established separately.",
+						)
+					}
+					if (params.expectedVersion !== record.contractVersion) {
+						throw new Error(
+							`Ferment V2 requirements amendment rejected: the proposal targets version ${params.expectedVersion}, but the current contract version is ${record.contractVersion}. Re-read the current criteria and resubmit against the current version.`,
+						)
+					}
+					const items = parseVerifierRequirements(params.requirements)
+					if (!items) {
+						throw new Error(
+							"Ferment V2 requirements amendment rejected: the proposed list must contain 1–64 items with distinct r<n> IDs and nonempty requirement, source, acceptance, and a valid category.",
+						)
+					}
+					const reason = params.reason.trim()
+					if (!reason) {
+						throw new Error(
+							"Ferment V2 requirements amendment rejected: give a nonempty reason citing objective or repository evidence for every addition, change, and removal.",
+						)
+					}
+					const diff = diffRequirementsAmendment(record.items, items, record.idWatermark)
+					if (!diff) {
+						throw new Error(
+							`Ferment V2 requirements amendment rejected: a retired requirement ID cannot be reused; keep existing obligations on their IDs and allocate fresh IDs above r${record.idWatermark}.`,
+						)
+					}
+					if (diff.added.length === 0 && diff.changed.length === 0 && diff.removed.length === 0) {
+						noOpVersion = record.contractVersion
+						return undefined
+					}
+					if (diff.removed.length === record.items.length) {
+						throw new Error(
+							"Ferment V2 requirements amendment rejected: an amendment must preserve at least one current obligation; rebuilding the contract requires the objective's own edit flow.",
+						)
+					}
+					const digest = digestRequirementsAmendmentProposal(record.contractVersion, items, reason)
+					const cached = record.rejectedProposals?.find(
+						(entry) => entry.digest === digest && entry.contractVersion === record.contractVersion,
+					)
+					if (cached) {
+						cachedRejection = { reason: cached.reason, contractVersion: cached.contractVersion }
+						return undefined
+					}
+					return {
+						fence: {
+							fermentV2Id: current.id,
+							revision: current.revision,
+							objectiveDigest: record.objectiveDigest,
+							contractVersion: record.contractVersion,
+						},
+						items,
+						diff,
+						reason,
+						digest,
+					}
+				})
+			} catch (error) {
+				const message = errorMessage(error)
+				return {
+					content: [{ type: "text" as const, text: message }],
+					details: { fermentV2: currentFermentV2 ?? null, error: message },
+				}
+			}
+			if (!plan) {
+				const current = currentFermentV2
+				if (noOpVersion !== undefined) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Amendment is a no-op: the proposed list matches the current contract (version ${noOpVersion}). No change was made; continue working.`,
+							},
+						],
+						details: { fermentV2: current ?? null, noOp: true },
+					}
+				}
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Amendment rejected (cached ruling for this exact proposal against contract version ${cachedRejection?.contractVersion}): ${cachedRejection?.reason ?? "rejected."}\nThe current contract stands and work continues; changed evidence or a changed contract version permits reconsideration.`,
+						},
+					],
+					details: { fermentV2: current ?? null, cachedRejection: true },
+				}
+			}
+
+			// Await the ruling outside the user-mutation lock, fenced by the
+			// captured goal/contract identity. Cancellation reaches the ruling
+			// through the combined signal (turn/tool-call cancellation aborts it
+			// like a user mutation does) and usage still settles exactly once.
+			const abort = new AbortController()
+			amendmentRulingAbort = abort
+			const rulingTarget = currentFermentV2
+			const settled = runFermentV2RequirementsAmendmentRuling(
+				{
+					fermentV2Id: plan.fence.fermentV2Id,
+					revision: plan.fence.revision,
+					objective: rulingTarget?.requirements?.objectiveText ?? "",
+					objectiveDigest: plan.fence.objectiveDigest,
+					contractVersion: plan.fence.contractVersion,
+					currentItems: rulingTarget?.requirements?.items ?? [],
+					proposedItems: plan.items,
+					diff: plan.diff,
+					reason: plan.reason,
+					cwd: ctx.cwd,
+					signal: AbortSignal.any([abort.signal, ...(signal ? [signal] : [])]),
+				},
+				ctx,
+				pi,
+			)
+			const settledTail = settled.then(
+				() => undefined,
+				() => undefined,
+			)
+			amendmentRulingSettled = settledTail
+			let outcome: FermentV2RequirementsAmendmentOutcome
+			try {
+				outcome = await settled
+			} finally {
+				if (amendmentRulingAbort === abort) amendmentRulingAbort = undefined
+				if (amendmentRulingSettled === settledTail) amendmentRulingSettled = undefined
+			}
+			if (!rulingTarget) {
+				return {
+					content: [
+						{ type: "text" as const, text: "Amendment not applied: the Ferment V2 was replaced during this turn." },
+					],
+					details: { fermentV2: currentFermentV2 ?? null, stale: true },
+				}
+			}
+			const settleResult = await serializeFermentV2Mutation(sessionId, () => {
+				assertCurrentSession(ctx, sessionId)
+				const current = currentFermentV2
+				if (!current || current.id !== plan.fence.fermentV2Id) return { kind: "gone" as const }
+				const now = timestamp()
+				let accounted = current
+				if (outcome.usage.totalTokens > 0 || outcome.diagnostics.durationMs > 0) {
+					accounted = addFermentV2Accounting(
+						accounted,
+						accounted.id,
+						outcome.usage.totalTokens,
+						outcome.diagnostics.durationMs,
+						now,
+					)
+				}
+				accounted = recordFermentV2AmendmentUsage(accounted, accounted.id, outcome.usage, now)
+				if (signal?.aborted) {
+					// The turn was cancelled while the ruling ran: the result is never
+					// applied or cached, whatever the ruling decided; usage is settled.
+					if (accounted !== current) commitFermentV2(accounted)
+					return { kind: "cancelled" as const, current: accounted }
+				}
+				const record = accounted.requirements
+				const stale =
+					record?.availability !== "ready" ||
+					accounted.revision !== plan.fence.revision ||
+					record.objectiveDigest !== plan.fence.objectiveDigest ||
+					record.contractVersion !== plan.fence.contractVersion
+				if (stale) {
+					// The contract moved while the ruling ran (external amendment,
+					// objective edit, replacement): usage is settled; the ruling is
+					// discarded and the implementer reconsiders against the new version.
+					if (accounted !== current) commitFermentV2(accounted)
+					emitFermentV2Requirements(accounted)
+					return { kind: "stale" as const, current: accounted }
+				}
+				if (outcome.status === "unavailable") {
+					// An unavailable ruling preserves the current obligations and
+					// leaves the goal active; it is not cached (a retry may succeed).
+					if (accounted !== current) commitFermentV2(accounted)
+					emitFermentV2Requirements(accounted)
+					return { kind: "unavailable" as const, current: accounted, reason: outcome.reason }
+				}
+				if (outcome.status === "rejected") {
+					let withRejection = accounted
+					try {
+						withRejection = recordFermentV2AmendmentRejection(
+							accounted,
+							accounted.id,
+							accounted.revision,
+							plan.digest,
+							plan.fence.contractVersion,
+							outcome.reason,
+							now,
+						)
+					} catch {
+						withRejection = accounted
+					}
+					if (withRejection !== current) commitFermentV2(withRejection)
+					return { kind: "rejected" as const, current: withRejection, reason: outcome.reason }
+				}
+				try {
+					const next = applyFermentV2RequirementsAmendment(
+						accounted,
+						accounted.id,
+						accounted.revision,
+						plan.fence.contractVersion,
+						{ items: plan.items, reason: plan.reason, rulingReason: outcome.reason },
+						now,
+					)
+					commitFermentV2(next)
+					emitFermentV2Requirements(next)
+					if (next !== accounted) {
+						// The contract moved: a claim or conversation captured against
+						// the older criteria can no longer be evaluated silently, and a
+						// claim captured in this same turn was decided blind to the
+						// amendment result.
+						completionClaim = undefined
+						preparedEvaluation = undefined
+						capturedConversation = undefined
+						requirementsAmendedPendingClaim = true
+					}
+					if (current.status === "active" && next.status === "budget_limited") {
+						emitFermentV2Lifecycle(FERMENT_V2_EVENTS.BUDGET_LIMITED, next, { reason: "token_budget" })
+						invalidateContinuation()
+						ctx.ui.notify(
+							`${displayName(next)} stopped after reaching its ${formatCount(next.tokenBudget ?? 0)} token budget.`,
+							"warning",
+						)
+					}
+					return { kind: "accepted" as const, next }
+				} catch {
+					// Raced at apply time (e.g. a competing external update in the
+					// same mutation window): usage is settled; the ruling is discarded.
+					if (accounted !== current) commitFermentV2(accounted)
+					return { kind: "stale" as const, current: accounted }
+				}
+			})
+			const settledCurrent =
+				settleResult.kind === "accepted"
+					? settleResult.next
+					: "current" in settleResult
+						? settleResult.current
+						: (currentFermentV2 ?? null)
+			if (settleResult.kind === "gone") {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "Amendment not applied: the Ferment V2 was replaced or cleared while the ruling ran.",
+						},
+					],
+					details: { fermentV2: null, stale: true },
+				}
+			}
+			if (settleResult.kind === "stale") {
+				const version = settledCurrent?.requirements?.contractVersion
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Amendment not applied: the requirements contract moved while the ruling ran${
+								version === undefined ? "" : ` (now version ${version})`
+							}. Re-read the current criteria and reconsider against the current version; work continues meanwhile.`,
+						},
+					],
+					details: { fermentV2: settledCurrent ?? null, stale: true },
+				}
+			}
+			if (settleResult.kind === "cancelled") {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Amendment ruling cancelled: the turn was cancelled while the ruling ran.\nThe current contract (version ${settleResult.current.requirements?.contractVersion}) stands and nothing was applied; resubmitting the same proposal may retry the ruling.`,
+						},
+					],
+					details: { fermentV2: settleResult.current, cancelled: true },
+				}
+			}
+			if (settleResult.kind === "unavailable") {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Amendment ruling unavailable: ${settleResult.reason}\nThe current contract (version ${settleResult.current.requirements?.contractVersion}) stands and work continues; resubmitting the same proposal may retry the ruling.`,
+						},
+					],
+					details: { fermentV2: settleResult.current, unavailable: true },
+				}
+			}
+			if (settleResult.kind === "rejected") {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Amendment rejected: ${settleResult.reason}\nThe current contract (version ${settleResult.current.requirements?.contractVersion}) stands and work continues. Todos never need an amendment; changed evidence permits a new proposal.`,
+						},
+					],
+					details: { fermentV2: settleResult.current, rejected: true },
+				}
+			}
+			const record = settleResult.next.requirements
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: [
+							`Amendment accepted: the requirements contract is now version ${record?.contractVersion}. Ruling rationale: ${outcome.reason}`,
+							`Updated criteria (authoritative for final verification):\n${JSON.stringify(record?.items ?? [])}`,
+							"If you claimed completion in this same turn, that claim was discarded: review the updated criteria and claim complete again in a new turn. Work continues.",
+						].join("\n\n"),
+					},
+				],
+				details: { fermentV2: settleResult.next, accepted: true },
 			}
 		},
 	})
@@ -2440,6 +2885,9 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		releaseFermentV2PromptSummary()
 		supersededActiveTurn = undefined
 		preparedEvaluation = undefined
+		// A new turn means the implementer can have seen the amended criteria
+		// rendered in context; a fresh completion claim is legitimate again.
+		requirementsAmendedPendingClaim = false
 		bufferingAssistantText = false
 		bufferedAssistantText = undefined
 		streamedAssistantTextIndices = undefined
@@ -2867,7 +3315,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				result.verdict === "met" &&
 				(!ctx.hasUI || (Boolean(todoState?.total) && todoState?.settledStatus === "complete"))
 			) {
-				const claim = matchesFermentV2(completionClaim, evaluated, sessionId) ? completionClaim : undefined
+				const claim = evaluationGradeClaim(completionClaim, evaluated, sessionId)
 				const readyForFinalAnswer = {
 					...evaluated,
 					...(claim?.completionConfidence ? { completionConfidence: claim.completionConfidence } : {}),
@@ -2926,7 +3374,19 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		}
 		const draftEntry = latestFinalAnswerDraftEntry(messages)
 		const activeFermentV2 = fermentV2?.status === "active" ? fermentV2 : undefined
-		const hasCompletionClaim = Boolean(activeFermentV2 && matchesFermentV2(completionClaim, activeFermentV2, sessionId))
+		const hasCompletionClaim = Boolean(
+			activeFermentV2 && evaluationGradeClaim(completionClaim, activeFermentV2, sessionId),
+		)
+		// A claim whose captured contract version moved (an accepted amendment
+		// applied after the claim) is stale: evaluation must not run against
+		// criteria the claim never observed. Expose the new criteria and ask for
+		// a fresh claim instead.
+		const staleRequirementsClaim = Boolean(
+			!hasCompletionClaim &&
+				activeFermentV2 &&
+				matchesFermentV2(completionClaim, activeFermentV2, sessionId) &&
+				!claimMatchesCurrentRequirements(completionClaim, activeFermentV2),
+		)
 		// A resumed headless prompt has no slash-command waiter. Queue its next
 		// turn before agent_end returns so Pi keeps the same session.prompt alive.
 		const queueDuringAgentRun = Boolean(
@@ -2980,7 +3440,19 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		// Verification runs only after an explicit `update_ferment_v2` completion
 		// claim; a stop without one queues a deterministic continuation instead.
 		if (!hasCompletionClaim) {
-			continueFermentV2WithoutClaim(ctx, sessionId, fermentV2, { source: "no_completion_claim" }, queueDuringAgentRun)
+			continueFermentV2WithoutClaim(
+				ctx,
+				sessionId,
+				fermentV2,
+				staleRequirementsClaim
+					? {
+							source: "requirements_amended_after_claim",
+							reason:
+								"The requirements contract changed after your completion claim. Review the updated criteria rendered in context, verify your evidence against them, and claim complete again.",
+						}
+					: { source: "no_completion_claim" },
+				queueDuringAgentRun,
+			)
 			return
 		}
 		holdFermentV2PromptSummary()
@@ -3108,12 +3580,29 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			queueFermentV2TurnAfterSettled(ctx, withErrorTurns, buildFermentV2ErrorContinuation(), "agent_error")
 			return
 		}
-		// No explicit completion claim: queue the deterministic continuation without
-		// calling the evaluator, recording an evaluation, or emitting an EVALUATED event.
-		if (!matchesFermentV2(completionClaim, capturedFermentV2, sessionId)) {
+		// No explicit completion claim — or a claim whose captured contract
+		// version moved — queues the deterministic continuation without calling
+		// the evaluator, recording an evaluation, or emitting an EVALUATED event.
+		const staleRequirementsClaim = Boolean(
+			matchesFermentV2(completionClaim, capturedFermentV2, sessionId) &&
+				!claimMatchesCurrentRequirements(completionClaim, capturedFermentV2),
+		)
+		if (!matchesFermentV2(completionClaim, capturedFermentV2, sessionId) || staleRequirementsClaim) {
 			releaseEvaluationIndicator()
 			releaseFermentV2PromptSummary()
-			continueFermentV2WithoutClaim(ctx, sessionId, capturedFermentV2, { source: "no_completion_claim" }, false)
+			continueFermentV2WithoutClaim(
+				ctx,
+				sessionId,
+				capturedFermentV2,
+				staleRequirementsClaim
+					? {
+							source: "requirements_amended_after_claim",
+							reason:
+								"The requirements contract changed after your completion claim. Review the updated criteria rendered in context, verify your evidence against them, and claim complete again.",
+						}
+					: { source: "no_completion_claim" },
+				false,
+			)
 			return
 		}
 		const prepared = preparedEvaluation?.conversation === conversation ? preparedEvaluation : undefined

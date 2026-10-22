@@ -76,6 +76,30 @@ export function isRequirementsDraftRequest(request: FakeResponseRequest): boolea
 	)
 }
 
+/** The requirements amendment ruler's request (one read-only ruling per proposal). */
+export function isRequirementsRulingRequest(request: FakeResponseRequest): boolean {
+	return (
+		request.url.startsWith("/openai/v1/chat/completions") &&
+		JSON.stringify(request.body).includes("<ferment_v2_requirements_amendment>")
+	)
+}
+
+/**
+ * The ruler submits its one atomic decision through submit_amendment_ruling.
+ * A deterministic fixture decision proves routing only, not model judgment.
+ */
+export function rulingDecision(decision: "accept" | "reject", reason: string): FakeResponseScript {
+	return {
+		match: isRequirementsRulingRequest,
+		toolCalls: [
+			{
+				id: "amendment-ruling",
+				function: { name: "submit_amendment_ruling", arguments: JSON.stringify({ decision, reason }) },
+			},
+		],
+	}
+}
+
 /**
  * The drafter records the complete initial list through record_requirements.
  * Pass the exact items the seeded verifier must later acknowledge.

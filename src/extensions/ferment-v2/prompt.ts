@@ -1,5 +1,10 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME } from "./constants.js"
+import {
+	AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME,
+	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
+	GET_FERMENT_V2_TOOL_NAME,
+	UPDATE_FERMENT_V2_TOOL_NAME,
+} from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
 import { FERMENT_V2_STATUS, type FermentV2Requirements, type SessionFermentV2 } from "./types.js"
 
@@ -140,7 +145,9 @@ function renderFermentV2RequirementsRules(record: FermentV2Requirements): string
 		return `<requirements_rules>
 - The requirements above are the authoritative acceptance criteria for this objective, established from the objective and baseline source before implementation began.
 - Work toward them; they are checked independently against the objective at completion.
-- If you discover an obligation the objective requires that the list misses, add a Todo for it and surface it in your completion evidence; do not assume the list was wrong.
+- If you discover an obligation the objective requires that the list misses, add a Todo for it and propose the addition with ${AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME}; do not assume the list was wrong.
+- If objective or repository evidence shows a criterion misstates the task (a corrected interpretation, a superseded compatibility expectation), propose a sourced correction with ${AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME}: the complete replacement list, the expected contract version, and evidence for every change. An independent ruling accepts or rejects the whole batch; a rejection keeps the current criteria and never pauses the goal.
+- Ordinary new Todos never need an amendment or a model call; only the requirements contract changes through ${AMEND_FERMENT_V2_REQUIREMENTS_TOOL_NAME}, never the user's objective text.
 </requirements_rules>`
 	}
 	if (record.availability === "pending") {

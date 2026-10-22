@@ -81,6 +81,7 @@ import {
 } from "./personas/agent-types.js"
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
+	AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
 	AGENT_FERMENT_REQUIREMENTS_DRAFT,
 	AGENT_FERMENT_VERIFIER,
 	AGENT_GENERAL_PURPOSE,
@@ -848,11 +849,14 @@ function terminalAssistantError(session: AgentSession | undefined): string | und
 	return undefined
 }
 
-/** Shared spawn for the Ferment V2 host-driven phases (verifier, requirements drafter).
+/** Shared spawn for the Ferment V2 host-driven phases (verifier, requirements drafter, requirements ruler).
  *  Both run as hidden, unlimited-turn, model-only-inactivity child sessions with
  *  inline extensionFactories and a persisted transcript alongside the parent. */
 async function spawnFermentV2PhaseAgent(
-	phase: typeof AGENT_FERMENT_VERIFIER | typeof AGENT_FERMENT_REQUIREMENTS_DRAFT,
+	phase:
+		| typeof AGENT_FERMENT_VERIFIER
+		| typeof AGENT_FERMENT_REQUIREMENTS_DRAFT
+		| typeof AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	prompt: string,
@@ -886,7 +890,12 @@ async function spawnFermentV2PhaseAgent(
 	}
 
 	const record = await activeManager.spawnAndWait(pi, ctx, phase, prompt, {
-		description: phase === AGENT_FERMENT_VERIFIER ? "Ferment V2 verifier" : "Ferment V2 requirements draft",
+		description:
+			phase === AGENT_FERMENT_VERIFIER
+				? "Ferment V2 verifier"
+				: phase === AGENT_FERMENT_REQUIREMENTS_DRAFT
+					? "Ferment V2 requirements draft"
+					: "Ferment V2 requirements amendment ruling",
 		visibility: "system",
 		model: opts.model,
 		cwd: opts.cwd,
@@ -956,6 +965,33 @@ export async function spawnFermentV2RequirementsDraftAgent(
 	},
 ): Promise<FermentV2VerifierAgentRun | undefined> {
 	return spawnFermentV2PhaseAgent(AGENT_FERMENT_REQUIREMENTS_DRAFT, pi, ctx, prompt, opts)
+}
+
+/** Spawn the Ferment V2 Requirements Ruler subagent and wait for its result.
+ *
+ *  The ruler judges one proposed requirements amendment against the original
+ *  objective with a single atomic accept/reject decision. It is a short,
+ *  read-only invocation bounded by the caller's wall-clock cap: it may
+ *  inspect relevant workspace sources but has no shell, write, or edit tools
+ *  and must not run a verification campaign; the host guard confines read
+ *  paths. Returns undefined when the agent system is not active so the caller
+ *  can surface an explicit unavailable outcome. */
+export async function spawnFermentV2RequirementsAmendmentAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	opts: {
+		model: Model<Api>
+		cwd: string
+		extensionFactories: InlineExtension[]
+		signal: AbortSignal
+		/** Wall-clock cap in seconds. */
+		maxDuration?: number
+		/** Thinking level of the ruler session; default `low`. */
+		thinkingLevel?: ThinkingLevel
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	return spawnFermentV2PhaseAgent(AGENT_FERMENT_REQUIREMENTS_AMENDMENT, pi, ctx, prompt, opts)
 }
 
 /** Resume the Ferment V2 verifier session with a correction prompt. Same

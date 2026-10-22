@@ -78,9 +78,12 @@ describe("buildVerifierTaskPrompt", () => {
 		expect(prompt).toContain("a fresh ID such as r6")
 		expect(prompt).toContain("expectedVersion 3")
 		expect(prompt).toContain("binding immediately")
-		// Existing criteria are immutable in this review.
+		// Existing criteria are immutable in this review: proposals route through
+		// the implementer's amendment tool, the review stays additions-only.
 		expect(prompt).toContain("never be changed, weakened, recategorized, or removed")
-		expect(prompt).toContain("actionable context, not an accepted rewrite")
+		expect(prompt).toContain("additions-only")
+		expect(prompt).toContain("amend_ferment_v2_requirements")
+		expect(prompt).toContain("the user's own edit flow")
 	})
 
 	it("notes unavailable facts outside git", () => {

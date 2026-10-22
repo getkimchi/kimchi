@@ -12,6 +12,7 @@ import {
 	AGENT_BUILDER,
 	AGENT_DEBUGGER,
 	AGENT_EXPLORE,
+	AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
 	AGENT_FERMENT_REQUIREMENTS_DRAFT,
 	AGENT_FERMENT_VERIFIER,
 	AGENT_FIXER,
@@ -50,6 +51,33 @@ Derive the complete initial list of observable requirements for the given object
 - If no source view is available, derive requirements from the objective and plan text alone.
 </rules>
 </ferment_v2_requirements_draft>`
+
+/**
+ * System prompt for the Ferment V2 Requirements Ruler persona. The host
+ * appends the task-specific prompt (objective, current contract, proposed
+ * amendment diff, and the implementer's evidence) per ruling; this constant
+ * carries the standing procedure and decision policy. The host enforces the
+ * read-only boundary: the persona has no shell, write, or edit tools, and the
+ * host guard confines read paths to the workspace.
+ */
+const REQUIREMENTS_RULER_SYSTEM_PROMPT = `<ferment_v2_requirements_amendment>
+Decide whether a proposed amendment to the requirements contract is justified. You are the same independent evaluator role that established the contract; the implementer proposes a correction while work continues, and your one decision either applies or preserves the whole batch.
+
+<procedure>
+1. Read the original objective first. It is authoritative: your decision interprets the task, it never changes it.
+2. Read the current contract, the proposed replacement list, and the computed diff (additions, changes, removals). For every addition, change, and removal, inspect the cited objective clause or repository contract in the workspace with the read tools (read, grep, find, ls).
+3. Weigh the implementer's evidence against the objective. Call submit_amendment_ruling exactly once with your decision and a source-grounded reason, then end your turn.
+</procedure>
+
+<rules>
+- Accept only when the objective or a repository contract establishes that the current criteria misstate the task: a corrected interpretation, a genuinely superseded compatibility expectation, or a newly discovered obligation the objective requires.
+- Reject scope weakening. Implementation difficulty, the candidate's output or passing behavior, an unexplained failing assertion, preference, or convenience never justify changing or removing an obligation.
+- The decision is atomic for the whole batch: accept applies the complete proposed list; reject keeps the current contract untouched. Partial acceptance is impossible.
+- Changed or removed items must keep their existing IDs; new obligations need fresh IDs. The host validates this.
+- Changing the user's objective text itself is out of scope; that requires the user's own edit flow.
+- This phase is read-only: inspect relevant sources as needed, but do not run tests, builds, or a verification campaign, and do not write, edit, or delete anything.
+</rules>
+</ferment_v2_requirements_amendment>`
 
 /**
  * System prompt for the Ferment V2 Verifier persona. The host appends the
@@ -657,6 +685,37 @@ Do not iterate beyond the verification needed. Once you have checked the load-be
 				// would silently bound every verification run.
 				enabled: false,
 				systemPrompt: VERIFIER_SYSTEM_PROMPT,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
+			{
+				name: AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
+				displayName: AGENT_FERMENT_REQUIREMENTS_AMENDMENT,
+				description:
+					"Ferment V2 requirements ruler — accepts or rejects evidence-backed requirements amendments with one atomic decision",
+				// Read-only: the ruling inspects the workspace and evidence but must
+				// not touch the working tree or run a verification campaign. The
+				// host guard confines paths further.
+				builtinToolNames: ["read", "grep", "find", "ls", "submit_amendment_ruling"],
+				disallowedTools: [
+					"bash",
+					"powershell",
+					"write",
+					"edit",
+					"Agent",
+					"resume_subagent",
+					"get_subagent_result",
+					"steer_subagent",
+				],
+				extensions: false,
+				skills: false,
+				thinking: "low",
+				// Host-spawned only: hidden from the Agent tool list, like the drafter.
+				enabled: false,
+				systemPrompt: REQUIREMENTS_RULER_SYSTEM_PROMPT,
 				promptMode: "replace",
 				isDefault: true,
 			},

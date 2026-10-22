@@ -84,6 +84,11 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 					`Requirements drafts: ${fermentV2.requirementsUsage.runs} run${fermentV2.requirementsUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.requirementsUsage.totalTokens)} tokens · $${fermentV2.requirementsUsage.costUsd.toFixed(2)}`,
 				]
 			: []),
+		...(fermentV2.amendmentsUsage
+			? [
+					`Amendment rulings: ${fermentV2.amendmentsUsage.runs} run${fermentV2.amendmentsUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.amendmentsUsage.totalTokens)} tokens · $${fermentV2.amendmentsUsage.costUsd.toFixed(2)}`,
+				]
+			: []),
 		...(evaluation
 			? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}${formatFermentV2EvaluatorModel(evaluation)}`]
 			: []),

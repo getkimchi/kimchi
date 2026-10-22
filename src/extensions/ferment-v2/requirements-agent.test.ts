@@ -7,13 +7,21 @@ import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel } from "../__mocks__/model-registry.js"
 import type { FermentV2VerifierAgentRun } from "../agents/index.js"
+import { diffRequirementsAmendment } from "./requirements.js"
 import {
+	AMENDMENT_RULING_TOOL_NAME,
+	buildFermentV2RequirementsAmendmentPrompt,
 	buildFermentV2RequirementsDraftPrompt,
+	createRequirementsAmendmentRulingGuard,
+	createRequirementsAmendmentRulingLedger,
 	createRequirementsDraftGuard,
 	createRequirementsDraftLedger,
+	type FermentV2RequirementsAmendmentDeps,
+	type FermentV2RequirementsAmendmentInput,
 	type FermentV2RequirementsDeps,
 	type FermentV2RequirementsDraftInput,
 	isDraftReadablePath,
+	runFermentV2RequirementsAmendmentRuling,
 	runFermentV2RequirementsDraft,
 } from "./requirements-agent.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
@@ -411,5 +419,239 @@ describe("runFermentV2RequirementsDraft", () => {
 		const items = [retained, { ...retained, id: "r6", requirement: "Add goodbye" }]
 		await tool.execute("valid", { requirements: items }, undefined, undefined, ctx)
 		expect(ledger.items).toEqual(items)
+	})
+})
+
+describe("requirements amendment ruling", () => {
+	const CURRENT = [
+		{
+			id: "r1",
+			requirement: "returns hello",
+			source: "Objective: return hello",
+			acceptance: "output is hello",
+			category: "behavior" as const,
+		},
+		{
+			id: "r2",
+			requirement: "logs each greeting",
+			source: "Repository: logger",
+			acceptance: "one log line",
+			category: "constraint" as const,
+		},
+	]
+	const PROPOSED = [
+		{
+			id: "r1",
+			requirement: "returns hello by name",
+			source: "Objective: greet by name",
+			acceptance: "output is hello <name>",
+			category: "behavior" as const,
+		},
+		{
+			id: "r3",
+			requirement: "validates names",
+			source: "Objective: named input",
+			acceptance: "empty name rejected",
+			category: "behavior" as const,
+		},
+	]
+
+	async function loadExtension(extension: InlineExtension) {
+		const child = createExtensionApi()
+		if (typeof extension === "function") await extension(child.api)
+		else await extension.factory(child.api)
+		return child
+	}
+
+	beforeEach(() => {
+		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	function amendmentInput(
+		overrides: Partial<FermentV2RequirementsAmendmentInput> = {},
+	): FermentV2RequirementsAmendmentInput {
+		const diff = diffRequirementsAmendment(CURRENT, PROPOSED, 2)
+		if (!diff) throw new Error("fixture diff invalid")
+		return {
+			fermentV2Id: "f1",
+			revision: 1,
+			objective: "ship a greeter that greets by name",
+			objectiveDigest: "b".repeat(64),
+			contractVersion: 1,
+			currentItems: CURRENT,
+			proposedItems: PROPOSED,
+			diff,
+			reason: "Objective names the input form; the current criteria under-specify it.",
+			cwd: "/host/cwd",
+			...overrides,
+		}
+	}
+
+	it("renders the objective, both lists, the computed diff, the evidence, and the decision policy", async () => {
+		const prompt = buildFermentV2RequirementsAmendmentPrompt(amendmentInput())
+		expect(prompt).toContain("<ferment_v2_requirements_amendment_task>")
+		expect(prompt).toContain("greets by name")
+		expect(prompt).toContain("Additions: r3")
+		expect(prompt).toContain("Changes: r1")
+		expect(prompt).toContain("Removals: r2 (logs each greeting)")
+		expect(prompt).toContain("under-specify it")
+		expect(prompt).toContain("submit_amendment_ruling")
+		expect(prompt).toContain("Reject scope weakening")
+		// The tool's own description carries the atomic decision contract.
+		const ledger = createRequirementsAmendmentRulingLedger()
+		const child = await loadExtension(ledger.extension)
+		expect(child.getRegisteredTool(AMENDMENT_RULING_TOOL_NAME).description).toContain('"decision": "accept" | "reject"')
+		expect(child.getRegisteredTool(AMENDMENT_RULING_TOOL_NAME).description).toContain("atomic")
+	})
+
+	it("records one atomic decision and rejects an empty reason", async () => {
+		const ledger = createRequirementsAmendmentRulingLedger()
+		const child = await loadExtension(ledger.extension)
+		const tool = child.getRegisteredTool(AMENDMENT_RULING_TOOL_NAME)
+		expect(ledger.ruling).toBeUndefined()
+		const empty = await tool.execute("c1", { decision: "accept", reason: "   " }, undefined, undefined, createContext())
+		expect(empty).toMatchObject({ isError: true })
+		await tool.execute(
+			"c2",
+			{ decision: "reject", reason: "No source justifies removing the log obligation." },
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(ledger.ruling).toEqual({ decision: "reject", reason: "No source justifies removing the log obligation." })
+		// The last valid call wins within one bounded session.
+		await tool.execute(
+			"c3",
+			{ decision: "accept", reason: "Objective clause 2 requires it." },
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(ledger.ruling).toEqual({ decision: "accept", reason: "Objective clause 2 requires it." })
+	})
+
+	const ctx = createContext()
+	const pi = createExtensionApi().api
+	const depsWithModel = (deps: FermentV2RequirementsAmendmentDeps): FermentV2RequirementsAmendmentDeps => ({
+		resolveModel: async () => MODEL_CHOICE,
+		...deps,
+	})
+
+	it("maps a submitted accept ruling to an accepted outcome with model and usage", async () => {
+		const outcome = await runFermentV2RequirementsAmendmentRuling(amendmentInput(), ctx, pi, {
+			...depsWithModel({}),
+			spawn: async (spawnInput) => {
+				expect(spawnInput.cwd).toBe("/host/cwd")
+				expect(spawnInput.maxDuration).toBe(120)
+				const child = createExtensionApi()
+				const ledgerFactory = spawnInput.extensionFactories.at(-1)
+				if (typeof ledgerFactory !== "function") throw new Error("Expected the ruling ledger")
+				await ledgerFactory(child.api)
+				await child
+					.getRegisteredTool(AMENDMENT_RULING_TOOL_NAME)
+					.execute(
+						"call-1",
+						{ decision: "accept", reason: "The objective's greeting clause names the input form." },
+						undefined,
+						undefined,
+						ctx,
+					)
+				return {
+					id: "run-1",
+					text: "",
+					status: "completed",
+					toolCalls: 1,
+					turns: 1,
+				} satisfies FermentV2VerifierAgentRun
+			},
+		})
+		expect(outcome).toMatchObject({
+			status: "accepted",
+			reason: "The objective's greeting clause names the input form.",
+			objectiveDigest: "b".repeat(64),
+			objectiveRevision: 1,
+		})
+		expect(outcome.diagnostics.model).toBe("test/drafter")
+	})
+
+	it("maps a submitted reject ruling to a rejected outcome", async () => {
+		const outcome = await runFermentV2RequirementsAmendmentRuling(amendmentInput(), ctx, pi, {
+			...depsWithModel({}),
+			spawn: async (spawnInput) => {
+				const child = createExtensionApi()
+				const ledgerFactory = spawnInput.extensionFactories.at(-1)
+				if (typeof ledgerFactory !== "function") throw new Error("Expected the ruling ledger")
+				await ledgerFactory(child.api)
+				await child
+					.getRegisteredTool(AMENDMENT_RULING_TOOL_NAME)
+					.execute(
+						"call-1",
+						{ decision: "reject", reason: "Implementation difficulty never justifies removing an obligation." },
+						undefined,
+						undefined,
+						ctx,
+					)
+				return {
+					id: "run-1",
+					text: "",
+					status: "completed",
+					toolCalls: 1,
+					turns: 1,
+				} satisfies FermentV2VerifierAgentRun
+			},
+		})
+		expect(outcome.status).toBe("rejected")
+		expect(outcome.reason).toContain("Implementation difficulty")
+	})
+
+	it("reports the ruler system as unavailable when the manager is absent", async () => {
+		const outcome = await runFermentV2RequirementsAmendmentRuling(amendmentInput(), ctx, pi, depsWithModel({}))
+		expect(outcome.status).toBe("unavailable")
+		expect(outcome.diagnostics.failureType).toBe("agent_unavailable")
+	})
+
+	it("maps an aborted caller signal to a cancelled outcome", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		const outcome = await runFermentV2RequirementsAmendmentRuling(
+			amendmentInput({ signal: controller.signal }),
+			ctx,
+			pi,
+			depsWithModel({}),
+		)
+		expect(outcome.status).toBe("unavailable")
+		expect(outcome.diagnostics.failureType).toBe("cancelled")
+	})
+
+	it("reports invalid output when the run ends without a submitted ruling", async () => {
+		const outcome = await runFermentV2RequirementsAmendmentRuling(amendmentInput(), ctx, pi, {
+			...depsWithModel({
+				spawn: async () => ({ id: "r", text: "no ruling", status: "completed", toolCalls: 0, turns: 1 }),
+			}),
+		})
+		expect(outcome.status).toBe("unavailable")
+		expect(outcome.diagnostics.failureType).toBe("invalid_output")
+	})
+
+	it("confines the ruling's reads to the workspace and blocks every other tool", async () => {
+		const guard = createRequirementsAmendmentRulingGuard("/host/cwd")
+		const child = await loadExtension(guard)
+		const handler = child.getHandler<{ toolName: string; input?: unknown }, unknown>("tool_call")
+		if (!handler) throw new Error("expected the guard handler")
+		const call = (toolName: string, input?: unknown) =>
+			handler({ toolName, input }, createContext({ cwd: "/host/cwd" }))
+		expect(await call("read", { path: "src/index.ts" })).toBeUndefined()
+		expect(await call("grep", { path: "." })).toBeUndefined()
+		expect(await call(AMENDMENT_RULING_TOOL_NAME, {})).toBeUndefined()
+		expect(await call("bash", { command: "pnpm test" })).toMatchObject({ block: true })
+		expect(await call("write", { path: "/host/cwd/x.ts" })).toMatchObject({ block: true })
+		expect(await call("edit", { path: "src/index.ts" })).toMatchObject({ block: true })
+		expect(await call("record_requirements", {})).toMatchObject({ block: true })
+		expect(await call("read", { path: "../outside.ts" })).toMatchObject({ block: true })
+		expect(await call("read", { path: ".git/config" })).toMatchObject({ block: true })
 	})
 })
