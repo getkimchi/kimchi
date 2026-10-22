@@ -91,7 +91,10 @@ const KNOWN_REGISTRARS: BlockRegistrar[] = [
 		owner: "lsp",
 		blockId: "lsp-tools",
 		expectedStability: "dynamic",
-		reason: "LSP block reflects the detected servers for the current working directory",
+		reason:
+			"LSP block reflects the detected servers for the current working directory; it can " +
+			"also appear mid-session on lazy activation (a project materializing after session start) — " +
+			"still dynamic, causing the accepted one-time cache re-miss at the next prompt rebuild",
 	},
 	{
 		file: "src/extensions/dap.ts",
