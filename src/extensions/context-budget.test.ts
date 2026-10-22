@@ -71,13 +71,13 @@ const BUDGET = {
 	 * description capped at 200 chars + path; no XML); this metric sums the
 	 * authored lengths, capped only at render time. After the bundled pptx
 	 * and pdf skills landed (descriptions trimmed) on top of the #1474
-	 * product-identity intro, the measured baseline is ~165 est; ~13%
-	 * headroom. */
-	skillsCatalog: 190,
-	/** Total canonical system-prompt + skills surface (measured ~1700 after
-	 *  the #1474 intro plus the bundled pptx and pdf skills — includes the
-	 *  ## Language section). */
-	total: 1760,
+	 * product-identity intro, and the bundled docx skill raised the catalog
+	 * to ~233, budgeted at 240. */
+	skillsCatalog: 240,
+	/** Total canonical system-prompt + skills surface (measured ~1777 after
+	 *  the #1474 intro plus the bundled pptx, pdf, and docx skills — includes
+	 *  the ## Language section). */
+	total: 1790,
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
