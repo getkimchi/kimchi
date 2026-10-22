@@ -248,7 +248,7 @@ describe("TurnArtifactBuffer", () => {
 		mkdirSync(yDir, { recursive: true })
 		mkdirSync(join(tmpDir, "bb"))
 		writeFileSync(join(tmpDir, "bb", "report.md"), "md")
-		writeFileSync(yDir + "/report.md", "md")
+		writeFileSync(join(yDir, "report.md"), "md")
 		const buffer = new TurnArtifactBuffer()
 		buffer.collectFromToolCall(writeCall(join(tmpDir, "bb", "report.md")))
 		buffer.collectFromToolCall(writeCall(join(yDir, "report.md")))

@@ -1905,7 +1905,6 @@ export class KimchiAcpAgent implements Agent {
 					toolResults,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
-					artifactBuffer,
 				)
 				if (lastTextBlockId !== undefined) {
 					artifactBuffer.noteTextBlock(lastTextBlockId, modelAttributionFrom(msg))
@@ -1976,7 +1975,6 @@ export class KimchiAcpAgent implements Agent {
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
-		artifactBuffer: TurnArtifactBuffer,
 	): string | undefined {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
@@ -1990,9 +1988,8 @@ export class KimchiAcpAgent implements Agent {
 		// the caller can register it as the turn's artifact attachment point
 		// (thinking chunks are excluded).
 		let lastTextMessageId: string | undefined
-		// Artifacts from this message's completed tool calls go into the
-		// caller's turn buffer (flush once per turn, like finalizeTurn).
-		// Replay skips the on-disk existence check (files may be gone).
+		// Artifacts are replayed strictly from recorded rows by the caller
+		// (replayTranscript) — replay never re-runs live detection.
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or

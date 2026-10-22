@@ -1670,8 +1670,7 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 		await updateModelsConfig(modelsJsonPath, "test-key")
 		expect(getModelThinkingLevels("kimchi-dev/kimi-k2.5")).toEqual(["off", "low", "high", "max"])
 
-		const uncurated = { ...(KIMI as Record<string, unknown>) }
-		delete (uncurated as Record<string, unknown>).thinking_levels
+		const { thinking_levels: _removedLevel, ...uncurated } = KIMI as Record<string, unknown>
 		fetchOnce([uncurated])
 		await updateModelsConfig(modelsJsonPath, "test-key")
 		vi.restoreAllMocks()

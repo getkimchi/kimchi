@@ -167,7 +167,7 @@ describe("settled-message render cache", () => {
 		// the widget line.
 		const { count: count2, done: done2 } = containerRenderCalls()
 		try {
-			;(message as unknown as Record<string, unknown>)["_piClaudeStyleWorkedDurationMs"] = 65_000
+			;(message as unknown as Record<string, unknown>)._piClaudeStyleWorkedDurationMs = 65_000
 			const lines = component.render(80)
 			expect(count2()).toBeGreaterThan(0)
 			expect(lines.some((l) => l.includes("Worked for 1m 5s"))).toBe(true)
