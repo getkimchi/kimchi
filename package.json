@@ -70,6 +70,7 @@
 		"better-sqlite3": "link:shims/better-sqlite3",
 		"chokidar": "^5.0.0",
 		"diff": "^9.0.0",
+		"docx": "9.13.0",
 		"jszip": "^3.10.2",
 		"marked": "^18.1.0",
 		"mem0ai": "3.1.8",
