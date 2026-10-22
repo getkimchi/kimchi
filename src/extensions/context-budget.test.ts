@@ -73,11 +73,11 @@ const BUDGET = {
 	 * and pdf skills landed (descriptions trimmed) on top of the #1474
 	 * product-identity intro, and the bundled docx skill raised the catalog
 	 * to ~233, budgeted at 240. */
-	skillsCatalog: 240,
-	/** Total canonical system-prompt + skills surface (measured ~1777 after
-	 *  the #1474 intro plus the bundled pptx, pdf, and docx skills — includes
-	 *  the ## Language section). */
-	total: 1790,
+	skillsCatalog: 300,
+	/** Total canonical system-prompt + skills surface (measured ~1831 after
+	 *  the #1474 intro plus the bundled pptx, pdf, docx, and xlsx skills —
+	 *  includes the ## Language section). */
+	total: 1860,
 	/** Total canonical tool surface (18 tools after the DAP entry/session and
 	 *  Agent-continuation deferrals, the Skill resource gate, the mcp
 	 *  zero-server registration gate, and the lsp no-server detection gate;
