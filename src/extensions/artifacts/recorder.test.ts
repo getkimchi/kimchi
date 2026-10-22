@@ -123,10 +123,12 @@ describe("artifact-recorder", () => {
 				},
 			],
 		})
-		// Chained runs within one prompt each emit their own agent_end; the
-		// row must wait for agent_settled and cover the whole chain.
+		// Chained runs within one prompt each emit their own agent_start +
+		// agent_end (auto-retry, compaction): the buffer must survive the
+		// chain and the row must wait for agent_settled, covering all runs.
 		await emit("turn_end", turn("1", "first.md"), ctx)
 		await emit("agent_end", { type: "agent_end", messages: [] }, ctx)
+		await emit("agent_start", { type: "agent_start" }, ctx)
 		await emit("turn_end", turn("2", "second.md"), ctx)
 		await emit("agent_end", { type: "agent_end", messages: [] }, ctx)
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
@@ -134,40 +136,6 @@ describe("artifact-recorder", () => {
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
 		expect(rows[0].artifacts.map((a) => a.name)).toEqual(["first.md", "second.md"])
-	})
-
-	it("agent_start clears leftovers of a run that never settled", async () => {
-		touch("leak.md")
-		const now = Date.now()
-		const { api, emit, getAppendedEntries } = createExtensionApi()
-		artifactRecorderExtension(api)
-		await emit(
-			"turn_end",
-			{
-				type: "turn_end",
-				turnIndex: 0,
-				message: {
-					role: "assistant",
-					timestamp: now,
-					content: [{ type: "toolCall", id: "tc-1", name: "write", arguments: { path: "leak.md" } }],
-				},
-				toolResults: [
-					{
-						toolCallId: "tc-1",
-						toolName: "write",
-						content: [{ type: "text", text: "ok" }],
-						isError: false,
-						timestamp: now,
-					},
-				],
-			},
-			ctx,
-		)
-		// Run torn down without agent_settled; the next run starts fresh and
-		// settles empty — the previous run's file must not bleed across.
-		await emit("agent_start", { type: "agent_start" }, ctx)
-		await emit("agent_settled", { type: "agent_settled" }, ctx)
-		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
 	})
 
 	it("sniffed-in-turn-1 promoted to intentional by a write in turn 2", async () => {

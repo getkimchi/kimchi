@@ -40,9 +40,7 @@ surfaces) runs the same detection at every turn end, accumulates across the
 agent run, and appends the result once at `agent_settled` (once per prompt —
 `agent_end` may fire multiple times per prompt across auto-retry/compaction
 chains) — so the row lands after the prompt's last assistant message in the
-session log, the same position the live ACP flush emits artifact chunks.
-Earlier the row was written at the first producing turn's end, i.e. *before*
-the run's final agent message. The
+session log, the same position the live ACP flush emits artifact chunks. The
 row is a session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
 artifacts: [{ path, name, mimeType, sniffed }] } }` (`sniffed: true` =
 bash/powershell-sniffed, eviction-eligible at the cap the way live is) —

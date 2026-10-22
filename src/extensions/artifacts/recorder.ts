@@ -45,8 +45,6 @@ type DetectedArtifact = Artifact & { sniffed: boolean }
 // row is written once per prompt (agent_settled) so it lands AFTER the
 // prompt's last assistant message in the session log — matching the live
 // ACP flush, which emits artifact chunks after the last agent message.
-// Writing at the first producing turn_end misplaced the row between that
-// turn's tool results and the run's final agent message.
 class RunArtifactAccumulator {
 	private readonly seen = new Set<string>()
 	private readonly sniffedKeys: string[] = []
@@ -80,20 +78,13 @@ class RunArtifactAccumulator {
 		this.out.push(artifact)
 	}
 
-	/** Snapshot and reset atomically — returning the live array here
-	 * previously let a clear() empty the caller's copy (snapshot bug). */
+	/** Snapshot and reset atomically. */
 	drain(): DetectedArtifact[] {
 		const out = this.out.slice()
 		this.seen.clear()
 		this.sniffedKeys.length = 0
 		this.out.length = 0
 		return out
-	}
-
-	clear(): void {
-		this.seen.clear()
-		this.sniffedKeys.length = 0
-		this.out.length = 0
 	}
 }
 
@@ -135,10 +126,6 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 			// Persistence must never break a turn; partial state stays buffered.
 		}
 	})
-
-	// Defensive reset: if the previous run somehow ended without
-	// agent_settled, its buffer must not bleed into this run's row.
-	pi.on("agent_start", () => acc.clear())
 
 	// `agent_settled`, not `agent_end`: after `agent_end` Pi may still
 	// auto-retry, auto-compact and retry, or run queued follow-up messages —
