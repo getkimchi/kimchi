@@ -22,8 +22,10 @@ afterEach(async () => {
 	rmSync(attributionDir, { recursive: true, force: true })
 })
 
-vi.mock("@earendil-works/pi-coding-agent", async () => {
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
 	return {
+		...actual,
 		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
 			reload: vi.fn().mockResolvedValue(undefined),
 		})),

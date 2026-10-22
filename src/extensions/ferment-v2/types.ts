@@ -1,3 +1,5 @@
+import type { VerifierRequirement } from "./requirements.js"
+
 export const FERMENT_V2_STATUS = {
 	ACTIVE: "active",
 	PAUSED: "paused",
@@ -38,6 +40,56 @@ export interface FermentV2Presentation {
 	planText?: string
 }
 
+/** Where the requirements draft ran: before implementation, from the fixed baseline after work started, or from the objective alone. */
+export const FERMENT_V2_REQUIREMENTS_PROVENANCE = ["pre_implementation", "baseline_recovery", "objective_only"] as const
+export type FermentV2RequirementsProvenance = (typeof FERMENT_V2_REQUIREMENTS_PROVENANCE)[number]
+
+export const FERMENT_V2_REQUIREMENTS_AVAILABILITY = ["pending", "ready", "unavailable"] as const
+export type FermentV2RequirementsAvailability = (typeof FERMENT_V2_REQUIREMENTS_AVAILABILITY)[number]
+
+/** One accepted requirements revision, retained immutably. */
+export interface FermentV2RequirementsRevision {
+	/** Contract version this acceptance produced (1-based; never reused). */
+	version: number
+	items: readonly VerifierRequirement[]
+	/** Lifecycle phase that accepted the list (for example `requirements_draft`). */
+	actor: string
+	reason?: string
+	/** Ferment revision the accepted list targets. */
+	objectiveRevision: number
+	acceptedAt: string
+}
+
+/**
+ * The one durable requirements record for a goal. `objectiveText` and
+ * `objectiveDigest` pin the exact objective the contract was drafted for, so
+ * editing an objective file cannot silently rewrite the criteria; a contract
+ * whose `objectiveRevision` lags the ferment's current revision is stale for
+ * verification but keeps its accepted history.
+ */
+export interface FermentV2Requirements {
+	schemaVersion: 1
+	/** Monotonically increasing; 0 = no list accepted yet, +1 per accepted list. */
+	contractVersion: number
+	objectiveRevision: number
+	/** Hex sha256 of the exact resolved objective text the contract targets. */
+	objectiveDigest: string
+	/** Exact resolved objective text used for the drafting decision. */
+	objectiveText: string
+	/** The fixed goal baseline the draft (or a recovery draft) is anchored to, when one exists. */
+	baselineCommit?: string
+	provenance: FermentV2RequirementsProvenance
+	availability: FermentV2RequirementsAvailability
+	/** Concise reason when availability is `unavailable`. */
+	unavailableReason?: string
+	items: readonly VerifierRequirement[]
+	/** Highest `r<n>` ID ever allocated; retired IDs are not reused. */
+	idWatermark: number
+	history: readonly FermentV2RequirementsRevision[]
+	/** The one degraded-outage retry at a completion claim has been spent. */
+	draftRetried?: boolean
+}
+
 export interface SessionFermentV2 {
 	schemaVersion: 1
 	id: string
@@ -59,6 +111,10 @@ export interface SessionFermentV2 {
 	timeUsedMs: number
 	/** Cumulative executing-verifier usage, tracked separately from the implementer's tokens. */
 	verifierUsage?: FermentV2VerifierUsage
+	/** Cumulative requirements-draft stage usage, tracked separately from the implementer's tokens. */
+	requirementsUsage?: FermentV2VerifierUsage
+	/** The goal-owned durable requirements record; absent on sessions created before it existed. */
+	requirements?: FermentV2Requirements
 	/** Working-tree snapshot the verifier's facts, flags, and baseline worktree are anchored to. */
 	baseline?: FermentV2Baseline
 	createdAt: string

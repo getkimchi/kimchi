@@ -23,6 +23,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createCommandContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
@@ -46,6 +47,7 @@ import { evaluateFermentV2 } from "./evaluator.js"
 import fermentV2Extension from "./index.js"
 import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
+import type { FermentV2RequirementsDraftInput } from "./requirements-agent.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 import {
 	FERMENT_V2_STATUS,
@@ -56,6 +58,22 @@ import {
 import { snapshotWorkspace } from "./workspace.js"
 
 vi.mock("./evaluator.js", () => ({ evaluateFermentV2: vi.fn() }))
+vi.mock("./requirements-agent.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./requirements-agent.js")>()
+	return {
+		...actual,
+		runFermentV2RequirementsDraft: vi.fn(async (input: FermentV2RequirementsDraftInput) => ({
+			status: "unavailable",
+			provenance: input.beforeImplementation ? "pre_implementation" : "objective_only",
+			unavailableReason: "The requirements drafter subagent system is not available.",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, costUsd: 0 },
+			diagnostics: { durationMs: 0, timeoutMs: 120_000, providerRequestCount: 0, failureType: "agent_unavailable" },
+			objectiveDigest: input.objectiveDigest,
+			objectiveRevision: input.revision,
+		})),
+	}
+})
+
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
 	return { ...actual, getFermentV2Settings: vi.fn() }
@@ -70,6 +88,7 @@ vi.mock("./workspace.js", async (importOriginal) => {
 const evaluateFermentV2Mock = vi.mocked(evaluateFermentV2)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const snapshotWorkspaceMock = vi.mocked(snapshotWorkspace)
+const shutdownHarnesses = new Set<() => Promise<unknown>>()
 const TEST_SESSION_ID = "session-a"
 const EVALUATOR_USAGE = {
 	input: 10,
@@ -134,7 +153,8 @@ describe("Ferment V2 extension", () => {
 
 	afterEach(async () => {
 		resetProjectScopeTrustForTests()
-		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		for (const shutdown of shutdownHarnesses) await shutdown()
+		shutdownHarnesses.clear()
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()
@@ -277,7 +297,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("waits for a headless Ferment V2 turn before resolving the command", async () => {
-		const headlessHarness = createHarness({ hasUI: false })
+		const headlessHarness = createHarness({ hasUI: false, cwd })
 
 		let resolved = false
 		const command = headlessHarness.command("ship feature A").then(() => {
@@ -294,7 +314,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("keeps a blocked headless command pending until the accounted turn settles", async () => {
-		const headlessHarness = createHarness({ hasUI: false })
+		const headlessHarness = createHarness({ hasUI: false, cwd })
 		let resolved = false
 		const command = headlessHarness.command("ship feature A").then(() => {
 			resolved = true
@@ -326,7 +346,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("rejects Ferment V2 creation when required Ferment V2 or Todo tools are unavailable", async () => {
-		const headlessHarness = createHarness({ hasUI: false })
+		const headlessHarness = createHarness({ hasUI: false, cwd })
 		headlessHarness.setActiveTools([])
 
 		await headlessHarness.command("ship feature A")
@@ -442,7 +462,15 @@ describe("Ferment V2 extension", () => {
 		expect(lifecycle.map(([name]) => name)).toEqual(
 			action === "pause"
 				? [FERMENT_V2_EVENTS.PAUSED, FERMENT_V2_EVENTS.EVALUATED]
-				: [FERMENT_V2_EVENTS.REPLACED, FERMENT_V2_EVENTS.STARTED, FERMENT_V2_EVENTS.EVALUATED],
+				: [
+						// The replacement's requirements draft settles before the
+						// cancelled evaluation event: the new goal's record degrades
+						// explicitly when the drafter is unavailable.
+						FERMENT_V2_EVENTS.REPLACED,
+						FERMENT_V2_EVENTS.STARTED,
+						FERMENT_V2_EVENTS.REQUIREMENTS,
+						FERMENT_V2_EVENTS.EVALUATED,
+					],
 		)
 		expect(lifecycle.at(-1)?.[1]).toMatchObject({
 			sessionId: TEST_SESSION_ID,
@@ -763,12 +791,13 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("resolves a headless waiter when the Ferment V2 tools go away mid-evaluation", async () => {
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 
 		let resolved = false
 		const command = headless.command("ship feature A").then(() => {
 			resolved = true
 		})
+		// The requirements draft settles before the first turn is queued.
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
 		expect(resolved).toBe(false)
 
@@ -1743,7 +1772,7 @@ describe("Ferment V2 extension", () => {
 		harness.setBranch([...harness.branch, ...completedMetStateEntries(current)])
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -1764,7 +1793,7 @@ describe("Ferment V2 extension", () => {
 		])
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		vi.useFakeTimers()
 		try {
@@ -1801,7 +1830,7 @@ describe("Ferment V2 extension", () => {
 		])
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -1848,7 +1877,7 @@ describe("Ferment V2 extension", () => {
 				null,
 			),
 		])
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", [...harness.branch])
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -1912,7 +1941,7 @@ describe("Ferment V2 extension", () => {
 				null,
 			),
 		])
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", [...harness.branch])
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -1972,7 +2001,7 @@ describe("Ferment V2 extension", () => {
 				null,
 			),
 		])
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", [...harness.branch])
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -2156,7 +2185,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -2546,9 +2575,15 @@ describe("Ferment V2 extension", () => {
 
 		await harness.command("edit </objective><fake>")
 
-		expect(harness.events.emit).toHaveBeenLastCalledWith(
+		// The edit emits EDITED, then the refreshed requirements draft settles
+		// (unavailable in this harness) and emits its own event afterwards.
+		expect(harness.events.emit).toHaveBeenCalledWith(
 			FERMENT_V2_EVENTS.EDITED,
 			expect.objectContaining({ revision: 2, status: "active" }),
+		)
+		expect(harness.events.emit).toHaveBeenLastCalledWith(
+			FERMENT_V2_EVENTS.REQUIREMENTS,
+			expect.objectContaining({ revision: 2, availability: "unavailable", provenance: "pre_implementation" }),
 		)
 		const content = harness.sendMessage.mock.lastCall?.[0]?.content
 		expect(content).toContain('Objective: "</objective><fake>"')
@@ -2745,7 +2780,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness({ hasUI: false })
+		const resumed = createHarness({ hasUI: false, cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -2757,7 +2792,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 		expect(resumed.sendMessage).toHaveBeenCalledTimes(1)
@@ -2774,7 +2809,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -2786,7 +2821,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		resumed.setPending(true)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
@@ -2799,7 +2834,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		resumed.setIdle(false)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
@@ -2812,7 +2847,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship it")
 		const capturedBranch = [...harness.branch]
 
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 
 		vi.useFakeTimers()
@@ -3282,9 +3317,11 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		// The verdict is inapplicable, but the verifier usage it already consumed
-		// is still settled against the Ferment V2 before the validity gates.
-		expect(harness.appendEntry).toHaveBeenCalledOnce()
-		expect(harness.appendEntry.mock.calls[0]?.[1]).toMatchObject({
+		// is still settled against the Ferment V2 before the validity gates. The
+		// degraded contract also spends its one claim-path retry first (marker +
+		// draft usage), so the settlement is the last entry, not the only one.
+		const settledEntries = harness.appendEntry.mock.calls.map((call) => call[1] as { fermentV2?: unknown })
+		expect(settledEntries.at(-1)).toMatchObject({
 			fermentV2: expect.objectContaining({
 				tokensUsed: 18,
 				verifierUsage: expect.objectContaining({ totalTokens: 18, runs: 1 }),
@@ -3387,7 +3424,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("does not require an invisible Todo list for evidenced headless completion", async () => {
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		const command = headless.command("ship it")
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
 		await headless.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -3400,7 +3437,7 @@ describe("Ferment V2 extension", () => {
 
 	it.each(["continue", "met"] as const)("queues resumed headless %s before agent_end returns", async (verdict) => {
 		await harness.command("ship it")
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		headless.setSession("session-a", [...harness.branch])
 		await headless.fire("session_start", { type: "session_start", reason: "resume" })
 		headless.setIdle(false)
@@ -3467,15 +3504,26 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.EVALUATED,
 			expect.not.objectContaining({ reason: expect.anything() }),
 		)
-		expect(harness.appendEntry).toHaveBeenCalledTimes(2)
-		// Verifier usage settles before the blocked verdict is committed.
+		// The degraded contract spends its claim-path retry before the verdict
+		// applies: retry marker, retry draft usage, verifier usage, then the
+		// blocked outcome.
+		expect(harness.appendEntry).toHaveBeenCalledTimes(4)
 		expect(harness.appendEntry.mock.calls[0]?.[1]).toMatchObject({
+			fermentV2: expect.objectContaining({ requirements: expect.objectContaining({ draftRetried: true }) }),
+		})
+		// Draft usage is cumulative: the startup draft plus the claim-path retry.
+		expect(harness.appendEntry.mock.calls[1]?.[1]).toMatchObject({
+			fermentV2: expect.objectContaining({
+				requirementsUsage: expect.objectContaining({ runs: 2 }),
+			}),
+		})
+		expect(harness.appendEntry.mock.calls[2]?.[1]).toMatchObject({
 			fermentV2: expect.objectContaining({
 				tokensUsed: 18,
 				verifierUsage: expect.objectContaining({ totalTokens: 18, runs: 1 }),
 			}),
 		})
-		expect(harness.appendEntry.mock.calls[1]?.[1]).toMatchObject({
+		expect(harness.appendEntry.mock.calls[3]?.[1]).toMatchObject({
 			fermentV2: { status: "blocked" },
 		})
 
@@ -3500,7 +3548,17 @@ describe("Ferment V2 extension", () => {
 			expect.objectContaining({ verdict: "unavailable", failureType: "no_model" }),
 		)
 		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused: No evaluator model is available.", "warning")
-		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
+		// The degraded contract spends its claim-path retry before the verdict
+		// applies: the retry marker commit, the retry draft's usage commit, then
+		// the paused evaluation outcome.
+		expect(harness.appendEntry).toHaveBeenCalledTimes(3)
+		expect(harness.appendEntry.mock.calls[0]?.[1]).toMatchObject({
+			fermentV2: expect.objectContaining({ requirements: expect.objectContaining({ draftRetried: true }) }),
+		})
+		// Draft usage is cumulative: the startup draft plus the claim-path retry.
+		expect(harness.appendEntry.mock.calls[1]?.[1]).toMatchObject({
+			fermentV2: expect.objectContaining({ requirementsUsage: expect.objectContaining({ runs: 2 }) }),
+		})
 	})
 
 	it("keeps evaluation details out of the transcript", async () => {
@@ -3593,7 +3651,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("blocks a headless edit until the Ferment V2 reaches a terminal state", async () => {
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		const create = headless.command("ship it")
 		await vi.waitFor(() => expect(headless.sendMessage).toHaveBeenCalledOnce())
 
@@ -4090,7 +4148,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "active", unchangedContinuationTurns: 2 })
 
 		const capturedBranch = [...harness.branch]
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 		resumed.sendMessage.mockClear()
@@ -4392,7 +4450,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("resolves a headless waiter when an agent-error continuation cannot be queued", async () => {
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		let resolved = false
 		const command = headless.command("keep going").then(() => {
 			resolved = true
@@ -4428,7 +4486,7 @@ describe("Ferment V2 extension", () => {
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 
 		const capturedBranch = [...harness.branch]
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 		resumed.sendMessage.mockClear()
@@ -4490,7 +4548,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.consecutiveErrorTurns).toBeUndefined()
 
 		const capturedBranch = [...harness.branch]
-		const resumed = createHarness()
+		const resumed = createHarness({ cwd })
 		resumed.setSession("session-a", capturedBranch)
 		await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 		resumed.sendMessage.mockClear()
@@ -4534,7 +4592,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("keeps a budget-limited headless command pending until the agent settles", async () => {
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		let resolved = false
 		const command = headless.command("--tokens 100 keep going").then(() => {
 			resolved = true
@@ -4588,7 +4646,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", tokenBudget: 100, tokensUsed: 100 })
 
 		const capturedBranch = [...harness.branch]
-		const headless = createHarness({ hasUI: false })
+		const headless = createHarness({ hasUI: false, cwd })
 		headless.setSession("session-a", capturedBranch)
 		await headless.fire("session_start", { type: "session_start", reason: "resume" })
 		expect(headless.sendMessage).not.toHaveBeenCalled()
@@ -4902,7 +4960,7 @@ describe("Ferment V2 extension", () => {
 			await harness.command("ship it")
 			const capturedBranch = [...harness.branch]
 
-			const resumed = createHarness()
+			const resumed = createHarness({ cwd })
 			resumed.setSession("session-a", capturedBranch)
 			resumed.setPendingMessagesError(new Error("This extension ctx is stale: session torn down"))
 
@@ -4991,7 +5049,7 @@ describe("Ferment V2 extension", () => {
 			const capturedBranch = [...harness.branch]
 
 			fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, autoResume: false })
-			const resumed = createHarness()
+			const resumed = createHarness({ cwd })
 			resumed.setSession("session-a", capturedBranch)
 			await resumed.fire("session_start", { type: "session_start", reason: "resume" })
 
@@ -5019,7 +5077,7 @@ async function gitForTests(cwd: string, args: readonly string[]): Promise<string
 	return stdout
 }
 
-function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
+function createHarness(options: { hasUI?: boolean; cwd: string }) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, CommandConfig>()
 	const tools = new Map<string, ToolConfig>()
@@ -5031,7 +5089,9 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 
 	let idleError: Error | undefined
 	let pendingMessagesError: Error | undefined
+	const commandContext = createCommandContext()
 	const ui = {
+		...commandContext.ui,
 		notify: vi.fn(),
 		confirm: vi.fn(async () => true),
 		editor: vi.fn(async (_title: string, value: string): Promise<string | undefined> => value),
@@ -5060,8 +5120,9 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 		events,
 		getActiveTools: vi.fn(() => activeTools),
 	} as unknown as ExtensionAPI
-	const ctx = {
-		cwd: options.cwd ?? process.cwd(),
+	const ctx: ExtensionCommandContext = {
+		...commandContext,
+		cwd: options.cwd,
 		hasUI: options.hasUI ?? true,
 		mode: "tui",
 		ui,
@@ -5084,15 +5145,16 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 			return pending
 		},
 		sessionManager: {
+			...commandContext.sessionManager,
 			getSessionId: () => sessionId,
 			getBranch: () => branch,
 			getEntries: () => branch,
 		},
-	} as unknown as ExtensionCommandContext
+	}
 
 	fermentV2Extension(pi)
 
-	return {
+	const harness = {
 		pi,
 		commands,
 		tools,
@@ -5175,6 +5237,8 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 			return entry?.type === "custom" ? (entry.data as FermentV2JournalEntry) : undefined
 		},
 	}
+	shutdownHarnesses.add(() => harness.fire("session_shutdown", { type: "session_shutdown" }))
+	return harness
 }
 
 function continuations(harness: ReturnType<typeof createHarness>): Array<{ content: string }> {

@@ -1,13 +1,19 @@
+import { createHash } from "node:crypto"
 import { describe, expect, it } from "vitest"
 import {
 	addFermentV2Accounting,
+	applyFermentV2Requirements,
+	applyFermentV2RequirementsAdditions,
 	clearFermentV2,
 	clearFermentV2Entry,
 	createFermentV2,
+	createPendingFermentV2Requirements,
 	editFermentV2,
 	markFermentV2EvaluatorModelWarned,
+	markFermentV2RequirementsRetried,
 	putFermentV2Entry,
 	recordFermentV2Evaluation,
+	recordFermentV2RequirementsUsage,
 	recordFermentV2VerifierUsage,
 	replaceFermentV2,
 	restoreFermentV2,
@@ -461,5 +467,572 @@ describe("Ferment V2 reducer", () => {
 				{ ...putFermentV2Entry(withUnchanged), fermentV2: { ...withUnchanged, consecutiveErrorTurns: Number.NaN } },
 			]),
 		).toEqual(withUnchanged)
+	})
+})
+
+describe("Ferment V2 requirements record", () => {
+	const ITEMS = [
+		{
+			id: "r1",
+			requirement: "The greeter returns hello",
+			source: "Objective: return hello",
+			acceptance: "Output equals hello",
+			category: "behavior" as const,
+		},
+	]
+	const digest = (text: string) => createHash("sha256").update(text, "utf8").digest("hex")
+
+	function pendingRecord(objectiveRevision = 1, baselineCommit?: string) {
+		return createPendingFermentV2Requirements({
+			objectiveRevision,
+			objectiveText: "ship the greeter",
+			objectiveDigest: digest("ship the greeter"),
+			...(baselineCommit ? { baselineCommit } : {}),
+			provenance: "pre_implementation",
+		})
+	}
+
+	it("creates a goal with a pending record and round-trips it through the journal", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"req-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		expect(run.requirements).toMatchObject({
+			schemaVersion: 1,
+			contractVersion: 0,
+			availability: "pending",
+			provenance: "pre_implementation",
+			items: [],
+			idWatermark: 0,
+			history: [],
+		})
+		expect(restoreFermentV2([putFermentV2Entry(run)])).toEqual(run)
+	})
+
+	it("parses old sessions without a record", () => {
+		const run = createFermentV2(undefined, "legacy goal", "legacy-run", T1)
+		const { requirements: _dropped, ...legacy } = run
+		expect(restoreFermentV2([putFermentV2Entry(legacy)])).toEqual(legacy)
+	})
+
+	it("drops an invalid or inconsistent record instead of rejecting the session entry", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"bad-record",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const cases = [
+			{ ...run, requirements: { ...pendingRecord(), schemaVersion: 2 } },
+			{ ...run, requirements: { ...pendingRecord(), objectiveDigest: "nothex" } },
+			{ ...run, requirements: { ...pendingRecord(), provenance: "candidate_informed" } },
+			{ ...run, requirements: { ...pendingRecord(), availability: "ready", items: [] } },
+			{ ...run, requirements: { ...pendingRecord(), objectiveRevision: 5 } },
+			{ ...run, requirements: { ...pendingRecord(), baselineCommit: "different" } },
+			{ ...run, requirements: undefined },
+		]
+		for (const broken of cases) {
+			const restored = restoreFermentV2([putFermentV2Entry(broken as typeof run)])
+			expect(restored).toBeDefined()
+			expect(restored?.requirements).toBeUndefined()
+		}
+	})
+
+	it("applies a ready draft behind the fence and appends accepted history", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"apply-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const applied = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+				actor: "requirements_draft",
+			},
+			T2,
+		)
+		expect(applied.requirements).toMatchObject({
+			availability: "ready",
+			contractVersion: 1,
+			idWatermark: 1,
+			items: ITEMS,
+			history: [{ version: 1, actor: "requirements_draft", objectiveRevision: 1 }],
+		})
+		expect(restoreFermentV2([putFermentV2Entry(applied)])).toEqual(applied)
+	})
+
+	it("applies final-review additions atomically with one history entry per accepted addition", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"additions-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const ready = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+				actor: "requirements_draft",
+			},
+			T2,
+		)
+		const first = { ...ITEMS[0], id: "r2", requirement: "The greeter also says goodbye" }
+		const second = { ...ITEMS[0], id: "r3", requirement: "The greeter logs each greeting" }
+		const withBoth = applyFermentV2RequirementsAdditions(
+			ready,
+			ready.id,
+			ready.revision,
+			1,
+			[
+				{ items: [first], reason: "Objective also requires goodbye", basedOnVersion: 1 },
+				{ items: [second], reason: "Objective also requires logging", basedOnVersion: 2 },
+			],
+			T3,
+		)
+		const record = withBoth.requirements
+		if (!record) throw new Error("missing record")
+		expect(record.contractVersion).toBe(3)
+		expect(record.items).toEqual([...ITEMS, first, second])
+		expect(record.idWatermark).toBe(3)
+		expect(record.history).toHaveLength(3)
+		expect(record.history[1]).toMatchObject({
+			version: 2,
+			items: [...ITEMS, first],
+			actor: "final_review",
+			reason: "Objective also requires goodbye",
+			objectiveRevision: 1,
+			acceptedAt: T3,
+		})
+		expect(record.history[2]).toMatchObject({ version: 3, items: [...ITEMS, first, second] })
+		expect(record.availability).toBe("ready")
+		expect(restoreFermentV2([putFermentV2Entry(withBoth)])).toEqual(withBoth)
+	})
+
+	it("rejects additions on stale fences: contract version, ferment revision, or a non-ready record", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"additions-fence",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const ready = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+			},
+			T2,
+		)
+		const added = { ...ITEMS[0], id: "r2", requirement: "An omitted obligation" }
+		const attempt = (overrides?: {
+			expectedRevision?: number
+			expectedVersion?: number
+			additions?: { items: typeof ITEMS; reason: string; basedOnVersion: number }[]
+		}) =>
+			applyFermentV2RequirementsAdditions(
+				ready,
+				ready.id,
+				overrides?.expectedRevision ?? ready.revision,
+				overrides?.expectedVersion ?? 1,
+				overrides?.additions ?? [{ items: [added], reason: "grounded", basedOnVersion: 1 }],
+				T3,
+			)
+		// A competing external update moved the contract version.
+		expect(() => attempt({ expectedVersion: 0 })).toThrow(/stale/)
+		// An objective edit (revision bump) invalidates the review.
+		expect(() => attempt({ expectedRevision: 2 })).toThrow(/expected Ferment V2 additions-fence revision 2/)
+		// A pending record cannot take additions.
+		expect(() =>
+			applyFermentV2RequirementsAdditions(
+				run,
+				run.id,
+				run.revision,
+				0,
+				[{ items: [added], reason: "grounded", basedOnVersion: 0 }],
+				T3,
+			),
+		).toThrow(/not ready/)
+		// An addition based on the wrong in-review version breaks the chain.
+		expect(() => attempt({ additions: [{ items: [added], reason: "grounded", basedOnVersion: 2 }] })).toThrow(
+			/version 2, but the review's contract is at version 1/,
+		)
+		// The record is unchanged after every rejection.
+		expect(ready.requirements?.contractVersion).toBe(1)
+	})
+
+	it("rejects invalid additions: missing reason, retired or colliding IDs, and the 64-item bound", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"additions-invalid",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const ready = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+			},
+			T2,
+		)
+		const attempt = (additions: { items: unknown[]; reason?: string; basedOnVersion?: number }[]) =>
+			applyFermentV2RequirementsAdditions(
+				ready,
+				ready.id,
+				ready.revision,
+				1,
+				additions.map((addition) => ({
+					items: addition.items,
+					reason: addition.reason ?? "grounded",
+					basedOnVersion: addition.basedOnVersion ?? 1,
+				})) as never,
+				T3,
+			)
+		expect(() => attempt([{ items: [{ ...ITEMS[0], id: "r2" }], reason: " " }])).toThrow(/source-grounded reason/)
+		// A retired ID (at or below the watermark, absent from the current items).
+		expect(() => attempt([{ items: [{ ...ITEMS[0], id: "r0" }] }])).toThrow()
+		// A colliding ID attempts to replace an existing criterion.
+		expect(() => attempt([{ items: [{ ...ITEMS[0], id: "r1", requirement: "weakened" }] }])).toThrow(
+			/cannot replace an existing criterion/,
+		)
+		// The 64-item bound.
+		const many = Array.from({ length: 64 }, (_, index) => ({ ...ITEMS[0], id: `r${index + 5}` }))
+		expect(() => attempt([{ items: many }])).toThrow(/cannot exceed 64 items/)
+		expect(ready.requirements?.items).toEqual(ITEMS)
+	})
+
+	it("rejects stale fences: wrong contract version, digest, or revision", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"fence-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const apply =
+			(overrides: Record<string, unknown>, expectedVersion = 0) =>
+			() =>
+				applyFermentV2Requirements(
+					run,
+					run.id,
+					1,
+					expectedVersion,
+					{
+						objectiveRevision: 1,
+						objectiveDigest: digest("ship the greeter"),
+						provenance: "pre_implementation",
+						availability: "ready",
+						items: ITEMS,
+						...overrides,
+					} as never,
+					T2,
+				)
+		expect(apply({}, 3)).toThrow(/expected contract version 3/)
+		expect(apply({ objectiveDigest: digest("other objective") })).toThrow(/different objective/)
+		expect(apply({ objectiveRevision: 2 })).toThrow(/different objective revision/)
+		expect(apply({}, 0)).not.toThrow()
+	})
+
+	it("an identical list on a ready record is an idempotent no-op; a different list never overwrites", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"idem-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const first = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+			},
+			T2,
+		)
+		const noOp = applyFermentV2Requirements(
+			first,
+			first.id,
+			1,
+			1,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS.map((item) => ({ ...item })),
+			},
+			T3,
+		)
+		expect(noOp).toBe(first)
+		expect(() =>
+			applyFermentV2Requirements(
+				first,
+				first.id,
+				1,
+				1,
+				{
+					objectiveRevision: 1,
+					objectiveDigest: digest("ship the greeter"),
+					provenance: "pre_implementation",
+					availability: "ready",
+					items: [...ITEMS, { ...ITEMS[0], id: "r2", requirement: "another" }],
+				},
+				T3,
+			),
+		).toThrow(/cannot replace it/)
+	})
+
+	it("enforces the ID watermark: stable IDs are kept, retired IDs are never reused", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"watermark-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const drafted = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: [ITEMS[0], { ...ITEMS[0], id: "r3", requirement: "third" }],
+			},
+			T2,
+		)
+		expect(drafted.requirements?.idWatermark).toBe(3)
+		// The objective edit invalidates the contract for verification but keeps
+		// the items and the watermark: a refresh may keep stable IDs and allocate
+		// fresh ones, never reuse a retired one.
+		const invalidated = editFermentV2(drafted, drafted.id, 1, "ship the shout", T3)
+		expect(() =>
+			applyFermentV2Requirements(
+				invalidated,
+				invalidated.id,
+				2,
+				1,
+				{
+					objectiveRevision: 1,
+					objectiveDigest: digest("ship the greeter"),
+					provenance: "baseline_recovery",
+					availability: "ready",
+					items: [{ ...ITEMS[0], id: "r2", requirement: "replacement" }],
+				},
+				T3,
+			),
+		).toThrow(/retired and cannot be reused/)
+		// Keeping stable IDs and allocating a fresh one is accepted.
+		const refreshed = applyFermentV2Requirements(
+			invalidated,
+			invalidated.id,
+			2,
+			1,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "baseline_recovery",
+				availability: "ready",
+				items: [
+					ITEMS[0],
+					{ ...ITEMS[0], id: "r3", requirement: "third" },
+					{ ...ITEMS[0], id: "r4", requirement: "fourth" },
+				],
+			},
+			T3,
+		)
+		expect(refreshed.requirements).toMatchObject({ contractVersion: 2, idWatermark: 4 })
+		expect(refreshed.requirements?.history).toHaveLength(2)
+	})
+
+	it("an unavailable result records the degraded state without touching history", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"degraded-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const failed = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "unavailable",
+				unavailableReason: "The drafter was cancelled.",
+			},
+			T2,
+		)
+		expect(failed.requirements).toMatchObject({
+			availability: "unavailable",
+			unavailableReason: "The drafter was cancelled.",
+			contractVersion: 0,
+			items: [],
+			history: [],
+		})
+		// A retry that succeeds moves the record to ready (one degraded retry).
+		const retried = applyFermentV2Requirements(
+			failed,
+			failed.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+			},
+			T3,
+		)
+		expect(retried.requirements).toMatchObject({ availability: "ready", contractVersion: 1 })
+	})
+
+	it("objective edits retain the record and its history but invalidate the contract", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"edit-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const ready = applyFermentV2Requirements(
+			run,
+			run.id,
+			1,
+			0,
+			{
+				objectiveRevision: 1,
+				objectiveDigest: digest("ship the greeter"),
+				provenance: "pre_implementation",
+				availability: "ready",
+				items: ITEMS,
+			},
+			T2,
+		)
+		const edited = editFermentV2(ready, ready.id, 1, "ship the shout", T3)
+		expect(edited.requirements).toMatchObject({
+			availability: "pending",
+			contractVersion: 1,
+		})
+		expect(edited.requirements).not.toHaveProperty("draftRetried")
+		expect(edited.requirements).not.toHaveProperty("unavailableReason")
+		expect(edited.requirements?.history).toHaveLength(1)
+		expect(edited.requirements?.items).toEqual(ITEMS)
+		expect(restoreFermentV2([putFermentV2Entry(edited)])).toEqual(edited)
+	})
+
+	it("marks the degraded retry once and folds stage usage", () => {
+		const run = createFermentV2(
+			undefined,
+			"ship the greeter",
+			"retry-run",
+			T1,
+			undefined,
+			undefined,
+			undefined,
+			pendingRecord(),
+		)
+		const marked = markFermentV2RequirementsRetried(run, run.id, 1, T2)
+		expect(marked.requirements?.draftRetried).toBe(true)
+		expect(markFermentV2RequirementsRetried(marked, marked.id, 1, T3)).toBe(marked)
+		const charged = recordFermentV2RequirementsUsage(
+			marked,
+			marked.id,
+			{ input: 4, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6, costUsd: 0.02 },
+			T3,
+		)
+		expect(charged.requirementsUsage).toEqual({
+			runs: 1,
+			input: 4,
+			output: 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 6,
+			costUsd: 0.02,
+		})
+		expect(restoreFermentV2([putFermentV2Entry(charged)])).toEqual(charged)
 	})
 })

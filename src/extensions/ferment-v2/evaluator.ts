@@ -45,10 +45,16 @@ import {
 	createRequirementLedger,
 	RECORD_REQUIREMENTS_TOOL,
 	REQUIREMENT_CATEGORIES,
+	type RequirementAddition,
 	type RequirementSnapshot,
 } from "./requirements.js"
 import { getFermentV2Settings } from "./settings.js"
-import type { FermentV2Baseline, FermentV2CompletionConfidence, FermentV2EvaluatorUsage } from "./types.js"
+import type {
+	FermentV2Baseline,
+	FermentV2CompletionConfidence,
+	FermentV2EvaluatorUsage,
+	FermentV2Requirements,
+} from "./types.js"
 import {
 	createVerifierGuard,
 	enforceWorkspaceIntegrity,
@@ -94,10 +100,17 @@ const TRANSIENT_FAILURE_REASONS = new Set(["rate_limit", "transport_failure", "s
  * Correction prompt for a verdict whose verification procedure is incomplete
  * (a behaviour passed on non-independent evidence, or a flagged pre-existing
  * test was never run in its baseline version): the verifier must do the
- * missing work with its tools, not just relabel the checks.
+ * missing work with its tools, not just relabel the checks. A seeded review
+ * cannot revise the persisted contract, so the correction points omissions at
+ * continue gaps instead.
  */
-const INCOMPLETE_PROCEDURE_CORRECTION_PROMPT =
-	"Host validation found the verification incomplete: {reason} Complete the missing steps with your tools: record or revise requirements when needed, and write and run the probes that are missing, and use run_original_test for flagged original tests. Then return exactly one JSON object matching the output contract, referencing requirementId and citing the [eN] results."
+function incompleteProcedureCorrectionPrompt(seeded: boolean): string {
+	return `Host validation found the verification incomplete: {reason} Complete the missing steps with your tools: ${
+		seeded
+			? "the persisted requirements contract can only gain omitted obligations here — call record_requirements with the current list verbatim plus the addition, a source-grounded reason, and the expected version; an existing item can never change or be removed, so report such a proposal as a continue gap naming the obligation and its objective source"
+			: "record or revise requirements when needed"
+	}, and write and run the probes that are missing, and use run_original_test for flagged original tests. Then return exactly one JSON object matching the output contract, referencing requirementId and citing the [eN] results.`
+}
 
 /**
  * Correction prompt for a verdict whose only defect is its citations — a
@@ -137,8 +150,21 @@ export type FermentV2EvaluatorVerdict = "continue" | "met" | "impossible"
 export interface FermentV2EvaluatorDiagnostics {
 	/** Initial requirements followed by source-grounded revisions, from this evaluator session. */
 	requirements?: readonly RequirementSnapshot[]
+	/** Version/provenance/availability of the persisted contract supplied to this run, when one exists. */
+	contractVersion?: number
+	contractProvenance?: string
+	contractAvailability?: string
+	/** The in-review contract version after this run's accepted additions (equal to contractVersion when none were accepted). */
+	finalContractVersion?: number
+	/** Additions this review accepted against the persisted contract, in acceptance order. */
+	contractAdditions?: readonly RequirementAddition[]
+	/** The ferment revision (objective revision) this evaluation ran against. */ objectiveRevision?: number
+	/** Why no established contract applied to this run (degraded outage or stale revision). */
+	contractUnavailable?: string
 	/** Full host validation gaps, including those summarized in the bounded correction prompt. */
 	validationGaps?: readonly string[]
+	/** Failed or unverifiable checks from correction rounds the final verdict superseded; an earlier failure never silently disappears. */
+	retainedChecks?: readonly FermentV2VerifierCheck[]
 	originalTests?: readonly OriginalTestReceipt[]
 	durationMs: number
 	timeoutMs: number
@@ -171,6 +197,8 @@ export type FermentV2EvaluationResult =
 			supportingEvidence?: readonly string[]
 			/** The host-gathered facts the verifier was given. */
 			facts?: FermentV2VerifierFacts
+			/** Additions this review accepted against the persisted contract; the host applies them when the review settles. */
+			contractAdditions?: readonly RequirementAddition[]
 	  }
 	| {
 			verdict: "unavailable"
@@ -189,6 +217,8 @@ export type FermentV2EvaluationResult =
 
 export interface FermentV2EvaluationInput {
 	objective: string
+	/** The ferment revision (objective revision) this evaluation runs against, for the report. */
+	objectiveRevision?: number
 	/** The verifier child session's working directory (the real working tree). */
 	cwd: string
 	/** The implementer's conversation — used only to derive the proposed final answer. */
@@ -199,6 +229,14 @@ export interface FermentV2EvaluationInput {
 	previousGap?: string
 	/** The ferment's baseline snapshot — the fixed point the facts, the flags, and the baseline worktree anchor to. */
 	baseline?: FermentV2Baseline
+	/**
+	 * The goal's persisted requirements contract, passed only when it is ready
+	 * and current for this objective revision. The verifier verifies it;
+	 * it never recreates or replaces it.
+	 */
+	requirements?: FermentV2Requirements
+	/** Why no established contract applies to this run (degraded outage or stale revision). */
+	requirementsUnavailable?: string
 	/** Kept failing probes from earlier verifier runs, flagged when modified or deleted. */
 	keptProbes?: readonly { path: string; requirementId: string }[]
 	/** Fired once when the verifier run starts (after model resolution), for status-line UX. */
@@ -719,6 +757,19 @@ function failingCheckReason(
 	return undefined
 }
 
+/** Retain the failed or unverifiable observations a correction supersedes, deduplicated by identity. */
+function retainFailedObservations(
+	round: readonly FermentV2VerifierCheck[] | undefined,
+	retained: FermentV2VerifierCheck[],
+): void {
+	for (const check of round ?? []) {
+		if (check.status === "pass") continue
+		const key = (item: FermentV2VerifierCheck) =>
+			`${item.requirementId ?? ""}\0${item.status}\0${item.failureMode ?? ""}\0${item.evidence.join(",")}`
+		if (!retained.some((prior) => key(prior) === key(check))) retained.push(check)
+	}
+}
+
 type ValidatedVerdict =
 	| { kind: "ok"; verdict: FermentV2EvaluatorVerdict; reason: string; acceptedFinalAnswer?: string }
 	| {
@@ -824,9 +875,15 @@ function validateParsedVerdict(
 		}
 	}
 	// A verdict with a failing check keeps the composed task-facing gap
-	// (requirement + observed error); without one the verifier's own
-	// summary stands.
-	return { kind: "ok", verdict: parsed.verdict, reason: failingCheckReason(parsed.checks, evidence) ?? parsed.reason }
+	// (requirement + observed error) AND the verifier's own summary: the
+	// summary can carry an amendment proposal or an independent explanation
+	// that the composition must not erase. Without a composed gap (no failing
+	// check cites a nonempty excerpt) the verifier's summary stands alone.
+	const composed = failingCheckReason(parsed.checks, evidence)
+	const own = parsed.reason
+	const reason =
+		composed === undefined || own === composed || composed.includes(own) ? (composed ?? own) : `${composed} — ${own}`
+	return { kind: "ok", verdict: parsed.verdict, reason }
 }
 
 /** Integrity outcome attached when the before-run snapshot failed: the verifier ran without the guard. */
@@ -882,6 +939,11 @@ export async function evaluateFermentV2(
 	let gatheredFacts: FermentV2VerifierFacts | undefined
 	let requirements: ReturnType<typeof createRequirementLedger> | undefined
 	const validationGaps: string[] = []
+	// Failed or unverifiable observations from correction rounds that the final
+	// verdict superseded: an earlier failure must survive a later pass — the
+	// retained checks (with their evidence citations) stay visible in the
+	// result's diagnostics so the reconciliation can be audited.
+	const retainedChecks: FermentV2VerifierCheck[] = []
 	let modelRef: string | undefined
 	let sameModelAsImplementer: boolean | undefined
 	let modelFallback: "session" | undefined
@@ -892,7 +954,23 @@ export async function evaluateFermentV2(
 		httpStatusCode?: number,
 	): FermentV2EvaluatorDiagnostics => ({
 		...(requirements?.history.length ? { requirements: requirements.history } : {}),
+		...(input.objectiveRevision !== undefined ? { objectiveRevision: input.objectiveRevision } : {}),
+		...(input.requirements
+			? {
+					contractVersion: input.requirements.contractVersion,
+					contractProvenance: input.requirements.provenance,
+					contractAvailability: input.requirements.availability,
+				}
+			: {}),
+		...(input.requirements?.availability === "ready" && requirements
+			? {
+					finalContractVersion: requirements.version(),
+					...(requirements.additions.length ? { contractAdditions: [...requirements.additions] } : {}),
+				}
+			: {}),
+		...(input.requirementsUnavailable ? { contractUnavailable: input.requirementsUnavailable } : {}),
 		...(validationGaps.length ? { validationGaps } : {}),
+		...(retainedChecks.length ? { retainedChecks: [...retainedChecks] } : {}),
 		...(guard
 			? {
 					originalTests: [...guard.evidence.values()].flatMap((item) => (item.originalTest ? [item.originalTest] : [])),
@@ -1067,7 +1145,7 @@ export async function evaluateFermentV2(
 			previousGap: input.previousGap,
 		})
 		let prompt = buildVerifierTaskPrompt({
-			objective: objectiveText(input.objective, ctx.cwd),
+			objective: input.requirements?.objectiveText ?? objectiveText(input.objective, ctx.cwd),
 			cwd: input.cwd,
 			facts,
 			...(reserved ? { baselineWorktree: reserved.path } : {}),
@@ -1075,6 +1153,17 @@ export async function evaluateFermentV2(
 			todos: input.todos,
 			...(proposedAnswer !== undefined ? { proposedAnswer } : {}),
 			...(input.previousGap ? { previousGap: input.previousGap } : {}),
+			...(input.requirements
+				? {
+						requirements: {
+							items: input.requirements.items,
+							contractVersion: input.requirements.contractVersion,
+							provenance: input.requirements.provenance,
+							idWatermark: input.requirements.idWatermark,
+						},
+					}
+				: {}),
+			...(input.requirementsUnavailable ? { requirementsUnavailable: input.requirementsUnavailable } : {}),
 		})
 		const timeoutSignal = evaluationTimeoutMs ? AbortSignal.timeout(evaluationTimeoutMs) : undefined
 		const runSignal = timeoutSignal
@@ -1117,7 +1206,20 @@ export async function evaluateFermentV2(
 			// child cannot prompt, so non-read-only commands go to the classifier).
 			// A transport retry starts a fresh session: it must record its own
 			// expectations and receive implementation context after acceptance.
-			requirements = createRequirementLedger(validationContext)
+			// A persisted ready contract is seeded: the session acknowledges it
+			// instead of recreating it.
+			const seeded = input.requirements?.availability === "ready" ? input.requirements.items : undefined
+			requirements = createRequirementLedger(
+				validationContext,
+				seeded
+					? {
+							seeded,
+							seededReason: `persisted contract v${input.requirements?.contractVersion} (${input.requirements?.provenance})`,
+							seededVersion: input.requirements?.contractVersion,
+							idWatermark: input.requirements?.idWatermark,
+						}
+					: undefined,
+			)
 			run = await spawn({
 				model,
 				prompt,
@@ -1239,8 +1341,12 @@ export async function evaluateFermentV2(
 			: { kind: "correct", reason: "no valid JSON verdict was returned.", failureType: "invalid_output" }
 		if (validated.kind === "correct") {
 			correctionCount++
+			// The corrected verdict replaces this round's checks; retain its failed
+			// or unverifiable observations first — a later pass never silently
+			// erases what was observed.
+			retainFailedObservations(parsed?.checks, retainedChecks)
 			const correctionPrompt = validated.procedure
-				? INCOMPLETE_PROCEDURE_CORRECTION_PROMPT
+				? incompleteProcedureCorrectionPrompt(input.requirements !== undefined)
 				: validated.citation
 					? CITATION_REPAIR_CORRECTION_PROMPT
 					: INVALID_OUTPUT_CORRECTION_PROMPT
@@ -1279,8 +1385,20 @@ export async function evaluateFermentV2(
 						failureType: "invalid_output",
 					}
 			if (validated.kind === "correct") {
+				// The run ends unavailable without carrying checks: retain this
+				// round's failed observations too, so they stay auditable.
+				retainFailedObservations(reparsed?.checks, retainedChecks)
 				return unavailable(`Verifier ${modelRef} ${validated.reason}`, validated.failureType)
 			}
+		}
+
+		// Existing unavailability policy: without a ready, current contract a
+		// met verdict cannot be certified, whatever the checks say.
+		if (validated.verdict === "met" && input.requirementsUnavailable) {
+			return unavailable(
+				`Completion cannot be certified: ${input.requirementsUnavailable} A met verdict requires a ready requirements contract for the current objective.`,
+				"requirements_unavailable",
+			)
 		}
 
 		return {
@@ -1292,6 +1410,7 @@ export async function evaluateFermentV2(
 			...(validated.acceptedFinalAnswer ? { acceptedFinalAnswer: validated.acceptedFinalAnswer } : {}),
 			...(checks ? { checks } : {}),
 			...(supportingEvidence ? { supportingEvidence } : {}),
+			...(recordedRequirements?.additions.length ? { contractAdditions: [...recordedRequirements.additions] } : {}),
 			...baseResultFields(),
 		}
 	}

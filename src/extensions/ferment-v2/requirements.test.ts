@@ -114,3 +114,200 @@ describe("evaluator requirements", () => {
 		expect(ledger.history).toHaveLength(1)
 	})
 })
+
+describe("seeded evaluator requirements (persisted contract)", () => {
+	async function setupSeeded() {
+		const ledger = createRequirementLedger("Implementation context: seeded claim", {
+			seeded: [requirement],
+			seededReason: "persisted contract v2 (pre implementation)",
+			seededVersion: 2,
+			idWatermark: 1,
+		})
+		const child = createExtensionApi()
+		await ledger.extension(child.api)
+		const tool = child.getRegisteredTool(RECORD_REQUIREMENTS_TOOL)
+		return {
+			ledger,
+			record: (requirements = [requirement], options?: { reason?: string; expectedVersion?: number }) =>
+				tool.execute(
+					"record",
+					{
+						requirements,
+						...(options?.reason ? { reason: options.reason } : {}),
+						...(options?.expectedVersion !== undefined ? { expectedVersion: options.expectedVersion } : {}),
+					},
+					undefined,
+					undefined,
+					createContext(),
+				),
+		}
+	}
+
+	it("starts with the persisted list in history and coverage", async () => {
+		const { ledger } = await setupSeeded()
+		expect(ledger.history).toEqual([
+			{ requirements: [requirement], reason: "persisted contract v2 (pre implementation)" },
+		])
+		expect(ledger.baseVersion).toBe(2)
+		expect(ledger.version()).toBe(2)
+		expect(ledger.additions).toEqual([])
+		expect(ledger.coverageGap([])).toContain("r1")
+		expect(ledger.coverageGap([{ requirementId: "r1", category: "behavior" }])).toBeUndefined()
+		expect(ledger.category("r1")).toBe("behavior")
+	})
+
+	it("acknowledges the identical list, releasing the implementation context", async () => {
+		const { record } = await setupSeeded()
+		const acknowledged = JSON.stringify(await record())
+		expect(acknowledged).toContain("acknowledged")
+		expect(acknowledged).toContain("seeded claim")
+	})
+
+	it("cannot replace, weaken, recategorize, or remove an existing criterion", async () => {
+		const { ledger, record } = await setupSeeded()
+		for (const list of [
+			[{ ...requirement, requirement: "A weakened obligation" }],
+			[{ ...requirement, category: "constraint" as const }],
+			[{ ...requirement, acceptance: "Anything counts" }],
+		]) {
+			const rejected = await record(list, { reason: "attempted rewrite" })
+			expect(rejected).toMatchObject({ isError: true })
+		}
+		const removal = await record([{ ...requirement, id: "r2", requirement: "A different obligation" }], {
+			reason: "replacing r1",
+		})
+		expect(removal).toMatchObject({ isError: true })
+		expect(JSON.stringify(removal)).toContain("continue")
+		expect(JSON.stringify(removal)).toContain("cannot change, weaken, recategorize, or remove")
+		// A removal submitted alone is equally rejected: r1 must stay.
+		const dropSeeded = await record([{ ...requirement, id: "r2", requirement: "Another obligation" }], {
+			reason: "dropping r1",
+		})
+		expect(dropSeeded).toMatchObject({ isError: true })
+		expect(ledger.history).toHaveLength(1)
+		expect(ledger.additions).toEqual([])
+	})
+
+	it("adds an omitted obligation with a fresh ID, a source-grounded reason, and the expected version", async () => {
+		const { ledger, record } = await setupSeeded()
+		const added = { ...requirement, id: "r2", requirement: "An omitted obligation" }
+		const accepted = await record([requirement, added], {
+			reason: "Objective also requires the report to be deterministic",
+			expectedVersion: 2,
+		})
+		expect(accepted).not.toMatchObject({ isError: true })
+		expect(JSON.stringify(accepted)).toContain("Addition accepted: r2")
+		expect(JSON.stringify(accepted)).toContain("seeded claim")
+		expect(ledger.history).toHaveLength(2)
+		expect(ledger.history[1]).toEqual({
+			requirements: [requirement, added],
+			reason: "Objective also requires the report to be deterministic",
+		})
+		expect(ledger.additions).toEqual([
+			{
+				items: [added],
+				reason: "Objective also requires the report to be deterministic",
+				basedOnVersion: 2,
+			},
+		])
+		expect(ledger.version()).toBe(3)
+		// The addition is in coverage immediately: it needs its own outcome.
+		expect(ledger.coverageGap([{ requirementId: "r1" }])).toContain("r2")
+		expect(ledger.coverageGap([{ requirementId: "r1" }, { requirementId: "r2" }])).toBeUndefined()
+		expect(ledger.category("r2")).toBe("behavior")
+	})
+
+	it("rejects an addition without a reason, without the expected version, or with the wrong version", async () => {
+		const { ledger, record } = await setupSeeded()
+		const added = { ...requirement, id: "r2", requirement: "An omitted obligation" }
+		expect(await record([requirement, added])).toMatchObject({ isError: true })
+		expect(await record([requirement, added], { reason: "grounded" })).toMatchObject({ isError: true })
+		expect(await record([requirement, added], { reason: "grounded", expectedVersion: 1 })).toMatchObject({
+			isError: true,
+		})
+		expect(await record([requirement, added], { reason: "grounded", expectedVersion: 3 })).toMatchObject({
+			isError: true,
+		})
+		expect(ledger.history).toHaveLength(1)
+		expect(ledger.additions).toEqual([])
+	})
+
+	it("rejects retired or colliding IDs and enforces the 64-item bound", async () => {
+		const seeded = Array.from({ length: 63 }, (_, index) => ({
+			...requirement,
+			id: `r${index + 1}`,
+			requirement: `Obligation ${index + 1}`,
+		}))
+		const ledger = createRequirementLedger("context", {
+			seeded,
+			seededVersion: 1,
+			idWatermark: 70,
+		})
+		const child = createExtensionApi()
+		await ledger.extension(child.api)
+		const tool = child.getRegisteredTool(RECORD_REQUIREMENTS_TOOL)
+		const call = (requirements: VerifierRequirement[], expectedVersion = 1, reason = "grounded") =>
+			tool.execute("record", { requirements, reason, expectedVersion }, undefined, undefined, createContext())
+		// A fresh-looking ID at or below the watermark is a retired ID: rejected.
+		const retired = await call([...seeded, { ...requirement, id: "r64" }])
+		expect(retired).toMatchObject({ isError: true })
+		expect(JSON.stringify(retired)).toContain("fresh requirement IDs above r70")
+		// Beyond the 64-item bound: the parser rejects the list outright.
+		const overflowing = await call([...seeded, { ...requirement, id: "r100" }, { ...requirement, id: "r101" }])
+		expect(overflowing).toMatchObject({ isError: true })
+		expect(ledger.additions).toEqual([])
+	})
+
+	it("accepts a chained addition against the version the first acceptance produced", async () => {
+		const { ledger, record } = await setupSeeded()
+		const first = { ...requirement, id: "r2", requirement: "First omitted obligation" }
+		await record([requirement, first], { reason: "Objective clause A", expectedVersion: 2 })
+		// A further addition must state the in-review version the first produced;
+		// resubmitting the identical list is an acknowledgement, so the version
+		// fence is tested with a list that grows.
+		expect(
+			await record([requirement, first, { ...requirement, id: "r9", requirement: "Another" }], {
+				reason: "stale version",
+				expectedVersion: 2,
+			}),
+		).toMatchObject({ isError: true })
+		const second = { ...requirement, id: "r3", requirement: "Second omitted obligation" }
+		const accepted = await record([requirement, first, second], {
+			reason: "Objective clause B",
+			expectedVersion: 3,
+		})
+		expect(accepted).not.toMatchObject({ isError: true })
+		expect(ledger.version()).toBe(4)
+		expect(ledger.additions).toEqual([
+			{ items: [first], reason: "Objective clause A", basedOnVersion: 2 },
+			{ items: [second], reason: "Objective clause B", basedOnVersion: 3 },
+		])
+		// The acknowledgement after additions compares against the grown list.
+		expect(JSON.stringify(await record([first, requirement, second]))).not.toContain("isError")
+		expect(ledger.history).toHaveLength(3)
+	})
+
+	it("rejects a chained addition below an ID this review already allocated", async () => {
+		const { ledger, record } = await setupSeeded()
+		const first = { ...requirement, id: "r3", requirement: "First omitted obligation" }
+		await record([requirement, first], { reason: "Objective clause A", expectedVersion: 2 })
+		// r2 was never allocated, but this review already allocated r3: the host
+		// would reject r2 at settle time, so the ledger rejects it immediately
+		// instead of accepting an addition that cannot persist.
+		const descending = await record(
+			[requirement, first, { ...requirement, id: "r2", requirement: "Below the allocation" }],
+			{ reason: "Objective clause B", expectedVersion: 3 },
+		)
+		expect(descending).toMatchObject({ isError: true })
+		expect(JSON.stringify(descending)).toContain("above r3")
+		expect(ledger.additions).toEqual([{ items: [first], reason: "Objective clause A", basedOnVersion: 2 }])
+		// An ID above the running allocation still applies.
+		const second = { ...requirement, id: "r4", requirement: "Second omitted obligation" }
+		const accepted = await record([requirement, first, second], {
+			reason: "Objective clause B",
+			expectedVersion: 3,
+		})
+		expect(accepted).not.toMatchObject({ isError: true })
+		expect(ledger.additions).toHaveLength(2)
+	})
+})

@@ -16,7 +16,11 @@ import {
 	originalTestVerificationResponses,
 	seedOriginalTestRepository,
 } from "../e2e/tui/support/ferment-v2-original-test.js"
-import { verifierRequirements } from "../e2e/tui/support/ferment-v2-verifier.js"
+import {
+	draftRequirements,
+	isRequirementsDraftRequest,
+	verifierRequirements,
+} from "../e2e/tui/support/ferment-v2-verifier.js"
 
 const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
@@ -49,6 +53,7 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 	await withFermentV2PrintFixture(
 		{
 			responses: [
+				...draftContractResponses("Reply exactly NO_TODO_DRAFT", "delivery"),
 				{
 					stream: ["Creating the Todo."],
 					toolCalls: [
@@ -103,7 +108,7 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 			expect(result.stdout, failure).toBe("NO_TODO_DRAFT\n")
 			expect(readFermentV2Journal(sessionPath).at(-1)?.status, failure).toBe("complete")
 			const chatRequests = fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
-			expect(chatRequests, failure).toHaveLength(8)
+			expect(chatRequests, failure).toHaveLength(10)
 			expect(chatRequests.filter(isFermentV2VerifierRequest), failure).toHaveLength(4)
 			expect(JSON.stringify(chatRequests.at(-2)?.body), failure).toContain("no valid JSON verdict was returned")
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).toContain(
@@ -121,7 +126,15 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 		async ({ fake, homeDir, workDir, sessionPath }) => {
 			const result = await runFermentV2Print(homeDir, workDir, sessionPath)
 			const fermentV2Runs = readFermentV2Journal(sessionPath)
-			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
+			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}\nrequests=${fake.requests
+				.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+				.map((request) => {
+					const messages = (request.body as { messages?: Array<{ role: string; content: unknown }> }).messages ?? []
+					const last = messages.at(-1)
+					const tools = JSON.stringify(last ?? {}).slice(0, 200)
+					return `[${JSON.stringify(request.body).includes("<ferment_v2_requirements_draft>") ? "draft" : JSON.stringify(request.body).includes("<ferment_v2_verifier>") ? "verifier" : "main"}:${last?.role ?? "?"}:${tools}:URL=${request.url}]`
+				})
+				.join("")}`
 
 			expect(result.timedOut, failure).toBe(false)
 			expect(result.code, failure).toBe(0)
@@ -141,7 +154,7 @@ it("keeps --print alive across continue and exits only after Ferment V2 evaluate
 				"UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN",
 			)
 			expect(JSON.stringify(chatRequests.at(-1)?.body), failure).not.toContain("Return this evaluated draft verbatim")
-			expect(chatRequests, failure).toHaveLength(11)
+			expect(chatRequests, failure).toHaveLength(13)
 		},
 	)
 })
@@ -188,7 +201,7 @@ it("exits --print with code 0 when the verifier returns no parseable verdict, in
 			expect(
 				fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),
 				failure,
-			).toHaveLength(6)
+			).toHaveLength(8)
 		},
 	)
 })
@@ -267,7 +280,7 @@ it("exits --print after update_ferment_v2 blocked persists final turn usage", { 
 			expect(result.code, failure).toBe(0)
 			expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
 			expect(fermentV2Runs.at(-1)?.tokensUsed, failure).toBe(10)
-			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(1)
+			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(3)
 		},
 	)
 })
@@ -278,6 +291,7 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 		{
 			models,
 			responses: [
+				...draftContractResponses(),
 				{
 					toolCalls: [
 						{
@@ -308,7 +322,7 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 			expect(fermentV2Runs.at(-1), failure).toMatchObject({ status: "budget_limited", tokensUsed: 10 })
 			expect(result.stdout, failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
 			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_POST_BUDGET_OUTPUT")
-			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(2)
+			expect(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))).toHaveLength(4)
 			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("This extension ctx is stale")
 			expect(`${result.stdout}\n${result.stderr}`, failure).not.toContain("Extension error")
 		},
@@ -463,6 +477,7 @@ function resumedActiveFermentV2CompletionResponses(): FakeResponseScript[] {
 
 function blockedFermentV2Responses() {
 	return [
+		...draftContractResponses(),
 		{
 			toolCalls: [
 				{
@@ -550,6 +565,7 @@ function fermentV2Responses(
 	finalAnswer: FakeResponseScript = { stream: ["VERIFIED_FINAL_AFTER_EVALUATION"] },
 ): FakeResponseScript[] {
 	return [
+		...draftContractResponses(),
 		{
 			stream: ["Creating the Todo."],
 			toolCalls: [
@@ -619,6 +635,20 @@ function isFermentV2VerifierRequest(request: FakeResponseRequest): boolean {
 }
 
 /** First verifier turn: one executing bash check whose result the guard stamps as [e1]. */
+function draftContractResponses(
+	requirement = "Complete the requested task",
+	category: "behavior" | "constraint" | "delivery" = "behavior",
+): FakeResponseScript[] {
+	// The drafter records exactly the item shape the seeded verifier later
+	// acknowledges, so the persisted contract and the ack are identical.
+	return [
+		draftRequirements([
+			{ id: "r1", requirement, source: `Objective: ${requirement}`, acceptance: requirement, category },
+		]),
+		{ match: isRequirementsDraftRequest, stream: ["The requirements are recorded."] },
+	]
+}
+
 function verifierBashCheck(
 	id: string,
 	requirement = "Complete the requested task",
@@ -641,6 +671,7 @@ function verifierResponse(text: string): FakeResponseScript {
 
 function unparseableEvaluatorResponses() {
 	return [
+		...draftContractResponses(),
 		{
 			stream: ["Creating the Todo."],
 			toolCalls: [

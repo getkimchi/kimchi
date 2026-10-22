@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { readFileSync } from "node:fs"
 import type {
 	AgentEndEvent,
 	ExtensionAPI,
@@ -42,8 +43,10 @@ import {
 import {
 	FERMENT_V2_EVENTS,
 	type FermentV2EvaluatedPayload,
+	type FermentV2EvaluatorFailureType,
 	type FermentV2EventName,
 	type FermentV2LifecyclePayload,
+	type FermentV2RequirementsPayload,
 } from "./domain-events.js"
 import { evaluateFermentV2, type FermentV2EvaluationResult } from "./evaluator.js"
 import {
@@ -72,15 +75,20 @@ import {
 } from "./prompt.js"
 import {
 	addFermentV2Accounting,
+	applyFermentV2Requirements,
+	applyFermentV2RequirementsAdditions,
 	clearFermentV2,
 	clearFermentV2Entry,
 	createFermentV2,
+	createPendingFermentV2Requirements,
 	editFermentV2,
 	type FermentV2State,
 	isRecord,
 	markFermentV2EvaluatorModelWarned,
+	markFermentV2RequirementsRetried,
 	putFermentV2Entry,
 	recordFermentV2Evaluation,
+	recordFermentV2RequirementsUsage,
 	recordFermentV2VerifierUsage,
 	replaceFermentV2,
 	restoreFermentV2,
@@ -88,6 +96,8 @@ import {
 	setFermentV2Status,
 	setFermentV2UnchangedContinuationTurns,
 } from "./reducer.js"
+import { digestFermentV2ObjectiveText } from "./requirements.js"
+import { type FermentV2RequirementsDraftOutcome, runFermentV2RequirementsDraft } from "./requirements-agent.js"
 import {
 	deriveContinuationDecision,
 	deriveHostContinuationDecision,
@@ -107,6 +117,7 @@ import {
 	type FermentV2Baseline,
 	type FermentV2CompletionConfidence,
 	type FermentV2Evaluation,
+	type FermentV2Requirements,
 	type PendingFermentV2Continuation,
 	type SessionFermentV2,
 } from "./types.js"
@@ -149,6 +160,8 @@ type PreparedFermentV2Evaluation = {
 	startFingerprint: string | undefined
 	abort: AbortController
 	result: FermentV2EvaluationResult
+	/** The evaluationCount this review claimed at start ((count at start) + 1); a newer recorded result invalidates it. */
+	evaluationCount: number
 }
 const FERMENT_V2_TOOL_NAME_SET = new Set<string>(FERMENT_V2_TOOL_NAMES)
 
@@ -206,6 +219,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	// must treat an in-flight evaluation as busy.
 	let evaluationAbort: AbortController | undefined
 	let evaluationSettled: Promise<void> | undefined
+	// The in-flight requirements draft, fenced the same way as the evaluation:
+	// user mutations abort it, stale results cannot apply, usage settles once.
+	let requirementsDraftAbort: AbortController | undefined
+	let requirementsDraftSettled: Promise<void> | undefined
+	// Marker for the first implementer turn of the current goal, so a later
+	// re-draft can honestly report provenance (pre-implementation vs recovery).
+	let implementationStartedMarker: PendingFermentV2Continuation | undefined
 	let preparedEvaluation: PreparedFermentV2Evaluation | undefined
 	let releaseEvaluationWorkingIndicator: (() => void) | undefined
 	let releasePromptSummaryHold: (() => void) | undefined
@@ -266,6 +286,24 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		})
 	}
 
+	/** Failure types whose root cause is an incomplete verification procedure rather than a product defect or infrastructure. */
+	const PROCEDURE_FAILURE_TYPES: ReadonlySet<string> = new Set([
+		"procedure_incomplete",
+		"uncited_verdict",
+		"invalid_output",
+		"truncated_output",
+	])
+
+	/** The distinct outcome class of a non-terminal evaluation: a product defect, an incomplete verification procedure, or an infrastructure failure. */
+	function evaluationOutcome(
+		verdict: FermentV2EvaluatedPayload["verdict"],
+		failureType: FermentV2EvaluatorFailureType | undefined,
+	): FermentV2EvaluatedPayload["outcome"] {
+		if (verdict === "met" || verdict === "impossible") return undefined
+		if (verdict === "continue") return "defect"
+		return failureType && PROCEDURE_FAILURE_TYPES.has(failureType) ? "procedure" : "infrastructure"
+	}
+
 	function emitFermentV2Evaluation(
 		target: Pick<FermentV2EvaluatedPayload, "sessionId" | "fermentV2Id" | "revision" | "status">,
 		result: FermentV2EvaluationResult,
@@ -282,12 +320,15 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			timeoutCount: 0,
 			correctionCount: 0,
 		}
+		const verdict = override?.verdict ?? result.verdict
+		const failureType = override?.failureType ?? diagnostics.failureType
+		const outcome = evaluationOutcome(verdict, failureType)
 		pi.events.emit(FERMENT_V2_EVENTS.EVALUATED, {
 			sessionId: target.sessionId,
 			fermentV2Id: target.fermentV2Id,
 			revision: target.revision,
 			status: target.status,
-			verdict: override?.verdict ?? result.verdict,
+			verdict,
 			count,
 			model: result.model,
 			...(result.sameModelAsImplementer ? { sameModelAsImplementer: true } : {}),
@@ -302,9 +343,19 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			...(diagnostics.turns !== undefined ? { turns: diagnostics.turns } : {}),
 			...(result.integrity?.restored.length ? { restoredFiles: result.integrity.restored } : {}),
 			...(result.integrity?.removed.length ? { removedFiles: result.integrity.removed } : {}),
-			...(override?.failureType || diagnostics.failureType
-				? { failureType: override?.failureType ?? diagnostics.failureType }
+			...(diagnostics.contractVersion !== undefined ? { initialContractVersion: diagnostics.contractVersion } : {}),
+			...(diagnostics.finalContractVersion !== undefined
+				? { finalContractVersion: diagnostics.finalContractVersion }
 				: {}),
+			...(diagnostics.contractAdditions?.length
+				? {
+						contractAdditions: diagnostics.contractAdditions.flatMap((addition) =>
+							addition.items.map((item) => item.id),
+						),
+					}
+				: {}),
+			...(outcome ? { outcome } : {}),
+			...(failureType ? { failureType } : {}),
 			...(diagnostics.httpStatusCode !== undefined ? { httpStatusCode: diagnostics.httpStatusCode } : {}),
 		})
 	}
@@ -415,6 +466,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		continuationBaselineFingerprint = undefined
 		substantiveToolUseSinceEvaluation = false
 		activeSinceMs = undefined
+		implementationStartedMarker = undefined
 	}
 
 	function bindSession(ctx: ExtensionContext): string {
@@ -429,6 +481,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		currentContext = ctx
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
 		void abortEvaluation()
+		void abortRequirementsDraft()
 		const previousSessionId = currentSessionId
 		// Preserve a pending continuation only for the same session, then revalidate it
 		// against the replayed Ferment V2 below.
@@ -488,6 +541,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (!sessionId || current?.status !== "active" || getPermissionMode(sessionId)?.mode !== "plan") return
 
 		void abortEvaluation()
+		void abortRequirementsDraft()
 		const nowMs = Date.now()
 		const accounted = checkpointFermentV2(current, 0, nowMs)
 		const paused = setFermentV2Status(accounted, current.id, current.revision, "paused", timestamp(nowMs))
@@ -934,7 +988,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function fermentV2IsBusy(ctx: ExtensionContext): boolean {
-		return Boolean(evaluationAbort) || agentTurnIsBusy(ctx)
+		return Boolean(evaluationAbort) || Boolean(requirementsDraftAbort) || agentTurnIsBusy(ctx)
 	}
 
 	/**
@@ -962,6 +1016,299 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return evaluationSettled ?? Promise.resolve()
 	}
 
+	function abortRequirementsDraft(): Promise<void> {
+		requirementsDraftAbort?.abort()
+		return requirementsDraftSettled ?? Promise.resolve()
+	}
+
+	/** Whether any implementer turn already ran for this goal in this runtime. */
+	function implementationStarted(fermentV2: SessionFermentV2): boolean {
+		return implementationStartedMarker?.fermentV2Id === fermentV2.id
+	}
+
+	/**
+	 * Bootstrap the durable requirements record on a legacy goal (or a goal
+	 * whose record was dropped as invalid) at a safe checkpoint: a pending
+	 * record targeting the current objective, drafted with recovery provenance.
+	 */
+	async function bootstrapRequirementsRecord(
+		ctx: ExtensionContext,
+		sessionId: string,
+		fermentV2: SessionFermentV2,
+	): Promise<SessionFermentV2> {
+		return serializeFermentV2Mutation(sessionId, () => {
+			const current = currentFermentV2
+			if (!current || current.id !== fermentV2.id || current.revision !== fermentV2.revision)
+				return current ?? fermentV2
+			if (current.requirements) return current
+			const objective = resolveObjectiveContractText(current.objective, ctx.cwd)
+			const withRecord: SessionFermentV2 = {
+				...current,
+				requirements: createPendingFermentV2Requirements({
+					objectiveRevision: current.revision,
+					objectiveText: objective,
+					objectiveDigest: digestFermentV2ObjectiveText(objective),
+					...(current.baseline ? { baselineCommit: current.baseline.commit } : {}),
+					provenance: "objective_only",
+				}),
+				updatedAt: timestamp(),
+			}
+			commitFermentV2(withRecord)
+			return withRecord
+		})
+	}
+
+	function emitFermentV2Requirements(fermentV2: SessionFermentV2): void {
+		const record = fermentV2.requirements
+		if (!record) return
+		pi.events.emit(FERMENT_V2_EVENTS.REQUIREMENTS, {
+			fermentV2Id: fermentV2.id,
+			revision: fermentV2.revision,
+			availability: record.availability,
+			...(record.availability === "pending" ? {} : { provenance: record.provenance }),
+			...(record.contractVersion > 0 ? { contractVersion: record.contractVersion } : {}),
+			...(record.unavailableReason ? { reason: record.unavailableReason } : {}),
+		} satisfies FermentV2RequirementsPayload)
+	}
+
+	/** The exact resolved objective text a contract (or a new one) targets. */
+	function resolveObjectiveContractText(objective: string, cwd: string): string {
+		try {
+			return objectiveText(objective, cwd)
+		} catch {
+			// An unreadable objective file (untrusted project, deleted file) is
+			// drafted from the raw reference text — degraded, but honest.
+			return objective
+		}
+	}
+
+	function fermentV2PlanText(fermentV2: SessionFermentV2): string | undefined {
+		const presentation = fermentV2.presentation
+		if (presentation?.kind !== "approved-plan") return undefined
+		if (presentation.planText) return presentation.planText
+		if (!presentation.planPath || !currentContext) return undefined
+		try {
+			return new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(presentation.planPath))
+		} catch {
+			return undefined
+		}
+	}
+
+	/**
+	 * The fence a draft application must still match: goal identity, revision,
+	 * the objective digest it targets, and the contract version it may settle.
+	 * Pending and unavailable records both accept a settled draft (the claim
+	 * path retries an unavailable contract once); a ready record accepts
+	 * nothing new.
+	 */
+	function requirementsDraftFence(fermentV2: SessionFermentV2):
+		| {
+				sessionId: string
+				fermentV2Id: string
+				revision: number
+				objectiveDigest: string
+				contractVersion: number
+		  }
+		| undefined {
+		const record = fermentV2.requirements
+		if (!record || record.availability === "ready") return undefined
+		return {
+			sessionId: currentSessionId ?? "",
+			fermentV2Id: fermentV2.id,
+			revision: fermentV2.revision,
+			objectiveDigest: record.objectiveDigest,
+			contractVersion: record.contractVersion,
+		}
+	}
+
+	/**
+	 * Settle one draft run's usage against the ferment that ran it, exactly
+	 * once, matched by id only (status/revision may legitimately have moved
+	 * on). Then apply the result to the requirements record behind the fence;
+	 * a stale result is discarded after its usage is settled.
+	 */
+	async function settleAndApplyRequirementsDraft(
+		ctx: ExtensionContext,
+		sessionId: string,
+		fence: {
+			fermentV2Id: string
+			revision: number
+			objectiveDigest: string
+			contractVersion: number
+		},
+		outcome: FermentV2RequirementsDraftOutcome,
+		source: string,
+	): Promise<void> {
+		await serializeFermentV2Mutation(sessionId, () => {
+			const current = currentFermentV2
+			if (!current || current.id !== fence.fermentV2Id) return
+			const now = timestamp()
+			let accounted = current
+			if (outcome.usage.totalTokens > 0 || outcome.diagnostics.durationMs > 0) {
+				accounted = addFermentV2Accounting(
+					accounted,
+					accounted.id,
+					outcome.usage.totalTokens,
+					outcome.diagnostics.durationMs,
+					now,
+				)
+			}
+			accounted = recordFermentV2RequirementsUsage(accounted, accounted.id, outcome.usage, now)
+			let updated = accounted
+			try {
+				updated = applyFermentV2Requirements(
+					accounted,
+					fence.fermentV2Id,
+					fence.revision,
+					fence.contractVersion,
+					{
+						objectiveRevision: outcome.objectiveRevision,
+						objectiveDigest: outcome.objectiveDigest,
+						provenance: outcome.provenance,
+						availability: outcome.status === "ready" ? "ready" : "unavailable",
+						...(outcome.items ? { items: outcome.items } : {}),
+						...(outcome.unavailableReason ? { unavailableReason: outcome.unavailableReason } : {}),
+						actor: source,
+					},
+					now,
+				)
+			} catch {
+				// Stale result (revision moved, contract settled elsewhere, digest
+				// mismatch): usage is settled; the record is left as-is.
+				updated = accounted
+			}
+			if (updated !== current) commitFermentV2(updated)
+			emitFermentV2Requirements(updated)
+			if (current.status === "active" && accounted.status === "budget_limited") {
+				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.BUDGET_LIMITED, accounted, { reason: "token_budget" })
+				invalidateContinuation()
+				ctx.ui.notify(
+					`${displayName(accounted)} stopped after reaching its ${formatCount(accounted.tokenBudget ?? 0)} token budget.`,
+					"warning",
+				)
+			}
+		})
+	}
+
+	/**
+	 * Run one bounded requirements draft outside the user-mutation lock and
+	 * settle/apply it behind the captured fence. Resolves when the record has
+	 * settled (ready or unavailable) or the result was discarded as stale.
+	 */
+	async function runAndApplyRequirementsDraft(
+		ctx: ExtensionContext,
+		sessionId: string,
+		fermentV2: SessionFermentV2,
+		options: { source: string; beforeImplementation: boolean },
+	): Promise<void> {
+		const fence = requirementsDraftFence(fermentV2)
+		if (!fence || fence.sessionId !== sessionId) return
+		const record = fermentV2.requirements
+		if (!record) return
+		const planText = fermentV2PlanText(fermentV2)
+		const abort = new AbortController()
+		requirementsDraftAbort = abort
+		const settled = runFermentV2RequirementsDraft(
+			{
+				fermentV2Id: fermentV2.id,
+				revision: fermentV2.revision,
+				objective: record.objectiveText,
+				objectiveDigest: record.objectiveDigest,
+				...(record.contractVersion > 0
+					? {
+							previousContract: {
+								items: record.items.length ? record.items : (record.history.at(-1)?.items ?? []),
+								idWatermark: record.idWatermark,
+							},
+						}
+					: {}),
+				...(planText ? { planText } : {}),
+				cwd: ctx.cwd,
+				...(fermentV2.baseline ? { baseline: fermentV2.baseline.commit } : {}),
+				beforeImplementation: options.beforeImplementation,
+				signal: abort.signal,
+			},
+			ctx,
+			pi,
+		)
+		const settledTail = settled.then(
+			() => undefined,
+			() => undefined,
+		)
+		requirementsDraftSettled = settledTail
+		try {
+			const outcome = await settled
+			await settleAndApplyRequirementsDraft(ctx, sessionId, fence, outcome, options.source)
+		} finally {
+			if (requirementsDraftAbort === abort) requirementsDraftAbort = undefined
+			if (requirementsDraftSettled === settledTail) requirementsDraftSettled = undefined
+		}
+	}
+
+	/**
+	 * Bring the goal's requirements record as close to ready as one bounded
+	 * draft can before verification: await an in-flight draft, restart an
+	 * orphaned pending record, and spend the single degraded-outage retry
+	 * (fixed baseline or objective only). A goal without a record keeps its
+	 * legacy claim behavior — bootstrapping happens at resume/kick
+	 * checkpoints, not here. Runs only on the completion-claim path.
+	 */
+	async function ensureRequirementsReadyForEvaluation(
+		ctx: ExtensionContext,
+		sessionId: string,
+		fermentV2: SessionFermentV2,
+	): Promise<SessionFermentV2> {
+		if (requirementsDraftSettled && requirementsDraftAbort) {
+			// An in-flight draft settles and applies itself.
+			await requirementsDraftSettled
+		}
+		let current = currentFermentV2
+		if (!current || current.id !== fermentV2.id || !current.requirements) return current ?? fermentV2
+		const record = current.requirements
+		if (record.availability === "ready" && record.objectiveRevision === current.revision) return current
+		if (record.availability === "unavailable" && record.draftRetried) return current
+		if (record.availability === "unavailable" && !record.draftRetried) {
+			const target = current
+			const marked = await serializeFermentV2Mutation(sessionId, () => {
+				const latest = currentFermentV2
+				if (!latest || latest.id !== target.id) return latest
+				const next = markFermentV2RequirementsRetried(latest, latest.id, latest.revision, timestamp())
+				if (next !== latest) commitFermentV2(next)
+				return next
+			})
+			if (!marked || marked.id !== target.id) return target
+			current = marked
+		}
+		await runAndApplyRequirementsDraft(ctx, sessionId, current, {
+			source: "requirements_recovery",
+			beforeImplementation: false,
+		})
+		return currentFermentV2 ?? current
+	}
+
+	/** Requirements inputs for one evaluation: the persisted ready contract, or why none applies. */
+	function fermentV2RequirementsEvaluationInput(fermentV2: SessionFermentV2): {
+		requirements?: FermentV2Requirements
+		requirementsUnavailable?: string
+	} {
+		const record = fermentV2.requirements
+		// A goal without a record keeps its legacy claim behavior: the verifier
+		// derives its working list in-session, exactly as before this record
+		// existed. Bootstrapping happens at resume/kick checkpoints.
+		if (!record) return {}
+		if (record.availability === "ready") {
+			if (record.objectiveRevision === fermentV2.revision) return { requirements: record }
+			return {
+				requirementsUnavailable:
+					"The established requirements contract targets a previous objective revision; it is being re-established.",
+			}
+		}
+		if (record.availability === "unavailable") {
+			return { requirementsUnavailable: record.unavailableReason ?? "Requirements could not be established." }
+		}
+		return { requirementsUnavailable: "Requirements are still being established." }
+	}
+
 	async function runFermentV2Evaluation(
 		fermentV2: SessionFermentV2,
 		conversation: CapturedFermentV2Conversation,
@@ -982,15 +1329,18 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const count = (fermentV2.evaluationCount ?? 0) + 1
 		const claim = matchesFermentV2(completionClaim, fermentV2, conversation.sessionId) ? completionClaim : undefined
 		const previousGap = fermentV2.lastEvaluation?.verdict === "continue" ? fermentV2.lastEvaluation.reason : undefined
+		const requirementsInput = fermentV2RequirementsEvaluationInput(fermentV2)
 		const evaluation = evaluateFermentV2(
 			{
 				objective: fermentV2.objective,
+				objectiveRevision: fermentV2.revision,
 				cwd: ctx.cwd,
 				messages: conversation.messages,
 				todos: todoState?.todos ?? [],
 				...(claim?.completionConfidence ? { completionConfidence: claim.completionConfidence } : {}),
 				...(previousGap ? { previousGap } : {}),
 				...(fermentV2.baseline ? { baseline: fermentV2.baseline } : {}),
+				...requirementsInput,
 				onVerifierStart: (info) => {
 					verifyingModelRef = info.model
 					updateVerifyingStatus()
@@ -1034,6 +1384,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			startFingerprint,
 			abort,
 			result,
+			evaluationCount: count,
 		}
 	}
 
@@ -1115,6 +1466,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		if (marker) {
 			pendingUserMutation = marker
 			const settled = abortEvaluation()
+			const draftSettled = abortRequirementsDraft()
 			if (settleBeforeMutation && agentTurnIsBusy(ctx)) {
 				safeSendControl(
 					ctx,
@@ -1124,7 +1476,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				if (!ctx.waitForIdle) throw new Error("Cannot settle the active turn from this context.")
 				await ctx.waitForIdle()
 			}
-			if (settleBeforeMutation) await settled
+			if (settleBeforeMutation) {
+				await settled
+				await draftSettled
+			}
 		}
 		try {
 			return await serializeFermentV2Mutation(sessionId, operation)
@@ -1200,6 +1555,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const sessionId = bindSession(ctx)
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
+		let created: SessionFermentV2 | undefined
 		const approvedPlan = presentation?.kind === "approved-plan"
 		if (!fermentV2ToolsAvailable()) {
 			if (!approvedPlan) notifyFermentV2ToolsUnavailable(ctx)
@@ -1252,23 +1608,38 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				// replayed state, and journal through the current session.
 				assertCurrentSession(ctx, sessionId)
 				assertUnchanged(captured)
+				// The goal-owned requirements contract is drafted for the exact
+				// resolved objective before the first implementer turn.
+				const contractObjective = resolveObjectiveContractText(objective, ctx.cwd)
+				const requirements = createPendingFermentV2Requirements({
+					objectiveRevision: 1,
+					objectiveText: contractObjective,
+					objectiveDigest: digestFermentV2ObjectiveText(contractObjective),
+					...(baseline ? { baselineCommit: baseline.commit } : {}),
+					provenance: "pre_implementation",
+				})
 				const next = captured
-					? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget, presentation, baseline)
-					: createFermentV2(undefined, objective, randomUUID(), now, effectiveTokenBudget, presentation, baseline)
+					? replaceFermentV2(objective, randomUUID(), now, effectiveTokenBudget, presentation, baseline, requirements)
+					: createFermentV2(
+							undefined,
+							objective,
+							randomUUID(),
+							now,
+							effectiveTokenBudget,
+							presentation,
+							baseline,
+							requirements,
+						)
 				commitFermentV2(next)
 				if (replaced) {
 					emitFermentV2Lifecycle(FERMENT_V2_EVENTS.REPLACED, replaced, { replacementFermentV2Id: next.id })
 				}
 				emitFermentV2Lifecycle(FERMENT_V2_EVENTS.STARTED, next)
 				resetFermentV2Runtime()
-				// Only block a headless command when a turn is actually running, or
-				// nothing would ever resolve the waiter.
-				if (
-					queueFermentV2Turn(ctx, next, buildFermentV2StartSteer(captured ? "replaced" : "created"), source) &&
-					!ctx.hasUI
-				) {
-					terminalWaiter = ensureFermentV2Waiter(sessionId, next.id)
-				}
+				created = next
+				// The first implementer turn is queued only after the requirements
+				// draft below settles (ready or explicitly degraded), so normal
+				// startup never implements before the contract exists.
 				ctx.ui.notify(
 					approvedPlan
 						? captured
@@ -1282,6 +1653,25 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			},
 			settleBeforeMutation,
 		)
+		// The draft awaits model work outside the user-mutation lock; its result
+		// is fenced and applied atomically before the implementer starts.
+		if (created) {
+			await runAndApplyRequirementsDraft(ctx, sessionId, created, {
+				source: "requirements_draft",
+				beforeImplementation: true,
+			})
+			const current = currentFermentV2
+			if (
+				current &&
+				current.id === created.id &&
+				current.revision === created.revision &&
+				current.status === "active" &&
+				queueFermentV2Turn(ctx, current, buildFermentV2StartSteer(captured ? "replaced" : "created"), source) &&
+				!ctx.hasUI
+			) {
+				terminalWaiter = ensureFermentV2Waiter(sessionId, current.id)
+			}
+		}
 		await terminalWaiter
 		return "started"
 	}
@@ -1359,6 +1749,29 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					) {
 						next = { ...next, objective: saveObjectiveFile(submittedObjective, ctx.cwd) }
 					}
+					// Re-target the requirements contract at the edited objective:
+					// the old criteria are invalid for verification (their objective
+					// revision lags) but stay in history, and a refreshed draft gets
+					// a fresh retry budget. A legacy goal without a record
+					// bootstraps one at this safe checkpoint.
+					const contractObjective = resolveObjectiveContractText(next.objective, ctx.cwd)
+					next = {
+						...next,
+						requirements: next.requirements
+							? {
+									...next.requirements,
+									objectiveRevision: next.revision,
+									objectiveText: contractObjective,
+									objectiveDigest: digestFermentV2ObjectiveText(contractObjective),
+								}
+							: createPendingFermentV2Requirements({
+									objectiveRevision: next.revision,
+									objectiveText: contractObjective,
+									objectiveDigest: digestFermentV2ObjectiveText(contractObjective),
+									...(next.baseline ? { baselineCommit: next.baseline.commit } : {}),
+									provenance: "objective_only",
+								}),
+					}
 					const retainedTodoState =
 						todoStateFor && matchesFermentV2(todoStateFor, current, sessionId)
 							? rebindTodoState(todoStateFor, next)
@@ -1395,6 +1808,16 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			throw error
 		}
+		// Refresh the contract for the edited objective outside the mutation
+		// lock; the queued steer turn is not blocked on it (the claim path
+		// awaits the in-flight draft before verifying).
+		const edited = currentFermentV2
+		if (edited && edited.status === "active" && edited.requirements?.availability === "pending") {
+			await runAndApplyRequirementsDraft(ctx, sessionId, edited, {
+				source: "requirements_refresh",
+				beforeImplementation: !implementationStarted(edited),
+			})
+		}
 		await terminalWaiter
 	}
 
@@ -1415,6 +1838,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			if (current.status === "complete")
 				return ctx.ui.notify(`A completed ${displayObjectName(current)} cannot be paused.`, "warning")
+			void abortRequirementsDraft()
 			const nowMs = Date.now()
 			const accounted = checkpointFermentV2(current, 0, nowMs)
 			const next = setFermentV2Status(accounted, current.id, current.revision, "paused", timestamp(nowMs))
@@ -1487,6 +1911,26 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 			ctx.ui.notify(`${displayName(next)} resumed.`, "info")
 		})
+		// Bootstrap/restart the requirements record at this safe checkpoint
+		// (legacy goals without a record, or a pending record whose draft never
+		// settled). A ready contract is kept; the claim path spends the one
+		// degraded retry, not resume.
+		const resumed = currentFermentV2
+		if (
+			resumed &&
+			captured &&
+			resumed.id === captured.id &&
+			resumed.status === "active" &&
+			!isReadyForFinalAnswer(resumed, todoStateFor, sessionId, ctx.hasUI)
+		) {
+			const withRecord = resumed.requirements ? resumed : await bootstrapRequirementsRecord(ctx, sessionId, resumed)
+			if (withRecord.requirements?.availability === "pending") {
+				await runAndApplyRequirementsDraft(ctx, sessionId, withRecord, {
+					source: "requirements_bootstrap",
+					beforeImplementation: false,
+				})
+			}
+		}
 		await terminalWaiter
 	}
 
@@ -1498,6 +1942,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)
 			if (!current) throw new Error("No Ferment V2 is currently set.")
+			void abortRequirementsDraft()
 			commitClear(current)
 			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.CLEARED, current, { reason: "user" })
 			invalidateContinuation()
@@ -1694,6 +2139,22 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			const latest = currentFermentV2
 			if (latest?.id !== fermentV2Id || latest.revision !== fermentV2Revision || latest.status !== "active") return
 			if (fermentV2ResumeBlocked(ctx)) return
+			// Bootstrap/restart this goal's requirements record at the kick (a
+			// safe checkpoint for legacy sessions and interrupted drafts); a
+			// ready contract is never redrafted. Non-blocking: the kick's turn
+			// proceeds, and the claim path awaits the draft before verifying.
+			if (!latest.requirements || latest.requirements.availability === "pending") {
+				void (async () => {
+					if (!sessionId) return
+					const withRecord = latest.requirements ? latest : await bootstrapRequirementsRecord(ctx, sessionId, latest)
+					if (withRecord.requirements?.availability === "pending") {
+						await runAndApplyRequirementsDraft(ctx, sessionId, withRecord, {
+							source: "requirements_bootstrap",
+							beforeImplementation: false,
+						})
+					}
+				})()
+			}
 			if (isReadyForFinalAnswer(latest, todoStateFor, sessionId, ctx.hasUI)) {
 				queueFinalAnswerTurn(ctx, latest, "followUp")
 			} else queueFermentV2Turn(ctx, latest, buildFermentV2StartSteer("resumed"), "session_start_resume", "followUp")
@@ -2014,6 +2475,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				fermentV2Id: fermentV2.id,
 				revision: fermentV2.revision,
 			}
+			// First implementer turn of this runtime: later re-drafts must not
+			// claim pre-implementation provenance. Cleared on replay (a resumed
+			// session conservatively reports recovery provenance).
+			implementationStartedMarker ??= activeTurn
 			const todoState = matchesFermentV2(todoStateFor, fermentV2, currentSessionId) ? todoStateFor : undefined
 			turnStartFingerprint = fermentV2ProgressFingerprint(fermentV2, todoState, fermentV2Lessons)
 			// The checkpoint baseline is only armed when no decision has set it yet;
@@ -2230,7 +2695,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		evaluation: PreparedFermentV2Evaluation,
 		queueDuringAgentRun: boolean,
 	): Promise<void> {
-		const { abort, hadSubstantiveToolUse, result, startFingerprint } = evaluation
+		const { abort, hadSubstantiveToolUse, result, startFingerprint, evaluationCount } = evaluation
 		if (abort.signal.aborted) {
 			abandonFermentV2Evaluation(sessionId, conversation)
 			releaseFermentV2PromptSummary()
@@ -2255,6 +2720,24 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				return
 			}
 			const now = timestamp()
+			// Stale-result fences: a newer review already recorded its result, or
+			// the contract this review verified moved externally (a redraft or
+			// another review's accepted additions). The review's own accepted
+			// additions apply below inside this same mutation, after the fence,
+			// so they never invalidate this result.
+			if ((fermentV2.evaluationCount ?? 0) >= evaluationCount) {
+				abandonFermentV2Evaluation(sessionId, conversation)
+				releaseFermentV2PromptSummary()
+				return
+			}
+			if (
+				result.diagnostics.contractVersion !== undefined &&
+				fermentV2.requirements?.contractVersion !== result.diagnostics.contractVersion
+			) {
+				abandonFermentV2Evaluation(sessionId, conversation)
+				releaseFermentV2PromptSummary()
+				return
+			}
 			const evaluation: FermentV2Evaluation = {
 				verdict: result.verdict,
 				reason: result.reason,
@@ -2262,7 +2745,32 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				...(result.sameModelAsImplementer ? { sameModelAsImplementer: true } : {}),
 				evaluatedAt: now,
 			}
-			let evaluated = recordFermentV2Evaluation(fermentV2, fermentV2.id, fermentV2.revision, evaluation, now)
+			// Accepted additions apply atomically before the verdict is recorded,
+			// on `continue` and `impossible` as well as `met`: an accepted
+			// obligation is binding regardless of the verdict that settled the
+			// review. A fence failure (competing update, objective edit) discards
+			// the additions without overwriting newer state and abandons the
+			// stale result — usage was already settled when the run settled.
+			let evaluated = fermentV2
+			const contractAdditions = result.verdict === "unavailable" ? undefined : result.contractAdditions
+			if (contractAdditions?.length) {
+				try {
+					evaluated = applyFermentV2RequirementsAdditions(
+						evaluated,
+						evaluated.id,
+						evaluated.revision,
+						contractAdditions[0].basedOnVersion,
+						contractAdditions,
+						now,
+					)
+				} catch {
+					abandonFermentV2Evaluation(sessionId, conversation)
+					releaseFermentV2PromptSummary()
+					return
+				}
+				emitFermentV2Requirements(evaluated)
+			}
+			evaluated = recordFermentV2Evaluation(evaluated, evaluated.id, evaluated.revision, evaluation, now)
 			// Verifier tokens and wall-clock time were already settled when the run
 			// settled — before the validity gates above — so they survive even when a
 			// verdict is abandoned; the budget transition was handled there as well.
@@ -2478,7 +2986,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		holdFermentV2PromptSummary()
 		let keptEvaluationForSettled = false
 		try {
-			const evaluation = await runFermentV2Evaluation(fermentV2, conversation, ctx)
+			const ensured = await ensureRequirementsReadyForEvaluation(ctx, sessionId, fermentV2)
+			if (
+				ensured.id !== fermentV2.id ||
+				ensured.revision !== fermentV2.revision ||
+				!canEvaluateFermentV2(conversation, ensured, sessionId, ctx)
+			) {
+				// The goal moved or stopped while the requirements settled; the
+				// normal continuation drivers pick it up from the new state.
+				return
+			}
+			const evaluation = await runFermentV2Evaluation(ensured, conversation, ctx)
 			if (
 				!evaluation.abort.signal.aborted &&
 				currentSessionId === sessionId &&
@@ -2601,7 +3119,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const prepared = preparedEvaluation?.conversation === conversation ? preparedEvaluation : undefined
 		preparedEvaluation = undefined
 		holdFermentV2PromptSummary()
-		const evaluation = prepared ?? (await runFermentV2Evaluation(capturedFermentV2, conversation, ctx))
+		const ensured = await ensureRequirementsReadyForEvaluation(ctx, sessionId, capturedFermentV2)
+		if (ensured.id !== capturedFermentV2.id || ensured.revision !== capturedFermentV2.revision) {
+			releaseFermentV2PromptSummary()
+			return
+		}
+		const evaluation = prepared ?? (await runFermentV2Evaluation(ensured, conversation, ctx))
 		await applyFermentV2Evaluation(ctx, sessionId, conversation, evaluation, false)
 	})
 
@@ -2611,6 +3134,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		unregisterTodoCommandMutationHandler = undefined
 		stopVerifyingStatus()
 		void abortEvaluation()
+		void abortRequirementsDraft()
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined
 		syncRunStatus(undefined)

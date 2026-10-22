@@ -1,13 +1,27 @@
 import { deriveFermentV2Name } from "./name.js"
 import {
+	FERMENT_V2_MAX_REQUIREMENTS,
+	isFermentV2ObjectiveDigest,
+	nextRequirementIdWatermark,
+	parseVerifierRequirements,
+	type RequirementAddition,
+	sameRequirementItem as sharedSameRequirementItem,
+	type VerifierRequirement,
+} from "./requirements.js"
+import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
+	FERMENT_V2_REQUIREMENTS_AVAILABILITY,
+	FERMENT_V2_REQUIREMENTS_PROVENANCE,
 	FERMENT_V2_STATUSES,
 	type FermentV2Baseline,
 	type FermentV2Evaluation,
 	type FermentV2EvaluatorUsage,
 	type FermentV2JournalEntry,
 	type FermentV2Presentation,
+	type FermentV2Requirements,
+	type FermentV2RequirementsProvenance,
+	type FermentV2RequirementsRevision,
 	type FermentV2Status,
 	type FermentV2VerifierUsage,
 	type SessionFermentV2,
@@ -23,6 +37,42 @@ function normalizeObjective(value: unknown): string {
 	return objective
 }
 
+/**
+ * Build the pending requirements record a goal starts with (and a legacy goal
+ * bootstraps at its next safe checkpoint). The contract targets the exact
+ * resolved objective text passed here — later edits to an objective file
+ * cannot silently rewrite it.
+ */
+export function createPendingFermentV2Requirements(input: {
+	objectiveRevision: number
+	objectiveText: string
+	objectiveDigest: string
+	baselineCommit?: string
+	provenance: FermentV2RequirementsProvenance
+}): FermentV2Requirements {
+	if (!isPositiveInteger(input.objectiveRevision)) {
+		throw new Error("Ferment V2 requirements objective revision must be a positive integer.")
+	}
+	if (!normalizeObjective(input.objectiveText))
+		throw new Error("Ferment V2 requirements objective text cannot be empty.")
+	if (!isFermentV2ObjectiveDigest(input.objectiveDigest)) {
+		throw new Error("Ferment V2 requirements objective digest must be a hex sha256 digest.")
+	}
+	return {
+		schemaVersion: 1,
+		contractVersion: 0,
+		objectiveRevision: input.objectiveRevision,
+		objectiveDigest: input.objectiveDigest,
+		objectiveText: input.objectiveText,
+		...(input.baselineCommit ? { baselineCommit: input.baselineCommit } : {}),
+		provenance: input.provenance,
+		availability: "pending",
+		items: [],
+		idWatermark: 0,
+		history: [],
+	}
+}
+
 export function createFermentV2(
 	state: FermentV2State,
 	objective: unknown,
@@ -31,9 +81,10 @@ export function createFermentV2(
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
 	baseline?: FermentV2Baseline,
+	requirements?: FermentV2Requirements,
 ): SessionFermentV2 {
 	if (state) throw new Error("A Ferment V2 already exists.")
-	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline, requirements)
 }
 
 export function replaceFermentV2(
@@ -43,8 +94,9 @@ export function replaceFermentV2(
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
 	baseline?: FermentV2Baseline,
+	requirements?: FermentV2Requirements,
 ): SessionFermentV2 {
-	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
+	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline, requirements)
 }
 
 export function editFermentV2(
@@ -68,8 +120,270 @@ export function editFermentV2(
 		objective: nextObjective,
 		name: deriveFermentV2Name(nextObjective),
 		status: current.status === "complete" ? "paused" : current.status,
+		// The previous criteria are invalidated for verification (their objective
+		// revision now lags) but their accepted history is retained; a refreshed
+		// draft gets a fresh retry budget.
+		...(current.requirements ? { requirements: invalidateFermentV2Requirements(current.requirements) } : {}),
 		updatedAt: now,
 	}
+}
+
+/** Reset a record to pending for a new objective generation, omitting the volatile fields. */
+function invalidateFermentV2Requirements(record: FermentV2Requirements): FermentV2Requirements {
+	const { draftRetried: _draftRetried, unavailableReason: _unavailableReason, ...rest } = record
+	return { ...rest, availability: "pending" }
+}
+
+/** Fold one requirements-draft run's usage into the ferment's cumulative stage accounting. */
+export function recordFermentV2RequirementsUsage(
+	state: FermentV2State,
+	expectedId: string,
+	usage: FermentV2EvaluatorUsage,
+	now: string,
+): SessionFermentV2 {
+	if (!state) throw new Error("Ferment V2 requirements accounting rejected: no current Ferment V2 exists.")
+	if (state.id !== expectedId) {
+		throw new Error(
+			`Ferment V2 requirements accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+		)
+	}
+	const previous = state.requirementsUsage
+	return {
+		...state,
+		requirementsUsage: {
+			runs: (previous?.runs ?? 0) + 1,
+			input: (previous?.input ?? 0) + usage.input,
+			output: (previous?.output ?? 0) + usage.output,
+			cacheRead: (previous?.cacheRead ?? 0) + usage.cacheRead,
+			cacheWrite: (previous?.cacheWrite ?? 0) + usage.cacheWrite,
+			totalTokens: (previous?.totalTokens ?? 0) + usage.totalTokens,
+			costUsd: (previous?.costUsd ?? 0) + usage.costUsd,
+		},
+		updatedAt: now,
+	}
+}
+
+/** Mark that the one degraded-outage retry at a completion claim has been spent. Idempotent. */
+export function markFermentV2RequirementsRetried(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	if (!current.requirements || current.requirements.draftRetried) return current
+	return {
+		...current,
+		requirements: { ...current.requirements, draftRetried: true },
+		updatedAt: now,
+	}
+}
+
+export interface FermentV2RequirementsApplication {
+	objectiveRevision: number
+	objectiveDigest: string
+	provenance: FermentV2RequirementsProvenance
+	availability: "ready" | "unavailable"
+	/** The accepted list when availability is `ready`. */
+	items?: readonly VerifierRequirement[]
+	unavailableReason?: string
+	actor?: string
+	reason?: string
+}
+
+/**
+ * Apply a settled draft result to the pending requirements record, fenced by
+ * the ferment identity, the contract version the caller captured, and the
+ * objective digest the record targets. A ready result accepts the complete
+ * list (validated, fresh IDs only, watermark advanced, history appended,
+ * contract version bumped); an unavailable result records the degraded state
+ * without touching history. An identical ready list on an already ready
+ * record is an idempotent no-op; a different list never overwrites a newer
+ * one — the caller treats the throw as a stale fence.
+ */
+export function applyFermentV2Requirements(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	expectedContractVersion: number,
+	application: FermentV2RequirementsApplication,
+	now: string,
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const record = current.requirements
+	if (!record) throw new Error("Ferment V2 requirements rejected: no requirements record exists.")
+	if (record.contractVersion !== expectedContractVersion) {
+		throw new Error(
+			`Ferment V2 requirements rejected: expected contract version ${expectedContractVersion}, but the current contract version is ${record.contractVersion}. The draft result is stale.`,
+		)
+	}
+	if (record.objectiveDigest !== application.objectiveDigest) {
+		throw new Error("Ferment V2 requirements rejected: the draft result targets a different objective.")
+	}
+	if (application.availability === "unavailable") {
+		if (record.availability === "unavailable") return current
+		if (record.availability !== "pending") {
+			throw new Error("Ferment V2 requirements rejected: the record already settled with a contract.")
+		}
+		const reason = application.unavailableReason?.trim() || "Requirements drafting failed."
+		return {
+			...current,
+			requirements: {
+				...record,
+				provenance: application.provenance,
+				availability: "unavailable",
+				unavailableReason: reason.slice(0, MAX_BLOCKED_REASON_LENGTH),
+			},
+			updatedAt: now,
+		}
+	}
+	const items = parseVerifierRequirements(application.items)
+	if (!items) {
+		throw new Error(
+			"Ferment V2 requirements rejected: the drafted list must contain 1–64 items with distinct IDs and nonempty requirement, source, acceptance, and a valid category.",
+		)
+	}
+	if (application.objectiveRevision !== record.objectiveRevision) {
+		throw new Error("Ferment V2 requirements rejected: the draft result targets a different objective revision.")
+	}
+	// An identical list on an already ready record is an idempotent no-op.
+	if (record.availability === "ready" && sameRequirementItems(record.items, items)) return current
+	if (record.availability === "ready") {
+		throw new Error(
+			"Ferment V2 requirements rejected: the current contract is already ready; a redraft cannot replace it.",
+		)
+	}
+	const watermark = nextRequirementIdWatermark(
+		record.idWatermark,
+		items,
+		record.items.length ? record.items : (record.history.at(-1)?.items ?? []),
+	)
+	const version = record.contractVersion + 1
+	const { unavailableReason: _drop, ...recordWithoutReason } = record
+	return {
+		...current,
+		requirements: {
+			...recordWithoutReason,
+			contractVersion: version,
+			provenance: application.provenance,
+			availability: "ready",
+			items,
+			idWatermark: watermark,
+			history: [
+				...record.history,
+				{
+					version,
+					items,
+					actor: application.actor?.trim() || "requirements_draft",
+					...(application.reason?.trim() ? { reason: application.reason.trim() } : {}),
+					objectiveRevision: application.objectiveRevision,
+					acceptedAt: now,
+				},
+			],
+		},
+		updatedAt: now,
+	}
+}
+
+function sameRequirementItems(a: readonly VerifierRequirement[], b: readonly VerifierRequirement[]): boolean {
+	return (
+		a.length === b.length && a.every((item, index) => b[index] !== undefined && sameRequirementItem(item, b[index]))
+	)
+}
+
+/**
+ * Apply the additions a final review accepted, atomically and fenced by the
+ * ferment identity, the ferment revision (an objective edit bumps it), and
+ * the contract version the review started from. Each addition must be based
+ * on the running version the review itself advanced (the first on the
+ * persisted version, each later one on the version the previous acceptance
+ * produced), so the review's own accepted version advances never invalidate
+ * it — while a competing external update or a newer review (a moved contract
+ * version) rejects the whole application without overwriting newer state.
+ * Every accepted addition appends one immutable history entry (items, reason,
+ * actor, version, objective revision, timestamp), advances the ID watermark
+ * past every allocated ID (retired IDs are never reused), and never touches
+ * an existing item: an addition colliding with a current ID is rejected.
+ */
+export function applyFermentV2RequirementsAdditions(
+	state: FermentV2State,
+	expectedId: string,
+	expectedRevision: number,
+	expectedContractVersion: number,
+	additions: readonly RequirementAddition[],
+	now: string,
+	actor = "final_review",
+): SessionFermentV2 {
+	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
+	const record = current.requirements
+	if (!record) throw new Error("Ferment V2 requirements additions rejected: no requirements record exists.")
+	if (record.availability !== "ready") {
+		throw new Error("Ferment V2 requirements additions rejected: the requirements contract is not ready.")
+	}
+	if (record.contractVersion !== expectedContractVersion) {
+		throw new Error(
+			`Ferment V2 requirements additions rejected: expected contract version ${expectedContractVersion}, but the current contract version is ${record.contractVersion}. The review result is stale.`,
+		)
+	}
+	if (additions.length === 0) return current
+	let version = record.contractVersion
+	let watermark = record.idWatermark
+	const combined: VerifierRequirement[] = [...record.items]
+	const entries: FermentV2RequirementsRevision[] = []
+	for (const addition of additions) {
+		const items = parseVerifierRequirements(addition.items)
+		if (!items) {
+			throw new Error(
+				"Ferment V2 requirements additions rejected: each addition needs 1–64 items with distinct IDs and nonempty requirement, source, acceptance, and a valid category.",
+			)
+		}
+		const reason = typeof addition.reason === "string" ? addition.reason.trim() : ""
+		if (!reason) {
+			throw new Error("Ferment V2 requirements additions rejected: each addition needs a source-grounded reason.")
+		}
+		if (addition.basedOnVersion !== version) {
+			throw new Error(
+				`Ferment V2 requirements additions rejected: an addition is based on version ${addition.basedOnVersion}, but the review's contract is at version ${version}.`,
+			)
+		}
+		if (combined.length + items.length > FERMENT_V2_MAX_REQUIREMENTS) {
+			throw new Error(
+				`Ferment V2 requirements additions rejected: the contract cannot exceed ${FERMENT_V2_MAX_REQUIREMENTS} items.`,
+			)
+		}
+		const currentIds = new Set(combined.map((item) => item.id))
+		if (items.some((item) => currentIds.has(item.id))) {
+			throw new Error(
+				"Ferment V2 requirements additions rejected: an addition cannot replace an existing criterion; additions must use fresh IDs.",
+			)
+		}
+		watermark = nextRequirementIdWatermark(watermark, items, combined)
+		version += 1
+		combined.push(...items)
+		entries.push({
+			version,
+			items: [...combined],
+			actor,
+			reason,
+			objectiveRevision: record.objectiveRevision,
+			acceptedAt: now,
+		})
+	}
+	return {
+		...current,
+		requirements: {
+			...record,
+			contractVersion: version,
+			items: [...combined],
+			idWatermark: watermark,
+			history: [...record.history, ...entries],
+		},
+		updatedAt: now,
+	}
+}
+
+function sameRequirementItem(a: VerifierRequirement, b: VerifierRequirement | undefined): boolean {
+	return b !== undefined && sharedSameRequirementItem(a, b)
 }
 
 export function setFermentV2Status(
@@ -274,6 +588,7 @@ function newFermentV2(
 	tokenBudget?: number,
 	presentation?: FermentV2Presentation,
 	baseline?: FermentV2Baseline,
+	requirements?: FermentV2Requirements,
 ): SessionFermentV2 {
 	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
@@ -291,6 +606,7 @@ function newFermentV2(
 		...(presentation ? { presentation } : {}),
 		...(tokenBudget === undefined ? {} : { tokenBudget }),
 		...(baseline ? { baseline } : {}),
+		...(requirements ? { requirements } : {}),
 		timeUsedMs: 0,
 		createdAt: now,
 		updatedAt: now,
@@ -329,7 +645,9 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 	const lastEvaluation = parseFermentV2Evaluation(value.lastEvaluation)
 	const presentation = parseFermentV2Presentation(value.presentation)
 	const verifierUsage = parseFermentV2VerifierUsage(value.verifierUsage)
+	const requirementsUsage = parseFermentV2VerifierUsage(value.requirementsUsage)
 	const baseline = parseFermentV2Baseline(value.baseline)
+	const requirements = parseFermentV2Requirements(value.requirements, value, baseline)
 	if (
 		value.schemaVersion !== 1 ||
 		!isNonEmptyString(value.id) ||
@@ -374,10 +692,109 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		...(value.tokenBudget === undefined ? {} : { tokenBudget: value.tokenBudget }),
 		timeUsedMs: value.timeUsedMs ?? 0,
 		...(verifierUsage ? { verifierUsage } : {}),
+		...(requirementsUsage ? { requirementsUsage } : {}),
 		...(baseline ? { baseline } : {}),
+		...(requirements ? { requirements } : {}),
 		createdAt: value.createdAt,
 		updatedAt: value.updatedAt,
 	}
+}
+
+/**
+ * Parse the durable requirements record off a stored ferment. A malformed or
+ * inconsistent record is dropped (the ferment entry stays valid and the goal
+ * re-bootstraps requirements at its next safe checkpoint) rather than
+ * rejecting the whole session entry. Consistency checks: the record's
+ * objective revision cannot exceed the ferment's, and a claimed baseline must
+ * match the ferment's actual baseline.
+ */
+function parseFermentV2Requirements(
+	value: unknown,
+	ferment: Record<string, unknown>,
+	baseline: FermentV2Baseline | undefined,
+): FermentV2Requirements | undefined {
+	if (value === undefined) return undefined
+	if (!isRecord(value) || value.schemaVersion !== 1) return undefined
+	const provenance = FERMENT_V2_REQUIREMENTS_PROVENANCE.find((candidate) => candidate === value.provenance)
+	const availability = FERMENT_V2_REQUIREMENTS_AVAILABILITY.find((candidate) => candidate === value.availability)
+	if (
+		provenance === undefined ||
+		availability === undefined ||
+		!isNonNegativeInteger(value.contractVersion) ||
+		!isPositiveInteger(value.objectiveRevision) ||
+		(typeof ferment.revision === "number" && value.objectiveRevision > ferment.revision) ||
+		!isFermentV2ObjectiveDigest(value.objectiveDigest) ||
+		!isNonEmptyString(value.objectiveText) ||
+		!isNonNegativeInteger(value.idWatermark) ||
+		(value.baselineCommit !== undefined && !isNonEmptyString(value.baselineCommit)) ||
+		(value.draftRetried !== undefined && value.draftRetried !== true)
+	) {
+		return undefined
+	}
+	const unavailableReason =
+		availability === "unavailable" && isNonEmptyString(value.unavailableReason) ? value.unavailableReason : undefined
+	if (availability === "unavailable" && !unavailableReason) return undefined
+	if (availability === "ready" && value.unavailableReason !== undefined) return undefined
+	// Pending/unavailable refreshes retain the previous generation's items
+	// for identity allocation; availability still prevents their verification.
+	const items = parseVerifierRequirements(value.items)
+	if (value.items !== undefined && (!Array.isArray(value.items) || (value.items.length > 0 && !items))) return undefined
+	if (availability === "ready" && !items) return undefined
+	const history = parseFermentV2RequirementsHistory(value.history)
+	if (!history) return undefined
+	const maxItemId = (items ?? []).reduce((max, item) => Math.max(max, Number(item.id.slice(1))), 0)
+	if (value.idWatermark < maxItemId) return undefined
+	const baselineCommit = typeof value.baselineCommit === "string" ? value.baselineCommit : undefined
+	// A record claiming a baseline the ferment does not have (or that moved) is
+	// inconsistent: drop the record instead of trusting the mismatched anchor.
+	if (baselineCommit !== baseline?.commit) return undefined
+	return {
+		schemaVersion: 1,
+		contractVersion: value.contractVersion,
+		objectiveRevision: value.objectiveRevision,
+		objectiveDigest: value.objectiveDigest,
+		objectiveText: value.objectiveText,
+		...(baselineCommit ? { baselineCommit } : {}),
+		provenance,
+		availability,
+		...(unavailableReason ? { unavailableReason } : {}),
+		...(items ? { items } : { items: [] }),
+		idWatermark: value.idWatermark,
+		history,
+		...(value.draftRetried === true ? { draftRetried: true } : {}),
+	}
+}
+
+function parseFermentV2RequirementsHistory(value: unknown): FermentV2RequirementsRevision[] | undefined {
+	if (value === undefined) return []
+	if (!Array.isArray(value)) return undefined
+	const entries: FermentV2RequirementsRevision[] = []
+	let previousVersion = 0
+	for (const candidate of value) {
+		if (!isRecord(candidate)) return undefined
+		const items = parseVerifierRequirements(candidate.items)
+		if (
+			!isPositiveInteger(candidate.version) ||
+			candidate.version <= previousVersion ||
+			!items ||
+			!isNonEmptyString(candidate.actor) ||
+			!isPositiveInteger(candidate.objectiveRevision) ||
+			!isNonEmptyString(candidate.acceptedAt) ||
+			(candidate.reason !== undefined && !isNonEmptyString(candidate.reason))
+		) {
+			return undefined
+		}
+		previousVersion = candidate.version
+		entries.push({
+			version: candidate.version,
+			items,
+			actor: candidate.actor,
+			...(candidate.reason !== undefined ? { reason: candidate.reason } : {}),
+			objectiveRevision: candidate.objectiveRevision,
+			acceptedAt: candidate.acceptedAt,
+		})
+	}
+	return entries
 }
 
 function parseFermentV2Baseline(value: unknown): FermentV2Baseline | undefined {

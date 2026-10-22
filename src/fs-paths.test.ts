@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { expandUserPath, findExistingFile, normalizeAtFileArgs, resolveUserPath, stripAtPrefix } from "./fs-paths.js"
 
@@ -27,6 +28,12 @@ describe("resolveUserPath", () => {
 
 	it("strips a leading @", () => {
 		expect(resolveUserPath("@/etc/hosts", "/any/cwd")).toBe("/etc/hosts")
+	})
+	it("resolves tool file URLs and normalizes absolute parent traversal", () => {
+		const path = resolve("/tmp", "candidate file.txt")
+		expect(resolveUserPath(pathToFileURL(path).href, "/baseline")).toBe(path)
+		expect(resolveUserPath(`@${pathToFileURL(path).href}`, "/baseline")).toBe(path)
+		expect(resolveUserPath("/tmp/../candidate.txt", "/baseline")).toBe(resolve("/candidate.txt"))
 	})
 })
 

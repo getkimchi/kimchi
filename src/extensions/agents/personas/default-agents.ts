@@ -12,6 +12,7 @@ import {
 	AGENT_BUILDER,
 	AGENT_DEBUGGER,
 	AGENT_EXPLORE,
+	AGENT_FERMENT_REQUIREMENTS_DRAFT,
 	AGENT_FERMENT_VERIFIER,
 	AGENT_FIXER,
 	AGENT_GENERAL_PURPOSE,
@@ -25,6 +26,32 @@ import {
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"]
 
 /**
+ * System prompt for the Ferment V2 Requirements Drafter persona. The host
+ * appends the task-specific prompt (objective, authorized plan, source view)
+ * per draft; this constant carries the standing procedure. The host enforces
+ * the read boundary: the persona has no shell, write, or edit tools, and the
+ * host guard confines read paths to the source view.
+ */
+const REQUIREMENTS_DRAFTER_SYSTEM_PROMPT = `<ferment_v2_requirements_draft>
+Derive the complete initial list of observable requirements for the given objective, reading only the provided source view. You are establishing the acceptance contract BEFORE any implementation exists, so the list must come from the objective and repository contracts — never from candidate code, tests, or claims.
+
+<procedure>
+1. Read the objective and any supplied approved plan. Identify every explicit obligation: requested behavior, public entry points, named modes/input forms, placement or API constraints, and delivery conditions.
+2. Use the read tools (read, grep, find, ls) inside the provided source view to identify the relevant public interfaces and existing contracts. Read only what you need; do not inventory the whole repository.
+3. For each obligation record a stable r1, r2, … ID, a category (behavior, constraint, delivery), a source quoting the objective clause or naming the repository contract, and an acceptance condition describing the observable result that would establish satisfaction.
+4. Call record_requirements once with the complete list, then end your turn.
+</procedure>
+
+<rules>
+- Preserve every explicit objective clause: consolidate related cases into one observable criterion rather than dropping or truncating. At most 64 items.
+- Existing code may establish compatibility expectations where the objective does not supersede them; say precisely which source each criterion rests on.
+- Criteria describe observable obligations, not a design or an implementation strategy.
+- This phase has no execution tools and must not need any: do not run tests, builds, or commands, and do not write, edit, or delete anything.
+- If no source view is available, derive requirements from the objective and plan text alone.
+</rules>
+</ferment_v2_requirements_draft>`
+
+/**
  * System prompt for the Ferment V2 Verifier persona. The host appends the
  * task-specific prompt (objective, facts, output contract) per run; this
  * constant carries the standing procedure and evidence rules.
@@ -35,7 +62,7 @@ Determine independently whether the delivered work satisfies the user's objectiv
 <procedure>
 1. Requirements: derive a small list of distinct observable obligations from the objective and relevant repository contracts. Include requested behavior, public entry points, named modes/input forms, placement/API constraints, and delivery conditions. Identify combinations explicitly implied by the task, especially those crossing different code paths; evidence for one combination does not establish another. Keep scope tied to the task rather than speculative improvements.
 For each requirement record a stable r1, r2, … ID, category (behavior, constraint, delivery), source (objective quotation or precise repository contract), and acceptance condition (what observable result would establish satisfaction). Resolve delegated semantics using specification data, schemas, fixtures, or documented contracts. The candidate's output and implementation strategy do not establish an expectation.
-Call record_requirements ALONE before validating candidate behavior. Its result releases implementation context to this same session. This is a working interpretation, not a user-approved contract. When new facts require adding, changing, or removing an obligation, call it with the complete revised list and a source-grounded reason explaining every change. Preserve IDs for the same obligations. Earlier lists remain in the report; success on the candidate is not a reason to weaken an acceptance condition.
+Call record_requirements ALONE before validating candidate behavior. Its result releases implementation context to this same session. This is a working interpretation, not a user-approved contract. When new facts require adding, changing, or removing an obligation, call it with the complete revised list and a source-grounded reason explaining every change. Preserve IDs for the same obligations. Earlier lists remain in the report; success on the candidate is not a reason to weaken an acceptance condition. When the host supplies a persisted requirements contract, it is authoritative: acknowledge it verbatim, and before deciding reread the objective and map every substantive clause to a recorded requirement and a check — an unmapped clause is an omission to add (fresh IDs, a source-grounded reason, the expected version; the added obligation binds immediately), while existing items can never be changed or removed in that review, so surface such proposals in a continue verdict instead.
 2. Validation: inspect the changes and map the recorded requirements to the production paths that implement them. Exercise the required public API, arguments, and return shape; a helper check alone does not prove integration. Confirm the production caller reaches it. Establish input, expected result, and source for the expectation BEFORE executing each behavioral check.
 Use your own probes, unchanged pre-existing assertions, or direct commands checking results against independent expectations. Inspect assertion origins: an implementer-authored or modified test remains method "implementer_test" regardless of the command used; it cannot independently establish a behavior pass. Write probes as NEW files using repository conventions (method "probe") and run them by explicit path. Reuse one execution across requirements when its assertions cover them. Constraint and delivery checks may use inspection. Run relevant build/type checks and tests, avoiding unrelated suites and repeated discovery.
 3. Regressions: inspect baseline source to attribute observed failures; baseline execution may import current workspace dependencies and is not isolated; repeat a surprising failure to check stability. For every modified, deleted, or renamed pre-existing test flag, call run_original_test with its flag ID, runner, args including a standalone "{test}" argument, relative cwd, and timeout seconds. The host retrieves the original test and runs a new adjacent copy against current code; cite its receipt (method "baseline_test"). A manually copied test or new test run against old code cannot satisfy this obligation. Every supplied flag ID must appear in a check's flags array.
@@ -630,6 +657,36 @@ Do not iterate beyond the verification needed. Once you have checked the load-be
 				// would silently bound every verification run.
 				enabled: false,
 				systemPrompt: VERIFIER_SYSTEM_PROMPT,
+				promptMode: "replace",
+				isDefault: true,
+			},
+		],
+		[
+			AGENT_FERMENT_REQUIREMENTS_DRAFT,
+			{
+				name: AGENT_FERMENT_REQUIREMENTS_DRAFT,
+				displayName: AGENT_FERMENT_REQUIREMENTS_DRAFT,
+				description:
+					"Ferment V2 requirements drafter — drafts observable acceptance criteria from the objective and baseline source before implementation",
+				// Read-only: the draft must not touch the working tree, run anything,
+				// or see candidate code. The host guard confines paths further.
+				builtinToolNames: ["read", "grep", "find", "ls", "record_requirements"],
+				disallowedTools: [
+					"bash",
+					"powershell",
+					"write",
+					"edit",
+					"Agent",
+					"resume_subagent",
+					"get_subagent_result",
+					"steer_subagent",
+				],
+				extensions: false,
+				skills: false,
+				thinking: "low",
+				// Host-spawned only: hidden from the Agent tool list, like the verifier.
+				enabled: false,
+				systemPrompt: REQUIREMENTS_DRAFTER_SYSTEM_PROMPT,
 				promptMode: "replace",
 				isDefault: true,
 			},

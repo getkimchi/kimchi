@@ -4,7 +4,8 @@
 
 import { statSync } from "node:fs"
 import { homedir } from "node:os"
-import { isAbsolute, resolve } from "node:path"
+import { join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 // Non-ASCII whitespace code points the OS / clipboard / browser sometimes substitute for a plain space: NBSP (U+00A0), the U+2000–U+200A span, NNBSP (U+202F), MMSP (U+205F), and the ideographic space (U+3000). We flatten them to " " before comparing against the filesystem. Escape sequences used deliberately: literal invisibles would get silently rewritten by formatters (biome in particular reads a run of spaces as "consecutive whitespace" and collapses the character class) and tests would pass as tautologies.
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g
@@ -24,16 +25,22 @@ export function stripAtPrefix(filePath: string): string {
 
 // Turn a user-facing path into a plain path: drop the optional @, flatten exotic whitespace, expand `~` and `~/…`. Does NOT resolve relative paths — see resolveUserPath.
 export function expandUserPath(filePath: string): string {
-	const n = normalizeUnicodeSpaces(stripAtPrefix(filePath))
+	let n = normalizeUnicodeSpaces(stripAtPrefix(filePath))
+	// Pi also accepts Git Bash/MSYS/WSL drive paths on Windows.
+	if (process.platform === "win32" && n.startsWith("/") && !n.startsWith("//") && !n.includes("\\")) {
+		const match = n.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i)
+		if (match) n = `${match[1].toUpperCase()}:\\${match[2]?.replaceAll("/", "\\") ?? ""}`
+	}
 	if (n === "~") return homedir()
-	if (n.startsWith("~/")) return homedir() + n.slice(1)
+	if (n.startsWith("~/") || (process.platform === "win32" && n.startsWith("~\\"))) return join(homedir(), n.slice(2))
+	if (n.startsWith("file://")) return fileURLToPath(n)
 	return n
 }
 
 // Full resolution to an absolute path: expansion + cwd-join for relative inputs. Still not a filesystem check — the file may or may not exist.
 export function resolveUserPath(filePath: string, cwd: string): string {
 	const expanded = expandUserPath(filePath)
-	return isAbsolute(expanded) ? expanded : resolve(cwd, expanded)
+	return resolve(cwd, expanded)
 }
 
 type ExistingPathKind = "file" | "directory" | "other"

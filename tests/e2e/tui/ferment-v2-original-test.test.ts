@@ -8,7 +8,7 @@ import {
 	originalTestRepairResponses,
 	seedOriginalTestRepository,
 } from "./support/ferment-v2-original-test.js"
-import { isVerifierRequest } from "./support/ferment-v2-verifier.js"
+import { draftRequirements, isRequirementsDraftRequest, isVerifierRequest } from "./support/ferment-v2-verifier.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -25,7 +25,21 @@ test("original assertions expose weakened tests and the run repairs the defect",
 				writeFileSync(settingsPath, JSON.stringify({ ...settings, resources: { "extensions.ferment-v2": true } }))
 				seedOriginalTestRepository(workDir)
 			},
-			responses: originalTestRepairResponses(),
+			responses: [
+				// The source-only drafter records the contract before any candidate;
+				// the seeded verifier later acknowledges the identical list.
+				draftRequirements([
+					{
+						id: "r1",
+						requirement: ORIGINAL_TEST_OBJECTIVE,
+						source: `Objective: ${ORIGINAL_TEST_OBJECTIVE}`,
+						acceptance: ORIGINAL_TEST_OBJECTIVE,
+						category: "behavior",
+					},
+				]),
+				{ match: isRequirementsDraftRequest, stream: ["The requirements are recorded."] },
+				...originalTestRepairResponses(),
+			],
 		},
 		async (fixture, trace) => {
 			terminal.submit(`/ferment-v2 ${ORIGINAL_TEST_OBJECTIVE}`)

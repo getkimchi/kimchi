@@ -3,6 +3,25 @@ import { join } from "node:path"
 import type { CustomEntry } from "@earendil-works/pi-coding-agent"
 import { expect, Key, test } from "@microsoft/tui-test"
 import type { FermentV2JournalEntry } from "../../../src/extensions/ferment-v2/types.js"
+import type { FakeResponseScript } from "./support/fake-openai-server.js"
+import { draftRequirements, isRequirementsDraftRequest } from "./support/ferment-v2-verifier.js"
+
+/** The source-only drafter records a one-item contract, then ends its turn. */
+function draftPhase(): FakeResponseScript[] {
+	return [
+		draftRequirements([
+			{
+				id: "r1",
+				requirement: "Complete the approved snapshot",
+				source: "Objective: complete the approved snapshot",
+				acceptance: "The approved snapshot is executed",
+				category: "delivery",
+			},
+		]),
+		{ match: isRequirementsDraftRequest, stream: ["The requirements are recorded."] },
+	]
+}
+
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
 import {
 	createKimchiFixture,
@@ -101,6 +120,9 @@ for (const referenceState of ["changed", "missing"] as const) {
 					stream: [plan],
 					toolCalls: [{ id: "submit", function: { name: "submit_plan", arguments: JSON.stringify({ plan }) } }],
 				},
+				// The approved-plan execution drafts its requirements contract before
+				// the first implementation turn; no verifier runs in this test.
+				...draftPhase(),
 				blockedResponse,
 				{
 					stream: ["RESUMED_APPROVED_SNAPSHOT"],
@@ -242,6 +264,10 @@ test("approved plan edits save separate files and reopen full requirements after
 				stream: [plan],
 				toolCalls: [{ id: "submit-editable", function: { name: "submit_plan", arguments: JSON.stringify({ plan }) } }],
 			},
+			// Each approved-plan execution (initial and after the edit) drafts its
+			// requirements contract before the first implementation turn.
+			...draftPhase(),
+			...draftPhase(),
 			{
 				toolCalls: [
 					{

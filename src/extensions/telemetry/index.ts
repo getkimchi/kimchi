@@ -389,6 +389,8 @@ function externalFermentV2EventName(eventName: FermentV2EventName): string | und
 			return "ferment_v2.stalled"
 		case FERMENT_V2_EVENTS.AGENT_ERROR:
 			return "ferment_v2.agent_error"
+		case FERMENT_V2_EVENTS.REQUIREMENTS:
+			return "ferment_v2.requirements"
 		case FERMENT_V2_EVENTS.EVALUATED:
 		case FERMENT_V2_EVENTS.CONTEXT_CHANGED:
 			return undefined

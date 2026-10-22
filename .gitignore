@@ -78,6 +78,7 @@ __pycache__/
 
 # LLM tools
 .codegraph/
+.factory/
 
 # vendor/superpowers is a local-only directory, not a submodule
 vendor/superpowers/

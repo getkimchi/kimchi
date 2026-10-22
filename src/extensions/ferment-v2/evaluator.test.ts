@@ -1197,7 +1197,7 @@ describe("Ferment V2 executing verifier", () => {
 		})
 		expect(result).toMatchObject({
 			verdict: "impossible",
-			reason: "Remaining requirement: ship it. Failing check: result e1",
+			reason: "Remaining requirement: ship it. Failing check: result e1 — needs the credentials",
 		})
 	})
 
@@ -1228,7 +1228,9 @@ describe("Ferment V2 executing verifier", () => {
 		})
 		expect(result).toMatchObject({
 			verdict: "continue",
-			reason: "Remaining requirement: ship it. Failing check: result e1",
+			// The composed observed failure AND the verifier's own summary both
+			// survive: the summary can carry an amendment proposal.
+			reason: "Remaining requirement: ship it. Failing check: result e1 — Fix the parser",
 		})
 	})
 
@@ -1275,8 +1277,67 @@ describe("Ferment V2 executing verifier", () => {
 		expect(result.verdict).toBe("continue")
 		if (result.verdict === "continue") {
 			expect(result.reason).toContain("Failing check: assertion failed ")
-			expect(result.reason.endsWith("…")).toBe(true)
-			expect(result.reason).toHaveLength("Remaining requirement: ship it. Failing check: ".length + 301)
+			// The composed gap stays clipped…
+			expect(result.reason).toContain("…")
+			// …and the verifier's own summary is preserved after it.
+			expect(result.reason.endsWith("Fix the parser")).toBe(true)
+			expect(result.reason).toHaveLength(
+				"Remaining requirement: ship it. Failing check: ".length + 301 + " — Fix the parser".length,
+			)
+		}
+	})
+
+	it("preserves an amendment proposal carried in the continue reason alongside the composed failure", async () => {
+		const result = await evaluate({
+			text: '{"verdict":"continue","reason":"r1 contradicts the repository contract; propose changing r1 to accept the documented default","checks":[{"requirementId":"r1","kind":"work","requirement":"ship it","status":"fail","evidence":["e1"]}]}',
+		})
+		expect(result.verdict).toBe("continue")
+		if (result.verdict === "continue") {
+			// The observed failure and the proposal (with its rationale) both reach the implementer.
+			expect(result.reason).toContain("Remaining requirement: ship it. Failing check: result e1")
+			expect(result.reason).toContain(
+				"r1 contradicts the repository contract; propose changing r1 to accept the documented default",
+			)
+		}
+	})
+
+	it("retains the failed observations a correction supersedes, in diagnostics", async () => {
+		const failing =
+			'{"verdict":"met","reason":"done","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"ship it","status":"fail","failureMode":"the export is broken","evidence":["e1"]}]}'
+		const corrected =
+			'{"verdict":"met","reason":"repaired and fully verified","checks":[{"requirementId":"r1","kind":"work","method":"command","requirement":"ship it","status":"pass","failureMode":"the export is broken","evidence":["e1"]},{"requirementId":"r2","kind":"work","method":"command","requirement":"include every field","status":"pass","failureMode":"a field could be missing","evidence":["e1"]}]}'
+		const resume = vi.fn(async () => makeRun({ text: corrected }))
+		const result = await evaluate({
+			text: failing,
+			// Two recorded requirements: the initial run covers only r1, so the
+			// coverage gap forces the single correction while r1 fails.
+			requirements: [
+				{
+					id: "r1",
+					requirement: "ship it",
+					source: "Objective: ship it",
+					acceptance: "The requested observable behavior holds",
+					category: "behavior",
+				},
+				{
+					id: "r2",
+					requirement: "include every field",
+					source: "Objective: include every field",
+					acceptance: "Every field is present",
+					category: "behavior",
+				},
+			],
+			deps: { resume },
+		})
+		expect(resume).toHaveBeenCalledTimes(1)
+		expect(result).toMatchObject({ verdict: "met" })
+		// The earlier failure is retained for audit: the corrected verdict's
+		// checks replace it, but it never silently disappears.
+		expect(result.diagnostics.retainedChecks).toEqual([
+			expect.objectContaining({ requirementId: "r1", status: "fail", failureMode: "the export is broken" }),
+		])
+		if (result.verdict === "met") {
+			expect(result.checks?.every((check) => check.status === "pass")).toBe(true)
 		}
 	})
 
@@ -1310,7 +1371,7 @@ describe("Ferment V2 executing verifier", () => {
 		})
 		expect(result).toMatchObject({
 			verdict: "continue",
-			reason: "Remaining requirement: ship it. Failing check: result e1",
+			reason: "Remaining requirement: ship it. Failing check: result e1 — now cited",
 		})
 	})
 
@@ -1597,7 +1658,7 @@ describe("Ferment V2 executing verifier", () => {
 		})
 		expect(result).toMatchObject({
 			verdict: "continue",
-			reason: "Remaining requirement: ship it. Failing check: result e1",
+			reason: "Remaining requirement: ship it. Failing check: result e1 — Fix the parser",
 		})
 		if (result.verdict === "continue") {
 			expect(result.integrity?.violated).toBe(true)

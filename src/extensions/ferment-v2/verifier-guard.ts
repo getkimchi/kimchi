@@ -31,7 +31,7 @@
 import { lstatSync, realpathSync } from "node:fs"
 import { isAbsolute, relative, resolve } from "node:path"
 import type { Usage } from "@earendil-works/pi-ai"
-import type { InlineExtension } from "@earendil-works/pi-coding-agent"
+import type { ExtensionFactory, InlineExtension } from "@earendil-works/pi-coding-agent"
 import type { OriginalTestReceipt } from "./original-test.js"
 import { isRecord } from "./reducer.js"
 import { RECORD_REQUIREMENTS_TOOL } from "./requirements.js"
@@ -85,6 +85,46 @@ export interface VerifierGuard {
 	 * summarization completion bills tokens no assistant message ever carries.
 	 */
 	usage: FermentV2EvaluatorUsage
+}
+
+/** Shared usage accumulator for host-spawned child sessions (verifier, requirements drafter). */
+export interface UsageAccumulator {
+	/** Live totals; read after the run settles. */
+	readonly usage: FermentV2EvaluatorUsage
+	/** Registers the tracking handlers on a child session's extension API. */
+	register: ExtensionFactory
+}
+
+export function createUsageAccumulator(): UsageAccumulator {
+	const usage: FermentV2EvaluatorUsage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		costUsd: 0,
+	}
+	const addUsage = (u: Usage): void => {
+		usage.input += u.input ?? 0
+		usage.output += u.output ?? 0
+		usage.cacheRead += u.cacheRead ?? 0
+		usage.cacheWrite += u.cacheWrite ?? 0
+		usage.totalTokens += u.totalTokens ?? 0
+		usage.costUsd += u.cost?.total ?? 0
+	}
+	const register: ExtensionFactory = (pi) => {
+		// Compaction runs a separate summarization completion that produces no
+		// assistant message — its billed usage surfaces only on this event.
+		pi.on("session_compact", (event) => {
+			if (event.compactionEntry.usage) addUsage(event.compactionEntry.usage)
+		})
+		pi.on("message_end", (event) => {
+			if (event.message.role !== "assistant") return
+			const u = (event.message as { usage?: Usage }).usage
+			if (u) addUsage(u)
+		})
+	}
+	return { usage, register }
 }
 
 function textExcerpt(content: readonly unknown[]): string {
@@ -158,26 +198,11 @@ export function createVerifierGuard(options: VerifierGuardOptions = {}): Verifie
 	const writableRoots = { cwd: options.cwd, worktree: worktree?.path }
 	const evidence = new Map<string, VerifierEvidence>()
 	const createdFiles = new Set<string>()
-	const usage: FermentV2EvaluatorUsage = {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		costUsd: 0,
-	}
+	const usageTracker = createUsageAccumulator()
 	let nextEvidenceId = 1
 
-	const addUsage = (u: Usage): void => {
-		usage.input += u.input ?? 0
-		usage.output += u.output ?? 0
-		usage.cacheRead += u.cacheRead ?? 0
-		usage.cacheWrite += u.cacheWrite ?? 0
-		usage.totalTokens += u.totalTokens ?? 0
-		usage.costUsd += u.cost?.total ?? 0
-	}
-
 	const extension: InlineExtension = (pi) => {
+		usageTracker.register(pi)
 		if (worktree) {
 			pi.on("tool_call", async (event) => {
 				if (!inputMentions(event.input, worktreePaths)) return undefined
@@ -222,19 +247,9 @@ export function createVerifierGuard(options: VerifierGuardOptions = {}): Verifie
 			)
 			return { content }
 		})
-		// Compaction runs a separate summarization completion that produces no
-		// assistant message — its billed usage surfaces only on this event.
-		pi.on("session_compact", (event) => {
-			if (event.compactionEntry.usage) addUsage(event.compactionEntry.usage)
-		})
-		pi.on("message_end", (event) => {
-			if (event.message.role !== "assistant") return
-			const u = (event.message as { usage?: Usage }).usage
-			if (u) addUsage(u)
-		})
 	}
 
-	return { extension, evidence, createdFiles, usage }
+	return { extension, evidence, createdFiles, usage: usageTracker.usage }
 }
 
 /**

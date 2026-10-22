@@ -1,7 +1,7 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME, UPDATE_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
-import { FERMENT_V2_STATUS, type SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUS, type FermentV2Requirements, type SessionFermentV2 } from "./types.js"
 
 const TODO_CONTINUITY_RULE =
 	"If more work remains after Todos were settled, preserve those Todos and their evidence; extend the list with a concrete missing action or reopen the matching Todo instead of clearing or replacing the list."
@@ -109,6 +109,51 @@ Execution:
 ${EXECUTION_GUIDANCE}`
 }
 
+/**
+ * The requirements context every implementer turn sees: the current ready
+ * contract (items, sources, acceptance, version, provenance) or a concise
+ * pending/unavailable status. History is never rendered here.
+ */
+export function renderFermentV2RequirementsSnapshot(record: FermentV2Requirements) {
+	if (record.availability === "ready") {
+		return {
+			availability: record.availability,
+			contractVersion: record.contractVersion,
+			provenance: record.provenance,
+			items: record.items.map((item) => ({
+				id: item.id,
+				requirement: item.requirement,
+				source: item.source,
+				acceptance: item.acceptance,
+				category: item.category,
+			})),
+		}
+	}
+	return {
+		availability: record.availability,
+		...(record.unavailableReason ? { reason: record.unavailableReason } : {}),
+	}
+}
+
+function renderFermentV2RequirementsRules(record: FermentV2Requirements): string {
+	if (record.availability === "ready") {
+		return `<requirements_rules>
+- The requirements above are the authoritative acceptance criteria for this objective, established from the objective and baseline source before implementation began.
+- Work toward them; they are checked independently against the objective at completion.
+- If you discover an obligation the objective requires that the list misses, add a Todo for it and surface it in your completion evidence; do not assume the list was wrong.
+</requirements_rules>`
+	}
+	if (record.availability === "pending") {
+		return `<requirements_rules>
+- Acceptance criteria are being established for the current objective; keep working on the objective meanwhile.
+</requirements_rules>`
+	}
+	return `<requirements_rules>
+- Acceptance criteria could not be established${record.unavailableReason ? ` (${record.unavailableReason})` : ""}; work from the objective directly.
+- Completion still requires independent verification, so preserve visible evidence for every objective requirement.
+</requirements_rules>`
+}
+
 function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly FermentV2Lesson[]): string {
 	const durableLessons = lessons.map(({ kind, text }) => ({ kind, text }))
 	const snapshot = JSON.stringify(
@@ -116,11 +161,15 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 			status: fermentV2.status,
 			objective: fermentV2.objective,
 			tokenBudget: fermentV2.tokenBudget,
+			...(fermentV2.requirements ? { requirements: renderFermentV2RequirementsSnapshot(fermentV2.requirements) } : {}),
 			...(durableLessons.length > 0 ? { lessons: durableLessons } : {}),
 		},
 		null,
 		2,
 	)
+	const requirementsRules = fermentV2.requirements
+		? `\n${renderFermentV2RequirementsRules(fermentV2.requirements)}\n`
+		: ""
 	const continuation =
 		fermentV2.status === FERMENT_V2_STATUS.ACTIVE
 			? `Persistent objective continuation is enabled.
@@ -129,7 +178,7 @@ function renderFermentV2Context(fermentV2: SessionFermentV2, lessons: readonly F
 - Treat the objective JSON above as authoritative.
 - Do not call ${GET_FERMENT_V2_TOOL_NAME} while this context is present.
 </objective_rules>
-
+${requirementsRules}
 <todo_rules>
 - Use the separately supplied Todo state as the authoritative tactical plan. Do not clear it while this objective is active.
 - Add a Todo when you discover work the objective requires. A list that grows from real discoveries is progress, even though it defers completion.

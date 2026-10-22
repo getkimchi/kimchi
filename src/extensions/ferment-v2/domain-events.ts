@@ -1,4 +1,9 @@
-import type { FermentV2EvaluatorUsage, SessionFermentV2 } from "./types.js"
+import type {
+	FermentV2EvaluatorUsage,
+	FermentV2RequirementsAvailability,
+	FermentV2RequirementsProvenance,
+	SessionFermentV2,
+} from "./types.js"
 
 export const FERMENT_V2_EVENTS = {
 	STARTED: "ferment-v2:started",
@@ -13,6 +18,7 @@ export const FERMENT_V2_EVENTS = {
 	STALLED: "ferment-v2:stalled",
 	AGENT_ERROR: "ferment-v2:agent_error",
 	EVALUATED: "ferment-v2:evaluated",
+	REQUIREMENTS: "ferment-v2:requirements",
 	CONTEXT_CHANGED: "ferment-v2:context_changed",
 } as const
 
@@ -66,6 +72,7 @@ export type FermentV2EvaluatorFailureType =
 	| "invalid_request_payload"
 	| "model_retired"
 	| "call_failed"
+	| "requirements_unavailable"
 
 export interface FermentV2EvaluatedPayload {
 	sessionId: string
@@ -95,10 +102,28 @@ export interface FermentV2EvaluatedPayload {
 	restoredFiles?: readonly string[]
 	/** Working-tree files the integrity guard removed after the verifier run. */
 	removedFiles?: readonly string[]
+	/** The contract version the review verified against (before its own additions). */
+	initialContractVersion?: number
+	/** The contract version after the review's accepted additions, when one applied. */
+	finalContractVersion?: number
+	/** IDs of requirements the review added to the persisted contract. */
+	contractAdditions?: readonly string[]
+	/** Distinct outcome class for non-terminal results: a product defect, an incomplete verification procedure, or an infrastructure failure. */
+	outcome?: "defect" | "procedure" | "infrastructure"
 }
 
 export interface FermentV2ContextChangedPayload {
 	fermentV2Id?: string
 	revision?: number
 	status?: SessionFermentV2["status"]
+}
+
+/** Emitted when a goal's requirements record settles (ready, unavailable) or is invalidated. */
+export interface FermentV2RequirementsPayload {
+	fermentV2Id: string
+	revision: number
+	availability: FermentV2RequirementsAvailability
+	provenance?: FermentV2RequirementsProvenance
+	contractVersion?: number
+	reason?: string
 }

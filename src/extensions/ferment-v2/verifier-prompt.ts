@@ -11,6 +11,7 @@
  */
 
 import type { TodoItem } from "../todos/types.js"
+import type { VerifierRequirement } from "./requirements.js"
 import type { TestInventoryFlag, WorkspaceChangedFile, WorkspaceFacts } from "./workspace.js"
 
 /**
@@ -124,6 +125,25 @@ export interface FermentV2VerifierTaskInput {
 	proposedAnswer?: string
 	/** The task-facing reason of the previous verifier `continue` verdict, when one exists. */
 	previousGap?: string
+	/** The persisted ready contract this review must verify (acknowledge; additions only). */
+	requirements?: {
+		items: readonly VerifierRequirement[]
+		contractVersion: number
+		provenance: string
+		/** Highest r<n> ID ever allocated; additions must use fresh IDs above it. */
+		idWatermark: number
+	}
+	/** Why no established contract applies to this review (degraded or stale). */
+	requirementsUnavailable?: string
+}
+
+function formatRequirementItems(items: readonly VerifierRequirement[]): string {
+	return items
+		.map(
+			(item) =>
+				`- ${item.id} [${item.category}] ${item.requirement}\n  source: ${item.source}\n  acceptance: ${item.acceptance}`,
+		)
+		.join("\n")
 }
 
 /** Build the verifier's task prompt: objective, facts, low-trust context, and the output contract. */
@@ -146,9 +166,38 @@ export function buildVerifierTaskPrompt(input: FermentV2VerifierTaskInput): stri
 		)
 	}
 	const hasFlags = "workspace" in input.facts && input.facts.workspace.testInventoryFlags.length > 0
+	if (input.requirements) {
+		const provenanceLabel = input.requirements.provenance.replaceAll("_", " ")
+		sections.push(
+			[
+				`Established requirements (persisted contract v${input.requirements.contractVersion}, drafted ${provenanceLabel} before implementation):`,
+				formatRequirementItems(input.requirements.items),
+				"These obligations were sourced from the objective and baseline repository contracts before any candidate code existed; they are authoritative for this review. Call record_requirements with exactly this list to acknowledge it and receive implementation context.",
+				"Reverse coverage: before your verdict, reread the objective above and map every substantive clause to a listed requirement and a check that verifies it — do not stop at checking the recorded IDs. A substantive clause mapping to no requirement is an omission.",
+				`If you discover an omitted task-grounded obligation, add it: call record_requirements with the current list verbatim plus the new obligation (a fresh ID such as r${input.requirements.idWatermark + 1}, above the allocated watermark), a source-grounded reason quoting where the objective or a repository contract requires it, and expectedVersion ${input.requirements.contractVersion}. The added obligation is binding immediately: verify it in this review like any other — fully verified it permits met, unmet or unverified it requires continue.`,
+				"Existing items can never be changed, weakened, recategorized, or removed in this review. If one seems wrong, return a continue verdict whose reason names the proposal and its rationale; the obligation stays binding and the proposal is actionable context, not an accepted rewrite.",
+				"Verify every listed requirement independently and reference their IDs in your checks.",
+				'Cite only [eN] evidence IDs stamped on your tool results, one bare ID string per array entry (for example "e25" in the JSON evidence arrays).',
+				...(hasFlags
+					? [
+							"Every test-inventory flag ID listed above must be addressed by some check's flags array before a met verdict is accepted.",
+						]
+					: []),
+			].join("\n\n"),
+		)
+		return sections.join("\n\n")
+	}
+	if (input.requirementsUnavailable) {
+		sections.push(
+			`Requirements contract: unavailable — ${input.requirementsUnavailable}. Derive a working list of observable requirements from the objective and call record_requirements with it before validating candidate behavior; its result supplies the implementer context. A met verdict cannot be certified without an established contract, so when no established requirement remains unresolved, report the outage instead of claiming completion.`,
+		)
+	} else {
+		sections.push(
+			"First derive observable requirements from the objective and relevant repository contracts. Call record_requirements alone before validating candidate behavior; its result supplies the implementer context. Then verify the recorded requirements independently and reference their IDs in your checks",
+		)
+	}
 	sections.push(
 		[
-			"First derive observable requirements from the objective and relevant repository contracts. Call record_requirements alone before validating candidate behavior; its result supplies the implementer context. Then verify the recorded requirements independently and reference their IDs in your checks",
 			'and end with exactly one JSON object matching the output contract. Cite only [eN] evidence IDs stamped on your tool results, one bare ID string per array entry (for example "e25" in the JSON evidence arrays).',
 			...(hasFlags
 				? [

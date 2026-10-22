@@ -48,6 +48,41 @@ describe("buildVerifierTaskPrompt", () => {
 		expect(prompt).toContain("[eN] evidence IDs")
 	})
 
+	it("instructs a seeded review to acknowledge, add omissions, and never rewrite existing criteria", () => {
+		const prompt = buildVerifierTaskPrompt({
+			objective: "Implement the login flow",
+			cwd: "/workspace",
+			facts,
+			todos,
+			requirements: {
+				items: [
+					{
+						id: "r1",
+						requirement: "The login flow returns hello",
+						source: "Objective: return hello",
+						acceptance: "Output equals hello",
+						category: "behavior",
+					},
+				],
+				contractVersion: 3,
+				provenance: "pre_implementation",
+				idWatermark: 5,
+			},
+		})
+		expect(prompt).toContain("persisted contract v3")
+		expect(prompt).toContain("Call record_requirements with exactly this list to acknowledge it")
+		// Reverse coverage: map objective clauses, not just recorded IDs.
+		expect(prompt).toContain("Reverse coverage")
+		expect(prompt).toContain("map every substantive clause to a listed requirement and a check")
+		// The addition procedure: fresh-ID hint, expected version, binding immediately.
+		expect(prompt).toContain("a fresh ID such as r6")
+		expect(prompt).toContain("expectedVersion 3")
+		expect(prompt).toContain("binding immediately")
+		// Existing criteria are immutable in this review.
+		expect(prompt).toContain("never be changed, weakened, recategorized, or removed")
+		expect(prompt).toContain("actionable context, not an accepted rewrite")
+	})
+
 	it("notes unavailable facts outside git", () => {
 		const prompt = buildVerifierTaskPrompt({
 			objective: "Research the API",

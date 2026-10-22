@@ -71,11 +71,17 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 			: []),
 		`Revision: ${fermentV2.revision}`,
 		approvedPlan ? `Plan: ${approvedPlan.planPath ?? "no saved file"}` : `Objective: ${fermentV2.objective}`,
+		...formatFermentV2RequirementsSummary(fermentV2),
 		`${approvedPlan ? "Run time" : "Fermenting time"}: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
 		...(fermentV2.verifierUsage
 			? [
 					`Verifier: ${fermentV2.verifierUsage.runs} run${fermentV2.verifierUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.verifierUsage.totalTokens)} tokens · $${fermentV2.verifierUsage.costUsd.toFixed(2)}`,
+				]
+			: []),
+		...(fermentV2.requirementsUsage
+			? [
+					`Requirements drafts: ${fermentV2.requirementsUsage.runs} run${fermentV2.requirementsUsage.runs === 1 ? "" : "s"} · ${formatCount(fermentV2.requirementsUsage.totalTokens)} tokens · $${fermentV2.requirementsUsage.costUsd.toFixed(2)}`,
 				]
 			: []),
 		...(evaluation
@@ -84,6 +90,24 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 		"",
 		`Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
+}
+
+/** Status/version and the current criteria (or the pending/unavailable reason); history is not shown. */
+export function formatFermentV2RequirementsSummary(fermentV2: SessionFermentV2): string[] {
+	const record = fermentV2.requirements
+	if (!record) return []
+	if (record.availability === "ready") {
+		const provenance = record.provenance.replaceAll("_", " ")
+		return [
+			`Requirements: ready · v${record.contractVersion} · ${record.items.length} item${record.items.length === 1 ? "" : "s"} · ${provenance}`,
+			...record.items.map((item) => {
+				const requirement = item.requirement.length > 100 ? `${item.requirement.slice(0, 100)}…` : item.requirement
+				return `  ${item.id} [${item.category}] ${requirement}`
+			}),
+		]
+	}
+	if (record.availability === "pending") return ["Requirements: being established…"]
+	return [`Requirements: unavailable — ${record.unavailableReason ?? "drafting failed"}`]
 }
 
 function formatFermentV2EvaluatorModel(evaluation: FermentV2Evaluation): string {

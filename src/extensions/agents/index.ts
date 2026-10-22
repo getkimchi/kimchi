@@ -81,6 +81,7 @@ import {
 } from "./personas/agent-types.js"
 import { loadCustomAgents } from "./personas/custom-agents.js"
 import {
+	AGENT_FERMENT_REQUIREMENTS_DRAFT,
 	AGENT_FERMENT_VERIFIER,
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
@@ -847,6 +848,61 @@ function terminalAssistantError(session: AgentSession | undefined): string | und
 	return undefined
 }
 
+/** Shared spawn for the Ferment V2 host-driven phases (verifier, requirements drafter).
+ *  Both run as hidden, unlimited-turn, model-only-inactivity child sessions with
+ *  inline extensionFactories and a persisted transcript alongside the parent. */
+async function spawnFermentV2PhaseAgent(
+	phase: typeof AGENT_FERMENT_VERIFIER | typeof AGENT_FERMENT_REQUIREMENTS_DRAFT,
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	opts: {
+		model: Model<Api>
+		cwd: string
+		extensionFactories: InlineExtension[]
+		signal: AbortSignal
+		/** Wall-clock cap in seconds; 0 (default) = unlimited. */
+		maxDuration?: number
+		/** Thinking level of the phase session; default `low`. */
+		thinkingLevel?: ThinkingLevel
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	if (!activeManager) return undefined
+
+	// Persist the phase transcript alongside the parent session for
+	// post-mortem analysis, exactly like the grader.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, opts.cwd, phase)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Best-effort: the phase can run without a persisted transcript.
+	}
+
+	const record = await activeManager.spawnAndWait(pi, ctx, phase, prompt, {
+		description: phase === AGENT_FERMENT_VERIFIER ? "Ferment V2 verifier" : "Ferment V2 requirements draft",
+		visibility: "system",
+		model: opts.model,
+		cwd: opts.cwd,
+		sessionFile,
+		sessionDir,
+		signal: opts.signal,
+		// 0 = unlimited: bounded by the caller's wall-clock cap, not turns.
+		maxTurns: 0,
+		maxDuration: opts.maxDuration ?? 0,
+		inactivityMode: "model_only",
+		thinkingLevel: opts.thinkingLevel ?? "low",
+		extensionFactories: opts.extensionFactories,
+	})
+	return verifierRunFromRecord(record)
+}
+
 /** Spawn the Ferment V2 Verifier subagent and wait for its result.
  *
  *  The verifier executes checks in the working tree with read-only tools and
@@ -873,40 +929,33 @@ export async function spawnFermentV2VerifierAgent(
 		thinkingLevel?: ThinkingLevel
 	},
 ): Promise<FermentV2VerifierAgentRun | undefined> {
-	if (!activeManager) return undefined
+	return spawnFermentV2PhaseAgent(AGENT_FERMENT_VERIFIER, pi, ctx, prompt, opts)
+}
 
-	// Persist the verifier transcript alongside the parent session for
-	// post-mortem analysis, exactly like the grader.
-	let sessionFile: string | undefined
-	let sessionDir: string | undefined
-	try {
-		const parentSessionDir = ctx.sessionManager.getSessionDir()
-		const parentSessionFile = ctx.sessionManager.getSessionFile()
-		if (parentSessionDir && parentSessionFile) {
-			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, opts.cwd, AGENT_FERMENT_VERIFIER)
-			sessionFile = prepared?.sessionFile
-			sessionDir = parentSessionDir
-		}
-	} catch {
-		// Best-effort: the verifier can run without a persisted transcript.
-	}
-
-	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_FERMENT_VERIFIER, prompt, {
-		description: "Ferment V2 verifier",
-		visibility: "system",
-		model: opts.model,
-		cwd: opts.cwd,
-		sessionFile,
-		sessionDir,
-		signal: opts.signal,
-		// 0 = unlimited: no turn or wall-clock limit for the verifier.
-		maxTurns: 0,
-		maxDuration: opts.maxDuration ?? 0,
-		inactivityMode: "model_only",
-		thinkingLevel: opts.thinkingLevel ?? "low",
-		extensionFactories: opts.extensionFactories,
-	})
-	return verifierRunFromRecord(record)
+/** Spawn the Ferment V2 Requirements Drafter subagent and wait for its result.
+ *
+ *  The drafter derives the initial requirements list from the objective, the
+ *  authorized plan, and a host-provided read-only source view, before any
+ *  implementation exists. It is bounded by the caller's wall-clock cap and
+ *  has no shell, write, or edit tools; the host guard confines read paths.
+ *  Returns undefined when the agent system is not active so the caller can
+ *  surface an explicit degraded outcome. */
+export async function spawnFermentV2RequirementsDraftAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	opts: {
+		model: Model<Api>
+		cwd: string
+		extensionFactories: InlineExtension[]
+		signal: AbortSignal
+		/** Wall-clock cap in seconds. */
+		maxDuration?: number
+		/** Thinking level of the drafter session; default `low`. */
+		thinkingLevel?: ThinkingLevel
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	return spawnFermentV2PhaseAgent(AGENT_FERMENT_REQUIREMENTS_DRAFT, pi, ctx, prompt, opts)
 }
 
 /** Resume the Ferment V2 verifier session with a correction prompt. Same
