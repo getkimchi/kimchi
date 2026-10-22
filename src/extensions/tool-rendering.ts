@@ -48,7 +48,7 @@ import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
-import { TODO_TOOL_NAMES } from "./todos/tool.js"
+import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 
 const RESET = "\x1b[0m"
@@ -80,7 +80,7 @@ function currentThemeInstance(): unknown {
 	return (globalThis as Record<symbol, unknown>)[PI_THEME_KEY]
 }
 let themeChangeListenerRegistered = false
-const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>(["write_todos", ...TODO_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
+const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>([...TODO_WRITE_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
 const KITTY_IMAGE_PREFIX = "\x1b_G"
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File="

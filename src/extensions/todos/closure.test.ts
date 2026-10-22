@@ -9,9 +9,9 @@ import { FERMENT_V2_STATUS, FERMENT_V2_STATUSES } from "../ferment-v2/types.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { getInputRevision } from "./reconciliation.js"
+import { TODO_WRITE_TOOL_NAMES } from "./session.js"
 import { TODO_STALENESS_CUSTOM_TYPE } from "./staleness-steers.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
-import { TODO_TOOL_NAMES } from "./tool.js"
 import { TODO_STATUS, type TodoDraft } from "./types.js"
 
 async function harness() {
@@ -127,7 +127,7 @@ describe("bounded todo cleanup", () => {
 		expect(h.closure()).toHaveLength(1)
 	})
 
-	it.each([...TODO_TOOL_NAMES, "write_todos"])("does not treat a %s result as reconciliation", async (name) => {
+	it.each(TODO_WRITE_TOOL_NAMES)("does not treat a %s result as reconciliation", async (name) => {
 		const h = await harness()
 		h.write([{ content: "Future task", status: TODO_STATUS.PENDING }])
 		await h.work(name)
@@ -153,10 +153,7 @@ describe("bounded todo cleanup", () => {
 			expect(h.closure()).toHaveLength(0)
 		})
 
-		it.each([
-			...TODO_TOOL_NAMES,
-			"write_todos",
-		])("a real %s write reconciles and suppresses the closure check", async (name) => {
+		it.each(TODO_WRITE_TOOL_NAMES)("a real %s write reconciles and suppresses the closure check", async (name) => {
 			const h = await harness()
 			h.write([{ content: "Future task", status: TODO_STATUS.PENDING }])
 			await h.work(name)

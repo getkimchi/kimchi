@@ -9,7 +9,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetSteerOutcomeWatches, steerOutcomeWatcherExtension } from "./steer-outcome-watcher.js"
-import { TODO_TOOL_NAMES } from "./todos/tool.js"
+import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 
 type Handler = (...args: unknown[]) => Promise<unknown> | unknown
 
@@ -70,7 +70,7 @@ describe("steer outcome watcher — site adoptions", () => {
 	// "todo_write", "todowrite") that kimchi never registers, so real
 	// compliance — e.g. a mark_todo call following a staleness steer — was
 	// misclassified: the window expired and emitted "expired" instead.
-	it.each([...TODO_TOOL_NAMES, "write_todos"])("todo_staleness: a %s write counts as compliance", async (name) => {
+	it.each(TODO_WRITE_TOOL_NAMES)("todo_staleness: a %s write counts as compliance", async (name) => {
 		const { pi, emitted, fire } = makePi()
 		const { sendHiddenSteer } = await import("./todos/staleness-steers.js")
 		sendHiddenSteer(pi, "todo-staleness", "refresh the list", {}, { steerKind: "todo_staleness", sessionId: "session" })
