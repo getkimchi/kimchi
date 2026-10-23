@@ -1554,6 +1554,36 @@ describe("PR titles and author logins", () => {
 		expect(link).not.toHaveProperty("title")
 		expect(link).not.toHaveProperty("author")
 	})
+	it.each(
+		providers,
+	)("keeps the branch keys of a %s PR across a restart, so an unchanged check adds no row", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-add-jira"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const rows = saved().length
+		vi.resetModules()
+		const relaunched = await import("./pull-requests.js")
+		expect(relaunched.readWorkPullRequestUpdates(agentDir)[0].pullRequests).toEqual([
+			expect.objectContaining({ provider, number: 7, branchIssueKeys: ["ABC-12"] }),
+		])
+		const checks = commitCalls().length
+		later()
+		await relaunched.reconcileWorkPullRequests(agentDir, new AbortController().signal, () => {})
+		expect(commitCalls().length).toBeGreaterThan(checks)
+		expect(saved()).toHaveLength(rows)
+	})
+	it.each(providers)("keeps the Jira keys of a %s PR's head branch, not the branch name", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-and-DEF-3"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const [link] = saved().at(-1).pullRequests
+		expect(link.branchIssueKeys).toEqual(["ABC-12", "DEF-3"])
+		expect(JSON.stringify(saved().at(-1))).not.toContain(branch)
+	})
 	it.each(providers)("keeps reading %s links saved without them and adds them on the next check", async (provider) => {
 		const id = String(provider === "github" ? pull().id : mr().id)
 		// A link saved by an earlier version.

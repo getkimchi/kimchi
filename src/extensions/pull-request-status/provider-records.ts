@@ -1,4 +1,6 @@
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
+
+import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "../../shared/issue-keys.js"
 import { plainURL } from "../../utils/url.js"
 import { object } from "../work-attribution/summary.js"
 import type { WorkPullRequest, WorkPullRequestLookup } from "./pull-requests.js"
@@ -84,6 +86,8 @@ export function pullRequest(
 	value: unknown,
 	repository: Pick<Repository, "host" | "provider">,
 	checkedAt: string,
+	/** The branch keys of a saved link, which keeps the keys but not the branch they came from. */
+	savedBranchKeys?: unknown,
 ): WorkPullRequest {
 	const { host, provider } = repository
 	if (!object(value)) throw new LookupError(`${label(repository)} returned an invalid pull request.`, "invalid")
@@ -121,6 +125,11 @@ export function pullRequest(
 	const title = pullRequestTitle(value.title)
 	const user = provider === "gitlab" ? value.author : value.user
 	const author = object(user) ? pullRequestAuthor(provider === "gitlab" ? user.username : user.login) : undefined
+	const branch = provider === "gitlab" ? value.source_branch : object(value.head) ? value.head.ref : undefined
+	const branchKeys =
+		typeof branch === "string"
+			? branchIssueKeys(branch).slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+			: savedBranchIssueKeys(savedBranchKeys)
 	const repositoryId = providerId(
 		provider === "gitlab"
 			? value.target_project_id
@@ -142,6 +151,7 @@ export function pullRequest(
 		number,
 		...(title ? { title } : {}),
 		...(author ? { author } : {}),
+		...(branchKeys.length ? { branchIssueKeys: branchKeys } : {}),
 		state,
 		repository: path[1],
 		host,
@@ -191,6 +201,8 @@ export function storedPullRequests(value: unknown): WorkPullRequest[] {
 					},
 					{ host: item.host, provider },
 					item.checkedAt,
+					// Without them a reloaded link differs from the next unchanged check, which appends it again.
+					item.branchIssueKeys,
 				),
 			]
 		} catch {
