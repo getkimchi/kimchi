@@ -107,6 +107,14 @@
 #     description column truncates first, then the provider column, the model
 #     id last. The shared renderer lives in src/model-selector-table.ts;
 #     removal criteria for this hunk are in the Removal note below.
+#   - /settings omits the "Install telemetry" toggle: the settings item and
+#     its onEnableInstallTelemetryChange switch case are dropped from
+#     dist/modes/interactive/components/settings-selector.js. kimchi
+#     force-disables pi install telemetry (PI_TELEMETRY=0 +
+#     reportInstallTelemetry no-op, src/pi-telemetry-patch.ts), so the toggle
+#     is dead UI that could flip the persisted enableInstallTelemetry value
+#     without any effect. The interactive-mode callback wiring and the
+#     SettingsCallbacks type stay (unreferenced) to keep the hunk minimal.
 #   - exportToJsonl is awaited: src/cli.ts replaces the prototype with an async
 #     wrapper (trace IDs + awaited PII redaction, fail-closed). Upstream's method
 #     is sync, so this hunk looks redundant - it is not. Dropping it prints
@@ -166,7 +174,7 @@
 # (dist/core/project-trust.js, dist/modes/interactive/interactive-mode.js)
 # mention those resources and speak as Kimchi, not pi.
 # Careful: pasteToEditor is NOT patched here - src/paste-to-editor-patch.ts owns
-# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
+# Removal: remove the selector adapter when the pinned Pi release provides equivalent rendering extensibility or native capability columns. Remove the tools/bash.js bounded-termination hunk when the pinned Pi release ships equivalent bounded abort cleanup (upstream: earendil-works/pi#10929); keep the Kimchi regression tests in src/extensions/bash-background/ after removal. Remove the /settings Install-telemetry-omission hunk when pi hides the toggle itself while install telemetry is force-disabled (or exposes a settings-item filter API). Remove other runtime/UI hunks when upstream provides equivalent APIs or Kimchi no longer needs the branded behavior. Remove trust hunks when Pi provides native trust-scan extensibility or Kimchi adopts Pi's config-directory layout. Keep trust resources synchronized with `TRUST_REQUIRING_PROJECT_RESOURCES` in `src/project-scope-trust.ts` until then.
 # History: patches/CHANGELOG.md.
 #
 #   - Bug-report zip archives created with mode 0600 (writeZipArchive +
@@ -514,7 +522,7 @@ index 0ff35badb1ba62b35c4ba1fd778cedae670a8691..e1ffb4c2ea89e502a1dd6540783bc63c
  async function selectProjectTrustOption(cwd, ctx) {
      const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a21278f08341e 100644
+index 563d7d5ff8b514bd276e16c0243f373769ca8de2..ed0c6233112b57dc53a7c8639fc12c477465e811 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -583,9 +583,16 @@ export class DefaultResourceLoader {
@@ -544,7 +552,7 @@ index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a2127
              for (const toolName of ext.tools.keys()) {
                  const existingOwner = toolOwners.get(toolName);
                  if (existingOwner && existingOwner !== ext.path) {
-@@ -990,16 +997,23 @@ export class DefaultResourceLoader {
+@@ -990,17 +997,24 @@ export class DefaultResourceLoader {
                      toolOwners.set(toolName, ext.path);
                  }
              }
@@ -573,6 +581,7 @@ index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a2127
 +                    flagOwners.set(flagName, { owner: ext.path, def: ext.flags.get(flagName) });
                  }
              }
+         }
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 index 62b469b5dc3fcea2aa8f52218cbdfe892d9abed4..c34fb4ea381311f7e8e9cc380b24f1bf10ea255d 100644
 --- a/dist/core/session-manager.js
@@ -1512,6 +1521,34 @@ index bd8894046f77385541fd9bd7b88268866a34a526..41dbea51183403be34687a00a3035254
          this.onSelectCallback(model);
      }
      getSearchInput() {
+diff --git a/dist/modes/interactive/components/settings-selector.js b/dist/modes/interactive/components/settings-selector.js
+index f7929f1dfb9dcdd1e80e71e1c4e6fc05578d8a49..c50ff3182b48b8d76578961591e82876f39f28ee 100644
+--- a/dist/modes/interactive/components/settings-selector.js
++++ b/dist/modes/interactive/components/settings-selector.js
+@@ -350,13 +350,6 @@ export class SettingsSelectorComponent extends Container {
+                 currentValue: String(config.quietStartup),
+                 values: ["true", "header", "false"],
+             },
+-            {
+-                id: "install-telemetry",
+-                label: "Install telemetry",
+-                description: "Send an anonymous version/update ping after changelog-detected updates",
+-                currentValue: config.enableInstallTelemetry ? "true" : "false",
+-                values: ["true", "false"],
+-            },
+             {
+                 id: "default-project-trust",
+                 label: "Default project trust",
+@@ -689,9 +682,6 @@ export class SettingsSelectorComponent extends Container {
+                 case "quiet-startup":
+                     callbacks.onQuietStartupChange(newValue === "header" ? "header" : newValue === "true");
+                     break;
+-                case "install-telemetry":
+-                    callbacks.onEnableInstallTelemetryChange(newValue === "true");
+-                    break;
+                 case "default-project-trust": {
+                     const defaultProjectTrust = DEFAULT_PROJECT_TRUST_BY_LABEL.get(newValue);
+                     if (defaultProjectTrust) {
 diff --git a/dist/modes/interactive/components/skill-invocation-message.js b/dist/modes/interactive/components/skill-invocation-message.js
 index 39514bbcb15ce424b389374980a33e07bcacabe3..15c123c7f01eab190e2929f6ff743179d050b78d 100644
 --- a/dist/modes/interactive/components/skill-invocation-message.js
@@ -1555,7 +1592,7 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..fb2940b3e49af7bd2361e5c22976fc160d5873da 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd5e089725 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -1432,8 +1432,64 @@ export class InteractiveMode {

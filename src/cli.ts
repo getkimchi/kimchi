@@ -39,6 +39,7 @@ import "./login-command-patch.js"
 // child process does not crash the CLI. Load early for the same reason as above.
 import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
+import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
 import {
 	captureApiKeyFromEnvironment,
@@ -236,6 +237,10 @@ installPiNativeCompatibilityShim()
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
 applyInteractiveModelSessionPatch()
+// No-op pi's install/update ping (pi.dev/api/report-install) on the
+// InteractiveMode prototype — belt-and-braces on top of PI_TELEMETRY=0 in
+// entry.ts. Must run before any InteractiveMode instance is constructed.
+applyPiTelemetryPatch()
 
 function getSubcommand(args: string[]): string {
 	if (args.includes("--version") || args.includes("-v")) return "version"
