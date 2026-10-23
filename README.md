@@ -31,6 +31,14 @@ brew install getkimchi/tap/kimchi
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
 
+To install Kimchi together with work-reporting plugins for official Claude Code and Codex, use the same installer:
+
+```bash
+curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash -s -- --adapters both
+```
+
+Use `--adapters claude` or `--adapters codex` for one client. Install those clients from their official sources first. The optional adapters are pulled from private [`getkimchi/kimchi-adapters`](https://github.com/getkimchi/kimchi-adapters) releases, so they also require authenticated `gh` and repository access. Their installer preserves existing inference and enterprise telemetry settings. Configure Cast reporting separately as described in that repository. `KIMCHI_ADAPTERS_VERSION` pins the adapter release independently of `KIMCHI_VERSION`; rerun the same command to update both selected components.
+
 **PowerShell (Windows):**
 
 ```powershell

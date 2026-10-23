@@ -4,6 +4,7 @@
 #
 # Usage:
 #   curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
+#   curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash -s -- --adapters both
 #
 # Optional env:
 #   KIMCHI_INSTALL_DIR  Override install dir. Defaults to /usr/local/bin if
@@ -11,6 +12,7 @@
 #   KIMCHI_VERSION      Pin a specific version tag (e.g. v0.2.0). Defaults
 #                      to "latest", which resolves to the GitHub "Latest
 #                      release" pointer.
+#   KIMCHI_ADAPTERS_VERSION  Pin the optional private adapter release separately.
 
 set -euo pipefail
 
@@ -22,6 +24,36 @@ NC='\033[0m'
 
 REPO="${KIMCHI_REPO_OVERRIDE:-getkimchi/kimchi}"
 VERSION="${KIMCHI_VERSION:-latest}"
+ADAPTERS=""
+ADAPTERS_VERSION="${KIMCHI_ADAPTERS_VERSION:-}"
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--adapters)
+		[ "$#" -ge 2 ] || { echo 'Usage: install.sh [--adapters claude|codex|both]' >&2; exit 2; }
+		ADAPTERS="$2"
+		shift 2
+		;;
+	-h | --help)
+		echo 'Usage: install.sh [--adapters claude|codex|both]'
+		echo 'Installs Kimchi, optionally adding work-reporting plugins to official Claude Code and Codex.'
+		exit 0
+		;;
+	*) echo "Unknown installer option: $1" >&2; exit 2 ;;
+	esac
+done
+case "$ADAPTERS" in
+"" | claude | codex | both) ;;
+*) echo 'Choose --adapters claude, codex or both.' >&2; exit 2 ;;
+esac
+if [ -n "$ADAPTERS" ]; then
+	command -v gh >/dev/null || { echo 'Adapters require GitHub CLI (gh), gh auth login and private repository access.' >&2; exit 1; }
+	for client in claude codex; do
+		if [ "$ADAPTERS" = both ] || [ "$ADAPTERS" = "$client" ]; then
+			command -v "$client" >/dev/null || { echo "Install official $client before adding its adapter." >&2; exit 1; }
+		fi
+	done
+fi
 
 echo -e "${BLUE}Installing Kimchi from ${REPO}${VERSION:+ (${VERSION})}…${NC}"
 
@@ -58,6 +90,22 @@ fi
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
+
+# Resolve private access before changing an existing Kimchi installation.
+if [ -n "$ADAPTERS" ]; then
+	if [ -z "$ADAPTERS_VERSION" ]; then
+		ADAPTERS_VERSION=$(gh release list --repo getkimchi/kimchi-adapters --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName') || {
+			echo 'Could not resolve the private adapter release. Check gh auth login and repository access.' >&2
+			exit 1
+		}
+	fi
+	[[ "$ADAPTERS_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo 'Invalid adapter release version.' >&2; exit 1; }
+	mkdir -p "$TEMP_DIR/adapters"
+	if ! gh release download "$ADAPTERS_VERSION" --repo getkimchi/kimchi-adapters --pattern install.sh --dir "$TEMP_DIR/adapters"; then
+		echo 'Could not download the private adapter installer. Check gh auth login and repository access.' >&2
+		exit 1
+	fi
+fi
 
 echo -e "${BLUE}Downloading kimchi for ${OS}/${ARCH}…${NC}"
 if ! curl -fsSL "$BINARY_URL" | tar -xzf - -C "$TEMP_DIR"; then
@@ -154,6 +202,14 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 		echo "  Add ${INSTALL_DIR} to your PATH in your shell's config file."
 		;;
 	esac
+fi
+
+if [ -n "$ADAPTERS" ]; then
+	echo -e "${BLUE}Installing $ADAPTERS work-reporting adapters (${ADAPTERS_VERSION})…${NC}"
+	if ! bash "$TEMP_DIR/adapters/install.sh" install "$ADAPTERS" "$ADAPTERS_VERSION" </dev/null; then
+		echo 'Kimchi installed, but adapter installation failed. Rerun the same command to retry.' >&2
+		exit 1
+	fi
 fi
 
 echo ""
