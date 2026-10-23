@@ -1983,4 +1983,34 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		expect(failedDelivered).toBe(false)
 		expect(piMock.getAppendedEntries("subagents:record")).toEqual([])
 	})
+
+	it("the completion handler persists remote run state through the guarded helper after invalidation", async () => {
+		const piMock = createExtensionApi()
+		agentsExtension(piMock.api)
+		const manager = latestManagerInstance()
+		let completedDelivered = false
+		piMock.api.events.on("subagents:completed", () => {
+			completedDelivered = true
+		})
+		piMock.invalidate()
+
+		// A finished REMOTE record — the terminal remote_run:state entry is
+		// written through the same pi API, which is dead after invalidation. A
+		// raw call would throw out of onComplete, making the manager mark the
+		// successful run as failed and skip its queue draining.
+		const record = makeRunningRecord({
+			status: "completed",
+			result: "done",
+			completedAt: Date.now(),
+			remote: true,
+			acpSessionId: "acp-session-1",
+			remoteSession: { sessionName: "sandbox-1" },
+		})
+		expect(() => manager.onComplete(record)).not.toThrow()
+		expect(completedDelivered).toBe(false)
+		expect(piMock.getAppendedEntries("subagents:record")).toEqual([])
+		// The terminal remote_run:state entry is skipped for the dead session's
+		// transcript, not thrown through the stale API.
+		expect(piMock.getAppendedEntries("remote_run:state")).toEqual([])
+	})
 })

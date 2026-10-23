@@ -1155,7 +1155,7 @@ export default function (pi: ExtensionAPI) {
 			// Overwrite the persisted running state with the terminal outcome — a
 			// later session resume must not reattach to a finished run.
 			if (record.remote && record.acpSessionId && record.remoteSession) {
-				persistRemoteRunState(pi, {
+				persistRemoteRunStateSafe({
 					id: record.id,
 					description: record.description,
 					remoteSession: record.remoteSession,
