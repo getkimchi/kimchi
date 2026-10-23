@@ -314,7 +314,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 | No token and no CLI | Tries public repository access. Private repositories require credentials. |
 | No access, network failure or rate limit | Shows the reason and retries later; local request, edit and commit recording continue. |
 
-`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com. GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
+`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com and to GHE.com hosts (`<subdomain>.ghe.com`). GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
 
 ### 5. Build the local summary
 
