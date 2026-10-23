@@ -12,7 +12,9 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readdirSync, rmSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
-import { DocumentError } from "./model.js"
+import { pathToFileURL } from "node:url"
+import { DocumentError, type DocumentFormat } from "./model.js"
+import { defaultWhich, findSoffice } from "./soffice.js"
 
 export interface ProcessResult {
 	code: number
@@ -48,13 +50,6 @@ export interface RenderResult {
 
 const SOFFICE_TIMEOUT_MS = 120_000
 
-const SOFFICE_CANDIDATES = [
-	"/Applications/LibreOffice.app/Contents/MacOS/soffice",
-	"/usr/bin/soffice",
-	"/usr/local/bin/soffice",
-	"C:\\Program Files\\LibreOffice\\program\\soffice.exe",
-]
-
 const PDF_TO_PNG: Array<{ cmd: string; label: string; args: (pdf: string, prefix: string) => string[] }> = [
 	{ cmd: "pdftoppm", label: "pdftoppm (poppler)", args: (pdf, prefix) => ["-png", "-r", "110", pdf, prefix] },
 	{
@@ -89,12 +84,6 @@ const PDF_TO_PNG: Array<{ cmd: string; label: string; args: (pdf: string, prefix
 	},
 ]
 
-function defaultWhich(cmd: string): string | undefined {
-	const result = spawnSync("which", [cmd], { encoding: "utf8" })
-	const path = result.status === 0 ? (result.stdout ?? "").trim() : ""
-	return path !== "" && existsSync(path) ? path : undefined
-}
-
 function defaultRun(cmd: string, args: string[]): ProcessResult {
 	const result = spawnSync(cmd, args, { encoding: "utf8", maxBuffer: 32 << 20, timeout: SOFFICE_TIMEOUT_MS })
 	return {
@@ -103,19 +92,6 @@ function defaultRun(cmd: string, args: string[]): ProcessResult {
 		stderr: result.stderr ?? result.error?.message ?? "",
 		signal: result.signal ?? undefined,
 	}
-}
-
-function findSoffice(deps: Required<RenderDeps>): string {
-	const onPath = deps.which("soffice")
-	if (onPath) return onPath
-	for (const candidate of SOFFICE_CANDIDATES) {
-		if (deps.fileExists(candidate)) return candidate
-	}
-	throw new DocumentError(
-		"tool-missing",
-		"render needs LibreOffice (soffice). Install it with `brew install --cask libreoffice` (macOS) or `apt install libreoffice` (Debian/Ubuntu); on Windows use the LibreOffice installer. read/create/edit/check never need it.",
-		"pptx",
-	)
 }
 
 /** First few lines of tool stderr — enough to diagnose, small enough to read. */
@@ -129,15 +105,113 @@ function excerpt(stderr: string): string {
 	return text.length > 300 ? `${text.slice(0, 297)}...` : text
 }
 
+/** Deps for the shared PDF→PNG rasterizer chain (pdftoppm → ghostscript → python3+pymupdf). */
+export interface RasterizeDeps {
+	which: (cmd: string) => string | undefined
+	run: Runner
+	listdir: (dir: string) => string[]
+}
+
+export interface RasterizeOptions {
+	outDir: string
+	/** 1-based, inclusive page filter; undefined renders all. */
+	pages?: { start: number; end: number }
+	/** Errors name this format. */
+	format: DocumentFormat
+}
+
+export interface RasterizeResult {
+	/** PNG paths in page order. */
+	images: string[]
+	/** Label of the rasterizer that produced them (results are labelled per route). */
+	rasterizer: string
+}
+
+/**
+ * Rasterize an existing PDF to `<stem>-<n>.png` files in outDir, first
+ * rasterizer that works wins. outDir should not already contain PNGs of
+ * the same stem from an earlier run — they are swept first so they can't
+ * pose as this run's output.
+ */
+export function rasterizePdf(deps: RasterizeDeps, pdf: string, opts: RasterizeOptions): RasterizeResult {
+	const stem = basename(pdf).replace(/\.pdf$/i, "")
+	for (const entry of safeListdir(deps.listdir, opts.outDir)) {
+		if (stemPngPattern(stem).test(entry)) {
+			try {
+				unlinkSync(join(opts.outDir, entry))
+			} catch {
+				// best-effort — a locked file just leaves a stale PNG
+			}
+		}
+	}
+	const prefix = join(opts.outDir, stem)
+	const failures: string[] = []
+	for (const candidate of PDF_TO_PNG) {
+		const cmd = deps.which(candidate.cmd)
+		if (!cmd) {
+			failures.push(`${candidate.label}: not installed`)
+			continue
+		}
+		const raster = deps.run(cmd, candidate.args(pdf, prefix))
+		if (raster.code !== 0) {
+			failures.push(`${candidate.label}: ${excerpt(raster.stderr) || `exit ${raster.code}`}`)
+			continue
+		}
+		const all = collectImages(deps.listdir, opts.outDir, stem)
+		if (all.length === 0) {
+			failures.push(`${candidate.label}: exited 0 but no <stem>-<n>.png files appeared in ${opts.outDir}`)
+			continue
+		}
+		if (opts.pages) {
+			const { start, end } = opts.pages
+			const images = all.filter((img) => img.n >= start && img.n <= end).map((img) => img.path)
+			if (images.length === 0) {
+				throw new DocumentError(
+					"corrupt",
+					`--pages ${start}-${end} selected none of the ${all.length} rendered page(s). The PDF is at ${pdf}.`,
+					opts.format,
+				)
+			}
+			return { images, rasterizer: candidate.label }
+		}
+		return { images: all.map((img) => img.path), rasterizer: candidate.label }
+	}
+	throw new DocumentError(
+		"tool-missing",
+		`could not rasterize ${pdf} to PNGs — the PDF is usable as-is. Install one of: pdftoppm (poppler-utils), ghostscript, or python3 with pymupdf. Tried: ${failures.join("; ")}`,
+		opts.format,
+	)
+}
+
+function stemPngPattern(stem: string): RegExp {
+	return new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)\\.png$`)
+}
+
+/** Production defaults for rasterizePdf: real which/run/readdirSync. */
+export function defaultRasterizeDeps(): RasterizeDeps {
+	return {
+		which: defaultWhich,
+		run: defaultRun,
+		listdir: (dir) => readdirSync(dir),
+	}
+}
+
+function safeListdir(listdir: (dir: string) => string[], dir: string): string[] {
+	try {
+		return listdir(dir)
+	} catch {
+		return []
+	}
+}
+
 function collectImages(
 	listdir: (dir: string) => string[],
 	outDir: string,
 	stem: string,
 ): Array<{ path: string; n: number }> {
-	const stemPattern = new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)\\.png$`)
 	const images: Array<{ path: string; n: number }> = []
 	for (const entry of listdir(outDir)) {
-		const match = stemPattern.exec(entry)
+		const match = stemPngPattern(stem).exec(entry)
 		if (match) images.push({ path: join(outDir, entry), n: Number(match[1]) })
 	}
 	images.sort((a, b) => a.n - b.n)
@@ -159,7 +233,7 @@ export async function renderPptx(inputPath: string, opts: RenderOptions): Promis
 		mkdtemp: opts.deps?.mkdtemp ?? ((prefix) => mkdtempSync(prefix)),
 	}
 
-	const soffice = findSoffice(deps)
+	const soffice = findSoffice(deps, { format: "pptx", commands: "render", core: "read/create/edit/check" })
 	// Isolated profile: a running LibreOffice instance holding the default
 	// profile makes a second soffice hang forever — this is the classic
 	// headless-conversion stall, and the profile flag sidesteps it.
@@ -204,7 +278,7 @@ async function convertAndRasterize(
 		"--headless",
 		"--norestore",
 		"--nolockcheck",
-		`-env:UserInstallation=file://${profileDir}`,
+		`-env:UserInstallation=${pathToFileURL(profileDir).href}`,
 		"--convert-to",
 		"pdf",
 		"--outdir",
@@ -230,42 +304,6 @@ async function convertAndRasterize(
 		throw new DocumentError("corrupt", `LibreOffice reported success but produced no PDF at ${pdf}`, "pptx")
 	}
 
-	const stem = basename(pdf).replace(/\.pdf$/i, "")
-	const prefix = join(opts.outDir, stem)
-	const failures: string[] = []
-	for (const candidate of PDF_TO_PNG) {
-		const cmd = deps.which(candidate.cmd)
-		if (!cmd) {
-			failures.push(`${candidate.label}: not installed`)
-			continue
-		}
-		const raster = deps.run(cmd, candidate.args(pdf, prefix))
-		if (raster.code !== 0) {
-			failures.push(`${candidate.label}: ${excerpt(raster.stderr) || `exit ${raster.code}`}`)
-			continue
-		}
-		const all = collectImages(deps.listdir, opts.outDir, stem)
-		if (all.length === 0) {
-			failures.push(`${candidate.label}: exited 0 but no <stem>-<n>.png files appeared in ${opts.outDir}`)
-			continue
-		}
-		if (opts.slides) {
-			const { start, end } = opts.slides
-			const images = all.filter((img) => img.n >= start && img.n <= end).map((img) => img.path)
-			if (images.length === 0) {
-				throw new DocumentError(
-					"corrupt",
-					`--slides ${start}-${end} selected none of the ${all.length} rendered slide(s). The PDF is at ${pdf}.`,
-					"pptx",
-				)
-			}
-			return { pdf, images }
-		}
-		return { pdf, images: all.map((img) => img.path) }
-	}
-	throw new DocumentError(
-		"tool-missing",
-		`rendered ${pdf}, but could not rasterize it to PNGs — the PDF is usable as-is. Install one of: pdftoppm (poppler-utils), ghostscript, or python3 with pymupdf. Tried: ${failures.join("; ")}`,
-		"pptx",
-	)
+	const { images } = rasterizePdf(deps, pdf, { outDir: opts.outDir, pages: opts.slides, format: "pptx" })
+	return { pdf, images }
 }

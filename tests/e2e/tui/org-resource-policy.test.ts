@@ -74,8 +74,9 @@ test("org-locked resources show as locked in /resources and a FORCE_OFF tool is 
 			trace.step("locked rows visible")
 
 			// Selection starts on the first row; step down to tools.web_search
-			// (skills.pptx, hooks.bash, then tools.web_search) and read its
-			// org-policy note.
+			// (skills.pptx, skills.pdf, hooks.bash, then tools.web_search) and
+			// read its org-policy note.
+			terminal.keyDown()
 			terminal.keyDown()
 			terminal.keyDown()
 			await waitForText(terminal, "locked off", { timeoutMs: STREAM_TIMEOUT_MS })
