@@ -284,11 +284,16 @@ export function classifyBashCommand(command: string): BashClassification | null 
 		const matchedSegment = tokens.join(" ")
 
 		// Category 1: write — `> file` / `>> file` redirect to a non-stream
-		// target, OR `tee <file>`. We treat any non-stream `>` / `>>` op in
-		// any segment as a write signal because the redirect target is the
-		// file the model wants to produce.
+		// target, OR `tee <file>`. We treat any non-stream `>` / `>>` / `&>` /
+		// `&>>` op in any segment as a write signal because the redirect target is
+		// the file the model wants to produce. (`&>` combined redirects arrive as
+		// single operators since shell-quote 1.11.)
 		for (const op of segment.ops) {
-			if ((op.op === ">" || op.op === ">>") && op.target && !isStreamRedirectTarget(op.target)) {
+			if (
+				(op.op === ">" || op.op === ">>" || op.op === "&>" || op.op === "&>>") &&
+				op.target &&
+				!isStreamRedirectTarget(op.target)
+			) {
 				return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, tool }
 			}
 		}

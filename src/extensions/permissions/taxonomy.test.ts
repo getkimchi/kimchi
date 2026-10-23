@@ -489,12 +489,27 @@ describe("isReadOnlyBashCommand", () => {
 	})
 
 	it("blocks bash &> combined redirect", () => {
-		// `&>` redirects both stdout+stderr to a file — shell-quote decomposes it
-		// into `&` + `>`, so the `&` (backgrounding) op blocks it transitively.
-		// Regression test: pins this incidental safety against future `&` relaxation.
+		// `&>` redirects both stdout+stderr to a file. shell-quote 1.11+ parses it
+		// as a single `&>` operator, which DANGEROUS_OPS blocks explicitly.
+		// Regression test: pins this against future `&` relaxation.
 		expect(isReadOnlyBashCommand("cat foo &> /tmp/out")).toBe(false)
 		expect(isReadOnlyBashCommand("cat foo &>/tmp/out")).toBe(false)
 		expect(isReadOnlyBashCommand("echo hi &> /tmp/evil")).toBe(false)
+		// `&>` has no /dev/null allowance — unlike `>` — matching the pre-1.11
+		// behavior where the `&` always blocked it.
+		expect(isReadOnlyBashCommand("cat foo &> /dev/null")).toBe(false)
+	})
+
+	it("blocks every other file-writing or stdin-shaping operator shell-quote emits as a single token", () => {
+		// shell-quote >= 1.11 emits these as single control operators instead of
+		// decomposing them; each is blocked only by its DANGEROUS_OPS entry, so
+		// each line here is the regression test for that entry.
+		expect(isReadOnlyBashCommand("cat foo &>> /tmp/out")).toBe(false) // append both streams
+		expect(isReadOnlyBashCommand("cat foo >| /tmp/out")).toBe(false) // clobber redirect
+		expect(isReadOnlyBashCommand("cat foo <> /tmp/inout")).toBe(false) // read/write open
+		expect(isReadOnlyBashCommand("cat foo <&3")).toBe(false) // fd duplication
+		expect(isReadOnlyBashCommand("cat <<< input string")).toBe(false) // here-string
+		expect(isReadOnlyBashCommand("grep x >(sort)")).toBe(false) // process substitution output
 	})
 
 	it("blocks hard-blocked patterns", () => {
@@ -684,6 +699,24 @@ describe("splitCompoundCommand", () => {
 
 	it("preserves redirect targets", () => {
 		expect(splitCompoundCommand("echo hi > file.txt && cat file.txt")).toEqual(["echo hi > file.txt", "cat file.txt"])
+	})
+
+	it("preserves combined and clobber redirects so classification blocks them", () => {
+		// Regression: shell-quote 1.11+ emits `&>` / `&>>` as single operators;
+		// dropping them here let `git status &> /tmp/pwn && echo ok` reconstruct
+		// to a read-only-looking segment and auto-approve a file write.
+		expect(splitCompoundCommand("git status &> /tmp/pwn && echo ok")).toEqual(["git status &> /tmp/pwn", "echo ok"])
+		expect(splitCompoundCommand("git status &>> /tmp/pwn && echo ok")).toEqual(["git status &>> /tmp/pwn", "echo ok"])
+		// Every other operator is preserved verbatim (fail closed) — the
+		// reconstructed segments must still be blocked downstream.
+		expect(splitCompoundCommand("cat foo >| /tmp/pwn && echo ok")).toEqual(["cat foo >| /tmp/pwn", "echo ok"])
+		expect(splitCompoundCommand("cat foo <> /tmp/io && echo ok")).toEqual(["cat foo <> /tmp/io", "echo ok"])
+		expect(splitCompoundCommand("cat foo <&3 && echo ok")).toEqual(["cat foo <& 3", "echo ok"])
+		expect(splitCompoundCommand("git status </tmp/x && echo ok")).toEqual(["git status < /tmp/x", "echo ok"])
+		// And the reconstructed segments themselves are not read-only.
+		expect(isReadOnlyBashCommand("git status &> /tmp/pwn")).toBe(false)
+		expect(isReadOnlyBashCommand("cat foo >| /tmp/pwn")).toBe(false)
+		expect(isReadOnlyBashCommand("git status </tmp/x")).toBe(false)
 	})
 })
 
