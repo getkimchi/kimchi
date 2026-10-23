@@ -88,7 +88,7 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 
 ## Dual-surface parity (TUI ↔ ACP)
 
-The harness ships two user-facing surfaces: the interactive TUI (upstream `InteractiveMode` from `@earendil-works/pi-coding-agent`, which this repo patches and extends) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
+The harness ships two user-facing surfaces: the interactive TUI (upstream `InteractiveMode` from `@earendil-works/pi-coding-agent`, customized locally by the runtime patches imported first in `src/cli.ts`, such as `src/paste-to-editor-patch.ts`, and by `src/extensions/`) and the ACP server (`src/modes/acp/`, JSON-RPC/IDE integration), each with its own e2e suite (`pnpm run test:e2e:tui` / `pnpm run test:e2e:acp`). Most harness changes must work on both surfaces — forgetting the ACP side is a recurring source of drift and follow-up `fix(acp):` PRs.
 
 **Whenever you change the harness, check whether ACP needs a parallel change — before you consider the task done.** A change is ACP-relevant until proven otherwise if it touches:
 
