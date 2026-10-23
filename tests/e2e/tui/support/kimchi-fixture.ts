@@ -364,6 +364,10 @@ export function launchKimchi(
 		// deliberately cover the remote-run menu opt in via
 		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
 		"KIMCHI_REMOTE_RUN=0",
+		// Login e2e tests drive the real browser flow — without this seam every
+		// one of them pops open the developer's actual browser (the token is
+		// delivered straight to the callback server instead).
+		"KIMCHI_E2E_FAKE_BROWSER_OPEN=1",
 		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
 		// fire only under a harness — production binaries must never see them.
 		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness

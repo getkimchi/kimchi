@@ -17,6 +17,13 @@ vi.mock("node:os", async (importOriginal) => {
 })
 
 const { endpointsForRegion, invalidateResolvedEndpoints, resolveEndpoints, writeApiKey } = await import("./config.js")
+// The legacy-layout endpoints (path-prefixed bases) a discovery document
+// may advertise — the derivation helpers must append shapes onto these too.
+const LEGACY_LAYOUT = {
+	api: "https://kimchi.example.com/api",
+	console: "https://kimchi.example.com",
+	llm: "https://kimchi.example.com/llm",
+}
 
 const configPath = join(home, ".config", "kimchi", "config.json")
 
@@ -31,7 +38,6 @@ describe("resolveEndpoints (default config path)", () => {
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_BASE_URL", undefined)
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		invalidateResolvedEndpoints()
 	})
 
@@ -102,7 +108,6 @@ describe("resolveEndpoints — self-hosted region", () => {
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_BASE_URL", undefined)
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		invalidateResolvedEndpoints()
 	})
 
@@ -112,10 +117,10 @@ describe("resolveEndpoints — self-hosted region", () => {
 		rmSync(home, { recursive: true, force: true })
 	})
 
-	it("derives every endpoint from the stored base URL", () => {
+	it("derives every endpoint from the stored base-derived endpoints", () => {
 		writeFileSync(
 			configPath,
-			JSON.stringify({ apiKey: "k", region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }),
+			JSON.stringify({ apiKey: "k", region: "self-hosted", selfHostedEndpoints: LEGACY_LAYOUT }),
 		)
 
 		const resolved = resolveEndpoints()
@@ -137,37 +142,42 @@ describe("resolveEndpoints — self-hosted region", () => {
 		})
 	})
 
-	it("normalizes a trailing slash in the stored base URL", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com/" }))
+	it("normalizes trailing slashes in the stored endpoints", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com/",
+					llm: "https://kimchi.example.com/llm",
+				},
+			}),
+		)
 
 		expect(resolveEndpoints().llmBaseUrl).toBe("https://kimchi.example.com/llm")
 		expect(resolveEndpoints().webAppUrl).toBe("https://kimchi.example.com")
 		expect(resolveEndpoints().castApiUrl).toBe("https://kimchi.example.com/api")
 	})
 
-	it("treats an invalid stored base URL as unset and fails fast", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "not a url" }))
-
-		expect(() => resolveEndpoints()).toThrow(/self-hosted.*base URL/s)
-	})
-
-	it("KIMCHI_SELF_HOSTED_URL wins over the config-file value", () => {
+	it("treats invalid stored endpoints as unset and fails fast", () => {
 		writeFileSync(
 			configPath,
-			JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://from-config.example.com" }),
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "not a url",
+					llm: "https://kimchi.example.com/llm",
+				},
+			}),
 		)
-		expect(resolveEndpoints().webAppUrl).toBe("https://from-config.example.com")
 
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://from-env.example.com")
-		expect(resolveEndpoints().webAppUrl).toBe("https://from-env.example.com")
-		expect(resolveEndpoints().llmBaseUrl).toBe("https://from-env.example.com/llm")
-
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
-		expect(resolveEndpoints().webAppUrl).toBe("https://from-config.example.com")
+		expect(() => resolveEndpoints()).toThrow(/self-hosted.*console URL/s)
 	})
 
 	it("KIMCHI_REGION=self-hosted resolves without the config-file region", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "us", selfHostedUrl: "https://kimchi.example.com" }))
+		writeFileSync(configPath, JSON.stringify({ region: "us", selfHostedEndpoints: LEGACY_LAYOUT }))
 		expect(resolveEndpoints().region).toBe("us")
 
 		vi.stubEnv("KIMCHI_REGION", "self-hosted")
@@ -177,7 +187,7 @@ describe("resolveEndpoints — self-hosted region", () => {
 	})
 
 	it("KIMCHI_BASE_URL still overrides the gateway on top of the base URL", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedEndpoints: LEGACY_LAYOUT }))
 
 		vi.stubEnv("KIMCHI_BASE_URL", "https://gateway.example")
 		const resolved = resolveEndpoints()
@@ -189,45 +199,231 @@ describe("resolveEndpoints — self-hosted region", () => {
 		expect(resolved.castApiUrl).toBe("https://kimchi.example.com/api")
 	})
 
-	it("fails fast with an actionable error when no base URL is configured", () => {
+	it("fails fast with an actionable error when no console URL is configured", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "self-hosted" }))
 
-		// The actionable error names both fixes instead of silently falling
+		// The actionable error names the fix instead of silently falling
 		// back to another region's endpoints.
-		expect(() => resolveEndpoints()).toThrow(/KIMCHI_SELF_HOSTED_URL/)
 		expect(() => resolveEndpoints()).toThrow(/kimchi login/)
 	})
 
-	it("endpointsForRegion fails fast for self-hosted without a base URL", () => {
+	it("endpointsForRegion fails fast for self-hosted without endpoints", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "us" }))
 
-		expect(() => endpointsForRegion("self-hosted")).toThrow(/base URL is configured/)
+		expect(() => endpointsForRegion("self-hosted")).toThrow(/console URL is configured/)
 	})
 
 	it("resolves a stored self-hosted region without the experimental flag", async () => {
 		// The gate is selection-only: resolveEndpoints never consults the flag.
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedEndpoints: LEGACY_LAYOUT }))
 
 		await withExperimentalFeatures(false, () => {
 			expect(resolveEndpoints().webAppUrl).toBe("https://kimchi.example.com")
 		})
 	})
 
-	it("picks up a selfHostedUrl written to the config file by another process", () => {
+	it("picks up selfHostedEndpoints written to the config file by another process", () => {
 		writeFileSync(configPath, JSON.stringify({ region: "self-hosted" }))
-		expect(() => resolveEndpoints()).toThrow(/base URL is configured/)
+		expect(() => resolveEndpoints()).toThrow(/console URL is configured/)
 
 		// Out-of-process write, no in-process invalidation.
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://late.example.com" }))
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://late.example.com/api",
+					console: "https://late.example.com",
+					llm: "https://late.example.com/llm",
+				},
+			}),
+		)
 		expect(resolveEndpoints().webAppUrl).toBe("https://late.example.com")
 	})
+})
 
-	it("picks up a KIMCHI_SELF_HOSTED_URL change without a config write", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
-		expect(resolveEndpoints().webAppUrl).toBe("https://config.example.com")
+describe("resolveEndpoints — self-hosted discovery endpoints", () => {
+	let cwd: string
 
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://switched.example.com")
-		expect(resolveEndpoints().webAppUrl).toBe("https://switched.example.com")
+	beforeEach(() => {
+		mkdirSync(join(home, ".config", "kimchi"), { recursive: true })
+		cwd = mkdtempSync(join(home, "cwd-"))
+		vi.spyOn(process, "cwd").mockReturnValue(cwd)
+		vi.stubEnv("KIMCHI_REGION", undefined)
+		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
+		invalidateResolvedEndpoints()
+	})
+
+	afterAll(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	it("resolves every endpoint from stored discovery endpoints (llm origin-only rule)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "k",
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		const resolved = resolveEndpoints()
+		expect(resolved).toMatchObject({
+			region: "self-hosted",
+			webAppUrl: "https://kimchi.example.com",
+			platformApiUrl: "https://kimchi.example.com/api",
+			llmBaseUrl: "https://llm.example.com",
+			// The llm value is the ORIGIN ONLY — consumers append the API shape.
+			openAiBaseUrl: "https://llm.example.com/openai/v1",
+			anthropicBaseUrl: "https://llm.example.com/anthropic",
+			experimentalOpenAiBaseUrl: "https://llm.example.com/experimental/openai/v1",
+			searchUrl: "https://llm.example.com/v1/search",
+			// REST API paths live at the root of the advertised api origin.
+			castApiUrl: "https://kimchi.example.com",
+			keyValidationUrl: "https://kimchi.example.com/v1/llm/openai/supported-providers",
+			telemetryLogsUrl: "https://kimchi.example.com/ai-optimizer/v1beta/logs:ingest",
+			telemetryMetricsUrl: "https://kimchi.example.com/ai-optimizer/v1beta/metrics:ingest",
+			llmEndpoint: "https://llm.example.com/openai/v1",
+		})
+	})
+
+	it("discovery endpoints replace previously stored different ones", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://api.other.example.com",
+					console: "https://console.other.example.com",
+					llm: "https://llm.other.example.com",
+				},
+			}),
+		)
+
+		const resolved = resolveEndpoints()
+		expect(resolved.webAppUrl).toBe("https://console.other.example.com")
+		expect(resolved.castApiUrl).toBe("https://api.other.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://llm.other.example.com")
+	})
+
+	it("treats invalid stored endpoints as unset and fails fast", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "not a url",
+				},
+			}),
+		)
+
+		expect(() => resolveEndpoints()).toThrow(/console URL is configured/)
+	})
+
+	it("KIMCHI_BASE_URL still overrides the discovered gateway", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		vi.stubEnv("KIMCHI_BASE_URL", "https://gateway.example")
+		const resolved = resolveEndpoints()
+		expect(resolved.llmBaseUrl).toBe("https://gateway.example")
+		expect(resolved.openAiBaseUrl).toBe("https://gateway.example/openai/v1")
+		expect(resolved.webAppUrl).toBe("https://kimchi.example.com")
+		expect(resolved.castApiUrl).toBe("https://kimchi.example.com")
+	})
+
+	it("endpointsForRegion: fresh endpoints beat the stored ones", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://stored.example.com/api",
+					console: "https://stored.example.com",
+					llm: "https://stored.example.com/llm",
+				},
+			}),
+		)
+
+		const resolved = endpointsForRegion("self-hosted", {
+			endpoints: {
+				api: "https://kimchi.example.com",
+				console: "https://kimchi.example.com",
+				llm: "https://llm.example.com",
+			},
+		})
+		expect(resolved.webAppUrl).toBe("https://kimchi.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://llm.example.com")
+		expect(resolved.openAiBaseUrl).toBe("https://llm.example.com/openai/v1")
+	})
+
+	it("writeApiKey persists discovery endpoints, and a re-login replaces them with the new install's", () => {
+		const first = {
+			api: "https://kimchi.example.com",
+			console: "https://kimchi.example.com",
+			llm: "https://llm.example.com",
+		}
+
+		// First login: region + the document's endpoints stored.
+		writeApiKey("k1", configPath, { region: "self-hosted", selfHostedEndpoints: first })
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.example.com")
+		expect(resolveEndpoints().openAiBaseUrl).toBe("https://llm.example.com/openai/v1")
+
+		// Re-login against a different install: the endpoints are REPLACED.
+		writeApiKey("k2", configPath, {
+			region: "self-hosted",
+			selfHostedEndpoints: {
+				api: "https://other.example.com",
+				console: "https://other.example.com",
+				llm: "https://llm.other.example.com",
+			},
+		})
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.other.example.com")
+		expect(resolveEndpoints().openAiBaseUrl).toBe("https://llm.other.example.com/openai/v1")
+	})
+
+	it("keeps stored discovery endpoints when switching away and back to self-hosted", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "k",
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		// Switching away leaves the self-hosted config stored (same semantics
+		// as the endpoints' account-level peers); switching back resolves the
+		// discovered endpoints.
+		writeApiKey("us-token", configPath, { region: "us", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		expect(resolveEndpoints().region).toBe("us")
+
+		writeApiKey("self-hosted-token", configPath, { region: "self-hosted" })
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.example.com")
 	})
 })
 
@@ -242,7 +438,6 @@ describe("resolveEndpoints — self-hosted region round-trip", () => {
 		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_BASE_URL", undefined)
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		invalidateResolvedEndpoints()
 	})
 
@@ -252,10 +447,10 @@ describe("resolveEndpoints — self-hosted region round-trip", () => {
 		rmSync(home, { recursive: true, force: true })
 	})
 
-	it("keeps the stored selfHostedUrl when switching away and back to self-hosted", async () => {
+	it("keeps the stored selfHostedEndpoints when switching away and back to self-hosted", async () => {
 		writeFileSync(
 			configPath,
-			JSON.stringify({ apiKey: "k", region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }),
+			JSON.stringify({ apiKey: "k", region: "self-hosted", selfHostedEndpoints: LEGACY_LAYOUT }),
 		)
 		expect(resolveEndpoints().webAppUrl).toBe("https://kimchi.example.com")
 
@@ -266,8 +461,8 @@ describe("resolveEndpoints — self-hosted region round-trip", () => {
 		expect(resolveEndpoints().webAppUrl).toBe("https://app.kimchi.dev")
 
 		// Switch back (a re-login persists the region; the login flow offers
-		// the stored base URL as the prompt default). Endpoints resolve from the
-		// still-stored base URL again.
+		// the stored console URL as the prompt default). Endpoints resolve from
+		// the still-stored values again.
 		writeApiKey("self-hosted-token", configPath, { region: "self-hosted" })
 		const resolved = resolveEndpoints()
 		expect(resolved.region).toBe("self-hosted")

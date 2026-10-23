@@ -8,7 +8,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import type {
@@ -1117,7 +1117,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
 		})
 
-		it("authenticates against the self-hosted region and persists region + base URL", async () => {
+		it("authenticates against the self-hosted region and persists region + endpoints", async () => {
 			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_self-hosted-token" })
 
 			const testAgent = new KimchiAcpAgent(makeConn(), {
@@ -1126,11 +1126,21 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// ACP clients have no interactive prompt; the base URL comes from the
-			// env override (or a previously stored selfHostedUrl).
-			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://kimchi.example.com")
+			// ACP clients have no interactive prompt and cannot run endpoint
+			// discovery; the endpoints come from a previous login's stored values.
+			const configDir = join(homedir(), ".config", "kimchi")
+			const storedEndpoints = {
+				api: "https://kimchi.example.com/api",
+				console: "https://kimchi.example.com",
+				llm: "https://kimchi.example.com/llm",
+			}
+			mkdirSync(configDir, { recursive: true })
+			writeFileSync(
+				join(configDir, "config.json"),
+				JSON.stringify({ region: "self-hosted", selfHostedEndpoints: storedEndpoints }),
+			)
 			onTestFinished(() => {
-				vi.unstubAllEnvs()
+				rmSync(join(configDir, "config.json"), { force: true })
 			})
 
 			const result = await testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })
@@ -1140,24 +1150,24 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				webAppUrl: "https://kimchi.example.com",
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
-			// The resolved base is persisted next to the region so later launches
-			// resolve without the env override.
+			// The resolved endpoints are persisted next to the region so later
+			// launches resolve without the login that discovered them.
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
 				region: "self-hosted",
-				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: storedEndpoints,
 			})
 		})
 
-		it("fails fast when kimchi-agent-self-hosted has no base URL configured", async () => {
+		it("fails fast when kimchi-agent-self-hosted has no endpoints configured", async () => {
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: tempAgentDir,
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// The isolated test home stores no selfHostedUrl, so nothing resolves.
+			// The isolated test home stores no selfHostedEndpoints, so nothing resolves.
 			await expect(testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })).rejects.toThrow(
-				/self-hosted.*base URL is configured/s,
+				/self-hosted.*console URL is configured/s,
 			)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 			expect(writeApiKey).not.toHaveBeenCalled()
@@ -1172,6 +1182,52 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			await expect(testAgent.authenticate({ methodId: "unknown" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		it("resolves stored discovery endpoints for self-hosted and persists them", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_self-hosted-token" })
+
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			// A previous TUI / CLI login stored the console URL and its discovery
+			// endpoints; ACP cannot run discovery itself, so it resolves both from
+			// the stored configuration.
+			const configDir = join(homedir(), ".config", "kimchi")
+			const storedEndpoints = {
+				api: "https://kimchi.example.com",
+				console: "https://kimchi.example.com",
+				llm: "https://llm.example.com",
+			}
+			mkdirSync(configDir, { recursive: true })
+			writeFileSync(
+				join(configDir, "config.json"),
+				JSON.stringify({
+					region: "self-hosted",
+					selfHostedEndpoints: storedEndpoints,
+				}),
+			)
+			onTestFinished(() => {
+				rmSync(join(configDir, "config.json"), { force: true })
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })
+
+			expect(result).toEqual({})
+			// The browser handoff targets the discovered console origin.
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({
+				webAppUrl: "https://kimchi.example.com",
+				successMessage: ACP_SUCCESS_MESSAGE,
+			})
+			// The resolved endpoints ride along with the key so later launches
+			// resolve without the login that discovered them.
+			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
+				region: "self-hosted",
+				selfHostedEndpoints: storedEndpoints,
+			})
 		})
 
 		it("throws invalidParams for an unknown region suffix", async () => {
@@ -1330,7 +1386,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				apiKey,
 				agentConfigDir: tempAgentDir,
 				region: "us",
-				selfHostedUrl: undefined,
+				selfHostedEndpoints: undefined,
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,
 				maxToolResultChars: 12000,

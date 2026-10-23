@@ -1,6 +1,6 @@
 import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
-import { isRegionId, REGION_ENV, REGIONS, SELF_HOSTED_URL_ENV, selectableRegions } from "../regions.js"
+import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 import { isTelemetryPolicyEnforced, readEffectiveTelemetryConfig, usageReportingPolicy } from "../telemetry-policy.js"
 
 const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
@@ -238,15 +238,12 @@ function handleRegion(args: string[]): number {
 	// Self-hosted is only meaningful with its base URL; show what is
 	// configured (env override wins over the stored value, like the region).
 	if (cfg.region === "self-hosted") {
-		const envBase = process.env[SELF_HOSTED_URL_ENV]
-		if (cfg.selfHostedUrl && envBase) {
-			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl} (from ${SELF_HOSTED_URL_ENV}, overrides config)`)
-		} else if (cfg.selfHostedUrl) {
-			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl}`)
+		const stored = cfg.selfHostedEndpoints
+		if (stored) {
+			console.log(`Self-hosted console URL: ${stored.console}`)
+			console.log(`Self-hosted endpoints: api ${stored.api}, llm ${stored.llm}`)
 		} else {
-			console.log(
-				`Self-hosted base URL: not configured — set ${SELF_HOSTED_URL_ENV} or run "kimchi login" and choose Self-hosted`,
-			)
+			console.log('Self-hosted console URL: not configured — run "kimchi login <console-url>"')
 		}
 	}
 	console.log(
