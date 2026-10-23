@@ -21,6 +21,15 @@
 #     the recorded glue (dropping only the recorded margin, so genuine code
 #     indentation survives) instead of a hard "\n", and a fullscreen selection
 #     across a soft wrap pastes as one logical line again.
+#   - (2026-10-23) review fixes on the glue seams: the long-token branch
+#     records the consumed trailing whitespace and marks the first broken
+#     piece with it (the space before an over-wide URL/path survives copy);
+#     no-space scripts (CJK) rejoin with "" glue — never an invented space;
+#     each wrap segment's first line registers null glue (skipped when a
+#     same-segment piece shares the value) so a hard start never inherits a
+#     stale continuation mark and paragraphs stay separate. The ambiguity
+#     rule is a one-way ratchet in the safe direction: a value that turns
+#     ambiguous stays degraded ("\n" fallback) until the 50k wipe.
 #   - (Removed 2026-10-15: the KIMCHI_WHEEL_SCROLL_LINES env fallback matched
 #     upstream pi-tui's native WheelScrollAccelerator/"auto" mode plus the
 #     fullscreenWheelScrollLines setting, making the branch unreachable.)
@@ -273,7 +282,7 @@ index cc41fea6df832f87b45bf054b5b8db0370885fc1..5e8ecdc106782562c759d79444979889
      }
      async copySelectionToClipboard() {
 diff --git a/dist/utils.js b/dist/utils.js
-index 946da9df9f098c55272410a78e31363623fdc219..cc857df7298d5820acf32ab4ecb95e7fe66e4b1a 100644
+index 946da9d..67c39ec 100644
 --- a/dist/utils.js
 +++ b/dist/utils.js
 @@ -820,6 +820,58 @@ export function flattenLines(lines) {
@@ -335,7 +344,14 @@ index 946da9df9f098c55272410a78e31363623fdc219..cc857df7298d5820acf32ab4ecb95e7f
  export function wrapTextWithAnsi(text, width) {
      if (!text) {
          return [""];
-@@ -850,6 +902,13 @@ function wrapSingleLine(line, width) {
+@@ -847,9 +899,20 @@ function wrapSingleLine(line, width) {
+     }
+     const visibleLength = visibleWidth(line);
+     if (visibleLength <= width) {
++        // Kimchi: an unwrapped line is a hard start — register null glue so a
++        // stale continuation mark on the same value degrades into "ambiguous"
++        // instead of being inherited (same rule as the wrap path below).
++        markRenderedLine(line, null);
          return [line];
      }
      const wrapped = [];
@@ -349,28 +365,51 @@ index 946da9df9f098c55272410a78e31363623fdc219..cc857df7298d5820acf32ab4ecb95e7f
      const tracker = new AnsiCodeTracker();
      const tokens = splitIntoTokensWithAnsi(line);
      let currentLine = "";
-@@ -872,8 +931,10 @@ function wrapSingleLine(line, width) {
+@@ -859,7 +922,17 @@ function wrapSingleLine(line, width) {
+         const isWhitespace = token.trim() === "";
+         // Token itself is too long - break it character by character
+         if (tokenVisibleLength > width && !isWhitespace) {
++            let firstPieceGlue;
+             if (currentLine) {
++                // Kimchi: this wrap consumes currentLine, and its trailing
++                // whitespace (stripped by the final trimEnd) is the glue that
++                // rejoins the first broken piece. Capture it before appending
++                // the underline reset, which would mask the \s+$ match. A
++                // codes-only currentLine contributes no glue — the whitespace
++                // branch's recorded glue must survive.
++                if (visibleWidth(currentLine) > 0) {
++                    firstPieceGlue = currentLine.match(/\s+$/)?.[0] ?? "";
++                }
+                 // Add specific reset for underline only (preserves background)
+                 const lineEndReset = tracker.getLineEndReset();
+                 if (lineEndReset) {
+@@ -872,8 +945,13 @@ function wrapSingleLine(line, width) {
              // Break long token - breakLongWord handles its own resets
              const broken = breakLongWord(token, width, tracker);
              for (let i = 0; i < broken.length - 1; i++) {
-+                markNext("");
++                // First piece: rejoin with the consumed currentLine's glue, or
++                // leave untouched when none was captured (the whitespace-skip
++                // branch already recorded the real whitespace there).
++                if (i > 0 || firstPieceGlue !== undefined) markNext(i === 0 ? firstPieceGlue : "");
                  wrapped.push(broken[i]);
              }
 +            markNext("");
              currentLine = broken[broken.length - 1];
              currentVisibleLength = visibleWidth(currentLine);
              continue;
-@@ -888,6 +949,9 @@ function wrapSingleLine(line, width) {
+@@ -888,6 +966,11 @@ function wrapSingleLine(line, width) {
                  lineToWrap += lineEndReset;
              }
              wrapped.push(lineToWrap);
 +            // Kimchi: glue = the whitespace the wrap consumed (exact token for
-+            // whitespace breaks, the trimmed trailing run otherwise).
-+            markNext(isWhitespace ? token : (currentLine.match(/\s+$/)?.[0] ?? " "));
++            // whitespace breaks, the trimmed trailing run otherwise). No-space
++            // scripts (CJK) wrap with no trailing whitespace: the glue is the
++            // empty string — never an invented space.
++            markNext(isWhitespace ? token : (currentLine.match(/\s+$/)?.[0] ?? ""));
              if (isWhitespace) {
                  // Don't start new line with whitespace
                  currentLine = tracker.getActiveCodes();
-@@ -909,8 +973,18 @@ function wrapSingleLine(line, width) {
+@@ -909,8 +992,27 @@ function wrapSingleLine(line, width) {
          // No reset at end of final line - let caller handle it
          wrapped.push(currentLine);
      }
@@ -386,11 +425,20 @@ index 946da9df9f098c55272410a78e31363623fdc219..cc857df7298d5820acf32ab4ecb95e7f
 +    for (let i = 1; i < trimmed.length; i++) {
 +        markRenderedLine(trimmed[i], gluesPerLine[i] ?? "");
 +    }
++    // The segment's first line is a hard start: register null glue so a stale
++    // continuation mark on the same value (left by an earlier wrap elsewhere)
++    // degrades into "ambiguous" instead of being inherited. Skip when a later
++    // piece of this same segment shares the value — mid-word breaks can emit
++    // identical chunks (e.g. "a".repeat(90) at 45 cols) whose continuation
++    // mark must win so the rejoin stays unambiguous.
++    if (!trimmed.slice(1).includes(trimmed[0])) {
++        markRenderedLine(trimmed[0], null);
++    }
 +    return trimmed;
  }
  export const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
  /**
-@@ -1004,6 +1078,34 @@ export function applyBackgroundToLine(line, width, bgFn) {
+@@ -1004,6 +1106,34 @@ export function applyBackgroundToLine(line, width, bgFn) {
      const withPadding = line + padding;
      return bgFn(withPadding);
  }

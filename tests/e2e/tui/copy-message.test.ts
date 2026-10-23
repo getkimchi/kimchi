@@ -309,6 +309,41 @@ test.describe("narrow geometry selection copy", () => {
 		})
 	})
 
+	notWindows("the space before an over-wide token survives a mid-word wrap", async ({ terminal }) => {
+		// Review regression: a word + space immediately before an overlarge token
+		// (long URL/path). The wrap consumes the trailing space and breaks the
+		// long token mid-word — the rejoin must restore the space (previously
+		// pasted as "preludehttps://…").
+		const narrowReply = "prelude https://example.com/some/very/long/path/that/wraps-onwards"
+		await withClipboardSaved(async () => {
+			await runKimchiSession(
+				terminal,
+				{
+					artifactName: "copy-selection-narrow-oversize-token",
+					responses: [{ stream: [narrowReply] }],
+					sessionTuiMode: "fullscreen",
+					seedHome: seedClipboardShims,
+				},
+				async (fixture, trace) => {
+					const clipboard = clipboardProbe(fixture.homeDir)
+
+					terminal.submit(PROMPT)
+					await waitForText(terminal, "onwards", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					trace.step("over-size-token reply rendered")
+
+					const span = findSelectionSpan(terminal, "prelude", "onwards")
+					clipboard.writeSentinel("sentinel-oversize")
+					dragSelect(terminal, span)
+					trace.step(`selected from ${span.x1},${span.y1} to ${span.x2},${span.y2}`)
+
+					const copied = await waitForClipboardSpan(clipboard, "prelude", "onwards")
+					trace.step(`selection copied (${copied.length} chars)`)
+					expect(copied).toBe(narrowReply)
+				},
+			)
+		})
+	})
+
 	notWindows("a selection starting on a wrapped continuation row reconstructs the suffix", async ({ terminal }) => {
 		await withClipboardSaved(async () => {
 			await runKimchiSession(
