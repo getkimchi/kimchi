@@ -275,15 +275,15 @@ it("falls back to the first available model when the default is not present", as
 	)
 })
 
-it("omits the 'Selected X' suffix when the chosen model is the implicit default", async () => {
+it("announces the auto-selected model when no prior Kimchi model is active", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
 		token: "test-token-default",
 	})
 
 	const registry = makeFakeModelRegistry()
-	// minimax-m3 is KIMCHI_DEFAULT_MODEL_ID — selecting it isn't a user choice,
-	// so the success message should not call attention to it.
+	// The login default is the first model in the registry, so the success
+	// message announces which model was auto-selected.
 	registry.getAvailable.mockReturnValue([{ id: "minimax-m3", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
@@ -292,12 +292,11 @@ it("omits the 'Selected X' suffix when the chosen model is the implicit default"
 	await patched.call(fakeIm, "login")
 	await selectCurrentLoginOption(fakeIm)
 
-	// We still set the model so the session is usable, but the user-facing
-	// feedback drops the "Selected X" suffix.
 	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "minimax-m3", provider: "kimchi-dev" }, { persist: true })
 	const messages = getFeedbackMessages(fakeIm)
-	expect(messages).toContainEqual(expect.stringContaining("Logged in to Kimchi. Credentials saved to "))
-	expect(messages).not.toContainEqual(expect.stringContaining("Selected minimax-m3"))
+	expect(messages).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected minimax-m3. Credentials saved to "),
+	)
 })
 
 it("preserves a Kimchi provider model that is already active across login", async () => {

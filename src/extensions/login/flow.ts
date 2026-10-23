@@ -43,7 +43,6 @@ import {
 } from "../../regions.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
-export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const KIMCHI_SSO_LABEL = "Sign in with CAST AI (SSO)"
@@ -420,15 +419,14 @@ async function configureKimchiToken(
 		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
 		const selectedModel = priorKimchiModel
 			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
-			: (providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0])
+			: providerModels[0]
 		if (!priorKimchiModel) {
 			await host.setModel?.(selectedModel)
 		}
-		// Only announce the model when we actually made a fresh, non-default
-		// choice. The implicit default and a preserved prior Kimchi model both
-		// carry no information the user doesn't already have.
-		const madeFreshChoice = !priorKimchiModel && selectedModel.id !== KIMCHI_DEFAULT_MODEL_ID
-		const announceModel = madeFreshChoice ? selectedModel.id : undefined
+		// Announce the model whenever login auto-selected one: the first model
+		// in the registry is dynamic, so the user can't predict it. A preserved
+		// prior Kimchi model carries no information the user doesn't already have.
+		const announceModel = priorKimchiModel ? undefined : selectedModel.id
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
@@ -527,15 +525,14 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
 		const selectedModel = priorKimchiModel
 			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
-			: (providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0])
+			: providerModels[0]
 		if (!priorKimchiModel) {
 			await host.setModel?.(selectedModel)
 		}
-		// Only announce the model when we actually made a fresh, non-default
-		// choice. The implicit default and a preserved prior Kimchi model both
-		// carry no information the user doesn't already have.
-		const madeFreshChoice = !priorKimchiModel && selectedModel.id !== KIMCHI_DEFAULT_MODEL_ID
-		const announceModel = madeFreshChoice ? selectedModel.id : undefined
+		// Announce the model whenever login auto-selected one: the first model
+		// in the registry is dynamic, so the user can't predict it. A preserved
+		// prior Kimchi model carries no information the user doesn't already have.
+		const announceModel = priorKimchiModel ? undefined : selectedModel.id
 		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
 		return true
 	}
