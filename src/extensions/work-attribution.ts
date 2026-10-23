@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import {
+	closeSync,
+	existsSync,
+	fstatSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readSync,
+	writeFileSync,
+} from "node:fs"
+import { dirname, join, resolve } from "node:path"
 import { contentText } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
@@ -59,7 +69,6 @@ import {
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
 import {
-	appendJournalLine,
 	flushWorkSummaries,
 	markNewWork,
 	object,
@@ -285,6 +294,8 @@ export function appendWorkRecord(
 	workId = getWorkId(ctx),
 	path = workLedgerPath(ctx),
 ): void {
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+	const fd = openSync(path, "a+", 0o600)
 	const record = {
 		...fields,
 		version: 1,
@@ -293,7 +304,18 @@ export function appendWorkRecord(
 		cwd: ctx.cwd,
 		recordedAt: new Date().toISOString(),
 	}
-	appendJournalLine(path, record)
+	try {
+		const size = fstatSync(fd).size
+		const last = Buffer.alloc(1)
+		if (size) readSync(fd, last, 0, 1, size - 1)
+		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
+		// another process may be appending, and readers skip only that cut-off record.
+		const repair = size && last[0] !== 10 ? "\n" : ""
+		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
+		fsyncSync(fd)
+	} finally {
+		closeSync(fd)
+	}
 	if (fields.type === "plan" || fields.type === "commit" || fields.type === "file_transition") {
 		const key = workLedgerPath(ctx)
 		const outputs = workOutputs.get(key) ?? new Set<string>()
