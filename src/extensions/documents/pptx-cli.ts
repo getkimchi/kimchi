@@ -20,12 +20,12 @@
  *                                      revalidate the package, write atomically.
  */
 
-import { readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { atomicWrite, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { applyPptxOps, parsePptxOps } from "./editors/pptx.js"
 import { extractPptx } from "./extractors/pptx.js"
-import { MAX_UNITS_PER_CALL, maxFileBytes } from "./limits.js"
+import { MAX_UNITS_PER_CALL } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { openOoxml } from "./ooxml/package.js"
 import { validateContentTypes, validatePresentationChildOrder } from "./ooxml/validate.js"
@@ -59,31 +59,6 @@ commands:
   edit <in.pptx> --out <out.pptx> --ops <ops.json>  apply ops, never in place
   render <deck.pptx> --out <dir> [--slides N-M]   PDF + per-slide PNGs for visual QA
                                                   (needs LibreOffice; optional)`
-
-function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
-	try {
-		return io(path)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot read ${path}: ${(err as Error).message}`)
-	}
-}
-
-function enforceSizeCap(path: string, data: Uint8Array): void {
-	const cap = maxFileBytes()
-	if (data.length > cap) {
-		throw new DocumentError(
-			"too-large",
-			`${path} is ${(data.length / 1024 / 1024).toFixed(1)} MB, over the ${cap / 1024 / 1024} MB document cap. Raise it with KIMCHI_DOCUMENT_MAX_MB.`,
-			"pptx",
-		)
-	}
-}
-
-/** Value of a `--name value` flag, or undefined when absent. */
-function flagValue(flags: string[], name: string): string | undefined {
-	const i = flags.indexOf(name)
-	return i >= 0 ? flags[i + 1] : undefined
-}
 
 function parseSlideRange(arg: string | undefined): { start: number; end: number } | undefined {
 	if (!arg) return undefined
@@ -198,7 +173,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 				} else {
 					bytes = await writePptx(spec, { baseDir: dirname(resolve(contentPath)) })
 				}
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "pptx-mjs-tmp"))
 				writeFile(out, bytes)
 				io.stdout(`created ${out} (${spec.slides.length} slide${spec.slides.length === 1 ? "" : "s"})`)
 				return 0
@@ -250,7 +225,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 					)
 				}
 				const bytes = await pkg.save()
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "pptx-mjs-tmp"))
 				writeFile(out, bytes)
 				io.stdout(`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`)
 				return 0
@@ -291,45 +266,4 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 	}
 }
 
-/** Write via temp + rename so an interrupted create never leaves a half file. */
-function atomicWrite(path: string, data: Uint8Array): void {
-	// pid + counter: two concurrent edits to the same --out path must not
-	// clobber each other's temp. Same-dir keeps renameSync on one filesystem.
-	const temp = `${path}.pptx-mjs-tmp.${process.pid}.${++atomicWriteCounter}`
-	try {
-		writeFileSync(temp, data)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot write ${path}: ${(err as Error).message}`)
-	}
-	try {
-		renameSync(temp, path)
-	} catch (err) {
-		try {
-			unlinkSync(temp)
-		} catch {
-			// temp cleanup is best-effort; the OS reclaims temp files
-		}
-		throw new DocumentError("corrupt", `Cannot move output into place at ${path}: ${(err as Error).message}`)
-	}
-}
-
-let atomicWriteCounter = 0
-
-const invokedAsScript = (() => {
-	const entry = process.argv[1]
-	if (!entry) return false
-	try {
-		return realpathSync(entry) === fileURLToPath(import.meta.url)
-	} catch {
-		return false
-	}
-})()
-
-if (invokedAsScript) {
-	runPptxCli(process.argv.slice(2), {
-		stdout: (line) => console.log(line),
-		stderr: (line) => console.error(line),
-	}).then((code) => {
-		process.exitCode = code
-	})
-}
+runCliScript(import.meta.url, runPptxCli)
