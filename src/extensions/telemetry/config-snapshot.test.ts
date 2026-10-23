@@ -20,6 +20,7 @@ function makeConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		agentConfigDir: "/tmp/agent-config",
 		region: "us",
 		selfHostedUrl: undefined,
+		selfHostedEndpoints: undefined,
 		llmEndpoint: "https://api.test.example.com",
 		customLlmEndpoint: undefined,
 		maxToolResultChars: 12000,

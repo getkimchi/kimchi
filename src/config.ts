@@ -7,9 +7,11 @@ import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
+	discoveredSelfHostedRegion,
 	isRegionId,
 	type KimchiRegion,
 	normalizeSelfHostedBaseUrl,
+	normalizeSelfHostedEndpoints,
 	openAiBaseUrl,
 	REGION_ENV,
 	REGIONS,
@@ -17,6 +19,7 @@ import {
 	type RegionId,
 	regionEndpoints,
 	SELF_HOSTED_URL_ENV,
+	type SelfHostedEndpoints,
 	selfHostedRegion,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
@@ -240,6 +243,16 @@ export interface KimchiConfig {
 	 * switch back offers it as the login default.
 	 */
 	selfHostedUrl: string | undefined
+	/**
+	 * Endpoints discovered from the self-hosted install's discovery document
+	 * (see src/self-hosted-discovery.ts) and persisted at login: the api,
+	 * console, and llm origins as advertised. Undefined for installs that
+	 * predate discovery — those derive every endpoint from `selfHostedUrl`
+	 * via selfHostedRegion(base). Account-level like `region`: only the
+	 * global config may set it, and KIMCHI_SELF_HOSTED_URL (an old-style base
+	 * URL override) suppresses it.
+	 */
+	selfHostedEndpoints: SelfHostedEndpoints | undefined
 	/** KIMCHI_BASE_URL env → project config → global config → the region's OpenAI base (this one includes the /openai/v1 path; a config-file custom value is stored as written). */
 	llmEndpoint: string
 	/**
@@ -310,6 +323,7 @@ function readConfigExtras(configPath: string): {
 	llmEndpoint?: string
 	region?: RegionId
 	selfHostedUrl?: string
+	selfHostedEndpoints?: SelfHostedEndpoints
 	maxToolResultChars?: number
 	mcpSearchLimit?: number
 	mcpSearch?: Partial<SearchStrategyConfig>
@@ -391,6 +405,12 @@ function readConfigExtras(configPath: string): {
 			typeof parsed.selfHostedUrl === "string" ? parsed.selfHostedUrl : undefined,
 		)
 
+		// Read selfHostedEndpoints — the discovery-document origins persisted
+		// at login (account-level like selfHostedUrl, global config only). Every
+		// key must be a valid http(s) origin; anything else counts as unset so a
+		// hand-edited value falls back to the manual base-URL derivation.
+		const selfHostedEndpoints = normalizeSelfHostedEndpoints(parsed.selfHostedEndpoints)
+
 		// Read deviceId (camelCase, then snake_case for backwards compat)
 		const deviceId =
 			(typeof parsed.deviceId === "string" && parsed.deviceId.length > 0 && parsed.deviceId) ||
@@ -448,6 +468,7 @@ function readConfigExtras(configPath: string): {
 			llmEndpoint,
 			region,
 			selfHostedUrl,
+			selfHostedEndpoints,
 			maxToolResultChars,
 			mcpSearchLimit,
 			mcpSearch,
@@ -575,12 +596,14 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	let fileHeaders: Record<string, string> | undefined
 	let fileRegion: unknown
 	let selfHostedUrlFromFile: string | undefined
+	let selfHostedEndpointsFromFile: SelfHostedEndpoints | undefined
 
 	try {
 		const raw = readFileSync(path, "utf-8")
 		const parsed = JSON.parse(raw)
 		fileRegion = parsed.region
 		if (typeof parsed.selfHostedUrl === "string") selfHostedUrlFromFile = parsed.selfHostedUrl
+		selfHostedEndpointsFromFile = normalizeSelfHostedEndpoints(parsed.selfHostedEndpoints)
 		const t = parsed.telemetry
 		if (t && typeof t === "object") {
 			if (typeof t.enabled === "boolean") fileEnabled = t.enabled
@@ -611,12 +634,19 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 
 	// Explicit telemetry.* config wins over the region defaults.
 	const regionId = effectiveRegion(fileRegion)
-	// Self-hosted telemetry URLs derive from the same base URL as every other
-	// endpoint. Without a configured base the placeholder entry's empty URLs
-	// make telemetry sends fail (best-effort, like an unreachable host);
-	// endpoint resolution fails fast elsewhere with the actionable error.
-	const selfHostedBase = environmentSelfHostedUrl() ?? normalizeSelfHostedBaseUrl(selfHostedUrlFromFile)
-	const region = regionId === "self-hosted" && selfHostedBase ? selfHostedRegion(selfHostedBase) : REGIONS[regionId]
+	// Self-hosted telemetry URLs follow the same resolution as every other
+	// endpoint: stored discovery endpoints when present, else the base URL.
+	// KIMCHI_SELF_HOSTED_URL is an old-style base override and outranks stored
+	// discovery. Without either, the placeholder entry's empty URLs make
+	// telemetry sends fail (best-effort, like an unreachable host); endpoint
+	// resolution fails fast elsewhere with the actionable error.
+	const envSelfHostedBase = environmentSelfHostedUrl()
+	const selfHostedBase = envSelfHostedBase ?? normalizeSelfHostedBaseUrl(selfHostedUrlFromFile)
+	const region = regionOrPlaceholder(
+		regionId,
+		selfHostedBase,
+		envSelfHostedBase ? undefined : selfHostedEndpointsFromFile,
+	)
 
 	// Always inject a User-Agent so telemetry is traceable on the server side.
 	const hasUserAgent = Object.keys(headers).some((k) => k.toLowerCase() === "user-agent")
@@ -704,20 +734,25 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 
 	// The self-hosted base URL is region config: account-level (global config
 	// only), with KIMCHI_SELF_HOSTED_URL winning over the stored value — the
-	// same env-over-file shape as effectiveRegion.
-	const selfHostedUrl = environmentSelfHostedUrl() ?? globalExtras.selfHostedUrl
+	// same env-over-file shape as effectiveRegion. That env override is an
+	// old-style base by definition (ONE URL every endpoint derives from), so
+	// it also outranks the stored discovery endpoints.
+	const envSelfHostedUrl = environmentSelfHostedUrl()
+	const selfHostedUrl = envSelfHostedUrl ?? globalExtras.selfHostedUrl
+	const selfHostedEndpoints = envSelfHostedUrl ? undefined : globalExtras.selfHostedEndpoints
 
 	// KIMCHI_BASE_URL repoints the whole LLM gateway (chat, router,
 	// search, anthropic base) and outranks any configured llmEndpoint,
 	// matching the KIMCHI_API_KEY env-wins rule.
 	const envLlmBaseUrl = environmentLlmBaseUrl()
-	const gateway = withLlmBaseUrl(regionOrPlaceholder(region, selfHostedUrl))
+	const gateway = withLlmBaseUrl(regionOrPlaceholder(region, selfHostedUrl, selfHostedEndpoints))
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
 		agentConfigDir: AGENT_CONFIG_DIR,
 		region,
 		selfHostedUrl,
+		selfHostedEndpoints,
 		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
 		customLlmEndpoint: envLlmBaseUrl ?? extras.llmEndpoint,
 		maxToolResultChars: extras.maxToolResultChars ?? 10_000,
@@ -804,7 +839,7 @@ export function resolveEndpoints(options?: {
 		cfg = resolvedEndpointsConfigCache.cfg
 	}
 	return {
-		...endpointsForRegion(cfg.region, { selfHostedUrl: cfg.selfHostedUrl }),
+		...endpointsForRegion(cfg.region, { selfHostedUrl: cfg.selfHostedUrl, endpoints: cfg.selfHostedEndpoints }),
 		llmEndpoint: cfg.llmEndpoint,
 	}
 }
@@ -885,15 +920,36 @@ export function resolveSelfHostedBaseUrl(): string | undefined {
 }
 
 /**
- * The KimchiRegion for a region id, without the endpoint fail-fast: a
- * self-hosted region with a resolvable base is built via selfHostedRegion,
- * anything else falls back to the REGIONS entry (the self-hosted
- * placeholder when no base is configured). Used by loadConfig/telemetry,
- * which must keep working in the broken state so `kimchi config region` can
- * show it and `kimchi login` can fix it.
+ * The self-hosted discovery endpoints a bare `endpointsForRegion("self-hosted")`
+ * call resolves: the global config's selfHostedEndpoints. KIMCHI_SELF_HOSTED_URL
+ * suppresses them — that env override is an old-style base URL by definition
+ * (ONE URL every endpoint derives from) and, like resolveSelfHostedBaseUrl's
+ * env-over-file shape, outranks the stored discovery result.
  */
-function regionOrPlaceholder(region: RegionId, selfHostedUrl: string | undefined): KimchiRegion {
-	return region === "self-hosted" && selfHostedUrl ? selfHostedRegion(selfHostedUrl) : REGIONS[region]
+export function resolveSelfHostedEndpoints(): SelfHostedEndpoints | undefined {
+	if (environmentSelfHostedUrl()) return undefined
+	return readConfigExtras(KIMCHI_CONFIG_PATH).selfHostedEndpoints
+}
+
+/**
+ * The KimchiRegion for a region id, without the endpoint fail-fast: a
+ * self-hosted region with discovery endpoints is built via
+ * discoveredSelfHostedRegion, else one with a resolvable base via
+ * selfHostedRegion; anything else falls back to the REGIONS entry (the
+ * self-hosted placeholder when no base is configured). Used by
+ * loadConfig/telemetry, which must keep working in the broken state so
+ * `kimchi config region` can show it and `kimchi login` can fix it.
+ */
+function regionOrPlaceholder(
+	region: RegionId,
+	selfHostedUrl: string | undefined,
+	selfHostedEndpoints?: SelfHostedEndpoints,
+): KimchiRegion {
+	if (region !== "self-hosted") return REGIONS[region]
+	// Discovery endpoints win over the base-URL derivation: they advertise
+	// the install's real api/llm origins, which no single base URL expresses.
+	if (selfHostedEndpoints) return discoveredSelfHostedRegion(selfHostedEndpoints)
+	return selfHostedUrl ? selfHostedRegion(selfHostedUrl) : REGIONS[region]
 }
 
 /**
@@ -914,18 +970,32 @@ function missingSelfHostedBaseUrlError(): Error {
  * endpoints — the low-level helpers in src/regions.ts bypass the env overrides
  * (see the note there). loadConfig() applies the same overrides to llmEndpoint.
  *
- * Self-hosted regions are built by selfHostedRegion(base) from the base URL in
- * `options.selfHostedUrl` or — when omitted — from KIMCHI_SELF_HOSTED_URL /
- * the global config. A self-hosted region with no resolvable base URL throws
+ * Self-hosted regions resolve from `options.endpoints` (fresh discovery
+ * from the login flow) or `options.selfHostedUrl`, falling back to
+ * KIMCHI_SELF_HOSTED_URL / the global config — where stored discovery
+ * endpoints (selfHostedEndpoints) outrank the stored base URL. A
+ * self-hosted region with no resolvable base URL throws
  * (see missingSelfHostedBaseUrlError) instead of silently falling back to
  * another region's endpoints.
  */
-export function endpointsForRegion(region: RegionId, options?: { selfHostedUrl?: string }): RegionEndpoints {
+export function endpointsForRegion(
+	region: RegionId,
+	options?: { selfHostedUrl?: string; endpoints?: SelfHostedEndpoints },
+): RegionEndpoints {
 	let resolved: KimchiRegion
 	if (region === "self-hosted") {
-		const base = options?.selfHostedUrl ?? resolveSelfHostedBaseUrl()
-		if (!base) throw missingSelfHostedBaseUrlError()
-		resolved = selfHostedRegion(base)
+		// Precedence: an explicit fresh-discovery `endpoints` from the login
+		// flow wins over an explicit `selfHostedUrl`; without either,
+		// KIMCHI_SELF_HOSTED_URL (an old-style base override) wins over the
+		// stored discovery endpoints (see resolveSelfHostedEndpoints).
+		const endpoints = options?.endpoints ?? (options?.selfHostedUrl ? undefined : resolveSelfHostedEndpoints())
+		if (endpoints) {
+			resolved = discoveredSelfHostedRegion(endpoints)
+		} else {
+			const base = options?.selfHostedUrl ?? resolveSelfHostedBaseUrl()
+			if (!base) throw missingSelfHostedBaseUrlError()
+			resolved = selfHostedRegion(base)
+		}
 	} else {
 		resolved = REGIONS[region]
 	}
@@ -1127,6 +1197,12 @@ export interface WriteApiKeyOptions {
 	 *  derivation stays single-sourced. Left untouched when absent, so
 	 *  switching away from self-hosted and back keeps the stored value. */
 	selfHostedUrl?: string
+	/** Self-hosted discovery endpoints (see src/self-hosted-discovery.ts)
+	 *  resolved at login: stored next to `selfHostedUrl`, and cleared on a
+	 *  self-hosted login without them (the manual-entry fallback) so a stale
+	 *  value from a different install never outlives the base it was
+	 *  discovered for. */
+	selfHostedEndpoints?: SelfHostedEndpoints
 }
 
 export function writeApiKey(key: string, configPath?: string, options: WriteApiKeyOptions = {}): void {
@@ -1138,6 +1214,20 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// derivation; an invalid value counts as unset (never stored).
 		const selfHostedUrl = normalizeSelfHostedBaseUrl(options.selfHostedUrl)
 		if (selfHostedUrl) raw.selfHostedUrl = selfHostedUrl
+		// Discovery endpoints ride along with the console URL: normalized on
+		// write like selfHostedUrl (an invalid value counts as absent), stored on
+		// a discovered login, and cleared on a manual-entry login — a
+		// self-hosted login persisting a console URL but no endpoints — so a
+		// stale value from a different install never outlives the base it was
+		// discovered for. A write with neither (a bare region flip) leaves them
+		// stored, matching selfHostedUrl's leave-untouched-when-absent rule.
+		const selfHostedEndpoints = normalizeSelfHostedEndpoints(options.selfHostedEndpoints)
+		if (selfHostedEndpoints) {
+			raw.selfHostedEndpoints = selfHostedEndpoints
+		} else if (options.region === "self-hosted" && options.selfHostedUrl !== undefined) {
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.selfHostedEndpoints
+		}
 		const llmEndpoint = options.llmEndpoint?.trim()
 		if (llmEndpoint) {
 			raw.llmEndpoint = llmEndpoint

@@ -25,6 +25,7 @@ function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		agentConfigDir: "/agent-config-dir",
 		region: "us",
 		selfHostedUrl: undefined,
+		selfHostedEndpoints: undefined,
 		llmEndpoint: "https://gateway.test/openai/v1",
 		customLlmEndpoint: undefined,
 		maxToolResultChars: 10_000,

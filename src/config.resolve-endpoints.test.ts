@@ -231,6 +231,205 @@ describe("resolveEndpoints — self-hosted region", () => {
 	})
 })
 
+describe("resolveEndpoints — self-hosted discovery endpoints", () => {
+	let cwd: string
+
+	beforeEach(() => {
+		mkdirSync(join(home, ".config", "kimchi"), { recursive: true })
+		cwd = mkdtempSync(join(home, "cwd-"))
+		vi.spyOn(process, "cwd").mockReturnValue(cwd)
+		vi.stubEnv("KIMCHI_REGION", undefined)
+		vi.stubEnv("KIMCHI_WEB_APP_URL", undefined)
+		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
+		vi.stubEnv("KIMCHI_BASE_URL", undefined)
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
+		invalidateResolvedEndpoints()
+	})
+
+	afterAll(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	it("resolves every endpoint from stored discovery endpoints (llm origin-only rule)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "k",
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		const resolved = resolveEndpoints()
+		expect(resolved).toMatchObject({
+			region: "self-hosted",
+			webAppUrl: "https://kimchi.example.com",
+			platformApiUrl: "https://kimchi.example.com/api",
+			llmBaseUrl: "https://llm.example.com",
+			// The llm value is the ORIGIN ONLY — consumers append the API shape.
+			openAiBaseUrl: "https://llm.example.com/openai/v1",
+			anthropicBaseUrl: "https://llm.example.com/anthropic",
+			experimentalOpenAiBaseUrl: "https://llm.example.com/experimental/openai/v1",
+			searchUrl: "https://llm.example.com/v1/search",
+			// REST API paths live at the root of the advertised api origin.
+			castApiUrl: "https://kimchi.example.com",
+			keyValidationUrl: "https://kimchi.example.com/v1/llm/openai/supported-providers",
+			telemetryLogsUrl: "https://kimchi.example.com/ai-optimizer/v1beta/logs:ingest",
+			telemetryMetricsUrl: "https://kimchi.example.com/ai-optimizer/v1beta/metrics:ingest",
+			llmEndpoint: "https://llm.example.com/openai/v1",
+		})
+	})
+
+	it("discovery endpoints win over the stored base URL derivation", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://api.other.example.com",
+					console: "https://console.other.example.com",
+					llm: "https://llm.other.example.com",
+				},
+			}),
+		)
+
+		const resolved = resolveEndpoints()
+		expect(resolved.webAppUrl).toBe("https://console.other.example.com")
+		expect(resolved.castApiUrl).toBe("https://api.other.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://llm.other.example.com")
+	})
+
+	it("KIMCHI_SELF_HOSTED_URL suppresses stored discovery endpoints (old-style base override)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://from-env.example.com")
+		const resolved = resolveEndpoints()
+		expect(resolved.webAppUrl).toBe("https://from-env.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://from-env.example.com/llm")
+		expect(resolved.castApiUrl).toBe("https://from-env.example.com/api")
+	})
+
+	it("treats invalid stored endpoints as unset and falls back to the base URL", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "not a url",
+				},
+			}),
+		)
+
+		const resolved = resolveEndpoints()
+		expect(resolved.webAppUrl).toBe("https://kimchi.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://kimchi.example.com/llm")
+	})
+
+	it("KIMCHI_BASE_URL still overrides the discovered gateway", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		vi.stubEnv("KIMCHI_BASE_URL", "https://gateway.example")
+		const resolved = resolveEndpoints()
+		expect(resolved.llmBaseUrl).toBe("https://gateway.example")
+		expect(resolved.openAiBaseUrl).toBe("https://gateway.example/openai/v1")
+		expect(resolved.webAppUrl).toBe("https://kimchi.example.com")
+		expect(resolved.castApiUrl).toBe("https://kimchi.example.com")
+	})
+
+	it("endpointsForRegion: fresh discovery options beat an explicit base URL", () => {
+		const resolved = endpointsForRegion("self-hosted", {
+			selfHostedUrl: "https://kimchi.example.com",
+			endpoints: {
+				api: "https://kimchi.example.com",
+				console: "https://kimchi.example.com",
+				llm: "https://llm.example.com",
+			},
+		})
+		expect(resolved.webAppUrl).toBe("https://kimchi.example.com")
+		expect(resolved.llmBaseUrl).toBe("https://llm.example.com")
+		expect(resolved.openAiBaseUrl).toBe("https://llm.example.com/openai/v1")
+	})
+
+	it("writeApiKey persists discovery endpoints, and the manual fallback clears them", () => {
+		const endpoints = {
+			api: "https://kimchi.example.com",
+			console: "https://kimchi.example.com",
+			llm: "https://llm.example.com",
+		}
+
+		// Discovered login: region + console URL + endpoints stored.
+		writeApiKey("k1", configPath, {
+			region: "self-hosted",
+			selfHostedUrl: "https://kimchi.example.com",
+			selfHostedEndpoints: endpoints,
+		})
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.example.com")
+		expect(resolveEndpoints().openAiBaseUrl).toBe("https://llm.example.com/openai/v1")
+
+		// Manual-entry re-login (install predates discovery / doc unreachable):
+		// the stale endpoints are cleared so they cannot outlive the base.
+		writeApiKey("k2", configPath, { region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" })
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://kimchi.example.com/llm")
+	})
+
+	it("keeps stored discovery endpoints when switching away and back to self-hosted", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "k",
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			}),
+		)
+
+		// Switching away leaves the self-hosted config stored (same semantics
+		// as selfHostedUrl); switching back resolves the discovered endpoints.
+		writeApiKey("us-token", configPath, { region: "us", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
+		expect(resolveEndpoints().region).toBe("us")
+
+		writeApiKey("self-hosted-token", configPath, { region: "self-hosted" })
+		expect(resolveEndpoints().llmBaseUrl).toBe("https://llm.example.com")
+	})
+})
+
 describe("resolveEndpoints — self-hosted region round-trip", () => {
 	let cwd: string
 
