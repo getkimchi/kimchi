@@ -9,7 +9,7 @@ import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"
-import { readWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
+import { MAX_ISSUE_BYTES, parseWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
 import { readWorkHead, type WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
@@ -94,11 +94,15 @@ export async function readWorkBrowser(
 	const works = await Promise.all(
 		[own, ...recent].map(async (work): Promise<SavedWork> => {
 			const folder = join(directory, work.workId)
-			const [totals, planTitle] = await Promise.all([
+			const issuePath = join(folder, "issue.json")
+			const [totals, planTitle, issueText] = await Promise.all([
 				readJson(join(folder, "cost-totals.json")),
 				work.head && readPlanTitle(folder, work.head),
+				readText(issuePath, MAX_ISSUE_BYTES),
 			])
-			return { ...work, totals, planTitle, issue: readWorkIssue(agentDir, work.workId) }
+			// A missing, special or oversized issue.json shows no issue.
+			const issue = issueText === undefined ? undefined : parseWorkIssue(issuePath, work.workId, issueText)
+			return { ...work, totals, planTitle, issue }
 		}),
 	)
 	return buildWorkBrowser(agentDir, current, works)

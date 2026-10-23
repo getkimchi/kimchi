@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs"
+import { closeSync, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
@@ -17,6 +17,8 @@ import { LOCK_RETRIES, LOCK_STALE_MS, object } from "./summary.js"
 
 const BRANCH_TIMEOUT_MS = 2000
 const CHOOSE = "Choose with: /work issue <KEY> or /work issue clear"
+/** A saved selection takes a few hundred bytes; a larger `issue.json` is not read. */
+export const MAX_ISSUE_BYTES = 8 * 1024
 
 /** `issue.json`: the work's selection, or the clear that ended it. */
 interface SavedWorkIssue {
@@ -63,11 +65,30 @@ export function workIssuePath(agentDir: string, workId: string): string {
 export function readWorkIssue(agentDir: string, workId: string): WorkIssue {
 	if (!isWorkId(workId)) return { revision: 0 }
 	const path = workIssuePath(agentDir, workId)
-	let value: unknown
+	let fd: number | undefined
+	let text: string
 	try {
-		value = JSON.parse(readFileSync(path, "utf8"))
+		fd = openSync(path, "r")
+		if (fstatSync(fd).size > MAX_ISSUE_BYTES) return { revision: 0, unreadable: path }
+		text = readFileSync(fd, "utf8")
 	} catch (error) {
 		return object(error) && error.code === "ENOENT" ? { revision: 0 } : { revision: 0, unreadable: path }
+	} finally {
+		if (fd !== undefined) closeSync(fd)
+	}
+	return parseWorkIssue(path, workId, text)
+}
+
+/**
+ * The work's issue from the text of its `issue.json`, read at `path`. Text that is no saved selection leaves the issue
+ * unknown.
+ */
+export function parseWorkIssue(path: string, workId: string, text: string): WorkIssue {
+	let value: unknown
+	try {
+		value = JSON.parse(text)
+	} catch {
+		return { revision: 0, unreadable: path }
 	}
 	if (!object(value) || value.version !== 1 || value.workId !== workId) return { revision: 0, unreadable: path }
 	const { revision, issueKey } = value

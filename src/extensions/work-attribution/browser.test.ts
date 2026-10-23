@@ -8,7 +8,7 @@ import { saveWorkSummary } from "../__mocks__/work-summary.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
 import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
 import type { PullRequestCost } from "./costs.js"
-import { changeWorkIssue } from "./issues.js"
+import { changeWorkIssue, MAX_ISSUE_BYTES } from "./issues.js"
 import { type Collection, type Row, readWorkHead, type WorkHead } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -568,6 +568,26 @@ describe("work browser rows", () => {
 		expect(description.slice(activity + 1, activity + 3)).toEqual(["Jira issue: ABC-12", expect.any(String)])
 		expect(row(none)?.label).toBe("  00000003 kimchi")
 		expect(row(none)?.description).not.toContain("Jira issue")
+	})
+
+	it("reads saved Jira issues asynchronously, skipping one larger than any selection", async () => {
+		const [current, other, large] = [1, 2, 3].map(workId)
+		for (const id of [current, other, large])
+			await save(id, { summary: summary(id, { requests: [request(`r-${id}`)] }) })
+		await changeWorkIssue(agentDir, other, "session", "ABC-12")
+		const largeIssue = join(agentDir, "work", large, "issue.json")
+		const padding = "x".repeat(MAX_ISSUE_BYTES)
+		writeFileSync(largeIssue, JSON.stringify({ version: 1, workId: large, revision: 1, issueKey: "ABC-7", padding }))
+		const reads = vi.spyOn(asyncFs, "readFile")
+
+		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
+		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
+
+		expect(row(other)?.label).toBe("  00000002 ABC-12 · kimchi")
+		expect(row(large)?.label).toBe("  00000003 kimchi")
+		const files = reads.mock.calls.map(([path]) => String(path))
+		expect(files).toContain(join(agentDir, "work", other, "issue.json"))
+		expect(files).not.toContain(largeIssue)
 	})
 
 	it("explains unknown prices with the work's own untagged requests and failed refreshes only", async () => {

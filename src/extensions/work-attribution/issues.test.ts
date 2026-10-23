@@ -7,6 +7,7 @@ import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest"
 import {
 	changeWorkIssue,
+	MAX_ISSUE_BYTES,
 	parseIssueKey,
 	readWorkIssue,
 	workIssueCommand,
@@ -136,14 +137,16 @@ describe("a work's issue relation", () => {
 		expect(readFileSync(scope, "utf8")).toBe('{"version":1}\n')
 	})
 
+	// Each file is built in its test, once beforeEach has chosen the work's ID.
 	it.each([
-		["a damaged file", "not json\n"],
-		["a file cut short", savedFile(1, "ABC-1").slice(0, 40)],
-		["a file of a newer format", savedFile(1, "ABC-1", { version: 2 })],
-		["another work's file", savedFile(1, "ABC-1", { workId: randomUUID() })],
-		["a file naming no valid key", savedFile(1, "abc")],
+		["a damaged file", () => "not json\n"],
+		["a file cut short", () => savedFile(1, "ABC-1").slice(0, 40)],
+		["a file of a newer format", () => savedFile(1, "ABC-1", { version: 2 })],
+		["another work's file", () => savedFile(1, "ABC-1", { workId: randomUUID() })],
+		["a file naming no valid key", () => savedFile(1, "abc")],
+		["a file larger than any selection", () => savedFile(1, "ABC-1", { padding: "x".repeat(MAX_ISSUE_BYTES) })],
 	])("keeps the selection unknown with %s until the next change", async (_case, text) => {
-		const path = saveFile(text)
+		const path = saveFile(text())
 
 		expect(readWorkIssue(agentDir, workId)).toMatchObject({ unreadable: path })
 		expect((await changeWorkIssue(agentDir, workId, "first", undefined)).changed).toBe(true)
