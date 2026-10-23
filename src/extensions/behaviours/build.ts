@@ -22,6 +22,12 @@ interface TriggeredSource {
 	kind: "triggered"
 	triggers: BehaviourTriggers
 	evals?: BehaviourEvals
+	/**
+	 * Delivery class for tool-triggered loads. Default (unset): steer + re-steer
+	 * after compaction, block never renders on a tool load. `true`: the body is
+	 * standing policy — the block renders on every load path.
+	 */
+	standing?: boolean
 }
 
 export type BehaviourSource = BaselineSource | TriggeredSource
@@ -57,6 +63,7 @@ export function buildBehaviours(sources: readonly BehaviourSource[]): Behaviour[
 			body: parsed.content,
 			triggers: src.triggers,
 			evals: src.evals,
+			standing: src.standing,
 		})
 	}
 	return result

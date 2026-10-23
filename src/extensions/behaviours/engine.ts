@@ -12,10 +12,13 @@
  * also records the load circumstances (turn, trigger source, tool args) so
  * downstream consumers (session summary) don't need a parallel side-table.
  *
- * Persistence across turns is handled by the system-prompt block registered
- * for each triggered behaviour: the block renders its body iff the behaviour
- * is loaded, so the loaded set surviving a session reset is sufficient —
- * no explicit re-injection is required after compaction.
+ * Persistence across turns is handled per delivery class: session-triggered
+ * bodies and `standing` bodies persist via the system-prompt block registered
+ * for each triggered behaviour (the block renders its body while the behaviour
+ * is loaded, so the loaded set surviving a session reset is sufficient — no
+ * explicit re-injection is required after compaction). Default tool-triggered
+ * bodies are steer-delivered only: wiring.ts re-sends the steer on every
+ * `session_compact` event to carry them across context rewrites.
  *
  * The `pending` queue exists solely to gate the in-turn steer delivery from
  * `tool_result`: a tool-triggered body is steered exactly once, the first

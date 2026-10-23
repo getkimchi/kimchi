@@ -33,6 +33,8 @@ export const BEHAVIOUR_BODY_TYPE = "behaviour"
 
 interface BehaviourBodyDetails {
 	name: string
+	/** Why this body was steered — absent on first delivery, "compaction" on re-steer. */
+	reason?: string
 }
 
 export interface WireOptions {
@@ -137,6 +139,35 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		}
 	})
 
+	// Re-steer tool-triggered bodies after every successful compaction. The
+	// rewritten context drops the original steer message, and a default
+	// tool-triggered body never renders a system-prompt block (steer-only
+	// delivery), so without this handler the guidance would be lost at the
+	// first compaction boundary. Session-triggered bodies never re-steer —
+	// their block sits in the system prompt from turn 0 and survives
+	// compaction by construction. Standing tool-loaded bodies re-steer too:
+	// their block only enters the prompt at the next user-prompt rebuild, so
+	// until then the steer is the only carrier — an inline overflow compaction
+	// can consume the original steer, and if the session ends before the next
+	// user prompt the block would never render. No pending-queue gating: this
+	// fires on every compaction event, bounded at one body per tool-loaded
+	// behaviour per compaction. The reason detail distinguishes re-steers
+	// from first deliveries without a new entry type.
+	pi.on("session_compact", async () => {
+		for (const b of triggered) {
+			if (engine.loadRecord(b.name)?.trigger !== "tool") continue
+			pi.sendMessage(
+				{
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: markHarnessSteer(b.body),
+					display: false,
+					details: { name: b.name, reason: "compaction" } satisfies BehaviourBodyDetails,
+				},
+				{ deliverAs: "steer" },
+			)
+		}
+	})
+
 	// Summary fires on graceful shutdown only — a hard crash (kill -9, OOM,
 	// power loss) skips this handler and the session ends without a summary
 	// row. Loaded/eval rows are durable (appended live), so offline analysis
@@ -167,20 +198,33 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 	})
 
 	// Register system-prompt blocks for baseline rules (constant) and each
-	// loaded triggered behaviour (dynamic). Dynamic block render returns the
-	// body iff the engine has the behaviour loaded; otherwise undefined makes
-	// the block skip silently. This is what makes triggered bodies appear in
-	// the developer role (system prompt) instead of as user-role messages — the
-	// model treats them as standing guidance rather than fresh input to
-	// acknowledge. Persistence across turns is automatic: the loaded set
+	// loaded triggered behaviour (dynamic). Dynamic block render is source- and
+	// flag-aware: session-triggered bodies render their block from turn 0
+	// (cache-stable by construction), and `standing` bodies render on every
+	// load path (explicit opt-in that accepts the one-time full-context cache
+	// invalidation of a late-rendering block in exchange for front-of-prompt
+	// authority). Default tool-triggered bodies are steer-delivered only, so
+	// their render returns undefined: a block that renders at the next
+	// user-prompt rebuild would rewrite the system prompt mid-session, which is
+	// exactly the invalidation steer + re-steer delivery exists to avoid. This
+	// is what makes triggered bodies appear in the developer role (system
+	// prompt) instead of as user-role messages — the model treats them as
+	// standing guidance rather than fresh input to acknowledge. Persistence
+	// across turns is automatic for block-rendering bodies: the loaded set
 	// survives reset only on a new session_start, and the same set survives
-	// compaction by definition.
+	// compaction by definition; steer-delivered bodies persist via the
+	// session_compact re-steer handler above.
 	registerRulesBlock(pi, behaviours)
 	const blocks = createSystemPromptBlocks(pi, "behaviours")
 	for (const b of triggered) {
 		blocks.register({
 			id: `triggered:${b.name}`,
-			render: () => (engine.isLoaded(b.name) ? b.body : undefined),
+			render: () => {
+				const record = engine.loadRecord(b.name)
+				if (!record) return undefined
+				if (record.trigger === "session" || b.standing) return b.body
+				return undefined
+			},
 		})
 	}
 }

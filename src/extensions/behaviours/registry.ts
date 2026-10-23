@@ -53,6 +53,11 @@ const sources: BehaviourSource[] = [
 			observed: ghInvocation,
 			violated: githubFromOtherTool,
 		},
+		// Standing policy: the body carries the consent policy for external /
+		// irreversible actions, so it keeps front-of-prompt authority on every
+		// load path (block renders even for tool loads) instead of the default
+		// steer + re-steer delivery.
+		standing: true,
 	},
 	{
 		raw: glabCliBody,
@@ -65,6 +70,9 @@ const sources: BehaviourSource[] = [
 			observed: glabInvocation,
 			violated: gitlabFromOtherTool,
 		},
+		// Standing policy, same rationale as gh-cli (consent rules for
+		// external / irreversible actions).
+		standing: true,
 	},
 ]
 

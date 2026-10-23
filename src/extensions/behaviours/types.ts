@@ -44,6 +44,17 @@ export interface TriggeredBehaviour extends BehaviourBase {
 	kind: "triggered"
 	triggers: BehaviourTriggers
 	evals?: BehaviourEvals
+	/**
+	 * Delivery class for tool-triggered loads — an explicit authoring decision,
+	 * never inferred. Default (unset) treats the body as a habit: tool loads are
+	 * delivered steer-only (with re-steer after compaction), so the body never
+	 * renders late into the system prompt and cannot cause a one-time
+	 * full-context cache invalidation. `standing: true` treats the body as
+	 * standing policy (e.g. consent rules): the system-prompt block renders on
+	 * every load path, accepting that late invalidation in exchange for
+	 * front-of-prompt authority.
+	 */
+	standing?: boolean
 }
 
 export type Behaviour = BaselineBehaviour | TriggeredBehaviour
