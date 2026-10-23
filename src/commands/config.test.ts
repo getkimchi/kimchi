@@ -407,9 +407,7 @@ describe("kimchi config region", () => {
 			"Self-hosted base URL: https://env.example.com (from KIMCHI_SELF_HOSTED_URL, overrides config)",
 		)
 		expect(
-			vi.mocked(console.log).mock.calls.some((call) =>
-				String(call[0]).startsWith("Self-hosted discovered endpoints"),
-			),
+			vi.mocked(console.log).mock.calls.some((call) => String(call[0]).startsWith("Self-hosted discovered endpoints")),
 		).toBe(false)
 	})
 
