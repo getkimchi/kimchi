@@ -36,6 +36,9 @@ function rejectOnStrictAccept(request, response, path) {
 }
 const oauthGrantType = process.env.KIMCHI_MCP_FIXTURE_OAUTH_GRANT_TYPE ?? "authorization_code"
 const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-e2e-client"
+// Redirect URI the "oauth-pre-registered" scenario's client was registered with.
+// Mirrors the localhost form kimchi's pre-1.3.0 adapter sent by default.
+const OAUTH_PRE_REGISTERED_REDIRECT_URI = "http://localhost:19876/callback"
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
 const oauthAccessToken = "kimchi-e2e-oauth-access-token"
 const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
@@ -328,6 +331,13 @@ async function runHttpFixture() {
 					callback.searchParams.set("state", state)
 					response.writeHead(302, { location: callback.toString() })
 					response.end()
+					return
+				}
+				if (scenario === "oauth-pre-registered" && redirectUri !== OAUTH_PRE_REGISTERED_REDIRECT_URI) {
+					// Emulate Google: the redirect URI is compared as an exact string
+					// against the client's pre-registered list; anything else is a 400.
+					record("oauth_authorization_denied", { redirectUri })
+					sendJson(response, 400, { error: "redirect_uri_mismatch" })
 					return
 				}
 				const code = `kimchi-e2e-code-${randomUUID()}`

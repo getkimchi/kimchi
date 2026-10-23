@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
@@ -184,6 +185,100 @@ test("completes a pre-registered https redirect OAuth flow through the loopback 
 			})
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-remote-redirect")
 			trace.step("authenticated MCP call after remote redirect flow verified")
+		},
+	)
+})
+
+test("re-auth of a pre-registered client reuses the stored redirect URI", async ({ terminal }) => {
+	// A client registered with the pre-1.3.0 default (http://localhost:19876/callback)
+	// must receive that exact URI on re-auth; sending the new 127.0.0.1 default
+	// makes strict servers (e.g. Google) reject the flow with redirect_uri_mismatch.
+	const echo = gatewayMcpCall("echo", { message: "oauth-stored-redirect" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-stored-redirect",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-stored-redirect" }] },
+							{ message: "oauth-stored-redirect" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The re-auth reused the stored redirect URI.")],
+			seedHome(homeDir) {
+				// Simulate a registration stored by the pre-1.3.0 adapter: a client
+				// whose redirect list pins the localhost callback, with no tokens
+				// (the user must sign in again). Written straight into the file-backed
+				// test keyring the session reads (service remapped by the keyring
+				// bridge; account is sha256 of the server name — adapter layout).
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+				const config = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8")) as {
+					mcpServers?: { fixture?: { url?: unknown } }
+				}
+				const serverUrl = config.mcpServers?.fixture?.url
+				if (typeof serverUrl !== "string") throw new Error("OAuth fixture config is missing its URL")
+				const account = `sha256-${createHash("sha256").update("fixture").digest("hex")}`
+				const keyringPath = join(
+					agentDir,
+					"mcp-keyring",
+					createHash("sha256").update(`dev.kimchi.mcp.oauth\u0000${account}`).digest("hex"),
+				)
+				mkdirSync(dirname(keyringPath), { recursive: true })
+				writeFileSync(
+					keyringPath,
+					JSON.stringify({
+						clientInfo: {
+							clientId: "kimchi-e2e-pre-registered-client",
+							clientIdIssuedAt: Math.floor(Date.now() / 1_000),
+							redirectUris: ["http://localhost:19876/callback"],
+						},
+						serverUrl,
+					}),
+					{ mode: 0o600 },
+				)
+			},
+		},
+		async (fixture, trace) => {
+			await fixture.mcp.waitForEvent("http_unauthorized", {
+				description: "initial OAuth challenge",
+			})
+			trace.step("protected MCP endpoint challenged the unauthenticated client")
+
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the stored localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed with the reused redirect URI",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("re-auth completed against the pre-registered redirect URI")
+
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			const browserCompleted = await fixture.mcp.waitForEvent("oauth_browser_completed", {
+				description: "browser followed the redirect to the loopback callback",
+			})
+			expect(browserCompleted.status).toBe(200)
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The re-auth reused the stored redirect URI.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-stored-redirect" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-stored-redirect")
+			trace.step("authenticated MCP call after stored-redirect re-auth verified")
 		},
 	)
 })

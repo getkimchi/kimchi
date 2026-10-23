@@ -93,6 +93,7 @@ export type McpFixtureScenario =
 	| "basic"
 	| "http-malformed"
 	| "oauth-deny"
+	| "oauth-pre-registered"
 	| "oauth-token-failure"
 	| "oauth-expiring"
 	| "ui-app"
