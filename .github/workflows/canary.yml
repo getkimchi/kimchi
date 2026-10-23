@@ -191,6 +191,20 @@ jobs:
         shell: pwsh
         run: .\dist\bin\kimchi.exe mcp keyring-check --json
 
+      - name: Verify document skill scripts execute under the binary
+        shell: bash
+        run: |
+          set -e
+          BIN="./dist/bin/kimchi"
+          [ -f "$BIN" ] || BIN="./dist/bin/kimchi.exe"
+          for cli in pptx; do
+            script="dist/share/kimchi/skills/$cli/scripts/$cli.mjs"
+            [ -f "$script" ] || { echo "missing $script"; exit 1; }
+            out=$(BUN_BE_BUN=1 "$BIN" "$script" 2>&1 || true)
+            echo "$out" | head -1
+            echo "$out" | grep -q "usage: $cli.mjs" || { echo "$cli.mjs did not print usage"; exit 1; }
+          done
+
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}
         run: |
