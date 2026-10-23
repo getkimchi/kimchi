@@ -7,9 +7,6 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 
 test.use(TUI_TEST_CONFIG)
 
-/** The console URL the self-hosted login flow is driven with. */
-const SELF_HOSTED_BASE = "https://kimchi-self-hosted.example.com"
-
 /**
  * Extract the browser-login callback coordinates from the terminal buffer.
  * Same normalization as login-region.test.ts: the OSC-8 link wraps across
@@ -47,15 +44,19 @@ async function waitForConfigField(configPath: string, expected: Record<string, u
 
 /** Serve the discovery document (and nothing else) on an ephemeral loopback port.
  *  `endpoints` is evaluated per request so it can reference the server's own
- *  origin. */
+ *  origin; returning null makes the server answer 404 (an install predating
+ *  discovery). */
 async function startDiscoveryConsole(
-	endpoints: () => Record<string, string>,
+	endpoints: () => Record<string, string> | null,
 ): Promise<{ server: Server; url: string }> {
 	const server = createServer((req, res) => {
 		if (req.url === "/env/endpoints.json") {
-			res.writeHead(200, { "content-type": "application/json" })
-			res.end(JSON.stringify(endpoints()))
-			return
+			const document = endpoints()
+			if (document) {
+				res.writeHead(200, { "content-type": "application/json" })
+				res.end(JSON.stringify(document))
+				return
+			}
 		}
 		res.writeHead(404)
 		res.end()
@@ -78,51 +79,60 @@ test("login via Kimchi account offers Self-hosted behind the experimental flag a
 			extraArgs: ["--enable-experimental-features"],
 		},
 		async (fixture, trace) => {
-			terminal.write("/login")
-			await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
-			terminal.submit("")
-			await waitForText(terminal, "Use a Kimchi account", { timeoutMs: INPUT_TIMEOUT_MS })
-			// SSO is the first option; the account login is one row down.
-			terminal.keyDown(1)
-			terminal.submit("")
-			trace.step("auth-method selector confirmed")
+			// A local console that does NOT serve the discovery document — an
+			// install predating endpoint discovery (deterministic 404; the sandbox
+			// cannot resolve an unreachable external domain).
+			const preDiscovery = await startDiscoveryConsole(() => null)
+			const selfHostedBase = preDiscovery.url
+			try {
+				terminal.write("/login")
+				await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
+				terminal.submit("")
+				await waitForText(terminal, "Use a Kimchi account", { timeoutMs: INPUT_TIMEOUT_MS })
+				// SSO is the first option; the account login is one row down.
+				terminal.keyDown(1)
+				terminal.submit("")
+				trace.step("auth-method selector confirmed")
 
-			// Region selector: US (current) first, Europe, then Self-hosted.
-			await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "Self-hosted", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("region selector lists Self-hosted")
-			terminal.keyDown(2)
-			terminal.submit("")
+				// Region selector: US (current) first, Europe, then Self-hosted.
+				await waitForText(terminal, "Select region:", { timeoutMs: INPUT_TIMEOUT_MS })
+				await waitForText(terminal, "United States \u2014 current", { timeoutMs: INPUT_TIMEOUT_MS })
+				await waitForText(terminal, "Self-hosted", { timeoutMs: INPUT_TIMEOUT_MS })
+				trace.step("region selector lists Self-hosted")
+				terminal.keyDown(2)
+				terminal.submit("")
 
-			// The console URL prompt appears before the browser flow starts.
-			await waitForText(terminal, "Self-hosted Kimchi console URL:", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("console URL prompt visible")
-			terminal.submit(SELF_HOSTED_BASE)
+				// The console URL prompt appears before the browser flow starts.
+				await waitForText(terminal, "Self-hosted Kimchi console URL:", { timeoutMs: INPUT_TIMEOUT_MS })
+				trace.step("console URL prompt visible")
+				terminal.submit(selfHostedBase)
 
-			// The install has no discovery document (the domain is unreachable),
-			// so the flow falls back to the manual single-base derivation with a
-			// clear notice.
-			await waitForText(terminal, "predates endpoint discovery", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
-			trace.step("manual fallback notice shown")
+				// The install predates discovery, so the flow falls back to the manual
+				// single-base derivation with a clear notice.
+				await waitForText(terminal, "predates endpoint discovery", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
+				trace.step("manual fallback notice shown")
 
-			// The browser flow must target the self-hosted web app (the console URL
-			// itself, /cli-auth appended).
-			await waitForText(terminal, `${SELF_HOSTED_BASE}/cli-auth`, { timeoutMs: STREAM_TIMEOUT_MS, full: true })
-			trace.step("browser login URL points at the self-hosted web app")
+				// The browser flow must target the self-hosted web app (the console URL
+				// itself, /cli-auth appended).
+				await waitForText(terminal, `${selfHostedBase}/cli-auth`, { timeoutMs: STREAM_TIMEOUT_MS, full: true })
+				trace.step("browser login URL points at the self-hosted web app")
 
-			// Deliver the OAuth token directly to the local callback server (what
-			// the browser would do after the self-hosted web app redirects back).
-			const { port, state } = browserLoginUrl(terminal)
-			const callback = await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)
-			expect(callback.status).toBe(200)
+				// Deliver the OAuth token directly to the local callback server (what
+				// the browser would do after the self-hosted web app redirects back).
+				const { port, state } = browserLoginUrl(terminal)
+				const callback = await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)
+				expect(callback.status).toBe(200)
 
-			// The chosen region and the base URL are persisted next to the API key.
-			const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
-			await waitForConfigField(configPath, { region: "self-hosted", selfHostedUrl: SELF_HOSTED_BASE })
-			trace.step("config.json contains region self-hosted + selfHostedUrl")
+				// The chosen region and the console URL are persisted next to the API key
+				// — without discovery endpoints (the manual fallback).
+				const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
+				await waitForConfigField(configPath, { region: "self-hosted", selfHostedUrl: selfHostedBase })
+				trace.step("config.json contains region self-hosted + selfHostedUrl")
 
-			await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+			} finally {
+				preDiscovery.server.close()
+			}
 		},
 	)
 })
