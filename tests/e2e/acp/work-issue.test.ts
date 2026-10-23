@@ -12,7 +12,10 @@ afterEach(async () => {
 	await fixture?.stop()
 })
 
-/** Runs a slash command and returns the notice it shows, as the ACP client receives it. */
+/**
+ * Runs a /work command and returns its reply, as the ACP client receives it. Every reply ends with the work's details,
+ * so the reply is the first notice with a Work ID; another feature's notice, such as PR reporting's, can arrive first.
+ */
 async function notice(active: AcpFixture, sessionId: string, command: string): Promise<string> {
 	const before = active.client.extNotifications.length
 	expect((await prompt(active, sessionId, command)).stopReason).toBe("end_turn")
@@ -21,7 +24,10 @@ async function notice(active: AcpFixture, sessionId: string, command: string): P
 			active.client.extNotifications.slice(before).flatMap(({ method, params }) => {
 				if (method !== "_kimchi.dev/pi_notify" || typeof params !== "object" || params === null) return []
 				const fields: Record<string, unknown> = { ...params }
-				return fields.sessionId === sessionId && fields.method === "notify" && typeof fields.message === "string"
+				return fields.sessionId === sessionId &&
+					fields.method === "notify" &&
+					typeof fields.message === "string" &&
+					fields.message.includes("Work ID: ")
 					? [fields.message]
 					: []
 			})[0],
