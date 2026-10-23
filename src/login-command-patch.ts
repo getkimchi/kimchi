@@ -155,7 +155,10 @@ async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<A
 /** Prompt for the self-hosted console URL through InteractiveMode's extension
  * input, mirroring the API-key endpoint prompt. Returns undefined on Esc,
  * re-prompting on invalid input, and resolves the install's endpoints via the
- * discovery document (see promptSelfHostedLoginTarget). */
+ * discovery document (see promptSelfHostedLoginTarget). Notices render as
+ * persistent chat feedback, not showStatus — consecutive showStatus calls
+ * coalesce into one line, so the "Opening browser…" status would otherwise
+ * replace them before the user reads them. */
 async function promptSelfHostedTargetViaIm(im: InteractiveMode): Promise<SelfHostedLoginTarget | undefined> {
 	const modeLike = im as unknown as LoginModeLike
 	const input = modeLike.showExtensionInput?.bind(modeLike)
@@ -163,7 +166,7 @@ async function promptSelfHostedTargetViaIm(im: InteractiveMode): Promise<SelfHos
 	return promptSelfHostedLoginTarget({
 		prompt: (title, placeholder) => input(title, placeholder),
 		notifyError: (message) => im.showError(message),
-		notifyStatus: (message) => modeLike.showStatus?.(message),
+		notifyStatus: (message) => addLoginFeedback(im, message),
 		storedUrl: loadConfig().selfHostedUrl,
 	})
 }

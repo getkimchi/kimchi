@@ -572,9 +572,10 @@ it("selecting Self-hosted for API-key login prompts for the console URL, not a s
 	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi API Key:", "Enter your Kimchi API key")
 	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
 	// The install predates discovery: the fallback notice explains the manual
-	// derivation before the login continues.
-	expect(fakeIm.showStatus).toHaveBeenCalledWith(
-		expect.stringContaining("This Kimchi install predates endpoint discovery"),
+	// derivation before the login continues (persistent chat feedback — showStatus
+	// would be coalesced away by the next status line).
+	expect(getFeedbackMessages(fakeIm).some((m) => m.includes("This Kimchi install predates endpoint discovery"))).toBe(
+		true,
 	)
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://kimchi.example.com/llm...")
 	// Self-hosted persists region + selfHostedUrl only — a stored llmEndpoint
@@ -700,10 +701,14 @@ it("a discovered self-hosted install drives the LLM gateway from the document an
 	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
 	await waitForMockCall(fakeIm.session.setModel)
 
-	expect(fakeIm.showStatus).toHaveBeenCalledWith("Checking https://kimchi.example.com/env/endpoints.json…")
-	expect(fakeIm.showStatus).toHaveBeenCalledWith(
-		"Discovered endpoints — API https://kimchi.example.com, LLM gateway https://llm.example.com.",
+	expect(getFeedbackMessages(fakeIm).some((m) => m === "Checking https://kimchi.example.com/env/endpoints.json…")).toBe(
+		true,
 	)
+	expect(
+		getFeedbackMessages(fakeIm).some(
+			(m) => m === "Discovered endpoints — API https://kimchi.example.com, LLM gateway https://llm.example.com.",
+		),
+	).toBe(true)
 	// The models refresh targets the DISCOVERED gateway origin, not base/llm.
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.example.com...")
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
