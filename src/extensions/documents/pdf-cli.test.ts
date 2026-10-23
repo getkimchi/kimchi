@@ -399,7 +399,8 @@ describe("pdf.mjs html (styled HTML -> PDF via browser)", () => {
 		const printed = await makePdf(["rendered by browser"])
 		const t = io({ browser: browserOverride(printed) })
 		// The staged output is a real fs path; make readFile see it after the "browser" wrote it.
-		const origRead = t.io.readFile!
+		const origRead = t.io.readFile
+		if (!origRead) throw new Error("readFile required for this test")
 		t.io.readFile = (path: string) => {
 			try {
 				return origRead(path)

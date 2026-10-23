@@ -113,7 +113,7 @@ function parsePageList(spec: string, total: number): number[] {
 		throw new DocumentError("corrupt", `invalid page range "${spec}" — use N or N-M (1-based)`, "pdf")
 	}
 	const [a, b] = spec.split("-")
-	const start = Number.parseInt(a!, 10)
+	const start = Number.parseInt(a ?? "", 10)
 	const end = b === undefined || b === "" ? total : Number.parseInt(b, 10)
 	if (start < 1 || end < start) {
 		throw new DocumentError("corrupt", `invalid page range "${spec}" — start ≥ 1 and end ≥ start`, "pdf")
@@ -188,8 +188,9 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 				io.stdout(rendered.text)
 				if (wanted && wanted.length > MAX_UNITS_PER_CALL) {
 					const remaining = wanted.slice(MAX_UNITS_PER_CALL)
+					const shown = window ?? []
 					io.stderr(
-						`showing pages ${window![0]}-${window![window!.length - 1]} of the requested range; continue with: read ${path} ${remaining[0]}-${remaining[remaining.length - 1]}`,
+						`showing pages ${shown[0]}-${shown[shown.length - 1]} of the requested range; continue with: read ${path} ${remaining[0]}-${remaining[remaining.length - 1]}`,
 					)
 				} else if (!wanted && info.pageCount > MAX_UNITS_PER_CALL) {
 					io.stderr(`document has ${info.pageCount} pages, showing 1-20; continue with: read ${path} 21-40`)

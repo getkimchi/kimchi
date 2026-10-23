@@ -90,7 +90,8 @@ function wrap(fonts: PdfWriterFonts, tokens: Token[], size: number, width: numbe
 	const lines: Run[][] = [[]]
 	let used = 0
 	const pushRun = (text: string, style: Style) => {
-		const line = lines[lines.length - 1]!
+		const line = lines[lines.length - 1]
+		if (!line) throw new Error("wrap: lines invariant broken")
 		const last = line[line.length - 1]
 		if (last && last.style === style) last.text += text
 		else line.push({ text, style })

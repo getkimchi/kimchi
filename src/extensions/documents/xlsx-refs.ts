@@ -198,7 +198,7 @@ export function renameSheetInFormula(formula: string, oldName: string, newName: 
 					return part
 				})
 			: [hit.name.toLowerCase() === oldLower ? quoteSheetName(newName) : hit.raw]
-		out += ends.join(":") + "!"
+		out += `${ends.join(":")}!`
 		pos = hit.end
 	}
 	out += formula.slice(pos)
