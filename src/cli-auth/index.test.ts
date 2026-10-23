@@ -73,6 +73,32 @@ describe("authenticateViaBrowser", () => {
 		expect(openMock).not.toHaveBeenCalled()
 	})
 
+	it("skips the browser opener under the e2e seam (login tests must not pop a real browser)", async () => {
+		openMock.mockResolvedValue(undefined)
+		// vitest sets VITEST, so the seam gate is unlocked in this worker.
+		process.env.KIMCHI_E2E_FAKE_BROWSER_OPEN = "1"
+		const logSpy = vi.spyOn(console, "log")
+
+		try {
+			const controller = new AbortController()
+			const promise = authenticateViaBrowser({
+				webAppUrl: "https://app.kimchi.dev",
+				signal: controller.signal,
+			})
+			await vi.waitFor(() => {
+				// The quiet-path hint replaces the opener under the seam.
+				expect(
+					logSpy.mock.calls.some((call) => String(call[0]).includes("If the browser did not open automatically")),
+				).toBe(true)
+			})
+			expect(openMock).not.toHaveBeenCalled()
+			controller.abort()
+			await expect(promise).rejects.toThrow(/cancelled/i)
+		} finally {
+			delete process.env.KIMCHI_E2E_FAKE_BROWSER_OPEN
+		}
+	})
+
 	it("throws when the browser callback returns an error", async () => {
 		openMock.mockResolvedValue(undefined)
 
