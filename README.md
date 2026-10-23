@@ -522,6 +522,12 @@ kimchi update v1.2.3-rc.1           # install a release candidate
 kimchi update --canary              # install the latest canary build from master
 ```
 
+Self-update checks call the GitHub API, which allows only 60 unauthenticated
+requests per hour per IP. When a token is available — from `GITHUB_TOKEN` or
+`GH_TOKEN`, or the gh CLI's stored credential — kimchi sends it along and
+gets GitHub's 5,000/hour budget instead. A bad token is detected (401) and
+retried unauthenticated, so a stale token never blocks an update.
+
 
 ### HTTP proxy
 
