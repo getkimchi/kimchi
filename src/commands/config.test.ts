@@ -361,6 +361,58 @@ describe("kimchi config region", () => {
 		})
 	})
 
+	it("prints discovered self-hosted endpoints when stored", async () => {
+		await withExperimentalFeatures(true, async () => {
+			vi.mocked(loadConfig).mockReturnValue({
+				apiKey: "",
+				region: "self-hosted",
+				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			} as ReturnType<typeof loadConfig>)
+
+			const exit = await runConfig(["region"])
+
+			expect(exit).toBe(0)
+			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Self-hosted base URL: https://kimchi.example.com")
+			expect(vi.mocked(console.log).mock.calls[2]?.[0]).toBe(
+				"Self-hosted discovered endpoints: api https://kimchi.example.com, llm https://llm.example.com",
+			)
+			expect(vi.mocked(console.log).mock.calls[3]?.[0]).toBe(
+				"Available regions: us (United States), eu (Europe), self-hosted (Self-hosted)",
+			)
+		})
+	})
+
+	it("hides discovered self-hosted endpoints while the env override applies", async () => {
+		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
+		vi.mocked(loadConfig).mockReturnValue({
+			apiKey: "",
+			region: "self-hosted",
+			selfHostedUrl: "https://env.example.com",
+			selfHostedEndpoints: {
+				api: "https://kimchi.example.com",
+				console: "https://kimchi.example.com",
+				llm: "https://llm.example.com",
+			},
+		} as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["region"])
+
+		expect(exit).toBe(0)
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
+			"Self-hosted base URL: https://env.example.com (from KIMCHI_SELF_HOSTED_URL, overrides config)",
+		)
+		expect(
+			vi.mocked(console.log).mock.calls.some((call) =>
+				String(call[0]).startsWith("Self-hosted discovered endpoints"),
+			),
+		).toBe(false)
+	})
+
 	it("notes the KIMCHI_SELF_HOSTED_URL env override when it is in effect", async () => {
 		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
 		vi.mocked(loadConfig).mockReturnValue({

@@ -24,8 +24,9 @@ import {
 	performKimchiApiKeyLogin,
 	performKimchiBrowserLogin,
 	prePopulateSubscriptionModels,
-	promptSelfHostedBaseUrl,
+	promptSelfHostedLoginTarget,
 	regionChoiceRequired,
+	type SelfHostedLoginTarget,
 	syncKimchiAuth,
 } from "./extensions/login/flow.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
@@ -151,16 +152,18 @@ async function patchedGetLogoutProviderOptions(this: InteractiveMode): Promise<A
 	return visibleAuthProviders(await originalGetLogoutProviderOptions.call(this))
 }
 
-/** Prompt for the self-hosted base URL through InteractiveMode's extension
+/** Prompt for the self-hosted console URL through InteractiveMode's extension
  * input, mirroring the API-key endpoint prompt. Returns undefined on Esc,
- * re-prompting on invalid input (see promptSelfHostedBaseUrl). */
-async function promptSelfHostedBaseViaIm(im: InteractiveMode): Promise<string | undefined> {
+ * re-prompting on invalid input, and resolves the install's endpoints via the
+ * discovery document (see promptSelfHostedLoginTarget). */
+async function promptSelfHostedTargetViaIm(im: InteractiveMode): Promise<SelfHostedLoginTarget | undefined> {
 	const modeLike = im as unknown as LoginModeLike
 	const input = modeLike.showExtensionInput?.bind(modeLike)
 	if (!input) return undefined
-	return promptSelfHostedBaseUrl({
+	return promptSelfHostedLoginTarget({
 		prompt: (title, placeholder) => input(title, placeholder),
 		notifyError: (message) => im.showError(message),
+		notifyStatus: (message) => modeLike.showStatus?.(message),
 		storedUrl: loadConfig().selfHostedUrl,
 	})
 }
@@ -176,20 +179,24 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 		return
 	}
 
-	// Self-hosted needs its base URL before the browser flow can target the
-	// right web app; Esc returns to the auth-method selector, like the API-key
-	// prompts.
+	// Self-hosted needs its console URL before the browser flow can target
+	// the right web app; Esc returns to the auth-method selector, like the
+	// API-key prompts. Discovery endpoints resolved along the way drive every
+	// derived endpoint (see promptSelfHostedLoginTarget).
 	let selfHostedUrl: string | undefined
+	let selfHostedEndpoints: SelfHostedLoginTarget["endpoints"]
 	if (region === "self-hosted") {
 		if (!modeLike.showExtensionInput) {
 			showError("Kimchi login failed: text input is unavailable")
 			return
 		}
-		selfHostedUrl = await promptSelfHostedBaseViaIm(im)
-		if (selfHostedUrl === undefined) {
+		const target = await promptSelfHostedTargetViaIm(im)
+		if (target === undefined) {
 			if (modeLike.showSelector) showLoginChoiceSelector(im)
 			return
 		}
+		selfHostedUrl = target.consoleUrl
+		selfHostedEndpoints = target.endpoints
 	}
 
 	await performKimchiBrowserLogin(
@@ -205,7 +212,7 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 			// needs the URL to copy into the right one. console.log is swallowed under the TUI.
 			onBrowserUrl: (url) => addLoginFeedback(im, formatBrowserLoginMessage(url)),
 		},
-		{ region, selfHostedUrl },
+		{ region, selfHostedUrl, selfHostedEndpoints },
 	)
 }
 
@@ -282,15 +289,20 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Prom
 	}
 	const registry = asLoginRegistry(runtime)
 
-	// Self-hosted needs its base URL before the endpoint default can be
+	// Self-hosted needs its console URL before the endpoint default can be
 	// derived; Esc returns to the auth-method selector, like the key prompt.
+	// Discovery endpoints resolved along the way drive the gateway derivation
+	// (see promptSelfHostedLoginTarget).
 	let selfHostedUrl: string | undefined
+	let selfHostedEndpoints: SelfHostedLoginTarget["endpoints"]
 	if (region === "self-hosted") {
-		selfHostedUrl = await promptSelfHostedBaseViaIm(im)
-		if (selfHostedUrl === undefined) {
+		const target = await promptSelfHostedTargetViaIm(im)
+		if (target === undefined) {
 			if (modeLike.showSelector) showLoginChoiceSelector(im)
 			return
 		}
+		selfHostedUrl = target.consoleUrl
+		selfHostedEndpoints = target.endpoints
 	}
 
 	const apiKey = await modeLike.showExtensionInput("Kimchi API Key:", "Enter your Kimchi API key")
@@ -328,6 +340,7 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Prom
 			endpoint,
 			region,
 			selfHostedUrl,
+			selfHostedEndpoints,
 		},
 	)
 }

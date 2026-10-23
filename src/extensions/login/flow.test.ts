@@ -113,63 +113,144 @@ describe("regionChoiceRequired", () => {
 	})
 })
 
-describe("promptSelfHostedBaseUrl", () => {
-	it("normalizes a valid base URL", async () => {
-		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+describe("promptSelfHostedLoginTarget", () => {
+	const discoveredEndpoints = {
+		api: "https://kimchi.example.com",
+		console: "https://kimchi.example.com",
+		llm: "https://llm.example.com",
+	}
+
+	it("normalizes a valid console URL and returns the discovered endpoints", async () => {
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
 		const prompt = vi.fn().mockResolvedValueOnce(" https://kimchi.example.com/ ")
 		const notifyError = vi.fn()
+		const notifyStatus = vi.fn()
+		const discoverEndpoints = vi.fn().mockResolvedValue({ status: "discovered", endpoints: discoveredEndpoints })
 
-		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+		const target = await promptSelfHostedLoginTarget({ prompt, notifyError, notifyStatus, discoverEndpoints })
 
-		expect(url).toBe("https://kimchi.example.com")
-		expect(prompt).toHaveBeenCalledWith("Self-hosted Kimchi base URL:", "https://your-kimchi-host.example.com")
+		expect(target).toEqual({ consoleUrl: "https://kimchi.example.com", endpoints: discoveredEndpoints })
+		expect(prompt).toHaveBeenCalledWith("Self-hosted Kimchi console URL:", "https://your-kimchi-host.example.com")
 		expect(notifyError).not.toHaveBeenCalled()
+		expect(discoverEndpoints).toHaveBeenCalledWith("https://kimchi.example.com")
+		expect(notifyStatus).toHaveBeenCalledWith("Checking https://kimchi.example.com/env/endpoints.json…")
+		expect(notifyStatus).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Discovered endpoints — API https://kimchi.example.com, LLM gateway https://llm.example.com.",
+			),
+		)
 	})
 
-	it("offers the stored URL as the Enter default", async () => {
-		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+	it("offers the stored URL as the Enter default and discovers against it", async () => {
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
 		const prompt = vi.fn().mockResolvedValueOnce("")
+		const discoverEndpoints = vi.fn().mockResolvedValue({ status: "discovered", endpoints: discoveredEndpoints })
 
-		const url = await promptSelfHostedBaseUrl({ prompt, notifyError: vi.fn(), storedUrl: "https://stored.example.com" })
+		const target = await promptSelfHostedLoginTarget({
+			prompt,
+			notifyError: vi.fn(),
+			storedUrl: "https://stored.example.com",
+			discoverEndpoints,
+		})
 
-		expect(url).toBe("https://stored.example.com")
-		expect(prompt).toHaveBeenCalledWith("Self-hosted base URL (press Enter to use https://stored.example.com):", "")
+		expect(target).toEqual({ consoleUrl: "https://stored.example.com", endpoints: discoveredEndpoints })
+		expect(prompt).toHaveBeenCalledWith("Self-hosted console URL (press Enter to use https://stored.example.com):", "")
+		expect(discoverEndpoints).toHaveBeenCalledWith("https://stored.example.com")
+	})
+
+	it("falls back to the manual single-base flow when the install predates discovery", async () => {
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce("https://kimchi.example.com")
+		const notifyStatus = vi.fn()
+		const discoverEndpoints = vi
+			.fn()
+			.mockResolvedValue({ status: "unavailable", cause: "not-found", reason: "no discovery document (HTTP 404)" })
+
+		const target = await promptSelfHostedLoginTarget({
+			prompt,
+			notifyError: vi.fn(),
+			notifyStatus,
+			discoverEndpoints,
+		})
+
+		expect(target).toEqual({ consoleUrl: "https://kimchi.example.com" })
+		expect(notifyStatus).toHaveBeenCalledWith(
+			expect.stringContaining("This Kimchi install predates endpoint discovery"),
+		)
+		expect(notifyStatus).toHaveBeenCalledWith(
+			expect.stringContaining("Falling back to manual configuration: API at https://kimchi.example.com/api"),
+		)
+	})
+
+	it("falls back to the manual flow when the document is incomplete or unreachable", async () => {
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
+		const prompt = vi
+			.fn()
+			.mockResolvedValueOnce("https://incomplete.example.com")
+			.mockResolvedValueOnce("https://unreachable.example.com")
+		const notifyStatus = vi.fn()
+		const discoverEndpoints = vi
+			.fn()
+			.mockResolvedValueOnce({ status: "unavailable", cause: "incomplete", reason: "missing llm key" })
+			.mockResolvedValueOnce({ status: "unavailable", cause: "fetch-failed", reason: "fetching failed (ENOTFOUND)" })
+
+		const incomplete = await promptSelfHostedLoginTarget({
+			prompt,
+			notifyError: vi.fn(),
+			notifyStatus,
+			discoverEndpoints,
+		})
+		expect(incomplete).toEqual({ consoleUrl: "https://incomplete.example.com" })
+		expect(notifyStatus).toHaveBeenCalledWith(
+			expect.stringContaining("This Kimchi install's discovery document is incomplete"),
+		)
+
+		const unreachable = await promptSelfHostedLoginTarget({
+			prompt,
+			notifyError: vi.fn(),
+			notifyStatus,
+			discoverEndpoints,
+		})
+		expect(unreachable).toEqual({ consoleUrl: "https://unreachable.example.com" })
+		expect(notifyStatus).toHaveBeenCalledWith(expect.stringContaining("Endpoint discovery could not be reached"))
 	})
 
 	it("re-prompts on invalid input until it parses", async () => {
-		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
 		const prompt = vi.fn().mockResolvedValueOnce("not a url").mockResolvedValueOnce("https://kimchi.example.com")
 		const notifyError = vi.fn()
+		const discoverEndpoints = vi.fn().mockResolvedValue({ status: "discovered", endpoints: discoveredEndpoints })
 
-		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+		const target = await promptSelfHostedLoginTarget({ prompt, notifyError, discoverEndpoints })
 
-		expect(url).toBe("https://kimchi.example.com")
+		expect(target).toEqual({ consoleUrl: "https://kimchi.example.com", endpoints: discoveredEndpoints })
 		expect(prompt).toHaveBeenCalledTimes(2)
 		expect(notifyError).toHaveBeenCalledWith(
-			'Invalid base URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
+			'Invalid console URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
 		)
 	})
 
 	it("re-prompts when no stored URL exists and the input is blank", async () => {
-		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
 		const prompt = vi.fn().mockResolvedValueOnce("").mockResolvedValueOnce("https://kimchi.example.com")
 		const notifyError = vi.fn()
+		const discoverEndpoints = vi.fn().mockResolvedValue({ status: "discovered", endpoints: discoveredEndpoints })
 
-		const url = await promptSelfHostedBaseUrl({ prompt, notifyError })
+		const target = await promptSelfHostedLoginTarget({ prompt, notifyError, discoverEndpoints })
 
-		expect(url).toBe("https://kimchi.example.com")
+		expect(target).toEqual({ consoleUrl: "https://kimchi.example.com", endpoints: discoveredEndpoints })
 		expect(notifyError).toHaveBeenCalledWith(
-			"A base URL is required for the self-hosted region, e.g. https://kimchi.example.com",
+			"A console URL is required for the self-hosted region, e.g. https://kimchi.example.com",
 		)
 	})
 
 	it("returns undefined on Esc (cancel)", async () => {
-		const { promptSelfHostedBaseUrl } = await import("./flow.js")
+		const { promptSelfHostedLoginTarget } = await import("./flow.js")
 		const prompt = vi.fn().mockResolvedValueOnce(undefined)
 
-		const url = await promptSelfHostedBaseUrl({ prompt, notifyError: vi.fn() })
+		const target = await promptSelfHostedLoginTarget({ prompt, notifyError: vi.fn() })
 
-		expect(url).toBeUndefined()
+		expect(target).toBeUndefined()
 	})
 })
 

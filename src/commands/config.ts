@@ -248,6 +248,12 @@ function handleRegion(args: string[]): number {
 				`Self-hosted base URL: not configured — set ${SELF_HOSTED_URL_ENV} or run "kimchi login" and choose Self-hosted`,
 			)
 		}
+		// Discovered endpoints (see src/self-hosted-discovery.ts): shown when
+		// stored; suppressed while the env override applies (old-style base).
+		if (cfg.selfHostedEndpoints && !envBase) {
+			const e = cfg.selfHostedEndpoints
+			console.log(`Self-hosted discovered endpoints: api ${e.api}, llm ${e.llm}`)
+		}
 	}
 	console.log(
 		`Available regions: ${selectableRegions()
