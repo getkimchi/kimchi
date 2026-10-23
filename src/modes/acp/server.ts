@@ -68,7 +68,6 @@ import {
 	endpointsForRegion,
 	loadConfig as loadKimchiConfig,
 	resolveEndpoints,
-	resolveSelfHostedBaseUrl,
 	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
@@ -574,12 +573,11 @@ export class KimchiAcpAgent implements Agent {
 		// itself (no URL input); logins created by the TUI /login or
 		// `kimchi login <console-url>` persist the discovered endpoints that this
 		// path then resolves.
-		const selfHostedUrl = region === "self-hosted" ? resolveSelfHostedBaseUrl() : undefined
 		const selfHostedEndpoints = region === "self-hosted" ? resolveSelfHostedEndpoints() : undefined
 		let token: string
 		try {
 			;({ token } = await authenticateViaBrowser({
-				webAppUrl: endpointsForRegion(region, { selfHostedUrl, endpoints: selfHostedEndpoints }).webAppUrl,
+				webAppUrl: endpointsForRegion(region, { endpoints: selfHostedEndpoints }).webAppUrl,
 				successMessage: ACP_SUCCESS_MESSAGE,
 			}))
 		} catch (error) {
@@ -595,7 +593,6 @@ export class KimchiAcpAgent implements Agent {
 		// and — for self-hosted — the console URL and discovery endpoints it was
 		// authenticated against.
 		const persist: WriteApiKeyOptions = { region }
-		if (selfHostedUrl) persist.selfHostedUrl = selfHostedUrl
 		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.

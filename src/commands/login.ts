@@ -1,7 +1,7 @@
 import { spinner } from "@clack/prompts"
 import { authenticateViaBrowser } from "../cli-auth/index.js"
 import { getApiKeyMismatchWarning, writeApiKey } from "../config.js"
-import { normalizeSelfHostedBaseUrl, type SelfHostedEndpoints } from "../regions.js"
+import { normalizeSelfHostedBaseUrl, type SelfHostedEndpoints, selfHostedEndpointsFromBase } from "../regions.js"
 import { discoveryFallbackNotice, fetchSelfHostedEndpoints } from "../self-hosted-discovery.js"
 
 export async function runLogin(args: string[]): Promise<number> {
@@ -53,11 +53,11 @@ async function runCloudLogin(): Promise<number> {
  *
  *   1. fetch `<console-url>/env/endpoints.json` and derive the api/llm
  *      endpoints from it (see src/self-hosted-discovery.ts),
- *   2. fall back to the manual single-base derivation with a clear notice
- *      when the install predates discovery (or the document is unreachable),
+ *   2. fall back to deriving them from the entered URL as the single base,
+ *      with a clear notice, when the install predates discovery (or the
+ *      document is unreachable),
  *   3. run the browser login against the console,
- *   4. persist the key with region "self-hosted", the console URL, and the
- *      discovered endpoints (absent on the manual fallback).
+ *   4. persist the key with region "self-hosted" and the endpoints.
  *
  * Authentication itself is unchanged from the interactive flow: the browser
  * handoff mints the API key and writeApiKey stores it.
@@ -72,12 +72,14 @@ async function runSelfHostedLogin(consoleUrlArg: string): Promise<number> {
 	const s = spinner()
 	s.start(`Checking ${consoleUrl}/env/endpoints.json…`)
 	const discovery = await fetchSelfHostedEndpoints(consoleUrl)
-	let selfHostedEndpoints: SelfHostedEndpoints | undefined
+	let selfHostedEndpoints: SelfHostedEndpoints
 	if (discovery.status === "discovered") {
 		selfHostedEndpoints = discovery.endpoints
 		s.stop(`Discovered endpoints — API ${selfHostedEndpoints.api}, LLM gateway ${selfHostedEndpoints.llm}.`)
 	} else {
+		// Manual fallback: derive the endpoints from the URL as the single base.
 		s.stop(discoveryFallbackNotice(discovery, consoleUrl))
+		selfHostedEndpoints = selfHostedEndpointsFromBase(consoleUrl)
 	}
 
 	s.start("Waiting for browser login…")
@@ -93,7 +95,7 @@ async function runSelfHostedLogin(consoleUrlArg: string): Promise<number> {
 	}
 
 	try {
-		writeApiKey(token, undefined, { region: "self-hosted", selfHostedUrl: consoleUrl, selfHostedEndpoints })
+		writeApiKey(token, undefined, { region: "self-hosted", selfHostedEndpoints })
 	} catch (err) {
 		console.error(`Failed to save API key to config: ${err instanceof Error ? err.message : String(err)}`)
 		return 1

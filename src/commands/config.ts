@@ -239,20 +239,16 @@ function handleRegion(args: string[]): number {
 	// configured (env override wins over the stored value, like the region).
 	if (cfg.region === "self-hosted") {
 		const envBase = process.env[SELF_HOSTED_URL_ENV]
-		if (cfg.selfHostedUrl && envBase) {
-			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl} (from ${SELF_HOSTED_URL_ENV}, overrides config)`)
-		} else if (cfg.selfHostedUrl) {
-			console.log(`Self-hosted base URL: ${cfg.selfHostedUrl}`)
+		const stored = cfg.selfHostedEndpoints
+		if (stored && envBase) {
+			console.log(`Self-hosted console URL: ${envBase} (from ${SELF_HOSTED_URL_ENV}, overrides config)`)
+		} else if (stored) {
+			console.log(`Self-hosted console URL: ${stored.console}`)
+			console.log(`Self-hosted endpoints: api ${stored.api}, llm ${stored.llm}`)
 		} else {
 			console.log(
-				`Self-hosted base URL: not configured — set ${SELF_HOSTED_URL_ENV} or run "kimchi login" and choose Self-hosted`,
+				`Self-hosted console URL: not configured — set ${SELF_HOSTED_URL_ENV} or run "kimchi login <console-url>"`,
 			)
-		}
-		// Discovered endpoints (see src/self-hosted-discovery.ts): shown when
-		// stored; suppressed while the env override applies (old-style base).
-		if (cfg.selfHostedEndpoints && !envBase) {
-			const e = cfg.selfHostedEndpoints
-			console.log(`Self-hosted discovered endpoints: api ${e.api}, llm ${e.llm}`)
 		}
 	}
 	console.log(

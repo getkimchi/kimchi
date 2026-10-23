@@ -1126,8 +1126,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// ACP clients have no interactive prompt; the base URL comes from the
-			// env override (or a previously stored selfHostedUrl).
+			// ACP clients have no interactive prompt; the endpoints come from the
+			// env override (base-derived) or a previous login's stored values.
 			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://kimchi.example.com")
 			onTestFinished(() => {
 				vi.unstubAllEnvs()
@@ -1140,24 +1140,28 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				webAppUrl: "https://kimchi.example.com",
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
-			// The resolved base is persisted next to the region so later launches
-			// resolve without the env override.
+			// The env-derived endpoints are persisted next to the region so later
+			// launches resolve without the env override.
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
 				region: "self-hosted",
-				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
 			})
 		})
 
-		it("fails fast when kimchi-agent-self-hosted has no base URL configured", async () => {
+		it("fails fast when kimchi-agent-self-hosted has no endpoints configured", async () => {
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
 				agentDir: tempAgentDir,
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// The isolated test home stores no selfHostedUrl, so nothing resolves.
+			// The isolated test home stores no selfHostedEndpoints, so nothing resolves.
 			await expect(testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })).rejects.toThrow(
-				/self-hosted.*base URL is configured/s,
+				/self-hosted.*console URL is configured/s,
 			)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 			expect(writeApiKey).not.toHaveBeenCalled()
@@ -1197,7 +1201,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				join(configDir, "config.json"),
 				JSON.stringify({
 					region: "self-hosted",
-					selfHostedUrl: "https://kimchi.example.com",
 					selfHostedEndpoints: storedEndpoints,
 				}),
 			)
@@ -1217,7 +1220,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// resolve without the login that discovered them.
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
 				region: "self-hosted",
-				selfHostedUrl: "https://kimchi.example.com",
 				selfHostedEndpoints: storedEndpoints,
 			})
 		})
@@ -1378,7 +1380,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				apiKey,
 				agentConfigDir: tempAgentDir,
 				region: "us",
-				selfHostedUrl: undefined,
 				selfHostedEndpoints: undefined,
 				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 				customLlmEndpoint: undefined,

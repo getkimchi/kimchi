@@ -41,6 +41,7 @@ import {
 	type RegionId,
 	type SelfHostedEndpoints,
 	selectableRegions,
+	selfHostedEndpointsFromBase,
 } from "../../regions.js"
 import { discoveryFallbackNotice, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
@@ -135,31 +136,21 @@ export const REGION_SELECTOR_TITLE = "Select region:"
 /** Title of the self-hosted console-URL prompt (no stored URL to offer). */
 export const SELF_HOSTED_CONSOLE_URL_PROMPT = "Self-hosted Kimchi console URL:"
 
-/** The self-hosted install the login flow targets, resolved from the console-URL prompt. */
-export interface SelfHostedLoginTarget {
-	/** The normalized console URL the user entered (or the stored default). */
-	consoleUrl: string
-	/**
-	 * Endpoints discovered from `<consoleUrl>/env/endpoints.json`; undefined
-	 * when the install predates discovery — the manual single-base fallback
-	 * then derives every endpoint from the URL itself.
-	 */
-	endpoints?: SelfHostedEndpoints
-}
-
 /**
  * Prompt for the self-hosted console URL, re-prompting until the input parses
- * as an http(s) URL, then discover the install's endpoints from
+ * as an http(s) URL, then resolve the install's endpoints from
  * `<url>/env/endpoints.json` (see src/self-hosted-discovery.ts). Mirrors the
  * API-key endpoint prompt: Esc (undefined) backs out; Enter on an empty input
- * keeps the stored URL when one exists. Invalid input is normalized exactly
- * like KIMCHI_SELF_HOSTED_URL (trim, strip trailing slashes, require http(s)).
+ * keeps the stored console URL when one exists. Invalid input is normalized
+ * exactly like KIMCHI_SELF_HOSTED_URL (trim, strip trailing slashes, require
+ * http(s)).
  *
- * A missing or incomplete document (older installs) — or an unreachable one —
- * falls back to the manual single-base flow with a clear notice: the entered
- * console URL doubles as the base every endpoint derives from.
+ * Returns the endpoints to log in with: the discovered document's values, or
+ * — when the document is missing, incomplete, or unreachable — the values
+ * derived from the entered URL as the single base (see
+ * selfHostedEndpointsFromBase), with a clear notice explaining the fallback.
  */
-export async function promptSelfHostedLoginTarget(options: {
+export async function promptSelfHostedEndpoints(options: {
 	prompt: (title: string, placeholder?: string) => Promise<string | undefined>
 	notifyError: (message: string) => void
 	/** Progress notices: discovery check, discovered endpoints, manual fallback. */
@@ -168,7 +159,7 @@ export async function promptSelfHostedLoginTarget(options: {
 	storedUrl?: string
 	/** Test seam for the discovery fetch. */
 	discoverEndpoints?: typeof fetchSelfHostedEndpoints
-}): Promise<SelfHostedLoginTarget | undefined> {
+}): Promise<SelfHostedEndpoints | undefined> {
 	const discover = options.discoverEndpoints ?? fetchSelfHostedEndpoints
 	for (;;) {
 		const title = options.storedUrl
@@ -191,10 +182,12 @@ export async function promptSelfHostedLoginTarget(options: {
 		const result = await discover(consoleUrl)
 		if (result.status === "discovered") {
 			options.notifyStatus?.(`Discovered endpoints — API ${result.endpoints.api}, LLM gateway ${result.endpoints.llm}.`)
-			return { consoleUrl, endpoints: result.endpoints }
+			return result.endpoints
 		}
+		// Manual fallback: the install predates discovery — derive the endpoints
+		// from the entered URL as the single base.
 		options.notifyStatus?.(discoveryFallbackNotice(result, consoleUrl))
-		return { consoleUrl }
+		return selfHostedEndpointsFromBase(consoleUrl)
 	}
 }
 
@@ -366,11 +359,10 @@ export interface KimchiBrowserLoginOptions {
 	reuseExistingToken?: boolean
 	/** Region to log in to; persisted with the token. */
 	region: RegionId
-	/** Console URL for self-hosted logins; required when region is self-hosted
-	 *  (the login surfaces prompt for it and pass the value through). */
-	selfHostedUrl?: string
-	/** Discovery endpoints for self-hosted logins (see
-	 *  src/self-hosted-discovery.ts); absent on the manual-entry fallback. */
+	/** Self-hosted endpoints (see src/self-hosted-discovery.ts): the
+	 *  discovery document's values, or base-derived ones on the manual
+	 *  fallback. Required when region is self-hosted — the login surfaces
+	 *  resolve them via the console-URL prompt and pass them through. */
 	selfHostedEndpoints?: SelfHostedEndpoints
 }
 
@@ -379,12 +371,10 @@ export interface KimchiApiKeyLoginOptions {
 	endpoint: string
 	/** Region to log in to; persisted with the token. `endpoint` still wins for the LLM gateway. */
 	region: RegionId
-	/** Console URL for self-hosted logins; persisted instead of `llmEndpoint`
-	 *  (see performKimchiApiKeyLogin) when region is self-hosted. */
-	selfHostedUrl?: string
-	/** Discovery endpoints for self-hosted logins (see
-	 *  src/self-hosted-discovery.ts); persisted next to `selfHostedUrl` and
-	 *  absent on the manual-entry fallback. */
+	/** Self-hosted endpoints (see src/self-hosted-discovery.ts): the
+	 *  discovery document's values, or base-derived ones on the manual
+	 *  fallback. Persisted instead of `llmEndpoint` (see
+	 *  performKimchiApiKeyLogin) when region is self-hosted. */
 	selfHostedEndpoints?: SelfHostedEndpoints
 }
 
@@ -564,10 +554,7 @@ export async function performKimchiApiKeyLogin(
 	options: KimchiApiKeyLoginOptions,
 ): Promise<boolean> {
 	const token = options.apiKey.trim()
-	const endpoints = endpointsForRegion(options.region, {
-		selfHostedUrl: options.selfHostedUrl,
-		endpoints: options.selfHostedEndpoints,
-	})
+	const endpoints = endpointsForRegion(options.region, { endpoints: options.selfHostedEndpoints })
 	const endpoint = options.endpoint.trim() || endpoints.llmBaseUrl
 	if (!token) {
 		host.showError?.("Kimchi API key is required.")
@@ -576,19 +563,14 @@ export async function performKimchiApiKeyLogin(
 
 	try {
 		host.showStatus?.(`Refreshing Kimchi models from ${endpoint}...`)
-		// Self-hosted logins persist region + selfHostedUrl (+ discovered
-		// endpoints when present) only: a stored llmEndpoint overrides the
-		// region (documented precedence), and the console URL must stay the
-		// single source every endpoint derives from. Dropping llmEndpoint also
-		// clears a stale custom endpoint from a previous region; dropping the
-		// endpoints clears a stale discovery from a previous install.
+		// Self-hosted logins persist region + the resolved endpoints only: a
+		// stored llmEndpoint overrides the region (documented precedence), and
+		// the endpoints must stay the single source every URL derives from.
+		// Dropping llmEndpoint also clears a stale custom endpoint from a
+		// previous region.
 		const persistOptions =
 			options.region === "self-hosted"
-				? {
-						region: options.region,
-						selfHostedUrl: options.selfHostedUrl,
-						selfHostedEndpoints: options.selfHostedEndpoints,
-					}
+				? { region: options.region, selfHostedEndpoints: options.selfHostedEndpoints }
 				: { llmEndpoint: endpoint, region: options.region }
 		return await configureKimchiToken(host, token, endpoint, {
 			strictFreshDiscovery: true,
@@ -609,7 +591,8 @@ export async function performKimchiBrowserLogin(
 	// login. The same goes for a self-hosted console change: the stored key was
 	// issued by a different install.
 	const regionChanged = options.region !== cfg.region
-	const baseChanged = options.region === "self-hosted" && options.selfHostedUrl !== cfg.selfHostedUrl
+	const baseChanged =
+		options.region === "self-hosted" && options.selfHostedEndpoints?.console !== cfg.selfHostedEndpoints?.console
 	const existingToken = options.reuseExistingToken && !regionChanged && !baseChanged ? cfg.apiKey : ""
 	if (existingToken) {
 		host.showStatus?.("Refreshing Kimchi models with existing login...")
@@ -621,10 +604,7 @@ export async function performKimchiBrowserLogin(
 		host.showStatus?.("Opening browser for Kimchi login...")
 
 		const { token } = await authenticateViaBrowser({
-			webAppUrl: endpointsForRegion(options.region, {
-				selfHostedUrl: options.selfHostedUrl,
-				endpoints: options.selfHostedEndpoints,
-			}).webAppUrl,
+			webAppUrl: endpointsForRegion(options.region, { endpoints: options.selfHostedEndpoints }).webAppUrl,
 			onBrowserUrl: (url) => {
 				browserUrl = url
 				host.onBrowserUrl?.(url)
@@ -633,7 +613,6 @@ export async function performKimchiBrowserLogin(
 		})
 
 		const persist: WriteApiKeyOptions = { region: options.region }
-		if (options.selfHostedUrl) persist.selfHostedUrl = options.selfHostedUrl
 		if (options.selfHostedEndpoints) persist.selfHostedEndpoints = options.selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
 		return configureKimchiToken(host, token)
@@ -669,20 +648,17 @@ export async function performKimchiBrowserLoginWithDialog(
 ): Promise<KimchiBrowserLoginDialogResult> {
 	// Self-hosted needs its console URL before the browser flow can target
 	// the right web app; Esc here backs out to the selector that launched the
-	// login. Discovery endpoints resolved along the way drive every derived
-	// endpoint (see promptSelfHostedLoginTarget).
-	let selfHostedUrl: string | undefined
+	// login. The prompt resolves the install's endpoints (discovered or
+	// base-derived) that drive every derived endpoint.
 	let selfHostedEndpoints: SelfHostedEndpoints | undefined
 	if (options.region === "self-hosted") {
-		const target = await promptSelfHostedLoginTarget({
+		selfHostedEndpoints = await promptSelfHostedEndpoints({
 			prompt: (title, placeholder) => ctx.ui.input(title, placeholder),
 			notifyError: (message) => ctx.ui.notify(message, "error"),
 			notifyStatus: (message) => ctx.ui.notify(message, "info"),
-			storedUrl: loadConfig().selfHostedUrl,
+			storedUrl: loadConfig().selfHostedEndpoints?.console,
 		})
-		if (target === undefined) return "cancelled"
-		selfHostedUrl = target.consoleUrl
-		selfHostedEndpoints = target.endpoints
+		if (selfHostedEndpoints === undefined) return "cancelled"
 	}
 	return ctx.ui.custom<KimchiBrowserLoginDialogResult>((tui, _theme, _keybindings, done) => {
 		let finished = false
@@ -724,7 +700,7 @@ export async function performKimchiBrowserLoginWithDialog(
 						]),
 					signal: dialog.signal,
 				},
-				{ region: options.region, selfHostedUrl, selfHostedEndpoints, reuseExistingToken: true },
+				{ region: options.region, selfHostedEndpoints, reuseExistingToken: true },
 			)
 			if (cancelled || dialog.signal.aborted) finish("cancelled")
 			else finish(ok ? "success" : "failed")
@@ -841,20 +817,18 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 	options: { region: RegionId },
 ): Promise<"success" | "failed" | "cancelled"> {
 	// Self-hosted needs its console URL up front; Esc backs out to the
-	// selector that launched the login. Discovery endpoints resolved along
-	// the way drive the gateway derivation (see promptSelfHostedLoginTarget).
-	let selfHostedUrl: string | undefined
+	// selector that launched the login. The prompt resolves the install's
+	// endpoints (discovered or base-derived) that drive the gateway
+	// derivation.
 	let selfHostedEndpoints: SelfHostedEndpoints | undefined
 	if (options.region === "self-hosted") {
-		const target = await promptSelfHostedLoginTarget({
+		selfHostedEndpoints = await promptSelfHostedEndpoints({
 			prompt: (title, placeholder) => ctx.ui.input(title, placeholder),
 			notifyError: (message) => ctx.ui.notify(message, "error"),
 			notifyStatus: (message) => ctx.ui.notify(message, "info"),
-			storedUrl: loadConfig().selfHostedUrl,
+			storedUrl: loadConfig().selfHostedEndpoints?.console,
 		})
-		if (target === undefined) return "cancelled"
-		selfHostedUrl = target.consoleUrl
-		selfHostedEndpoints = target.endpoints
+		if (selfHostedEndpoints === undefined) return "cancelled"
 	}
 	const apiKey = await ctx.ui.input("Kimchi API Key:")
 	if (!apiKey?.trim()) return "cancelled"
@@ -875,7 +849,7 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 			showError: (message) => ctx.ui.notify(message, "error"),
 			addFeedback: (message) => ctx.ui.notify(message, "info"),
 		},
-		{ apiKey: apiKey.trim(), endpoint, region: options.region, selfHostedUrl, selfHostedEndpoints },
+		{ apiKey: apiKey.trim(), endpoint, region: options.region, selfHostedEndpoints },
 	)
 	return ok ? "success" : "failed"
 }

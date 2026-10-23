@@ -63,10 +63,9 @@ describe("kimchi login <console-url> (self-hosted flow)", () => {
 		expect(authenticateViaBrowser).toHaveBeenCalledWith(
 			expect.objectContaining({ webAppUrl: "https://kimchi.example.com" }),
 		)
-		// The key is stored with the region, the console URL, and the endpoints.
+		// The key is stored with the region and the endpoints.
 		expect(config.writeApiKey).toHaveBeenCalledWith("new-key", undefined, {
 			region: "self-hosted",
-			selfHostedUrl: "https://kimchi.example.com",
 			selfHostedEndpoints: DISCOVERED_ENDPOINTS,
 		})
 	})
@@ -83,11 +82,15 @@ describe("kimchi login <console-url> (self-hosted flow)", () => {
 		expect(authenticateViaBrowser).toHaveBeenCalledWith(
 			expect.objectContaining({ webAppUrl: "https://kimchi.example.com" }),
 		)
-		// No endpoints persisted on the manual fallback.
+		// The manual fallback persists the endpoints derived from the URL.
+		const derived = {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		}
 		expect(config.writeApiKey).toHaveBeenCalledWith("new-key", undefined, {
 			region: "self-hosted",
-			selfHostedUrl: "https://kimchi.example.com",
-			selfHostedEndpoints: undefined,
+			selfHostedEndpoints: derived,
 		})
 	})
 

@@ -126,8 +126,15 @@ test("login via Kimchi account offers Self-hosted behind the experimental flag a
 				// The chosen region and the console URL are persisted next to the API key
 				// — without discovery endpoints (the manual fallback).
 				const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
-				await waitForConfigField(configPath, { region: "self-hosted", selfHostedUrl: selfHostedBase })
-				trace.step("config.json contains region self-hosted + selfHostedUrl")
+				await waitForConfigField(configPath, {
+					region: "self-hosted",
+					selfHostedEndpoints: {
+						api: `${selfHostedBase}/api`,
+						console: selfHostedBase,
+						llm: `${selfHostedBase}/llm`,
+					},
+				})
+				trace.step("config.json contains region self-hosted + base-derived endpoints")
 
 				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
 			} finally {
@@ -202,7 +209,7 @@ test("login via Kimchi account discovers self-hosted endpoints from /env/endpoin
 				const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
 				await waitForConfigField(configPath, {
 					region: "self-hosted",
-					selfHostedUrl: consoleUrl,
+
 					selfHostedEndpoints: discoveredEndpoints,
 				})
 				trace.step("config.json contains region self-hosted + console URL + discovered endpoints")

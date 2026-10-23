@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { withExperimentalFeatures } from "./extensions/experimental.js"
 import {
 	anthropicBaseUrl,
+	discoveredSelfHostedRegion,
 	experimentalOpenAiBaseUrl,
 	isRegionId,
 	keyValidationUrl,
@@ -12,14 +13,14 @@ import {
 	regionEndpoints,
 	searchUrl,
 	selectableRegions,
-	selfHostedRegion,
+	selfHostedEndpointsFromBase,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
 
 const us = REGIONS.us
 const eu = REGIONS.eu
-const selfHosted = selfHostedRegion("https://kimchi.example.com")
+const selfHosted = discoveredSelfHostedRegion(selfHostedEndpointsFromBase("https://kimchi.example.com"))
 
 describe("REGIONS", () => {
 	it("declares us, eu, and self-hosted", () => {
@@ -45,7 +46,7 @@ describe("REGIONS", () => {
 	})
 
 	it("self-hosted registry entry is a placeholder with empty URLs", () => {
-		// The real entry is built per install by selfHostedRegion(base); the
+		// The real entry is built per install from resolved endpoints; the
 		// registry entry only anchors the id/label and keeps RegionId complete.
 		expect(REGIONS["self-hosted"].label).toBe("Self-hosted")
 		expect(REGIONS["self-hosted"].webAppUrl).toBe("")
@@ -95,7 +96,8 @@ describe("derivation helpers — eu variants", () => {
 
 describe("derivation helpers — self-hosted golden URLs", () => {
 	// The full endpoint inventory a self-hosted server must serve, derived
-	// from ONE base URL via selfHostedRegion(base). This table is the contract
+	// for installs predating discovery via selfHostedEndpointsFromBase(base). This
+	// table is the contract
 	// the self-hosted server implements — keep it in sync with any change.
 	it("derives every endpoint from the base URL", () => {
 		expect(regionEndpoints(selfHosted)).toEqual({
@@ -118,12 +120,12 @@ describe("derivation helpers — self-hosted golden URLs", () => {
 		// Both resolve to base/api: the platform API (/v1/me, /workspaces, ...)
 		// and the Cast AI API (/v1/llm/..., /ai-optimizer/...) serve disjoint
 		// sub-paths behind the one self-hosted gateway. This is intentional —
-		// see the comment on selfHostedRegion.
+		// see the comment on selfHostedEndpointsFromBase.
 		expect(platformApiUrl(selfHosted)).toBe(selfHosted.castApiUrl)
 	})
 
 	it("strips a trailing slash from the base before appending paths", () => {
-		const trailing = selfHostedRegion("https://kimchi.example.com/")
+		const trailing = discoveredSelfHostedRegion(selfHostedEndpointsFromBase("https://kimchi.example.com/"))
 		expect(trailing.llmBaseUrl).toBe("https://kimchi.example.com/llm")
 		expect(trailing.castApiUrl).toBe("https://kimchi.example.com/api")
 		expect(trailing.webAppUrl).toBe("https://kimchi.example.com")

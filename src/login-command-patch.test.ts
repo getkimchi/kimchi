@@ -578,11 +578,15 @@ it("selecting Self-hosted for API-key login prompts for the console URL, not a s
 		true,
 	)
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://kimchi.example.com/llm...")
-	// Self-hosted persists region + selfHostedUrl only — a stored llmEndpoint
-	// would override the region derivation.
+	// Self-hosted persists region + the base-derived endpoints only — a stored
+	// llmEndpoint would override the endpoint derivation.
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
 	})
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/models.json",
@@ -617,7 +621,11 @@ it("re-prompts for the self-hosted console URL until it parses", async () => {
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
 	})
 })
 
@@ -674,7 +682,11 @@ it("selecting Self-hosted for account login prompts for the console URL and targ
 	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://kimchi.example.com")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-token", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
 	})
 })
 
@@ -722,7 +734,6 @@ it("a discovered self-hosted install drives the LLM gateway from the document an
 	// The endpoints are persisted next to the console URL.
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
 		selfHostedEndpoints: {
 			api: "https://kimchi.example.com",
 			console: "https://kimchi.example.com",

@@ -703,33 +703,72 @@ describe("writeApiKey", () => {
 		expect(raw.llmEndpoint).toBeUndefined()
 	})
 
-	it("persists region and selfHostedUrl together, normalized, without llmEndpoint (self-hosted login)", () => {
+	it("persists region and selfHostedEndpoints together, normalized, without llmEndpoint (self-hosted login)", () => {
 		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
-		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "https://kimchi.example.com/" })
+		writeApiKey("new-token", configPath, {
+			region: "self-hosted",
+			selfHostedEndpoints: {
+				api: "https://kimchi.example.com/",
+				console: "https://kimchi.example.com",
+				llm: "https://llm.example.com/",
+			},
+		})
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.apiKey).toBe("new-token")
 		expect(raw.region).toBe("self-hosted")
-		// Trailing slash stripped on write; no llmEndpoint so the region
-		// derivation stays single-sourced (a stored llmEndpoint would win over it).
-		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+		// Trailing slashes stripped on write; no llmEndpoint so the endpoints
+		// stay the single source (a stored llmEndpoint would win over them).
+		expect(raw.selfHostedEndpoints).toEqual({
+			api: "https://kimchi.example.com",
+			console: "https://kimchi.example.com",
+			llm: "https://llm.example.com",
+		})
 		expect(raw.llmEndpoint).toBeUndefined()
 	})
 
-	it("drops an invalid selfHostedUrl instead of storing it", () => {
-		writeApiKey("new-token", configPath, { region: "self-hosted", selfHostedUrl: "not a url" })
+	it("drops an invalid selfHostedEndpoints value instead of storing it", () => {
+		writeApiKey("new-token", configPath, {
+			region: "self-hosted",
+			selfHostedEndpoints: {
+				api: "https://kimchi.example.com",
+				console: "https://kimchi.example.com",
+				llm: "not a url",
+			},
+		})
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.region).toBe("self-hosted")
+		expect(raw.selfHostedEndpoints).toBeUndefined()
+	})
+
+	it("removes a legacy stored selfHostedUrl on write, superseded by selfHostedEndpoints", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", selfHostedUrl: "https://legacy.example.com" }))
+		writeApiKey("new-token", configPath, { region: "us" })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.selfHostedUrl).toBeUndefined()
 	})
 
-	it("leaves the stored selfHostedUrl untouched when switching away from self-hosted", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+	it("leaves the stored selfHostedEndpoints untouched when switching away from self-hosted", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
+			}),
+		)
 		writeApiKey("us-token", configPath, { region: "us", llmEndpoint: "https://llm.kimchi.dev/openai/v1" })
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.region).toBe("us")
-		// The base URL only matters for the self-hosted region, so it survives
-		// the switch and is offered as the default when switching back.
-		expect(raw.selfHostedUrl).toBe("https://kimchi.example.com")
+		// The endpoints only matter for the self-hosted region, so they survive
+		// the switch and are offered as the default when switching back.
+		expect(raw.selfHostedEndpoints).toEqual({
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		})
 	})
 
 	it("keeps llmEndpoint behavior when only a custom endpoint is given", () => {
@@ -877,31 +916,74 @@ describe("region config", () => {
 		expect(cfg.metricsEndpoint).toBe("https://api.eu.cast.ai/ai-optimizer/v1beta/metrics:ingest")
 	})
 
-	it("loadConfig: self-hosted region with a stored base URL derives the gateway", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+	it("loadConfig: self-hosted region with stored endpoints derives the gateway", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
+			}),
+		)
 		const cfg = loadConfig({ configPath })
 		expect(cfg.region).toBe("self-hosted")
-		expect(cfg.selfHostedUrl).toBe("https://kimchi.example.com")
 		expect(cfg.llmEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
 	})
 
-	it("loadConfig: KIMCHI_SELF_HOSTED_URL env wins over the stored base URL", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+	it("loadConfig: KIMCHI_SELF_HOSTED_URL env derives endpoints that win over the stored ones", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://config.example.com/api",
+					console: "https://config.example.com",
+					llm: "https://config.example.com/llm",
+				},
+			}),
+		)
 		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
 		const cfg = loadConfig({ configPath })
-		expect(cfg.selfHostedUrl).toBe("https://env.example.com")
+		expect(cfg.selfHostedEndpoints).toEqual({
+			api: "https://env.example.com/api",
+			console: "https://env.example.com",
+			llm: "https://env.example.com/llm",
+		})
 		expect(cfg.llmEndpoint).toBe("https://env.example.com/llm/openai/v1")
 	})
 
-	it("loadConfig: an invalid stored selfHostedUrl counts as unset", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "not a url" }))
+	it("loadConfig: an invalid stored selfHostedEndpoints counts as unset", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "not a url",
+				},
+			}),
+		)
 		const cfg = loadConfig({ configPath })
 		expect(cfg.region).toBe("self-hosted")
-		expect(cfg.selfHostedUrl).toBeUndefined()
+		expect(cfg.selfHostedEndpoints).toBeUndefined()
 	})
 
 	it("loadConfig: an invalid KIMCHI_SELF_HOSTED_URL warns once and counts as unset", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://config.example.com" }))
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://config.example.com/api",
+					console: "https://config.example.com",
+					llm: "https://config.example.com/llm",
+				},
+			}),
+		)
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 		resetInvalidSelfHostedUrlWarningForTests()
 		// Only the self-hosted warning; the temp file's loose permissions warn separately.
@@ -911,7 +993,7 @@ describe("region config", () => {
 		try {
 			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "not a url")
 			const first = loadConfig({ configPath })
-			expect(first.selfHostedUrl).toBe("https://config.example.com")
+			expect(first.selfHostedEndpoints?.console).toBe("https://config.example.com")
 			// Repeated reads warn only once (the stored base keeps serving).
 			loadConfig({ configPath })
 			expect(selfHostedWarnings()).toHaveLength(1)
@@ -922,8 +1004,18 @@ describe("region config", () => {
 		}
 	})
 
-	it("telemetry defaults follow the self-hosted base URL", () => {
-		writeFileSync(configPath, JSON.stringify({ region: "self-hosted", selfHostedUrl: "https://kimchi.example.com" }))
+	it("telemetry defaults follow the self-hosted endpoints", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
+			}),
+		)
 		const cfg = readTelemetryConfig(configPath)
 		expect(cfg.endpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/logs:ingest")
 		expect(cfg.metricsEndpoint).toBe("https://kimchi.example.com/api/ai-optimizer/v1beta/metrics:ingest")
