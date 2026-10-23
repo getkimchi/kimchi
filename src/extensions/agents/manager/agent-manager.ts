@@ -559,6 +559,19 @@ export class AgentManager {
 		// remote dispatch is the single entry point for fresh runs and steers.
 		if (options.continuation) return this._runRemoteContinuation(record, prompt, options, ctx)
 
+		// Capture the ctx facts used after the awaits below (this prefix runs
+		// synchronously at spawn, while the runtime is fresh): a session
+		// replace/fork/reload mid-run invalidates the per-call ctx (every
+		// property read throws — see ../../stale-ctx.ts) and must not kill a
+		// live remote run. Same entry-capture convention as spawnCtx and the
+		// Agent tool's execute. Residual: a QUEUED background remote agent runs
+		// this prefix at drain time, when the ctx may already be stale — that
+		// run then errors and the record surfaces it.
+		const remoteCwd = ctx.cwd
+		const remoteSessionId = ctx.sessionManager.getSessionId()
+		const remoteUi = ctx.ui
+		const remoteMode = ctx.mode
+
 		const apiKey = loadConfig().apiKey
 		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
 
@@ -569,13 +582,13 @@ export class AgentManager {
 		// Match a workspace whose name matches the current repo dir (same convention
 		// as /teleport, which names workspaces by basename(cwd)). If no match is
 		// found, mint a new one rather than reusing an unrelated workspace.
-		const dirName = basename(ctx.cwd) || "kimchi"
+		const dirName = basename(remoteCwd) || "kimchi"
 		const byName = workspaces.find((w) => w.name.toLowerCase() === dirName.toLowerCase())
 		const workspaceId = byName?.id ?? randomUUID()
 		// Workspace spec (kimchi_workspace.yaml) rides the upsert PUT only
 		// when minting — a name-matched workspace keeps its existing spec
 		// (spec fields are create-time-only server-side).
-		const workspaceSpec = byName ? undefined : resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
+		const workspaceSpec = byName ? undefined : resolveWorkspaceSpec(loadWorkspaceFile(remoteCwd))
 
 		// Resolve git clone plan from the local repo so the sandbox gets a
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
@@ -583,7 +596,7 @@ export class AgentManager {
 		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
 		let gitCredential: { host: string; token: string } | undefined
 		try {
-			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
+			const clonePlan = await resolveClonePlan(remoteCwd, undefined, { signal: record.abortController?.signal })
 			gitDetails = {
 				repo: clonePlan.httpsUrl,
 				// PR-intent runs override the branch: the worker forks the clone's
@@ -596,7 +609,7 @@ export class AgentManager {
 			// rejection) must not wipe the clone plan. The clone proceeds without
 			// creds; private repos fail, public repos still work.
 			try {
-				gitCredential = await resolveGitCredential(ctx, clonePlan)
+				gitCredential = await resolveGitCredential(remoteMode, remoteUi, clonePlan)
 			} catch (err) {
 				gitCredential = undefined
 				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
@@ -619,10 +632,10 @@ export class AgentManager {
 			keepAlive: record.gitWorkflow !== undefined,
 			gitDetails,
 			gitCredential,
-			localPath: ctx.cwd,
+			localPath: remoteCwd,
 			workspaceName: dirName,
 			outputFile: record.outputFile,
-			tags: { [SESSION_TAG_PARENT_SESSION_ID]: ctx.sessionManager.getSessionId() },
+			tags: { [SESSION_TAG_PARENT_SESSION_ID]: remoteSessionId },
 			...(workspaceSpec ? { spec: workspaceSpec } : {}),
 			onReady: async (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
@@ -644,7 +657,7 @@ export class AgentManager {
 					// Bounded per ssh round trip (two commands: rev-parse + status);
 					// the run otherwise looks idle for up to ~90s on a cold sandbox —
 					// name what it's doing instead of staring at "analyzing".
-					ctx.ui.notify?.(
+					remoteUi.notify?.(
 						"Capturing the pre-run git baseline over SSH (one-time snapshot used for the review diff)…",
 						"info",
 					)
@@ -669,7 +682,7 @@ export class AgentManager {
 							// Was console.warn — invisible. This degrades the PR review at
 							// completion (no deterministic range), so tell the user now.
 							const message = `Pre-run snapshot failed: ${err instanceof Error ? err.message : err}. This is a one-time HEAD snapshot taken before the agent commits — diff review at completion will recover via merge-base instead.`
-							ctx.ui.notify?.(message, "warning")
+							remoteUi.notify?.(message, "warning")
 							console.warn(`[agent-manager] baseline capture failed: ${err instanceof Error ? err.message : err}`)
 							break
 						}
@@ -1297,14 +1310,15 @@ export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abort
  * will succeed for public repos only.
  */
 async function resolveGitCredential(
-	ctx: ExtensionContext,
+	mode: ExtensionContext["mode"],
+	ui: ExtensionContext["ui"],
 	clonePlan: ClonePlan,
 ): Promise<{ host: string; token: string } | undefined> {
 	const host = new URL(clonePlan.httpsUrl).hostname
 	const prompt: () => Promise<GitTokenPromptResult> =
-		ctx.mode === "tui"
+		mode === "tui"
 			? () =>
-					ctx.ui.custom(
+					ui.custom(
 						(tui, theme, _kb, done) => new GitTokenPromptComponent(theme, host, done, () => tui.requestRender()),
 					)
 			: async () => ({ outcome: "skipped" as const })

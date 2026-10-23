@@ -217,6 +217,7 @@ vi.mock("../orchestration/model-roles.js", () => ({
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -1477,6 +1478,7 @@ function getRegisteredTool(
 type MockManagerInstance = {
 	_records: Map<string, Record<string, unknown>>
 	onComplete: (record: Record<string, unknown>) => void
+	spawn: ReturnType<typeof vi.fn>
 }
 
 function latestManagerInstance(): MockManagerInstance {
@@ -1782,5 +1784,203 @@ describe("Agent tool background spawn result contract", () => {
 		expect(text).toContain("notified when this agent completes")
 		expect(text).toContain("Do NOT call get_subagent_result with wait: true")
 		expect(text).not.toContain("Use get_subagent_result to retrieve full results")
+	})
+})
+
+// ---- Agent foreground path under mid-run session invalidation ----
+//
+// The foreground path awaits the subagent's ENTIRE run (minutes, not a
+// bounded 60s). A session replace/fork/reload mid-run invalidates the
+// per-call ctx (every property read throws, Pi's assertActive) and the pi
+// runtime (appendEntry/events.emit/sendMessage all throw) — a completed
+// subagent result must NOT be discarded at the response boundary. These
+// tests use the dual-invalidation harness: createLiveContext for the ctx
+// AND createExtensionApi's invalidate() for the pi mock. An always-
+// permissive appendEntry/events mock would mask exactly this failure.
+
+describe("Agent foreground path under mid-run session invalidation", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+	})
+
+	/**
+	 * Boot the extension with the invalidation-capable pi mock and a spawn
+	 * stub that parks the spawned record's run promise on a deferred, so the
+	 * test controls when (and whether) the foreground race completes while
+	 * execute() is suspended at the await.
+	 */
+	function setupDeferredForeground(): {
+		piMock: ReturnType<typeof createExtensionApi>
+		manager: MockManagerInstance
+		run: { promise: Promise<string>; resolve: (value: string) => void }
+		live: ReturnType<typeof createLiveContext>
+		tool: ReturnType<typeof getRegisteredTool>
+	} {
+		const piMock = createExtensionApi()
+		agentsExtension(piMock.api)
+		const manager = latestManagerInstance()
+		const run = deferred<string>()
+		manager.spawn.mockImplementation(
+			(_pi: unknown, _ctx: unknown, type: string, _prompt: string, options: Record<string, unknown>) => {
+				const id = `mock-${manager._records.size}`
+				manager._records.set(id, {
+					id,
+					type,
+					status: "running",
+					...options,
+					promise: run.promise,
+					lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				})
+				return id
+			},
+		)
+		const live = createLiveContext({ mode: "tui" })
+		const tool = getRegisteredTool(piMock.api as unknown as ReturnType<typeof makeMockPi>, "Agent")
+		return { piMock, manager, run, live, tool }
+	}
+
+	function startForegroundExecute(
+		tool: ReturnType<typeof getRegisteredTool>,
+		ctx: unknown,
+		callId: string,
+	): Promise<{ content: { type: string; text: string }[] }> {
+		return tool.execute(
+			callId,
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: false },
+			undefined,
+			undefined,
+			ctx,
+		)
+	}
+
+	it("returns the completed result instead of a stale-ctx error when the session is replaced mid-run", async () => {
+		const { piMock, manager, run, live, tool } = setupDeferredForeground()
+
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-stale-completion")
+		// execute() is now suspended at the race. Simulate an ACP/IDE client
+		// replacing/forking the session while the subagent churns: every later
+		// ctx read and pi API call throws.
+		live.invalidate()
+		piMock.invalidate()
+
+		const record = [...manager._records.values()][0]
+		record.status = "completed"
+		record.result = "the finished agent result"
+		record.completedAt = Date.now()
+		run.resolve("the finished agent result")
+
+		const result = await execPromise
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("Agent completed in")
+		expect(text).toContain("the finished agent result")
+		// Persistence is a guarded drop: no subagents:record entry for the dead
+		// session's transcript.
+		expect(piMock.getAppendedEntries("subagents:record")).toEqual([])
+	})
+
+	it("returns the Ctrl+B backgrounding text from captured values when the session is replaced mid-run", async () => {
+		const { piMock, manager, live, tool } = setupDeferredForeground()
+		let backgroundedDelivered = false
+		piMock.api.events.on("subagents:backgrounded", () => {
+			backgroundedDelivered = true
+		})
+
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-stale-detach")
+		live.invalidate()
+		piMock.invalidate()
+
+		const record = [...manager._records.values()][0]
+		// Ctrl+B: resolve the detach promise the tool parked on the record.
+		;(record.detachResolver as () => void)()
+
+		const result = await execPromise
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("Agent sent to background by the user (Ctrl+B)")
+		// The lifecycle event for the dead session is dropped, not thrown.
+		expect(backgroundedDelivered).toBe(false)
+		// Output-file wiring was rebuilt from the entry-time captures (cwd,
+		// parent session id), not from a stale ctx read.
+		expect(record.outputFile).toContain("test-session")
+	})
+
+	it("the deferred onSessionCreated callback wires output streaming with the entry-time cwd", async () => {
+		const { piMock, manager, run, live, tool } = setupDeferredForeground()
+
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-stale-callback")
+		const record = [...manager._records.values()][0]
+		const fakeSession = {
+			messages: [],
+			subscribe: vi.fn(() => () => {}),
+		}
+		// The runner invokes onSessionCreated after async session creation —
+		// temporally post-await. Give the record a session so the wrapper's
+		// streaming branch runs, then invalidate before invoking it.
+		record.session = fakeSession
+		live.invalidate()
+		piMock.invalidate()
+
+		expect(() => {
+			;(record.onSessionCreated as (session: unknown) => void)(fakeSession)
+		}).not.toThrow()
+		expect(fakeSession.subscribe).toHaveBeenCalledTimes(1)
+		expect(typeof record.outputCleanup).toBe("function")
+
+		// Let execute() settle so the spinner interval is cleared (no lingering
+		// timer into later tests).
+		run.resolve("")
+		await execPromise
+	})
+
+	it("freezes the completion instruction's multi-model state at spawn time", async () => {
+		const { piMock, manager, run, live, tool } = setupDeferredForeground()
+
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-mm-freeze")
+		// Model cycling toggles the flag mid-run WITHOUT invalidating the ctx
+		// (ui.ts calls setMultiModelEnabled on toggle) — the old post-await read
+		// would observe this flipped value.
+		vi.mocked(getMultiModelEnabled).mockReturnValue(true)
+
+		const record = [...manager._records.values()][0]
+		record.status = "aborted"
+		record.abortReason = "max_turns"
+		record.completedAt = Date.now()
+		run.resolve("partial work")
+
+		const result = await execPromise
+		const text = result.content[0]?.text ?? ""
+		// Entry-time flag was false → relaxed instruction; the strict
+		// multi-model delegation reminder must NOT appear.
+		expect(text).not.toContain("Do NOT implement the remaining work yourself")
+		// Fresh runtime → the record entry IS appended (contrast with the
+		// invalidated scenarios above).
+		expect(piMock.getAppendedEntries("subagents:record")).toHaveLength(1)
+	})
+
+	it("the manager completion handler drops events and records instead of throwing after invalidation", async () => {
+		const piMock = createExtensionApi()
+		agentsExtension(piMock.api)
+		const manager = latestManagerInstance()
+		let completedDelivered = false
+		let failedDelivered = false
+		piMock.api.events.on("subagents:completed", () => {
+			completedDelivered = true
+		})
+		piMock.api.events.on("subagents:failed", () => {
+			failedDelivered = true
+		})
+		// The handler runs on background completion, potentially long after
+		// the spawning session was replaced — invalidate the runtime first.
+		piMock.invalidate()
+
+		const record = makeRunningRecord({ status: "completed", result: "done", completedAt: Date.now() })
+		expect(() => manager.onComplete(record)).not.toThrow()
+		// Both guarded drops: no lifecycle event for the dead session, no
+		// subagents:record entry appended.
+		expect(completedDelivered).toBe(false)
+		expect(failedDelivered).toBe(false)
+		expect(piMock.getAppendedEntries("subagents:record")).toEqual([])
 	})
 })

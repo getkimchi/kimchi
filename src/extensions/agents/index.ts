@@ -90,7 +90,7 @@ import {
 	type NotificationDetails,
 	type SubagentType,
 } from "./personas/types.js"
-import { findResumableRemoteRuns, persistRemoteRunState } from "./remote-run-persistence.js"
+import { findResumableRemoteRuns, persistRemoteRunState, type RemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
@@ -1054,6 +1054,45 @@ export default function (pi: ExtensionAPI) {
 		})
 	}
 
+	/** Emit a `subagents:*` lifecycle event, tolerating a session that was
+	 * replaced/reloaded mid-run: pi.events.emit asserts active on every
+	 * call, and the event serves the now-dead session's UI (widget rows,
+	 * steer-outcome watchers) — dropping it is the correct degradation, not
+	 * queuing it for a session that never knew about the agent. Any other
+	 * error still propagates. Only the temporally-deferred emissions route
+	 * through here; entry-time ones (subagents:ready, subagents:created)
+	 * evaluate while the runtime is fresh and stay direct. */
+	function emitSubagentEvent(channel: string, data: unknown): void {
+		try {
+			pi.events.emit(channel, data)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
+	/** Append the auxiliary `subagents:record` entry for export-transcript
+	 * enrichment, tolerating a stale runtime: the entry cannot be written
+	 * once the session is replaced, and it is auxiliary — the run's result
+	 * still reaches the orchestrator. Any other error still propagates. */
+	function appendSubagentRecordSafe(record: AgentRecord): void {
+		try {
+			appendSubagentRecord(record)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
+	/** Persist `remote_run:state` for resume-after-restart, tolerating a stale
+	 * runtime (the entry serves the now-dead session's transcript). Any other
+	 * error still propagates. */
+	function persistRemoteRunStateSafe(state: RemoteRunState): void {
+		try {
+			persistRemoteRunState(pi, state)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
 	let batchFinalizeTimer: ReturnType<typeof setTimeout> | undefined
 	let batchCounter = 0
@@ -1107,12 +1146,12 @@ export default function (pi: ExtensionAPI) {
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
 			const eventData = buildEventData(record)
 			if (isError) {
-				pi.events.emit("subagents:failed", eventData)
+				emitSubagentEvent("subagents:failed", eventData)
 			} else {
-				pi.events.emit("subagents:completed", eventData)
+				emitSubagentEvent("subagents:completed", eventData)
 			}
 
-			appendSubagentRecord(record)
+			appendSubagentRecordSafe(record)
 			// Overwrite the persisted running state with the terminal outcome — a
 			// later session resume must not reattach to a finished run.
 			if (record.remote && record.acpSessionId && record.remoteSession) {
@@ -1182,13 +1221,20 @@ export default function (pi: ExtensionAPI) {
 					// Errored runs have no result to review/sync — no completion
 					// dropdown. handleRemoteFailure notifies the user (or steers a
 					// headless agent, which would otherwise see nothing) and resumes
-					// the ferment paused for cloud execution.
-					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
-						error: record.error,
-						recoveryNote: record.recoveryNote,
-						fermentId: record.fermentId,
-						stoppedByUser: record.status === "stopped",
-					})
+					// the ferment paused for cloud execution. Guarded: a stale runtime
+					// means the spawning session was replaced mid-run — resumeFerment
+					// (first statement, no ctx access) still ran, and the dead
+					// session's notification surface is correctly dropped.
+					try {
+						handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+							error: record.error,
+							recoveryNote: record.recoveryNote,
+							fermentId: record.fermentId,
+							stoppedByUser: record.status === "stopped",
+						})
+					} catch (err) {
+						if (!isStaleCtxError(err)) throw err
+					}
 				} else if (!userAbortedRun && completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
@@ -1229,7 +1275,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		undefined,
 		(record, ctx) => {
-			pi.events.emit("subagents:started", {
+			emitSubagentEvent("subagents:started", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1238,7 +1284,7 @@ export default function (pi: ExtensionAPI) {
 			void trackSubagentSpawned(record, ctx)
 		},
 		(record, info) => {
-			pi.events.emit("subagents:compacted", {
+			emitSubagentEvent("subagents:compacted", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1321,7 +1367,7 @@ export default function (pi: ExtensionAPI) {
 			// is ready — the meta + ACP id only exist then.
 			onRemoteReady: ({ meta, acpSessionId }: { meta: RemoteSessionMeta; acpSessionId: string }) => {
 				const rec = manager.getRecord(id)
-				persistRemoteRunState(pi, {
+				persistRemoteRunStateSafe({
 					id,
 					description: desc,
 					remoteSession: meta,
@@ -1380,7 +1426,7 @@ export default function (pi: ExtensionAPI) {
 				widget.ensureTimer()
 				widget.update()
 
-				pi.events.emit("subagents:backgrounded", {
+				emitSubagentEvent("subagents:backgrounded", {
 					id,
 					type: "Remote-Runner",
 					description: desc,
@@ -1765,6 +1811,19 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				reloadCustomAgents()
 
+				// Capture the session facts every post-run path needs BEFORE the
+				// first await: the race below can run for minutes, and a session
+				// replace/fork/reload mid-run invalidates this per-call ctx (every
+				// property read throws — see ../stale-ctx.ts), which must not turn a
+				// completed subagent result into a tool error. cwd/session id are
+				// call-invariant. The multi-model flag deliberately freezes at spawn
+				// time — the agent runs under the config it was spawned with.
+				// Same convention as the surfaceMode capture in get_subagent_result
+				// and spawnCtx in agent-manager.
+				const agentCwd = ctx.cwd
+				const parentSessionId = ctx.sessionManager.getSessionId()
+				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
 				const rawType = params.subagent_type as SubagentType
 				const resolved = resolveType(rawType)
 				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
@@ -1800,7 +1859,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				// resolve the default model from the role config based on the agent
 				// type. This ensures Builder calls use the configured builder model,
 				// not the orchestrator's own model.
-				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+				if (multiModelEnabled && !resolvedConfig.modelFromParams) {
 					const roleModelRef = resolveRoleModelRef(subagentType)
 					if (roleModelRef) {
 						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
@@ -1816,7 +1875,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks
 				// so invalid models are rejected immediately.
-				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
+				if (multiModelEnabled && resolvedConfig.modelFromParams) {
 					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
 					const allowed = new Set(getAllowedMultiModelRefs())
 					if (!allowed.has(fullRef)) {
@@ -1922,11 +1981,15 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						origBgOnSession(session)
 						const rec = manager.getRecord(id)
 						if (rec?.outputFile) {
+							// Invoked by the runner after async session creation —
+							// temporally post-await, so it must use the entry-time
+							// capture, not ctx.cwd (stale after a mid-run session
+							// replace).
 							rec.outputCleanup = streamToOutputFile(
 								session as Parameters<typeof streamToOutputFile>[0],
 								rec.outputFile,
 								id,
-								ctx.cwd,
+								agentCwd,
 							)
 						}
 					}
@@ -2031,11 +2094,15 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 							widget.ensureTimer()
 							const rec = manager.getRecord(a.id)
 							if (rec?.outputFile) {
+								// Invoked by the runner after async session creation
+								// — temporally post-await, so it must use the
+								// entry-time capture, not ctx.cwd (stale after a
+								// mid-run session replace).
 								rec.outputCleanup = streamToOutputFile(
 									session as Parameters<typeof streamToOutputFile>[0],
 									rec.outputFile,
 									a.id,
-									ctx.cwd,
+									agentCwd,
 								)
 							}
 							break
@@ -2118,14 +2185,9 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					fgDetached = true
 					clearInterval(spinnerInterval)
 
-					const outputFile = createOutputFilePath(
-						ctx.cwd,
-						spawnedId,
-						ctx.sessionManager.getSessionId(),
-						parentSessionDir,
-					)
+					const outputFile = createOutputFilePath(agentCwd, spawnedId, parentSessionId, parentSessionDir)
 					record.outputFile = outputFile
-					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					writeInitialEntry(outputFile, spawnedId, params.prompt as string, agentCwd)
 					if (record.session) {
 						// Tear down the foreground streaming subscription before
 						// re-subscribing against the same session for background output.
@@ -2134,7 +2196,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 							record.session as Parameters<typeof streamToOutputFile>[0],
 							outputFile,
 							spawnedId,
-							ctx.cwd,
+							agentCwd,
 						)
 					}
 
@@ -2159,7 +2221,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					widget.ensureTimer()
 					widget.update()
 
-					pi.events.emit("subagents:backgrounded", {
+					emitSubagentEvent("subagents:backgrounded", {
 						id: spawnedId,
 						type: subagentType,
 						description: params.description,
@@ -2246,17 +2308,15 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				record.latestOutcome ??= buildAgentOutcome(record)
 				// Persist a subagents:record entry for foreground agents so exports
 				// can enrich them with full transcripts the same way background
-				// agents are handled.
-				appendSubagentRecord(record)
+				// agents are handled. Best-effort under a mid-run session replace:
+				// the entry is skipped (the result still returns) — see
+				// appendSubagentRecordSafe.
+				appendSubagentRecordSafe(record)
 
 				const timeTaken = formatMs(durationMs)
 				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
-				const instruction = getStatusInstruction(
-					record.status,
-					getMultiModelEnabled(ctx.sessionManager),
-					record.abortReason,
-				)
+				const instruction = getStatusInstruction(record.status, multiModelEnabled, record.abortReason)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
@@ -2483,7 +2543,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				if (!record.session) {
 					if (!record.pendingSteers) record.pendingSteers = []
 					record.pendingSteers.push(params.message as string)
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					emitSubagentEvent("subagents:steered", { id: record.id, message: params.message })
 					return textResult(
 						`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`,
 					)
@@ -2491,7 +2551,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				try {
 					await steerAgent(record.session, params.message as string)
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					emitSubagentEvent("subagents:steered", { id: record.id, message: params.message })
 					const tokens = formatLifetimeTokens(record)
 					const contextPercent = getSessionContextPercent(record.session)
 					const stateParts: string[] = []

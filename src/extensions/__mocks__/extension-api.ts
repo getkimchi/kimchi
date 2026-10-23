@@ -1,11 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
+import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import { createMiniEventBus } from "./mini-event-bus.js"
 
 type RegisteredHandler = ExtensionHandler<unknown, unknown>
 
 export function createExtensionApi(): {
 	api: ExtensionAPI
+	/** Mark the runtime stale, as Pi's runner does after a session replacement or reload. */
+	invalidate(): void
 	getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R>
 	getHandlers<E, R = undefined>(event: string): ExtensionHandler<E, R>[]
 	/** Invoke every handler registered for `event`, awaiting each in turn; returns their results. */
@@ -33,15 +36,29 @@ export function createExtensionApi(): {
 	getShortcutDescription(key: string): string | undefined
 } {
 	const handlers = new Map<string, RegisteredHandler[]>()
+	// Pi invalidates the per-call extension runtime together with its ctx on
+	// session replace/fork/reload: every API method (including events.emit)
+	// then throws via assertActive (loader.js). Simulated here so tests
+	// exercising stale-ctx behavior are not masked by an always-permissive
+	// mock — the pre-fix appendEntry mock masked exactly this failure class.
+	// The message starts with STALE_CTX_MESSAGE_PREFIX so the spelling stays
+	// shared with production's isStaleCtxError.
+	let stale = false
+	const assertFresh = () => {
+		if (stale) throw new Error(`${STALE_CTX_MESSAGE_PREFIX} after session replacement or reload.`)
+	}
 	const on = vi.fn((event: string, handler: RegisteredHandler) => {
 		const registered = handlers.get(event) ?? []
 		registered.push(handler)
 		handlers.set(event, registered)
 	})
-	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>()
+	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>(() => {
+		assertFresh()
+	})
 	const registerEntryRenderer = vi.fn<ExtensionAPI["registerEntryRenderer"]>()
 	const appendedEntries: Array<{ type: string; payload: unknown }> = []
 	const appendEntry = vi.fn((type: string, payload: unknown) => {
+		assertFresh()
 		appendedEntries.push({ type, payload })
 	})
 	const setModel = vi.fn<ExtensionAPI["setModel"]>(async () => true)
@@ -60,7 +77,17 @@ export function createExtensionApi(): {
 	})
 	const getActiveTools = vi.fn(() => [...activeToolNames])
 	const getAllTools = vi.fn(() => [...registeredTools.values()])
-	const { events, emit } = createMiniEventBus()
+	const { events: busEvents, emit: busEmit } = createMiniEventBus()
+	// api.events routes through the stale guard like every other asserting
+	// API method; the raw bus emit stays exposed as `emitEvent` so delivery
+	// assertions still observe every (fresh) emission.
+	const events = {
+		emit: (channel: string, data: unknown) => {
+			assertFresh()
+			return busEmit(channel, data)
+		},
+		on: busEvents.on,
+	}
 	const shortcuts = new Map<
 		string,
 		{ description?: string; handler: (ctx: ExtensionContext) => Promise<void> | void }
@@ -90,6 +117,9 @@ export function createExtensionApi(): {
 			getCommands,
 			events,
 		} as unknown as ExtensionAPI,
+		invalidate: () => {
+			stale = true
+		},
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
 			if (!handler) throw new Error(`Extension did not register a ${event} handler`)
@@ -123,7 +153,7 @@ export function createExtensionApi(): {
 			if (!call) throw new Error(`No entry renderer registered for ${customType}`)
 			return call[1]
 		},
-		emitEvent: emit,
+		emitEvent: busEmit,
 		registerTool,
 		registerCommand,
 		setActiveTools,
