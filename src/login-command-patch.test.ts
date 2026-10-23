@@ -299,6 +299,32 @@ it("announces the auto-selected model when no prior Kimchi model is active", asy
 	)
 })
 
+it("defaults to the Auto router when the catalog serves it", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-auto",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// The catalog serves the routed virtual model alongside concrete models —
+	// login must prefer the router, matching the fresh-session default policy.
+	registry.getAvailable.mockReturnValue([
+		{ id: "glm-5.3", provider: "kimchi-dev" },
+		{ id: "auto", provider: "kimchi-dev" },
+	])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "auto", provider: "kimchi-dev" }, { persist: true })
+	expect(getFeedbackMessages(fakeIm)).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected auto. Credentials saved to "),
+	)
+})
+
 it("preserves a Kimchi provider model that is already active across login", async () => {
 	const cliAuthModule = await import("./cli-auth/index.js")
 	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({

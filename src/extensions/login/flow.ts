@@ -41,6 +41,7 @@ import {
 	type RegionId,
 	selectableRegions,
 } from "../../regions.js"
+import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
@@ -365,23 +366,42 @@ function formatKimchiTokenError(error: unknown, options: { saved: boolean }): st
 
 /**
  * Apply the post-login model selection: keep a prior Kimchi model (login is a
- * credential/registry refresh, not a model switch), otherwise select the first
- * model from the registry and announce it. A preserved prior model stays
- * silent — the user already knows what they're running.
+ * credential/registry refresh, not a model switch), otherwise select the
+ * catalog default and announce it. A preserved prior model stays silent — the
+ * user already knows what they're running.
  */
 async function applyPostLoginModel(host: KimchiBrowserLoginHost, providerModels: ProviderModelLike[]): Promise<void> {
 	const priorModel = host.getCurrentModel?.()
 	const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
 	const selectedModel = priorKimchiModel
 		? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
-		: providerModels[0]
+		: defaultLoginModel(providerModels)
 	if (!priorKimchiModel) {
 		await host.setModel?.(selectedModel)
 	}
-	// Announce the model whenever login auto-selected one: the first model
-	// in the registry is dynamic, so the user can't predict it.
+	// Announce the model whenever login auto-selected one: the catalog default
+	// is dynamic, so the user can't predict it.
 	const announceModel = priorKimchiModel ? undefined : selectedModel.id
 	host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+}
+
+/**
+ * Resolve the catalog default for login, mirroring the auto-model extension's
+ * fresh-session heir order: the Auto router when the catalog serves it, else
+ * the gated flash candidates (orgs not served `auto`), else the first served
+ * model. Keeping the order aligned means login and the next fresh session
+ * land on the same default instead of login installing a model the fresh
+ * session then rolls back.
+ */
+function defaultLoginModel(providerModels: ProviderModelLike[]): ProviderModelLike {
+	return (
+		providerModels.find((m) => isAutoRoutedModel(m)) ??
+		GATED_DEFAULT_MODEL_CANDIDATES.reduce<ProviderModelLike | undefined>(
+			(found, id) => found ?? providerModels.find((m) => m.id === id),
+			undefined,
+		) ??
+		providerModels[0]
+	)
 }
 
 async function configureKimchiToken(
