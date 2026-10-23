@@ -162,8 +162,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	},
 ]
 
-export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]
-
 export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 	web_search: "tools.web_search",
 	web_fetch: "tools.web_fetch",
