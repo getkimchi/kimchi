@@ -24,7 +24,14 @@ import {
 } from "../work-attribution.js"
 
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries, readWorkRecords, readWorkRecordsAsync, recoverWorkSummaries } from "./summary.js"
+import {
+	flushWorkSummaries,
+	type JournalPosition,
+	readAppendedWorkRecords,
+	readWorkRecords,
+	readWorkRecordsAsync,
+	recoverWorkSummaries,
+} from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -94,6 +101,52 @@ describe("readable work summaries", () => {
 		fs.appendFileSync(ledger, '\n{broken\n{"type":"request"}\n')
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).toHaveBeenCalledTimes(2)
+	})
+	describe("readAppendedWorkRecords", () => {
+		const row = (name: string) => ({ version: 1, type: "work", workId: randomUUID(), sessionId: "writer", name })
+		const ledger = () => join(dir, "work-attribution", "writer.jsonl")
+		const write = (text: string) => {
+			fs.mkdirSync(dirname(ledger()), { recursive: true })
+			fs.writeFileSync(ledger(), text)
+		}
+		it("parses appended bytes only and holds back a partial last line", () => {
+			const first = JSON.stringify(row("first"))
+			write(`${first}\n`)
+			const positions = new Map<string, JournalPosition>()
+			expect(readAppendedWorkRecords(dir, positions).map((record) => record.name)).toEqual(["first"])
+			// An unchanged journal parses nothing again.
+			expect(readAppendedWorkRecords(dir, positions)).toEqual([])
+			// A record still being appended stays unread until its line completes.
+			const second = JSON.stringify(row("second"))
+			fs.appendFileSync(ledger(), second.slice(0, -3))
+			expect(readAppendedWorkRecords(dir, positions)).toEqual([])
+			fs.appendFileSync(ledger(), `${second.slice(-3)}\n${JSON.stringify(row("third"))}\n`)
+			expect(readAppendedWorkRecords(dir, positions).map((record) => record.name)).toEqual(["second", "third"])
+		})
+		it("rereads a journal from its start when it shrinks or is replaced", () => {
+			const one = JSON.stringify(row("one"))
+			const two = JSON.stringify(row("two"))
+			write(`${one}\n${two}\n`)
+			const positions = new Map<string, JournalPosition>()
+			expect(readAppendedWorkRecords(dir, positions).map((record) => record.name)).toEqual(["one", "two"])
+			// A compacting rewrite is smaller: everything is read again.
+			write(`${one}\n`)
+			expect(readAppendedWorkRecords(dir, positions).map((record) => record.name)).toEqual(["one"])
+			// A rotated replacement keeps the length but not the inode.
+			const replacement = `${two}\n${one}\n`
+			fs.writeFileSync(join(dir, "work-attribution", "replacement.jsonl"), replacement)
+			fs.renameSync(join(dir, "work-attribution", "replacement.jsonl"), ledger())
+			expect(readAppendedWorkRecords(dir, positions).map((record) => record.name)).toEqual(["two", "one"])
+		})
+		it("drops the position of a deleted journal", () => {
+			write(`${JSON.stringify(row("one"))}\n`)
+			const positions = new Map<string, JournalPosition>()
+			readAppendedWorkRecords(dir, positions)
+			expect(positions.size).toBe(1)
+			fs.rmSync(ledger())
+			expect(readAppendedWorkRecords(dir, positions)).toEqual([])
+			expect(positions.size).toBe(0)
+		})
 	})
 	it.each(["", "transitions"])("skips only interrupted appends in %s journals", async (source) => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }

@@ -3,6 +3,7 @@ import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
@@ -288,8 +289,20 @@ export async function reconcileReporting(
 
 /** Unchanged journals and queue give the same snapshots; only the moving upload window needs another capture. */
 const CAPTURE_REFRESH_MS = HOUR_MS
+/**
+ * The shortest gap between captures. Appends — usually billing evidence from the costs
+ * pass — change the journal fingerprint every few minutes; without this floor each one
+ * re-read the whole history and recomputed the report for no snapshot change.
+ */
+const CAPTURE_MIN_INTERVAL_MS = 5 * MINUTE_MS
+
+/** The capture floor, with the e2e override for tests that need to move it. */
+function captureMinIntervalMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_CAPTURE_MIN_INTERVAL_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value >= 0 ? value : CAPTURE_MIN_INTERVAL_MS
+}
 /** What the last capture that settled every repository identity read and left behind, and when it started. */
-let lastCapture: { inputs: string; at: number } | undefined
+let lastCapture: { agentDir: string; inputs: string; at: number } | undefined
 
 /** Queues every repository's snapshot, unless the journals and queue have not changed since the last capture. */
 async function captureSnapshots(
@@ -309,6 +322,7 @@ async function captureSnapshots(
 	// Fingerprint before reading: an append during the read only makes the next pass capture again.
 	const journals = await workJournalFingerprint(agentDir)
 	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
+	if (lastCapture?.agentDir === agentDir && Date.now() - lastCapture.at < captureMinIntervalMs()) return
 	if (lastCapture?.inputs === (await inputs()) && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) return
 	const startedAt = Date.now()
 	let historyComplete = true
@@ -381,5 +395,5 @@ async function captureSnapshots(
 	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests)
 	// A repository lookup that failed or ran out of time is retried by the next pass.
 	if ([...needed].every((repository) => repositories.has(repository)))
-		lastCapture = { inputs: await inputs(), at: startedAt }
+		lastCapture = { agentDir, inputs: await inputs(), at: startedAt }
 }

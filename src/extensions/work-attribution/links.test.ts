@@ -20,6 +20,7 @@ import {
 	requestWorkLinks,
 } from "./links.js"
 import * as scope from "./scope.js"
+import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -963,4 +964,38 @@ it("keeps a concurrent revocation authoritative when its append follows the repa
 		reason: "work-link-unresolved",
 		totalCostUsd: "0.125000000",
 	})
+})
+
+it("stays off the whole history when only billing evidence appends between passes", async () => {
+	const flow = acceptedContinuation("plan")
+	const progress: { nextContinuation?: string } = {}
+	await repair(progress)
+	expect(links()).toHaveLength(1)
+	const records = vi.spyOn(summary, "readWorkRecords")
+	appendWorkRecord(
+		flow.ctx,
+		{
+			type: "request_cost",
+			requestId: flow.producer,
+			billingSource: {
+				apiUrl: "https://api.example",
+				gatewayUrl: "https://api.example/openai/v1",
+				credentialHash: "a".repeat(64),
+			},
+			billingSelector: {
+				type: "tag",
+				tag: `kimchi-request:${flow.producer}`,
+				startTime: "2026-10-01T00:00:00.000Z",
+				endTime: "2026-10-02T00:00:00.000Z",
+			},
+			billingRows: [],
+			billingLookup: { status: "pending", checkedAt: "2026-10-01T12:00:00.000Z" },
+		},
+		flow.workId,
+	)
+	await repair(progress)
+	// The billing-evidence append settles the pass without a full-history rescan;
+	// the quiet path's since-bounded check may read the appended journals, but never
+	// the unbounded full-history signature.
+	for (const call of records.mock.calls) expect(call[1]).toBeTypeOf("number")
 })

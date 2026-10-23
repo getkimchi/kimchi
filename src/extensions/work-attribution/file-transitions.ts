@@ -468,17 +468,26 @@ function reconciliationBudget(signal?: AbortSignal): () => void {
 		if (Date.now() > deadline) throw new Error("Work attribution reconciliation time limit exceeded")
 	}
 }
+let cachedJournalPaths: { mtimeMs: number; paths: string[] } | undefined
 async function journalPaths(): Promise<string[]> {
 	const directory = join(getAgentDir(), "work-attribution", "transitions")
+	// A pass lists this directory once per repository; with real histories that readdir ran
+	// dozens of times per tick. The directory's own mtime only moves when entries appear or
+	// disappear, and appends to a journal leave the listing unchanged.
+	let mtimeMs: number
 	try {
-		return (await readdir(directory, { withFileTypes: true }))
-			.filter((file) => file.isFile() && file.name.endsWith(".jsonl"))
-			.map((file) => join(directory, file.name))
-			.sort()
+		mtimeMs = (await stat(directory)).mtimeMs
 	} catch (error) {
-		if (error instanceof Error && "code" in error && error.code === "ENOENT") return []
-		throw error
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") mtimeMs = -1
+		else throw error
 	}
+	if (cachedJournalPaths?.mtimeMs === mtimeMs) return cachedJournalPaths.paths
+	const paths: string[] = []
+	if (mtimeMs !== -1)
+		for (const file of await readdir(directory, { withFileTypes: true }))
+			if (file.isFile() && file.name.endsWith(".jsonl")) paths.push(join(directory, file.name))
+	cachedJournalPaths = { mtimeMs, paths: paths.sort() }
+	return cachedJournalPaths.paths
 }
 /** Read only enough to identify a journal, including one left by a deleted linked worktree. */
 async function journalOwner(path: string): Promise<FileTransition | undefined> {
@@ -1007,6 +1016,32 @@ async function reconcileContentHistory(
 		writeFileSync(progressPath, JSON.stringify({ evidence, sha }))
 	}
 }
+/** Session ledgers were re-read in full every pass for commit evidence; keyed by identity, an unchanged file is parsed once. */
+const sessionCommitCache = new Map<
+	string,
+	{ stat: { ino: number; size: number; mtimeMs: number }; commits: Record<string, unknown>[] }
+>()
+function sessionCommits(path: string): Record<string, unknown>[] {
+	let identity: { ino: number; size: number; mtimeMs: number }
+	try {
+		const current = statSync(path)
+		identity = { ino: current.ino, size: current.size, mtimeMs: current.mtimeMs }
+	} catch {
+		return []
+	}
+	const cached = sessionCommitCache.get(path)
+	if (
+		cached &&
+		cached.stat.ino === identity.ino &&
+		cached.stat.size === identity.size &&
+		cached.stat.mtimeMs === identity.mtimeMs
+	)
+		return cached.commits
+	const commits = records(path).filter((record) => record.type === "commit")
+	sessionCommitCache.set(path, { stat: identity, commits })
+	return commits
+}
+
 /** The supervisor supplies its shared deadline and lease; direct callers get one bounded pass. */
 export async function reconcileRepositoryTransitions(
 	repository: string,
@@ -1027,9 +1062,7 @@ export async function reconcileRepositoryTransitions(
 			if (sessions.has(row.sessionId)) continue
 			sessions.add(row.sessionId)
 			recordedCommits.push(
-				...records(workLedgerPath({ cwd: row.cwd, sessionManager: { getSessionId: () => row.sessionId } })).filter(
-					(record) => record.type === "commit",
-				),
+				...sessionCommits(workLedgerPath({ cwd: row.cwd, sessionManager: { getSessionId: () => row.sessionId } })),
 			)
 		}
 	}

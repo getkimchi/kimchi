@@ -15,7 +15,11 @@ import {
 	type WorkScope,
 } from "./scope.js"
 import {
+	type JournalPosition,
+	journalPositions,
+	journalsExtend,
 	object,
+	readAppendedWorkRecords,
 	readWorkRecords,
 	SHA256_HEX,
 	type WorkRecord,
@@ -428,6 +432,10 @@ export interface ContinuationProgress {
 	done?: Set<string>
 	/** Set while no receipt can link: every receipt known then, and when that history was read. */
 	quiet?: { since: number; receipts: Set<string> }
+	/** The last full-history read, reused while only billing evidence appends to the journals. */
+	history?: ContinuationHistory
+	/** Where that history stopped in each journal; appends since are read alone. */
+	positions?: Map<string, JournalPosition>
 }
 
 /** Retry accepted evidence locally; unresolved receipts are never marked permanently complete. */
@@ -464,9 +472,33 @@ export async function reconcileWorkContinuations(
 		}
 		progress.quiet = undefined
 	}
+	// Billing evidence and commit evidence appends change the journal fingerprint without
+	// affecting linking: neither record type enters the continuation index or creates a
+	// receipt. When those are the only records appended since the last full pass — and every
+	// appended line parsed as a known record — the persisted history is reused instead of
+	// re-reading every journal, and candidate retries continue against it.
+	let unparsable = false
+	const appended: WorkRecord[] | undefined =
+		progress.history && progress.positions && journalsExtend(progress.positions)
+			? readAppendedWorkRecords(agentDir, progress.positions, () => {
+					unparsable = true
+				})
+			: undefined
+	let history: ContinuationHistory
+	if (
+		!unparsable &&
+		appended &&
+		appended.every((row) => row.type === "request_cost" || row.type === "commit") &&
+		progress.history
+	) {
+		history = progress.history
+	} else {
+		history = readContinuationHistory(agentDir, checkBudget)
+		progress.history = history
+		progress.positions = journalPositions(agentDir)
+	}
 	progress.done ??= new Set()
 	const done = progress.done
-	const history = readContinuationHistory(agentDir, checkBudget)
 	const { index } = history
 	const receipts = new Set<string>()
 	const candidates = new Map<string, { row: WorkRecord; continuation: WorkContinuation }>()
