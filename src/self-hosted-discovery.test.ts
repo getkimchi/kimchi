@@ -195,17 +195,22 @@ describe("fetchSelfHostedEndpoints", () => {
 		if (result.status === "unavailable") expect(result.reason).toContain("ENOTFOUND")
 	})
 
-	it("reports invalid JSON bodies as unavailable, without throwing", async () => {
+	it("reports invalid JSON bodies as an incomplete document, without throwing", async () => {
+		// Pre-discovery installs serve the SPA for unknown paths, so
+		// /env/endpoints.json can answer 200 with an HTML payload.
 		const result = await fetchSelfHostedEndpoints("https://kimchi.example.com", {
 			fetchImpl: async () => ({
 				ok: true,
 				status: 200,
-				json: () => Promise.reject(new Error("Unexpected token < in JSON")),
+				json: () => Promise.reject(new SyntaxError("Unexpected token '<', \"<!doctype \"... is not valid JSON")),
 			}),
 		})
 
-		expect(result.status).toBe("unavailable")
-		if (result.status === "unavailable") expect(result.reason).toContain("Unexpected token")
+		expect(result).toEqual({
+			status: "unavailable",
+			cause: "incomplete",
+			reason: expect.stringContaining("did not return valid JSON"),
+		})
 	})
 })
 

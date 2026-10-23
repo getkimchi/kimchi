@@ -111,7 +111,19 @@ export async function fetchSelfHostedEndpoints(
 		if (!response.ok) {
 			return { status: "unavailable", cause: "fetch-failed", reason: `HTTP ${response.status} from ${url}` }
 		}
-		const body = await response.json()
+		let body: unknown
+		try {
+			body = await response.json()
+		} catch {
+			// Older installs serve their SPA page for unknown paths (the console
+			// route's / prefix catch-all), so /env/endpoints.json can return 200
+			// with HTML — treat that as an incomplete document, not a fetch error.
+			return {
+				status: "unavailable",
+				cause: "incomplete",
+				reason: `the document at ${SELF_HOSTED_DISCOVERY_PATH} did not return valid JSON (the install likely predates discovery)`,
+			}
+		}
 		const endpoints = parseEndpointsDocument(body)
 		if (!endpoints) {
 			return {
