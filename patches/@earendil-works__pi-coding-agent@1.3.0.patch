@@ -6,7 +6,25 @@
 #   source change and regression tests is planned against it). The /model
 #   selector and remaining runtime/UI hunks are still publication pending; no
 #   upstream issue or PR has been filed for those.
+# Tracking: interactive-mode main-loop/initial-message prompt() call sites
+#   losing user text when a concurrently-starting run flips the streaming flag
+#   mid-submit (public repro: getkimchi/kimchi#1446; upstream issue against
+#   earendil-works/pi planned — draft pending). Publication pending.
+# Removal: drop the three call-site streamingBehavior arguments when
+#   upstream gives the interactive submit a queueing default (or equivalent)
+#   and kimchi upgrades past that version.
 # Changes:
+#   - Interactive submit streamingBehavior default (mid-turn typed message
+#     lost to "Specify streamingBehavior"): the interactive-mode main loop and
+#     the two initial-message call sites now pass
+#     `{ streamingBehavior: "steer" }`, so a user submit that loses the race
+#     against an extension-triggered turn start queues as steering instead of
+#     throwing and being discarded by the main loop's catch. The editor's own
+#     mid-stream Enter branch already steered; this extends the same semantics
+#     to the async continuation of the same keypress. Steer (not followUp)
+#     keeps Enter's meaning independent of when the synchronous check lands.
+#     The runtime throw stays untouched for programmatic callers (ACP manages
+#     its own steer/followUp queues).
 #   - Root-index re-exports of getQuickJSWasmPath/setEmbeddedQuickJSWasmPath
 #     (and getThemesDir) from dist/config, so a host's compiled binary entry
 #     can embed quickjs.wasm via a Bun file import and register it without a
@@ -514,7 +532,7 @@ index 0ff35badb1ba62b35c4ba1fd778cedae670a8691..e1ffb4c2ea89e502a1dd6540783bc63c
  async function selectProjectTrustOption(cwd, ctx) {
      const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
-index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a21278f08341e 100644
+index 563d7d5ff8b514bd276e16c0243f373769ca8de2..ed0c6233112b57dc53a7c8639fc12c477465e811 100644
 --- a/dist/core/resource-loader.js
 +++ b/dist/core/resource-loader.js
 @@ -583,9 +583,16 @@ export class DefaultResourceLoader {
@@ -544,7 +562,7 @@ index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a2127
              for (const toolName of ext.tools.keys()) {
                  const existingOwner = toolOwners.get(toolName);
                  if (existingOwner && existingOwner !== ext.path) {
-@@ -990,16 +997,23 @@ export class DefaultResourceLoader {
+@@ -990,17 +997,24 @@ export class DefaultResourceLoader {
                      toolOwners.set(toolName, ext.path);
                  }
              }
@@ -573,6 +591,7 @@ index 563d7d5ff8b514bd276e16c0243f373769ca8de2..bdd6d4ae0d21e019a8ab969a4a8a2127
 +                    flagOwners.set(flagName, { owner: ext.path, def: ext.flags.get(flagName) });
                  }
              }
+         }
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 index 62b469b5dc3fcea2aa8f52218cbdfe892d9abed4..c34fb4ea381311f7e8e9cc380b24f1bf10ea255d 100644
 --- a/dist/core/session-manager.js
@@ -1555,9 +1574,36 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..fb2940b3e49af7bd2361e5c22976fc160d5873da 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..e487b90b99b5afa39b295cb50ee40e3a81ecceff 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
+@@ -893,7 +893,7 @@ export class InteractiveMode {
+         // Process initial messages
+         if (initialMessage) {
+             try {
+-                await this.session.prompt(initialMessage, { images: initialImages });
++                await this.session.prompt(initialMessage, { images: initialImages, streamingBehavior: "steer" });
+             }
+             catch (error) {
+                 const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+@@ -903,7 +903,7 @@ export class InteractiveMode {
+         if (initialMessages) {
+             for (const message of initialMessages) {
+                 try {
+-                    await this.session.prompt(message);
++                    await this.session.prompt(message, { streamingBehavior: "steer" });
+                 }
+                 catch (error) {
+                     const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+@@ -915,7 +915,7 @@ export class InteractiveMode {
+         while (true) {
+             const userInput = await this.getUserInput();
+             try {
+-                await this.session.prompt(userInput);
++                await this.session.prompt(userInput, { streamingBehavior: "steer" });
+             }
+             catch (error) {
+                 const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 @@ -1432,8 +1432,64 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;

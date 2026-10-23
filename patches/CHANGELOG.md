@@ -188,6 +188,25 @@ but are only drained by the next fresh run).
   three sites).
 - **mcpScript stays OFF** (upstream 4.0 default; Kimchi already pinned
   `scriptMode: false` and suppresses the gateway).
+- **MID-CYCLE ADDITION (2026-10-23, still on 1.3.0) — interactive submit
+  streamingBehavior default.** Three `prompt()` call sites in
+  `dist/modes/interactive/interactive-mode.js` (main loop, initial message,
+  initial-message list) now pass `{ streamingBehavior: "steer" }`. A user
+  submit that loses the race against an extension-triggered turn start
+  (monitor pattern: `sendMessage` + `triggerTurn` firing near the turn
+  boundary) previously hit the runtime's behaviorless-streaming throw and the
+  main loop's catch discarded the text — reproduced live against the built
+  binary (see the 1.3.0 patch header's Tracking entry). The editor's own
+  mid-stream Enter branch already steered; this gives the async continuation
+  of the same keypress the same meaning. Steer was chosen over followUp for
+  that consistency; the runtime throw is untouched for programmatic callers.
+  Regenerated via `pnpm patch`/`patch-commit`; watch for the curated header —
+  patch-commit strips it, re-add it from the previous patch file. The
+  regeneration also normalized a pre-existing malformed hunk: the
+  `dist/core/resource-loader.js` conflict-warning hunk had mismatched line
+  counts (a missing closing `}` in its context), which `patch-commit`'s
+  re-derivation repaired — the file's post-image hash changed accordingly
+  with no behavior change.
 
 ---
 
