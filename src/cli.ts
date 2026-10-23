@@ -175,6 +175,7 @@ import toolOutputExternalizerExtension from "./extensions/tool-output-externaliz
 import toolRenderingExtension from "./extensions/tool-rendering.js"
 import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
+import undecodableImageSanitizerExtension from "./extensions/undecodable-image-sanitizer.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
@@ -925,6 +926,7 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				undecodableImageSanitizerExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,

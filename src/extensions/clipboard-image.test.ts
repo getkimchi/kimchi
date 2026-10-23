@@ -51,6 +51,7 @@ vi.mock("../utils/image-registry.js", () => ({
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import { PNG_SIGNATURE } from "../utils/image-utils.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import clipboardImageExtension from "./clipboard-image.js"
@@ -325,7 +326,7 @@ describe("clipboard-image extension", () => {
 	})
 
 	describe("image file paths in the prompt", () => {
-		const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+		const PNG_BYTES = Buffer.from(PNG_SIGNATURE)
 		let tmpDir: string
 		let imgPath: string
 
@@ -475,6 +476,28 @@ describe("clipboard-image extension", () => {
 			expect(last).toContain("📎 1 image")
 			expect(last).not.toContain("text-only")
 			expect(ctx.ui.notify).not.toHaveBeenCalled()
+		})
+
+		it("warns when the paste used the degraded pasteboard fallback", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx({ model: VISION_MODEL })
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue({
+				bytes: Buffer.from([1, 2, 3, 4]),
+				mimeType: "image/png",
+				degraded: true,
+			})
+
+			pasteHandler?.()
+			await settle()
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Pasted a lower-quality preview — the original file could not be read",
+				"info",
+			)
+			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("📎 1 image"))
 		})
 
 		it("model_select clears the text-only segment when the model gains vision", async () => {
@@ -667,8 +690,9 @@ describe("clipboard-image extension", () => {
 			try {
 				const pngA = join(tmp, "a.png")
 				const pngB = join(tmp, "b.png")
-				writeFileSync(pngA, Buffer.from([1]))
-				writeFileSync(pngB, Buffer.from([2]))
+				const pngBytes = Buffer.from(PNG_SIGNATURE)
+				writeFileSync(pngA, pngBytes)
+				writeFileSync(pngB, pngBytes)
 
 				const { pi, ctx, custom, resolveDialog } = startGateSession()
 				const incoming: ImageContent[] = [img("drop")]
@@ -698,7 +722,7 @@ describe("clipboard-image extension", () => {
 			const tmp = mkdtempSync(join(tmpdir(), "gate-discard-"))
 			try {
 				const imagePath = join(tmp, "photo.png")
-				writeFileSync(imagePath, Buffer.from([1]))
+				writeFileSync(imagePath, Buffer.from(PNG_SIGNATURE))
 				const { pi, ctx, custom, resolveDialog } = startGateSession()
 				const originalText = `see ${imagePath}`
 				const cancelled = callInput(pi, ctx, { text: originalText, source: "interactive" })
@@ -834,7 +858,7 @@ describe("clipboard-image extension", () => {
 			const tmp = mkdtempSync(join(tmpdir(), "gate-defer-"))
 			try {
 				const pngPath = join(tmp, "a.png")
-				writeFileSync(pngPath, Buffer.from([0x89, 0x50]))
+				writeFileSync(pngPath, Buffer.from(PNG_SIGNATURE))
 
 				const harness = startGateSession()
 				const { pi, ctx, custom, resolveDialog } = harness
@@ -873,7 +897,7 @@ describe("clipboard-image extension", () => {
 			const tmp = mkdtempSync(join(tmpdir(), "gate-defer-cancel-"))
 			try {
 				const pngPath = join(tmp, "a.png")
-				writeFileSync(pngPath, Buffer.from([0x89, 0x50]))
+				writeFileSync(pngPath, Buffer.from(PNG_SIGNATURE))
 				const draft = `see ${pngPath}`
 				const harness = startGateSession()
 				const { pi, ctx, custom, resolveDialog } = harness

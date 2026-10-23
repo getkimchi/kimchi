@@ -79,10 +79,14 @@ export class LLMGatewayError {
 	}
 }
 
+// Status values may arrive JSON-quoted (the gateway sends "code":"400"), so
+// the key/value-shaped patterns tolerate surrounding quotes; (?:"|\b) keeps
+// prose like "400 status code" matching while "400" inside a longer number
+// ("4000") still fails the capture.
 const HTTP_STATUS_RES = [
-	/"code"\s*:\s*(400|429|500|502|503|504|524|529)\b/i,
-	/\bcode\s*(?:=|:)?\s*(400|429|500|502|503|504|524|529)\b/i,
-	/\b(?:http(?:\s+status)?|status(?:\s+code)?)\s*(?:=|:)?\s*(400|429|500|502|503|504|524|529)\b/i,
+	/"code"\s*:\s*"?(400|429|500|502|503|504|524|529)(?:"|\b)/i,
+	/\bcode\s*(?:=|:)?\s*"?(400|429|500|502|503|504|524|529)(?:"|\b)/i,
+	/\b(?:http(?:\s+status)?|status(?:\s+code)?)\s*(?:=|:)?\s*"?(400|429|500|502|503|504|524|529)(?:"|\b)/i,
 	/\b(400|429|500|502|503|504|524|529)\s+status\s+code\b/i,
 	/\b(400)\s+bad\s+request\b/i,
 	/\b(429)\s+(?:too many requests|rate.?limit(?:ed)?)\b/i,
@@ -130,8 +134,8 @@ const BAD_REQUEST_TEXT_RE = /bad request|BadRequest/i
 const MODEL_RETIRED_TYPE_RE = /"type"\s*:\s*"model_(?:gone|not_found)"|\bmodel_gone\b/i
 const MODEL_RETIRED_TEXT_RE = /\bmodel\b.{0,60}\bhas been (?:retired|removed)\b/i
 const GONE_STATUS_RES = [
-	/"code"\s*:\s*410\b/i,
-	/\b(?:http(?:\s+status)?|status(?:\s+code)?|code)\s*(?:=|:)?\s*410\b/i,
+	/"code"\s*:\s*"?410(?:"|\b)/i,
+	/\b(?:http(?:\s+status)?|status(?:\s+code)?|code)\s*(?:=|:)?\s*"?410(?:"|\b)/i,
 	/\b410\s+(?:gone|status\s+code)\b/i,
 ]
 
