@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeSimpleXlsx } from "./fixtures/builders.js"
+import { makeCustomXlsx, makeOfficeShapedXlsx, makeSimpleXlsx } from "./fixtures/builders.js"
 import { type CliIo, runXlsxCli } from "./xlsx-cli.js"
 
 function testIo(files: Record<string, Uint8Array> = {}) {
@@ -45,6 +45,22 @@ describe("runXlsxCli read", () => {
 		expect(await runXlsxCli(["read", "a.csv"], io)).toBe(0)
 		expect(out[0]).toContain('sheet "(csv)"')
 		expect(out[0]).toContain("| 1 | x | y |")
+	})
+
+	it("reports malformed XML as a typed corrupt error (exit 2, no stack trace)", async () => {
+		const bad = await makeCustomXlsx([
+			{ name: "S", inner: `<sheetData><row r="1"><c r="A1"><v>1</v></row></sheetData>` },
+		])
+		const { io, err } = testIo({ "bad.xlsx": bad })
+		expect(await runXlsxCli(["read", "bad.xlsx"], io)).toBe(2)
+		expect(err[0]).toContain("error [corrupt]:")
+	})
+
+	it("reads an Excel 2010+ shaped workbook (x14ac namespaces) end to end", async () => {
+		const { io, out, err } = testIo({ "o.xlsx": await makeOfficeShapedXlsx() })
+		expect(await runXlsxCli(["read", "o.xlsx"], io)).toBe(0)
+		expect(err[0] ?? "").not.toContain("Error")
+		expect(out[0]).toContain("2023-01-01")
 	})
 
 	it("rejects unknown flags and missing files with the standard shape", async () => {

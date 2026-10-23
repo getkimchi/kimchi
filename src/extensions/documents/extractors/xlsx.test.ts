@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomXlsx, makeSimplePptx, makeSimpleXlsx } from "../fixtures/builders.js"
+import { makeCustomXlsx, makeOfficeShapedXlsx, makeSimplePptx, makeSimpleXlsx } from "../fixtures/builders.js"
 import { extractCsv, extractXlsx, isDateFormatCode, parseCsv, serialToIso } from "./xlsx.js"
 
 describe("extractXlsx", () => {
@@ -20,6 +20,36 @@ describe("extractXlsx", () => {
 		expect(lines).toContain("| 1 | padding cell | 2.5 | 2024-01-01 | =A1&B1 → 0 |")
 		expect(lines).toContain("| 2 | inline note | TRUE | 2025-12-31 | =SUM(B1:B2) → 1.5 |")
 		expect(lines).toContain("| 3 | #DIV/0! | -7 |  |  |")
+	})
+
+	it("reads an Excel 2010+ shaped workbook (x14ac/mc/xr namespaces on rows)", async () => {
+		const doc = await extractXlsx(await makeOfficeShapedXlsx())
+		expect(doc.sheets.map((s) => s.name)).toEqual(["Data"])
+		const w = doc.window({ sheet: 1, startRow: 1, endRow: 2 })
+		expect(w.markdown).toContain("| 1 | padding cell | 2023-01-01 | 0 |")
+		expect(w.markdown).toContain("| 2 | 2.5 | -7 |  |")
+	})
+
+	it("reads formulas from an Excel 2010+ shaped workbook with --show-formulas semantics", async () => {
+		const doc = await extractXlsx(await makeOfficeShapedXlsx())
+		const w = doc.window({ sheet: "Data", startRow: 1, endRow: 1, showFormulas: true })
+		expect(w.markdown).toContain("=A1&B1 → 0")
+	})
+
+	it("throws a typed corrupt error on a malformed row instead of a raw stack", async () => {
+		const bytes = await makeCustomXlsx([
+			{
+				name: "S",
+				inner: `<sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><zz:c r="A2"><v>2</v></zz:c></row></sheetData>`,
+			},
+		])
+		try {
+			const doc = await extractXlsx(bytes)
+			doc.window({ sheet: 1, startRow: 1, endRow: 2 })
+			expect.unreachable()
+		} catch (err) {
+			expect((err as { code?: string }).code).toBe("corrupt")
+		}
 	})
 
 	it("shows cached values only by default", async () => {

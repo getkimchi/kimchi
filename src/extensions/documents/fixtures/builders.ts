@@ -393,8 +393,12 @@ export function makeSimpleXlsx(): Promise<Uint8Array> {
 	])
 }
 
-/** Custom XLSX from sheet fixtures; styles carry numFmt 164 "yyyy-mm-dd". */
-export function makeCustomXlsx(sheets: XlsxSheetFixture[], opts: { date1904?: boolean } = {}): Promise<Uint8Array> {
+/** Custom XLSX from sheet fixtures; styles carry numFmt 164 "yyyy-mm-dd".
+ *  `sheetRootAttrs` overrides every `<worksheet>` start tag's attributes. */
+export function makeCustomXlsx(
+	sheets: XlsxSheetFixture[],
+	opts: { date1904?: boolean; sheetRootAttrs?: string } = {},
+): Promise<Uint8Array> {
 	const zip = new JSZip()
 	const M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 	zip.file(
@@ -454,8 +458,39 @@ ${sheets.map((s, i) => `    <sheet name="${s.name}" sheetId="${i + 1}"${s.state 
 		zip.file(
 			`xl/worksheets/sheet${i + 1}.xml`,
 			`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${sh.inner}</worksheet>`,
+<worksheet ${opts.sheetRootAttrs ?? `xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`}>${sh.inner}</worksheet>`,
 		)
 	}
 	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+}
+
+/**
+ * Root attribute set Excel 2010+ writes on `<worksheet>`: the default and
+ * `r:` namespaces plus `mc:`/`x14ac:`/`xr:`/`xr6:`/`xr10:`/`xr2:`/`xr3:`,
+ * `mc:Ignorable` and an `xr:uid`. Rows carry `spans` and `x14ac:dyDescent`.
+ * Any parser that hardcodes its own namespace list must work on something
+ * shaped like this.
+ */
+export const OFFICE_XLSX_SHEET_ROOT_ATTRS = `xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac" xmlns:xr="http://schemas.microsoft.com/office/spreadsheetml/2014/revision" xmlns:xr6="http://schemas.microsoft.com/office/spreadsheetml/2016/revision6" xmlns:xr10="http://schemas.microsoft.com/office/spreadsheetml/2016/revision10" xmlns:xr2="http://schemas.microsoft.com/office/spreadsheetml/2015/revision2" xmlns:xr3="http://schemas.microsoft.com/office/spreadsheetml/2016/revision3" mc:Ignorable="x14ac xr xr6 xr10" xr:uid="{00000000-0001-0000-0300-000000000000}"`
+
+/**
+ * A workbook shaped like Excel 2010+ writes it. Ground truth (sheet "Data"):
+ * A1 = shared string "padding cell", B1 = date serial 44927 → "2023-01-01",
+ * C1 = formula `A1&amp;B1`, A2 = 2.5, B2 = -7.
+ */
+export function makeOfficeShapedXlsx(): Promise<Uint8Array> {
+	return makeCustomXlsx(
+		[
+			{
+				name: "Data",
+				inner: `
+<dimension ref="A1:C2"/>
+<sheetData>
+<row r="1" spans="1:3" x14ac:dyDescent="0.25"><c r="A1" t="s"><v>0</v></c><c r="B1" s="1"><v>44927</v></c><c r="C1"><f>A1&amp;B1</f><v>0</v></c></row>
+<row r="2" spans="1:2" x14ac:dyDescent="0.25"><c r="A2"><v>2.5</v></c><c r="B2"><v>-7</v></c></row>
+</sheetData>`,
+			},
+		],
+		{ sheetRootAttrs: OFFICE_XLSX_SHEET_ROOT_ATTRS },
+	)
 }

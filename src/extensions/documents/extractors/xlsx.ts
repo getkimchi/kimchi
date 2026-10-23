@@ -18,8 +18,19 @@ import type { Element as XmlElement } from "@xmldom/xmldom"
 import { MAX_OUTPUT_CHARS } from "../limits.js"
 import { DocumentError } from "../model.js"
 import { type OoxmlPackage, openOoxml } from "../ooxml/package.js"
-import { byTag, parseXml } from "../ooxml/xml.js"
+import { byTag, fragmentNamespaces, parseFragment, parseXml } from "../ooxml/xml.js"
 import { columnLetter, parseCellRef } from "../xlsx-refs.js"
+
+/**
+ * Namespace fallback for row fragments when the worksheet root doesn't
+ * declare them itself. Excel 2010+ declares these plus `mc:`, `x14ac:`,
+ * `xr:` on `<worksheet>`; a prefix that IS declared on the root wins, so
+ * real files parse with their own declarations.
+ */
+const ROW_FRAGMENT_REQUIRED = [
+	{ prefix: "", uri: "http://schemas.openxmlformats.org/spreadsheetml/2006/main" },
+	{ prefix: "r", uri: "http://schemas.openxmlformats.org/officeDocument/2006/relationships" },
+]
 
 /** Raw cap for parts parsed fully (worksheet + sharedStrings are scanned). */
 const SIDE_PART_MAX_BYTES = 20 * 1024 * 1024
@@ -252,18 +263,16 @@ interface ParsedCell {
 	display: string
 }
 
-const WRAP_OPEN =
-	'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-
 function parseRow(
 	sheetXml: string,
+	nsDecls: string,
 	span: { start: number; end: number },
 	sst: string[],
 	styles: Styles,
 	epoch1904: boolean,
 	showFormulas: boolean,
 ): ParsedCell[] {
-	const dom = parseXml(`${WRAP_OPEN}${sheetXml.slice(span.start, span.end)}</worksheet>`)
+	const dom = parseFragment(sheetXml.slice(span.start, span.end), "worksheet", nsDecls)
 	const row = byTag(dom, "row")[0]
 	if (!row) return []
 	const cells: ParsedCell[] = []
@@ -337,6 +346,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 	// Scan each sheet's row spans once, drop raw bytes afterwards.
 	const spansBySheet: Array<Array<{ row: number; start: number; end: number }>> = []
 	const sheetXmlBySheet: string[] = []
+	const nsDeclsBySheet: string[] = []
 	const mergedBySheet: string[][] = []
 	const infos: SheetInfo[] = []
 	for (const sh of wbSheets) {
@@ -345,6 +355,9 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 		const xml = new TextDecoder().decode(bytes)
 		pkg.remove(sh.part)
 		sheetXmlBySheet.push(xml)
+		// Namespace declarations every row fragment parses under, derived from
+		// the worksheet root (Excel's `x14ac:`/`mc:`/`xr:` set included).
+		nsDeclsBySheet.push(fragmentNamespaces(xml, ROW_FRAGMENT_REQUIRED))
 		const spans = scanRowSpans(xml)
 		spansBySheet.push(spans)
 		mergedBySheet.push([...xml.matchAll(/<mergeCell\s+ref="([A-Za-z0-9:]+)"/g)].map((m) => m[1]).sort())
@@ -402,7 +415,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 			const allCells: ParsedCell[] = []
 			let maxCol = 0
 			for (const span of inWindow) {
-				const cells = parseRow(sheetXml, span, sst, styles, epoch1904, showFormulas)
+				const cells = parseRow(sheetXml, nsDeclsBySheet[index], span, sst, styles, epoch1904, showFormulas)
 				for (const c of cells) maxCol = Math.max(maxCol, c.column)
 				allCells.push(...cells)
 			}
