@@ -44,6 +44,7 @@ interface ModelLike {
 interface SessionLike {
 	modelRuntime: ModelRuntime
 	setModel(model: ModelLike, options?: { persist?: boolean }): Promise<void>
+	model?: ModelLike | undefined
 }
 
 /** Wraps `session.modelRuntime` (a `ModelRuntime`) in a `ModelRegistry` so the login
@@ -197,6 +198,9 @@ async function startKimchiBrowserLogin(im: InteractiveMode, region: RegionId): P
 			modelRegistry: asLoginRegistry(runtime),
 			// The user picked this model during login, so save it as their default.
 			setModel: (model) => session.setModel(model, { persist: true }),
+			// Preserve the active Kimchi provider model across login instead of
+			// forcing a switch — login is a credential refresh, not a model change.
+			getCurrentModel: () => session.model,
 			showStatus,
 			showError,
 			addFeedback: (message) => addLoginFeedback(im, message),
@@ -319,6 +323,7 @@ async function runKimchiApiKeyLogin(im: InteractiveMode, region: RegionId): Prom
 		{
 			modelRegistry: registry,
 			setModel: (model) => session.setModel(model, { persist: true }),
+			getCurrentModel: () => session.model,
 			showStatus,
 			showError,
 			addFeedback: (message) => addLoginFeedback(im, message),
@@ -482,6 +487,7 @@ async function runKimchiSsoLogin(im: InteractiveMode, region: RegionId): Promise
 	const ok = await completeKimchiSsoLogin({
 		modelRegistry: asLoginRegistry(runtime),
 		setModel: (model) => session.setModel(model, { persist: true }),
+		getCurrentModel: () => session.model,
 		showStatus: modeLike.showStatus?.bind(modeLike),
 		showError,
 		addFeedback: (message) => addLoginFeedback(im, message),

@@ -319,6 +319,10 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 export interface KimchiBrowserLoginHost {
 	modelRegistry: ModelRegistryLike
 	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown
+	/** Currently active model, used to decide whether login should keep it
+	 *  (when it's already a Kimchi provider) or pick a fresh one. Returning
+	 *  `undefined` means "nothing active" — login will then set the default. */
+	getCurrentModel?: () => { provider: string; id?: string } | undefined
 	showStatus?: (message: string) => void
 	showError?: (message: string) => void
 	addFeedback?: (message: string) => void
@@ -409,9 +413,23 @@ async function configureKimchiToken(
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		// If a Kimchi provider model is already active, keep it: login is a
+		// credential/registry refresh, not a model switch. The user picked the
+		// model for a reason; clobbering it on every login is hostile.
+		const priorModel = host.getCurrentModel?.()
+		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
+		const selectedModel = priorKimchiModel
+			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
+			: (providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0])
+		if (!priorKimchiModel) {
+			await host.setModel?.(selectedModel)
+		}
+		// Only announce the model when we actually made a fresh, non-default
+		// choice. The implicit default and a preserved prior Kimchi model both
+		// carry no information the user doesn't already have.
+		const madeFreshChoice = !priorKimchiModel && selectedModel.id !== KIMCHI_DEFAULT_MODEL_ID
+		const announceModel = madeFreshChoice ? selectedModel.id : undefined
+		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
 		return true
@@ -503,9 +521,22 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		// If a Kimchi provider model is already active, keep it: login is a
+		// credential/registry refresh, not a model switch.
+		const priorModel = host.getCurrentModel?.()
+		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
+		const selectedModel = priorKimchiModel
+			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
+			: (providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0])
+		if (!priorKimchiModel) {
+			await host.setModel?.(selectedModel)
+		}
+		// Only announce the model when we actually made a fresh, non-default
+		// choice. The implicit default and a preserved prior Kimchi model both
+		// carry no information the user doesn't already have.
+		const madeFreshChoice = !priorKimchiModel && selectedModel.id !== KIMCHI_DEFAULT_MODEL_ID
+		const announceModel = madeFreshChoice ? selectedModel.id : undefined
+		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
 		return true
 	}
 
@@ -652,6 +683,7 @@ export async function performKimchiBrowserLoginWithDialog(
 				{
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
@@ -735,6 +767,7 @@ export async function performKimchiSsoLoginWithExtensionUI(
 				const ok = await completeKimchiSsoLogin({
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
