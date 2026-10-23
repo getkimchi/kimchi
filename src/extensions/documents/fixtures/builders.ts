@@ -394,10 +394,29 @@ export function makeSimpleXlsx(): Promise<Uint8Array> {
 }
 
 /** Custom XLSX from sheet fixtures; styles carry numFmt 164 "yyyy-mm-dd".
- *  `sheetRootAttrs` overrides every `<worksheet>` start tag's attributes. */
+ *  Extra knobs append workbook/worksheet XML and package parts so editor
+ *  tests can cover defined names, charts, pivot caches, conditional
+ *  formatting and validations. */
 export function makeCustomXlsx(
 	sheets: XlsxSheetFixture[],
-	opts: { date1904?: boolean; sheetRootAttrs?: string } = {},
+	opts: {
+		date1904?: boolean
+		sheetRootAttrs?: string
+		/** XML appended to every sheet, after its inner content. */
+		sheetAppend?: string
+		/** XML placed after `</sheets>` (e.g. `<definedNames>…`). */
+		workbookAfterSheets?: string
+		/** XML placed right after the `<workbook …>` start tag (e.g. bookViews). */
+		workbookBeforeSheets?: string
+		/** Extra package parts (charts, pivot caches), keyed by part name. */
+		extraParts?: Record<string, string>
+		/** Extra rels lines appended to xl/_rels/workbook.xml.rels. */
+		extraWorkbookRels?: string
+		/** Extra Override entries for [Content_Types].xml. */
+		extraContentTypes?: string
+		/** Write sheet rel targets as absolute `/xl/…` (a shape MS Office also writes). */
+		absoluteSheetTargets?: boolean
+	} = {},
 ): Promise<Uint8Array> {
 	const zip = new JSZip()
 	const M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -411,6 +430,7 @@ export function makeCustomXlsx(
   <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 ${sheets.map((_, i) => `  <Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("\n")}
+${opts.extraContentTypes ?? ""}
 </Types>`,
 	)
 	zip.file(
@@ -424,19 +444,21 @@ ${sheets.map((_, i) => `  <Override PartName="/xl/worksheets/sheet${i + 1}.xml" 
 		"xl/_rels/workbook.xml.rels",
 		`<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-${sheets.map((_, i) => `  <Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("\n")}
+${sheets.map((_, i) => `  <Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${opts.absoluteSheetTargets ? "/xl/worksheets" : "worksheets"}/sheet${i + 1}.xml"/>`).join("\n")}
   <Relationship Id="rIdSS" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
   <Relationship Id="rIdST" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+${opts.extraWorkbookRels ?? ""}
 </Relationships>`,
 	)
 	zip.file(
 		"xl/workbook.xml",
 		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  ${opts.date1904 ? '<workbookPr date1904="1"/>' : ""}
+  ${opts.workbookBeforeSheets ?? ""}${opts.date1904 ? '<workbookPr date1904="1"/>' : ""}
   <sheets>
 ${sheets.map((s, i) => `    <sheet name="${s.name}" sheetId="${i + 1}"${s.state ? ` state="${s.state}"` : ""} r:id="rId${i + 1}"/>`).join("\n")}
   </sheets>
+  ${opts.workbookAfterSheets ?? ""}
 </workbook>`,
 	)
 	zip.file(
@@ -458,9 +480,10 @@ ${sheets.map((s, i) => `    <sheet name="${s.name}" sheetId="${i + 1}"${s.state 
 		zip.file(
 			`xl/worksheets/sheet${i + 1}.xml`,
 			`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet ${opts.sheetRootAttrs ?? `xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`}>${sh.inner}</worksheet>`,
+<worksheet ${opts.sheetRootAttrs ?? `xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"`}>${sh.inner}${opts.sheetAppend ?? ""}</worksheet>`,
 		)
 	}
+	for (const [name, content] of Object.entries(opts.extraParts ?? {})) zip.file(name, content)
 	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 }
 

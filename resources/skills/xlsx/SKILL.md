@@ -82,7 +82,7 @@ One sheet as a Markdown table: a leading row-number column, column letters as th
 - `set-cells` writes values/formulas (per-cell `"B4"` keys; ref-qualified `Sheet!B4` allowed), `null` clears. Changed number formats are refused — rebuild with `create` for style changes.
 - `clear-range` refuses ranges intersecting merged cells and names them.
 - `fill-formula` expands `{col}`/`{row}` over the range.
-- `add-sheet` inserts after a sheet (title or 1-based index, default: at the end); `rename-sheet` updates every formula reference in the workbook; `delete-sheet` is refused when other sheets' formulas reference it (they are named).
+- `add-sheet` inserts after a sheet (title or 1-based index, default: at the end); `rename-sheet` updates every reference to the sheet — cell formulas, workbook defined names, chart series refs, pivot sources, conditional-format and data-validation formulas; `delete-sheet` is refused when any of those reference the sheet (the referring locations are named). Cell text is never treated as a reference.
 - The summary lists per-op results, lint warnings, the recalculation note when formulas were written, and `macros preserved` for .xlsm — macros are never touched. The edited package is schema-validated before save; if an op would corrupt the package, the input stays unchanged.
 
 ## recalc `<in.xlsx> --out <out.xlsx>`

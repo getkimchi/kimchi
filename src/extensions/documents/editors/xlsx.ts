@@ -13,7 +13,16 @@ import { scanRowSpans } from "../extractors/xlsx.js"
 import { applyXlfnPrefixes, lintFormula } from "../formula-lint.js"
 import { DocumentError } from "../model.js"
 import type { OoxmlPackage } from "../ooxml/package.js"
-import { columnIndex, columnLetter, parseCellRef, parseRangeRef, splitSheetRef } from "../xlsx-refs.js"
+import {
+	columnIndex,
+	columnLetter,
+	formulaReferencesSheet,
+	parseCellRef,
+	parseRangeRef,
+	renameSheetInFormula,
+	splitSheetRef,
+	validateSheetName,
+} from "../xlsx-refs.js"
 
 export type SheetSelector = number | string
 
@@ -51,6 +60,8 @@ interface SheetLoc {
 	index: number
 	name: string
 	part: string
+	relId: string
+	sheetId: number
 }
 
 function esc(s: string): string {
@@ -75,8 +86,9 @@ export function listSheetParts(pkg: OoxmlPackage): SheetLoc[] {
 	for (const m of wb.matchAll(/<sheet\b([^>]*)\/>/g)) {
 		const name = /\bname="([^"]*)"/.exec(m[1])?.[1]
 		const relId = /\br:id="([^"]+)"/.exec(m[1])?.[1]
+		const sheetId = Number(/\bsheetId="(\d+)"/.exec(m[1])?.[1] ?? out.length + 1)
 		const part = relId ? targets[relId] : undefined
-		if (name && part) out.push({ index: out.length, name: unescName(name), part })
+		if (name && part) out.push({ index: out.length, name: unescName(name), part, relId: relId ?? "", sheetId })
 	}
 	return out
 }
@@ -128,6 +140,136 @@ function resolveSheet(pkg: OoxmlPackage, selector: SheetSelector | undefined): S
 		)
 	}
 	return sheet
+}
+
+// --- formula-text surgery (sheet structure ops) ----------------------------------------
+
+/** Worksheet elements whose TEXT is a formula (cells, conditional formats, validations). */
+const FORMULA_ELEMENT_NAMES = ["f", "formula", "formula1", "formula2"] as const
+
+/**
+ * Rewrite the text of every `<name>…</name>` element via `fn` (matching any
+ * namespace prefix, skipping self-closed elements). Text is XML-unescaped
+ * before `fn` and re-escaped after. Returns the new XML and the number of
+ * elements whose text actually changed.
+ */
+function rewriteFormulaText(
+	xml: string,
+	elementNames: readonly string[],
+	fn: (text: string) => string,
+): { xml: string; changed: number } {
+	let changed = 0
+	let out = xml
+	for (const name of elementNames) {
+		const tag = `(?:[A-Za-z0-9]+:)?${name}`
+		const re = new RegExp(`(<(${tag})\\b[^>]*>)([^<]*)(</\\2>)`, "g")
+		out = out.replace(re, (m, open: string, _tag: string, text: string, close: string) => {
+			const before = unescName(text)
+			const after = fn(before)
+			if (after === before) return m
+			changed++
+			return `${open}${esc(after)}${close}`
+		})
+	}
+	return { xml: out, changed }
+}
+
+/** Chart parts and pivot cache definitions that may reference sheet names. */
+const CHART_PART = /^xl\/charts\/[^/]+\.xml$/
+const PIVOT_DEF_PART = /^xl\/pivotCache\/pivotCacheDefinition[^/]*\.xml$/
+
+/**
+ * Where `sheetName` is referenced, outside the sheet's own parts: formula
+ * text on other sheets, workbook defined names, chart `c:f` series refs, and
+ * pivotCache `worksheetSource@sheet`. `excludeName` labels each hit.
+ */
+function findSheetReferences(pkg: OoxmlPackage, sheets: SheetLoc[], sheetIndex: number): string[] {
+	const name = sheets[sheetIndex].name
+	const refs: string[] = []
+	let hit = false
+	const probe = (text: string) => {
+		if (formulaReferencesSheet(text, name)) hit = true
+		return text
+	}
+	for (const loc of sheets) {
+		if (loc.index === sheetIndex) continue
+		const bytes = pkg.getBytes(loc.part)
+		if (!bytes) continue
+		hit = false
+		rewriteFormulaText(new TextDecoder().decode(bytes), FORMULA_ELEMENT_NAMES, probe)
+		if (hit) refs.push(`sheet ${loc.name}`)
+	}
+	const wbBytes = pkg.getBytes("xl/workbook.xml")
+	if (wbBytes) {
+		const wb = new TextDecoder().decode(wbBytes)
+		wb.replace(/<definedName\b([^>]*)>([^<]*)<\/definedName>/g, (m, attrs, text) => {
+			const localSheetId = /\blocalSheetId="(\d+)"/.exec(attrs)?.[1]
+			// Names scoped to the deleted/renamed sheet itself are handled separately.
+			if (localSheetId !== undefined && Number(localSheetId) === sheetIndex) return m
+			if (formulaReferencesSheet(unescName(text), name)) {
+				const label = /\bname="([^"]*)"/.exec(attrs)?.[1]
+				refs.push(`defined name ${unescName(label ?? "")}`)
+			}
+			return m
+		})
+	}
+	for (const part of pkg.names()) {
+		if (CHART_PART.test(part)) {
+			const bytes = pkg.getBytes(part)
+			if (!bytes) continue
+			hit = false
+			rewriteFormulaText(new TextDecoder().decode(bytes), ["f"], probe)
+			if (hit) refs.push(`chart ${part}`)
+		}
+		if (PIVOT_DEF_PART.test(part)) {
+			const xml = new TextDecoder().decode(pkg.getBytes(part) ?? new Uint8Array())
+			for (const m of xml.matchAll(/\bworksheetSource\b[^>]*?\bsheet="([^"]*)"/g)) {
+				if (unescName(m[1]).toLowerCase() === name.toLowerCase()) refs.push(`pivot source ${part}`)
+			}
+		}
+	}
+	return refs
+}
+
+/**
+ * After deleting sheet `deletedIndex` (0-based): drop defined names scoped
+ * to it, renumber `localSheetId`, and decrement/clamp `activeTab`/`firstSheet`.
+ */
+function renumberRefsAfterDelete(wb: string, deletedIndex: number, newSheetCount: number): string {
+	let out = wb.replace(/<definedName\b([^>]*)>([^<]*)<\/definedName>/g, (m, attrs: string) => {
+		const lm = /\blocalSheetId="(\d+)"/.exec(attrs)
+		if (!lm) return m
+		const idx = Number(lm[1])
+		if (idx === deletedIndex) return ""
+		if (idx > deletedIndex) return m.replace(`localSheetId="${idx}"`, `localSheetId="${idx - 1}"`)
+		return m
+	})
+	for (const attr of ["activeTab", "firstSheet"]) {
+		out = out.replace(new RegExp(`\\b${attr}="(\\d+)"`), (_m, v: string) => {
+			let n = Number(v)
+			if (n > deletedIndex) n -= 1
+			if (n > newSheetCount - 1) n = newSheetCount - 1
+			return `${attr}="${n}"`
+		})
+	}
+	return out
+}
+
+/** After inserting a sheet at `fromIndex` (0-based): shift refs above it up. */
+function shiftRefsAfterInsert(wb: string, fromIndex: number): string {
+	let out = wb.replace(/<definedName\b([^>]*)>([^<]*)<\/definedName>/g, (m, attrs: string) => {
+		const lm = /\blocalSheetId="(\d+)"/.exec(attrs)
+		if (!lm) return m
+		const idx = Number(lm[1])
+		if (idx >= fromIndex) return m.replace(`localSheetId="${idx}"`, `localSheetId="${idx + 1}"`)
+		return m
+	})
+	for (const attr of ["activeTab", "firstSheet"]) {
+		out = out.replace(new RegExp(`\\b${attr}="(\\d+)"`), (m, v: string) =>
+			Number(v) >= fromIndex ? `${attr}="${Number(v) + 1}"` : m,
+		)
+	}
+	return out
 }
 
 // --- cell-level string surgery ---------------------------------------------------------
@@ -350,6 +492,70 @@ function removeCalcChain(pkg: OoxmlPackage): void {
 	if (pkg.hasXml("xl/calcChain.xml")) pkg.remove("xl/calcChain.xml")
 }
 
+/**
+ * Rename `oldName` → `newName` in every formula-bearing location:
+ * workbook `<sheet name>`, worksheet formula text, workbook defined names,
+ * chart `c:f` series refs and pivotCache `worksheetSource@sheet`. Returns
+ * per-location change counts for the summary.
+ */
+function applySheetRename(pkg: OoxmlPackage, sheets: SheetLoc[], index: number, newName: string): string[] {
+	const oldName = sheets[index].name
+	const counts: string[] = []
+	const rename = (text: string) => renameSheetInFormula(text, oldName, newName)
+
+	let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
+	wb = wb.replace(/<sheet\b([^>]*)\/>/g, (m, attrs: string) => {
+		const nm = /\bname="([^"]*)"/.exec(attrs)?.[1]
+		const rid = /\br:id="([^"]+)"/.exec(attrs)?.[1]
+		if (nm !== undefined && unescName(nm) === oldName && rid === sheets[index].relId) {
+			return m.replace(`name="${nm}"`, `name="${esc(newName)}"`)
+		}
+		return m
+	})
+	const dn = rewriteFormulaText(wb, ["definedName"], rename)
+	wb = dn.xml
+	pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
+	if (dn.changed > 0) counts.push(`defined names: ${dn.changed}`)
+
+	for (const loc of sheets) {
+		const bytes = pkg.getBytes(loc.part)
+		if (!bytes) continue
+		const r = rewriteFormulaText(new TextDecoder().decode(bytes), FORMULA_ELEMENT_NAMES, rename)
+		if (r.changed > 0) {
+			pkg.putBytes(loc.part, new TextEncoder().encode(r.xml))
+			counts.push(`sheet ${loc.name}: ${r.changed}`)
+		}
+	}
+	for (const part of pkg.names()) {
+		if (CHART_PART.test(part)) {
+			const bytes = pkg.getBytes(part)
+			if (!bytes) continue
+			const r = rewriteFormulaText(new TextDecoder().decode(bytes), ["f"], rename)
+			if (r.changed > 0) {
+				pkg.putBytes(part, new TextEncoder().encode(r.xml))
+				counts.push(`chart ${part}: ${r.changed}`)
+			}
+		}
+		if (PIVOT_DEF_PART.test(part)) {
+			const bytes = pkg.getBytes(part)
+			if (!bytes) continue
+			let changed = 0
+			const xml = new TextDecoder()
+				.decode(bytes)
+				.replace(/(\bworksheetSource\b[^>]*?\bsheet=")([^"]*)(")/g, (m, pre: string, val: string, post: string) => {
+					if (unescName(val).toLowerCase() !== oldName.toLowerCase()) return m
+					changed++
+					return `${pre}${esc(newName)}${post}`
+				})
+			if (changed > 0) {
+				pkg.putBytes(part, new TextEncoder().encode(xml))
+				counts.push(`pivot source ${part}: ${changed}`)
+			}
+		}
+	}
+	return counts
+}
+
 // --- ops --------------------------------------------------------------------------------
 
 export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
@@ -560,11 +766,10 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const newName = op.name?.trim()
 				if (!newName)
 					throw new DocumentError("corrupt", `op ${opIndex + 1}: rename-sheet needs a non-empty "name"`, "xlsx")
-				if (newName.length > 31 || /[[\]:*?/\\]/.test(newName)) {
-					throw new DocumentError("corrupt", `op ${opIndex + 1}: bad sheet name ${JSON.stringify(op.name)}`, "xlsx")
-				}
+				const nameError = validateSheetName(newName)
+				if (nameError) throw new DocumentError("corrupt", `op ${opIndex + 1}: ${nameError}`, "xlsx")
 				const sheets = listSheetParts(pkg)
-				if (sheets.some((s) => s.name.toLowerCase() === newName.toLowerCase())) {
+				if (sheets.some((s) => s.index !== sheet.index && s.name.toLowerCase() === newName.toLowerCase())) {
 					throw new DocumentError(
 						"corrupt",
 						`op ${opIndex + 1}: a sheet named ${JSON.stringify(newName)} already exists`,
@@ -572,36 +777,10 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 					)
 				}
 				const oldName = sheet.name
-				let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
-				wb = wb.replace(/(<sheet\b[^>]*\bname=")([^"]*)(")/g, (m, pre, name, post) =>
-					unescName(name) === oldName ? `${pre}${esc(newName)}${post}` : m,
-				)
-				pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
-				// Rewrite formula references in every sheet part ('Old'! / Old!).
-				const quotedOld = `'${oldName.replace(/'/g, "''")}'`
-				const quotedNew = `'${newName.replace(/'/g, "''")}'`
-				const bareOldEscaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-				for (const loc of listSheetParts(pkg)) {
-					const bytes = pkg.getBytes(loc.part)
-					if (!bytes) continue
-					let partXml = new TextDecoder().decode(bytes)
-					let changed = false
-					if (partXml.includes(`${quotedOld}!`)) {
-						partXml = partXml.split(`${quotedOld}!`).join(`${quotedNew}!`)
-						changed = true
-					}
-					const bare = new RegExp(`(?<![A-Za-z0-9_'!.])${bareOldEscaped}!`, "g")
-					const next = partXml.replace(bare, () => {
-						changed = true
-						return `${newName}!`
-					})
-					if (changed) {
-						pkg.putBytes(loc.part, new TextEncoder().encode(next))
-						formulasTouched = true
-					}
-				}
+				const counts = applySheetRename(pkg, sheets, sheet.index, newName)
+				if (counts.length > 0) formulasTouched = true
 				result.applied.push(
-					`op ${opIndex + 1} rename-sheet: ${JSON.stringify(oldName)} -> ${JSON.stringify(newName)} (formula references updated)`,
+					`op ${opIndex + 1} rename-sheet: ${JSON.stringify(oldName)} -> ${JSON.stringify(newName)} (references updated: ${counts.join(", ") || "none"})`,
 				)
 				break
 			}
@@ -609,38 +788,37 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 				const sheet = resolveSheet(pkg, op.sheet)
 				const sheets = listSheetParts(pkg)
 				if (sheets.length <= 1) throw new DocumentError("corrupt", "cannot delete the only sheet", "xlsx")
-				// Refuse when any remaining formula references it — the formula would go #REF!.
-				const quotedOld = `'${sheet.name.replace(/'/g, "''")}'`
-				const bareOldEscaped = sheet.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-				const referring: string[] = []
-				for (const loc of sheets) {
-					if (loc.part === sheet.part) continue
-					const xml = new TextDecoder().decode(pkg.getBytes(loc.part) ?? new Uint8Array())
-					if (xml.includes(`${quotedOld}!`) || new RegExp(`(?<![A-Za-z0-9_'!.])${bareOldEscaped}!`).test(xml)) {
-						referring.push(loc.name)
-					}
-				}
+				// Refuse when anything else references it — the formulas would go #REF!.
+				const referring = findSheetReferences(pkg, sheets, sheet.index)
 				if (referring.length > 0) {
 					throw new DocumentError(
 						"corrupt",
-						`op ${opIndex + 1}: sheet ${JSON.stringify(sheet.name)} is referenced by formulas in ${referring.map((s) => JSON.stringify(s)).join(", ")} — clear those refs first`,
+						`op ${opIndex + 1}: sheet ${JSON.stringify(sheet.name)} is referenced by ${referring.map((s) => JSON.stringify(s)).join(", ")} — clear those refs first`,
 						"xlsx",
 					)
 				}
-				// workbook.xml: drop the <sheet> tag
+				// workbook.xml: drop the <sheet> tag (by r:id) and renumber remaining indices.
 				let wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml") ?? new Uint8Array())
-				wb = wb.replace(/<sheet\b[^>]*\/>/g, (m) => (m.includes(`name="${esc(sheet.name)}"`) ? "" : m))
+				wb = wb.replace(/<sheet\b([^>]*)\/>/g, (m, attrs: string) =>
+					/\br:id="([^"]+)"/.exec(attrs)?.[1] === sheet.relId ? "" : m,
+				)
+				wb = renumberRefsAfterDelete(wb, sheet.index, sheets.length - 1)
 				pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
-				// rels: drop the relationship; content types: drop the override; then remove the part.
+				// rels: drop the relationship (by Id); content types: drop the override; then remove the parts.
 				let rels = new TextDecoder().decode(pkg.getBytes("xl/_rels/workbook.xml.rels") ?? new Uint8Array())
-				rels = rels.replace(/<Relationship\b[^>]*\/>/g, (m) =>
-					m.includes(`Target="${sheet.part.replace(/^xl\//, "").replace(/\//g, "/")}"`) ? "" : m,
+				rels = rels.replace(/<Relationship\b[^>]*\bId="([^"]+)"[^>]*\/>/g, (m, id: string) =>
+					id === sheet.relId ? "" : m,
 				)
 				pkg.putBytes("xl/_rels/workbook.xml.rels", new TextEncoder().encode(rels))
 				let ct = new TextDecoder().decode(pkg.getBytes("[Content_Types].xml") ?? new Uint8Array())
 				ct = ct.replace(/<Override\b[^>]*\/>/g, (m) => (m.includes(`PartName="/${sheet.part}"`) ? "" : m))
 				pkg.putBytes("[Content_Types].xml", new TextEncoder().encode(ct))
 				pkg.remove(sheet.part)
+				const base = sheet.part.split("/").pop()
+				if (base) {
+					const partRels = `xl/worksheets/_rels/${base}.rels`
+					if (pkg.hasXml(partRels)) pkg.remove(partRels)
+				}
 				result.applied.push(
 					`op ${opIndex + 1} delete-sheet: ${JSON.stringify(sheet.name)} (part ${sheet.part} removed)`,
 				)
@@ -707,10 +885,11 @@ function addSheet(
 	if (sheets.some((s) => s.name.toLowerCase() === op.name.toLowerCase())) {
 		throw new DocumentError("corrupt", `a sheet named ${JSON.stringify(op.name)} already exists`, "xlsx")
 	}
-	if (op.name.length > 31 || /[[\]:*?/\\]/.test(op.name)) {
-		throw new DocumentError("corrupt", `bad sheet name ${JSON.stringify(op.name)} (forbidden chars or >31)`, "xlsx")
-	}
+	const nameError = validateSheetName(op.name)
+	if (nameError) throw new DocumentError("corrupt", nameError, "xlsx")
 	const newIndex = sheets.length
+	// sheetId is workbook-wide and must survive deletions: never reuse one.
+	const newSheetId = Math.max(0, ...sheets.map((s) => s.sheetId)) + 1
 	// The generated part path must not collide with an existing member —
 	// hostile rel targets can point sheets anywhere, so pick a free name.
 	let partOrdinal = newIndex + 1
@@ -736,7 +915,7 @@ function addSheet(
 						? s.index === (op.after as number) - 1
 						: s.name.toLowerCase() === String(op.after).toLowerCase(),
 				) + 1
-	const newSheetTag = `<sheet name="${esc(op.name)}" sheetId="${newIndex + 1}" r:id="${newId}"/>`
+	const newSheetTag = `<sheet name="${esc(op.name)}" sheetId="${newSheetId}" r:id="${newId}"/>`
 	const sheetTags = [...wb.matchAll(/<sheet\b[^>]*\/>/g)]
 	if (afterIndex <= 0 || sheetTags.length === 0) {
 		wb = wb.replace(/<sheets>/, `<sheets>${newSheetTag}`)
@@ -749,6 +928,8 @@ function addSheet(
 		const at = (prev.index ?? 0) + prev[0].length
 		wb = `${wb.slice(0, at)}${newSheetTag}${wb.slice(at)}`
 	}
+	// Inserted anywhere but at the end, every index at or above it shifts up.
+	if (afterIndex < sheetTags.length) wb = shiftRefsAfterInsert(wb, Math.max(0, afterIndex))
 	pkg.putBytes("xl/workbook.xml", new TextEncoder().encode(wb))
 
 	// [Content_Types].xml
