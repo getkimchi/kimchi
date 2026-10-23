@@ -3,6 +3,7 @@
  */
 
 import type { ContextFile } from "../../prompt-construction/context-files.js"
+import { hasUserLoop } from "../../prompt-construction/session-user-loop.js"
 import {
 	buildCoreGuidelinesSections,
 	buildOutputAndTruncationSection,
@@ -114,7 +115,7 @@ ${envBlock}`
 
 	const toolSection = availableToolsBlock ? `\n\n${availableToolsBlock}` : ""
 	const coreGuidelines = config.includeCoreGuidelines
-		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames)}`
+		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames, hasUserLoop())}`
 		: ""
 	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
 }
