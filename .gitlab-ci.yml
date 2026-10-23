@@ -51,13 +51,14 @@ build-tarball:
   image: mirror.gcr.io/library/node:22-bookworm
   timeout: 45 minutes
   script:
-    # ── Toolchain: mirrors the benchmarks branch's setup_image.sh (Bun + Go +
-    # pnpm pinned via packageManager). ──
+    # ── Toolchain: Bun + Go pinned (Go tarball sha256-verified); pnpm pinned
+    # via packageManager. ──
     - apt-get update -qq
     - apt-get install -y --no-install-recommends build-essential ca-certificates curl file git xz-utils
-    - curl -fsSL https://bun.sh/install | bash
+    - curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"
     - export BUN_INSTALL="$HOME/.bun" PATH="$HOME/.bun/bin:$PATH"
     - curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go1.25.5.linux-amd64.tar.gz"
+    - echo "9e9b755d63b36acf30c12a9a3fc379243714c1c6d3dd72861da637f336ebb35b  /tmp/go.tgz" | sha256sum -c -  # digest from https://go.dev/dl/?mode=json
     - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
     - export PATH="/usr/local/go/bin:$PATH"
     - corepack enable
