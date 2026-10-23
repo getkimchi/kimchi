@@ -53,7 +53,21 @@ describe.skipIf(process.platform === "win32")("shared Kimchi shell installer", (
 		commands = join(root, "commands")
 		installBin = join(root, "installed")
 		mkdirSync(commands)
-		for (const name of ["uname", "tr", "tar", "mktemp", "rm", "mkdir", "mv", "chmod", "cat", "grep", "cp", "bash"]) {
+		for (const name of [
+			"uname",
+			"tr",
+			"tar",
+			"gzip",
+			"mktemp",
+			"rm",
+			"mkdir",
+			"mv",
+			"chmod",
+			"cat",
+			"grep",
+			"cp",
+			"bash",
+		]) {
 			const actual = execFileSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim()
 			symlinkSync(actual, join(commands, name))
 		}
