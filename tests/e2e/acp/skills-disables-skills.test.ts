@@ -18,12 +18,15 @@ const USER_BODY = "OFFICE_PPTX_GUIDANCE: edit decks with python-pptx."
 const USER_PDF_DESC = "USER_PDF_SKILL: pypdf based merging."
 const USER_DOCX_DESC = "USER_DOCX_SKILL: python-docx based report editing."
 const USER_DOCX_BODY = "OFFICE_DOCX_GUIDANCE: edit documents with python-docx."
+const USER_XLSX_DESC = "USER_XLSX_SKILL: openpyxl based spreadsheet editing."
+const USER_XLSX_BODY = "OFFICE_XLSX_GUIDANCE: edit workbooks with openpyxl."
 
 function seedClaudeSkills(homeDir: string): void {
 	const skills: Array<[string, string]> = [
 		["pptx", `---\nname: pptx\ndescription: ${USER_DESC}\n---\n# PPTX\n${USER_BODY}\n`],
 		["pdf", `---\nname: pdf\ndescription: ${USER_PDF_DESC}\n---\n# PDF\nUse pypdf.\n`],
 		["docx", `---\nname: docx\ndescription: ${USER_DOCX_DESC}\n---\n# DOCX\n${USER_DOCX_BODY}\n`],
+		["xlsx", `---\nname: xlsx\ndescription: ${USER_XLSX_DESC}\n---\n# XLSX\n${USER_XLSX_BODY}\n`],
 		[
 			"verify-this",
 			"---\nname: verify-this\ndescription: Verify a claim with fresh evidence.\n---\n# Verify this\nRestate it falsifiably.\n",
@@ -115,6 +118,7 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pptx" }) } }] },
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "pdf" }) } }] },
 					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "docx" }) } }] },
+					{ toolCalls: [{ function: { name: "Skill", arguments: JSON.stringify({ skill: "xlsx" }) } }] },
 					{ stream: ["Refused as expected."] },
 				],
 				pretrustWorkDir: true,
@@ -134,6 +138,7 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 			const first = JSON.stringify(chats[0].body)
 			expect(first).not.toContain(USER_PDF_DESC)
 			expect(first).not.toContain(USER_DOCX_DESC)
+			expect(first).not.toContain(USER_XLSX_DESC)
 			// A same-named user pdf skill is refused by the bundled pdf skill.
 			const thirdBody = chats[2].body as { messages?: Array<{ role: string; content: unknown }> }
 			const thirdTools = (thirdBody.messages ?? []).filter((m) => m.role === "tool")
@@ -144,6 +149,12 @@ describe("ACP integration — disables-skills shadowing (bundled pptx → user p
 			const docxResult = String(fourthTools.at(-1)?.content ?? "")
 			expect(docxResult).toContain('disabled by the enabled "docx" skill')
 			expect(docxResult).not.toContain(USER_DOCX_BODY)
+			// And a same-named user xlsx skill is refused by the bundled xlsx skill.
+			const fifthBody = chats[4].body as { messages?: Array<{ role: string; content: unknown }> }
+			const fifthTools = (fifthBody.messages ?? []).filter((m) => m.role === "tool")
+			const xlsxResult = String(fifthTools.at(-1)?.content ?? "")
+			expect(xlsxResult).toContain('disabled by the enabled "xlsx" skill')
+			expect(xlsxResult).not.toContain(USER_XLSX_BODY)
 		},
 		PROMPT_TIMEOUT_MS * 3,
 	)

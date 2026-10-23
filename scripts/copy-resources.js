@@ -279,6 +279,74 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 	}
 }
 
+// Bundle the xlsx skill's CLI. Same recipe as docx: stage the documents
+// module tree plus the jszip/@xmldom/yauzl graph the extractor/editor needs.
+{
+	const xlsxCliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/xlsx/scripts/xlsx.mjs")
+	mkdirSync(dirname(xlsxCliDest), { recursive: true })
+	const xlsxStaging = mkdtempSync(join(tmpdir(), "kimchi-xlsx-build-"))
+	try {
+		const stagedEntry = join(xlsxStaging, "xlsx-cli.ts")
+		cpSync(join(projectRoot, "src", "extensions", "documents", "xlsx-cli.ts"), stagedEntry)
+		cpSync(join(projectRoot, "src", "extensions", "documents"), join(xlsxStaging, "documents"), {
+			recursive: true,
+			filter: (src) => !src.endsWith(".test.ts"),
+		})
+		let entry = readFileSync(stagedEntry, "utf-8")
+		entry = entry.replaceAll('from "./', 'from "./documents/')
+		writeFileSync(stagedEntry, entry)
+		{
+			// yauzl's transitive deps (fd-slicer, pend, buffer-crc32) aren't
+			// hoisted by pnpm — walk the dependency graph like the docx block.
+			const stagedPkgs = new Set()
+			const stageDep = (name, anchor) => {
+				if (stagedPkgs.has(name)) return
+				stagedPkgs.add(name)
+				const requireFrom = createRequire(anchor ?? join(projectRoot, "package.json"))
+				let realPkg
+				try {
+					realPkg = realpathSync(requireFrom.resolve(`${name}/package.json`))
+				} catch {
+					let dir = dirname(realpathSync(requireFrom.resolve(name)))
+					while (!existsSync(join(dir, "package.json"))) {
+						const up = dirname(dir)
+						if (up === dir) throw new Error(`no package.json above ${name}`)
+						dir = up
+					}
+					realPkg = join(dir, "package.json")
+				}
+				cpSync(dirname(realPkg), join(xlsxStaging, "node_modules", name), { dereference: true, recursive: true })
+				const manifest = JSON.parse(readFileSync(realPkg, "utf-8"))
+				for (const child of Object.keys(manifest.dependencies ?? {})) {
+					try {
+						stageDep(child, realPkg)
+					} catch {
+						// optional dep not installed — bundling fails loudly if it's truly needed
+					}
+				}
+			}
+			for (const dep of ["@xmldom/xmldom", "jszip", "yauzl"]) {
+				stageDep(dep)
+			}
+		}
+		const jszipPkgPath = join(xlsxStaging, "node_modules", "jszip", "package.json")
+		const jszipPkg = JSON.parse(readFileSync(jszipPkgPath, "utf-8"))
+		jszipPkg.main = "dist/jszip.min.js"
+		writeFileSync(jszipPkgPath, JSON.stringify(jszipPkg))
+		const stagedOut = join(xlsxStaging, "xlsx.mjs")
+		execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
+			stdio: "inherit",
+		})
+		cpSync(stagedOut, xlsxCliDest)
+	} finally {
+		try {
+			rmSync(xlsxStaging, { recursive: true, force: true })
+		} catch {
+			// ignore — the OS reclaims temp dirs
+		}
+	}
+}
+
 // Bundle the pptx skill's CLI (same staging-deref dance as validate-skill:
 // bun resolves jszip/@xmldom from the staged node_modules, not the repo).
 const pptxCliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/pptx/scripts/pptx.mjs")
