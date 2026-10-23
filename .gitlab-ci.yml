@@ -1,18 +1,27 @@
-# Build-only pipeline: produce installable kimchi tarballs from any branch.
+# Build-only GitLab pipeline: produce installable kimchi tarballs from any
+# branch.
 #
-# This repo's real CI (the benchmark runner) lives on the `benchmarks` branch.
-# `master` — and every agent branch forked from it — previously had NO pipeline at
-# all. This file adds exactly one optional job so a binary tarball can be built
-# from any agent branch on demand, without touching the benchmarks pipeline and
-# without running any benchmark:
+# This file is INERT on GitHub — GitHub Actions never reads it. It exists for
+# the GitLab mirror of this repo (https://gitlab.com/castai/kimchi/kimchi,
+# a pull mirror of github.com/getkimchi/kimchi): the mirror syncs this file,
+# and GitLab runs the single `build-tarball` job below when a pipeline is
+# explicitly triggered with BUILD_TARBALL=true. All changes to this file go
+# through THIS repo — never merge or push directly on the GitLab mirror's
+# `master`: that diverges it from GitHub and the mirror cannot force-update
+# its protected default branch, so mirroring fails until manually repaired.
 #
-#   glab api "projects/82797533/pipeline" -X POST \
+# The benchmark-runner CI lives on the GitLab mirror's `benchmarks` branch
+# (deliberately excluded from mirroring); `master` and every agent branch
+# forked from it have no other pipeline. This file adds exactly one optional
+# job so a binary tarball can be built from any agent branch on demand,
+# without touching the benchmarks pipeline and without running any benchmark:
+#
+#   glab api "projects/castai%2Fkimchi%2Fkimchi/pipeline" -X POST \
 #     -f ref=<agent-branch> \
 #     -f 'variables[0][key]=BUILD_TARBALL' -f 'variables[0][value]=true'
 #
-# The `workflow` gate keeps normal pushes pipeline-free (master previously had no
-# CI, so this preserves that behavior): pipelines only exist when
-# BUILD_TARBALL=true.
+# The `workflow` gate keeps normal pushes pipeline-free: pipelines only exist
+# when BUILD_TARBALL=true.
 #
 # Artifacts (expire in 30 days):
 #   kimchi_linux_amd64.tar.gz / kimchi_linux_arm64.tar.gz
@@ -23,10 +32,12 @@
 # cast-agent-bench's kimchi_agent/release.py: bin/kimchi + share/kimchi/*
 # (package.json, theme/, export-html/, skills/, oauth/, bin/).
 #
-# Downstream: upload tarball + sidecar to GCS, then launch cast-agent-bench with
-# --agent-tarball gs://<bucket>/<path>/kimchi_linux_<arch>.tar.gz — it requires the
-# <tarball>.sha256 sidecar next to the tarball and verifies the digest before
-# installing.
+# Downstream: cast-rollout's `--kimchi-agent-branch` triggers this pipeline on
+# an agent branch, uploads the tarball + sidecar to GCS, then launches
+# cast-agent-bench with
+# --agent-tarball gs://<bucket>/<path>/kimchi_linux_<arch>.tar.gz — it requires
+# the <tarball>.sha256 sidecar next to the tarball and verifies the digest
+# before installing.
 
 workflow:
   rules:
