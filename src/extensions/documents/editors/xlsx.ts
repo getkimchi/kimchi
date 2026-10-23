@@ -9,10 +9,11 @@
  * Dropped cells vanish; no in-place writes.
  */
 
-import { scanRowSpans } from "../extractors/xlsx.js"
+import { ROW_FRAGMENT_REQUIRED, scanRowSpans } from "../extractors/xlsx.js"
 import { applyXlfnPrefixes, lintFormula } from "../formula-lint.js"
 import { DocumentError } from "../model.js"
 import type { OoxmlPackage } from "../ooxml/package.js"
+import { fragmentNamespaces, parseFragment, parseXml } from "../ooxml/xml.js"
 import {
 	columnIndex,
 	columnLetter,
@@ -46,6 +47,8 @@ export type XlsxOp =
 
 export interface XlsxEditResult {
 	applied: string[]
+	/** Parts the ops wrote via putBytes — what the well-formedness gate checks. */
+	touchedParts: string[]
 	/** Formula cells written without cached values (recalculated on open). */
 	formulasWritten: number
 	/** True if any formula existed/was written — dependent values may be stale. */
@@ -558,9 +561,19 @@ function applySheetRename(pkg: OoxmlPackage, sheets: SheetLoc[], index: number, 
 
 // --- ops --------------------------------------------------------------------------------
 
-export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
+export function applyXlsxOps(innerPkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
+	// Record every part the ops write so the pre-save gate can check exactly them.
+	const touched = new Set<string>()
+	const pkg: OoxmlPackage = {
+		...innerPkg,
+		putBytes(name: string, data: Uint8Array): void {
+			touched.add(name)
+			innerPkg.putBytes(name, data)
+		},
+	}
 	const result: XlsxEditResult = {
 		applied: [],
+		touchedParts: [],
 		formulasWritten: 0,
 		formulasAlert: false,
 		warnings: [],
@@ -873,7 +886,47 @@ export function applyXlsxOps(pkg: OoxmlPackage, ops: XlsxOp[]): XlsxEditResult {
 		ensureFullCalcOnLoad(pkg)
 		result.formulasAlert = true
 	}
+	result.touchedParts = [...touched]
 	return result
+}
+
+const WORKSHEET_PART = /^xl\/worksheets\/[^/]+\.xml$/
+
+/**
+ * Parse every part an edit touched: worksheets skeleton-plus-row-fragments
+ * (the sheet is never fully DOM-parsed), everything else whole (they're
+ * small). A failure means THIS edit wrote malformed XML and nothing has
+ * been saved yet — the input is unchanged.
+ */
+export function assertWellFormedParts(pkg: OoxmlPackage, parts: string[]): void {
+	for (const part of parts) {
+		const bytes = pkg.getBytes(part)
+		if (!bytes) continue
+		const xml = new TextDecoder().decode(bytes)
+		try {
+			if (WORKSHEET_PART.test(part)) {
+				const spans = scanRowSpans(xml)
+				let skeleton = ""
+				let cursor = 0
+				for (const s of spans) {
+					skeleton += xml.slice(cursor, s.start)
+					cursor = s.end
+				}
+				skeleton += xml.slice(cursor)
+				const nsDecls = fragmentNamespaces(xml, ROW_FRAGMENT_REQUIRED)
+				parseXml(skeleton)
+				for (const s of spans) parseFragment(xml.slice(s.start, s.end), "worksheet", nsDecls)
+			} else {
+				parseXml(xml)
+			}
+		} catch (err) {
+			throw new DocumentError(
+				"corrupt",
+				`edit produced malformed XML in ${part} — output not written; this is a bug in the xlsx skill (${(err as Error).message})`,
+				"xlsx",
+			)
+		}
+	}
 }
 
 function addSheet(

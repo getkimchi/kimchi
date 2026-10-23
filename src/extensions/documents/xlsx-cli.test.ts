@@ -176,6 +176,23 @@ describe("typed errors and new commands", () => {
 		expect(err2[0]).toContain("encrypted workbook")
 	})
 
+	it("writes no output when a touched part is malformed (gate, exit 2)", async () => {
+		// The input sheet already holds a malformed row; editing another row of
+		// that SHEET touches the part, so the gate parses every row and fails.
+		const bad = await makeCustomXlsx([
+			{
+				name: "S",
+				inner: `<sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="2"><zz:c/></row></sheetData>`,
+			},
+		])
+		const ops = new TextEncoder().encode(JSON.stringify([{ kind: "set-cells", cells: { A1: 9 } }]))
+		const { io, err, written } = testIo({ "in.xlsx": bad, "ops.json": ops })
+		expect(await runXlsxCli(["edit", "in.xlsx", "--out", "out.xlsx", "--ops", "ops.json"], io)).toBe(2)
+		expect(err[0]).toContain("error [corrupt]")
+		expect(err[0]).toContain("malformed XML")
+		expect(written["out.xlsx"]).toBeUndefined()
+	})
+
 	it("caps oversized ops files before parsing", async () => {
 		// Valid JSON, ~1.5 MB — over a 1 MB cap, under the default.
 		const huge = new TextEncoder().encode(JSON.stringify([{ kind: "set-cells", cells: { A1: "x".repeat(1_500_000) } }]))

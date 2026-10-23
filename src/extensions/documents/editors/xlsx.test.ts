@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { extractXlsx } from "../extractors/xlsx.js"
 import { makeCustomXlsx, makeSimpleXlsx } from "../fixtures/builders.js"
 import { openOoxml } from "../ooxml/package.js"
-import { applyXlsxOps, type XlsxOp } from "./xlsx.js"
+import { applyXlsxOps, assertWellFormedParts, type XlsxOp } from "./xlsx.js"
 
 async function apply(data: Uint8Array, ops: XlsxOp[]) {
 	const pkg = await openOoxml(data)
@@ -420,5 +420,44 @@ describe("review fixes", () => {
 			{ kind: "set-cells", cells: { E9: { f: "SUM(A1:A99999)" }, B3: 1 } },
 		])
 		expect(result.warnings.some((w) => w.includes("out-of-range-ref"))).toBe(true)
+	})
+})
+
+describe("assertWellFormedParts / touchedParts", () => {
+	it("reports exactly the parts each op changed", async () => {
+		const data = await makeCustomXlsx([
+			{ name: "Data", inner: `<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>` },
+			{ name: "Calc", inner: `<sheetData><row r="1"><c r="A1"><f>Data!A1</f><v>1</v></c></row></sheetData>` },
+		])
+		const { result } = await apply(data, [
+			{ kind: "set-cells", cells: { A1: 9 } },
+			{ kind: "rename-sheet", sheet: "Data", name: "Raw Data" },
+		])
+		expect(result.touchedParts).toContain("xl/worksheets/sheet1.xml")
+		expect(result.touchedParts).toContain("xl/worksheets/sheet2.xml")
+		expect(result.touchedParts).toContain("xl/workbook.xml")
+		expect(result.touchedParts).not.toContain("xl/styles.xml")
+	})
+
+	it("passes on a well-formed edit", async () => {
+		const pkg = await openOoxml(await makeSimpleXlsx())
+		const result = applyXlsxOps(pkg, [{ kind: "set-cells", cells: { B1: 5 } }])
+		expect(() => assertWellFormedParts(pkg, result.touchedParts)).not.toThrow()
+	})
+
+	it("throws corrupt on a malformed touched part, naming it", async () => {
+		const pkg = await openOoxml(await makeSimpleXlsx())
+		pkg.putBytes(
+			"xl/worksheets/sheet1.xml",
+			new TextEncoder().encode(`<worksheet><row r="1"><zz:bad/></row></worksheet>`),
+		)
+		try {
+			assertWellFormedParts(pkg, ["xl/worksheets/sheet1.xml"])
+			expect.unreachable()
+		} catch (err) {
+			expect((err as { code?: string }).code).toBe("corrupt")
+			expect(String(err)).toContain("malformed XML in xl/worksheets/sheet1.xml")
+			expect(String(err)).toContain("output not written")
+		}
 	})
 })

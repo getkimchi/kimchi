@@ -24,7 +24,7 @@ import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { RealClock } from "./clock.js"
-import { applyXlsxOps, type XlsxOp } from "./editors/xlsx.js"
+import { applyXlsxOps, assertWellFormedParts, type XlsxOp } from "./editors/xlsx.js"
 import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.js"
 import { maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
@@ -250,6 +250,8 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					validateContentTypes(pkg, pkg.getXml("[Content_Types].xml")).filter((p) => !inputProblems.includes(p)),
 					`post-edit package validation for ${input} — fix the op and retry; the input is unchanged`,
 				)
+				// Nothing leaves the box malformed: every touched part must parse.
+				assertWellFormedParts(pkg, result.touchedParts)
 				const bytes = await pkg.save()
 				const writeFile = io.writeFile ?? atomicWrite
 				writeFile(out, bytes)

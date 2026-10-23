@@ -27,7 +27,7 @@ import { columnLetter, parseCellRef } from "../xlsx-refs.js"
  * `xr:` on `<worksheet>`; a prefix that IS declared on the root wins, so
  * real files parse with their own declarations.
  */
-const ROW_FRAGMENT_REQUIRED = [
+export const ROW_FRAGMENT_REQUIRED = [
 	{ prefix: "", uri: "http://schemas.openxmlformats.org/spreadsheetml/2006/main" },
 	{ prefix: "r", uri: "http://schemas.openxmlformats.org/officeDocument/2006/relationships" },
 ]
