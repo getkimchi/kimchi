@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { setActiveAnchor } from "../../shared/active-anchor.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribePullRequestReconciliation,
@@ -77,6 +78,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 
 	/** `branch · directory` for the status line while the anchor is a linked worktree of this repository. */
 	function workTreeStatus(ctx: ExtensionContext, anchor: string, branch: string | undefined): void {
+		setActiveAnchor(anchor === ctx.cwd ? undefined : anchor)
 		if (anchor === ctx.cwd) {
 			workTree()
 			return
@@ -315,6 +317,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		if (changed) {
 			shownTree = undefined
 			workTree()
+			setActiveAnchor(undefined)
 			shown = undefined
 			footer()
 			branchName = undefined
@@ -385,6 +388,7 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async () => {
 		started = false
 		workTree()
+		setActiveAnchor(undefined)
 		footer()
 		stopBranch()
 		observed = undefined

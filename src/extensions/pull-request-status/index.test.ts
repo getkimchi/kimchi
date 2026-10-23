@@ -5,6 +5,7 @@ import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { check } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getActiveAnchor, setActiveAnchor } from "../../shared/active-anchor.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as supervisor from "../work-attribution/reconcile-supervisor.js"
@@ -103,6 +104,7 @@ afterEach(async () => {
 	vi.clearAllMocks()
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
+	setActiveAnchor(undefined)
 	rmSync(directory, { recursive: true, force: true })
 })
 
@@ -239,6 +241,7 @@ describe("PR status extension", () => {
 		await startStandalone()
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr", "PR #7 open"))
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", undefined)
+		expect(getActiveAnchor()).toBeUndefined()
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-pr-url", pr.url)
 		expect(supervisor.subscribeFileReconciliation).not.toHaveBeenCalled()
 		expect(supervisor.subscribePullRequestReconciliation).not.toHaveBeenCalled()
@@ -334,6 +337,7 @@ describe("PR status extension", () => {
 		)
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "PR #7 open")
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("work-tree", "wt-branch · worktree")
+		expect(getActiveAnchor()).toBe(worktree)
 	})
 
 	it("re-anchors when a later command enters another directory", async () => {

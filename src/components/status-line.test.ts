@@ -10,6 +10,7 @@ import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
+import { setActiveAnchor } from "../shared/active-anchor.js"
 import {
 	buildContextCompact,
 	buildControlsLineSegments,
@@ -165,17 +166,18 @@ describe("buildScriptPayload", () => {
 		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-pr")).toBe(false)
 	})
 
-	it("names the active worktree in both footers and hides it outside one", () => {
+	it("names the active worktree in the status line, not under custom scripts", () => {
 		const context = {
 			ctx: createMockContext(),
 			theme: createMockTheme(),
 			statusLineData: createMockStatusLineData({ workTree: "feature/branch · .worktrees/branch" }),
 		}
-		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
-			const segment = segments.find((segment) => segment.id === "work-tree")
-			expect(stripAnsi(segment?.text ?? "")).toBe("⎇ feature/branch · .worktrees/branch")
-			expect(visibleWidth(renderFittedLine(segments, 60, context.theme))).toBeLessThanOrEqual(60)
-		}
+		const segments = buildStatusLineSegments(context, new Set())
+		const segment = segments.find((segment) => segment.id === "work-tree")
+		expect(stripAnsi(segment?.text ?? "")).toBe("⎇ feature/branch · .worktrees/branch")
+		expect(visibleWidth(renderFittedLine(segments, 60, context.theme))).toBeLessThanOrEqual(60)
+		// A custom status line script carries its own worktree line; the controls line does not repeat it.
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "work-tree")).toBe(false)
 		context.statusLineData = createMockStatusLineData()
 		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-tree")).toBe(false)
 	})
@@ -247,6 +249,21 @@ describe("buildScriptPayload", () => {
 
 		expect(payload.credits).toBe("$5.00")
 		expect(payload.budget).toBe("13.73% ($274.59/$2k)")
+	})
+
+	it("exposes the active anchor directory to status line scripts", () => {
+		const ctx = createMockContext()
+		expect(buildScriptPayload(ctx, "idle", 0, 0, 0).workspace).toEqual({
+			cwd: ctx.cwd,
+			current_dir: ctx.cwd,
+			anchor_dir: null,
+		})
+		setActiveAnchor("/repo/.worktrees/feature")
+		try {
+			expect(buildScriptPayload(ctx, "idle", 0, 0, 0).workspace.anchor_dir).toBe("/repo/.worktrees/feature")
+		} finally {
+			setActiveAnchor(undefined)
+		}
 	})
 })
 

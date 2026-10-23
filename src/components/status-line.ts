@@ -18,6 +18,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { getActiveAnchor } from "../shared/active-anchor.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -138,7 +139,7 @@ export function buildScriptPayload(
 		},
 		credits: billing?.amount ?? null,
 		budget: billing?.budget ?? null,
-		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
+		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd, anchor_dir: getActiveAnchor() ?? null },
 		status,
 		session: {
 			cost_usd: costUsd,
@@ -765,7 +766,6 @@ const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
 	"credits",
 	"budget",
 	"work-pr",
-	"work-tree",
 ])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
