@@ -69,6 +69,7 @@ import {
 	loadConfig as loadKimchiConfig,
 	resolveEndpoints,
 	resolveSelfHostedBaseUrl,
+	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
 } from "../../config.js"
@@ -565,15 +566,20 @@ export class KimchiAcpAgent implements Agent {
 		// The success page copy names no client: this flow may be launched by any
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		//
-		// Self-hosted resolves its web-app URL from the configured base URL
-		// (KIMCHI_SELF_HOSTED_URL env or the stored selfHostedUrl) — ACP clients
-		// have no interactive prompt surface, so a missing base fails fast here
-		// with the actionable configuration error instead of being prompted for.
+		// Self-hosted resolves its web-app URL from the stored configuration
+		// (KIMCHI_SELF_HOSTED_URL env, else the stored discovery endpoints and
+		// base URL) — ACP clients have no interactive prompt surface, so a
+		// missing base fails fast here with the actionable configuration error
+		// instead of being prompted for. ACP cannot run endpoint discovery
+		// itself (no URL input); logins created by the TUI /login or
+		// `kimchi login <console-url>` persist the discovered endpoints that this
+		// path then resolves.
 		const selfHostedUrl = region === "self-hosted" ? resolveSelfHostedBaseUrl() : undefined
+		const selfHostedEndpoints = region === "self-hosted" ? resolveSelfHostedEndpoints() : undefined
 		let token: string
 		try {
 			;({ token } = await authenticateViaBrowser({
-				webAppUrl: endpointsForRegion(region, { selfHostedUrl }).webAppUrl,
+				webAppUrl: endpointsForRegion(region, { selfHostedUrl, endpoints: selfHostedEndpoints }).webAppUrl,
 				successMessage: ACP_SUCCESS_MESSAGE,
 			}))
 		} catch (error) {
@@ -586,9 +592,11 @@ export class KimchiAcpAgent implements Agent {
 
 		// Persist the key so new sessions pick it up via the login extension's
 		// session_start handler (which reads loadConfig().apiKey), with its region
-		// and — for self-hosted — the base URL it was authenticated against.
+		// and — for self-hosted — the console URL and discovery endpoints it was
+		// authenticated against.
 		const persist: WriteApiKeyOptions = { region }
 		if (selfHostedUrl) persist.selfHostedUrl = selfHostedUrl
+		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
