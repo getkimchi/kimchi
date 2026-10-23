@@ -209,6 +209,76 @@ const pdfSkillsDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi
 	}
 }
 
+// Bundle the docx skill's CLI. Same staging-deref recipe as pdf: stage the
+// documents module tree plus the `docx` dependency graph (jszip, nanoid,
+// hash.js). jszip's CJS entry pulls transitive deps we don't stage; its
+// dist/jszip.min.js is self-contained, so point the staged package at it.
+{
+	const docxCliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/docx/scripts/docx.mjs")
+	mkdirSync(dirname(docxCliDest), { recursive: true })
+	const docxStaging = mkdtempSync(join(tmpdir(), "kimchi-docx-build-"))
+	try {
+		const stagedEntry = join(docxStaging, "docx-cli.ts")
+		cpSync(join(projectRoot, "src", "extensions", "documents", "docx-cli.ts"), stagedEntry)
+		cpSync(join(projectRoot, "src", "extensions", "documents"), join(docxStaging, "documents"), {
+			recursive: true,
+			filter: (src) => !src.endsWith(".test.ts"),
+		})
+		let entry = readFileSync(stagedEntry, "utf-8")
+		entry = entry.replaceAll('from "./', 'from "./documents/')
+		writeFileSync(stagedEntry, entry)
+		const stagedPkgs = new Set()
+		const stageDep = (name, anchor) => {
+			if (stagedPkgs.has(name)) return
+			stagedPkgs.add(name)
+			const requireFrom = createRequire(anchor ?? join(projectRoot, "package.json"))
+			let realPkg
+			try {
+				realPkg = realpathSync(requireFrom.resolve(`${name}/package.json`))
+			} catch {
+				let dir = dirname(realpathSync(requireFrom.resolve(name)))
+				while (!existsSync(join(dir, "package.json"))) {
+					const up = dirname(dir)
+					if (up === dir) throw new Error(`no package.json above ${name}`)
+					dir = up
+				}
+				realPkg = join(dir, "package.json")
+			}
+			cpSync(dirname(realPkg), join(docxStaging, "node_modules", name), { dereference: true, recursive: true })
+			const manifest = JSON.parse(readFileSync(realPkg, "utf-8"))
+			for (const child of Object.keys(manifest.dependencies ?? {})) {
+				try {
+					stageDep(child, realPkg)
+				} catch {
+					// optional dep not installed — bundling fails loudly if it's truly needed
+				}
+			}
+		}
+		for (const dep of ["docx", "@xmldom/xmldom", "jszip", "marked", "yauzl"]) {
+			stageDep(dep)
+		}
+		// jszip's package root resolves lib/index.js (-> lie, pako, …, not staged).
+		// Its dist/jszip.min.js is self-contained; point the manifest at it.
+		{
+			const jszipPkgPath = join(docxStaging, "node_modules", "jszip", "package.json")
+			const jszipPkg = JSON.parse(readFileSync(jszipPkgPath, "utf-8"))
+			jszipPkg.main = "dist/jszip.min.js"
+			writeFileSync(jszipPkgPath, JSON.stringify(jszipPkg))
+		}
+		const stagedOut = join(docxStaging, "docx.mjs")
+		execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
+			stdio: "inherit",
+		})
+		cpSync(stagedOut, docxCliDest)
+	} finally {
+		try {
+			rmSync(docxStaging, { recursive: true, force: true })
+		} catch {
+			// ignore — the OS reclaims temp dirs
+		}
+	}
+}
+
 // Bundle the pptx skill's CLI (same staging-deref dance as validate-skill:
 // bun resolves jszip/@xmldom from the staged node_modules, not the repo).
 const pptxCliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", "skills/pptx/scripts/pptx.mjs")
