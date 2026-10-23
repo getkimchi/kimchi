@@ -35,7 +35,6 @@ import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/reso
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
-import { backgroundNotificationsReachUser } from "../agents/background-delivery.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
@@ -74,7 +73,7 @@ import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
-import { hasUserLoop } from "./session-user-loop.js"
+import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,

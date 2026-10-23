@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { resolveHasUserLoop, resolveIsTuiSession } from "./session-user-loop.js"
+import { backgroundNotificationsReachUser, resolveHasUserLoop, resolveIsTuiSession } from "./session-user-loop.js"
 
 describe("resolveIsTuiSession", () => {
 	const base = { stdinIsTTY: true, stdoutIsTTY: true, acpMode: false }
@@ -34,6 +34,24 @@ describe("resolveIsTuiSession", () => {
 
 	it("is false for rpc over piped IO (how frontends spawn it)", () => {
 		expect(resolveIsTuiSession({ ...base, mode: "rpc", stdinIsTTY: false, stdoutIsTTY: false })).toBe(false)
+	})
+})
+
+describe("backgroundNotificationsReachUser", () => {
+	it("is true only for the TUI", () => {
+		expect(backgroundNotificationsReachUser("tui")).toBe(true)
+	})
+
+	it("is false for rpc (ACP sessions run as rpc)", () => {
+		expect(backgroundNotificationsReachUser("rpc")).toBe(false)
+	})
+
+	it("is false for json mode", () => {
+		expect(backgroundNotificationsReachUser("json")).toBe(false)
+	})
+
+	it("is false for print mode", () => {
+		expect(backgroundNotificationsReachUser("print")).toBe(false)
 	})
 })
 

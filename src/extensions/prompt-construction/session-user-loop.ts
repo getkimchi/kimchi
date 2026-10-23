@@ -27,6 +27,7 @@
  * instead of scanning raw argv.
  */
 
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, isProtocolCliMode } from "../../cli-args.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 
@@ -97,4 +98,15 @@ export function isTuiSession(): boolean {
 		})
 	}
 	return cachedIsTuiSession
+}
+
+/**
+ * True when a background agent's completion notification is shown to the
+ * user after the turn ended. Only the TUI renders extension-triggered runs:
+ * on every other surface (rpc / ACP, json, print), an agent still running
+ * when the turn ends never reports back to the user, so backgrounded agents
+ * must be joined with `get_subagent_result wait: true` before turn end.
+ */
+export function backgroundNotificationsReachUser(mode: ExtensionContext["mode"]): boolean {
+	return mode === "tui"
 }

@@ -37,13 +37,13 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { backgroundNotificationsReachUser, isTuiSession } from "../prompt-construction/session-user-loop.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
-import { backgroundNotificationsReachUser, processBackgroundNotificationsReachUser } from "./background-delivery.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -1593,7 +1593,7 @@ export default function (pi: ExtensionAPI) {
 
 ${typeListText}
 
-${buildAgentToolGuidelines(processBackgroundNotificationsReachUser())}`,
+${buildAgentToolGuidelines(isTuiSession())}`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -1638,7 +1638,7 @@ ${buildAgentToolGuidelines(processBackgroundNotificationsReachUser())}`,
 				),
 				run_in_background: Type.Optional(
 					Type.Boolean({
-						description: buildRunInBackgroundParameterDescription(processBackgroundNotificationsReachUser()),
+						description: buildRunInBackgroundParameterDescription(isTuiSession()),
 					}),
 				),
 				isolated: Type.Optional(
@@ -2282,7 +2282,7 @@ ${buildAgentToolGuidelines(processBackgroundNotificationsReachUser())}`,
 				}),
 				wait: Type.Optional(
 					Type.Boolean({
-						description: backgroundText(processBackgroundNotificationsReachUser()).waitParameter,
+						description: backgroundText(isTuiSession()).waitParameter,
 					}),
 				),
 				verbose: Type.Optional(

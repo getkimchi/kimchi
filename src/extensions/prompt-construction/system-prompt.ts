@@ -68,7 +68,7 @@ export interface SystemPromptBuildOptions {
 	 *  a short autonomous-session note. Default: true. */
 	hasUserLoop?: boolean
 	/** Whether background-subagent completion notifications reach the user
-	 *  after the turn ends (TUI only; see agents/background-delivery.ts). When
+	 *  after the turn ends (TUI only; see session-user-loop.ts). When
 	 *  false, orchestrator delegation guidance requires joining backgrounded
 	 *  agents before turn end. Default: true. */
 	backgroundNotificationsReachUser?: boolean
