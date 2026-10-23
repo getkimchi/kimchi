@@ -12,6 +12,8 @@
  *   KIMCHI_OAUTH_TOKEN_URL           dev/mock token-endpoint override
  *   KIMCHI_ORGANIZATIONS_URL         dev/mock override for the user-organizations listing
  *   KIMCHI_OAUTH_AUDIENCE            optional `audience` authorize/token param
+ *                                    (default: https://app.kimchi.dev — REQUIRED
+ *                                    for usable refresh tokens)
  *   KIMCHI_OAUTH_USE_ID_TOKEN        "1"/"true": send the ID token to the
  *                                    gateway instead of the access token
  *                                    (default until the gateway settles it).
@@ -27,7 +29,9 @@ export interface KimchiOAuthConfig {
 	authorizeUrl: string
 	tokenUrl: string
 	clientId: string
-	/** Optional `audience` param for authorize and token requests (RFC 8707). */
+	/** `audience` param for authorize and token requests (RFC 8707). Defaults
+	 * to https://app.kimchi.dev — without an audience Auth0 issues
+	 * session-bound tokens whose refresh grant is rejected. */
 	audience?: string
 	/** GET endpoint listing the user's organizations (Cast AI users API):
 	 * `${castApiUrl}/v1/organizations`. */
@@ -88,7 +92,7 @@ export function oauthConfigForRegion(region: KimchiRegion): KimchiOAuthConfig | 
 		authorizeUrl: nonEmptyEnv("KIMCHI_OAUTH_AUTHORIZE_URL") ?? defaults.authorizeUrl,
 		tokenUrl: nonEmptyEnv("KIMCHI_OAUTH_TOKEN_URL") ?? defaults.tokenUrl,
 		clientId,
-		audience: nonEmptyEnv("KIMCHI_OAUTH_AUDIENCE"),
+		audience: nonEmptyEnv("KIMCHI_OAUTH_AUDIENCE") ?? "https://app.kimchi.dev",
 		// The org listing lives on the Cast AI users API (castApiUrl), not the
 		// Auth0 tenant — full-URL env override for dev/test (mock AS setups).
 		organizationsUrl: nonEmptyEnv("KIMCHI_ORGANIZATIONS_URL") ?? `${region.castApiUrl}/v1/organizations`,

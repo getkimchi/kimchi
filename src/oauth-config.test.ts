@@ -32,7 +32,7 @@ describe("oauthConfigForRegion", () => {
 			authorizeUrl: "https://login.kimchi.dev/authorize",
 			tokenUrl: "https://login.kimchi.dev/oauth/token",
 			clientId: "rG3I0gwpiMzjzv1qC2W5s21UMQlNzSlS",
-			audience: undefined,
+			audience: "https://app.kimchi.dev",
 			organizationsUrl: "https://api.cast.ai/v1/organizations",
 			useIdToken: true,
 		})
