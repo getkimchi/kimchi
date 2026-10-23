@@ -1,0 +1,78 @@
+# Build-only pipeline: produce installable kimchi tarballs from any branch.
+#
+# This repo's real CI (the benchmark runner) lives on the `benchmarks` branch.
+# `master` — and every agent branch forked from it — previously had NO pipeline at
+# all. This file adds exactly one optional job so a binary tarball can be built
+# from any agent branch on demand, without touching the benchmarks pipeline and
+# without running any benchmark:
+#
+#   glab api "projects/82797533/pipeline" -X POST \
+#     -f ref=<agent-branch> \
+#     -f 'variables[0][key]=BUILD_TARBALL' -f 'variables[0][value]=true'
+#
+# The `workflow` gate keeps normal pushes pipeline-free (master previously had no
+# CI, so this preserves that behavior): pipelines only exist when
+# BUILD_TARBALL=true.
+#
+# Artifacts (expire in 30 days):
+#   kimchi_linux_amd64.tar.gz / kimchi_linux_arm64.tar.gz
+#   <tarball>.sha256 sidecars (sha256sum-format lines) + checksums.txt
+#   target_sha.txt (the exact commit built)
+#
+# Tarball layout matches the GitHub release assets consumed by
+# cast-agent-bench's kimchi_agent/release.py: bin/kimchi + share/kimchi/*
+# (package.json, theme/, export-html/, skills/, oauth/, bin/).
+#
+# Downstream: upload tarball + sidecar to GCS, then launch cast-agent-bench with
+# --agent-tarball gs://<bucket>/<path>/kimchi_linux_<arch>.tar.gz — it requires the
+# <tarball>.sha256 sidecar next to the tarball and verifies the digest before
+# installing.
+
+workflow:
+  rules:
+    - if: '$BUILD_TARBALL == "true"'
+
+stages:
+  - build
+
+build-tarball:
+  stage: build
+  image: mirror.gcr.io/library/node:22-bookworm
+  timeout: 45 minutes
+  script:
+    # ── Toolchain: mirrors the benchmarks branch's setup_image.sh (Bun + Go +
+    # pnpm pinned via packageManager). ──
+    - apt-get update -qq
+    - apt-get install -y --no-install-recommends build-essential ca-certificates curl file git xz-utils
+    - curl -fsSL https://bun.sh/install | bash
+    - export BUN_INSTALL="$HOME/.bun" PATH="$HOME/.bun/bin:$PATH"
+    - curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go1.25.5.linux-amd64.tar.gz"
+    - rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
+    - export PATH="/usr/local/go/bin:$PATH"
+    - corepack enable
+    - corepack prepare pnpm@10.8.1 --activate
+    - git rev-parse HEAD | tee target_sha.txt
+    - pnpm install --frozen-lockfile
+    # ── Build per target. GitLab sets CI=true, so build-binary.js skips its
+    # internal proxy-helper step — build the Go helper explicitly per target
+    # (build-binary.js cleans dist/ on every run, so build → tar per target). ──
+    - node scripts/build-proxy-helper.js --target linux-x64
+    - pnpm run build:binary-linux-x64
+    - tar -C dist -czf kimchi_linux_amd64.tar.gz bin share
+    - node scripts/build-proxy-helper.js --target linux-arm64
+    - pnpm run build:binary-linux-arm64
+    - tar -C dist -czf kimchi_linux_arm64.tar.gz bin share
+    # ── Checksums: release-style checksums.txt + per-file sidecars. ──
+    - sha256sum kimchi_linux_amd64.tar.gz kimchi_linux_arm64.tar.gz | tee checksums.txt
+    - sha256sum kimchi_linux_amd64.tar.gz > kimchi_linux_amd64.tar.gz.sha256
+    - sha256sum kimchi_linux_arm64.tar.gz > kimchi_linux_arm64.tar.gz.sha256
+  artifacts:
+    name: "kimchi-tarball-$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+    expire_in: 30 days
+    paths:
+      - kimchi_linux_amd64.tar.gz
+      - kimchi_linux_arm64.tar.gz
+      - kimchi_linux_amd64.tar.gz.sha256
+      - kimchi_linux_arm64.tar.gz.sha256
+      - checksums.txt
+      - target_sha.txt
