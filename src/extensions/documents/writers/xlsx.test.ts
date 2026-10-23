@@ -29,6 +29,14 @@ const spec: XlsxSpec = {
 }
 
 describe("writeXlsx", () => {
+	it("rejects sheet names Excel forbids", async () => {
+		await expect(writeXlsx({ ...spec, sheets: [{ name: "History", rows: [[1]] }] })).rejects.toThrow(
+			/reserved by Excel/,
+		)
+		await expect(writeXlsx({ ...spec, sheets: [{ name: "'lead", rows: [[1]] }] })).rejects.toThrow(/apostrophe/)
+		await expect(writeXlsx({ ...spec, sheets: [{ name: "a\\b", rows: [[1]] }] })).rejects.toThrow(/forbidden character/)
+	})
+
 	it("writes a workbook the extractor reads back with values, formats and formulas", async () => {
 		const { bytes, warnings, formulas } = await writeXlsx(spec, { clock })
 		expect(formulas).toBe(3)

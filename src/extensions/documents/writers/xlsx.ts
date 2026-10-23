@@ -17,7 +17,7 @@ import JSZip from "jszip"
 import { type DocumentClock, RealClock } from "../clock.js"
 import { applyXlfnPrefixes, lintFormula, type SheetShape } from "../formula-lint.js"
 import { DocumentError } from "../model.js"
-import { columnLetter } from "../xlsx-refs.js"
+import { columnLetter, validateSheetName } from "../xlsx-refs.js"
 
 /** Spec cell: a plain scalar, or an object with explicit parts. */
 export type SpecCell =
@@ -65,16 +65,8 @@ function validateSpec(spec: XlsxSpec): void {
 		if (typeof sheet.name !== "string" || sheet.name.trim() === "") {
 			throw new DocumentError("corrupt", "every sheet needs a non-empty name", "xlsx")
 		}
-		if (sheet.name.length > 31) {
-			throw new DocumentError("corrupt", `sheet name ${JSON.stringify(sheet.name)} exceeds 31 characters`, "xlsx")
-		}
-		if (/[[\]:*?/\\]/.test(sheet.name)) {
-			throw new DocumentError(
-				"corrupt",
-				`sheet name ${JSON.stringify(sheet.name)} contains a forbidden character ([ ] : * ? / \\)`,
-				"xlsx",
-			)
-		}
+		const nameError = validateSheetName(sheet.name)
+		if (nameError) throw new DocumentError("corrupt", nameError, "xlsx")
 		const key = sheet.name.toLowerCase()
 		if (seen.has(key)) throw new DocumentError("corrupt", `duplicate sheet name ${JSON.stringify(sheet.name)}`, "xlsx")
 		seen.add(key)
