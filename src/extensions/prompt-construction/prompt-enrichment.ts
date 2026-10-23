@@ -73,7 +73,7 @@ import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
-import { hasUserLoop } from "./session-user-loop.js"
+import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
 import {
 	buildSystemPrompt,
 	DELEGATION_TOOL_NAMES,
@@ -904,6 +904,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				customConfigs,
 				sessionId,
 				hasUserLoop: hasUserLoop(),
+				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

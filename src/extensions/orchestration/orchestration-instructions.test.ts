@@ -539,6 +539,57 @@ describe("resolveOrchestrationInstructions with custom configs", () => {
 	})
 })
 
+describe("background-subagent guidance by surface", () => {
+	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
+
+	it("keeps background-by-default delegation bullets when notifications reach the user", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		expect(result).toContain("- Agents run in the background by default; spawn a few independent subtasks in parallel")
+		expect(result).toContain("Agents are backgrounded by default")
+	})
+
+	it("treats an omitted backgroundNotificationsReachUser as true (byte-identical output)", () => {
+		const withDefault = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+		})
+		const withExplicitTrue = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+			backgroundNotificationsReachUser: true,
+		})
+		expect(withExplicitTrue).toBe(withDefault)
+	})
+
+	it("flips both delegation bullets to foreground-by-default when notifications never arrive", () => {
+		const result = resolveAsString({
+			currentModelId: "kimi-k2.6",
+			registry,
+			roles: DEFAULT_MODEL_ROLES,
+			backgroundNotificationsReachUser: false,
+		})
+		// Agent delegation bullet
+		expect(result).toContain(
+			"- Agents run in the foreground by default in this session; spawn independent subtasks together in one response",
+		)
+		expect(result).toContain("join it with get_subagent_result wait: true before ending your turn")
+		// Build phase bullet
+		expect(result).toContain(
+			"- DO run independent chunks in parallel by issuing their Agent calls in the same response",
+		)
+		expect(result).toContain("join any backgrounded agent with get_subagent_result wait: true")
+		// The background-by-default wording is gone everywhere
+		expect(result).not.toContain("background by default")
+		expect(result).not.toContain("backgrounded by default")
+	})
+})
+
 describe("Build phase directive (complex-chunk tier routing)", () => {
 	const registry = new ModelRegistry(ALL_KNOWN_METADATA)
 

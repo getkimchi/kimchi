@@ -37,6 +37,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { backgroundNotificationsReachUser, isTuiSession } from "../prompt-construction/session-user-loop.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
@@ -188,11 +189,80 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 	})
 }
 
-export const AGENT_TOOL_GUIDELINES = `Guidelines:
+/**
+ * Surface-dependent Agent-tool text. In the TUI a backgrounded agent's
+ * completion notification reaches the user after the turn ends, so the tui
+ * variants tell the model to background, end the turn, and rely on the
+ * notification. Every other surface (rpc/ACP, json, print) never delivers
+ * that notification, so the detached variants make foreground the default
+ * and require joining any backgrounded agent with get_subagent_result
+ * wait: true before the turn ends. TUI strings must stay byte-identical —
+ * they are the long-reviewed interactive-session contract.
+ */
+const BACKGROUND_TEXT = {
+	tui: {
+		guidelines: `Guidelines:
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
 - Choose the mode by dependency: agents run in the background by default, so set run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
 - One call per task, detailed prompt.
-- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`,
+		runInBackgroundParameter:
+			"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+		waitParameter:
+			"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
+		spawnTrailer: `You will be notified when this agent completes — the completion notification will contain the results.
+Do NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.
+Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
+		queuedBody: (maxConcurrent: number) =>
+			`Agent is queued behind the background-agent concurrency cap (max ${maxConcurrent} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`,
+		timedOutBody: (capSeconds: number) =>
+			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`,
+		abortedBody:
+			"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification.",
+		runningBody:
+			"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results.",
+	},
+	detached: {
+		guidelines: `Guidelines:
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- Choose the mode by dependency: in this session agents run in the foreground by default and the Agent call returns the result. Several Agent calls in one response run in parallel, so spawn independent agents together. Completion notifications are NOT delivered after your turn ends here: if you set run_in_background: true to keep working while an agent runs, you MUST join it with get_subagent_result wait: true before ending your turn.
+- One call per task, detailed prompt.
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`,
+		runInBackgroundParameter:
+			"Default: false in this session (the Agent call runs the agent to completion and returns its result). If true, the agent runs in the background and returns its ID immediately; you will NOT be notified after your turn ends, so you MUST join it with get_subagent_result wait: true before ending your turn. Set to true only to keep working on independent tasks while the agent runs.",
+		waitParameter:
+			"If true, block until the agent completes (capped at 60s per call — call again while it is still running). Required before ending your turn for every backgrounded agent in this session. Default: false.",
+		spawnTrailer: `You will NOT be notified after your turn ends in this session. Continue with independent work, then join it with get_subagent_result wait: true before ending your turn.
+Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
+		queuedBody: (maxConcurrent: number) =>
+			`Agent is queued behind the background-agent concurrency cap (max ${maxConcurrent} concurrent) and has not started. Join it with get_subagent_result wait: true before ending your turn — notifications are not delivered after the turn ends in this session.`,
+		timedOutBody: (capSeconds: number) =>
+			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed. Call get_subagent_result with wait: true again to keep waiting; do not finish your turn while it runs — notifications are not delivered after the turn ends in this session.`,
+		abortedBody:
+			"Wait cancelled before the agent completed. The result was NOT consumed. Re-call with wait: true to re-join before ending your turn.",
+		runningBody:
+			"Agent is still running. Join it with get_subagent_result wait: true before ending your turn — notifications are not delivered after the turn ends in this session.",
+	},
+} as const
+
+function backgroundText(reachUser: boolean) {
+	return reachUser ? BACKGROUND_TEXT.tui : BACKGROUND_TEXT.detached
+}
+
+/** Agent-tool guidelines for the current surface. `true` (TUI) keeps the
+ *  background-by-default contract; `false` flips to foreground-by-default
+ *  with a join-before-turn-end requirement. */
+export function buildAgentToolGuidelines(backgroundNotificationsReachUser: boolean): string {
+	return backgroundText(backgroundNotificationsReachUser).guidelines
+}
+
+/** `run_in_background` parameter description for the current surface. `true`
+ *  (TUI) keeps the interactive notification promise; `false` describes the
+ *  foreground default and the join-before-turn-end requirement instead of
+ *  promising a notification this surface never delivers. */
+export function buildRunInBackgroundParameterDescription(backgroundNotificationsReachUser: boolean): string {
+	return backgroundText(backgroundNotificationsReachUser).runInBackgroundParameter
+}
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
@@ -1523,7 +1593,7 @@ export default function (pi: ExtensionAPI) {
 
 ${typeListText}
 
-${AGENT_TOOL_GUIDELINES}`,
+${buildAgentToolGuidelines(isTuiSession())}`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -1568,8 +1638,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				),
 				run_in_background: Type.Optional(
 					Type.Boolean({
-						description:
-							"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+						description: buildRunInBackgroundParameterDescription(isTuiSession()),
 					}),
 				),
 				isolated: Type.Optional(
@@ -1920,7 +1989,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 					const isQueued = record?.status === "queued"
 					return textResult(
-						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes — the completion notification will contain the results.\nDo NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.\nUse steer_subagent to send it messages. Do not duplicate this agent's work.`,
+						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\n${backgroundText(backgroundNotificationsReachUser(ctx.mode)).spawnTrailer}`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
 					)
 				}
@@ -2097,6 +2166,8 @@ ${AGENT_TOOL_GUIDELINES}`,
 						visibility,
 					})
 
+					// Ctrl+B is a TUI-only keybinding — this path cannot be reached from
+					// another surface, so the notification promise in this text stays valid.
 					return textResult(
 						`Agent sent to background by the user (Ctrl+B).\nAgent ID: ${spawnedId}\nType: ${displayName}\nDescription: ${params.description}\n${outputFile ? `Output file: ${outputFile}\n` : ""}\nThe agent continues running in the background. You will be notified when it completes.\nDo NOT call get_subagent_result now — that would block and defeat the purpose of backgrounding. Continue with other independent work, or stop your turn and return control to the user. The completion notification will contain the results.`,
 						{
@@ -2211,8 +2282,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}),
 				wait: Type.Optional(
 					Type.Boolean({
-						description:
-							"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
+						description: backgroundText(isTuiSession()).waitParameter,
 					}),
 				),
 				verbose: Type.Optional(
@@ -2276,11 +2346,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 				return new Text(line, 0, 0)
 			},
 
-			execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
+			execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
+
+				// Capture the surface before the bounded join below: `ctx.mode` routes
+				// through the extension runner's assertActive() and throws once the
+				// session is replaced or forked mid-wait (see stale-ctx.ts), but a
+				// timed-out join must still return guidance text, not a tool error.
+				// A session keeps one surface for its lifetime, so the entry-time
+				// capture is equivalent to reading it when building the response.
+				const surfaceMode = ctx.mode
 
 				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
@@ -2310,19 +2388,18 @@ ${AGENT_TOOL_GUIDELINES}`,
 					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
 					`Description: ${record.description}\n\n`
 
+				const texts = backgroundText(backgroundNotificationsReachUser(surfaceMode))
 				let bodyForDisplay: string
 				if (record.status === "queued") {
-					bodyForDisplay = `Agent is queued behind the background-agent concurrency cap (max ${manager.getMaxConcurrent()} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`
+					bodyForDisplay = texts.queuedBody(manager.getMaxConcurrent())
 					output += bodyForDisplay
 				} else if (record.status === "running") {
 					if (waitOutcome === "timed_out") {
-						bodyForDisplay = `Waited ${GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`
+						bodyForDisplay = texts.timedOutBody(GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000)
 					} else if (waitOutcome === "aborted") {
-						bodyForDisplay =
-							"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification."
+						bodyForDisplay = texts.abortedBody
 					} else {
-						bodyForDisplay =
-							"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+						bodyForDisplay = texts.runningBody
 					}
 					output += bodyForDisplay
 				} else if (record.status === "error") {

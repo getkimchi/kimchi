@@ -1,5 +1,59 @@
 import { describe, expect, it } from "vitest"
-import { resolveHasUserLoop } from "./session-user-loop.js"
+import { backgroundNotificationsReachUser, resolveHasUserLoop, resolveIsTuiSession } from "./session-user-loop.js"
+
+describe("resolveIsTuiSession", () => {
+	const base = { stdinIsTTY: true, stdoutIsTTY: true, acpMode: false }
+
+	it("is true for a plain TTY terminal session", () => {
+		expect(resolveIsTuiSession(base)).toBe(true)
+	})
+
+	it("is false for ACP sessions even with TTY IO", () => {
+		expect(resolveIsTuiSession({ ...base, acpMode: true })).toBe(false)
+	})
+
+	it("is false for rpc mode (ACP sessions run as rpc)", () => {
+		expect(resolveIsTuiSession({ ...base, mode: "rpc" })).toBe(false)
+	})
+
+	it("is false for json protocol mode", () => {
+		expect(resolveIsTuiSession({ ...base, mode: "json" })).toBe(false)
+	})
+
+	it("is false for print mode even with TTY IO", () => {
+		expect(resolveIsTuiSession({ ...base, print: true })).toBe(false)
+	})
+
+	it("is false for piped stdin", () => {
+		expect(resolveIsTuiSession({ ...base, stdinIsTTY: false })).toBe(false)
+	})
+
+	it("is false for piped stdout", () => {
+		expect(resolveIsTuiSession({ ...base, stdoutIsTTY: false })).toBe(false)
+	})
+
+	it("is false for rpc over piped IO (how frontends spawn it)", () => {
+		expect(resolveIsTuiSession({ ...base, mode: "rpc", stdinIsTTY: false, stdoutIsTTY: false })).toBe(false)
+	})
+})
+
+describe("backgroundNotificationsReachUser", () => {
+	it("is true only for the TUI", () => {
+		expect(backgroundNotificationsReachUser("tui")).toBe(true)
+	})
+
+	it("is false for rpc (ACP sessions run as rpc)", () => {
+		expect(backgroundNotificationsReachUser("rpc")).toBe(false)
+	})
+
+	it("is false for json mode", () => {
+		expect(backgroundNotificationsReachUser("json")).toBe(false)
+	})
+
+	it("is false for print mode", () => {
+		expect(backgroundNotificationsReachUser("print")).toBe(false)
+	})
+})
 
 describe("resolveHasUserLoop", () => {
 	const base = { stdinIsTTY: true, stdoutIsTTY: true, acpMode: false }
