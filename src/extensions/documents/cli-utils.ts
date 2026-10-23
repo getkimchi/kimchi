@@ -68,6 +68,12 @@ export function atomicWrite(path: string, data: Uint8Array, marker: string): voi
 	}
 }
 
+/** The CLI's writeFile seam resolved: the injected override when present,
+ *  otherwise atomic temp+rename with this CLI's temp marker. */
+export function defaultWriter(io: DocumentCliIo, marker: string): (path: string, data: Uint8Array) => void {
+	return io.writeFile ?? ((path, data) => atomicWrite(path, data, marker))
+}
+
 /** True when this module is the directly executed script entry. */
 export function isInvokedAsScript(metaUrl: string): boolean {
 	const entry = process.argv[1]

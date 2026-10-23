@@ -22,7 +22,7 @@
 
 import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
-import { atomicWrite, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { applyPptxOps, parsePptxOps } from "./editors/pptx.js"
 import { extractPptx } from "./extractors/pptx.js"
 import { MAX_UNITS_PER_CALL } from "./limits.js"
@@ -173,7 +173,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 				} else {
 					bytes = await writePptx(spec, { baseDir: dirname(resolve(contentPath)) })
 				}
-				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "pptx-mjs-tmp"))
+				const writeFile = defaultWriter(io, "pptx-mjs-tmp")
 				writeFile(out, bytes)
 				io.stdout(`created ${out} (${spec.slides.length} slide${spec.slides.length === 1 ? "" : "s"})`)
 				return 0
@@ -225,7 +225,7 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 					)
 				}
 				const bytes = await pkg.save()
-				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "pptx-mjs-tmp"))
+				const writeFile = defaultWriter(io, "pptx-mjs-tmp")
 				writeFile(out, bytes)
 				io.stdout(`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`)
 				return 0

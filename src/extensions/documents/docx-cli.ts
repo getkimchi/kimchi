@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { atomicWrite, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { RealClock } from "./clock.js"
 import { applyDocxOps, parseDocxOps } from "./editors/docx.js"
 import { extractDocx } from "./extractors/docx.js"
@@ -27,9 +27,6 @@ import { requireNoProblems, validateContentTypes } from "./ooxml/validate.js"
 import { sameFile } from "./paths.js"
 import { defaultWhich, findSoffice } from "./soffice.js"
 import { type PageSizeName, writeDocx } from "./writers/docx.js"
-
-const outputFor = (io: CliIo): NonNullable<CliIo["writeFile"]> =>
-	io.writeFile ?? ((path, data) => atomicWrite(path, data, "docx-mjs-tmp"))
 
 export interface CliIo {
 	stdout: (line: string) => void
@@ -171,7 +168,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 				const finalBytes = templatePath
 					? await applyTemplate(bytes, readBytes(readFile, templatePath), templatePath)
 					: bytes
-				const writeFile = outputFor(io)
+				const writeFile = defaultWriter(io, "docx-mjs-tmp")
 				writeFile(out, finalBytes)
 				io.stdout(`created ${out} (${blocks.length} block${blocks.length === 1 ? "" : "s"})`)
 				return 0
@@ -214,7 +211,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 					`post-edit package validation for ${input} — fix the op and retry; the input is unchanged`,
 				)
 				const bytes = await pkg.save()
-				const writeFile = outputFor(io)
+				const writeFile = defaultWriter(io, "docx-mjs-tmp")
 				writeFile(out, bytes)
 
 				// Post-write summary: re-read the output, list per-op results and
@@ -283,7 +280,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 						)
 					}
 					const pdfPath = staged.replace(/\.docx$/i, ".pdf")
-					const writeFile = outputFor(io)
+					const writeFile = defaultWriter(io, "docx-mjs-tmp")
 					writeFile(out, new Uint8Array(readFileSync(pdfPath)))
 					io.stdout(`rendered ${input} -> ${out} via LibreOffice`)
 					return 0
@@ -355,5 +352,4 @@ export async function applyTemplate(
 	return out.save()
 }
 
-/** Write via temp + rename so an interrupted create never leaves a half file. */
 runCliScript(import.meta.url, runDocxCli)

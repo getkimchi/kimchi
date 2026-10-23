@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
-import { atomicWrite, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { RealClock } from "./clock.js"
 import { applyXlsxOps, assertWellFormedParts, type XlsxOp } from "./editors/xlsx.js"
 import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.js"
@@ -168,7 +168,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					throw new DocumentError("corrupt", `spec is not valid JSON: ${specPath}`, "xlsx")
 				}
 				const { bytes, warnings, formulas } = await writeXlsx(spec, { clock: RealClock })
-				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "xlsx-mjs-tmp"))
+				const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 				writeFile(out, bytes)
 				io.stdout(`created ${out} (${spec.sheets.length} sheet(s)${formulas > 0 ? `, ${formulas} formula(s)` : ""})`)
 				for (const warning of warnings) io.stderr(`warning: ${warning}`)
@@ -219,7 +219,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				// Nothing leaves the box malformed: every touched part must parse.
 				assertWellFormedParts(pkg, result.touchedParts)
 				const bytes = await pkg.save()
-				const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "xlsx-mjs-tmp"))
+				const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 				writeFile(out, bytes)
 				const lines = [
 					`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`,
@@ -284,7 +284,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 						)
 					}
 					const converted = new Uint8Array(readFileSync(staged))
-					const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "xlsx-mjs-tmp"))
+					const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 					writeFile(out, converted)
 					const doc = await extractXlsx(converted)
 					const errorCounts = new Map<string, number>()

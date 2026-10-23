@@ -34,7 +34,7 @@ import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { PDFDocument } from "@cantoo/pdf-lib"
 import { type BrowserDeps, htmlToPdf } from "./browser.js"
-import { atomicWrite, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { fillForm, listFields, mergePdfs, reorderPdf, rotatePdf, splitPdf } from "./editors/pdf.js"
 import { extractPdf, pdfInfo } from "./extractors/pdf.js"
 import { MAX_UNITS_PER_CALL } from "./limits.js"
@@ -142,7 +142,7 @@ async function verifyOutput(bytes: Uint8Array, path: string): Promise<void> {
 
 export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 	const readFile = io.readFile ?? ((path: string) => new Uint8Array(readFileSync(path)))
-	const writeFile = io.writeFile ?? ((path, data) => atomicWrite(path, data, "pdf-mjs-tmp"))
+	const writeFile = defaultWriter(io, "pdf-mjs-tmp")
 	const [command, ...rest] = argv
 	try {
 		switch (command) {
@@ -164,7 +164,8 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 				io.stdout(rendered.text)
 				if (wanted && wanted.length > MAX_UNITS_PER_CALL) {
 					const remaining = wanted.slice(MAX_UNITS_PER_CALL)
-					const shown = window ?? []
+					const shown = window
+					if (!shown?.length) throw new DocumentError("corrupt", "window invariant broken", "pdf")
 					io.stderr(
 						`showing pages ${shown[0]}-${shown[shown.length - 1]} of the requested range; continue with: read ${path} ${remaining[0]}-${remaining[remaining.length - 1]}`,
 					)
