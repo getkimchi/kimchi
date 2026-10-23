@@ -363,6 +363,27 @@ function formatKimchiTokenError(error: unknown, options: { saved: boolean }): st
 	return `Kimchi model refresh failed: ${detail}.${savedSuffix}`
 }
 
+/**
+ * Apply the post-login model selection: keep a prior Kimchi model (login is a
+ * credential/registry refresh, not a model switch), otherwise select the first
+ * model from the registry and announce it. A preserved prior model stays
+ * silent — the user already knows what they're running.
+ */
+async function applyPostLoginModel(host: KimchiBrowserLoginHost, providerModels: ProviderModelLike[]): Promise<void> {
+	const priorModel = host.getCurrentModel?.()
+	const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
+	const selectedModel = priorKimchiModel
+		? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
+		: providerModels[0]
+	if (!priorKimchiModel) {
+		await host.setModel?.(selectedModel)
+	}
+	// Announce the model whenever login auto-selected one: the first model
+	// in the registry is dynamic, so the user can't predict it.
+	const announceModel = priorKimchiModel ? undefined : selectedModel.id
+	host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+}
+
 async function configureKimchiToken(
 	host: KimchiBrowserLoginHost,
 	token: string,
@@ -412,22 +433,7 @@ async function configureKimchiToken(
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		// If a Kimchi provider model is already active, keep it: login is a
-		// credential/registry refresh, not a model switch. The user picked the
-		// model for a reason; clobbering it on every login is hostile.
-		const priorModel = host.getCurrentModel?.()
-		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
-		const selectedModel = priorKimchiModel
-			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
-			: providerModels[0]
-		if (!priorKimchiModel) {
-			await host.setModel?.(selectedModel)
-		}
-		// Announce the model whenever login auto-selected one: the first model
-		// in the registry is dynamic, so the user can't predict it. A preserved
-		// prior Kimchi model carries no information the user doesn't already have.
-		const announceModel = priorKimchiModel ? undefined : selectedModel.id
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+		await applyPostLoginModel(host, providerModels)
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
 		return true
@@ -519,21 +525,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		// If a Kimchi provider model is already active, keep it: login is a
-		// credential/registry refresh, not a model switch.
-		const priorModel = host.getCurrentModel?.()
-		const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
-		const selectedModel = priorKimchiModel
-			? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
-			: providerModels[0]
-		if (!priorKimchiModel) {
-			await host.setModel?.(selectedModel)
-		}
-		// Announce the model whenever login auto-selected one: the first model
-		// in the registry is dynamic, so the user can't predict it. A preserved
-		// prior Kimchi model carries no information the user doesn't already have.
-		const announceModel = priorKimchiModel ? undefined : selectedModel.id
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+		await applyPostLoginModel(host, providerModels)
 		return true
 	}
 
