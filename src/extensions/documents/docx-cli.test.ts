@@ -34,6 +34,15 @@ async function withEnvCap<T>(mb: number | undefined, fn: () => Promise<T>): Prom
 }
 
 describe("docx-cli read", () => {
+	it("reports malformed XML as a typed corrupt error (exit 2, no stack trace)", async () => {
+		const bad = await makeCustomDocx("<w:p><w:r><w:t>oops")
+		const { io, err } = ioCapture({ "bad.docx": bad })
+		const code = await runDocxCli(["read", "bad.docx"], io)
+		expect(code).toBe(2)
+		expect(err[0]).toContain("error [corrupt]:")
+		expect(err[0]).not.toContain("Error:")
+	})
+
 	it("renders a window with the file header and locators", async () => {
 		const { io, out, err } = ioCapture({ "in.docx": await makeSimpleDocx() })
 		const code = await runDocxCli(["read", "in.docx"], io)

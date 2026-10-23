@@ -283,8 +283,21 @@ export function makeSimpleDocx(): Promise<Uint8Array> {
 	})
 }
 
-/** Generic DOCX: caller supplies the `w:body` inner XML and any side parts. */
-export function makeCustomDocx(bodyInner: string, extraParts: Record<string, string> = {}): Promise<Uint8Array> {
+/**
+ * Root namespace set of a Word 2010+ document.xml (the real producer's
+ * shape): the prefixes our own writer never emits, including `mc:Ignorable`.
+ * Any parser that hardcodes its own namespace list must work on something
+ * shaped like this — see `makeOfficeShapedDocx`.
+ */
+export const OFFICE_DOCX_ROOT_NS = `xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w="${DOCX_MAIN}" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wpi="http://schemas.microsoft.com/office/word/2010/wordprocessingInk" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" mc:Ignorable="w14 w15 wp14"`
+
+/** Generic DOCX: caller supplies the `w:body` inner XML and any side parts.
+ *  `rootAttrs` overrides the `<w:document>` attributes (default: xmlns:w only). */
+export function makeCustomDocx(
+	bodyInner: string,
+	extraParts: Record<string, string> = {},
+	opts: { rootAttrs?: string } = {},
+): Promise<Uint8Array> {
 	const zip = new JSZip()
 	zip.file(
 		"[Content_Types].xml",
@@ -315,8 +328,134 @@ export function makeCustomDocx(bodyInner: string, extraParts: Record<string, str
 	zip.file(
 		"word/document.xml",
 		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="${DOCX_MAIN}"><w:body>${bodyInner}<w:sectPr/></w:body></w:document>`,
+<w:document ${opts.rootAttrs ?? `xmlns:w="${DOCX_MAIN}"`}><w:body>${bodyInner}<w:sectPr/></w:body></w:document>`,
 	)
 	for (const [name, content] of Object.entries(extraParts)) zip.file(name, content)
+	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+}
+/**
+ * A document shaped like Word 2010+ writes it: the full root namespace set
+ * with `mc:Ignorable`, `w14:paraId`/`w14:textId` on paragraphs, and an
+ * `mc:AlternateContent` text box (a real producer's output, not a round-trip
+ * through our own writer). Ground truth: heading "Board Pack", plain
+ * paragraph "Quarterly review.", table (Board|Seats, Custos|12), and the
+ * text-box words "text box words".
+ */
+export function makeOfficeShapedDocx(): Promise<Uint8Array> {
+	const body = `
+<w:p w14:paraId="3A7B4F2D" w14:textId="10101010"><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Board Pack</w:t></w:r></w:p>
+<w:p w14:paraId="11111111" w14:textId="22222222"><w:r><w:t>Quarterly review.</w:t></w:r></w:p>
+<w:p w14:paraId="33333333" w14:textId="44444444"><w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:inline><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>text box words</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice><mc:Fallback><w:pict/></mc:Fallback></mc:AlternateContent></w:r></w:p>
+<w:tbl>
+<w:tr><w:tc><w:p w14:paraId="55555555"><w:r><w:t>Board</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Seats</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:t>Custos</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>12</w:t></w:r></w:p></w:tc></w:tr>
+</w:tbl>`
+	return makeCustomDocx(
+		body,
+		{
+			"word/styles.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="${DOCX_MAIN}">
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+</w:styles>`,
+		},
+		{ rootAttrs: OFFICE_DOCX_ROOT_NS },
+	)
+}
+
+// --- XLSX builders -----------------------------------------------------------
+
+export interface XlsxSheetFixture {
+	name: string
+	/** Inner XML of the worksheet (rows etc). */
+	inner: string
+	state?: "hidden" | "veryHidden"
+}
+
+/**
+ * Minimal self-authored XLSX: two sheets (Data visible, Scratch hidden),
+ * shared strings, styles with a custom date numFmt (id 164), formulas with
+ * cached values, a boolean, an inline string and a merged range.
+ */
+export function makeSimpleXlsx(): Promise<Uint8Array> {
+	return makeCustomXlsx([
+		{
+			name: "Data",
+			inner: `
+<dimension ref="A1:D3"/>
+<mergeCells count="1"><mergeCell ref="B4:C4"/></mergeCells>
+<sheetData>
+<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>2.5</v></c><c r="C1" s="1"><v>45292</v></c><c r="D1"><f>A1&amp;B1</f><v>0</v></c></row>
+<row r="2"><c r="A2" t="inlineStr"><is><t>inline note</t></is></c><c r="B2" t="b"><v>1</v></c><c r="C2" s="1"><v>46022</v></c><c r="D2"><f>SUM(B1:B2)</f><v>1.5</v></c></row>
+<row r="3"><c r="A3" t="e"><v>#DIV/0!</v></c><c r="B3"><v>-7</v></c></row>
+</sheetData>`,
+		},
+		{ name: "Scratch", state: "hidden", inner: `<sheetData><row r="1"><c r="A1"><v>99</v></c></row></sheetData>` },
+	])
+}
+
+/** Custom XLSX from sheet fixtures; styles carry numFmt 164 "yyyy-mm-dd". */
+export function makeCustomXlsx(sheets: XlsxSheetFixture[], opts: { date1904?: boolean } = {}): Promise<Uint8Array> {
+	const zip = new JSZip()
+	const M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+	zip.file(
+		"[Content_Types].xml",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+${sheets.map((_, i) => `  <Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("\n")}
+</Types>`,
+	)
+	zip.file(
+		"_rels/.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"xl/_rels/workbook.xml.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+${sheets.map((_, i) => `  <Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("\n")}
+  <Relationship Id="rIdSS" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+  <Relationship Id="rIdST" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"xl/workbook.xml",
+		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  ${opts.date1904 ? '<workbookPr date1904="1"/>' : ""}
+  <sheets>
+${sheets.map((s, i) => `    <sheet name="${s.name}" sheetId="${i + 1}"${s.state ? ` state="${s.state}"` : ""} r:id="rId${i + 1}"/>`).join("\n")}
+  </sheets>
+</workbook>`,
+	)
+	zip.file(
+		"xl/sharedStrings.xml",
+		`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="${M}" count="1" uniqueCount="1"><si><t>padding cell</t></si></sst>`,
+	)
+	zip.file(
+		"xl/styles.xml",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="${M}">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy\\\\-mm\\\\-dd"/></numFmts>
+  <fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs>
+</styleSheet>`,
+	)
+	for (const [i, sh] of sheets.entries()) {
+		zip.file(
+			`xl/worksheets/sheet${i + 1}.xml`,
+			`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="${M}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${sh.inner}</worksheet>`,
+		)
+	}
 	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 }

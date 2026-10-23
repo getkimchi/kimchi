@@ -5,6 +5,7 @@
  */
 
 import { DOMParser, type Element, XMLSerializer, type Document as XmlDocument } from "@xmldom/xmldom"
+import { DocumentError } from "../model.js"
 
 export const NS = {
 	w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -27,14 +28,113 @@ export function parseXml(source: string): XmlDocument {
 			},
 		}).parseFromString(source, "text/xml")
 	} catch (err) {
-		throw new Error(`XML parse failed: ${(err as Error).message}`)
+		throw new DocumentError("corrupt", `XML parse failed: ${(err as Error).message}`)
 	}
-	if (errors.length > 0) throw new Error(`XML parse failed: ${errors.join("; ")}`)
+	if (errors.length > 0) throw new DocumentError("corrupt", `XML parse failed: ${errors.join("; ")}`)
 	return doc
 }
 
 export function serializeXml(doc: XmlDocument): string {
 	return new XMLSerializer().serializeToString(doc)
+}
+
+/**
+ * Namespace declarations of `xml`'s root start tag, as canonical
+ * `xmlns:p="uri"` / `xmlns="uri"` strings. String-scan only — no DOM — so
+ * callers parsing fragments of a huge part can reuse them cheaply. Attributes
+ * may use single or double quotes; the returned strings always use double.
+ */
+export function rootNamespaceDecls(xml: string): string[] {
+	// Skip the prolog: whitespace, XML declarations and comments.
+	let i = 0
+	for (;;) {
+		while (i < xml.length && xml.charCodeAt(i) <= 32) i++
+		if (xml.startsWith("<?", i)) {
+			const end = xml.indexOf("?>", i + 2)
+			if (end < 0) return []
+			i = end + 2
+			continue
+		}
+		if (xml.startsWith("<!--", i)) {
+			const end = xml.indexOf("-->", i + 4)
+			if (end < 0) return []
+			i = end + 3
+			continue
+		}
+		break
+	}
+	if (xml[i] !== "<" || xml[i + 1] === "!" || xml[i + 1] === "?") return []
+	// Scan the start tag quote-aware so a `>` inside an attribute can't end it.
+	let inQuote: string | undefined
+	let j = i
+	for (; j < xml.length; j++) {
+		const ch = xml[j]
+		if (inQuote) {
+			if (ch === inQuote) inQuote = undefined
+		} else if (ch === '"' || ch === "'") {
+			inQuote = ch
+		} else if (ch === ">") {
+			break
+		}
+	}
+	const startTag = xml.slice(i, j)
+	const out: string[] = []
+	const re = /[\s>/]xmlns(?::([\w.-]+))?\s*=\s*("([^"]*)"|'([^']*)')/g
+	for (let m = re.exec(startTag); m !== null; m = re.exec(startTag)) {
+		out.push(`xmlns${m[1] ? `:${m[1]}` : ""}="${m[3] ?? m[4] ?? ""}"`)
+	}
+	return out
+}
+
+/**
+ * Namespace declarations usable for parsing FRAGMENTS of `partXml`: the
+ * declarations on the part's root, plus any `required` prefix the root
+ * doesn't declare (a defensive fallback for parts that declare `w:`/`r:`
+ * only inside rare attributes). Returns a single space-joined string.
+ */
+export function fragmentNamespaces(partXml: string, required: { prefix: string; uri: string }[]): string {
+	const decls = rootNamespaceDecls(partXml)
+	const declared = new Set(decls.map((d) => d.slice(5, d.indexOf("=")))) // "" for default, ":w" for prefixed
+	for (const req of required) {
+		const key = req.prefix === "" ? "" : `:${req.prefix}`
+		if (!declared.has(key)) decls.push(`xmlns${key}="${req.uri}"`)
+	}
+	return decls.join(" ")
+}
+
+/**
+ * Parse a fragment of a part by wrapping it in `<wrapperQName nsDecls…>`.
+ * The fragment relies on its part's root xmlns declarations, so callers are
+ * expected to pass `fragmentNamespaces(partXml, …)` — xmldom rejects any
+ * prefix it cannot resolve (NamespaceError at parse time).
+ */
+export function parseFragment(fragment: string, wrapperQName: string, nsDecls: string): XmlDocument {
+	const attrs = nsDecls ? ` ${nsDecls}` : ""
+	return parseXml(`<${wrapperQName}${attrs}>${fragment}</${wrapperQName}>`)
+}
+
+/**
+ * Serialize the wrapper's children back to fragment shape. xmldom hoists the
+ * wrapper's xmlns declarations onto its children; strip exactly the
+ * declarations in `nsDecls` so the result keeps the fragment's original
+ * byte shape. A decl redeclared inside the fragment with the SAME prefix
+ * and URI is semantically identical, so stripping it is neutral; a
+ * redeclaration with a different URI is preserved (strip matches the full
+ * `prefix="uri"` pair).
+ */
+export function serializeFragmentChildren(doc: XmlDocument, nsDecls: string): string {
+	const ser = new XMLSerializer()
+	const root = doc.documentElement
+	if (!root) return ""
+	let out = ""
+	for (let i = 0; i < root.childNodes.length; i++) {
+		const node = root.childNodes.item(i)
+		if (node) out += ser.serializeToString(node)
+	}
+	for (const decl of nsDecls.split(" ")) {
+		if (decl) out = out.replaceAll(` ${decl}`, "")
+	}
+	return out
 }
 
 /**

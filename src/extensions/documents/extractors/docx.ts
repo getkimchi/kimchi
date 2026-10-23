@@ -23,7 +23,20 @@ import { MAX_OUTPUT_CHARS } from "../limits.js"
 import { renderMarkdownTable } from "../markdown-table.js"
 import { DocumentError } from "../model.js"
 import { type OoxmlPackage, openOoxml } from "../ooxml/package.js"
-import { byTag, parseXml } from "../ooxml/xml.js"
+import { byTag, fragmentNamespaces, parseFragment, parseXml } from "../ooxml/xml.js"
+
+/**
+ * Namespace fallback for fragments when the document root doesn't declare
+ * the prefixes itself. Office documents declare these (and many more) on
+ * `<w:document>`; only hostile or non-Office files need the fallback. A
+ * prefix that IS declared on the root wins, so real files parse with their
+ * own declarations — including Word's `w14:`, `w15:`, `mc:`, `wps:`, …
+ */
+export const FRAGMENT_REQUIRED = [
+	{ prefix: "w", uri: "http://schemas.openxmlformats.org/wordprocessingml/2006/main" },
+	{ prefix: "a", uri: "http://schemas.openxmlformats.org/drawingml/2006/main" },
+	{ prefix: "r", uri: "http://schemas.openxmlformats.org/officeDocument/2006/relationships" },
+]
 
 /** Raw cap for OOXML side parts parsed fully into memory (document.xml and
  *  worksheet parts follow the windowed path instead). */
@@ -68,10 +81,6 @@ export interface BlockSpan {
 	start: number
 	end: number
 }
-
-const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-const WRAP_OPEN =
-	'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
 
 function decodePart(pkg: OoxmlPackage, name: string): string | undefined {
 	const bytes = pkg.getBytes(name)
@@ -390,6 +399,10 @@ export async function extractDocx(data: Uint8Array): Promise<DocxExtraction> {
 		infoModifiedBy = pick("lastModifiedBy")
 	}
 
+	// Namespace declarations every block fragment parses under, derived from
+	// the document root (Word's full `w14:`/`mc:`/`wps:` set included).
+	const nsDecls = fragmentNamespaces(documentXml, FRAGMENT_REQUIRED)
+
 	const extractionNotes: string[] = []
 	if (trackedChanges) extractionNotes.push("contains tracked changes — shown as annotations, never applied")
 	if (notes.comments.size > 0) extractionNotes.push(`contains ${notes.comments.size} comment(s)`)
@@ -416,7 +429,7 @@ export async function extractDocx(data: Uint8Array): Promise<DocxExtraction> {
 		const span = blocks[i]
 		const num = ordinals[i]
 		const fragment = documentXml.slice(span.start, span.end)
-		const wrapped = parseXml(`${XML_DECL}${WRAP_OPEN}${fragment}</w:document>`)
+		const wrapped = parseFragment(fragment, "w:document", nsDecls)
 		if (span.kind === "tbl") {
 			return tableMarkdown(byTag(wrapped, "tbl")[0], num)
 		}

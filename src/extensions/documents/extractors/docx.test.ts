@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomDocx, makeSimpleDocx } from "../fixtures/builders.js"
+import { makeCustomDocx, makeOfficeShapedDocx, makeSimpleDocx } from "../fixtures/builders.js"
 import { DocumentError } from "../model.js"
 import { extractDocx } from "./docx.js"
 
@@ -31,6 +31,21 @@ describe("extractDocx", () => {
 		expect(w.markdown).toContain("With footnote[^1]")
 		expect(w.markdown).toContain("### Footnotes")
 		expect(w.markdown).toContain("[^1]: Source: internal data.")
+	})
+
+	it("reads a Word 2010+ shaped document (w14/mc/AlternateContent namespaces)", async () => {
+		const doc = await extractDocx(await makeOfficeShapedDocx())
+		expect(doc.totalBlocks).toBe(4)
+		expect(doc.tables).toBe(1)
+		expect(doc.outline).toEqual(["b1: # Board Pack"])
+		const w = doc.window({ start: 1, end: 4 })
+		expect(w.truncated).toBe(false)
+		const lines = w.markdown.split("\n")
+		expect(lines).toContain("p1: # Board Pack")
+		expect(lines).toContain("p2: Quarterly review.")
+		expect(lines.some((l) => l.includes("text box words"))).toBe(true)
+		expect(lines).toContain("| Board | Seats |")
+		expect(lines).toContain("| Custos | 12 |")
 	})
 
 	it("produces a whole-document outline of headings with block locators", async () => {

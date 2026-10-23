@@ -20,13 +20,19 @@
  * bullet-marked paragraphs). Images and tables are rejected with guidance.
  */
 
-import type { Element as XmlElement } from "@xmldom/xmldom"
-import { XMLSerializer } from "@xmldom/xmldom"
-import { scanBlocks, stripTags } from "../extractors/docx.js"
+import type { Document as XmlDocument, Element as XmlElement } from "@xmldom/xmldom"
+import { FRAGMENT_REQUIRED, scanBlocks, stripTags } from "../extractors/docx.js"
 import { type Block, type Inline, parseMarkdownBlocks } from "../markdown/blocks.js"
 import { DocumentError } from "../model.js"
 import type { OoxmlPackage } from "../ooxml/package.js"
-import { byTag, childElements, parseXml, setTextPreservingSpace } from "../ooxml/xml.js"
+import {
+	byTag,
+	childElements,
+	fragmentNamespaces,
+	parseFragment as parseFragmentWithNs,
+	serializeFragmentChildren,
+	setTextPreservingSpace,
+} from "../ooxml/xml.js"
 
 export type DocxOp =
 	| { type: "replace-text"; anchor: string; value: string; all?: boolean }
@@ -191,32 +197,17 @@ export function markdownToBodyXml(markdown: string): string {
 // --- Fragment DOM helpers ------------------------------------------------------
 
 /**
- * Parse a body-block fragment with namespace declarations injected (the raw
- * fragment relies on the document root's xmlns declarations). The wrapper is
- * stripped again when serializing back.
+ * Parse a body-block fragment under the document root's own namespace
+ * declarations (computed once per edit; the raw fragment relies on the
+ * root's xmlns declarations). The wrapper is stripped again on serialize.
  */
-function parseFragment(fragment: string): ReturnType<typeof parseXml> {
-	return parseXml(
-		`<w:body xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${fragment}</w:body>`,
-	)
+function parseFragment(fragment: string, nsDecls: string): XmlDocument {
+	return parseFragmentWithNs(fragment, "w:body", nsDecls)
 }
 
 /** Serialize the wrapper's children back to the original fragment shape. */
-function serializeFragment(dom: ReturnType<typeof parseXml>): string {
-	const ser = new XMLSerializer()
-	const root = dom.documentElement
-	if (!root) return ""
-	let out = ""
-	for (let i = 0; i < root.childNodes.length; i++) {
-		const node = root.childNodes.item(i)
-		if (node) out += ser.serializeToString(node)
-	}
-	// xmldom hoists the wrapper's xmlns declarations onto its children;
-	// strip the ones we injected so the document keeps its original shape.
-	return out
-		.replaceAll(' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"', "")
-		.replaceAll(' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"', "")
-		.replaceAll(' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"', "")
+function serializeFragment(dom: XmlDocument, nsDecls: string): string {
+	return serializeFragmentChildren(dom, nsDecls)
 }
 
 // --- Paragraph-level text surgery ---------------------------------------------
@@ -281,6 +272,9 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 	let documentXml = new TextDecoder().decode(raw)
 	const trackedChangesPresent = /<w:(ins|del)\b/.test(documentXml)
 	const result: ApplyDocxOpsResult = { applied: [], trackedChangesPresent, commentsAdded: 0 }
+	// Namespace declarations for every fragment parse, derived from the
+	// document root (Office's `w14:`/`w15:`/`mc:`/`wps:` set included).
+	const nsDecls = fragmentNamespaces(documentXml, FRAGMENT_REQUIRED)
 
 	const bodyOpen = (xml: string) => {
 		const m = /<w:body\b[^>]*>/.exec(xml)
@@ -368,7 +362,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 						throw new DocumentError("corrupt", `${label}: block ${blockIndex + 1} is not a paragraph`, "docx")
 					}
 					const fragment = documentXml.slice(span.start, span.end)
-					const dom = parseFragment(fragment)
+					const dom = parseFragment(fragment, nsDecls)
 					if (!replaceAcrossRuns(dom.documentElement as XmlElement, op.anchor, op.value)) {
 						throw new DocumentError(
 							"corrupt",
@@ -376,7 +370,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 							"docx",
 						)
 					}
-					replaceSpan(span, serializeFragment(dom))
+					replaceSpan(span, serializeFragment(dom, nsDecls))
 					count++
 				}
 				result.applied.push(`${label}: replaced in ${count} paragraph(s)`)
@@ -425,7 +419,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				if (!span) {
 					throw new DocumentError("corrupt", `${label}: no table ${op.table} (document has ${tables.length})`, "docx")
 				}
-				const dom = parseFragment(documentXml.slice(span.start, span.end))
+				const dom = parseFragment(documentXml.slice(span.start, span.end), nsDecls)
 				const rows = byTag(dom, "tr")
 				const row = rows[op.row - 1]
 				if (!row) {
@@ -456,7 +450,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				setTextPreservingSpace(t as XmlElement, op.value)
 				run.appendChild(t)
 				keep.appendChild(run)
-				replaceSpan(span, serializeFragment(dom))
+				replaceSpan(span, serializeFragment(dom, nsDecls))
 				result.applied.push(`${label}: set table ${op.table} row ${op.row} column ${op.column}`)
 				break
 			}

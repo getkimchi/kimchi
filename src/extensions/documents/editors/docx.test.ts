@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { extractDocx } from "../extractors/docx.js"
-import { makeCustomDocx, makeSimpleDocx } from "../fixtures/builders.js"
+import { makeCustomDocx, makeOfficeShapedDocx, makeSimpleDocx } from "../fixtures/builders.js"
 import { openOoxml } from "../ooxml/package.js"
 import { applyDocxOps, markdownToBodyXml, parseDocxOps } from "./docx.js"
 
@@ -42,6 +42,29 @@ describe("applyDocxOps", () => {
 		expect(out.blockText(2)).toBe("Revenue soared in Q3.")
 		// untouched content intact (other paragraphs unchanged)
 		expect(out.blockText(1)).toBe("Quarterly Report")
+	})
+
+	it("edits a Word 2010+ shaped document, keeping w14 attributes and bytes elsewhere", async () => {
+		const data = await makeOfficeShapedDocx()
+		const before = await openDocx(data)
+		const beforeXml = new TextDecoder().decode(before.getBytes("word/document.xml"))
+		const pkg = await openDocx(data)
+		applyDocxOps(pkg, parseDocxOps([{ type: "replace-text", anchor: "Quarterly", value: "Annual" }]))
+		const afterXml = new TextDecoder().decode(pkg.getBytes("word/document.xml"))
+		// Edited paragraph keeps its w14 attributes …
+		expect(afterXml).toContain('w14:paraId="11111111"')
+		expect(afterXml).toContain("Annual")
+		// … and every byte outside the edited block is unchanged.
+		const stripBlock = (xml: string) => xml.replace(/<w:p w14:paraId="11111111"[\s\S]*?<\/w:p>/, "<BLOCK/>")
+		expect(stripBlock(afterXml)).toBe(stripBlock(beforeXml))
+		expect(stripBlock(afterXml)).not.toBe(afterXml) // sanity: the replacement matched
+		// No namespace declarations injected below the root.
+		const docEnd = afterXml.indexOf(">", afterXml.indexOf("<w:document"))
+		const belowRoot = afterXml.slice(docEnd + 1)
+		expect(belowRoot).not.toContain("xmlns:")
+		// And the edit round-trips through the extractor.
+		const out = await extractDocx(await saved(pkg))
+		expect(out.blockText(2)).toBe("Annual review.")
 	})
 
 	it("keeps the first run's formatting when the match spans runs", async () => {
