@@ -13,23 +13,13 @@
  */
 
 import { spawnSync } from "node:child_process"
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { RealClock } from "./clock.js"
 import { applyDocxOps, parseDocxOps } from "./editors/docx.js"
 import { extractDocx } from "./extractors/docx.js"
-import { maxFileBytes } from "./limits.js"
 import { parseMarkdownBlocks } from "./markdown/blocks.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { openOoxml } from "./ooxml/package.js"
@@ -74,30 +64,6 @@ function rejectLegacyOrEncrypted(input: string, data: Uint8Array): void {
 			"docx",
 		)
 	}
-}
-
-function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
-	try {
-		return io(path)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot read ${path}: ${(err as Error).message}`)
-	}
-}
-
-function enforceSizeCap(path: string, data: Uint8Array): void {
-	const cap = maxFileBytes()
-	if (data.length > cap) {
-		throw new DocumentError(
-			"too-large",
-			`${path} is ${(data.length / 1024 / 1024).toFixed(1)} MB, over the ${cap / 1024 / 1024} MB document cap. Raise it with KIMCHI_DOCUMENT_MAX_MB.`,
-			"docx",
-		)
-	}
-}
-
-function flagValue(flags: string[], name: string): string | undefined {
-	const i = flags.indexOf(name)
-	return i >= 0 ? flags[i + 1] : undefined
 }
 
 /** Per-call window length (body blocks); smaller than the 50 KB char cap
@@ -202,7 +168,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 				const finalBytes = templatePath
 					? await applyTemplate(bytes, readBytes(readFile, templatePath), templatePath)
 					: bytes
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = defaultWriter(io, "docx-mjs-tmp")
 				writeFile(out, finalBytes)
 				io.stdout(`created ${out} (${blocks.length} block${blocks.length === 1 ? "" : "s"})`)
 				return 0
@@ -245,7 +211,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 					`post-edit package validation for ${input} — fix the op and retry; the input is unchanged`,
 				)
 				const bytes = await pkg.save()
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = defaultWriter(io, "docx-mjs-tmp")
 				writeFile(out, bytes)
 
 				// Post-write summary: re-read the output, list per-op results and
@@ -314,7 +280,7 @@ export async function runDocxCli(argv: string[], io: CliIo): Promise<number> {
 						)
 					}
 					const pdfPath = staged.replace(/\.docx$/i, ".pdf")
-					const writeFile = io.writeFile ?? atomicWrite
+					const writeFile = defaultWriter(io, "docx-mjs-tmp")
 					writeFile(out, new Uint8Array(readFileSync(pdfPath)))
 					io.stdout(`rendered ${input} -> ${out} via LibreOffice`)
 					return 0
@@ -386,43 +352,4 @@ export async function applyTemplate(
 	return out.save()
 }
 
-/** Write via temp + rename so an interrupted create never leaves a half file. */
-function atomicWrite(path: string, data: Uint8Array): void {
-	const temp = `${path}.docx-mjs-tmp.${process.pid}.${++atomicWriteCounter}`
-	try {
-		writeFileSync(temp, data)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot write ${path}: ${(err as Error).message}`)
-	}
-	try {
-		renameSync(temp, path)
-	} catch (err) {
-		try {
-			unlinkSync(temp)
-		} catch {
-			// temp cleanup is best-effort; the OS reclaims temp files
-		}
-		throw new DocumentError("corrupt", `Cannot move output into place at ${path}: ${(err as Error).message}`)
-	}
-}
-
-let atomicWriteCounter = 0
-
-const invokedAsScript = (() => {
-	const entry = process.argv[1]
-	if (!entry) return false
-	try {
-		return realpathSync(entry) === fileURLToPath(import.meta.url)
-	} catch {
-		return false
-	}
-})()
-
-if (invokedAsScript) {
-	runDocxCli(process.argv.slice(2), {
-		stdout: (line) => console.log(line),
-		stderr: (line) => console.error(line),
-	}).then((code) => {
-		process.exitCode = code
-	})
-}
+runCliScript(import.meta.url, runDocxCli)

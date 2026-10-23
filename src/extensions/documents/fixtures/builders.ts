@@ -6,6 +6,21 @@
 
 import JSZip from "jszip"
 
+import type { OoxmlPackage } from "../ooxml/package.js"
+
+/** Read a zip part's raw bytes; throws when the part is missing — a readable
+ * failure instead of a non-null assertion in test code. */
+export function partBytes(pkg: OoxmlPackage, name: string): Uint8Array {
+	const bytes = pkg.getBytes(name)
+	if (!bytes) throw new Error(`fixture part missing: ${name}`)
+	return bytes
+}
+
+/** Same, decoded as UTF-8 text. */
+export function partText(pkg: OoxmlPackage, name: string): string {
+	return new TextDecoder().decode(partBytes(pkg, name))
+}
+
 export async function makeSimplePptx(): Promise<Uint8Array> {
 	const zip = new JSZip()
 	zip.file(

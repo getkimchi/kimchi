@@ -270,7 +270,8 @@ function collectSkillNames(dir: string, out: Set<string>): void {
 /**
  * Bundled skills may carry `requires-resource: <id>` in their SKILL.md
  * frontmatter. Such skills are advertised only while that resource toggle is
- * enabled (e.g. the documents skill behind `extensions.documents`), which is
+ * enabled (e.g. the document skills — xlsx/pdf/docx/pptx — each gated
+ * behind its `skills.<format>` resource), which is
  * what keeps a disabled experimental toggle's skill list identical to a
  * build without the feature.
  */
@@ -295,9 +296,9 @@ function bundledSkillDisabledByResource(bundledDir: string, name: string): boole
  * path — ~/.claude/skills and trusted project .claude/skills). The list is
  * inert while the declaring skill's own `requires-resource` toggle is off,
  * so a disabled experimental toggle stays byte-identical to a build without
- * the feature. The documents skill uses this to suppress the Anthropic
- * office skills (xlsx/pdf/docx/pptx) whose pip/LibreOffice workflows
- * contradict its native read_document guidance.
+ * the feature. The document skills use this to shadow the Anthropic
+ * office skills of the same name (xlsx/pdf/docx/pptx) whose
+ * pip/LibreOffice workflows contradict their own bundled-CLI guidance.
  *
  * Returns skill name → declaring skill name (for Skill-tool refusal text).
  */

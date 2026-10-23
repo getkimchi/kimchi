@@ -29,15 +29,15 @@
  * re-parsed before landing; --out must differ from every input.
  */
 
-import { mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
 import { PDFDocument } from "@cantoo/pdf-lib"
 import { type BrowserDeps, htmlToPdf } from "./browser.js"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { fillForm, listFields, mergePdfs, reorderPdf, rotatePdf, splitPdf } from "./editors/pdf.js"
 import { extractPdf, pdfInfo } from "./extractors/pdf.js"
-import { MAX_UNITS_PER_CALL, maxFileBytes } from "./limits.js"
+import { MAX_UNITS_PER_CALL } from "./limits.js"
 import { parseMarkdownBlocks } from "./markdown/blocks.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { sameFile } from "./paths.js"
@@ -83,37 +83,13 @@ commands:
   render <in.pdf> --out <dir> [--pages N-M]       page PNGs for visual check
   html <in.html> --out <out.pdf>                  styled HTML -> PDF (browser)`
 
-function readBytes(readFile: NonNullable<PdfCliIo["readFile"]>, path: string): Uint8Array {
-	try {
-		return readFile(path)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot read ${path}: ${(err as Error).message}`, "pdf")
-	}
-}
-
-function enforceSizeCap(path: string, data: Uint8Array): void {
-	const cap = maxFileBytes()
-	if (data.length > cap) {
-		throw new DocumentError(
-			"too-large",
-			`${path} is ${(data.length / 1024 / 1024).toFixed(1)} MB, over the ${cap / 1024 / 1024} MB document cap. Raise it with KIMCHI_DOCUMENT_MAX_MB.`,
-			"pdf",
-		)
-	}
-}
-
-function flagValue(flags: string[], name: string): string | undefined {
-	const i = flags.indexOf(name)
-	return i >= 0 ? flags[i + 1] : undefined
-}
-
 /** "N", "N-M" → 1-based page list against a known page count. */
 function parsePageList(spec: string, total: number): number[] {
 	if (!/^\d+(-\d*)?$/.test(spec)) {
 		throw new DocumentError("corrupt", `invalid page range "${spec}" — use N or N-M (1-based)`, "pdf")
 	}
 	const [a, b] = spec.split("-")
-	const start = Number.parseInt(a!, 10)
+	const start = Number.parseInt(a ?? "", 10)
 	const end = b === undefined || b === "" ? total : Number.parseInt(b, 10)
 	if (start < 1 || end < start) {
 		throw new DocumentError("corrupt", `invalid page range "${spec}" — start ≥ 1 and end ≥ start`, "pdf")
@@ -166,7 +142,7 @@ async function verifyOutput(bytes: Uint8Array, path: string): Promise<void> {
 
 export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 	const readFile = io.readFile ?? ((path: string) => new Uint8Array(readFileSync(path)))
-	const writeFile = io.writeFile ?? atomicWrite
+	const writeFile = defaultWriter(io, "pdf-mjs-tmp")
 	const [command, ...rest] = argv
 	try {
 		switch (command) {
@@ -188,8 +164,10 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 				io.stdout(rendered.text)
 				if (wanted && wanted.length > MAX_UNITS_PER_CALL) {
 					const remaining = wanted.slice(MAX_UNITS_PER_CALL)
+					const shown = window
+					if (!shown?.length) throw new DocumentError("corrupt", "window invariant broken", "pdf")
 					io.stderr(
-						`showing pages ${window![0]}-${window![window!.length - 1]} of the requested range; continue with: read ${path} ${remaining[0]}-${remaining[remaining.length - 1]}`,
+						`showing pages ${shown[0]}-${shown[shown.length - 1]} of the requested range; continue with: read ${path} ${remaining[0]}-${remaining[remaining.length - 1]}`,
 					)
 				} else if (!wanted && info.pageCount > MAX_UNITS_PER_CALL) {
 					io.stderr(`document has ${info.pageCount} pages, showing 1-20; continue with: read ${path} 21-40`)
@@ -572,49 +550,4 @@ function refuseNonPdf(out: string): void {
 		throw new DocumentError("corrupt", `output path must end in .pdf: ${out}`, "pdf")
 }
 
-function atomicWrite(path: string, data: Uint8Array): void {
-	const temp = `${path}.pdf-mjs-tmp.${process.pid}.${++atomicWriteCounter}`
-	try {
-		writeFileSync(temp, data)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot write ${path}: ${(err as Error).message}`, "pdf")
-	}
-	try {
-		renameSync(temp, path)
-	} catch (err) {
-		try {
-			unlinkSync(temp)
-		} catch {
-			// temp cleanup is best-effort; the OS reclaims temp files
-		}
-		throw new DocumentError("corrupt", `Cannot move output into place at ${path}: ${(err as Error).message}`, "pdf")
-	}
-}
-
-let atomicWriteCounter = 0
-
-const invokedAsScript = (() => {
-	const entry = process.argv[1]
-	if (!entry) return false
-	try {
-		return realpathSync(entry) === fileURLToPath(import.meta.url)
-	} catch {
-		return false
-	}
-})()
-
-if (invokedAsScript) {
-	runPdfCli(process.argv.slice(2), {
-		stdout: (line) => console.log(line),
-		stderr: (line) => console.error(line),
-	})
-		.then((code) => {
-			process.exitCode = code
-		})
-		.catch((err) => {
-			// Typed errors print via the CLI's own formatting; anything else still
-			// exits nonzero instead of surfacing as an unhandled rejection.
-			if (!isDocumentError(err)) console.error(String((err as Error)?.message ?? err))
-			process.exitCode = 2
-		})
-}
+runCliScript(import.meta.url, runPdfCli)

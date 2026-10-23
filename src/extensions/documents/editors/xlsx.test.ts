@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { extractXlsx } from "../extractors/xlsx.js"
-import { makeCustomXlsx, makeSimpleXlsx } from "../fixtures/builders.js"
+import { makeCustomXlsx, makeSimpleXlsx, partText } from "../fixtures/builders.js"
 import { openOoxml } from "../ooxml/package.js"
 import { applyXlsxOps, assertWellFormedParts, type XlsxOp } from "./xlsx.js"
 
@@ -190,7 +190,7 @@ describe("review fixes", () => {
 			[{ kind: "rename-sheet", sheet: "Data", name: "Raw Data" }],
 		)
 		const pkg = await openOoxml(bytes)
-		const calc = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet2.xml")!)
+		const calc = partText(pkg, "xl/worksheets/sheet2.xml")
 		expect(calc).toContain("<f>'Raw Data'!A1*2</f>") // renamed names needing quoting are quoted
 		expect(calc).toContain("<f>'Raw Data'!$A$1+1</f>")
 		const doc = await extractXlsx(bytes)
@@ -209,9 +209,9 @@ describe("review fixes", () => {
 			[{ kind: "rename-sheet", sheet: "Data", name: "R&D 2026" }],
 		)
 		const pkg = await openOoxml(bytes)
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).toContain(`name="R&amp;D 2026"`)
-		const calc = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet2.xml")!)
+		const calc = partText(pkg, "xl/worksheets/sheet2.xml")
 		expect(calc).toContain(`<f>'R&amp;D 2026'!A1*2</f>`)
 		// and the whole workbook reads back cleanly
 		const doc = await extractXlsx(bytes)
@@ -236,13 +236,13 @@ describe("review fixes", () => {
 		)
 		const data = new TextDecoder().decode(sheetXml(pkg))
 		expect(data).toContain("Data!A1 is a label")
-		const calc = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet2.xml")!)
+		const calc = partText(pkg, "xl/worksheets/sheet2.xml")
 		expect(calc).toContain("<f>'Raw Data'!A1</f>")
 	})
 
 	it("rename-sheet allows a case-only rename (duplicate check excludes itself)", async () => {
 		const { pkg } = await apply(await makeSimpleXlsx(), [{ kind: "rename-sheet", sheet: "Data", name: "DATA" }])
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).toContain('name="DATA"')
 	})
 
@@ -286,17 +286,17 @@ describe("review fixes", () => {
 			},
 		)
 		const { pkg } = await apply(data, [{ kind: "rename-sheet", sheet: "Data", name: "Raw Data" }])
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).toContain(`<definedName name="Sales">'Raw Data'!$A$1</definedName>`)
 		expect(wb).toContain(`<definedName name="Literal">"Data!text"</definedName>`) // string literal untouched
-		const calc = new TextDecoder().decode(pkg.getBytes("xl/worksheets/sheet2.xml")!)
+		const calc = partText(pkg, "xl/worksheets/sheet2.xml")
 		expect(calc).toContain(`<formula>'Raw Data'!A1&gt;0</formula>`)
 		expect(calc).toContain(`<formula1>'Raw Data'!A1</formula1>`)
 		expect(calc).toContain("<formula2>3</formula2>")
-		const chart = new TextDecoder().decode(pkg.getBytes("xl/charts/chart1.xml")!)
+		const chart = partText(pkg, "xl/charts/chart1.xml")
 		expect(chart).toContain(`<c:f>'Raw Data'!$A$1</c:f>`)
 		expect(chart).toContain("<c:v>Data!</c:v>") // cache VALUES are not formulas
-		const pivot = new TextDecoder().decode(pkg.getBytes("xl/pivotCache/pivotCacheDefinition1.xml")!)
+		const pivot = partText(pkg, "xl/pivotCache/pivotCacheDefinition1.xml")
 		expect(pivot).toContain(`sheet="Raw Data"`)
 	})
 
@@ -305,9 +305,9 @@ describe("review fixes", () => {
 		expect(pkg.getBytes("xl/worksheets/sheet2.xml")).toBeUndefined()
 		const doc = await extractXlsx(bytes)
 		expect(doc.sheets.map((s) => s.name)).toEqual(["Data"])
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).not.toContain("Scratch")
-		const ct = new TextDecoder().decode(pkg.getBytes("[Content_Types].xml")!)
+		const ct = partText(pkg, "[Content_Types].xml")
 		expect(ct).not.toContain("sheet2.xml")
 	})
 
@@ -371,10 +371,10 @@ describe("review fixes", () => {
 			{ absoluteSheetTargets: true },
 		)
 		const { pkg } = await apply(data, [{ kind: "delete-sheet", sheet: "Scratch" }])
-		const rels = new TextDecoder().decode(pkg.getBytes("xl/_rels/workbook.xml.rels")!)
+		const rels = partText(pkg, "xl/_rels/workbook.xml.rels")
 		expect(rels).not.toContain("rId2")
 		expect(rels).toContain('Id="rId1"')
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).not.toContain("Scratch")
 	})
 
@@ -394,7 +394,7 @@ describe("review fixes", () => {
 			},
 		)
 		const { pkg } = await apply(data, [{ kind: "delete-sheet", sheet: "B" }])
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		expect(wb).not.toContain("OnB")
 		expect(wb).toContain(`localSheetId="1"`) // C became index 1
 	})
@@ -409,7 +409,7 @@ describe("review fixes", () => {
 			{ kind: "delete-sheet", sheet: "B" },
 			{ kind: "add-sheet", name: "D" },
 		])
-		const wb = new TextDecoder().decode(pkg.getBytes("xl/workbook.xml")!)
+		const wb = partText(pkg, "xl/workbook.xml")
 		const ids = [...wb.matchAll(/sheetId="(\d+)"/g)].map((m) => m[1])
 		expect(new Set(ids).size).toBe(ids.length)
 		expect(ids).toContain("4") // D takes max+1, never reuses 2

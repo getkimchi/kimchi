@@ -66,9 +66,6 @@ export function pickLayout(layouts: TemplateLayout[], hint: LayoutHint | undefin
 		}
 		case "blank":
 			return byName(/blank/) ?? layouts.find((l) => l.placeholders.length === 0) ?? fail("blank", slideNo, layouts)
-		case "table":
-		case "chart":
-		case "content":
 		default: {
 			return (
 				byName(/content|body|title and/) ??
@@ -156,7 +153,7 @@ function buildSlideXml(slide: SlideSpec, layout: TemplateLayout): string {
 		} else if (textPlaceholders.length > 0) {
 			const ph = textPlaceholders[textPlaceholders.length - 1]
 			const last = shapeText[shapeText.length - 1]
-			if (last !== undefined && last.includes(`idx="${ph.idx}"`)) {
+			if (last?.includes(`idx="${ph.idx}"`)) {
 				shapeText[shapeText.length - 1] = last.replace("</p:txBody>", `${bodyXml}</p:txBody>`)
 			} else {
 				shapeText.push(phShape(ph, bodyXml, 3 + bodySlot + 1))

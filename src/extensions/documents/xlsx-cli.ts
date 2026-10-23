@@ -10,23 +10,13 @@
  */
 
 import { spawnSync } from "node:child_process"
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { defaultWriter, enforceSizeCap, flagValue, readBytes, runCliScript } from "./cli-utils.js"
 import { RealClock } from "./clock.js"
 import { applyXlsxOps, assertWellFormedParts, type XlsxOp } from "./editors/xlsx.js"
 import { extractCsv, extractXlsx, type XlsxExtraction } from "./extractors/xlsx.js"
-import { maxFileBytes } from "./limits.js"
 import { DocumentError, isDocumentError } from "./model.js"
 import { openOoxml } from "./ooxml/package.js"
 import { requireNoProblems, validateContentTypes } from "./ooxml/validate.js"
@@ -50,30 +40,6 @@ commands:
   create <spec.json> --out <out.xlsx>           build a workbook from a JSON spec (never in place)
   edit <in.xlsx> --out <out.xlsx> --ops <ops.json>   apply ops, never in place
   recalc <in.xlsx> --out <out.xlsx>                recalculate formulas (needs LibreOffice; errors grouped by type)`
-
-function readBytes(io: Required<CliIo>["readFile"], path: string): Uint8Array {
-	try {
-		return io(path)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot read ${path}: ${(err as Error).message}`)
-	}
-}
-
-function enforceSizeCap(path: string, data: Uint8Array): void {
-	const cap = maxFileBytes()
-	if (data.length > cap) {
-		throw new DocumentError(
-			"too-large",
-			`${path} is ${(data.length / 1024 / 1024).toFixed(1)} MB, over the ${cap / 1024 / 1024} MB document cap. Raise it with KIMCHI_DOCUMENT_MAX_MB.`,
-			"xlsx",
-		)
-	}
-}
-
-function flagValue(flags: string[], name: string): string | undefined {
-	const i = flags.indexOf(name)
-	return i >= 0 ? flags[i + 1] : undefined
-}
 
 function flagsUsed(flags: string[]): string[] {
 	return flags.filter((f) => f.startsWith("--"))
@@ -202,7 +168,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					throw new DocumentError("corrupt", `spec is not valid JSON: ${specPath}`, "xlsx")
 				}
 				const { bytes, warnings, formulas } = await writeXlsx(spec, { clock: RealClock })
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 				writeFile(out, bytes)
 				io.stdout(`created ${out} (${spec.sheets.length} sheet(s)${formulas > 0 ? `, ${formulas} formula(s)` : ""})`)
 				for (const warning of warnings) io.stderr(`warning: ${warning}`)
@@ -253,7 +219,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				// Nothing leaves the box malformed: every touched part must parse.
 				assertWellFormedParts(pkg, result.touchedParts)
 				const bytes = await pkg.save()
-				const writeFile = io.writeFile ?? atomicWrite
+				const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 				writeFile(out, bytes)
 				const lines = [
 					`edited ${input} -> ${out} (${ops.length} op${ops.length === 1 ? "" : "s"} applied)`,
@@ -318,7 +284,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 						)
 					}
 					const converted = new Uint8Array(readFileSync(staged))
-					const writeFile = io.writeFile ?? atomicWrite
+					const writeFile = defaultWriter(io, "xlsx-mjs-tmp")
 					writeFile(out, converted)
 					const doc = await extractXlsx(converted)
 					const errorCounts = new Map<string, number>()
@@ -433,43 +399,4 @@ function parseXlsxOps(raw: unknown): XlsxOp[] {
 	})
 }
 
-/** Write via temp + rename so an interrupted create never leaves a half file. */
-function atomicWrite(path: string, data: Uint8Array): void {
-	const temp = `${path}.xlsx-mjs-tmp.${process.pid}.${++atomicWriteCounter}`
-	try {
-		writeFileSync(temp, data)
-	} catch (err) {
-		throw new DocumentError("corrupt", `Cannot write ${path}: ${(err as Error).message}`)
-	}
-	try {
-		renameSync(temp, path)
-	} catch (err) {
-		try {
-			unlinkSync(temp)
-		} catch {
-			// temp reclaim
-		}
-		throw new DocumentError("corrupt", `Cannot move output into place at ${path}: ${(err as Error).message}`)
-	}
-}
-
-let atomicWriteCounter = 0
-
-const invokedAsScript = (() => {
-	const entry = process.argv[1]
-	if (!entry) return false
-	try {
-		return realpathSync(entry) === fileURLToPath(import.meta.url)
-	} catch {
-		return false
-	}
-})()
-
-if (invokedAsScript) {
-	runXlsxCli(process.argv.slice(2), {
-		stdout: (line) => console.log(line),
-		stderr: (line) => console.error(line),
-	}).then((code) => {
-		process.exitCode = code
-	})
-}
+runCliScript(import.meta.url, runXlsxCli)

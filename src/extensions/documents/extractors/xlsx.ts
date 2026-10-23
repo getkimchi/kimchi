@@ -291,8 +291,11 @@ function parseRow(
 		else if (t === "inlineStr") value = stripAllTags(byTag(c, "is")[0] ? serializeInnerText(byTag(c, "is")[0]) : "")
 		else if (t === "str") value = v
 		else if (t === "e") value = v || "#ERR"
-		else if (v !== "" && styleDateKind(styles, s)) {
-			value = serialToIso(Number(v), epoch1904, styleDateKind(styles, s)!)
+		else {
+			const dateKind = v === "" ? undefined : styleDateKind(styles, s)
+			if (dateKind) {
+				value = serialToIso(Number(v), epoch1904, dateKind)
+			}
 		}
 		const display = f ? (showFormulas ? `=${f} → ${value}` : value) : value
 		cells.push({ ref, row: parsed.row, column: parsed.column, display })

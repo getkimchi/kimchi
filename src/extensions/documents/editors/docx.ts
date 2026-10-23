@@ -296,7 +296,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 		const texts = paragraphTexts(spans)
 		const indices: number[] = []
 		for (const [i, t] of texts.entries()) {
-			if (t !== undefined && t.includes(anchor)) indices.push(i)
+			if (t?.includes(anchor)) indices.push(i)
 		}
 		let inTable = false
 		if (indices.length === 0) {
@@ -358,7 +358,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				let count = 0
 				for (const blockIndex of [...occurrences].sort((a, b) => b - a)) {
 					const span = currentSpans()[blockIndex]
-					if (!span || span.kind !== "p") {
+					if (span?.kind !== "p") {
 						throw new DocumentError("corrupt", `${label}: block ${blockIndex + 1} is not a paragraph`, "docx")
 					}
 					const fragment = documentXml.slice(span.start, span.end)
@@ -390,9 +390,9 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				const xml = markdownToBodyXml(op.value)
 				if (xml.trim()) {
 					if (op.type === "insert-before") {
-						documentXml = documentXml.slice(0, span.start) + xml + "\n" + documentXml.slice(span.start)
+						documentXml = `${documentXml.slice(0, span.start)}${xml}\n${documentXml.slice(span.start)}`
 					} else {
-						documentXml = documentXml.slice(0, span.end) + "\n" + xml + documentXml.slice(span.end)
+						documentXml = `${documentXml.slice(0, span.end)}\n${xml}${documentXml.slice(span.end)}`
 					}
 				}
 				result.applied.push(
@@ -408,7 +408,7 @@ export function applyDocxOps(pkg: OoxmlPackage, ops: DocxOp[]): ApplyDocxOpsResu
 				// Insert before the final sectPr if one exists, else before w:body end.
 				const sect = documentXml.lastIndexOf("<w:sectPr", bodyClose)
 				const insertAt = sect > open.index ? sect : bodyClose
-				documentXml = documentXml.slice(0, insertAt) + xml + "\n" + documentXml.slice(insertAt)
+				documentXml = `${documentXml.slice(0, insertAt)}${xml}\n${documentXml.slice(insertAt)}`
 				result.applied.push(`${label}: appended at the end of the document`)
 				break
 			}
@@ -533,7 +533,7 @@ function ensureContentTypeOverride(pkg: OoxmlPackage, partName: string, contentT
 	pkg.putBytes(
 		"[Content_Types].xml",
 		new TextEncoder().encode(
-			xml.slice(0, close) + `<Override PartName="${partName}" ContentType="${contentType}"/>` + xml.slice(close),
+			`${xml.slice(0, close)}<Override PartName="${partName}" ContentType="${contentType}"/>${xml.slice(close)}`,
 		),
 	)
 }
@@ -551,7 +551,7 @@ function ensureDocumentRel(pkg: OoxmlPackage, type: string, target: string): voi
 	pkg.putBytes(
 		relsName,
 		new TextEncoder().encode(
-			relsXml.slice(0, close) + `<Relationship Id="${id}" Type="${type}" Target="${target}"/>` + relsXml.slice(close),
+			`${relsXml.slice(0, close)}<Relationship Id="${id}" Type="${type}" Target="${target}"/>${relsXml.slice(close)}`,
 		),
 	)
 }

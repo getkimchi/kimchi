@@ -84,10 +84,11 @@ export async function renderPdfCore(
 ): Promise<RenderCoreResult> {
 	const wasm = await (deps.loadWasm ?? defaultLoadWasm)()
 	const library = await (deps.initLibrary ?? (async (w) => PDFiumLibrary.init({ wasmBinary: w })))(wasm)
-	const stem = pdfPath
-		.replace(/\.pdf$/i, "")
-		.split(/[/\\]/)
-		.pop()!
+	const stem =
+		pdfPath
+			.replace(/\.pdf$/i, "")
+			.split(/[/\\]/)
+			.pop() ?? ""
 	mkdirSync(outDir, { recursive: true })
 	const stale = new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-\\d+\\.png$`)
 	for (const entry of readdirSync(outDir)) {

@@ -1,6 +1,7 @@
 import { crc32, deflateRawSync } from "node:zlib"
 import JSZip from "jszip"
 import { describe, expect, it } from "vitest"
+import { partBytes } from "../fixtures/builders.js"
 import { listZipEntries, openOoxml } from "./package.js"
 import { serializeXml } from "./xml.js"
 
@@ -126,7 +127,7 @@ describe("openOoxml", () => {
 		const pkg = await openOoxml(data)
 		pkg.putXml("ppt/presentation.xml", pkg.getXml("ppt/presentation.xml"))
 		const reopened = await openOoxml(await pkg.save())
-		expect([...reopened.getBytes("ppt/media/image1.bin")!]).toEqual([...pristine])
+		expect([...partBytes(reopened, "ppt/media/image1.bin")]).toEqual([...pristine])
 		expect(reopened.getBytes("ppt/presentation.xml")).toBeTruthy()
 	})
 

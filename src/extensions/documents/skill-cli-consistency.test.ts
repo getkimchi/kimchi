@@ -33,10 +33,11 @@ function extractCommands(markdown: string, cliName: string): string[] {
 	const commands = new Set<string>()
 	// `<cli>.mjs <command>` wherever it appears (headings, inline code, fences).
 	const pattern = new RegExp(`${cliName}\\.mjs\\s+([a-z][a-z-]*)\\b`, "g")
-	for (const m of markdown.matchAll(pattern)) commands.add(m[1]!)
+	for (const m of markdown.matchAll(pattern)) if (m[1]) commands.add(m[1])
 	// Headings like `## read \`<file.pdf> [N-M]\`` — the verb right after ##.
 	for (const m of markdown.matchAll(/^##+\s+(?:`)?([a-z][a-z-]*)(?:`|\s|<)/gm)) {
-		const verb = m[1]!
+		const verb = m[1]
+		if (!verb) continue
 		if (["usage", "error", "secure", "validation", "edit", "costs"].includes(verb)) continue
 		commands.add(verb)
 	}
@@ -51,7 +52,7 @@ function extractFlags(markdown: string, cliName: string): string[] {
 		const isCommandLine = line.includes(`${cliName}.mjs`)
 		const isCommandHeading = /^##\s/.test(line)
 		if (!isCommandLine && !isCommandHeading) continue
-		for (const m of line.matchAll(/(?<![\w-])(--[a-z][a-z-]+)\b/g)) flags.add(m[1]!)
+		for (const m of line.matchAll(/(?<![\w-])(--[a-z][a-z-]+)\b/g)) if (m[1]) flags.add(m[1])
 	}
 	return [...flags].sort()
 }
