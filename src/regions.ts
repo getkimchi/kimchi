@@ -99,6 +99,22 @@ export function selectableRegions(): KimchiRegion[] {
 }
 
 /**
+ * Endpoints advertised by a self-hosted install's discovery document
+ * (`GET <console>/env/endpoints.json`, see src/self-hosted-discovery.ts).
+ *
+ * Each value is an ORIGIN ONLY — no path suffix. The consumer appends the
+ * API shape it speaks (see the derivation note on discoveredSelfHostedRegion):
+ *   console → webAppUrl (SPA, /cli-auth login handoff, platform /api proxy)
+ *   api     → castApiUrl (REST API: /v1/llm, /ai-optimizer, /v1/me)
+ *   llm     → llmBaseUrl (gateway: /openai/v1, /anthropic, /v1/search, /v1/rerank)
+ */
+export interface SelfHostedEndpoints {
+	api: string
+	console: string
+	llm: string
+}
+
+/**
  * Build the self-hosted region from the user-provided base URL.
  *
  * Derivation contract — ONE base URL drives every endpoint:
@@ -126,6 +142,37 @@ export function selfHostedRegion(base: string): KimchiRegion {
 }
 
 /**
+ * Build the self-hosted region from a discovery document's endpoints.
+ *
+ * Unlike selfHostedRegion(base) — which derives every endpoint from ONE base
+ * URL via fixed path prefixes — the discovery document advertises each origin
+ * separately, because a standalone install fronts the console/API host and
+ * the LLM gateway host-scoped:
+ *
+ *   webAppUrl  = console  (the SPA host; its nginx proxies /api/* to the API)
+ *   castApiUrl = api      (the REST API host — paths live at the root:
+ *                         /v1/me, /v1/llm, /ai-optimizer)
+ *   llmBaseUrl = llm      (the gateway ORIGIN ONLY — no path suffix)
+ *
+ * Every llmBaseUrl-derived endpoint then appends its own API shape via the
+ * shared region helpers: openAiBaseUrl = <llm>/openai/v1,
+ * anthropicBaseUrl = <llm>/anthropic, searchUrl = <llm>/v1/search — matching
+ * the discovery contract. platformApiUrl stays webAppUrl + "/api" (the
+ * console's /api proxy path), which equals the api origin in the common
+ * path-routed case. Endpoints are expected pre-normalized
+ * (see normalizeSelfHostedEndpoints); trailing slashes are stripped defensively.
+ */
+export function discoveredSelfHostedRegion(endpoints: SelfHostedEndpoints): KimchiRegion {
+	return {
+		id: "self-hosted",
+		label: "Self-hosted",
+		webAppUrl: endpoints.console.trim().replace(/\/+$/, ""),
+		llmBaseUrl: endpoints.llm.trim().replace(/\/+$/, ""),
+		castApiUrl: endpoints.api.trim().replace(/\/+$/, ""),
+	}
+}
+
+/**
  * Normalize a user-provided self-hosted base URL: trim whitespace and
  * trailing slashes, then require an absolute http(s) URL. Returns undefined
  * for blank or invalid input — callers decide whether to warn, re-prompt, or
@@ -141,6 +188,22 @@ export function normalizeSelfHostedBaseUrl(raw: string | undefined): string | un
 		return undefined
 	}
 	return trimmed
+}
+
+/**
+ * Normalize and validate a discovery-document endpoints value: every key
+ * must be a valid absolute http(s) origin (trailing slashes stripped, same
+ * rules as normalizeSelfHostedBaseUrl). Returns undefined when any key is
+ * missing or invalid — callers treat that as "no discovery".
+ */
+export function normalizeSelfHostedEndpoints(raw: unknown): SelfHostedEndpoints | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const record = raw as Record<string, unknown>
+	const api = normalizeSelfHostedBaseUrl(typeof record.api === "string" ? record.api : undefined)
+	const consoleUrl = normalizeSelfHostedBaseUrl(typeof record.console === "string" ? record.console : undefined)
+	const llm = normalizeSelfHostedBaseUrl(typeof record.llm === "string" ? record.llm : undefined)
+	if (!api || !consoleUrl || !llm) return undefined
+	return { api, console: consoleUrl, llm }
 }
 
 /**
