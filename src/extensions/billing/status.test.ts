@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { discoveredSelfHostedRegion, openAiBaseUrl, selfHostedEndpointsFromBase } from "../../regions.js"
+import { discoveredSelfHostedRegion, openAiBaseUrl } from "../../regions.js"
 
 const {
 	AUTOMATIC_REFRESH_MIN_INTERVAL_MS,
@@ -49,7 +49,11 @@ describe("billing status", () => {
 		// <base>/llm/v1/{credits,budget} — the endpoints the self-hosted LLM
 		// gateway serves.
 		const chatEndpoint = openAiBaseUrl(
-			discoveredSelfHostedRegion(selfHostedEndpointsFromBase("https://kimchi.example.com")),
+			discoveredSelfHostedRegion({
+				api: "https://kimchi.example.com/api",
+				console: "https://kimchi.example.com",
+				llm: "https://kimchi.example.com/llm",
+			}),
 		)
 		expect(chatEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
 		expect(creditsEndpointFromLlmEndpoint(chatEndpoint)).toBe("https://kimchi.example.com/llm/v1/credits")

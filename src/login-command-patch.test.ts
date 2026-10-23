@@ -547,6 +547,14 @@ it("selecting Europe for API-key login defaults the endpoint to the EU gateway",
 
 it("selecting Self-hosted for API-key login prompts for the console URL, not a separate endpoint", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -571,14 +579,16 @@ it("selecting Self-hosted for API-key login prompts for the console URL, not a s
 	)
 	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi API Key:", "Enter your Kimchi API key")
 	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
-	// The install predates discovery: the fallback notice explains the manual
-	// derivation before the login continues (persistent chat feedback — showStatus
+	// The discovery outcome is surfaced as persistent chat feedback (showStatus
 	// would be coalesced away by the next status line).
-	expect(getFeedbackMessages(fakeIm).some((m) => m.includes("This Kimchi install predates endpoint discovery"))).toBe(
-		true,
-	)
+	expect(
+		getFeedbackMessages(fakeIm).some(
+			(m) =>
+				m === "Discovered endpoints — API https://kimchi.example.com/api, LLM gateway https://kimchi.example.com/llm.",
+		),
+	).toBe(true)
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://kimchi.example.com/llm...")
-	// Self-hosted persists region + the base-derived endpoints only — a stored
+	// Self-hosted persists region + the discovered endpoints only — a stored
 	// llmEndpoint would override the endpoint derivation.
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
@@ -600,6 +610,14 @@ it("selecting Self-hosted for API-key login prompts for the console URL, not a s
 
 it("re-prompts for the self-hosted console URL until it parses", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -650,8 +668,41 @@ it("Esc on the self-hosted console URL prompt returns to the auth-method selecto
 	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 })
 
+it("a console URL without the discovery document errors and re-prompts without logging in", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// A first URL whose install serves no document, then Esc out of the
+	// re-prompt: no login may happen (nothing is derived from the URL).
+	fakeIm.showExtensionInput.mockResolvedValueOnce("https://kimchi.example.com").mockResolvedValueOnce(undefined)
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
+	await flushAsyncLogin()
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Endpoint discovery failed: no discovery document at /env/endpoints.json (HTTP 404). A self-hosted install must serve /env/endpoints.json.",
+	)
+	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(modelsModule.updateModelsConfig).not.toHaveBeenCalled()
+})
+
 it("selecting Self-hosted for account login prompts for the console URL and targets its web app", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "self-hosted-token" })
 

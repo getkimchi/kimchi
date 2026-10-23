@@ -1,8 +1,8 @@
 import { spinner } from "@clack/prompts"
 import { authenticateViaBrowser } from "../cli-auth/index.js"
 import { getApiKeyMismatchWarning, writeApiKey } from "../config.js"
-import { normalizeSelfHostedBaseUrl, type SelfHostedEndpoints, selfHostedEndpointsFromBase } from "../regions.js"
-import { discoveryFallbackNotice, fetchSelfHostedEndpoints } from "../self-hosted-discovery.js"
+import { normalizeSelfHostedBaseUrl, type SelfHostedEndpoints } from "../regions.js"
+import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../self-hosted-discovery.js"
 
 export async function runLogin(args: string[]): Promise<number> {
 	if (args.length > 1) {
@@ -72,15 +72,13 @@ async function runSelfHostedLogin(consoleUrlArg: string): Promise<number> {
 	const s = spinner()
 	s.start(`Checking ${consoleUrl}/env/endpoints.json…`)
 	const discovery = await fetchSelfHostedEndpoints(consoleUrl)
-	let selfHostedEndpoints: SelfHostedEndpoints
-	if (discovery.status === "discovered") {
-		selfHostedEndpoints = discovery.endpoints
-		s.stop(`Discovered endpoints — API ${selfHostedEndpoints.api}, LLM gateway ${selfHostedEndpoints.llm}.`)
-	} else {
-		// Manual fallback: derive the endpoints from the URL as the single base.
-		s.stop(discoveryFallbackNotice(discovery, consoleUrl))
-		selfHostedEndpoints = selfHostedEndpointsFromBase(consoleUrl)
+	if (discovery.status !== "discovered") {
+		s.stop("Endpoint discovery failed.")
+		console.error(discoveryFailureMessage(discovery))
+		return 1
 	}
+	const selfHostedEndpoints: SelfHostedEndpoints = discovery.endpoints
+	s.stop(`Discovered endpoints — API ${selfHostedEndpoints.api}, LLM gateway ${selfHostedEndpoints.llm}.`)
 
 	s.start("Waiting for browser login…")
 	let token: string
@@ -114,8 +112,8 @@ export function getLoginHelp(): string {
 		"",
 		"Pass a self-hosted console URL to log in to a standalone install instead:",
 		"  kimchi login https://your-kimchi-host.example.com",
-		"The API and LLM-gateway endpoints are discovered from <url>/env/endpoints.json;",
-		"installs that predate discovery fall back to deriving them from the URL.",
+		"The API and LLM-gateway endpoints are discovered from <url>/env/endpoints.json,",
+		"which the install must serve — without it there is no self-hosted login.",
 	]
 	return lines.join("\n")
 }

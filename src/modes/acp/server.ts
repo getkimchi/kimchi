@@ -565,14 +565,13 @@ export class KimchiAcpAgent implements Agent {
 		// The success page copy names no client: this flow may be launched by any
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		//
-		// Self-hosted resolves its web-app URL from the stored configuration
-		// (KIMCHI_SELF_HOSTED_URL env, else the stored discovery endpoints and
-		// base URL) — ACP clients have no interactive prompt surface, so a
-		// missing base fails fast here with the actionable configuration error
-		// instead of being prompted for. ACP cannot run endpoint discovery
-		// itself (no URL input); logins created by the TUI /login or
-		// `kimchi login <console-url>` persist the discovered endpoints that this
-		// path then resolves.
+		// Self-hosted resolves its web-app URL from the stored endpoints —
+		// ACP clients have no interactive prompt surface, so a missing value
+		// fails fast here with the actionable configuration error instead of
+		// being prompted for. ACP cannot run endpoint discovery itself (no URL
+		// input); logins created by the TUI /login or `kimchi login
+		// <console-url>` persist the discovered endpoints that this path then
+		// resolves.
 		const selfHostedEndpoints = region === "self-hosted" ? resolveSelfHostedEndpoints() : undefined
 		let token: string
 		try {

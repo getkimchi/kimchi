@@ -1117,7 +1117,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_us-token", undefined, { region: "us" })
 		})
 
-		it("authenticates against the self-hosted region and persists region + base URL", async () => {
+		it("authenticates against the self-hosted region and persists region + endpoints", async () => {
 			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_self-hosted-token" })
 
 			const testAgent = new KimchiAcpAgent(makeConn(), {
@@ -1126,11 +1126,21 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sessionFactory: async () => asSession(fake),
 			})
 
-			// ACP clients have no interactive prompt; the endpoints come from the
-			// env override (base-derived) or a previous login's stored values.
-			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://kimchi.example.com")
+			// ACP clients have no interactive prompt and cannot run endpoint
+			// discovery; the endpoints come from a previous login's stored values.
+			const configDir = join(homedir(), ".config", "kimchi")
+			const storedEndpoints = {
+				api: "https://kimchi.example.com/api",
+				console: "https://kimchi.example.com",
+				llm: "https://kimchi.example.com/llm",
+			}
+			mkdirSync(configDir, { recursive: true })
+			writeFileSync(
+				join(configDir, "config.json"),
+				JSON.stringify({ region: "self-hosted", selfHostedEndpoints: storedEndpoints }),
+			)
 			onTestFinished(() => {
-				vi.unstubAllEnvs()
+				rmSync(join(configDir, "config.json"), { force: true })
 			})
 
 			const result = await testAgent.authenticate({ methodId: "kimchi-agent-self-hosted" })
@@ -1140,15 +1150,11 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				webAppUrl: "https://kimchi.example.com",
 				successMessage: ACP_SUCCESS_MESSAGE,
 			})
-			// The env-derived endpoints are persisted next to the region so later
-			// launches resolve without the env override.
+			// The resolved endpoints are persisted next to the region so later
+			// launches resolve without the login that discovered them.
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_self-hosted-token", undefined, {
 				region: "self-hosted",
-				selfHostedEndpoints: {
-					api: "https://kimchi.example.com/api",
-					console: "https://kimchi.example.com",
-					llm: "https://kimchi.example.com/llm",
-				},
+				selfHostedEndpoints: storedEndpoints,
 			})
 		})
 

@@ -393,49 +393,6 @@ describe("kimchi config region", () => {
 		})
 	})
 
-	it("derives the console URL from the endpoints while the env override applies", async () => {
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "",
-			region: "self-hosted",
-			selfHostedEndpoints: {
-				api: "https://env.example.com/api",
-				console: "https://env.example.com",
-				llm: "https://env.example.com/llm",
-			},
-		} as ReturnType<typeof loadConfig>)
-
-		const exit = await runConfig(["region"])
-
-		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
-			"Self-hosted console URL: https://env.example.com (from KIMCHI_SELF_HOSTED_URL, overrides config)",
-		)
-		expect(
-			vi.mocked(console.log).mock.calls.some((call) => String(call[0]).startsWith("Self-hosted endpoints: api")),
-		).toBe(false)
-	})
-
-	it("notes the KIMCHI_SELF_HOSTED_URL env override when it is in effect", async () => {
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "",
-			region: "self-hosted",
-			selfHostedEndpoints: {
-				api: "https://env.example.com/api",
-				console: "https://env.example.com",
-				llm: "https://env.example.com/llm",
-			},
-		} as ReturnType<typeof loadConfig>)
-
-		const exit = await runConfig(["region"])
-
-		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
-			"Self-hosted console URL: https://env.example.com (from KIMCHI_SELF_HOSTED_URL, overrides config)",
-		)
-	})
-
 	it("prints a self-hosted region without endpoints as not configured", async () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",
@@ -447,7 +404,7 @@ describe("kimchi config region", () => {
 		expect(exit).toBe(0)
 		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: self-hosted — Self-hosted")
 		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
-			'Self-hosted console URL: not configured — set KIMCHI_SELF_HOSTED_URL or run "kimchi login <console-url>"',
+			'Self-hosted console URL: not configured — run "kimchi login <console-url>"',
 		)
 	})
 

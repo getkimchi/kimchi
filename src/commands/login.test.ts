@@ -70,28 +70,20 @@ describe("kimchi login <console-url> (self-hosted flow)", () => {
 		})
 	})
 
-	it("falls back to the manual single-base flow when the install predates discovery", async () => {
+	it("fails when the install does not serve the discovery document", async () => {
 		vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
 			status: "unavailable",
 			cause: "not-found",
 			reason: "no discovery document at /env/endpoints.json (HTTP 404)",
 		})
 
-		expect(await runLogin(["https://kimchi.example.com"])).toBe(0)
+		expect(await runLogin(["https://kimchi.example.com"])).toBe(1)
 
-		expect(authenticateViaBrowser).toHaveBeenCalledWith(
-			expect.objectContaining({ webAppUrl: "https://kimchi.example.com" }),
+		expect(console.error).toHaveBeenCalledWith(
+			"Endpoint discovery failed: no discovery document at /env/endpoints.json (HTTP 404). A self-hosted install must serve /env/endpoints.json.",
 		)
-		// The manual fallback persists the endpoints derived from the URL.
-		const derived = {
-			api: "https://kimchi.example.com/api",
-			console: "https://kimchi.example.com",
-			llm: "https://kimchi.example.com/llm",
-		}
-		expect(config.writeApiKey).toHaveBeenCalledWith("new-key", undefined, {
-			region: "self-hosted",
-			selfHostedEndpoints: derived,
-		})
+		expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		expect(config.writeApiKey).not.toHaveBeenCalled()
 	})
 
 	it("rejects an invalid console URL without touching auth", async () => {

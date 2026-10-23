@@ -21,7 +21,6 @@ import {
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
 	resetInvalidLlmBaseUrlWarningForTests,
-	resetInvalidSelfHostedUrlWarningForTests,
 	resolveEndpoints,
 	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
@@ -793,7 +792,6 @@ describe("region config", () => {
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
 		vi.stubEnv("KIMCHI_REGION", undefined)
 		vi.stubEnv("KIMCHI_BASE_URL", undefined)
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", undefined)
 		resetProjectScopeTrustForTests()
 	})
 
@@ -933,28 +931,6 @@ describe("region config", () => {
 		expect(cfg.llmEndpoint).toBe("https://kimchi.example.com/llm/openai/v1")
 	})
 
-	it("loadConfig: KIMCHI_SELF_HOSTED_URL env derives endpoints that win over the stored ones", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				region: "self-hosted",
-				selfHostedEndpoints: {
-					api: "https://config.example.com/api",
-					console: "https://config.example.com",
-					llm: "https://config.example.com/llm",
-				},
-			}),
-		)
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
-		const cfg = loadConfig({ configPath })
-		expect(cfg.selfHostedEndpoints).toEqual({
-			api: "https://env.example.com/api",
-			console: "https://env.example.com",
-			llm: "https://env.example.com/llm",
-		})
-		expect(cfg.llmEndpoint).toBe("https://env.example.com/llm/openai/v1")
-	})
-
 	it("loadConfig: an invalid stored selfHostedEndpoints counts as unset", () => {
 		writeFileSync(
 			configPath,
@@ -970,38 +946,6 @@ describe("region config", () => {
 		const cfg = loadConfig({ configPath })
 		expect(cfg.region).toBe("self-hosted")
 		expect(cfg.selfHostedEndpoints).toBeUndefined()
-	})
-
-	it("loadConfig: an invalid KIMCHI_SELF_HOSTED_URL warns once and counts as unset", () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				region: "self-hosted",
-				selfHostedEndpoints: {
-					api: "https://config.example.com/api",
-					console: "https://config.example.com",
-					llm: "https://config.example.com/llm",
-				},
-			}),
-		)
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-		resetInvalidSelfHostedUrlWarningForTests()
-		// Only the self-hosted warning; the temp file's loose permissions warn separately.
-		const selfHostedWarnings = () =>
-			warnSpy.mock.calls.map((call) => String(call[0])).filter((message) => message.includes("KIMCHI_SELF_HOSTED_URL"))
-
-		try {
-			vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "not a url")
-			const first = loadConfig({ configPath })
-			expect(first.selfHostedEndpoints?.console).toBe("https://config.example.com")
-			// Repeated reads warn only once (the stored base keeps serving).
-			loadConfig({ configPath })
-			expect(selfHostedWarnings()).toHaveLength(1)
-			expect(selfHostedWarnings()[0]).toContain("Ignoring invalid KIMCHI_SELF_HOSTED_URL")
-		} finally {
-			resetInvalidSelfHostedUrlWarningForTests()
-			warnSpy.mockRestore()
-		}
 	})
 
 	it("telemetry defaults follow the self-hosted endpoints", () => {

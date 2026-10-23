@@ -41,9 +41,8 @@ import {
 	type RegionId,
 	type SelfHostedEndpoints,
 	selectableRegions,
-	selfHostedEndpointsFromBase,
 } from "../../regions.js"
-import { discoveryFallbackNotice, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
+import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
@@ -138,22 +137,19 @@ export const SELF_HOSTED_CONSOLE_URL_PROMPT = "Self-hosted Kimchi console URL:"
 
 /**
  * Prompt for the self-hosted console URL, re-prompting until the input parses
- * as an http(s) URL, then resolve the install's endpoints from
- * `<url>/env/endpoints.json` (see src/self-hosted-discovery.ts). Mirrors the
- * API-key endpoint prompt: Esc (undefined) backs out; Enter on an empty input
- * keeps the stored console URL when one exists. Invalid input is normalized
- * exactly like KIMCHI_SELF_HOSTED_URL (trim, strip trailing slashes, require
- * http(s)).
- *
- * Returns the endpoints to log in with: the discovered document's values, or
- * — when the document is missing, incomplete, or unreachable — the values
- * derived from the entered URL as the single base (see
- * selfHostedEndpointsFromBase), with a clear notice explaining the fallback.
+ * as an http(s) URL AND the install serves its discovery document at
+ * `<url>/env/endpoints.json` (see src/self-hosted-discovery.ts) — the only
+ * self-hosted flow: without the document there are no endpoints to log in
+ * with, so a missing/incomplete/unreachable one is an error, not a fallback.
+ * Mirrors the API-key endpoint prompt: Esc (undefined) backs out; Enter on an
+ * empty input keeps the stored console URL when one exists. Invalid input is
+ * normalized exactly like KIMCHI_SELF_HOSTED_URL (trim, strip trailing
+ * slashes, require http(s)).
  */
 export async function promptSelfHostedEndpoints(options: {
 	prompt: (title: string, placeholder?: string) => Promise<string | undefined>
 	notifyError: (message: string) => void
-	/** Progress notices: discovery check, discovered endpoints, manual fallback. */
+	/** Progress notices: discovery check, discovered endpoints. */
 	notifyStatus?: (message: string) => void
 	/** Stored console URL offered as the Enter default, when one exists. */
 	storedUrl?: string
@@ -184,10 +180,7 @@ export async function promptSelfHostedEndpoints(options: {
 			options.notifyStatus?.(`Discovered endpoints — API ${result.endpoints.api}, LLM gateway ${result.endpoints.llm}.`)
 			return result.endpoints
 		}
-		// Manual fallback: the install predates discovery — derive the endpoints
-		// from the entered URL as the single base.
-		options.notifyStatus?.(discoveryFallbackNotice(result, consoleUrl))
-		return selfHostedEndpointsFromBase(consoleUrl)
+		options.notifyError(discoveryFailureMessage(result))
 	}
 }
 

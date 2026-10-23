@@ -67,9 +67,7 @@ async function startDiscoveryConsole(
 	return { server, url: `http://127.0.0.1:${address.port}` }
 }
 
-test("login via Kimchi account offers Self-hosted behind the experimental flag and persists region + base URL", async ({
-	terminal,
-}) => {
+test("login via Kimchi account requires the self-hosted console to serve /env/endpoints.json", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -79,9 +77,8 @@ test("login via Kimchi account offers Self-hosted behind the experimental flag a
 			extraArgs: ["--enable-experimental-features"],
 		},
 		async (fixture, trace) => {
-			// A local console that does NOT serve the discovery document — an
-			// install predating endpoint discovery (deterministic 404; the sandbox
-			// cannot resolve an unreachable external domain).
+			// A local console that does NOT serve the discovery document —
+			// there is no self-hosted login without it (deterministic 404).
 			const preDiscovery = await startDiscoveryConsole(() => null)
 			const selfHostedBase = preDiscovery.url
 			try {
@@ -102,41 +99,33 @@ test("login via Kimchi account offers Self-hosted behind the experimental flag a
 				terminal.keyDown(2)
 				terminal.submit("")
 
-				// The console URL prompt appears before the browser flow starts.
+				// The console URL prompt appears before anything else.
 				await waitForText(terminal, "Self-hosted Kimchi console URL:", { timeoutMs: INPUT_TIMEOUT_MS })
 				trace.step("console URL prompt visible")
 				terminal.submit(selfHostedBase)
 
-				// The install predates discovery, so the flow falls back to the manual
-				// single-base derivation with a clear notice.
-				await waitForText(terminal, "predates endpoint discovery", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
-				trace.step("manual fallback notice shown")
-
-				// The browser flow must target the self-hosted web app (the console URL
-				// itself, /cli-auth appended).
-				await waitForText(terminal, `${selfHostedBase}/cli-auth`, { timeoutMs: STREAM_TIMEOUT_MS, full: true })
-				trace.step("browser login URL points at the self-hosted web app")
-
-				// Deliver the OAuth token directly to the local callback server (what
-				// the browser would do after the self-hosted web app redirects back).
-				const { port, state } = browserLoginUrl(terminal)
-				const callback = await fetch(`http://127.0.0.1:${port}/callback?state=${state}&token=fake`)
-				expect(callback.status).toBe(200)
-
-				// The chosen region and the console URL are persisted next to the API key
-				// — without discovery endpoints (the manual fallback).
-				const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
-				await waitForConfigField(configPath, {
-					region: "self-hosted",
-					selfHostedEndpoints: {
-						api: `${selfHostedBase}/api`,
-						console: selfHostedBase,
-						llm: `${selfHostedBase}/llm`,
-					},
+				// A missing document is an error, not a fallback: nothing is
+				// derived from the entered URL and no browser flow starts.
+				await waitForText(terminal, "Endpoint discovery failed", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
+				await waitForText(terminal, "no discovery document at /env/endpoints.json", {
+					timeoutMs: STREAM_TIMEOUT_MS,
+					full: true,
 				})
-				trace.step("config.json contains region self-hosted + base-derived endpoints")
+				trace.step("discovery failure error shown")
 
-				await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+				// The prompt re-appears for another attempt; no login happened — the
+				// seeded config carries neither the region nor a key.
+				await waitForText(terminal, "Self-hosted Kimchi console URL:", { timeoutMs: INPUT_TIMEOUT_MS })
+				const configPath = join(fixture.homeDir, ".config", "kimchi", "config.json")
+				const config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
+				expect(config.region).not.toBe("self-hosted")
+				expect(config.selfHostedEndpoints).toBeUndefined()
+				trace.step("no login persisted, prompt re-shown")
+
+				// Esc backs out of the prompt to the auth-method selector.
+				terminal.keyEscape()
+				await waitForText(terminal, "Use a Kimchi account", { timeoutMs: STREAM_TIMEOUT_MS, full: true })
+				trace.step("Esc returns to the auth-method selector")
 			} finally {
 				preDiscovery.server.close()
 			}

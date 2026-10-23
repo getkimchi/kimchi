@@ -66,22 +66,13 @@ export interface FetchSelfHostedEndpointsOptions {
 }
 
 /**
- * Human phrasing for a discovery failure, naming the manual fallback it
- * triggers (the entered console URL doubles as the single base every
- * endpoint derives from). Shared by the interactive login flows and the
+ * Human phrasing for a discovery failure — the console URL the user entered
+ * must serve the discovery document; without it there is no self-hosted login
+ * (no endpoint can be guessed). Shared by the interactive login flows and the
  * `kimchi login <console-url>` CLI so both surfaces phrase it identically.
  */
-export function discoveryFallbackNotice(
-	result: Extract<SelfHostedDiscoveryResult, { status: "unavailable" }>,
-	consoleUrl: string,
-): string {
-	const lead =
-		result.cause === "not-found"
-			? "This Kimchi install predates endpoint discovery (no /env/endpoints.json)"
-			: result.cause === "incomplete"
-				? "This Kimchi install's discovery document is incomplete"
-				: "Endpoint discovery could not be reached"
-	return `${lead}. Falling back to manual configuration: API at ${consoleUrl}/api and LLM gateway at ${consoleUrl}/llm.`
+export function discoveryFailureMessage(result: Extract<SelfHostedDiscoveryResult, { status: "unavailable" }>): string {
+	return `Endpoint discovery failed: ${result.reason}. A self-hosted install must serve ${SELF_HOSTED_DISCOVERY_PATH}.`
 }
 
 /**

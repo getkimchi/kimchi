@@ -67,13 +67,6 @@ export const DEFAULT_REGION: RegionId = "us"
  */
 export const REGION_ENV = "KIMCHI_REGION"
 
-/**
- * Env override for the self-hosted base URL, the headless/CI companion to
- * `KIMCHI_REGION=self-hosted`. Invalid values warn once and count as unset
- * (see src/config.ts), falling back to the stored `selfHostedUrl`.
- */
-export const SELF_HOSTED_URL_ENV = "KIMCHI_SELF_HOSTED_URL"
-
 export function isRegionId(value: unknown): value is RegionId {
 	// Object.hasOwn, not `in`: "constructor"/"__proto__" are on the prototype chain.
 	return typeof value === "string" && Object.hasOwn(REGIONS, value)
@@ -99,15 +92,12 @@ export function selectableRegions(): KimchiRegion[] {
 }
 
 /**
- * Endpoints a self-hosted login resolves — from the install's discovery
+ * Endpoints a self-hosted login resolves from the install's discovery
  * document (`GET <console>/env/endpoints.json`, see
- * src/self-hosted-discovery.ts) or, for installs predating it, derived from
- * a single base URL (see selfHostedEndpointsFromBase).
+ * src/self-hosted-discovery.ts) — the only self-hosted flow.
  *
- * Each value is a BASE the consumer appends the API shape it speaks to (see
- * discoveredSelfHostedRegion): discovered installs advertise bare origins
- * (no path suffix); fallback-derived values carry the legacy path prefixes
- * (`api` = base + "/api", `llm` = base + "/llm"). Either way:
+ * Each value is an ORIGIN ONLY — no path suffix. The consumer appends the
+ * API shape it speaks (see discoveredSelfHostedRegion):
  *   console → webAppUrl (SPA, /cli-auth login handoff, platform /api proxy)
  *   api     → castApiUrl (REST API: /v1/llm, /ai-optimizer, /v1/me)
  *   llm     → llmBaseUrl (gateway: /openai/v1, /anthropic, /v1/search, /v1/rerank)
@@ -119,52 +109,24 @@ export interface SelfHostedEndpoints {
 }
 
 /**
- * Derive endpoints for an install that predates the discovery document from
- * its single base URL — the manual-entry fallback (and the
- * KIMCHI_SELF_HOSTED_URL env override) resolve everything from ONE URL via
- * the legacy path prefixes:
- *   console = base           (login pages, /cli-auth, billing links)
- *   llm     = base + "/llm"  (chat, anthropic, search, models, credits)
- *   api     = base + "/api"  (key validation, telemetry, stats)
- *
- * NOTE: the derived `api` and `platformApiUrl` (webAppUrl + "/api")
- * intentionally BOTH resolve to `base/api`. The platform API
- * (/v1/me, /workspaces, ...) and the Cast AI API (/v1/llm/...,
- * /ai-optimizer/...) serve disjoint sub-paths behind the same self-hosted
- * gateway — do not "deduplicate" them.
- *
- * The base is expected pre-normalized (see normalizeSelfHostedBaseUrl); a
- * trailing slash is stripped defensively so `/llm` never becomes `//llm`.
- */
-export function selfHostedEndpointsFromBase(base: string): SelfHostedEndpoints {
-	const trimmed = base.trim().replace(/\/+$/, "")
-	return {
-		console: trimmed,
-		llm: `${trimmed}/llm`,
-		api: `${trimmed}/api`,
-	}
-}
-
-/**
  * Build the self-hosted region from resolved endpoints.
  *
- * Discovered installs advertise each base separately (the console/API host and
- * the LLM gateway are host-scoped); fallback-derived endpoints carry the
- * legacy path prefixes. Either way the mapping is:
+ * The discovery document advertises each origin separately, because a
+ * standalone install fronts the console/API host and the LLM gateway
+ * host-scoped:
  *
  *   webAppUrl  = console  (the SPA host; its nginx proxies /api/* to the API)
- *   castApiUrl = api      (the REST API base — /v1/me, /v1/llm, /ai-optimizer
- *                         append from the root for discovered installs, from
- *                         the legacy /api prefix for fallback-derived ones)
- *   llmBaseUrl = llm      (the gateway base — the shared region helpers
- *                         append the API shapes: openAiBaseUrl =
- *                         <llm>/openai/v1, anthropicBaseUrl = <llm>/anthropic,
- *                         searchUrl = <llm>/v1/search)
+ *   castApiUrl = api      (the REST API host — paths live at the root:
+ *                         /v1/me, /v1/llm, /ai-optimizer)
+ *   llmBaseUrl = llm      (the gateway ORIGIN ONLY — no path suffix)
  *
- * platformApiUrl stays webAppUrl + "/api" (the console's /api proxy path),
- * which equals the api origin in the common path-routed case. Endpoints are
- * expected pre-normalized (see normalizeSelfHostedEndpoints); trailing
- * slashes are stripped defensively.
+ * Every llmBaseUrl-derived endpoint then appends its own API shape via the
+ * shared region helpers: openAiBaseUrl = <llm>/openai/v1,
+ * anthropicBaseUrl = <llm>/anthropic, searchUrl = <llm>/v1/search — matching
+ * the discovery contract. platformApiUrl stays webAppUrl + "/api" (the
+ * console's /api proxy path), which equals the api origin in the common
+ * path-routed case. Endpoints are expected pre-normalized
+ * (see normalizeSelfHostedEndpoints); trailing slashes are stripped defensively.
  */
 export function discoveredSelfHostedRegion(endpoints: SelfHostedEndpoints): KimchiRegion {
 	return {

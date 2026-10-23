@@ -158,73 +158,55 @@ describe("promptSelfHostedEndpoints", () => {
 		expect(discoverEndpoints).toHaveBeenCalledWith("https://stored.example.com")
 	})
 
-	it("falls back to base-derived endpoints when the install predates discovery", async () => {
-		const { promptSelfHostedEndpoints } = await import("./flow.js")
-		const prompt = vi.fn().mockResolvedValueOnce("https://kimchi.example.com")
-		const notifyStatus = vi.fn()
-		const discoverEndpoints = vi
-			.fn()
-			.mockResolvedValue({ status: "unavailable", cause: "not-found", reason: "no discovery document (HTTP 404)" })
-
-		const endpoints = await promptSelfHostedEndpoints({
-			prompt,
-			notifyError: vi.fn(),
-			notifyStatus,
-			discoverEndpoints,
-		})
-
-		expect(endpoints).toEqual({
-			console: "https://kimchi.example.com",
-			llm: "https://kimchi.example.com/llm",
-			api: "https://kimchi.example.com/api",
-		})
-		expect(notifyStatus).toHaveBeenCalledWith(
-			expect.stringContaining("This Kimchi install predates endpoint discovery"),
-		)
-		expect(notifyStatus).toHaveBeenCalledWith(
-			expect.stringContaining("Falling back to manual configuration: API at https://kimchi.example.com/api"),
-		)
-	})
-
-	it("falls back to base-derived endpoints when the document is incomplete or unreachable", async () => {
+	it("errors and re-prompts when the install does not serve the discovery document", async () => {
 		const { promptSelfHostedEndpoints } = await import("./flow.js")
 		const prompt = vi
 			.fn()
-			.mockResolvedValueOnce("https://incomplete.example.com")
-			.mockResolvedValueOnce("https://unreachable.example.com")
-		const notifyStatus = vi.fn()
+			.mockResolvedValueOnce("https://kimchi.example.com")
+			.mockResolvedValueOnce("https://kimchi.example.com")
+		const notifyError = vi.fn()
 		const discoverEndpoints = vi
 			.fn()
-			.mockResolvedValueOnce({ status: "unavailable", cause: "incomplete", reason: "missing llm key" })
-			.mockResolvedValueOnce({ status: "unavailable", cause: "fetch-failed", reason: "fetching failed (ENOTFOUND)" })
+			.mockResolvedValueOnce({ status: "unavailable", cause: "not-found", reason: "no discovery document (HTTP 404)" })
+			.mockResolvedValueOnce({
+				status: "discovered",
+				endpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
+			})
 
-		const incomplete = await promptSelfHostedEndpoints({
-			prompt,
-			notifyError: vi.fn(),
-			notifyStatus,
-			discoverEndpoints,
-		})
-		expect(incomplete).toEqual({
-			console: "https://incomplete.example.com",
-			llm: "https://incomplete.example.com/llm",
-			api: "https://incomplete.example.com/api",
-		})
-		expect(notifyStatus).toHaveBeenCalledWith(
-			expect.stringContaining("This Kimchi install's discovery document is incomplete"),
+		const endpoints = await promptSelfHostedEndpoints({ prompt, notifyError, discoverEndpoints })
+
+		// A missing document is an error, not a fallback — nothing is derived
+		// from the entered URL; the user retries or Escs out.
+		expect(notifyError).toHaveBeenCalledWith(
+			"Endpoint discovery failed: no discovery document (HTTP 404). A self-hosted install must serve /env/endpoints.json.",
 		)
+		expect(prompt).toHaveBeenCalledTimes(2)
+		expect(endpoints).toEqual({
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		})
+	})
 
-		const unreachable = await promptSelfHostedEndpoints({
-			prompt,
-			notifyError: vi.fn(),
-			notifyStatus,
-			discoverEndpoints,
+	it("errors and re-prompts when the document is incomplete or unreachable", async () => {
+		const { promptSelfHostedEndpoints } = await import("./flow.js")
+		const prompt = vi.fn().mockResolvedValueOnce("https://unreachable.example.com").mockResolvedValueOnce(undefined)
+		const notifyError = vi.fn()
+		const discoverEndpoints = vi.fn().mockResolvedValueOnce({
+			status: "unavailable",
+			cause: "incomplete",
+			reason: "the document is missing the llm key",
 		})
-		expect(unreachable).toEqual({
-			console: "https://unreachable.example.com",
-			llm: "https://unreachable.example.com/llm",
-			api: "https://unreachable.example.com/api",
-		})
-		expect(notifyStatus).toHaveBeenCalledWith(expect.stringContaining("Endpoint discovery could not be reached"))
+
+		const result = await promptSelfHostedEndpoints({ prompt, notifyError, discoverEndpoints })
+
+		expect(notifyError).toHaveBeenCalledWith(expect.stringContaining("the document is missing the llm key"))
+		// Esc on the re-prompt backs out with undefined.
+		expect(result).toBeUndefined()
 	})
 
 	it("re-prompts on invalid input until it parses", async () => {
