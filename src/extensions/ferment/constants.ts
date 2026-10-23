@@ -2,6 +2,12 @@ import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-p
 
 export const SCOPING_EXPLORE_TOKEN_BUDGET = 120_000
 
+// NOTE: the STEP 4 background-probe wording below is deliberately surface-independent
+// (not gated on backgroundNotificationsReachUser): scoping must aggregate every probe's
+// findings before STEP 5 regardless of surface, so foreground-parallel spawning with a
+// bounded join is the one contract that is correct on the TUI and on detached surfaces
+// (rpc/ACP, json, print) alike. Surface-gated delegation guidance lives in the
+// orchestrator system prompt (prompt-construction/system-prompt.ts).
 export const SCOPING_DISCOVERY_GUIDANCE = `<scoping_sequence required="true">
 The host monitors your progress and will intervene if you spend too many turns exploring
 without advancing. Your goal is to reach propose_ferment_scoping, not to understand

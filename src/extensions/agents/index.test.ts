@@ -214,9 +214,9 @@ vi.mock("../orchestration/model-roles.js", () => ({
 	}),
 }))
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { createContext, createToolContext } from "../__mocks__/context.js"
+import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -1577,6 +1577,33 @@ describe("get_subagent_result wait contract", () => {
 			expect.objectContaining({ customType: "subagent-notification" }),
 			expect.objectContaining({ triggerTurn: true }),
 		)
+	})
+
+	it("returns text when the session is invalidated mid-wait (surface captured at entry)", async () => {
+		const { record, tool } = setupRunningAgent()
+		const live = createLiveContext({ mode: "tui" })
+
+		const execPromise = tool.execute(
+			"call-stale-midwait",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			live.ctx as unknown as ExtensionToolContext,
+		)
+		// Session replaced/forked while the join pends: every later ctx read
+		// now throws (Pi's assertActive). The tool captured ctx.mode before
+		// the wait, so the timed-out join must resolve with guidance text, not
+		// a stale-ctx tool error.
+		live.invalidate()
+		await vi.advanceTimersByTimeAsync(61_000)
+		const result = await execPromise
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("60s (cap)")
+		expect(text).toContain("wait: true again to re-join")
+		// The TUI variant was selected at entry — the response still carries the
+		// interactive notification promise rather than the detached join text.
+		expect(text).toContain("you will be notified when it completes")
 	})
 
 	it("wait: true returns promptly when the tool's abort signal fires mid-wait", async () => {

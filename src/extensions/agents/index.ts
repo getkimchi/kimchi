@@ -2352,6 +2352,14 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
 
+				// Capture the surface before the bounded join below: `ctx.mode` routes
+				// through the extension runner's assertActive() and throws once the
+				// session is replaced or forked mid-wait (see stale-ctx.ts), but a
+				// timed-out join must still return guidance text, not a tool error.
+				// A session keeps one surface for its lifetime, so the entry-time
+				// capture is equivalent to reading it when building the response.
+				const surfaceMode = ctx.mode
+
 				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
 					// Bounded, interruptible join: honor the tool's abort signal and
@@ -2380,7 +2388,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
 					`Description: ${record.description}\n\n`
 
-				const texts = backgroundText(backgroundNotificationsReachUser(ctx.mode))
+				const texts = backgroundText(backgroundNotificationsReachUser(surfaceMode))
 				let bodyForDisplay: string
 				if (record.status === "queued") {
 					bodyForDisplay = texts.queuedBody(manager.getMaxConcurrent())
