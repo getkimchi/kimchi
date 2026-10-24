@@ -283,6 +283,93 @@ test("re-auth of a pre-registered client reuses the stored redirect URI", async 
 	)
 })
 
+test("re-auth with a pre-registered client secret reuses the stored redirect URI", async ({ terminal }) => {
+	// Mirrors the reported Gmail MCP configuration shape: a fixed clientId AND
+	// clientSecret with no explicit redirectUri, plus a stored registration from
+	// the pre-1.3.0 adapter pinning the localhost callback. With a client secret
+	// the token request uses client_secret_post.
+	const echo = gatewayMcpCall("echo", { message: "oauth-stored-redirect-secret" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-stored-redirect-secret",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client", clientSecret: "kimchi-e2e-client-secret" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-stored-redirect-secret" }] },
+							{ message: "oauth-stored-redirect-secret" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The secret-bearing re-auth reused the stored redirect URI.")],
+			seedHome(homeDir) {
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+				const config = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8")) as {
+					mcpServers?: { fixture?: { url?: unknown } }
+				}
+				const serverUrl = config.mcpServers?.fixture?.url
+				if (typeof serverUrl !== "string") throw new Error("OAuth fixture config is missing its URL")
+				const account = `sha256-${createHash("sha256").update("fixture").digest("hex")}`
+				const keyringPath = join(
+					agentDir,
+					"mcp-keyring",
+					createHash("sha256").update(`dev.kimchi.mcp.oauth\u0000${account}`).digest("hex"),
+				)
+				mkdirSync(dirname(keyringPath), { recursive: true })
+				writeFileSync(
+					keyringPath,
+					JSON.stringify({
+						clientInfo: {
+							clientId: "kimchi-e2e-pre-registered-client",
+							clientSecret: "kimchi-e2e-client-secret",
+							clientIdIssuedAt: Math.floor(Date.now() / 1_000),
+							redirectUris: ["http://localhost:19876/callback"],
+						},
+						serverUrl,
+					}),
+					{ mode: 0o600 },
+				)
+			},
+		},
+		async (fixture, trace) => {
+			await fixture.mcp.waitForEvent("http_unauthorized", {
+				description: "initial OAuth challenge",
+			})
+			trace.step("protected MCP endpoint challenged the unauthenticated client")
+
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the stored localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed with the reused redirect URI and client secret",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("secret-bearing re-auth completed against the pre-registered redirect URI")
+
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The secret-bearing re-auth reused the stored redirect URI.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-stored-redirect-secret" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-stored-redirect-secret")
+			trace.step("authenticated MCP call after secret-bearing stored-redirect re-auth verified")
+		},
+	)
+})
+
 test("automatically authenticates and retries an OAuth-protected MCP call", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", { message: "oauth-auto-auth" })
 	await runMcpKimchiSession(
