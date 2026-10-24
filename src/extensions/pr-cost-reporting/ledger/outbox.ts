@@ -46,12 +46,11 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 		throw new Error("Claim source and request scope are immutable")
 	if (previous) {
 		if (!isClaim(previous)) throw new Error("Native request identity cannot become a claim")
-		const repository = (event: Event) =>
-			event.repository ? [event.repository.provider, event.repository.host, event.repository.id] : null
+		const repository = (value: Event["repository"]) => (value ? [value.provider, value.host, value.id] : null)
 		if (
 			next.usage.requestId?.toLowerCase() !== previous.usage?.requestId?.toLowerCase() ||
 			next.deviceId !== previous.deviceId ||
-			JSON.stringify(repository(next)) !== JSON.stringify(repository(previous))
+			JSON.stringify(repository(next.repository)) !== JSON.stringify(repository(previous.repository))
 		)
 			throw new Error("Claim request identity, producer and repository are immutable")
 		if (next.startedAt && timeNanos(next.startedAt) !== timeNanos(previous.startedAt ?? previous.observeTime))
@@ -67,7 +66,12 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 			if (same) {
 				const allocation = (event: Event) =>
 					event.allocation
-						? [event.allocation.kind, event.allocation.pullRequestIds ?? [], event.allocation.method]
+						? [
+								event.allocation.kind,
+								event.allocation.pullRequestIds ?? [],
+								event.allocation.method,
+								repository(event.allocation.targetRepository ?? event.repository),
+							]
 						: null
 				if (
 					(next.allocation && JSON.stringify(allocation(next)) !== JSON.stringify(allocation(previous))) ||

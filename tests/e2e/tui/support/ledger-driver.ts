@@ -776,6 +776,63 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	const correctionProgression =
 		parse(required(backend.latestOutboxEvent("claims", claim.entityId)).body).correction.id ===
 		nextReceipt.correction.id
+	const target = { provider: "github", host: "github.com", id: "parent-repo", name: "parent/repo" }
+	const targetClaim = { ...allocated, allocation: { ...allocated.allocation, targetRepository: target } }
+	observeEvents(agent, "target-claims", [targetClaim], [], fence)
+	const renamedTarget = {
+		...targetClaim,
+		allocation: { ...targetClaim.allocation, targetRepository: { ...target, name: "renamed/repo" } },
+	}
+	observeEvents(agent, "target-claims", [renamedTarget], [], fence)
+	observeEvents(
+		agent,
+		"target-claims",
+		[{ ...renamedTarget, allocation: undefined, usage: { ...claim.usage, responseId: "target-metadata" } }],
+		[],
+		fence,
+	)
+	const targetChangeRejected = rejects(() =>
+		observeEvents(
+			agent,
+			"target-claims",
+			[
+				{
+					...renamedTarget,
+					allocation: { ...renamedTarget.allocation, targetRepository: { ...target, id: "other-parent" } },
+				},
+			],
+			[],
+			fence,
+		),
+	)
+	const targetDefaultRejected = rejects(() =>
+		observeEvents(agent, "target-claims", [{ ...renamedTarget, allocation: allocated.allocation }], [], fence),
+	)
+	const newerTarget = {
+		...renamedTarget,
+		correction: { ...receipt, revision: 2 },
+		allocation: { ...renamedTarget.allocation, targetRepository: { ...target, id: "other-parent" } },
+	}
+	observeEvents(agent, "target-claims", [newerTarget], [], fence)
+	const claimTargetIdentity =
+		targetChangeRejected &&
+		targetDefaultRejected &&
+		parse(required(backend.latestOutboxEvent("target-claims", claim.entityId)).body).allocation.targetRepository.id ===
+			"other-parent"
+	observeEvents(agent, "default-target", [allocated], [], fence)
+	observeEvents(
+		agent,
+		"default-target",
+		[
+			{
+				...allocated,
+				allocation: { ...allocated.allocation, targetRepository: { ...claim.repository, name: "renamed/fork" } },
+			},
+		],
+		[],
+		fence,
+	)
+	observeEvents(agent, "default-target", [allocated], [], fence)
 	observeEvents(agent, "native-claim", [{ ...claim, allocation: undefined }], [], fence)
 	const noNativeUpgrade = rejects(() => observeEvents(agent, "native-claim", [claim], [], fence))
 	const validAck = ack(frozen)
@@ -883,6 +940,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		claimInheritance,
 		claimUpdateRejected,
 		correctionProgression,
+		claimTargetIdentity,
 		noNativeUpgrade,
 		accountIsolation:
 			other.id !== first.id &&

@@ -142,6 +142,7 @@ export interface Allocation {
 	kind: string
 	pullRequestIds?: string[]
 	method: string
+	targetRepository?: Repository
 }
 export interface Correction {
 	id: string
@@ -323,6 +324,7 @@ const schemas: Record<string, readonly Field[]> = {
 		["kind", "s"],
 		["pullRequestIds", "[]s", "empty"],
 		["method", "s"],
+		["targetRepository", "repository", "nil"],
 	],
 	correction: [
 		["id", "s"],
@@ -674,19 +676,20 @@ export function validateEvent(e: Event): void {
 	}
 	validateClaimEvidence(e, invalid)
 	if (!bounded(e.sourceVersion, 64) || !e.sourceVersion) invalid()
-	const r = e.repository
-	if (
-		r &&
-		(!["github", "gitlab"].includes(r.provider) ||
-			!r.host ||
-			!bounded(r.host, 253) ||
-			containsAny(r.host, "/\\@?#| :") ||
-			!r.id ||
-			!opaque(r.id) ||
-			!bounded(r.name, 256) ||
-			containsAny(r.name ?? "", "@?#|\\"))
-	)
-		invalid()
+	for (const r of [e.repository, e.allocation?.targetRepository]) {
+		if (
+			r &&
+			(!["github", "gitlab"].includes(r.provider) ||
+				!r.host ||
+				!bounded(r.host, 253) ||
+				containsAny(r.host, "/\\@?#| :") ||
+				!r.id ||
+				!opaque(r.id) ||
+				!bounded(r.name, 256) ||
+				containsAny(r.name ?? "", "@?#|\\"))
+		)
+			invalid()
+	}
 	if (e.work) {
 		const w = e.work
 		if (
@@ -781,6 +784,7 @@ export function validateEvent(e: Event): void {
 			invalid()
 	}
 	if (e.pullRequest) {
+		const r = e.repository
 		const p = e.pullRequest
 		if (Array.from(p.uri).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))
 			invalid()

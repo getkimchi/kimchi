@@ -14,6 +14,7 @@ let actual: {
 	invalidEvidence: boolean[]
 	author: { body: string; hash: string; emptyBody: string }
 	displayValidation: boolean[]
+	target: { body: string; hash: string; invalid: boolean[] }
 }
 
 beforeAll(() => {
@@ -48,6 +49,7 @@ const unicode = structuredClone(fixture.events[0].input);
 unicode.work.title = "\\ud800 <>&\\u2028";
 const usage = fixture.events[1].input;
 const claim = fixture.events[9].input;
+const target = {...claim, allocation: {...claim.allocation, targetRepository: {provider: "github", host: "github.com", id: "42", name: "parent/repo"}}};
 const pr = fixture.events[5].input;
 const authored = {...pr, pullRequest: {...pr.pullRequest, author: "provider-user"}};
 const display = [
@@ -103,6 +105,7 @@ console.log(JSON.stringify({
   unicode: encodeEvent(unicode),
   author: {body: encodeEvent(authored), hash: eventHash(authored), emptyBody: encodeEvent({...pr, pullRequest: {...pr.pullRequest, author: ""}})},
   displayValidation: display.map((fields) => !rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, ...fields}}))),
+  target: {body: encodeEvent(target), hash: eventHash(target), invalid: ["invalid", {}, {provider: "other", host: "github.com", id: "42"}, {provider: "github", host: "secret@github.com", id: "42"}, {provider: "github", host: "github.com", id: "42", name: "repo?secret"}].map((targetRepository) => rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository}})))},
   validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],
   invalidEvidence: [...badEvidence.map((event) => rejects(() => validateEvent(event))),
     rejects(() => validateBatch({...fixture.batches[0].input, events: [claim, claim]})),
@@ -116,6 +119,14 @@ console.log(JSON.stringify({
 
 it("rejects wrong scalar and collection types or overflowing integer values", () => {
 	expect(actual.errors).toEqual(Array(15).fill("TypeError"))
+})
+
+it("appends and validates an independent allocation target without changing the old claim bytes", () => {
+	const allocation = JSON.parse(actual.target.body).allocation
+	expect(allocation.targetRepository).toEqual({ provider: "github", host: "github.com", id: "42", name: "parent/repo" })
+	expect(Object.keys(allocation).at(-1)).toBe("targetRepository")
+	expect(actual.target.hash).not.toBe(golden.events[9].hash)
+	expect(actual.target.invalid).toEqual(Array(5).fill(true))
 })
 
 it("uses Go-compatible UTF8 replacement and HTML escaping", () => {

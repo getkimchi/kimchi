@@ -26,6 +26,7 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 			claimInheritance: true,
 			claimUpdateRejected: true,
 			correctionProgression: true,
+			claimTargetIdentity: true,
 			noNativeUpgrade: true,
 			accountIsolation: true,
 			frozenReplay: true,
