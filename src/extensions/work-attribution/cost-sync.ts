@@ -1,12 +1,11 @@
-import { existsSync, readFileSync } from "node:fs"
-import { mkdir } from "node:fs/promises"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
-import { writeFileAtomic, writeFileDurably } from "../../config/json.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { readE2eSeam } from "../e2e-seam.js"
+import { getNote, hasNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE, type BillingRow, billingResponse, lookupRows } from "./billing-api.js"
@@ -50,10 +49,10 @@ interface BillingPoll {
 	failure?: { checkedAt: string; reason: string }
 }
 
-function readBillingPolls(path: string): Record<string, BillingPoll> {
+function parseBillingPolls(text: string): Record<string, BillingPoll> {
 	const polls: Record<string, BillingPoll> = Object.create(null)
 	try {
-		const value: unknown = JSON.parse(readFileSync(path, "utf8"))
+		const value: unknown = JSON.parse(text)
 		if (object(value))
 			for (const [id, entry] of Object.entries(value)) {
 				if (
@@ -78,6 +77,21 @@ function readBillingPolls(path: string): Record<string, BillingPoll> {
 			}
 	} catch {}
 	return polls
+}
+
+function readBillingPolls(path: string): Record<string, BillingPoll> {
+	try {
+		return parseBillingPolls(readFileSync(path, "utf8"))
+	} catch {
+		return Object.create(null)
+	}
+}
+
+/** A5: the note is the authority; a legacy billing-polls.json still answers for old installs. */
+function loadBillingPolls(agentDir: string, path: string): Record<string, BillingPoll> {
+	const note = getNote(agentDir, "agent", "billing-polls")
+	if (note !== undefined) return parseBillingPolls(note)
+	return readBillingPolls(path)
 }
 
 /** Scheduling state applies only to the journal observation it was written for. */
@@ -208,12 +222,6 @@ function reportRefreshMs(): number {
 	const value = Number(readE2eSeam("KIMCHI_E2E_COST_REPORT_REFRESH_MS") ?? Number.NaN)
 	return Number.isSafeInteger(value) && value >= 0 ? value : REPORT_REFRESH_MS
 }
-async function writeChanged(path: string, content: string, assertLease: () => void): Promise<void> {
-	try {
-		if (readFileSync(path, "utf8") === content) return
-	} catch {}
-	await writeFileDurably(path, content, assertLease)
-}
 async function publishReports(
 	agentDir: string,
 	{ displays, report, workIds }: CostState,
@@ -287,24 +295,20 @@ async function publishReports(
 	let deferred = false
 	for (const workId of workIds) {
 		assertLease()
-		const directory = join(agentDir, "work", workId)
-		await mkdir(directory, { recursive: true, mode: 0o700 })
 		// ponytail: connected works repeat in per-work files; use one shared snapshot if storage growth warrants it.
 		const value = { version: 1, workId, ...content(component(workId)) }
-		// `/work` and its browser read only these bounded totals.
-		await writeChanged(
-			join(directory, "cost-totals.json"),
-			`${JSON.stringify(workCostTotals(value), null, 2)}\n`,
-			assertLease,
-		)
+		// A5: reports are ledger notes; unchanged bodies are not rewritten. `/work` and its browser read the bounded totals.
+		setNote(agentDir, workId, "cost-totals", `${JSON.stringify(workCostTotals(value), null, 2)}\n`)
 		// The accuracy CLI and lab read the full report. A missing one is rebuilt at once.
-		const path = join(directory, "costs.json")
 		const now = Date.now()
-		if (now - (reportRefreshes.get(workId) ?? Number.NEGATIVE_INFINITY) < reportRefreshMs() && existsSync(path)) {
+		if (
+			now - (reportRefreshes.get(workId) ?? Number.NEGATIVE_INFINITY) < reportRefreshMs() &&
+			hasNote(agentDir, workId, "costs")
+		) {
 			deferred = true
 			continue
 		}
-		await writeChanged(path, `${JSON.stringify(value, null, 2)}\n`, assertLease)
+		setNote(agentDir, workId, "costs", `${JSON.stringify(value, null, 2)}\n`)
 		reportRefreshes.set(workId, now)
 	}
 	return !deferred
@@ -321,7 +325,7 @@ export async function reconcileWorkCosts(
 	assertLease()
 	let changed = false
 	const pollingPath = join(agentDir, "work-attribution", "billing-polls.json")
-	const polls = readBillingPolls(pollingPath)
+	const polls = loadBillingPolls(agentDir, pollingPath)
 	const previousPolls = JSON.stringify(polls)
 	const deadline = Date.now() + PASS_MS
 	const controller = new AbortController()
@@ -517,14 +521,12 @@ export async function reconcileWorkCosts(
 		const open = new Set(latest.open.map((item) => item.requestId))
 		for (const requestId of Object.keys(polls)) if (!open.has(requestId)) delete polls[requestId]
 		const currentPolls = JSON.stringify(polls)
-		if (currentPolls !== previousPolls) writeFileAtomic(pollingPath, `${currentPolls}\n`)
+		if (currentPolls !== previousPolls) setNote(agentDir, "agent", "billing-polls", `${currentPolls}\n`)
 		const failures = refreshFailures(latest, polls)
-		// Unchanged inputs give unchanged reports; only a deleted report or totals file needs writing again.
+		// Unchanged inputs give unchanged reports; only a missing report or totals note needs writing again.
 		if (
 			latest.published === failures &&
-			latest.workIds.every((workId) =>
-				["costs.json", "cost-totals.json"].every((name) => existsSync(join(agentDir, "work", workId, name))),
-			)
+			latest.workIds.every((workId) => hasNote(agentDir, workId, "costs") && hasNote(agentDir, workId, "cost-totals"))
 		)
 			return
 		const complete = await publishReports(agentDir, latest, polls, () => {

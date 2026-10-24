@@ -1,24 +1,21 @@
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as json from "../../config/json.js"
+import type * as json from "../../config/json.js"
 import * as config from "../../config.js"
-import { isWorkId } from "../../shared/work-id.js"
 import { createContext } from "../__mocks__/context.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import {
+	backendFor,
+	getNote,
+	importBatchInTx,
+	listWorks,
+	type RecordBackend,
+	setNote,
+} from "../pr-cost-reporting/ledger/records.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
@@ -46,6 +43,20 @@ const ORG = "33333333-2222-4333-8444-555555555555"
 const RECHECK_MS = 20 * 60_000
 let dir: string
 let currentKey: string
+let notes: RecordBackend
+let missingNotes: Set<string>
+const noteKey = (workId: string, name: string) => JSON.stringify([workId, name])
+
+/** Simulates loss of a derived cache row, without deleting immutable authority records. */
+function forgetNotes(workId: string, ...names: string[]): void {
+	for (const name of names) missingNotes.add(noteKey(workId, name))
+}
+
+function savedNote(workId: string, name: string) {
+	const body = getNote(dir, workId, name)
+	if (body === undefined) throw new Error(`Expected ${name} note for ${workId}`)
+	return JSON.parse(body)
+}
 const fetchMock = vi.fn<typeof fetch>()
 
 beforeEach(() => {
@@ -54,6 +65,19 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-cost-sync-"))
 	currentKey = "test-only-original-key"
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	notes = backendFor(dir)
+	missingNotes = new Set()
+	const read = notes.getNote.bind(notes)
+	const has = notes.hasNote.bind(notes)
+	const put = notes.putNote.bind(notes)
+	vi.spyOn(notes, "getNote").mockImplementation((id, name) =>
+		missingNotes.has(noteKey(id, name)) ? undefined : read(id, name),
+	)
+	vi.spyOn(notes, "hasNote").mockImplementation((id, name) => !missingNotes.has(noteKey(id, name)) && has(id, name))
+	vi.spyOn(notes, "putNote").mockImplementation((id, name, body) => {
+		put(id, name, body)
+		missingNotes.delete(noteKey(id, name))
+	})
 	// These cases read the full report after every pass; one case below keeps the five-minute refresh.
 	vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", "0")
 	const originalConfig = config.loadConfig()
@@ -175,10 +199,11 @@ function previousCostDetailLines(value: unknown, path: string): string[] {
 afterEach(async () => {
 	await flushWorkSummaries()
 	// Every report a test saved prints the same `/work` lines from its bounded totals as from the whole file.
-	for (const workId of existsSync(join(dir, "work")) ? readdirSync(join(dir, "work")).filter(isWorkId) : []) {
+	for (const { workId } of listWorks(dir)) {
 		const path = join(dir, "work", workId, "costs.json")
-		if (!existsSync(path)) continue
-		const saved = JSON.parse(readFileSync(path, "utf8"))
+		const text = getNote(dir, workId, "costs")
+		if (text === undefined) continue
+		const saved = JSON.parse(text)
 		expect(costDetailLines(workCostTotals(saved), path)).toEqual(previousCostDetailLines(saved, path))
 	}
 	vi.restoreAllMocks()
@@ -223,7 +248,7 @@ function tracked(sessionId: string, requestId: string, fields: Record<string, un
 	return { ctx, workId, source }
 }
 function report(workId: string) {
-	return JSON.parse(readFileSync(join(dir, "work", workId, "costs.json"), "utf8"))
+	return savedNote(workId, "costs")
 }
 function sync() {
 	return reconcileWorkCosts(dir, new AbortController().signal)
@@ -337,15 +362,16 @@ describe("automatic exact work cost lookup", () => {
 				new RegExp(`^Prices: 1/1 requests priced, \\$${own.slice(1).replace(".", "\\.")}\\.`),
 			)
 			// The bounded totals name the same connected group in each member's folder.
-			expect(JSON.parse(readFileSync(join(dir, "work", workId, "cost-totals.json"), "utf8")).group).toEqual(
-				[first.workId, second.workId].sort(),
-			)
+			expect(savedNote(workId, "cost-totals").group).toEqual([first.workId, second.workId].sort())
 		}
-		const totals = join(dir, "work", first.workId, "cost-totals.json")
-		const written = statSync(totals).mtimeMs
+		const written = vi
+			.mocked(notes.putNote)
+			.mock.calls.filter(([id, name]) => id === first.workId && name === "cost-totals").length
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
 		await sync()
-		expect(statSync(totals).mtimeMs).toBe(written)
+		expect(
+			vi.mocked(notes.putNote).mock.calls.filter(([id, name]) => id === first.workId && name === "cost-totals"),
+		).toHaveLength(written)
 		await flushWorkSummaries()
 		// The browser shows the same own amounts and counts the connected works' requests once.
 		const { rows, spend } = await readWorkBrowser(dir, { workId: first.workId, lines: [] })
@@ -385,7 +411,7 @@ describe("automatic exact work cost lookup", () => {
 	it("reads reporting inventory from validated source records instead of editable per-work caches", async () => {
 		const { workId } = tagged()
 		await sync()
-		writeFileSync(join(dir, "work", workId, "costs.json"), '{"requests":[],"pullRequests":[]}')
+		setNote(dir, workId, "costs", '{"requests":[],"pullRequests":[]}')
 		const source = readWorkCostReport(dir)
 		expect(source.report.requests).toHaveLength(1)
 		expect(source.report.requests[0]).toMatchObject({ billingRecordIds: [ROW], totalCostUsd: "0.123456789" })
@@ -400,7 +426,7 @@ describe("automatic exact work cost lookup", () => {
 			knownCostUsd: "0.000000000",
 			totalCostUsd: null,
 		})
-		writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals(saved)))
+		setNote(dir, workId, "cost-totals", JSON.stringify(workCostTotals(saved)))
 		const lines = workCostDetails(dir, workId)
 		expect(lines).toContain(`Account: ${ORG} / ${PROMPT} (${API})`)
 		expect(lines).toContain("Account: unknown")
@@ -508,10 +534,9 @@ describe("automatic exact work cost lookup", () => {
 				{ requestId: "chat", billingRecordId: ORG, costUsd: "0.000581110", account },
 			],
 		)
-		mkdirSync(join(dir, "work", workId), { recursive: true })
-		writeFileSync(join(dir, "work", workId, "costs.json"), JSON.stringify({ version: 1, workId, ...costs }))
-		// /work prints the bounded totals saved beside the report.
-		writeFileSync(join(dir, "work", workId, "cost-totals.json"), JSON.stringify(workCostTotals({ workId, ...costs })))
+		setNote(dir, workId, "costs", JSON.stringify({ version: 1, workId, ...costs }))
+		// /work prints the bounded totals saved alongside the report in the ledger.
+		setNote(dir, workId, "cost-totals", JSON.stringify(workCostTotals({ workId, ...costs })))
 		expect(report(workId).pullRequests[0]).toMatchObject({
 			totalCostUsd: "0.029197350",
 			explicit: { totalCostUsd: "0.028616240" },
@@ -521,7 +546,7 @@ describe("automatic exact work cost lookup", () => {
 			`Cost: $0.0292 — ${url}`,
 			"Confirmed: $0.0286; inferred: $0.000581.",
 			"Prices: 2/2 requests priced, $0.0292. PR assignments: 0 unresolved, 1 inferred, 0 shared.",
-			`Cost details: ${join(dir, "work", workId, "costs.json")}`,
+			`Cost details: ledger:${workId}`,
 		])
 	})
 
@@ -583,7 +608,7 @@ describe("automatic exact work cost lookup", () => {
 				workIds: kind === "same-account" ? [...works].sort() : [workId],
 				totalCostUsd: kind === "same-account" ? "3.000000000" : `${index + 1}.000000000`,
 			})
-			unlinkSync(join(dir, "work", workId, "costs.json"))
+			forgetNotes(workId, "costs")
 		}
 		await sync()
 		expect(report(works[0]).pullRequests[0].totalCostUsd).toBe(kind === "same-account" ? "3.000000000" : "1.000000000")
@@ -723,7 +748,7 @@ describe("automatic exact work cost lookup", () => {
 			totalCostUsd: null,
 			unknownRequestIds: [requestId],
 		})
-		unlinkSync(join(dir, "work", implementation.workId, "costs.json"))
+		forgetNotes(implementation.workId, "costs")
 		await sync()
 		expect(report(implementation.workId)).toEqual(revoked)
 		expect(fetchMock).toHaveBeenCalledTimes(3)
@@ -823,7 +848,7 @@ describe("automatic exact work cost lookup", () => {
 		expect(readWorkRecords(dir).find((row) => row.type === "request_cost")?.billingRows).toEqual([expected])
 		await flushWorkSummaries()
 		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
-		writeFileSync(join(dir, "work", workId, "work.json"), "damaged")
+		backendFor(dir).clearProjection(workId)
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(savedWorkSummary(dir, workId).requests[0].billingRows).toEqual([expected])
@@ -1456,7 +1481,7 @@ describe("automatic exact work cost lookup", () => {
 		await sync()
 		await flushWorkSummaries()
 		const before = savedWorkSummary(dir, workId)
-		writeFileSync(join(dir, "work", workId, "work.json"), "broken")
+		backendFor(dir).clearProjection(workId)
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(savedWorkSummary(dir, workId)).toEqual(before)
@@ -1506,7 +1531,7 @@ describe("automatic exact work cost lookup", () => {
 		const { workId } = tagged()
 		await sync()
 		const before = report(workId)
-		unlinkSync(join(dir, "work", workId, "costs.json"))
+		forgetNotes(workId, "costs")
 		fetchMock.mockClear()
 		await sync()
 		expect(report(workId)).toEqual(before)
@@ -1740,7 +1765,6 @@ describe("automatic exact work cost lookup", () => {
 	it("refreshes the full report at most every five minutes while /work shows each new price", async () => {
 		vi.stubEnv("KIMCHI_E2E_COST_REPORT_REFRESH_MS", undefined)
 		const { workId } = tagged()
-		const path = join(dir, "work", workId, "costs.json")
 		let price: string | undefined
 		fetchMock.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")
@@ -1749,7 +1773,8 @@ describe("automatic exact work cost lookup", () => {
 		)
 		await sync()
 		// A process's first pass writes every report.
-		const pending = readFileSync(path, "utf8")
+		const pending = getNote(dir, workId, "costs")
+		if (pending === undefined) throw new Error("Expected the initial cost report")
 		expect(JSON.parse(pending).pullRequests[0].totalCostUsd).toBeNull()
 		price = "0.5"
 		const now = Date.now()
@@ -1757,14 +1782,14 @@ describe("automatic exact work cost lookup", () => {
 		for (const minutes of [1, 4]) {
 			clock.mockReturnValue(now + minutes * 60_000)
 			await sync()
-			expect(readFileSync(path, "utf8")).toBe(pending)
+			expect(getNote(dir, workId, "costs")).toBe(pending)
 			expect(workCostDetails(dir, workId)).toContain("Cost: $0.50 — https://github.com/example/repo/pull/1")
 		}
 		clock.mockReturnValue(now + 5 * 60_000)
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
-		// A deleted report is rebuilt on the next pass.
-		unlinkSync(path)
+		// A missing derived report is rebuilt on the next pass.
+		forgetNotes(workId, "costs")
 		await sync()
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.500000000")
 	})
@@ -1889,7 +1914,7 @@ describe("billing refresh after the request tag window closes", () => {
 	it("drops a request's poll entry once its final check is journaled, then never calls for it again", async () => {
 		const { workId, requestId } = tagged()
 		await sync()
-		const polls = () => JSON.parse(readFileSync(join(dir, "work-attribution", "billing-polls.json"), "utf8"))
+		const polls = () => savedNote("agent", "billing-polls")
 		expect(polls()).toHaveProperty(requestId)
 		let now = Date.parse("2026-11-02T08:00:00.000Z") + 60_000
 		vi.spyOn(Date, "now").mockImplementation(() => now)
@@ -1944,12 +1969,16 @@ describe("billing refresh after the request tag window closes", () => {
 	it("drops poll entries of requests that no journal contains", async () => {
 		const { requestId } = tagged()
 		await sync()
-		const path = join(dir, "work-attribution", "billing-polls.json")
 		const stray = randomUUID()
-		const saved = JSON.parse(readFileSync(path, "utf8"))
-		writeFileSync(path, JSON.stringify({ ...saved, [stray]: { checkedAt: Date.now(), lookupAt: "" } }))
+		const saved = savedNote("agent", "billing-polls")
+		setNote(
+			dir,
+			"agent",
+			"billing-polls",
+			JSON.stringify({ ...saved, [stray]: { checkedAt: Date.now(), lookupAt: "" } }),
+		)
 		await sync()
-		expect(Object.keys(JSON.parse(readFileSync(path, "utf8")))).toEqual([requestId])
+		expect(Object.keys(savedNote("agent", "billing-polls"))).toEqual([requestId])
 	})
 	it("retries a final check made offline and keeps the known total until it succeeds", async () => {
 		const { workId } = tagged()
@@ -2018,10 +2047,7 @@ describe("billing refresh after the request tag window closes", () => {
 	})
 })
 
-/**
- * Writes one session journal directly; appending through the extension would also rebuild
- * a work summary per row. Each request has a stable billing row, so repeated lookups are unchanged.
- */
+/** Seed one legacy-equivalent batch through the production import transaction, folding its projection once. */
 function seedJournal(
 	requests: { requestId: string; dispatchedAt: string; lookup?: "priced" | "pending"; checkedAt?: string }[],
 ) {
@@ -2029,15 +2055,13 @@ function seedJournal(
 	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
 	const workId = getWorkId(ctx)
 	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
+	const records: WorkRecord[] = []
 	for (const { requestId, dispatchedAt, lookup, checkedAt } of requests) {
 		const selector = requestTagSelector(requestId, dispatchedAt)
-		appendWorkRecord(ctx, {
-			type: "request",
-			requestId,
-			startedAt: dispatchedAt,
-			recordedAt: dispatchedAt,
-		})
-		appendWorkRecord(ctx, {
+		const identity = { version: 1 as const, workId, sessionId, cwd: dir }
+		records.push({ ...identity, type: "request", requestId, startedAt: dispatchedAt, recordedAt: dispatchedAt })
+		records.push({
+			...identity,
 			type: "request_dispatch",
 			requestId,
 			dispatchedAt,
@@ -2046,7 +2070,8 @@ function seedJournal(
 			recordedAt: dispatchedAt,
 		})
 		if (lookup)
-			appendWorkRecord(ctx, {
+			records.push({
+				...identity,
 				type: "request_cost",
 				requestId,
 				billingSource: source,
@@ -2056,6 +2081,20 @@ function seedJournal(
 				recordedAt: checkedAt,
 			})
 	}
+	const backend = backendFor(dir)
+	backend.tx(() =>
+		importBatchInTx(
+			backend,
+			records.map((record, index) => ({
+				line: JSON.stringify(record),
+				record,
+				sourcePath: `fixture-${sessionId}`,
+				sourceGeneration: 1,
+				sourceOffset: index,
+			})),
+		),
+	)
+	expect(readWorkRecords(dir).filter((record) => record.type === "request")).toHaveLength(requests.length)
 }
 const billingIds = new Map<string, string>()
 function billingId(requestId: string): string {
@@ -2174,27 +2213,27 @@ describe("idle cost passes", () => {
 		const saved = report(workId)
 		const read = vi.spyOn(summary, "readWorkRecordsAsync")
 		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
-		const write = vi.spyOn(json, "writeFileDurably")
+		const write = vi.mocked(notes.putNote)
+		write.mockClear()
 		const readFile = vi.spyOn(fs, "readFileSync")
-		const reports = (calls: unknown[][]) => calls.filter(([path]) => String(path).endsWith("costs.json"))
+		const reports = (calls: unknown[][]) => calls.filter(([, name]) => name === "costs")
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
 		await sync()
 		await sync()
 		expect(read).not.toHaveBeenCalled()
 		expect(calculate).not.toHaveBeenCalled()
 		expect(reports(write.mock.calls)).toEqual([])
-		expect(reports(readFile.mock.calls)).toEqual([])
+		expect(readFile.mock.calls.filter(([path]) => String(path).endsWith("costs.json"))).toEqual([])
 		expect(fetchMock).toHaveBeenCalledTimes(2)
-		// A deleted report is rebuilt from the same calculation.
-		unlinkSync(join(dir, "work", workId, "costs.json"))
+		// A missing report note is rebuilt from the same calculation.
+		forgetNotes(workId, "costs")
 		await sync()
 		expect(report(workId)).toEqual(saved)
 		expect(calculate).not.toHaveBeenCalled()
 		expect(reports(write.mock.calls)).toHaveLength(1)
 		// So are the deleted totals that /work reads.
-		const totals = join(dir, "work", workId, "cost-totals.json")
 		const shown = workCostDetails(dir, workId)
-		unlinkSync(totals)
+		forgetNotes(workId, "cost-totals")
 		await sync()
 		expect(workCostDetails(dir, workId)).toEqual(shown)
 		expect(calculate).not.toHaveBeenCalled()
@@ -2350,6 +2389,9 @@ describe("empty billing settlement", () => {
 		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(before)
 		fetchMock.mockClear()
 		vi.resetModules()
+		// Module reloads retain the same durable store, just as reopening SQLite does in production.
+		const reloadedRecords = await import("../pr-cost-reporting/ledger/records.js")
+		reloadedRecords.useBackendFactory(() => notes)
 		const reloaded = await import("./cost-sync.js")
 		await reloaded.reconcileWorkCosts(dir, new AbortController().signal)
 		expect(fetchMock).not.toHaveBeenCalled()

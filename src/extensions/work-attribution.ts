@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { contentText } from "@earendil-works/pi-ai"
 import {
@@ -321,6 +321,7 @@ export function getWorkId(ctx: WorkContext): string {
 	const cached = identities.get(path)
 	if (cached) return cached
 	const sessionId = ctx.sessionManager.getSessionId()
+	recoverWorkSummaries()
 	const info = ledgerSessionInfo(getAgentDir(), sessionId)
 	if (info.work && isWorkId(info.work.workId)) {
 		identities.set(path, info.work.workId)
@@ -627,7 +628,10 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const branch = ctx.sessionManager.getBranch()
-			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
+			recoverWorkSummaries()
+			// C2 keeps session records in the ledger: a session with records is restored, not fresh.
+			const restored = ledgerSessionInfo(getAgentDir(), ctx.sessionManager.getSessionId()).recordCount > 0
+			const fresh = !restored || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
 			let copiedExplicit = false
 			let copiedSegment: WorkSegment | undefined
@@ -644,7 +648,7 @@ export function createWorkAttributionExtension(
 					break
 				}
 			}
-			if (!existsSync(key)) {
+			if (!restored) {
 				if (copiedWorkId || inheritedWorkId) setWorkId(ctx, copiedWorkId ?? inheritedWorkId ?? undefined)
 				else getWorkId(ctx)
 				const segment = copiedWorkId ? copiedSegment : inheritedSegment

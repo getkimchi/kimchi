@@ -82,13 +82,15 @@ export function openStore(agentDir: string): LedgerStore {
 	closeSync(openSync(path, "a", 0o600))
 	const db = new Database(path, { create: true, strict: true })
 	try {
+		// Connection-local: even the first schema read may race another process's initialization.
+		db.exec("PRAGMA busy_timeout=5000")
 		// Read the version before any persisting pragma so a foreign database is left exactly as found.
 		const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
 		switch (classifyUserVersion(version)) {
 			case "foreign":
 				throw new LedgerSchemaError(version)
 			default:
-				db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
+				db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
 		}
 		if (classifyUserVersion(version) === "create") {
 			db.transaction(() => {

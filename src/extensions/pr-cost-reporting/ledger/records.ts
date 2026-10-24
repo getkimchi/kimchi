@@ -510,7 +510,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
 		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),
-		hasNote: (workId, name) => hasNote.get(workId, name) !== undefined,
+		hasNote: (workId, name) => hasNote.get(workId, name) != null,
 		getNote: (workId, name) => getNote.get(workId, name)?.body,
 		putNote: (workId, name, body) => putNote.run(workId, name, body, Date.now()),
 		diagnostic: (code) => bumpDiagnostic.run(code, Date.now()),

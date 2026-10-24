@@ -3,12 +3,12 @@ import { basename, dirname, join } from "node:path"
 import { stripTerminalSequences } from "@earendil-works/pi-tui"
 import { DEFAULT_SLUG, derivePlanTitle } from "../../shared/planning/plan-markdown.js"
 import { isWorkId } from "../../shared/work-id.js"
-import { listWorks, readWorkHead } from "../pr-cost-reporting/ledger/records.js"
+import { getNote, listWorks, readWorkHead } from "../pr-cost-reporting/ledger/records.js"
 import { mergePullRequestLinks, pullRequestLabel } from "../pull-request-status/links.js"
 import { storedPullRequests } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
-import { costDetailLines, type knownSpend } from "./cost-details.js"
+import { costDetailLines, costReportSource, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"
 import { MAX_ISSUE_BYTES, parseWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
 import type { WorkHead } from "./row-log.js"
@@ -70,9 +70,8 @@ export async function readWorkBrowser(
 			if (info) modified.set(workId, info.mtimeMs)
 		}),
 	)
-	// Works whose rows live only in the ledger have no work.json; their head stamps bound recency instead.
+	// A retained legacy manifest cannot override newer ledger activity.
 	for (const { workId, head } of listWorks(agentDir)) {
-		if (modified.has(workId)) continue
 		const at = time(head.latest?.activityAt) ?? time(head.updatedAt)
 		if (at !== undefined) modified.set(workId, at)
 	}
@@ -89,8 +88,7 @@ export async function readWorkBrowser(
 			}),
 		),
 	)
-	// Cost passes rewrite work.json weeks after the last request, so saved activity times pick the works listed.
-	// Reading deletes a work.json that is not a manifest; that work is listed again once an update rebuilds it.
+	// Saved activity, not background report updates, determines which works are recent.
 	const recent = others
 		.filter((work) => work.head)
 		.map((work) => ({ work, activity: lastActivity(work) ?? 0 }))
@@ -102,17 +100,37 @@ export async function readWorkBrowser(
 		[own, ...recent].map(async (work): Promise<SavedWork> => {
 			const folder = join(directory, work.workId)
 			const issuePath = join(folder, "issue.json")
-			const [totals, planTitle, issueText] = await Promise.all([
-				readJson(join(folder, "cost-totals.json")),
+			// A5: notes are the authority; legacy cost-totals.json and issue.json still answer for old installs.
+			const [totals, planTitle, issue] = await Promise.all([
+				readWorkTotals(agentDir, work.workId, folder),
 				work.head && readPlanTitle(folder, work.head),
-				readText(issuePath, MAX_ISSUE_BYTES),
+				readWorkIssueFile(agentDir, work.workId, issuePath),
 			])
-			// A missing, special or oversized issue.json shows no issue.
-			const issue = issueText === undefined ? undefined : parseWorkIssue(issuePath, work.workId, issueText)
 			return { ...work, totals, planTitle, issue }
 		}),
 	)
 	return buildWorkBrowser(agentDir, current, works)
+}
+
+/** The work's saved totals: the ledger note first, then a legacy cost-totals.json. */
+async function readWorkTotals(agentDir: string, workId: string, folder: string): Promise<unknown> {
+	const note = getNote(agentDir, workId, "cost-totals")
+	if (note !== undefined) {
+		try {
+			return JSON.parse(note)
+		} catch {
+			return undefined
+		}
+	}
+	return readJson(join(folder, "cost-totals.json"))
+}
+
+/** The work's issue: the ledger note first, then a legacy issue.json. A missing record shows no issue. */
+async function readWorkIssueFile(agentDir: string, workId: string, issuePath: string): Promise<WorkIssue | undefined> {
+	const note = getNote(agentDir, workId, "issue")
+	if (note !== undefined) return parseWorkIssue(issuePath, workId, note)
+	const text = await readText(issuePath, MAX_ISSUE_BYTES)
+	return text === undefined ? undefined : parseWorkIssue(issuePath, workId, text)
 }
 
 /** Newest request start, native edit or retained plan; the file time when the manifest has none. */
@@ -198,7 +216,7 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 	const lines = current
 		? current.lines
 		: [...(work.issue ? workIssueLines(work.issue) : []), ...links.map((pr) => `${pullRequestLabel(pr)}: ${pr.url}`)]
-	const costLines = costDetailLines(work.totals, join(folder, "costs.json"))
+	const costLines = costDetailLines(work.totals, costReportSource(workId))
 	const context = head
 		? [
 				`Repository: ${name ? plain(name) : "unknown"}${branch ? ` · branch ${plain(branch)}` : ""}`,

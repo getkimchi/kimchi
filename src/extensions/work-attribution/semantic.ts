@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, open, opendir, readdir, readFile, stat } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { open, opendir, readdir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { completeSimple } from "@earendil-works/pi-ai/compat"
@@ -12,6 +13,7 @@ import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { findModelByRef, refFromModel } from "../model-catalog/ref-utils.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
+import { backendFor, getNote, hasNote, listWorks, setNote } from "../pr-cost-reporting/ledger/records.js"
 import {
 	getWorkId,
 	pinWorkContext,
@@ -148,7 +150,6 @@ export async function rememberWorkIntent(
 	if (!summary || summary.length > 4000) return
 	const captured = knownAccount ?? (await captureWorkAccount(cwd))
 	if (!captured?.isCurrent() || !workMatchingEnabled()) return
-	const path = workIntentPath(workId)
 	const value = {
 		version: 2,
 		workId,
@@ -156,30 +157,23 @@ export async function rememberWorkIntent(
 		account: captured.account,
 		summary,
 	}
-	await mkdir(join(getAgentDir(), "work", workId), { recursive: true, mode: 0o700 })
 	if (!captured.isCurrent() || !workMatchingEnabled()) return
-	try {
-		const file = await open(path, "wx", 0o600)
-		try {
-			await file.writeFile(`${JSON.stringify(value)}\n`)
-		} finally {
-			await file.close()
-		}
-	} catch (error) {
-		if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error
-	}
+	// A5: first write wins, like the old exclusive create. An existing note or legacy intent.json is never replaced.
+	backendFor(getAgentDir()).tx(() => {
+		if (hasNote(getAgentDir(), workId, "intent")) return
+		if (existsSync(workIntentPath(workId))) return
+		setNote(getAgentDir(), workId, "intent", `${JSON.stringify(value)}\n`)
+	})
 }
 
-/** Undefined when the work saved no task text; null when its text belongs to another repository or account. */
-async function readIntent(workId: string, repo: string, account: WorkAccount): Promise<WorkIntent | null | undefined> {
-	const file = await open(workIntentPath(workId), "r").catch((error: NodeJS.ErrnoException) => {
-		if (error.code !== "ENOENT") throw new Error("Cannot read local work intent")
-	})
-	if (!file) return
+function parseWorkIntent(
+	workId: string,
+	text: string,
+	repo: string,
+	account: WorkAccount,
+): WorkIntent | null | undefined {
 	try {
-		const info = await file.stat()
-		if (!info.isFile() || info.size > 20000) throw new Error("Invalid local work intent")
-		const value = JSON.parse(await file.readFile("utf8"))
+		const value = JSON.parse(text)
 		if (
 			(value.version !== 1 && value.version !== 2) ||
 			value.workId !== workId ||
@@ -196,6 +190,25 @@ async function readIntent(workId: string, repo: string, account: WorkAccount): P
 		if (!isWorkAccount(value.account)) throw new Error("Invalid local work account")
 		if (!sameWorkAccount(value.account, account)) return null
 		return { workId, summary: value.summary }
+	} catch {
+		// Unreadable history must not hide a competing task.
+		throw new Error("Invalid local work intent")
+	}
+}
+
+/** Undefined when the work saved no task text; null when its text belongs to another repository or account. */
+async function readIntent(workId: string, repo: string, account: WorkAccount): Promise<WorkIntent | null | undefined> {
+	// A5: the note is the authority for new works; a legacy intent.json still answers for old installs.
+	const note = getNote(getAgentDir(), workId, "intent")
+	if (note !== undefined) return parseWorkIntent(workId, note, repo, account)
+	const file = await open(workIntentPath(workId), "r").catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "ENOENT") throw new Error("Cannot read local work intent")
+	})
+	if (!file) return
+	try {
+		const info = await file.stat()
+		if (!info.isFile() || info.size > 20000) throw new Error("Invalid local work intent")
+		return parseWorkIntent(workId, await file.readFile("utf8"), repo, account)
 	} catch {
 		// Missing history is expected; unreadable history must not hide a competing task.
 		throw new Error("Invalid local work intent")
@@ -265,22 +278,28 @@ export async function loadWorkIntents(cwd: string, workId: string, text: string,
 	const current = await readIntent(workId, repo, captured.account)
 	const candidates: WorkIntent[] = []
 	if (allowContinuation) {
+		// A5: DB-backed works are authoritative for recency; legacy directories still answer for old installs.
+		const works: { id: string; active: number }[] = []
+		for (const { workId: id, head } of listWorks(getAgentDir())) {
+			if (id === workId) continue
+			works.push({ id, active: Date.parse(head.latest?.activityAt ?? head.updatedAt) || 0 })
+		}
 		const directory = join(getAgentDir(), "work")
 		const entries = await readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
 			if (error.code !== "ENOENT") throw new Error("Cannot read local work history")
 			return []
 		})
-		const works = await Promise.all(
-			entries
-				.filter((entry) => entry.isDirectory() && isWorkId(entry.name) && entry.name !== workId)
-				.map(async (entry) => ({ id: entry.name, active: await lastActive(join(directory, entry.name)) })),
-		)
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !isWorkId(entry.name) || entry.name === workId) continue
+			if (works.some((work) => work.id === entry.name)) continue
+			works.push({ id: entry.name, active: await lastActive(join(directory, entry.name)) })
+		}
 		works.sort((left, right) => right.active - left.active)
 		let scanned = 0
 		for (const work of works) {
 			if (candidates.length >= MAX_WORK_CANDIDATES || scanned >= MAX_SCANNED_INTENTS) break
 			const intent = await readIntent(work.id, repo, captured.account)
-			// Every session creates a work directory; only saved task text counts as scanned.
+			// Every session creates a work record; only saved task text counts as scanned.
 			if (intent === undefined) continue
 			scanned++
 			if (intent) candidates.push(await addPlan(intent))

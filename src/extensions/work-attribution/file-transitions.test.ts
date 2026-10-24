@@ -26,7 +26,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import { hydrateLegacy } from "../pr-cost-reporting/ledger/import.js"
 import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
@@ -133,6 +135,7 @@ function baseline() {
 	return commit()
 }
 beforeEach(() => {
+	useBackendFactory(() => createMemoryRecords())
 	root = mkdtempSync(join(tmpdir(), "kimchi-file-work-"))
 	repo = join(root, "repo")
 	mkdirSync(repo)
@@ -144,6 +147,8 @@ beforeEach(() => {
 afterEach(async () => {
 	for (const shutdown of shutdowns.splice(0)) await shutdown()
 	await flushWorkSummaries()
+	closeBackends()
+	useBackendFactory(null)
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
@@ -368,8 +373,10 @@ describe("manual commit reconciliation", () => {
 		expect(mutations[0].historyBoundaryId).toMatch(/^[a-f0-9]{64}$/)
 		expect(mutations.every((row) => row.refTips === undefined)).toBe(true)
 		const snapshots = join(root, "agent", "work-attribution", "ref-tips")
-		expect(readdirSync(snapshots)).toEqual([`${mutations[0].historyBoundaryId}.json`])
-		const snapshot = JSON.parse(readFileSync(join(snapshots, readdirSync(snapshots)[0]), "utf8"))
+		expect(existsSync(snapshots)).toBe(false)
+		const snapshot = JSON.parse(
+			getNote(join(root, "agent"), "ref-tips", String(mutations[0].historyBoundaryId)) ?? "null",
+		)
 		expect(snapshot.refTips).toHaveLength(131)
 		expect(snapshot.refTips).not.toContain(tree)
 		expect(JSON.stringify(mutations).length).toBeLessThan(5000)
@@ -384,60 +391,69 @@ describe("manual commit reconciliation", () => {
 		baseline()
 		await edit("one", "first")
 		const mutation = firstTransition()
-		const path = join(root, "agent", "work-attribution", "ref-tips", `${mutation.historyBoundaryId}.json`)
-		const saved = readFileSync(path)
-		if (damage === "missing") rmSync(path)
-		else writeFileSync(path, '{"version":1,"refTips":[')
+		const agentDir = join(root, "agent")
+		const id = String(mutation.historyBoundaryId)
+		const saved = getNote(agentDir, "ref-tips", id)
+		if (saved === undefined) throw new Error("Expected a saved history boundary")
+		const readNote = ledger.getNote
+		const missing =
+			damage === "missing"
+				? vi
+						.spyOn(ledger, "getNote")
+						.mockImplementation((dir, workId, name) =>
+							workId === "ref-tips" && name === id ? undefined : readNote(dir, workId, name),
+						)
+				: undefined
+		if (damage === "truncated") setNote(agentDir, "ref-tips", id, '{"version":1,"refTips":[')
 		git("stash", "push", "-q")
 		git("stash", "pop", "-q")
 		const sha = commit()
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		await reconcileFileTransitions(context("damaged"))
 		expect(contributions()).toEqual([])
-		writeFileSync(path, saved)
+		missing?.mockRestore()
+		setNote(agentDir, "ref-tips", id, saved)
 		await reconcileFileTransitions(context("repaired"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha })])
 	})
 
 	it("publishes one complete snapshot before concurrent transitions and repairs a damaged copy", async () => {
 		baseline()
-		const rename = asyncFs.rename
-		let unblock!: () => void
-		const gate = new Promise<void>((resolve) => {
-			unblock = resolve
-		})
-		let waiting = 0
-		vi.spyOn(asyncFs, "rename").mockImplementation(async (from, to) => {
-			if (String(to).includes("/ref-tips/")) {
-				waiting++
-				await gate
+		const agentDir = join(root, "agent")
+		const backend = ledger.backendFor(agentDir)
+		const insert = backend.insertRecord
+		const stored = vi.spyOn(backend, "putNote")
+		const checked = vi.spyOn(backend, "insertRecord").mockImplementation((record) => {
+			if (record.type === "file_transition") {
+				const row = JSON.parse(record.body)
+				expect(JSON.parse(getNote(agentDir, "ref-tips", row.historyBoundaryId) ?? "null")).toEqual({
+					version: 1,
+					refTips: [git("rev-parse", "HEAD")],
+				})
 			}
-			return rename(from, to)
+			return insert(record)
 		})
-		const writes = Promise.all([write("first.txt", "first"), write("second.txt", "second")])
-		try {
-			await vi.waitFor(() => expect(waiting).toBeGreaterThan(0))
-			expect(rows().filter((row) => row.type === "file_transition")).toEqual([])
-		} finally {
-			unblock()
-			await writes
-		}
+		await Promise.all([write("first.txt", "first"), write("second.txt", "second")])
 		const mutations = rows().filter((row) => row.type === "file_transition")
-		const directory = join(root, "agent", "work-attribution", "ref-tips")
-		const file = `${mutations[0].historyBoundaryId}.json`
-		expect(readdirSync(directory)).toEqual([file])
-		expect(mutations[1].historyBoundaryId).toBe(mutations[0].historyBoundaryId)
-		writeFileSync(join(directory, file), "partial")
+		expect(mutations).toHaveLength(2)
+		const id = String(mutations[0].historyBoundaryId)
+		expect(mutations[1].historyBoundaryId).toBe(id)
+		expect(stored.mock.calls.filter(([workId, name]) => workId === "ref-tips" && name === id)).toHaveLength(1)
+		setNote(agentDir, "ref-tips", id, "partial")
 		await write("third.txt", "third")
-		expect(JSON.parse(readFileSync(join(directory, file), "utf8")).refTips).toEqual([git("rev-parse", "HEAD")])
-		expect(readdirSync(directory)).toEqual([file])
+		expect(JSON.parse(getNote(agentDir, "ref-tips", id) ?? "null").refTips).toEqual([git("rev-parse", "HEAD")])
+		expect(checked.mock.calls.filter(([record]) => record.type === "file_transition")).toHaveLength(3)
+		expect(existsSync(join(agentDir, "work-attribution", "ref-tips"))).toBe(false)
 	})
 
 	it("preserves exact matching when its optional history snapshot is missing", async () => {
 		baseline()
 		await edit("one", "first")
 		const mutation = firstTransition()
-		rmSync(join(root, "agent", "work-attribution", "ref-tips", `${mutation.historyBoundaryId}.json`))
+		const readNote = ledger.getNote
+		vi.spyOn(ledger, "getNote").mockImplementation((dir, workId, name) =>
+			workId === "ref-tips" && name === mutation.historyBoundaryId ? undefined : readNote(dir, workId, name),
+		)
 		const sha = commit()
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		await reconcileFileTransitions(context("fresh"))
@@ -452,15 +468,34 @@ describe("manual commit reconciliation", () => {
 	])("reads %s transition boundaries without changing their source format", async (format) => {
 		baseline()
 		await edit("one", "first")
-		// Transitions live in the ledger now; both boundary shapes (inline refTips and a compact
-		// historyBoundaryId) are read from the stored rows, which reconciliation never rewrites.
+		// Reopen actual legacy input with either inline tips or no snapshot evidence.
+		const legacy = rows().map((row) =>
+			row.type === "file_transition"
+				? {
+						...row,
+						historyBoundaryId: undefined,
+						refTips: format === "inline" ? [git("rev-parse", "HEAD")] : undefined,
+					}
+				: row,
+		)
+		const directory = join(root, "agent", "work-attribution", "transitions")
+		mkdirSync(directory, { recursive: true })
+		const path = join(directory, "legacy.jsonl")
+		const original = `${legacy.map((row) => JSON.stringify(row)).join("\n")}\n`
+		writeFileSync(path, original)
+		closeBackends()
+		hydrateLegacy(join(root, "agent"))
 		const stored = rows().filter((row) => row.type === "file_transition")
+		expect(stored).toHaveLength(1)
+		expect(stored[0].historyBoundaryId).toBeUndefined()
+		expect(stored[0].refTips).toEqual(format === "inline" ? [git("rev-parse", "HEAD")] : undefined)
 		git("stash", "push", "-q")
 		git("stash", "pop", "-q")
 		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha })])
 		expect(rows().filter((row) => row.type === "file_transition")).toEqual(stored)
+		expect(readFileSync(path, "utf8")).toBe(original)
 	})
 
 	it("finds a rewritten native contribution and labels its path/blob evidence", async () => {
@@ -1355,16 +1390,17 @@ describe("manual commit reconciliation", () => {
 		"snapshot",
 	])("uses only independent birth evidence after a changed reflog prefix (%s)", async (format) => {
 		baseline()
-		if (format === "legacy") {
-			// A legacy journal has no compact boundary: block the ref-tips store so the capture
-			// records its transition without a historyBoundaryId.
-			mkdirSync(join(root, "agent", "work-attribution"), { recursive: true })
-			writeFileSync(join(root, "agent", "work-attribution", "ref-tips"), "blocked")
-		}
+		const putNote = ledger.setNote
+		const blocked =
+			format === "legacy"
+				? vi.spyOn(ledger, "setNote").mockImplementation((dir, workId, name, body) => {
+						if (workId === "ref-tips") throw new Error("History boundary unavailable")
+						putNote(dir, workId, name, body)
+					})
+				: undefined
 		await edit("one", "first")
-		if (format === "legacy") {
-			rmSync(join(root, "agent", "work-attribution", "ref-tips"), { recursive: true, force: true })
-		}
+		blocked?.mockRestore()
+		if (format === "legacy") expect(firstTransition().historyBoundaryId).toBeUndefined()
 		git("reflog", "expire", "--expire=all", "--all")
 		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
@@ -1492,13 +1528,15 @@ describe("manual commit reconciliation", () => {
 		git("worktree", "add", "-qb", "first", first)
 		git("worktree", "add", "-qb", "second", second)
 		if (legacy) {
-			// A legacy worktree journal carries no compact boundary: capture its transition while
-			// the ref-tips store is blocked, so its row lacks a historyBoundaryId.
-			mkdirSync(join(root, "agent", "work-attribution"), { recursive: true })
-			writeFileSync(join(root, "agent", "work-attribution", "ref-tips"), "blocked")
+			const putNote = ledger.setNote
+			const blocked = vi.spyOn(ledger, "setNote").mockImplementation((dir, workId, name, body) => {
+				if (workId === "ref-tips") throw new Error("History boundary unavailable")
+				putNote(dir, workId, name, body)
+			})
 			repo = second
 			await edit("one", "same", context("second"))
-			rmSync(join(root, "agent", "work-attribution", "ref-tips"), { recursive: true, force: true })
+			blocked.mockRestore()
+			expect(firstTransition().historyBoundaryId).toBeUndefined()
 			repo = first
 			await edit("one", "same", context("first"))
 		} else {
@@ -1620,8 +1658,10 @@ describe("manual commit reconciliation", () => {
 
 	it("keeps native write and edit working when attribution storage fails", async () => {
 		baseline()
-		writeFileSync(join(root, "blocked"), "file")
-		vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "blocked"))
+		closeBackends()
+		useBackendFactory(() => {
+			throw new Error("Ledger unavailable")
+		})
 		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		await edit("one", "first")
 		await write("new.txt", "new")

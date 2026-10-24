@@ -1,7 +1,7 @@
 import { isUtf8 } from "node:buffer"
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import { constants, existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative } from "node:path"
 import {
@@ -11,7 +11,6 @@ import {
 	getAgentDir,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
-import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { SHA } from "../pull-request-status/provider-records.js"
@@ -23,7 +22,6 @@ import {
 	tryWorkAttribution,
 	tryWorkAttributionAsync,
 	type WorkContext,
-	workLedgerPath,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
 import { fileMatchStrength, readWorkRecords, SHA256_HEX } from "./summary.js"
@@ -293,29 +291,30 @@ function validRefTips(value: unknown): value is string[] {
 		Array.isArray(value) && value.every((sha) => typeof sha === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha))
 	)
 }
+/** A5 bookkeeping namespace: ref-tip snapshots keyed by their content hash. */
+const REF_TIPS_NOTES = "ref-tips"
 function historyBoundaryPath(id: string): string {
 	return join(getAgentDir(), "work-attribution", "ref-tips", `${id}.json`)
 }
-async function readHistoryBoundary(id: string): Promise<string[]> {
-	const path = historyBoundaryPath(id)
-	if ((await stat(path)).size > MAX_FILE_BYTES) throw new Error("Work attribution history boundary exceeds limit")
-	const value = JSON.parse(await readFile(path, "utf8"))
+function parseHistoryBoundary(text: string, id: string): string[] {
+	const value = JSON.parse(text)
 	if (value?.version !== 1 || !validRefTips(value.refTips) || digest(Buffer.from(JSON.stringify(value.refTips))) !== id)
 		throw new Error("Invalid work attribution history boundary")
 	return value.refTips
 }
+async function readHistoryBoundary(id: string): Promise<string[]> {
+	// A5: the note is the authority for new evidence; a legacy ref-tips file still answers for old installs.
+	const note = getNote(getAgentDir(), REF_TIPS_NOTES, id)
+	if (note !== undefined) return parseHistoryBoundary(note, id)
+	const path = historyBoundaryPath(id)
+	if ((await stat(path)).size > MAX_FILE_BYTES) throw new Error("Work attribution history boundary exceeds limit")
+	return parseHistoryBoundary(await readFile(path, "utf8"), id)
+}
 /** Publish immutable, shared evidence before a transition references it. Repeated edits stay small. */
 async function saveHistoryBoundary(refTips: string[]): Promise<string> {
 	const id = digest(Buffer.from(JSON.stringify(refTips)))
-	try {
-		await readHistoryBoundary(id)
-		return id
-	} catch {
-		// A missing or interrupted snapshot can be repaired from the current Git observation.
-	}
-	const path = historyBoundaryPath(id)
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-	await writeFileDurably(path, `${JSON.stringify({ version: 1, refTips })}\n`)
+	// A5: one atomic note publishes the snapshot; identical content is not rewritten, damaged content is repaired.
+	setNote(getAgentDir(), REF_TIPS_NOTES, id, `${JSON.stringify({ version: 1, refTips })}\n`)
 	return id
 }
 /** Native tools invoke these operations inside their existing file mutation queue. */

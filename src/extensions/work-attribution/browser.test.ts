@@ -153,6 +153,16 @@ async function browse(works: { workId: string; summary?: Summary; costs?: WorkCo
 }
 
 describe("work browser rows", () => {
+	it("uses recent ledger activity even when a retained legacy manifest is stale", async () => {
+		const current = workId(1)
+		const recent = workId(2)
+		await save(recent, { summary: "legacy bytes" }, Date.parse("2000-01-01T00:00:00Z"))
+		await saveWorkSummary(agentDir, summary(recent, { requests: [request("recent", "2026-10-08T09:00:00Z")] }))
+		const browser = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
+		expect(browser.rows.map((row) => row.workId)).toEqual([current, recent])
+		expect(fs.readFileSync(join(agentDir, "work", recent, "work.json"), "utf8")).toBe("legacy bytes")
+	})
+
 	it("lists the current work first, then recent works by last activity, and leaves out old works", async () => {
 		const [current, older, newer, stale, idle] = [1, 2, 3, 4, 5].map(workId)
 		await save(current, { summary: summary(current, { requests: [request("r1", "2026-09-20T09:00:00Z")] }) }, NOW - DAY)
@@ -591,7 +601,7 @@ describe("work browser rows", () => {
 		expect(row(none)?.description).not.toContain("Jira issue")
 	})
 
-	it("reads saved Jira issues asynchronously, skipping one larger than any selection", async () => {
+	it("reads issue notes without opening legacy files, skipping a legacy file larger than any selection", async () => {
 		const [current, other, large] = [1, 2, 3].map(workId)
 		for (const id of [current, other, large])
 			await save(id, { summary: summary(id, { requests: [request(`r-${id}`)] }) })
@@ -607,7 +617,7 @@ describe("work browser rows", () => {
 		expect(row(other)?.label).toBe("  00000002 ABC-12 · kimchi")
 		expect(row(large)?.label).toBe("  00000003 kimchi")
 		const files = reads.mock.calls.map(([path]) => String(path))
-		expect(files).toContain(join(agentDir, "work", other, "issue.json"))
+		expect(files).not.toContain(join(agentDir, "work", other, "issue.json"))
 		expect(files).not.toContain(largeIssue)
 	})
 
