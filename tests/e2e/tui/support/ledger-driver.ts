@@ -203,6 +203,10 @@ async function nativeUsage(agent: string): Promise<void> {
 				id: "chat-sdk",
 				model: "sdk-responding",
 				choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+			})}\n\ndata: ${JSON.stringify({
+				id: "chat-sdk",
+				model: "sdk-responding",
+				choices: [],
 				usage: { prompt_tokens: 100, completion_tokens: 7 },
 			})}\n\ndata: [DONE]\n\n`,
 			{ headers: { "Content-Type": "text/event-stream" } },

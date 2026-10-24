@@ -139,6 +139,15 @@ changed("retry", (rows) => {
 changed("headers-only", (rows) => {
 	rows[2] = { ...rows[2], nativeUsage: undefined, responseModel: "headers-model" }
 })
+changed("final-usage", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, finalUsageObserved: true }
+})
+changed("duplicate-final-usage", (rows) => {
+	rows.push({ ...rows[2], nativeUsage: { ...nativeUsage, finalUsageObserved: true } })
+})
+changed("unproven-final-usage", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, finalUsageObserved: "true" }
+})
 const invalidRaw = [
 	{ inputTokens: "12" },
 	{ inputTokens: -1 },
@@ -311,6 +320,15 @@ it("rejects complete OpenAI cache partitions exceeding inclusive input", () => {
 
 it("does not mistake response headers for native token usage", () => {
 	expect(actual["headers-only"]).toEqual({ observations: [], unresolved: [] })
+})
+
+it("retains affirmative final-usage evidence across equivalent copies without inventing it", () => {
+	expect(actual["final-usage"].observations[0].finalUsageObserved).toBe(true)
+	expect(actual["duplicate-final-usage"].observations).toHaveLength(1)
+	expect(actual["duplicate-final-usage"].observations[0].finalUsageObserved).toBe(true)
+	expect(actual["duplicate-final-usage"].unresolved).toEqual([])
+	expect(actual.valid.observations[0].finalUsageObserved).not.toBe(true)
+	expect(actual["unproven-final-usage"].observations[0].finalUsageObserved).not.toBe(true)
 })
 
 it("fulfills exact imported-line markers only with a durable outbox observation, including rollback and reopen", {

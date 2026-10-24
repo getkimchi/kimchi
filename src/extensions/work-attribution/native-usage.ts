@@ -32,6 +32,7 @@ interface Observation {
 	responseStatus?: string
 	incompleteReason?: string
 	rawStopReason?: string
+	finalUsageObserved?: true
 	previousResponses?: Omit<Observation, "attempt" | "previousResponses" | "responseCorrelation">[]
 	responseCorrelation?: "ambiguous"
 }
@@ -77,17 +78,22 @@ function observe(observation: Observation, data: unknown): void {
 			responseStatus: undefined,
 			incompleteReason: undefined,
 			rawStopReason: undefined,
+			finalUsageObserved: undefined,
 		})
 	}
 	let raw: NativeRawUsage
 	let stopReason: unknown
+	let usageObserved = false
+	let finalUsageObserved = false
 	if (observation.schema === "anthropic-messages-v1") {
 		const usage = object(body.usage) ? body.usage : {}
+		usageObserved = Object.keys(usage).length > 0
 		const creation = object(usage.cache_creation) ? usage.cache_creation : {}
 		const output = object(usage.output_tokens_details) ? usage.output_tokens_details : {}
 		if (typeof usage.service_tier === "string" && usage.service_tier) observation.serviceTier = usage.service_tier
 		if (typeof usage.inference_geo === "string" && usage.inference_geo) observation.region = usage.inference_geo
-		stopReason = body.stop_reason ?? (object(data.delta) ? data.delta.stop_reason : undefined)
+		const deltaStopReason = object(data.delta) ? data.delta.stop_reason : undefined
+		stopReason = body.stop_reason ?? deltaStopReason
 		raw = {
 			inputTokens: counter(usage.input_tokens),
 			outputTokens: counter(usage.output_tokens),
@@ -95,6 +101,11 @@ function observe(observation: Observation, data: unknown): void {
 			cacheWriteTokens: counter(usage.cache_creation_input_tokens),
 			reasoningTokens: counter(output.thinking_tokens),
 		}
+		finalUsageObserved =
+			data.type === "message_delta" &&
+			raw.outputTokens !== undefined &&
+			typeof deltaStopReason === "string" &&
+			deltaStopReason.length > 0
 		const writes = new Map(observation.raw.cacheWrites?.map((write) => [write.ttlSeconds, write.tokens]))
 		for (const [ttl, value] of [
 			[300, creation.ephemeral_5m_input_tokens],
@@ -110,6 +121,7 @@ function observe(observation: Observation, data: unknown): void {
 	} else if (observation.schema === "openai-chat-completions-v1") {
 		const choice = Array.isArray(data.choices) && object(data.choices[0]) ? data.choices[0] : {}
 		const usage = object(data.usage) ? data.usage : object(choice.usage) ? choice.usage : {}
+		usageObserved = Object.keys(usage).length > 0
 		const input = object(usage.prompt_tokens_details) ? usage.prompt_tokens_details : {}
 		const output = object(usage.completion_tokens_details) ? usage.completion_tokens_details : {}
 		stopReason = choice.finish_reason
@@ -120,8 +132,15 @@ function observe(observation: Observation, data: unknown): void {
 			cacheWriteTokens: counter(input.cache_write_tokens ?? input.cache_creation_tokens),
 			reasoningTokens: counter(output.reasoning_tokens),
 		}
+		finalUsageObserved =
+			object(data.usage) &&
+			Array.isArray(data.choices) &&
+			data.choices.length === 0 &&
+			raw.inputTokens !== undefined &&
+			raw.outputTokens !== undefined
 	} else if (observation.schema === "openai-responses-v1") {
 		const usage = object(body.usage) ? body.usage : {}
+		usageObserved = Object.keys(usage).length > 0
 		const input = object(usage.input_tokens_details) ? usage.input_tokens_details : {}
 		const output = object(usage.output_tokens_details) ? usage.output_tokens_details : {}
 		raw = {
@@ -131,9 +150,16 @@ function observe(observation: Observation, data: unknown): void {
 			cacheWriteTokens: counter(input.cache_write_tokens),
 			reasoningTokens: counter(output.reasoning_tokens),
 		}
+		const terminal =
+			data.type === "response.completed" ||
+			data.type === "response.incomplete" ||
+			data.type === "response.failed" ||
+			(observation.api === "openai-codex-responses" && data.type === "response.done")
+		finalUsageObserved = terminal && raw.inputTokens !== undefined && raw.outputTokens !== undefined
 	} else return
 	for (const [key, value] of Object.entries(raw))
 		if (value !== undefined) Object.assign(observation.raw, { [key]: value })
+	if (usageObserved) observation.finalUsageObserved = finalUsageObserved ? true : undefined
 	if (typeof body.id === "string" && body.id) observation.responseId = body.id
 	if (typeof body.model === "string" && body.model) observation.actualModel = body.model
 	if (observation.schema !== "anthropic-messages-v1" && typeof body.service_tier === "string" && body.service_tier)

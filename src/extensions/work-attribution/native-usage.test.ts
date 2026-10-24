@@ -81,6 +81,7 @@ it("joins actual SDK retries and raw stream usage in SQLite after switching sess
 			requestId: calls[1].id,
 			nativeUsage: expect.objectContaining({
 				finalized: true,
+				finalUsageObserved: true,
 				dispatchObserved: true,
 				responseId: "chat-sdk",
 				actualModel: "sdk-responding",
@@ -88,6 +89,195 @@ it("joins actual SDK retries and raw stream usage in SQLite after switching sess
 			}),
 		}),
 	])
+})
+
+it("retains Anthropic input/cache counters while requiring the terminal event's own output usage", () => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent(
+		{
+			type: "message_start",
+			message: {
+				id: "msg-final",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 1,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 9,
+					cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 5 },
+				},
+			},
+		},
+		model,
+	)
+	capture.onProviderStreamEvent(
+		{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } },
+		model,
+	)
+	capture.onProviderStreamEvent({ type: "message_stop" }, model)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage).toMatchObject({
+		finalUsageObserved: true,
+		raw: {
+			inputTokens: 100,
+			outputTokens: 7,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 9,
+			cacheWrites: [
+				{ ttlSeconds: 300, tokens: 4 },
+				{ ttlSeconds: 3600, tokens: 5 },
+			],
+		},
+	})
+})
+
+it("does not use a misplaced top-level Anthropic stop reason as a terminal witness", () => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent({ type: "message_delta", stop_reason: "end_turn", usage: { output_tokens: 7 } }, model)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage.finalUsageObserved).not.toBe(true)
+})
+
+it.each([
+	["openai-responses", "response.completed"],
+	["openai-responses", "response.incomplete"],
+	["openai-responses", "response.failed"],
+	["azure-openai-responses", "response.completed"],
+	["azure-openai-responses", "response.incomplete"],
+	["azure-openai-responses", "response.failed"],
+	["openai-codex-responses", "response.completed"],
+	["openai-codex-responses", "response.incomplete"],
+	["openai-codex-responses", "response.failed"],
+	["openai-codex-responses", "response.done"],
+])("observes final raw usage for %s %s", (api, type) => {
+	const { capture, model, dispatch } = tracked(api)
+	dispatch()
+	capture.onProviderStreamEvent(
+		{ type, response: { id: "resp-final", usage: { input_tokens: 100, output_tokens: 7 } } },
+		model,
+	)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage.finalUsageObserved).toBe(true)
+	expect(captured()[0].nativeUsage.raw).toEqual({ inputTokens: 100, outputTokens: 7 })
+})
+
+it.each([
+	[
+		"Anthropic start only",
+		"anthropic-messages",
+		[{ type: "message_start", message: { id: "msg", usage: { input_tokens: 100, output_tokens: 1 } } }],
+	],
+	[
+		"Anthropic stop without usage",
+		"anthropic-messages",
+		[{ type: "message_start", message: { usage: { input_tokens: 100, output_tokens: 1 } } }, { type: "message_stop" }],
+	],
+	[
+		"Anthropic terminal without own output",
+		"anthropic-messages",
+		[
+			{ type: "message_start", message: { usage: { input_tokens: 100, output_tokens: 1 } } },
+			{ type: "message_delta", delta: { stop_reason: "end_turn" } },
+		],
+	],
+	[
+		"Anthropic invalid terminal output",
+		"anthropic-messages",
+		[{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: -1 } }],
+	],
+	[
+		"Chat inline usage",
+		"openai-completions",
+		[{ choices: [{ finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 7 } }],
+	],
+	[
+		"Chat missing own input",
+		"openai-completions",
+		[{ usage: { prompt_tokens: 100 } }, { choices: [], usage: { completion_tokens: 7 } }],
+	],
+	[
+		"Responses status without usage",
+		"openai-responses",
+		[
+			{ type: "response.in_progress", response: { usage: { input_tokens: 100, output_tokens: 1 } } },
+			{ type: "response.completed", response: { status: "completed" } },
+		],
+	],
+	[
+		"Responses missing own input",
+		"openai-responses",
+		[
+			{ type: "response.in_progress", response: { usage: { input_tokens: 100, output_tokens: 1 } } },
+			{ type: "response.completed", response: { usage: { output_tokens: 7 } } },
+		],
+	],
+])("does not infer final usage from %s", (_name, api, events) => {
+	const { capture, model, dispatch } = tracked(api)
+	dispatch()
+	for (const event of events) capture.onProviderStreamEvent(event, model)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage.finalized).toBe(true)
+	expect(captured()[0].nativeUsage.finalUsageObserved).not.toBe(true)
+})
+
+it("retains each physical attempt's witness independently of the final logical attempt", () => {
+	const { capture, model, dispatch } = tracked()
+	const first = dispatch()
+	capture.onProviderStreamEvent(
+		{ id: "chat-first", choices: [], usage: { prompt_tokens: 100, completion_tokens: 7 } },
+		model,
+	)
+	const retry = dispatch()
+	capture.onProviderStreamEvent({ id: "chat-second", usage: { prompt_tokens: 12 } }, model)
+	capture.finish(result())
+	expect(
+		captured().map((row) => [row.requestId, row.nativeUsage.finalized, row.nativeUsage.finalUsageObserved]),
+	).toEqual([
+		[first, false, true],
+		[retry, true, undefined],
+	])
+})
+
+it("resets final usage when the response identity changes and retains the previous witness", () => {
+	const { capture, model, dispatch } = tracked("openai-codex-responses")
+	dispatch()
+	capture.onProviderStreamEvent(
+		{ type: "response.done", response: { id: "resp-first", usage: { input_tokens: 100, output_tokens: 7 } } },
+		model,
+	)
+	capture.onProviderStreamEvent({ type: "response.created", response: { id: "resp-second" } }, model)
+	capture.finish(result())
+	const usage = captured()[0].nativeUsage
+	expect(usage.finalUsageObserved).not.toBe(true)
+	expect(usage.previousResponses[0].finalUsageObserved).toBe(true)
+	expect(usage.responseCorrelation).toBe("ambiguous")
+})
+
+it("invalidates a final witness when later raw counters have no final aggregate marker", () => {
+	const { capture, model, dispatch } = tracked()
+	dispatch()
+	capture.onProviderStreamEvent({ id: "chat", choices: [], usage: { prompt_tokens: 100, completion_tokens: 7 } }, model)
+	capture.onProviderStreamEvent({ id: "chat", usage: { completion_tokens: 8 } }, model)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage.finalUsageObserved).not.toBe(true)
+	expect(captured()[0].nativeUsage.raw.outputTokens).toBe(8)
+})
+
+it("keeps initial counters partial after an early error", async () => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent(
+		{ type: "message_start", message: { usage: { input_tokens: 100, output_tokens: 1 } } },
+		model,
+	)
+	await expect(
+		capture.complete(async () => {
+			throw new Error("stream failed")
+		}),
+	).rejects.toThrow("stream failed")
+	expect(captured()[0].nativeUsage).toMatchObject({ finalized: true, raw: { inputTokens: 100, outputTokens: 1 } })
+	expect(captured()[0].nativeUsage.finalUsageObserved).not.toBe(true)
 })
 
 it.each([false, true])("observes the original physical runtime stream once (virtual: %s)", async (virtual) => {

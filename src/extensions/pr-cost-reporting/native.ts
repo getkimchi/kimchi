@@ -25,6 +25,7 @@ export interface NativeObservation {
 	responseStatus?: string
 	incompleteReason?: string
 	rawStopReason?: string
+	finalUsageObserved?: true
 	raw: RawUsage
 	recordHashes: string[]
 }
@@ -201,6 +202,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 					...candidate,
 					recordHashes,
 				}
+				if (usage.finalUsageObserved === true) observation.finalUsageObserved = true
 			}
 			if (observation) observations.push(observation)
 		} catch (error) {
