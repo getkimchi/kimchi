@@ -9,12 +9,13 @@ import * as providerApi from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import * as health from "../telemetry/pr-cost.js"
 import { requestTagSelector } from "../work-attribution/billing-source.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import * as costs from "../work-attribution/costs.js"
 import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
+import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
+import * as outbox from "./ledger/outbox.js"
 import { readRecords } from "./ledger/records.js"
 import {
 	pendingFrozenSnapshots,
@@ -23,7 +24,7 @@ import {
 	setReportingEnabled,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
-import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
+import { accountKey, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
 import { deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
 
@@ -31,6 +32,8 @@ const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.examp
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../work-attribution/costs.js", async (original) => ({ ...(await original<typeof costs>()) }))
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
+vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], unresolved: [] })) }))
+vi.mock("./ledger/outbox.js", async (original) => ({ ...(await original<typeof outbox>()), observeEvents: vi.fn() }))
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -59,6 +62,8 @@ let directory: string
 const http = vi.fn<typeof fetch>()
 beforeEach(async () => {
 	directory = await mkdtemp(join(tmpdir(), "kimchi-reporting-http-"))
+	vi.mocked(eventBuilder.buildEvents).mockClear()
+	vi.mocked(outbox.observeEvents).mockClear()
 	config.key = "test-key"
 	config.endpoint = "https://api.example"
 	http.mockReset().mockImplementation(async (input, init) =>
@@ -81,6 +86,7 @@ afterEach(async () => {
 	vi.restoreAllMocks()
 	await rm(directory, { recursive: true, force: true })
 })
+const capturedReport = () => vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[1]
 const deliver = () => deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
 async function seedLinked(priced = true) {
 	const at = "2026-10-04T12:00:00.000Z"
@@ -107,6 +113,7 @@ async function seedLinked(priced = true) {
 			...common,
 			type: "request_dispatch",
 			requestId,
+			startedAt: at,
 			dispatchedAt: at,
 			billingSource: source,
 			billingSelector: requestTagSelector(requestId, at),
@@ -157,6 +164,39 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it("queues the producer's facts and original hashes under their original account", async () => {
+		await seedLinked(false)
+		const group = {
+			account: content.account,
+			facts: [
+				{
+					entityId: "work",
+					source: "kimchi",
+					sourceVersion: "test",
+					deviceId: requestId,
+					observeTime: "2026-10-04T12:00:00Z",
+					work: { reason: "explicit", quality: "confirmed" },
+				},
+			],
+			recordHashes: ["a".repeat(64)],
+		}
+		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({ accounts: [group], unresolved: [] })
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(outbox.observeEvents).toHaveBeenCalledWith(
+			directory,
+			accountKey(content.account),
+			group.facts,
+			group.recordHashes,
+			expect.any(Function),
+		)
+		expect(
+			vi
+				.mocked(eventBuilder.buildEvents)
+				.mock.calls.at(-1)?.[0]
+				.map((row) => JSON.parse(row.body)),
+		).toEqual(readRecords(directory))
+	})
+
 	it("delivers frozen legacy bytes when an older writer replaces the queue during verification", async () => {
 		const original = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
 		let replaced = false
@@ -226,11 +266,11 @@ describe("account-fenced reporting delivery", () => {
 		expect(bodies).toHaveLength(3)
 	})
 
-	it("freezes an older writer's replacement under the capture lock before publishing the next inventory", async () => {
+	it("freezes an older writer's replacement under the capture lock without publishing a new legacy inventory", async () => {
 		await seedLinked()
-		const read = summary.readWorkRecordsAsync
+		const read = summary.importWorkRecordsAsync
 		let replacement: string | undefined
-		vi.spyOn(summary, "readWorkRecordsAsync").mockImplementationOnce(async (...args) => {
+		vi.spyOn(summary, "importWorkRecordsAsync").mockImplementationOnce(async (...args) => {
 			const records = await read(...args)
 			await queueSnapshots(directory, [
 				{
@@ -248,12 +288,8 @@ describe("account-fenced reporting delivery", () => {
 			return records
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1", "2", "3"])
-		expect(posts().map((snapshot) => snapshot.requests[0].allocation.kind)).toEqual([
-			"unlinked",
-			"unknown",
-			"pull-request",
-		])
+		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1", "2"])
+		expect(posts().map((snapshot) => snapshot.requests[0].allocation.kind)).toEqual(["unlinked", "unknown"])
 		expect(http.mock.calls.filter(([input]) => String(input).endsWith("pr-cost-snapshots"))[1]?.[1]?.body).toBe(
 			replacement,
 		)
@@ -280,10 +316,10 @@ describe("account-fenced reporting delivery", () => {
 		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
 	})
 
-	it("reports existing work before a PR exists, then replaces it when the PR is discovered", async () => {
-		await rm(join(directory, "pr-cost-reporting", "state.json"))
+	it("captures work before a PR exists and captures its later PR without writing legacy inventory", async () => {
+		await rm(join(directory, "pr-cost-reporting/state.json"))
 		await seedLinked()
-		const path = join(directory, "work-attribution", "source.jsonl")
+		const path = join(directory, "work-attribution/source.jsonl")
 		const linked = await readFile(path, "utf8")
 		await writeFile(
 			path,
@@ -297,34 +333,22 @@ describe("account-fenced reporting delivery", () => {
 			...content.content.repository,
 			name: "example/repo",
 		})
-		const sent: WireSnapshot[] = []
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			const payload: WireSnapshot = JSON.parse(String(init?.body))
-			sent.push(payload)
-			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
-		})
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toHaveLength(1)
-		expect(sent[0]).toMatchObject({
-			revision: "1",
-			pullRequests: [],
-			requests: [{ requestId, allocation: { kind: "unlinked", pullRequestIds: [] } }],
-		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(capturedReport()?.requests[0]).toMatchObject({ requestId, pullRequestIds: [] })
+		const firstProducer = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[3]
 		await writeFile(path, linked)
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toHaveLength(2)
-		expect(sent[1]).toMatchObject({
-			producerId: sent[0].producerId,
-			revision: "2",
-			pullRequests: [{ id: "101" }],
-			requests: [{ requestId, allocation: { pullRequestIds: ["101"] } }],
-		})
-		expect(sent[1].requests).toHaveLength(1)
-		expect(sent[1].requests[0].billingRecordIds).toEqual(sent[0].requests[0].billingRecordIds)
-		expect(Date.parse(sent[1].generatedAt)).toBeGreaterThanOrEqual(Date.parse(sent[0].generatedAt))
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toHaveLength(2)
+		await run()
+		expect(capturedReport()?.requests[0].pullRequestIds).toHaveLength(1)
+		expect(capturedReport()?.pullRequests[0].pullRequest).toMatchObject({ id: "101", repositoryId: "42" })
+		expect(vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[3]).toBe(firstProducer)
+		expect(posts()).toEqual([])
+		expect((await readReportingState(directory)).entries).toEqual({})
+		// Import changes the authority fingerprint; one following pass catches up to that prefix.
+		await run()
+		const captures = vi.mocked(eventBuilder.buildEvents).mock.calls.length
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(captures)
 	})
 	it.each([
 		"success",
@@ -350,7 +374,7 @@ describe("account-fenced reporting delivery", () => {
 		])
 		expect(metric).toHaveBeenLastCalledWith({ kind: "queueDepth", value: outcome === "success" ? 0 : 1 })
 	})
-	it("uploads every same-repository post-merge candidate without holding the repository", async () => {
+	it("retains every same-repository post-merge candidate for common event construction", async () => {
 		await seedLinked()
 		const path = join(directory, "work-attribution", "source.jsonl")
 		const rows = (await readFile(path, "utf8"))
@@ -366,39 +390,24 @@ describe("account-fenced reporting delivery", () => {
 			url: "https://github.com/example/repo/pull/2",
 		})
 		await writeFile(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
-		const sent: WireSnapshot[] = []
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			const payload: WireSnapshot = JSON.parse(String(init?.body))
-			sent.push(payload)
-			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
-		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent.map((snapshot) => snapshot.revision)).toEqual(["1", "2"])
-		expect(sent[1].requests[0]).toMatchObject({
-			billingRecordIds: ["44444444-4444-4444-8444-444444444444"],
-			allocation: { kind: "shared", pullRequestIds: ["101", "102"] },
+		expect(capturedReport()?.requests[0]).toMatchObject({
+			allocation: "post-merge",
 		})
+		expect(capturedReport()?.requests[0].pullRequestIds).toHaveLength(2)
+		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1"])
 		expect((await readReportingState(directory)).error).toBeUndefined()
 	})
-	it("holds an undelivered repository withdrawal when the source ledger disappears after queueing", async () => {
+	it("does not manufacture a legacy withdrawal when source records disappear", async () => {
 		await seedLinked()
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			const payload = JSON.parse(String(init?.body))
-			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
-		})
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		const path = join(directory, "work-attribution", "source.jsonl")
-		await writeFile(path, (await readFile(path, "utf8")).replaceAll('"repositoryId":"42"', '"repositoryId":"43"'))
-		const source = readWorkCostReport(directory)
-		const built = buildSnapshots(source.records, source.report, new Map(), source.costRefreshes)
-		await queueSnapshots(directory, built.snapshots, !built.incomplete)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const path = join(directory, "work-attribution/source.jsonl")
 		await rm(path)
-		http.mockClear()
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(http).not.toHaveBeenCalled()
-		expect(Object.values((await readReportingState(directory)).entries).every((entry) => entry.held)).toBe(true)
+		const before = posts().length
+		await run()
+		expect(posts()).toHaveLength(before)
+		expect(Object.values((await readReportingState(directory)).entries).map((entry) => entry.revision)).toEqual(["1"])
 	})
 	it("reports valid scoped work beside unrelated unscoped legacy history with incomplete coverage", async () => {
 		await seedLinked()
@@ -408,21 +417,19 @@ describe("account-fenced reporting delivery", () => {
 			// The legacy work has repository evidence, so its unscoped request leaves that history incomplete.
 			`${await readFile(sourcePath, "utf8")}${JSON.stringify({ version: 1, type: "request", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", requestId: "77777777-7777-4777-8777-777777777777", recordedAt: "2026-10-01T10:00:00Z" })}\n${JSON.stringify({ version: 1, type: "commit", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", sha: "c".repeat(40), repository: "/project/.git", worktree: "/project", recordedAt: "2026-10-01T10:00:00Z", pullRequests: [] })}\n`,
 		)
-		let sent: Record<string, unknown> | undefined
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			sent = JSON.parse(String(init?.body))
-			return Response.json({ status: "accepted", revision: sent?.revision, receivedAt: new Date().toISOString() })
-		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toMatchObject({ coverage: { observedRequests: 1, historyComplete: false } })
-		expect(JSON.stringify(sent)).not.toContain("77777777-7777-4777-8777-777777777777")
-		// Skipped history is coverage, not a delivery problem.
-		const { error, skippedRequests } = await readReportingState(directory)
-		expect(error).toBeUndefined()
-		expect(skippedRequests).toBe(1)
+		expect(capturedReport()?.requests.find((row) => row.requestId === requestId)?.account).toEqual(content.account)
+		expect(
+			capturedReport()?.requests.find((row) => row.requestId === "77777777-7777-4777-8777-777777777777")?.account,
+		).toBeNull()
+		expect(
+			vi
+				.mocked(eventBuilder.buildEvents)
+				.mock.calls.at(-1)?.[0]
+				.map((row) => JSON.parse(row.body)),
+		).toContainEqual(expect.objectContaining({ sessionId: "legacy-session", type: "request" }))
 	})
-	it("holds a broken known group while uploading an independent healthy repository", async () => {
+	it("keeps broken and healthy source evidence separate for the common producer", async () => {
 		await seedLinked()
 		const sourcePath = join(directory, "work-attribution", "source.jsonl")
 		const healthyId = "77777777-7777-4777-8777-777777777777"
@@ -438,41 +445,21 @@ describe("account-fenced reporting delivery", () => {
 			recordedAt: "2026-10-01T10:00:00Z",
 		}
 		await writeFile(sourcePath, `${healthy}${JSON.stringify(broken)}\n`)
-		const sent: string[] = []
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			const payload = JSON.parse(String(init?.body))
-			sent.push(payload.repository.id)
-			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
-		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toEqual(["43"])
-		const held = Object.values((await readReportingState(directory)).entries).find(
-			(entry) => entry.repository.id === "42",
-		)
-		expect(held).toMatchObject({ held: true, revision: "1", pending: { requests: [{ requestId }] } })
+		expect(capturedReport()?.requests.find((row) => row.requestId === healthyId)?.account).toEqual(content.account)
+		expect(capturedReport()?.requests.find((row) => row.requestId === requestId)?.account).toBeNull()
+		expect(posts().map((snapshot) => snapshot.repository.id)).toEqual(["42"])
 	})
-	it.each([
-		true,
-		false,
-	])("builds a full source snapshot with validated billing evidence (priced=%s)", async (priced) => {
+	it.each([true, false])("passes validated billing evidence to the common producer (priced=%s)", async (priced) => {
 		await seedLinked(priced)
-		let sent: Record<string, unknown> | undefined
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			sent = JSON.parse(String(init?.body))
-			return Response.json({ status: "accepted", revision: sent?.revision, receivedAt: new Date().toISOString() })
-		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent).toMatchObject({
-			coverage: { observedRequests: 1, unpricedRequests: priced ? 0 : 1, historyComplete: true },
-			requests: [{ requestId, billingRecordIds: priced ? ["44444444-4444-4444-8444-444444444444"] : [] }],
+		expect(capturedReport()?.requests[0]).toMatchObject({
+			requestId,
+			billingRecordIds: priced ? ["44444444-4444-4444-8444-444444444444"] : [],
 		})
-		for (const privateValue of ["private-session", "/private", "0.123456789", "a".repeat(64)])
-			expect(JSON.stringify(sent)).not.toContain(privateValue)
-		http.mockClear()
-		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(http).not.toHaveBeenCalled()
+		const stored = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[0]
+		expect(stored?.every((row) => /^[a-f0-9]{64}$/.test(row.recordHash))).toBe(true)
+		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1"])
 	})
 	it("does not look up or send with a different configured endpoint", async () => {
 		config.endpoint = "https://other.example"
@@ -531,7 +518,7 @@ describe("account-fenced reporting delivery", () => {
 		const timedOut = frozen.find(({ entry }) => entry.revision === "1")?.entry
 		expect(timedOut?.attempts).toBe(1)
 		expect(timedOut?.retryAt).toBeGreaterThan(Date.now())
-		expect(entry).toMatchObject({ revision: "2", attempts: 0 })
+		expect(entry).toMatchObject({ revision: "1", attempts: 1 })
 	}, 8000)
 	it("persists before dispatch and sends the allowlisted body without user or account fields", async () => {
 		http.mockImplementation(async (input, init) => {
@@ -922,46 +909,28 @@ describe("server limits", () => {
 		expect((await entryFor("42"))?.limit?.scope).toBeUndefined()
 		expect((await entryFor("43"))?.pending).toBeUndefined()
 	})
-	it("trims to a server snapshot limit and sends the smaller snapshot after the wait", async () => {
-		await rm(join(directory, "pr-cost-reporting", "state.json"))
-		await seedLinked()
-		const path = join(directory, "work-attribution", "source.jsonl")
-		const rows = (await readFile(path, "utf8"))
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line))
-		const later = "66666666-6666-4666-8666-666666666666"
-		rows.push({
-			...rows.find((row) => row.type === "request"),
-			requestId: later,
-			startedAt: "2026-10-04T12:30:00.000Z",
-			recordedAt: "2026-10-04T12:30:00.000Z",
-		})
-		await writeFile(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+	it("retains a rejected legacy body at cutover and retries its exact bytes after the limit wait", async () => {
+		await queueSnapshots(directory, [inventory([requestId, second])])
+		const original = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
 		let full = true
 		respond((payload) => (full ? limited("snapshot", "requests", "2", "1") : accepted(payload)))
-		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		await run()
-		expect(posts().map((payload) => payload.requests.length)).toEqual([2])
-		expect(await entryFor("42")).toMatchObject({
-			limit: { scope: "snapshot", limit: "requests" },
-			learned: { requests: 1 },
-		})
-		// The next pass queues the smaller snapshot at once, but it waits out the limit like any other.
-		await run()
-		const waiting = await entryFor("42")
-		expect(waiting).toMatchObject({ trimmed: 1, pending: { requests: [{ requestId: later }] } })
-		expect(posts()).toHaveLength(1)
+		await deliver()
+		const frozen = await pendingFrozenSnapshots(directory, () => {}, Date.now() + 5000)
+		const rejected = frozen.find((row) => row.body === original)
+		expect(rejected?.entry.limit).toMatchObject({ scope: "snapshot", limit: "requests" })
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(
+			(await pendingFrozenSnapshots(directory, () => {}, Date.now() + 5000)).find((row) => row.id === rejected?.id)
+				?.body,
+		).toBe(original)
 		full = false
-		vi.spyOn(Date, "now").mockReturnValue((waiting?.retryAt ?? 0) + 1)
-		await run()
-		expect(posts().at(-1)).toMatchObject({
-			requests: [{ requestId: later }],
-			coverage: { observedRequests: 1, historyComplete: false, trimmedRequests: 1 },
-		})
-		const sent = await entryFor("42")
-		expect(sent?.limit).toBeUndefined()
-		expect(sent?.learned?.requests).toBe(1)
+		vi.spyOn(Date, "now").mockReturnValue((rejected?.entry.retryAt ?? 0) + LIMIT_RETRY_MS)
+		await deliver()
+		expect(
+			http.mock.calls
+				.filter(([url]) => String(url).endsWith("pr-cost-snapshots"))
+				.some(([, init]) => init?.body === original),
+		).toBe(true)
 	})
 	it("retries an oversized 429 body as an outage without reading past 64 KiB", async () => {
 		respond(
@@ -1027,12 +996,9 @@ describe("repository identity for work without a PR", () => {
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError(message, kind))
 		respond(accepted)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(posts().map((payload) => [payload.repository.id, payload.coverage.historyComplete])).toEqual([
-			["42", complete],
-		])
-		const { error, skippedRequests } = await readReportingState(directory)
-		expect(error).toBeUndefined()
-		expect(skippedRequests).toBe(complete ? undefined : 1)
+		const identities = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[2]
+		expect(identities?.get("/scratch/.git")).toBe(complete ? "unsupported" : undefined)
+		expect(posts()).toEqual([])
 	})
 	it("delivers a known repository while another lookup times out, then retries that lookup after cooldown", async () => {
 		await seedLinked()
@@ -1051,25 +1017,24 @@ describe("repository identity for work without a PR", () => {
 				scope: { account: content.account, repository: "/slow/.git" },
 			})}\n`,
 		)
-		const lookup = vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation(
-			(_path, signal) =>
-				new Promise((_resolve, reject) => {
-					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-				}),
+		const lookup = vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation((path, signal) =>
+			path === "/private/repo/.git"
+				? Promise.resolve({ ...content.content.repository, name: "example/repo" })
+				: new Promise((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+					}),
 		)
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
-		expect(http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-snapshots"))).toHaveLength(2)
+		expect(posts()).toHaveLength(1)
 		await run()
-		expect(lookup).toHaveBeenCalledOnce()
+		expect(lookup).toHaveBeenCalledTimes(2)
 		const next = Date.now() + 31_000
 		vi.spyOn(Date, "now").mockReturnValue(next)
 		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/slow", id: "99" })
 		await run()
-		expect(lookup).toHaveBeenCalledTimes(2)
-		expect(
-			Object.values((await readReportingState(directory)).entries).some((entry) => entry.repository.id === "99"),
-		).toBe(true)
+		expect(lookup).toHaveBeenCalledTimes(3)
+		expect(vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[2].get("/slow/.git")).toMatchObject({ id: "99" })
 	})
 	it("keeps a repository identity for a day, then refreshes it", async () => {
 		await seedLinked()
@@ -1131,8 +1096,8 @@ describe("repository identity for work without a PR", () => {
 		})
 		for (let pass = 0; pass < 3; pass++)
 			await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		const queued = Object.values((await readReportingState(directory)).entries).filter(
-			(entry) => entry.repository.provider === "github" && Number(entry.repository.id) >= 1000,
+		const queued = [...(vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[2].values() ?? [])].filter(
+			(entry) => entry !== "unsupported" && Number(entry.id) >= 1000,
 		)
 		expect(queued).toHaveLength(12)
 		// One lookup per repository, plus at most one abandoned when a pass deadline interrupts it.
@@ -1150,7 +1115,7 @@ describe("idle reporting passes", () => {
 		const reads = vi.spyOn(fs, "readSync")
 		await run()
 		expect(reads).not.toHaveBeenCalled()
-		expect(posts()).toHaveLength(2)
+		expect(posts()).toHaveLength(1)
 	})
 
 	it.each([
@@ -1187,7 +1152,7 @@ describe("idle reporting passes", () => {
 			expect(calculate).not.toHaveBeenCalled()
 			expect((await readReportingState(directory)).error).toContain("complete inventory")
 		}
-		expect(posts()).toHaveLength(2)
+		expect(posts()).toHaveLength(1)
 	})
 
 	it("rechecks changed legacy input after a recoverable torn append", async () => {
@@ -1211,10 +1176,10 @@ describe("idle reporting passes", () => {
 		const problems: summary.WorkRecordProblem[] = []
 		reportJournalProblems(directory, (problem) => problems.push(problem))
 		expect(problems).toEqual([])
-		expect(posts()).toHaveLength(2)
+		expect(posts()).toHaveLength(1)
 	})
 
-	it("skips an unchanged pass, reads journals in the background and still moves the window", async () => {
+	it("skips an unchanged pass, reads journals in the background and refreshes mutable metadata", async () => {
 		await seedLinked()
 		respond(accepted)
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
@@ -1236,7 +1201,7 @@ describe("idle reporting passes", () => {
 		await run()
 		expect(calculate).toHaveBeenCalledTimes(2)
 		expect(blockingRead).not.toHaveBeenCalled()
-		expect(posts()).toHaveLength(2)
+		expect(posts()).toHaveLength(1)
 	})
 })
 
@@ -1252,11 +1217,8 @@ describe("journals with a torn final append", () => {
 			"55555555-5555-4555-8555-555555555555",
 		)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		const sent = http.mock.calls.filter(([url]) => String(url).endsWith("/pr-cost-snapshots"))
-		expect(sent).toHaveLength(1)
-		expect(
-			JSON.parse(String(sent[0][1]?.body)).requests.map((request: { requestId: string }) => request.requestId),
-		).toEqual([requestId])
+		expect(capturedReport()?.requests.map((row) => row.requestId)).toEqual([requestId])
+		expect(posts()).toEqual([])
 		expect((await readReportingState(directory)).error).toBeUndefined()
 	})
 	it("keeps reporting recorded work when another session's journal ends with a partial line", async () => {
@@ -1264,14 +1226,8 @@ describe("journals with a torn final append", () => {
 		await seedLinked()
 		// A process died during its final append; that record was never complete or reported.
 		await writeFile(join(directory, "work-attribution", "crashed.jsonl"), '{"type":"request","requestId":"0b8f')
-		const sent: WireSnapshot[] = []
-		http.mockImplementation(async (input, init) => {
-			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
-			const payload: WireSnapshot = JSON.parse(String(init?.body))
-			sent.push(payload)
-			return Response.json({ status: "accepted", revision: payload.revision, receivedAt: new Date().toISOString() })
-		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(sent.map((payload) => payload.requests.map((request) => request.requestId))).toEqual([[requestId]])
+		expect(capturedReport()?.requests.map((row) => row.requestId)).toEqual([requestId])
+		expect(posts()).toEqual([])
 	})
 })

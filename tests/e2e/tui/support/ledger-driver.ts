@@ -175,8 +175,13 @@ async function importJournalsCommand(agent: string): Promise<void> {
 	out(await importJournals(agent))
 }
 
-async function nativeUsage(agent: string, anthropic = false, common = false): Promise<void> {
+async function nativeUsage(agent: string, anthropic = false, common = false, delivery = false): Promise<void> {
 	process.env.PI_CODING_AGENT_DIR = agent
+	if (delivery) {
+		process.env.KIMCHI_API_KEY = "fake-reporting"
+		process.env.KIMCHI_REMOTE_ENDPOINT = "https://api.cast.ai"
+		process.env.KIMCHI_TELEMETRY_ENABLED = "true"
+	}
 	const { ModelRuntime } = await import("@earendil-works/pi-coding-agent")
 	const { installGlobalFetchInstrumentation } = await import("../../../../src/http/instrument-fetch.js")
 	const { getWorkId, prepareProviderRequest, recordProviderRequest, recordProviderResponse, setWorkId } = await import(
@@ -199,6 +204,14 @@ async function nativeUsage(agent: string, anthropic = false, common = false): Pr
 			return Response.json({ error: { message: "retry" } }, { status: 503, headers: { "Retry-After": "0" } })
 		}
 		if (anthropic) {
+			const accounting = delivery
+				? {
+						service_tier: "standard",
+						inference_geo: "global",
+						cache_read_input_tokens: 0,
+						cache_creation_input_tokens: 0,
+					}
+				: {}
 			const events = [
 				{
 					type: "message_start",
@@ -209,7 +222,7 @@ async function nativeUsage(agent: string, anthropic = false, common = false): Pr
 						model: "sdk-primary",
 						content: [],
 						stop_reason: null,
-						usage: { input_tokens: 100, output_tokens: 1 },
+						usage: { input_tokens: 100, output_tokens: 1, ...accounting },
 					},
 				},
 				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -219,11 +232,12 @@ async function nativeUsage(agent: string, anthropic = false, common = false): Pr
 					type: "message_delta",
 					delta: { stop_reason: "end_turn" },
 					usage: {
+						...accounting,
 						input_tokens: 90,
 						output_tokens: 7,
 						iterations: [
-							{ type: "message", model: "sdk-primary", input_tokens: 100, output_tokens: 0 },
-							{ type: "fallback_message", model: "sdk-fallback", input_tokens: 90, output_tokens: 7 },
+							{ type: "message", model: "sdk-primary", input_tokens: 100, output_tokens: 0, ...accounting },
+							{ type: "fallback_message", model: "sdk-fallback", input_tokens: 90, output_tokens: 7, ...accounting },
 						],
 					},
 				},
@@ -301,6 +315,10 @@ async function nativeUsage(agent: string, anthropic = false, common = false): Pr
 	)
 	closeBackends()
 	const captured = readRecords(agent).filter((row) => row.nativeUsage)
+	if (delivery) {
+		await nativeDelivery(agent)
+		return
+	}
 	if (common) {
 		const { buildEvents } = await import("../../../../src/extensions/pr-cost-reporting/events.js")
 		const { backendFor, readStoredRecordsAsync } = await import(
@@ -346,6 +364,259 @@ async function nativeUsage(agent: string, anthropic = false, common = false): Pr
 		return
 	}
 	out({ original, calls, stopReason: message.stopReason, captured })
+	closeBackends()
+}
+
+async function nativeDelivery(agent: string): Promise<void> {
+	const { isWorkScope } = await import("../../../../src/extensions/work-attribution/scope.js")
+	const request = readRecords(agent).find((row) => row.type === "request" && isWorkScope(row.scope))
+	if (
+		!request ||
+		!isWorkScope(request.scope) ||
+		typeof request.requestId !== "string" ||
+		typeof request.startedAt !== "string"
+	)
+		throw new Error("Missing original native scope")
+	const account = request.scope.account
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
+		"../../../../src/extensions/pr-cost-reporting/queue.js"
+	)
+	const key = accountKey(account)
+	const check = () => {}
+	const posts: { url: string; body: string }[] = []
+	let mode = "success"
+	let redirected = false
+	let legacyInterleaved = false
+	let racedLegacy = false
+	let abandonedSignal: AbortSignal | null | undefined
+	globalThis.fetch = async (input, init) => {
+		const url = String(input)
+		redirected ||= init?.redirect !== "error"
+		if (url.endsWith("api-keys:verify")) {
+			if (mode === "key-change") process.env.KIMCHI_API_KEY = "changed-key"
+			return Response.json({
+				organizationId: account.organizationId,
+				userId: mode === "other-user" ? "cccccccc-cccc-4ccc-8ccc-cccccccccccc" : account.userId,
+			})
+		}
+		if (!url.startsWith(account.apiUrl)) throw new Error("Unexpected network destination")
+		const body = String(init?.body)
+		posts.push({ url, body })
+		const parsed = JSON.parse(body)
+		if (url.endsWith("pr-cost-snapshots"))
+			return Response.json({ status: "accepted", revision: parsed.revision, receivedAt: new Date().toISOString() })
+		if (!url.endsWith("pr-cost-events:batchIngest")) throw new Error("Unexpected reporting route")
+		if (mode === "lease-loss") {
+			abandonedSignal = init?.signal
+			return new Promise((_resolve, reject) => {
+				abandonedSignal?.addEventListener("abort", () => reject(new Error("aborted held upload")), { once: true })
+			})
+		}
+		if (mode === "interleave" && legacyInterleaved) racedLegacy = true
+		if (mode === "lost") throw new Error("ACK lost")
+		if (mode === "invalid") return Response.json({ batchId: "wrong", receipts: [] })
+		if (mode === "off") await setReportingEnabled(agent, false)
+		return Response.json({
+			batchId: parsed.batch.id,
+			generation: "1",
+			receiveTime: new Date().toISOString(),
+			receipts: parsed.batch.events.map(({ id, revision }: { id: string; revision: string }) => ({
+				id,
+				revision,
+				status: "accepted",
+			})),
+		})
+	}
+	await setReportingEnabled(agent, true)
+	await queueSnapshots(agent, [
+		{
+			account,
+			content: {
+				repository: { provider: "github", host: "github.com", id: "999" },
+				pullRequests: [],
+				requests: [
+					{
+						requestId: request.requestId,
+						startedAt: request.startedAt,
+						billingRecordIds: [],
+						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+					},
+				],
+				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
+			},
+		},
+	])
+	const originalLegacy = JSON.stringify(Object.values((await readReportingState(agent)).entries)[0].pending)
+	await reconcileReporting(agent, agent, new AbortController().signal, check)
+	const initial = posts.filter((post) => post.url.endsWith("pr-cost-events:batchIngest"))
+	const initialEvents = initial.flatMap((post) => JSON.parse(post.body).batch.events)
+	const after = await readReportingState(agent)
+	const initialPending = backendFor(agent).pendingOutboxEvents(key, 1000).length
+	const capturedByWorker = initialEvents.filter((event: { usage?: object }) => event.usage)
+	const run = () => deliverEvents(agent, agent, new AbortController().signal, check)
+	const seed = () =>
+		observeEvents(
+			agent,
+			key,
+			[
+				{
+					entityId: crypto.randomUUID(),
+					source: "kimchi",
+					sourceVersion: "test",
+					deviceId: request.workId,
+					observeTime: new Date().toISOString(),
+					coverage: { code: "fixture", count: "1" },
+				},
+			],
+			[],
+			check,
+		)
+	const body = () => {
+		const batch = pendingBatch(agent, key, check)
+		if (!batch) throw new Error("Missing pending worker batch")
+		return Buffer.from(batch.body).toString()
+	}
+	seed()
+	mode = "lost"
+	await run()
+	const lostBody = body()
+	closeBackends()
+	const reopened = body() === lostBody
+	const attempts = posts.length
+	mode = "success"
+	await run()
+	const backoff = posts.length === attempts && body() === lostBody
+	const retry = JSON.parse(backendFor(agent).getNote("pr-cost-delivery", key) ?? "null")
+	const clock = Date.now
+	Date.now = () => retry.retryAt + 1
+	try {
+		await run()
+	} finally {
+		Date.now = clock
+	}
+	const replayed = posts.at(-1)?.body === lostBody && !backendFor(agent).getOutboxBatch(key)
+	seed()
+	mode = "invalid"
+	await run()
+	const invalidBody = body()
+	mode = "success"
+	await setReportingEnabled(agent, true)
+	await run()
+	const invalidAckRetained = posts.at(-1)?.body === invalidBody && !backendFor(agent).getOutboxBatch(key)
+	seed()
+	mode = "off"
+	await run()
+	const offBody = body()
+	mode = "success"
+	await setReportingEnabled(agent, true)
+	await run()
+	const optOutRetained = posts.at(-1)?.body === offBody && !backendFor(agent).getOutboxBatch(key)
+	seed()
+	const originalBody = body()
+	mode = "other-user"
+	const beforeOther = posts.length
+	await run()
+	const accountFenced = posts.length === beforeOther && body() === originalBody
+	mode = "key-change"
+	let keyFenced = false
+	try {
+		await run()
+	} catch {
+		keyFenced = posts.length === beforeOther && body() === originalBody
+	}
+	process.env.KIMCHI_API_KEY = "fake-reporting"
+	mode = "success"
+	await run()
+	const { readFileSync, writeFileSync, existsSync } = await import("node:fs")
+	const { lockSync } = await import("proper-lockfile")
+	const queueDirectory = join(agent, "pr-cost-reporting")
+	const statePath = join(queueDirectory, "state.json")
+	const drainedState = readFileSync(statePath)
+	await queueSnapshots(agent, [
+		{
+			account,
+			content: {
+				repository: { provider: "github", host: "github.com", id: "999" },
+				pullRequests: [],
+				requests: [
+					{
+						requestId: crypto.randomUUID(),
+						startedAt: new Date().toISOString(),
+						billingRecordIds: [],
+						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+					},
+				],
+				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
+			},
+		},
+	])
+	const oldWriterState = readFileSync(statePath)
+	writeFileSync(statePath, drainedState)
+	seed()
+	const backend = backendFor(agent)
+	const readPage = backend.readNotePage.bind(backend)
+	let scans = 0
+	let armed = false
+	backend.readNotePage = (...args) => {
+		const page = readPage(...args)
+		if (args[0] === "legacy-pr-cost-snapshots" && !page.length && ++scans === 2) armed = true
+		return page
+	}
+	mode = "interleave"
+	try {
+		await deliverEvents(agent, agent, new AbortController().signal, () => {
+			if (!armed || legacyInterleaved || existsSync(`${queueDirectory}.lock`)) return
+			const release = lockSync(queueDirectory)
+			try {
+				writeFileSync(statePath, oldWriterState)
+			} finally {
+				release()
+			}
+			legacyInterleaved = true
+		})
+	} finally {
+		backend.readNotePage = readPage
+	}
+	mode = "success"
+	const { deliverSnapshots } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	await deliverSnapshots(agent, agent, new AbortController().signal, check)
+	await run()
+	seed()
+	const abandonedBody = body()
+	mode = "lease-loss"
+	try {
+		await deliverEvents(agent, agent, new AbortController().signal, () => {
+			if (abandonedSignal) throw new Error("lease lost after dispatch")
+		})
+	} catch {}
+	const failedPassAborted = abandonedSignal?.aborted === true
+	const abandonedRetained = body() === abandonedBody
+	mode = "success"
+	await run()
+	out({
+		capturedByWorker,
+		initialBody: initial[0]?.body,
+		initialPending,
+		legacyExact: posts[0]?.body === originalLegacy,
+		legacyFirst: posts[0]?.url.endsWith("pr-cost-snapshots"),
+		noNewLegacy: Object.values(after.entries).every((entry) => entry.revision === "1" && !entry.pending),
+		reopened,
+		backoff,
+		replayed,
+		invalidAckRetained,
+		optOutRetained,
+		accountFenced,
+		keyFenced,
+		legacyBoundary: legacyInterleaved && !racedLegacy,
+		failedPassAborted,
+		abandonedRetained,
+		redirectsRejected: !redirected,
+		finalPending: backendFor(agent).pendingOutboxEvents(key, 1000).length,
+	})
 	closeBackends()
 }
 
@@ -1632,6 +1903,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"native-usage": (agent) => nativeUsage(agent),
 	"native-usage-anthropic": (agent) => nativeUsage(agent, true),
 	"native-common-events": (agent) => nativeUsage(agent, true, true),
+	"native-common-delivery": (agent) => nativeUsage(agent, true, true, true),
 	producer: (agent) => producerScenario(agent),
 	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),

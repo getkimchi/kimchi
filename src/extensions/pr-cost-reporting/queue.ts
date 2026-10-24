@@ -314,7 +314,7 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 
 async function update(
 	agentDir: string,
-	mutate: (state: ReportingState) => void,
+	mutate: (state: ReportingState, check: () => void) => void | Promise<void>,
 	assertCurrent: () => void = () => {},
 ): Promise<ReportingState> {
 	const directory = reportingDirectory(agentDir)
@@ -328,23 +328,24 @@ async function update(
 			compromised = error
 		},
 	})
+	const check = () => {
+		if (compromised) throw compromised
+		assertCurrent()
+	}
 	try {
 		const { state, text } = await loadReportingState(agentDir)
 		const before = JSON.stringify(state)
-		assertCurrent()
-		mutate(state)
-		assertCurrent()
+		check()
+		await mutate(state, check)
+		check()
 		if (text === undefined && JSON.stringify(state) === before) return state
 		state.machine ??= await machineFingerprint()
-		assertCurrent()
+		check()
 		const body = `${JSON.stringify(state)}\n`
 		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
 		if (body === text) return state
 		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
-		await writeFileDurably(reportingStatePath(agentDir), body, () => {
-			if (compromised) throw compromised
-			assertCurrent()
-		})
+		await writeFileDurably(reportingStatePath(agentDir), body, check)
 
 		const parent = await open(directory, "r")
 		try {
@@ -391,7 +392,7 @@ export async function takeReportingNotice(agentDir: string): Promise<boolean> {
 	return show
 }
 
-export function recordReportingError(agentDir: string, error: string): Promise<ReportingState> {
+export function recordReportingError(agentDir: string, error: string | undefined): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		if (state.enabled) state.error = error
 	})
@@ -823,7 +824,52 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 
 /** Take ownership under the old writers' lock before capture or delivery can replace their pending body. */
 export function freezeSnapshots(agentDir: string, assertCurrent: () => void): Promise<ReportingState> {
-	return update(agentDir, (state) => freezeState(agentDir, state, assertCurrent), assertCurrent)
+	return update(agentDir, (state, check) => freezeState(agentDir, state, check), assertCurrent)
+}
+
+/** A page of due uploads cannot prove drainage: held, delayed and old-writer bodies still own legacy claims. */
+export async function withDrainedLegacyAccount(
+	agentDir: string,
+	account: WorkAccount,
+	action: (check: () => void) => void,
+	assertCurrent: () => void,
+): Promise<boolean> {
+	let ready = false
+	await update(
+		agentDir,
+		async (state, check) => {
+			freezeState(agentDir, state, check)
+			if (!state.enabled) return
+			const key = accountKey(account)
+			if (Object.values(state.entries).some((entry) => entry.pending && accountKey(entry.account) === key)) return
+			const backend = backendFor(agentDir)
+			let after = ""
+			for (;;) {
+				check()
+				const page = backend.readNotePage(FROZEN_SNAPSHOTS, after, 16)
+				if (!page.length) break
+				for (const row of page) {
+					check()
+					const frozen = storedFrozen(agentDir, row.name)
+					if (!frozen || frozen.ack) throw new Error("Invalid pending frozen PR snapshot ownership")
+					if (accountKey(frozen.entry.account) === key) return
+				}
+				after = page[page.length - 1].name
+				await setImmediate()
+			}
+			check()
+			if (state.followsTelemetry && !isTelemetryEnabled()) return
+			const consent = () => {
+				check()
+				if (state.followsTelemetry && !isTelemetryEnabled()) throw new Error("PR reporting is disabled")
+			}
+			action(consent)
+			consent()
+			ready = true
+		},
+		assertCurrent,
+	)
+	return ready
 }
 
 /** Retained receipts have their own indexed namespace; a bounded scan resumes without dropping pending bodies. */

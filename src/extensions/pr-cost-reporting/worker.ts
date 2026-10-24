@@ -1,6 +1,7 @@
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
+import { isWorkId } from "../../shared/work-id.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
@@ -8,8 +9,12 @@ import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
-import { object, readWorkRecordsAsync, workJournalFingerprint } from "../work-attribution/summary.js"
+import { importWorkRecordsAsync, object, type WorkRecord, workJournalFingerprint } from "../work-attribution/summary.js"
+import { buildEvents } from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
+import { acknowledgeBatch, effectiveClaim, observeEvents, pendingBatch } from "./ledger/outbox.js"
+import { backendFor, type OutboxBatch, readStoredRecordsAsync } from "./ledger/records.js"
+import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
@@ -19,19 +24,18 @@ import {
 	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
-	learnedLimits,
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
-	queueSnapshots,
-	type ReportingState,
 	readReportingState,
 	recordReportingError,
+	reportingProducer,
 	reportingStatePath,
 	reportingStateVersion,
 	type ServerLimit,
 	type SnapshotAck,
+	withDrainedLegacyAccount,
 } from "./queue.js"
-import { accountKey, buildSnapshots, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
+import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
@@ -92,13 +96,13 @@ function safeEndpoint(value: string): boolean {
 	return url?.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "")
 }
 
-/** Delivery uses a fresh account verification and a credential fence for every bounded attempt. */
-export async function deliverSnapshots(
+/** Both transports share the same cancellation, opt-out polling and lease boundary. */
+async function reportingDelivery(
 	agentDir: string,
-	cwd: string,
 	signal: AbortSignal,
 	assertLease: () => void,
-	deadline = Date.now() + PASS_MS,
+	deadline: number,
+	deliver: (signal: AbortSignal, check: () => void) => Promise<void>,
 ): Promise<void> {
 	const controller = new AbortController()
 	const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()))
@@ -139,6 +143,24 @@ export async function deliverSnapshots(
 		poller = startStatPoller(statePath, OPT_OUT_POLL_MS, reread)
 	} catch {}
 	try {
+		await deliver(combined, check)
+	} finally {
+		controller.abort()
+		poller?.stop()
+		poller = undefined
+		clearTimeout(timer)
+	}
+}
+
+/** Preserve the old route and each frozen body's exact bytes until its original account acknowledges it. */
+export function deliverSnapshots(
+	agentDir: string,
+	cwd: string,
+	signal: AbortSignal,
+	assertLease: () => void,
+	deadline = Date.now() + PASS_MS,
+): Promise<void> {
+	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const state = await freezeSnapshots(agentDir, check)
 		if (!state.enabled) return
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
@@ -275,11 +297,187 @@ export async function deliverSnapshots(
 					)
 			}
 		}
-	} finally {
-		poller?.stop()
-		poller = undefined
-		clearTimeout(timer)
-	}
+	})
+}
+
+/** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */
+export function deliverEvents(
+	agentDir: string,
+	cwd: string,
+	signal: AbortSignal,
+	assertLease: () => void,
+	deadline = Date.now() + PASS_MS,
+): Promise<void> {
+	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
+		const backend = backendFor(agentDir)
+		for (let attempt = 0; attempt < 3; attempt++) {
+			check()
+			const key = loadConfig({ cwd }).apiKey
+			const apiUrl = platformApiUrl(cwd)
+			if (!key || !safeEndpoint(apiUrl)) return
+			const assertOwnership = () => {
+				assertLease()
+				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
+					throw new Error("PR reporting credentials changed")
+			}
+			const assertCurrent = () => {
+				assertOwnership()
+				combined.throwIfAborted()
+			}
+			let status: number | undefined
+			let retryAfterMs: number | null = null
+			let errorMessage = "PR cost event upload unavailable"
+			const readResponse = async (response: Response): Promise<Response> => {
+				assertCurrent()
+				status = response.status
+				retryAfterMs = parseRetryAfterMs(response)
+				if (!response.ok)
+					errorMessage =
+						response.status === 403
+							? "PR reporting is not allowed for this API key (HTTP 403)"
+							: `PR cost event upload returned HTTP ${response.status}`
+				const bounded = await boundedResponse(
+					response,
+					RESPONSE_BYTES,
+					combined,
+					"PR reporting response exceeds the size limit",
+				)
+				assertCurrent()
+				return bounded
+			}
+			const fetchBounded: typeof fetch = async (input, init) => {
+				assertCurrent()
+				const current = await readReportingState(agentDir)
+				assertCurrent()
+				if (!current.enabled) throw new Error("PR reporting is disabled")
+				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
+			}
+			const account = {
+				apiUrl,
+				...(await verifyApiKey(key, {
+					endpoint: apiUrl,
+					fetch: fetchBounded,
+					signal: combined,
+					retry: { maxRetries: 0 },
+				})),
+			}
+			assertCurrent()
+			if (!isWorkAccount(account)) throw new Error("PR reporting account verification failed")
+			const accountId = accountKey(account)
+			let batch: OutboxBatch | undefined
+			if (
+				!(await withDrainedLegacyAccount(
+					agentDir,
+					account,
+					(fence) => {
+						batch = pendingBatch(agentDir, accountId, fence)
+					},
+					assertCurrent,
+				)) ||
+				!batch
+			)
+				return
+			const sent = batch
+			const resume = backend.getNote("agent", "legacy-snapshot-resume")
+			if (resume !== undefined && !isWorkId(resume)) throw new Error("Invalid PR reporting resume marker")
+			const saved = backend.getNote("pr-cost-delivery", accountId)
+			const retry: unknown = saved === undefined ? undefined : JSON.parse(saved)
+			if (
+				retry !== undefined &&
+				(!object(retry) ||
+					!isWorkId(retry.batchId) ||
+					!Number.isSafeInteger(retry.attempts) ||
+					Number(retry.attempts) < 0 ||
+					!Number.isSafeInteger(retry.retryAt) ||
+					Number(retry.retryAt) < 0 ||
+					(retry.resume !== undefined && !isWorkId(retry.resume)))
+			)
+				throw new Error("Invalid PR cost delivery retry state")
+			const schedule = object(retry) && retry.batchId === sent.id && retry.resume === resume ? retry : undefined
+			if (schedule && Number(schedule.retryAt) > Date.now()) return
+			status = undefined
+			retryAfterMs = null
+			try {
+				let dispatched: Promise<Response> | undefined
+				if (
+					!(await withDrainedLegacyAccount(
+						agentDir,
+						account,
+						(fence) => {
+							const current = pendingBatch(agentDir, accountId, fence)
+							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
+								throw new Error("PR cost event batch changed")
+							fence()
+							// Launch under the old-writer lock; await network and body reads after releasing it.
+							dispatched = fetch(
+								`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
+								{
+									method: "POST",
+									body: Buffer.from(sent.body).toString("utf8"),
+									redirect: "error",
+									signal: combined,
+									headers: {
+										Authorization: `Bearer ${key}`,
+										"Content-Type": "application/json",
+										Accept: "application/json",
+									},
+								},
+							)
+							void dispatched.catch(() => {})
+						},
+						assertCurrent,
+					))
+				)
+					return
+				if (!dispatched) throw new Error("PR cost event batch was not dispatched")
+				const response = await readResponse(await dispatched)
+				assertCurrent()
+				if (!response.ok) throw new Error(errorMessage)
+				const ack: Acknowledgement = await response.json()
+				assertCurrent()
+				let acknowledged = false
+				if (
+					!(await withDrainedLegacyAccount(
+						agentDir,
+						account,
+						(fence) => {
+							backend.tx(() => {
+								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
+								if (acknowledged) backend.deleteNote("pr-cost-delivery", accountId)
+								fence()
+							})
+						},
+						assertCurrent,
+					)) ||
+					!acknowledged
+				)
+					return
+				trackPRCostMetric({ kind: "delivery", outcome: "success" })
+			} catch {
+				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
+				if (signal.aborted) return
+				assertOwnership()
+				const attempts = Number(schedule?.attempts ?? 0)
+				backend.tx(() => {
+					assertOwnership()
+					if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
+					backend.putNote(
+						"pr-cost-delivery",
+						accountId,
+						JSON.stringify({
+							batchId: sent.id,
+							attempts: attempts + 1,
+							retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
+							resume,
+						}),
+					)
+					assertOwnership()
+				})
+				await recordReportingError(agentDir, errorMessage)
+				return
+			}
+		}
+	})
 }
 
 /** Runs after local pricing, under the existing reconciliation lease, in sessions that may upload. */
@@ -295,7 +493,7 @@ export async function reconcileReporting(
 	})
 	if (!state.enabled) return
 	try {
-		await captureSnapshots(agentDir, state, signal, assertLease)
+		await captureEvents(agentDir, signal, assertLease)
 	} catch {
 		if (!signal.aborted)
 			await recordReportingError(
@@ -307,23 +505,19 @@ export async function reconcileReporting(
 	if (signal.aborted) return
 	try {
 		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 	} catch {
 		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
 	}
 }
 
-/** Unchanged journals and queue give the same snapshots; only the moving upload window needs another capture. */
+/** Refresh mutable PR metadata and repository identities even without new request records. */
 const CAPTURE_REFRESH_MS = HOUR_MS
 /** What the last capture that settled every repository identity read and left behind, and when it started. */
 let lastCapture: { inputs: string; at: number } | undefined
 
-/** Queues every repository's snapshot, unless the journals and queue have not changed since the last capture. */
-async function captureSnapshots(
-	agentDir: string,
-	state: ReportingState,
-	signal: AbortSignal,
-	assertLease: () => void,
-): Promise<void> {
+/** Translate one imported authority prefix without creating any new legacy snapshot inventory. */
+async function captureEvents(agentDir: string, signal: AbortSignal, assertLease: () => void): Promise<void> {
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
 	const check = () => {
@@ -354,12 +548,17 @@ async function captureSnapshots(
 	// Changed legacy input may repair a torn append. Re-evaluate coverage after the bounded import.
 	historyComplete = true
 	const startedAt = Date.now()
-	const records = await readWorkRecordsAsync(agentDir, bounded, () => {
+	await importWorkRecordsAsync(agentDir, check, () => {
 		historyComplete = false
+	})
+	const stored = await readStoredRecordsAsync(agentDir, check)
+	const records = stored.map((row) => {
+		check()
+		return JSON.parse(row.body) as WorkRecord
 	})
 	check()
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
-	const { report, costRefreshes } = readWorkCostReport(agentDir, records)
+	const { report } = readWorkCostReport(agentDir, records)
 	const repositories = new Map<string, RepositoryIdentity>()
 	const needed = new Set<string>()
 	const requestRepositories = new Map<string, Set<string>>()
@@ -371,14 +570,6 @@ async function captureSnapshots(
 		}
 	for (const request of report.requests) {
 		check()
-		const linked = report.pullRequests.filter(
-			(pr) =>
-				request.account &&
-				pr.account &&
-				sameWorkAccount(request.account, pr.account) &&
-				request.pullRequestIds.includes(pr.key),
-		)
-		if (linked.length && linked.every((pr) => pr.pullRequest?.id && pr.pullRequest.repositoryId)) continue
 		for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
 	}
 	for (const [key, cached] of repositoryCache)
@@ -418,9 +609,18 @@ async function captureSnapshots(
 		}
 	}
 
-	const built = buildSnapshots(records, report, repositories, costRefreshes, learnedLimits(state))
+	const producer = await reportingProducer(agentDir, check)
+	const built = buildEvents(stored, report, repositories, producer, check, (account, entity) =>
+		effectiveClaim(backendFor(agentDir), account, entity),
+	)
 	check()
-	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests, check)
+	for (const group of built.accounts)
+		observeEvents(agentDir, accountKey(group.account), group.facts, group.recordHashes, check)
+	await recordReportingError(
+		agentDir,
+		built.unresolved.length ? "Some PR cost events are waiting for complete original evidence" : undefined,
+	)
+	check()
 	// A repository lookup that failed or ran out of time is retried by the next pass.
 	if ([...needed].every((repository) => repositories.has(repository)))
 		lastCapture = { inputs: await inputs(), at: startedAt }

@@ -219,6 +219,16 @@ export async function readWorkRecordsAsync(
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
 ): Promise<WorkRecord[]> {
 	const checkBudget = () => signal.throwIfAborted()
+	await importWorkRecordsAsync(agentDir, checkBudget, onRecordProblem)
+	return ledgerReadRecordsAsync(agentDir, checkBudget)
+}
+
+/** Import once before reading an authority prefix with its original hashes or parsed work records. */
+export async function importWorkRecordsAsync(
+	agentDir: string,
+	checkBudget: () => void,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
+): Promise<void> {
 	checkBudget()
 	for (;;) {
 		await setImmediate()
@@ -227,7 +237,6 @@ export async function readWorkRecordsAsync(
 		if (!imported.pending) break
 	}
 	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
-	return ledgerReadRecordsAsync(agentDir, checkBudget)
 }
 /** Notice old-process appends and rewrites without reading journal bodies on idle passes. */
 export async function workJournalFingerprint(agentDir: string, checkBudget?: () => void): Promise<string> {

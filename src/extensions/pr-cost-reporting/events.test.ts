@@ -7,6 +7,54 @@ import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 import type { CommonEvents } from "./events.js"
 
+it("uploads real SDK capture through the worker with exact legacy drainage and account/consent-safe retries", {
+	timeout: 30_000,
+}, () => {
+	const directory = mkdtempSync(join(tmpdir(), "kimchi-worker-events-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "native-common-delivery", directory], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toMatchObject({
+			initialPending: 0,
+			finalPending: 0,
+			legacyExact: true,
+			legacyFirst: true,
+			noNewLegacy: true,
+			reopened: true,
+			backoff: true,
+			replayed: true,
+			invalidAckRetained: true,
+			optOutRetained: true,
+			accountFenced: true,
+			keyFenced: true,
+			redirectsRejected: true,
+			legacyBoundary: true,
+			failedPassAborted: true,
+			abandonedRetained: true,
+		})
+		expect(result.capturedByWorker).toHaveLength(2)
+		expect(
+			result.capturedByWorker.filter((event: { usage: { schema: string } }) => event.usage.schema === "unknown"),
+		).toHaveLength(1)
+		const native = result.capturedByWorker.find(
+			(event: { usage: { schema: string } }) => event.usage.schema === "anthropic-messages-v1",
+		)
+		expect(native.usage).toMatchObject({
+			serviceTier: "standard",
+			region: "global",
+			attemptsComplete: false,
+			iterations: [
+				{ model: "sdk-primary", raw: { inputTokens: "100", outputTokens: "0" } },
+				{ model: "sdk-fallback", raw: { inputTokens: "90", outputTokens: "7" } },
+			],
+		})
+	} finally {
+		rmSync(directory, { recursive: true, force: true })
+	}
+})
+
 const requestId = "11111111-1111-4111-8111-111111111111"
 const workId = "22222222-2222-4222-8222-222222222222"
 const producer = "33333333-3333-4333-8333-333333333333"

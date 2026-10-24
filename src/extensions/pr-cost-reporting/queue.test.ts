@@ -16,6 +16,7 @@ import type { WorkRecord } from "../work-attribution/summary.js"
 import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
+	acknowledgeFrozenSnapshot,
 	acknowledgeSnapshot,
 	deferSnapshot,
 	dueLimitNotices,
@@ -28,6 +29,7 @@ import {
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
+	withDrainedLegacyAccount,
 } from "./queue.js"
 import {
 	accountKey,
@@ -122,6 +124,100 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
+	it("blocks common delivery for held or delayed legacy bodies and after opt-out", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting/state.json")
+		const state = await readReportingState(directory)
+		for (const entry of Object.values(state.entries)) {
+			entry.held = true
+			entry.retryAt = Date.now() + 60_000
+		}
+		await writeFile(path, JSON.stringify(state))
+		const action = vi.fn()
+		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(false)
+		expect(action).not.toHaveBeenCalled()
+		await setReportingEnabled(directory, false)
+		expect(await withDrainedLegacyAccount(directory, { ...account, userId: otherRequestId }, action, () => {})).toBe(
+			false,
+		)
+		expect(action).not.toHaveBeenCalled()
+	})
+
+	it("scans all frozen ownership before allowing only the drained account", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(
+			directory,
+			Array.from({ length: 20 }, (_, index) => ({
+				...snapshot([requestId]),
+				account: { ...account, userId: `22222222-2222-4222-8222-${String(index).padStart(12, "0")}` },
+			})),
+		)
+		const state = await freezeSnapshots(directory, () => {})
+		const backend = backendFor(directory)
+		const rows = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
+		expect(rows).toHaveLength(20)
+		const last = JSON.parse(rows[19].body)
+		await writeFile(join(directory, "pr-cost-reporting/state.json"), JSON.stringify({ ...state, entries: {} }))
+		const action = vi.fn()
+		expect(await withDrainedLegacyAccount(directory, last.entry.account, action, () => {})).toBe(false)
+		expect(action).not.toHaveBeenCalled()
+		const pending = JSON.parse(last.body)
+		await acknowledgeFrozenSnapshot(
+			directory,
+			{ ...last, entry: { ...last.entry, pending } },
+			{
+				status: "accepted",
+				revision: pending.revision,
+				receivedAt: new Date().toISOString(),
+			},
+			() => {},
+		)
+		expect(await withDrainedLegacyAccount(directory, last.entry.account, action, () => {})).toBe(true)
+		expect(action).toHaveBeenCalledOnce()
+		expect(backend.readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(19)
+	})
+
+	it("never runs a common action after cancellation during the complete frozen scan", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const state = await freezeSnapshots(directory, () => {})
+		await writeFile(join(directory, "pr-cost-reporting/state.json"), JSON.stringify({ ...state, entries: {} }))
+		const backend = backendFor(directory)
+		const read = backend.readNotePage.bind(backend)
+		let canceled = false
+		vi.spyOn(backend, "readNotePage").mockImplementation((...args) => {
+			const rows = read(...args)
+			canceled = true
+			return rows
+		})
+		const action = vi.fn()
+		await expect(
+			withDrainedLegacyAccount(directory, { ...account, userId: otherRequestId }, action, () => {
+				if (canceled) throw new Error("lease lost")
+			}),
+		).rejects.toThrow("lease lost")
+		expect(action).not.toHaveBeenCalled()
+	})
+
+	it("rechecks follow-telemetry consent after the awaited frozen scan", async () => {
+		await setReportingEnabled(directory, true)
+		const state = await readReportingState(directory)
+		await writeFile(
+			join(directory, "pr-cost-reporting/state.json"),
+			JSON.stringify({ ...state, followsTelemetry: true }),
+		)
+		const backend = backendFor(directory)
+		const read = backend.readNotePage.bind(backend)
+		vi.spyOn(backend, "readNotePage").mockImplementation((...args) => {
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			return read(...args)
+		})
+		const action = vi.fn()
+		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(false)
+		expect(action).not.toHaveBeenCalled()
+	})
+
 	it("keeps an empty disabled freeze read-only while explicit consent still persists", async () => {
 		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
 		const state = await freezeSnapshots(directory, () => {})
