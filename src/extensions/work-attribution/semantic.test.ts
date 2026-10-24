@@ -1,12 +1,5 @@
 import { execFileSync } from "node:child_process"
-import {
-	mkdirSync,
-	mkdtempSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
