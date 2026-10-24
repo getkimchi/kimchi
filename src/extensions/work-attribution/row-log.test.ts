@@ -89,23 +89,30 @@ describe("observeLatest", () => {
 
 describe("commitPullRequests and summaryLatest", () => {
 	it("merges links from every commit row, never dropping one from incomplete data", () => {
+		const link = (number: number) => ({
+			provider: "github",
+			host: "github.com",
+			id: String(number),
+			number,
+			url: `https://github.com/o/r/pull/${number}`,
+			state: "open",
+			checkedAt: "2026-10-01T00:00:00.000Z",
+		})
 		const links = commitPullRequests([
+			{ sessionId: "s", sha: "a", repository: "r", worktree: "r", pullRequests: [link(1)] },
+			// Incomplete data: an empty lookup, a row without links, and a link missing its identity must not drop the others.
+			{ sessionId: "s", sha: "empty", repository: "r", worktree: "r", pullRequests: [] },
+			{ sessionId: "s", sha: "bare", repository: "r", worktree: "r" },
 			{
 				sessionId: "s",
-				sha: "a",
+				sha: "partial",
 				repository: "r",
 				worktree: "r",
-				pullRequests: [{ provider: "github", id: "1", number: 1 }],
+				pullRequests: [{ provider: "github", id: "3", number: 3 }],
 			},
-			{
-				sessionId: "s",
-				sha: "b",
-				repository: "r",
-				worktree: "r",
-				pullRequests: [{ provider: "github", id: "2", number: 2 }],
-			},
+			{ sessionId: "s", sha: "b", repository: "r", worktree: "r", pullRequests: [link(2)] },
 		])
-		expect(links).toHaveLength(2)
+		expect(links.map((row) => row.number)).toEqual([1, 2])
 	})
 
 	it("recomputes latest from a full row iterator", () => {
