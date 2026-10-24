@@ -175,11 +175,11 @@ async function importJournalsCommand(agent: string): Promise<void> {
 	out(await importJournals(agent))
 }
 
-async function nativeUsage(agent: string, anthropic = false): Promise<void> {
+async function nativeUsage(agent: string, anthropic = false, common = false): Promise<void> {
 	process.env.PI_CODING_AGENT_DIR = agent
 	const { ModelRuntime } = await import("@earendil-works/pi-coding-agent")
 	const { installGlobalFetchInstrumentation } = await import("../../../../src/http/instrument-fetch.js")
-	const { prepareProviderRequest, recordProviderRequest, recordProviderResponse, setWorkId } = await import(
+	const { getWorkId, prepareProviderRequest, recordProviderRequest, recordProviderResponse, setWorkId } = await import(
 		"../../../../src/extensions/work-attribution.js"
 	)
 	const { withNativeUsage } = await import("../../../../src/extensions/work-attribution/native-usage.js")
@@ -258,7 +258,8 @@ async function nativeUsage(agent: string, anthropic = false): Promise<void> {
 		refreshOnCreate: false,
 		allowModelNetwork: false,
 	})
-	runtime.registerProvider("native-test", {
+	const provider = common ? "anthropic" : "native-test"
+	runtime.registerProvider(provider, {
 		api: anthropic ? "anthropic-messages" : "openai-completions",
 		baseUrl: "https://native.invalid/v1",
 		models: [
@@ -273,10 +274,21 @@ async function nativeUsage(agent: string, anthropic = false): Promise<void> {
 			},
 		],
 	})
-	await runtime.setRuntimeApiKey("native-test", "fake")
+	await runtime.setRuntimeApiKey(provider, "fake")
 	await runtime.refresh({ allowNetwork: false })
-	const model = runtime.getModel("native-test", "requested")
+	const model = runtime.getModel(provider, "requested")
 	if (!model) throw new Error("Missing registered native model")
+	if (common) {
+		const { saveNewWorkScope } = await import("../../../../src/extensions/work-attribution/scope.js")
+		saveNewWorkScope(getWorkId(ctx), {
+			repository: agent,
+			account: {
+				apiUrl: "https://api.cast.ai",
+				organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			},
+		})
+	}
 	const original = recordProviderRequest(ctx, model)
 	const message = await runtime.completeSimple(
 		model,
@@ -289,6 +301,50 @@ async function nativeUsage(agent: string, anthropic = false): Promise<void> {
 	)
 	closeBackends()
 	const captured = readRecords(agent).filter((row) => row.nativeUsage)
+	if (common) {
+		const { buildEvents } = await import("../../../../src/extensions/pr-cost-reporting/events.js")
+		const { backendFor, readStoredRecordsAsync } = await import(
+			"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+		)
+		const { effectiveClaim, observeEvents, pendingBatch } = await import(
+			"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+		)
+		const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+		const { readWorkCostReport } = await import("../../../../src/extensions/work-attribution/cost-sync.js")
+		const stored = await readStoredRecordsAsync(agent, () => {})
+		const { report } = readWorkCostReport(
+			agent,
+			stored.map((row) => JSON.parse(row.body)),
+		)
+		const producer = "33333333-3333-4333-8333-333333333333"
+		const built = buildEvents(
+			stored,
+			report,
+			new Map([[agent, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]),
+			producer,
+			() => {},
+			(key, id) => effectiveClaim(backendFor(agent), key, id),
+		)
+		for (const group of built.accounts)
+			observeEvents(agent, accountKey(group.account), group.facts, group.recordHashes, () => {})
+		if (built.accounts.length !== 1) throw new Error("Missing original SDK reporting account")
+		const key = accountKey(built.accounts[0].account)
+		const first = pendingBatch(agent, key, () => {})
+		if (!first) throw new Error("Missing native SDK delta batch")
+		closeBackends()
+		const reopened = pendingBatch(agent, key, () => {})
+		if (!reopened) throw new Error("Missing reopened native SDK delta batch")
+		out({
+			original,
+			calls,
+			captured,
+			body: JSON.parse(Buffer.from(first.body).toString()),
+			reopened: Buffer.from(first.body).equals(Buffer.from(reopened.body)),
+			unresolved: built.unresolved,
+		})
+		closeBackends()
+		return
+	}
 	out({ original, calls, stopReason: message.stopReason, captured })
 	closeBackends()
 }
@@ -1575,6 +1631,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
 	"native-usage-anthropic": (agent) => nativeUsage(agent, true),
+	"native-common-events": (agent) => nativeUsage(agent, true, true),
 	producer: (agent) => producerScenario(agent),
 	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),

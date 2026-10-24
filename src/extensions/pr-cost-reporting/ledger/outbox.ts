@@ -18,7 +18,7 @@ import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } fr
 
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
-type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseHash">
+export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseHash">
 
 function isClaim(event: Event): boolean {
 	return (
@@ -96,7 +96,7 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 }
 
 /** Rebuild only this entity's effective claim facts; raw bytes remain the CAS and upload authority. */
-function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
+export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
 	let effective: Event | undefined
 	for (const row of backend.outboxEntityEvents(accountKey, entityId)) effective = projectClaim(unpack(row), effective)
 	return effective
