@@ -1,0 +1,451 @@
+{
+	"batches": [
+		{
+			"input": {
+				"version": 1,
+				"id": "0be5af29-c6c0-41a4-b1e6-96e779ab1c2d",
+				"events": [
+					{
+						"id": "1aae22b9-0b69-8b60-8526-e9c3a4805b17",
+						"entityId": "fc4d5bcd-7b11-4497-ed93-f29b8f22397a",
+						"revision": "1",
+						"source": "claude-code",
+						"sourceVersion": "2.1.309",
+						"deviceId": "b0c8ee08-2158-46df-a2e8-4b4e944d0a57",
+						"observeTime": "2026-10-23T13:34:23.715559000Z",
+						"usage": {
+							"channel": "transcript",
+							"requestId": "600a5684-c3af-425c-b289-3b79082e9eff",
+							"responseId": "msg_01ABC",
+							"schema": "anthropic-messages",
+							"counterScope": "request",
+							"observedRoute": "castai",
+							"reportedModel": "glm-5.3-flash",
+							"billingBasis": "api",
+							"raw": {
+								"inputTokens": "1200",
+								"outputTokens": "350"
+							},
+							"attemptsComplete": true
+						}
+					}
+				]
+			},
+			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true}}]}",
+			"hash": "1628ac928e2267c1c7f7f3bbb04e6052e0f2d8449484523275a89df7783f20d8"
+		},
+		{
+			"input": {
+				"version": 1,
+				"id": "0be5af29-c6c0-41a4-b1e6-96e779ab1c2d",
+				"events": [
+					{
+						"id": "1aae22b9-0b69-8b60-8526-e9c3a4805b17",
+						"entityId": "fc4d5bcd-7b11-4497-ed93-f29b8f22397a",
+						"revision": "1",
+						"source": "kimchi",
+						"sourceVersion": "2.1.309",
+						"deviceId": "b0c8ee08-2158-46df-a2e8-4b4e944d0a57",
+						"observeTime": "2026-10-23T13:34:23.715559000Z",
+						"usage": {
+							"channel": "transcript",
+							"requestId": "600a5684-c3af-425c-b289-3b79082e9eff",
+							"responseId": "msg_01ABC",
+							"schema": "anthropic-messages",
+							"counterScope": "request",
+							"observedRoute": "castai",
+							"reportedModel": "glm-5.3-flash",
+							"billingBasis": "api",
+							"raw": {
+								"inputTokens": "1200",
+								"outputTokens": "350"
+							},
+							"attemptsComplete": true
+						},
+						"allocation": {
+							"kind": "pull-request",
+							"pullRequestIds": ["2000000000"],
+							"method": "model"
+						},
+						"claimState": "retracted",
+						"correction": {
+							"id": "6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f",
+							"revision": 3,
+							"recordedAt": "2026-10-23T12:34:23.715559000+00:00",
+							"source": "producer-confirmation"
+						},
+						"startedAt": "2026-10-23T11:34:23.715559000Z"
+					}
+				]
+			},
+			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true},\"allocation\":{\"kind\":\"pull-request\",\"pullRequestIds\":[\"2000000000\"],\"method\":\"model\"},\"claimState\":\"retracted\",\"correction\":{\"id\":\"6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f\",\"revision\":3,\"recordedAt\":\"2026-10-23T12:34:23.715559Z\",\"source\":\"producer-confirmation\"},\"startedAt\":\"2026-10-23T11:34:23.715559Z\"}]}",
+			"hash": "7ed749bf7fd1c456fbc75b6373fa54c728fe7f46560550a10690cfe0eb217317"
+		}
+	],
+	"events": [
+		{
+			"input": {
+				"id": "e-work",
+				"entityId": "entity-work",
+				"revision": "1",
+				"source": "kimchi",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40.123456789Z",
+				"workId": "work",
+				"sessionId": "session",
+				"turnId": "turn",
+				"agentId": "agent",
+				"repository": {
+					"provider": "gitlab",
+					"host": "gitlab.com",
+					"id": "42",
+					"name": "team/repo"
+				},
+				"work": {
+					"title": "LLM-42 <plan> & emoji \ud83e\udd6c\u2028",
+					"planId": "plan",
+					"planRevision": "revision",
+					"reason": "saved_plan",
+					"quality": "confirmed",
+					"issueKeys": [
+						{
+							"key": "LLM-42",
+							"source": "work",
+							"revision": "0"
+						}
+					]
+				}
+			},
+			"body": "{\"id\":\"e-work\",\"entityId\":\"entity-work\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40.123456789Z\",\"repository\":{\"provider\":\"gitlab\",\"host\":\"gitlab.com\",\"id\":\"42\",\"name\":\"team/repo\"},\"workId\":\"work\",\"sessionId\":\"session\",\"turnId\":\"turn\",\"agentId\":\"agent\",\"work\":{\"title\":\"LLM-42 \\u003cplan\\u003e \\u0026 emoji \ud83e\udd6c\\u2028\",\"planId\":\"plan\",\"planRevision\":\"revision\",\"reason\":\"saved_plan\",\"quality\":\"confirmed\",\"issueKeys\":[{\"key\":\"LLM-42\",\"source\":\"work\"}]}}",
+			"hash": "fba36c0ee6bc7e12281b2806053e6c06f54c95523e7f2bd2f0b9d32f948e71f7"
+		},
+		{
+			"input": {
+				"id": "e-usage",
+				"entityId": "entity-usage",
+				"revision": "2",
+				"baseRevision": "1",
+				"baseHash": "previous",
+				"source": "claude-code",
+				"sourceVersion": "2.1.0",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40.100000000+00:00",
+				"usage": {
+					"channel": "transcript",
+					"requestId": "req_1",
+					"responseId": "msg_1",
+					"schema": "anthropic-messages-v1",
+					"counterScope": "request",
+					"observedRoute": "provider-api",
+					"reportedModel": "sonnet",
+					"actualModel": "claude-sonnet",
+					"provider": "anthropic",
+					"serviceTier": "default",
+					"region": "us",
+					"billingBasis": "api",
+					"correlation": "exact",
+					"raw": {
+						"inputTokens": "1000000000000",
+						"outputTokens": "400",
+						"cacheReadTokens": "0",
+						"cacheWriteTokens": "90",
+						"cacheWrites": [
+							{
+								"ttlSeconds": 300,
+								"tokens": "70"
+							},
+							{
+								"ttlSeconds": 3600,
+								"tokens": "20"
+							}
+						],
+						"reasoningTokens": "10"
+					},
+					"iterations": [
+						{
+							"id": "one",
+							"model": "sonnet",
+							"schema": "anthropic-messages-v1",
+							"raw": {
+								"inputTokens": "10",
+								"cacheReadTokens": "0"
+							},
+							"stopReason": "end_turn",
+							"billingStatus": "billable"
+						}
+					],
+					"finalIterationId": "one",
+					"attemptsComplete": false,
+					"stopReason": "end_turn",
+					"billingStatus": "billable",
+					"durationMs": "0",
+					"credits": [
+						{
+							"amount": "0.01",
+							"unit": "credit",
+							"basis": "reported"
+						}
+					],
+					"aliases": [
+						{
+							"namespace": "provider-request-id",
+							"id": "req_1",
+							"source": "transcript"
+						}
+					]
+				}
+			},
+			"body": "{\"id\":\"e-usage\",\"entityId\":\"entity-usage\",\"revision\":\"2\",\"baseRevision\":\"1\",\"baseHash\":\"previous\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.0\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40.1Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"req_1\",\"responseId\":\"msg_1\",\"schema\":\"anthropic-messages-v1\",\"counterScope\":\"request\",\"observedRoute\":\"provider-api\",\"reportedModel\":\"sonnet\",\"actualModel\":\"claude-sonnet\",\"provider\":\"anthropic\",\"serviceTier\":\"default\",\"region\":\"us\",\"billingBasis\":\"api\",\"correlation\":\"exact\",\"raw\":{\"inputTokens\":\"1000000000000\",\"outputTokens\":\"400\",\"cacheReadTokens\":\"0\",\"cacheWriteTokens\":\"90\",\"cacheWrites\":[{\"ttlSeconds\":300,\"tokens\":\"70\"},{\"ttlSeconds\":3600,\"tokens\":\"20\"}],\"reasoningTokens\":\"10\"},\"iterations\":[{\"id\":\"one\",\"model\":\"sonnet\",\"schema\":\"anthropic-messages-v1\",\"raw\":{\"inputTokens\":\"10\",\"cacheReadTokens\":\"0\"},\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\"}],\"finalIterationId\":\"one\",\"attemptsComplete\":false,\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\",\"durationMs\":\"0\",\"credits\":[{\"amount\":\"0.01\",\"unit\":\"credit\",\"basis\":\"reported\"}],\"aliases\":[{\"namespace\":\"provider-request-id\",\"id\":\"req_1\",\"source\":\"transcript\"}]}}",
+			"hash": "fffe54972724bbe6d49557a941582220b856826bd6e29f7277f39bb1b83f6aaa"
+		},
+		{
+			"input": {
+				"id": "e-tool",
+				"entityId": "entity-tool",
+				"revision": "1",
+				"source": "codex",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"tool": {
+					"callId": "call",
+					"name": "apply_patch",
+					"requestEntityId": "request",
+					"category": "edit",
+					"outcome": "completed",
+					"durationMs": "0"
+				}
+			},
+			"body": "{\"id\":\"e-tool\",\"entityId\":\"entity-tool\",\"revision\":\"1\",\"source\":\"codex\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"tool\":{\"callId\":\"call\",\"name\":\"apply_patch\",\"requestEntityId\":\"request\",\"category\":\"edit\",\"outcome\":\"completed\"}}",
+			"hash": "a1a5a389893ac2d2bfd7910b212647ca4dacdf95455f165f215b2616924ec383"
+		},
+		{
+			"input": {
+				"id": "e-file",
+				"entityId": "entity-file",
+				"revision": "1",
+				"source": "codex",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"file": {
+					"fileId": "file",
+					"toolCallId": "call",
+					"beforeRevision": "before",
+					"afterRevision": "after",
+					"operation": "modified",
+					"quality": "tool_observed"
+				}
+			},
+			"body": "{\"id\":\"e-file\",\"entityId\":\"entity-file\",\"revision\":\"1\",\"source\":\"codex\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"file\":{\"fileId\":\"file\",\"toolCallId\":\"call\",\"beforeRevision\":\"before\",\"afterRevision\":\"after\",\"operation\":\"modified\",\"quality\":\"tool_observed\"}}",
+			"hash": "39d4605f002e725d6faaadc1823066c2de9d6e80b0e582b16c65ca88da83cbdf"
+		},
+		{
+			"input": {
+				"id": "e-commit",
+				"entityId": "entity-commit",
+				"revision": "1",
+				"source": "collector",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"commit": {
+					"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"parents": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+					"quality": "confirmed"
+				}
+			},
+			"body": "{\"id\":\"e-commit\",\"entityId\":\"entity-commit\",\"revision\":\"1\",\"source\":\"collector\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"commit\":{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"parents\":[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],\"quality\":\"confirmed\"}}",
+			"hash": "2ed5020027ba3955b44445e62f32981d4cd054d5cd7274214de151ed5b555447"
+		},
+		{
+			"input": {
+				"id": "e-pr",
+				"entityId": "entity-pr",
+				"revision": "1",
+				"source": "collector",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"repository": {
+					"provider": "gitlab",
+					"host": "gitlab.com",
+					"id": "42",
+					"name": "team/repo"
+				},
+				"pullRequest": {
+					"id": "99",
+					"number": 3,
+					"uri": "https://gitlab.com/team/repo/-/merge_requests/3",
+					"state": "merged",
+					"createTime": "2026-10-22T12:30:40.120000000Z",
+					"closeTime": "2026-10-23T12:30:40Z",
+					"mergeTime": "2026-10-23T12:30:40Z",
+					"mergeCommitId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"title": "LLM-42: <done>",
+					"issueKeys": [
+						{
+							"key": "LLM-42",
+							"source": "title",
+							"revision": "2"
+						}
+					]
+				}
+			},
+			"body": "{\"id\":\"e-pr\",\"entityId\":\"entity-pr\",\"revision\":\"1\",\"source\":\"collector\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"repository\":{\"provider\":\"gitlab\",\"host\":\"gitlab.com\",\"id\":\"42\",\"name\":\"team/repo\"},\"pullRequest\":{\"id\":\"99\",\"number\":3,\"uri\":\"https://gitlab.com/team/repo/-/merge_requests/3\",\"state\":\"merged\",\"createTime\":\"2026-10-22T12:30:40.12Z\",\"closeTime\":\"2026-10-23T12:30:40Z\",\"mergeTime\":\"2026-10-23T12:30:40Z\",\"mergeCommitId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"title\":\"LLM-42: \\u003cdone\\u003e\",\"issueKeys\":[{\"key\":\"LLM-42\",\"source\":\"title\",\"revision\":\"2\"}]}}",
+			"hash": "a5567f510ead94acf80c2558bddf8af9465fe917bb2d848d4443b2d635e9169b"
+		},
+		{
+			"input": {
+				"id": "e-link",
+				"entityId": "entity-link",
+				"revision": "1",
+				"source": "collector",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"link": {
+					"fromKind": "work",
+					"fromId": "work",
+					"toKind": "commit",
+					"toId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"quality": "confirmed",
+					"reason": "exact_blob_transition"
+				}
+			},
+			"body": "{\"id\":\"e-link\",\"entityId\":\"entity-link\",\"revision\":\"1\",\"source\":\"collector\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"link\":{\"fromKind\":\"work\",\"fromId\":\"work\",\"toKind\":\"commit\",\"toId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"quality\":\"confirmed\",\"reason\":\"exact_blob_transition\"}}",
+			"hash": "4f776ced7e79e9226e9cd1873dacad1ad210f3d640d00d23f4bb2630a74f4a48"
+		},
+		{
+			"input": {
+				"id": "e-coverage",
+				"entityId": "entity-coverage",
+				"revision": "1",
+				"source": "codex",
+				"sourceVersion": "test",
+				"deviceId": "device",
+				"observeTime": "2026-10-23T12:30:40Z",
+				"coverage": {
+					"code": "native_auxiliary_usage_coverage_unknown",
+					"count": "1",
+					"windowStartTime": "2026-10-23T12:00:00Z",
+					"windowEndTime": "2026-10-23T13:00:00Z",
+					"observedUsage": {
+						"inputTokens": "0",
+						"cacheReadTokens": "0"
+					},
+					"model": "model"
+				}
+			},
+			"body": "{\"id\":\"e-coverage\",\"entityId\":\"entity-coverage\",\"revision\":\"1\",\"source\":\"codex\",\"sourceVersion\":\"test\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40Z\",\"coverage\":{\"code\":\"native_auxiliary_usage_coverage_unknown\",\"count\":\"1\",\"windowStartTime\":\"2026-10-23T12:00:00Z\",\"windowEndTime\":\"2026-10-23T13:00:00Z\",\"observedUsage\":{\"inputTokens\":\"0\",\"cacheReadTokens\":\"0\"},\"model\":\"model\"}}",
+			"hash": "d864427100b487335f3e237e6fee742a1e71bc9651f22893b63517d14c70b8b9"
+		},
+		{
+			"input": {
+				"id": "1aae22b9-0b69-8b60-8526-e9c3a4805b17",
+				"entityId": "fc4d5bcd-7b11-4497-ed93-f29b8f22397a",
+				"revision": "1",
+				"source": "claude-code",
+				"sourceVersion": "2.1.309",
+				"deviceId": "b0c8ee08-2158-46df-a2e8-4b4e944d0a57",
+				"observeTime": "2026-10-23T13:34:23.715559000Z",
+				"usage": {
+					"channel": "transcript",
+					"requestId": "600a5684-c3af-425c-b289-3b79082e9eff",
+					"responseId": "msg_01ABC",
+					"schema": "anthropic-messages",
+					"counterScope": "request",
+					"observedRoute": "castai",
+					"reportedModel": "glm-5.3-flash",
+					"billingBasis": "api",
+					"raw": {
+						"inputTokens": "1200",
+						"outputTokens": "350"
+					},
+					"attemptsComplete": true
+				}
+			},
+			"body": "{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true}}",
+			"hash": "ddd83ed4e3095429c148122573c2e603f8666365ce8e19681f20655d841b3bfe"
+		},
+		{
+			"input": {
+				"id": "1aae22b9-0b69-8b60-8526-e9c3a4805b17",
+				"entityId": "fc4d5bcd-7b11-4497-ed93-f29b8f22397a",
+				"revision": "1",
+				"source": "kimchi",
+				"sourceVersion": "2.1.309",
+				"deviceId": "b0c8ee08-2158-46df-a2e8-4b4e944d0a57",
+				"observeTime": "2026-10-23T13:34:23.715559000Z",
+				"usage": {
+					"channel": "transcript",
+					"requestId": "600a5684-c3af-425c-b289-3b79082e9eff",
+					"responseId": "msg_01ABC",
+					"schema": "anthropic-messages",
+					"counterScope": "request",
+					"observedRoute": "castai",
+					"reportedModel": "glm-5.3-flash",
+					"billingBasis": "api",
+					"raw": {
+						"inputTokens": "1200",
+						"outputTokens": "350"
+					},
+					"attemptsComplete": true
+				},
+				"allocation": {
+					"kind": "pull-request",
+					"pullRequestIds": ["2000000000"],
+					"method": "model"
+				},
+				"claimState": "retracted",
+				"correction": {
+					"id": "6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f",
+					"revision": 3,
+					"recordedAt": "2026-10-23T12:34:23.715559000+00:00",
+					"source": "producer-confirmation"
+				},
+				"startedAt": "2026-10-23T11:34:23.715559000Z"
+			},
+			"body": "{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true},\"allocation\":{\"kind\":\"pull-request\",\"pullRequestIds\":[\"2000000000\"],\"method\":\"model\"},\"claimState\":\"retracted\",\"correction\":{\"id\":\"6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f\",\"revision\":3,\"recordedAt\":\"2026-10-23T12:34:23.715559Z\",\"source\":\"producer-confirmation\"},\"startedAt\":\"2026-10-23T11:34:23.715559Z\"}",
+			"hash": "94840080118b90ee8dc86ac25e4ab906fe555b77809c12e047a41a6f9cfc1a6c"
+		},
+		{
+			"input": {
+				"id": "1aae22b9-0b69-8b60-8526-e9c3a4805b17",
+				"entityId": "fc4d5bcd-7b11-4497-ed93-f29b8f22397a",
+				"revision": "1",
+				"source": "kimchi",
+				"sourceVersion": "2.1.309",
+				"deviceId": "b0c8ee08-2158-46df-a2e8-4b4e944d0a57",
+				"observeTime": "2026-10-23T13:34:23.715559000Z",
+				"usage": {
+					"channel": "transcript",
+					"requestId": "600a5684-c3af-425c-b289-3b79082e9eff",
+					"responseId": "msg_01ABC",
+					"schema": "anthropic-messages",
+					"counterScope": "request",
+					"observedRoute": "castai",
+					"reportedModel": "glm-5.3-flash",
+					"billingBasis": "api",
+					"raw": {
+						"inputTokens": "1200",
+						"outputTokens": "350"
+					},
+					"attemptsComplete": true
+				},
+				"claimState": "active",
+				"startedAt": "2026-10-23T11:34:23.715559000Z"
+			},
+			"body": "{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true},\"claimState\":\"active\",\"startedAt\":\"2026-10-23T11:34:23.715559Z\"}",
+			"hash": "22d507b8bcddaabb72bfb28c14a1d7d980302789f103700be7f863f1f7484890"
+		}
+	],
+	"stableId": "6490dfe6-85e3-d581-eb3e-619e0491bfe2",
+	"stableParts": ["codex", "session <&> \ud83e\udd6c\u2028", "plan/path.md"],
+	"oracle": {
+		"backendHead": "c12eed1de707fa401eb3f5b078363ecba0b263fa",
+		"wireSha256": "6760f8eb914b6a8ff01b8a867dcabbb5057ac856d18dad3f6a19fc743af5dbcb",
+		"nativeV1BatchHash": "1628ac928e2267c1c7f7f3bbb04e6052e0f2d8449484523275a89df7783f20d8"
+	}
+}
