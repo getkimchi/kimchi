@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary, saveWorkSummary } from "../__mocks__/work-summary.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import {
 	appendWorkRecord,
 	createWorkAttributionExtension,
@@ -56,6 +57,19 @@ function path(workId: string) {
 function summary(workId: string) {
 	return savedWorkSummary(dir, workId)
 }
+function recoverProjection(workId: string): void {
+	const backend = backendFor(dir)
+	const authority = backend.readRecords({ workId })
+	backend.tx(() => {
+		backend.clearProjection(workId)
+		backend.markDirty(workId)
+	})
+	expect(backend.getHead(workId)).toBeUndefined()
+	recoverWorkSummaries()
+	expect(backend.getHead(workId)).toBeDefined()
+	expect(backend.dirtyWorks()).not.toContain(workId)
+	expect(backend.readRecords({ workId })).toEqual(authority)
+}
 
 describe("readable work summaries", () => {
 	it("keeps one PR after provider IDs are added and the repository is renamed", async () => {
@@ -79,8 +93,7 @@ describe("readable work summaries", () => {
 		appendWorkRecord(ctx, { ...commit, pullRequests: [renamed] })
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
-		fs.unlinkSync(path(workId))
-		recoverWorkSummaries()
+		recoverProjection(workId)
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0].pullRequests).toEqual([renamed])
 	})
@@ -204,8 +217,7 @@ describe("readable work summaries", () => {
 			prLookup: failure,
 			paths: ["example.ts"],
 		})
-		fs.unlinkSync(path(workId))
-		recoverWorkSummaries()
+		recoverProjection(workId)
 		await flushWorkSummaries()
 		expect(summary(workId).commits[0]).toMatchObject({ pullRequests: [merged], prLookup: failure })
 	})
@@ -311,8 +323,7 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		const expected = [priced.billingRows[0], { id: other, costUsd: null }]
 		expect(summary(workId).requests[0]).toMatchObject({ billingRows: expected, billingLookup: priced.billingLookup })
-		fs.unlinkSync(path(workId))
-		recoverWorkSummaries()
+		recoverProjection(workId)
 		await flushWorkSummaries()
 		expect(summary(workId).requests[0].billingRows).toEqual(expected)
 	})

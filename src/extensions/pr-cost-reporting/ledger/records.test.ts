@@ -13,6 +13,7 @@ import {
 	ledgerSessionInfo,
 	readWorkHead,
 	readWorkSummary,
+	rebuildWork,
 	seedProjection,
 	seedProjectionRows,
 	useBackendFactory,
@@ -158,6 +159,42 @@ describe("records conformance (memory backend)", () => {
 		capture(dir, records[0], "/a")
 		capture(dir, records[0], "/b")
 		expect(ledgerSessionInfo(dir, SESSION).recordCount).toBe(1)
+	})
+
+	it("recovery rolls back marker clearing with the projection and only clears the rebuilt work", () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		for (const record of records) capture(dir, record, "/ignored/source")
+		const beforeView = structuredClone(readWorkSummary(dir, WORK))
+		const otherWork = "33333333-3333-4333-8333-333333333333"
+		backend.tx(() => {
+			backend.clearProjection(WORK)
+			backend.markDirty(WORK)
+			backend.markDirty(otherWork)
+		})
+		const authority = backend.readRecords({ workId: WORK })
+		const clearDirty = backend.clearDirty
+		backend.clearDirty = (workId) => {
+			clearDirty(workId)
+			throw new Error("recovery marker failure")
+		}
+		try {
+			expect(() => rebuildWork(dir, WORK)).toThrow("recovery marker failure")
+		} finally {
+			backend.clearDirty = clearDirty
+		}
+		expect(backend.getHead(WORK)).toBeUndefined()
+		expect(backend.readLog(WORK, "requests")).toEqual([])
+		expect(backend.readLog(WORK, "plans")).toEqual([])
+		expect(backend.readLog(WORK, "commits")).toEqual([])
+		expect(backend.dirtyWorks().sort()).toEqual([WORK, otherWork].sort())
+		expect(backend.readRecords({ workId: WORK })).toEqual(authority)
+		rebuildWork(dir, WORK)
+		expect(backend.dirtyWorks()).toEqual([otherWork])
+		expect(readWorkSummary(dir, WORK)).toEqual(beforeView)
+		expect(backend.readRecords({ workId: WORK })).toEqual(authority)
 	})
 
 	it("a failed transaction rolls back without keeping partial state", () => {
@@ -322,6 +359,17 @@ it("known regression: Bun preserves capture/update/reopen and rolls back failed 
 			afterConstraint: { authority: 3, markers: 3, heads: 1, rows: 2, notes: 0, dirty: 0, diagnostics: 0 },
 			rolledBack: true,
 			afterRollback: { authority: 3, markers: 3, heads: 1, rows: 2, notes: 0, dirty: 0, diagnostics: 0 },
+			recovery: {
+				failed: true,
+				rolledBack: true,
+				reopenedDirty: true,
+				reopenedMissingHead: true,
+				headRestored: true,
+				viewRestored: true,
+				dirtyCleared: true,
+				authorityUnchanged: true,
+				persistedAfterReopen: true,
+			},
 			iteration: {
 				aborted: true,
 				budgetChecks: 3,

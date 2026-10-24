@@ -179,7 +179,7 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 }
 
 async function knownRecordRegressions(agent: string, recordJson: string): Promise<void> {
-	const { backendFor, closeBackends, ledgerSessionInfo } = await import(
+	const { backendFor, closeBackends, ledgerSessionInfo, recoverDirty } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 	)
 	const base = JSON.parse(recordJson) as WorkRecord
@@ -268,6 +268,59 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
 	}
 	closeBackends()
+	const dirty = backendFor(agent)
+	const beforeRecovery = dirty.readRecords({})
+	const recoveryView = readWorkSummary(agent, base.workId)
+	dirty.tx(() => {
+		dirty.clearProjection(base.workId)
+		dirty.markDirty(base.workId)
+	})
+	const clearDirty = dirty.clearDirty
+	let recoveryFailed = false
+	dirty.clearDirty = (workId) => {
+		clearDirty(workId)
+		throw new Error("recovery marker failure")
+	}
+	try {
+		recoverDirty(agent)
+	} catch (error) {
+		recoveryFailed = error instanceof Error && error.message === "recovery marker failure"
+	} finally {
+		dirty.clearDirty = clearDirty
+	}
+	closeBackends()
+	const afterFailure = backendFor(agent)
+	const recoveryRolledBack =
+		afterFailure.dirtyWorks().includes(base.workId) &&
+		afterFailure.getHead(base.workId) === undefined &&
+		afterFailure.readLog(base.workId, "requests").length === 0 &&
+		afterFailure.readLog(base.workId, "sessions").length === 0 &&
+		JSON.stringify(afterFailure.readRecords({})) === JSON.stringify(beforeRecovery)
+	afterFailure.tx(() => afterFailure.clearProjection(base.workId))
+	closeBackends()
+	const afterReopen = backendFor(agent)
+	const reopenedDirty = afterReopen.dirtyWorks().includes(base.workId)
+	const reopenedMissingHead = afterReopen.getHead(base.workId) === undefined
+	recoverDirty(agent)
+	const recovery = {
+		failed: recoveryFailed,
+		rolledBack: recoveryRolledBack,
+		reopenedDirty,
+		reopenedMissingHead,
+		headRestored: afterReopen.getHead(base.workId)?.workId === base.workId,
+		viewRestored: JSON.stringify(readWorkSummary(agent, base.workId)) === JSON.stringify(recoveryView),
+		dirtyCleared: !afterReopen.dirtyWorks().includes(base.workId),
+		authorityUnchanged: JSON.stringify(afterReopen.readRecords({})) === JSON.stringify(beforeRecovery),
+		persistedAfterReopen: false,
+	}
+	closeBackends()
+	const final = backendFor(agent)
+	recovery.persistedAfterReopen =
+		final.getHead(base.workId)?.workId === base.workId &&
+		!final.dirtyWorks().includes(base.workId) &&
+		JSON.stringify(final.readRecords({})) === JSON.stringify(beforeRecovery) &&
+		JSON.stringify(readWorkSummary(agent, base.workId)) === JSON.stringify(recoveryView)
+	closeBackends()
 	out({
 		sessionWorkId: session.work?.workId,
 		sessionRecords: session.recordCount,
@@ -277,6 +330,7 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 		afterConstraint,
 		rolledBack,
 		afterRollback,
+		recovery,
 		iteration,
 	})
 }

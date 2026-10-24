@@ -278,6 +278,7 @@ function rebuildWorkInTx(backend: RecordBackend, workId: string): void {
 	}
 	mergeRecordsInto(projectionRows(backend, workId), records)
 	backend.putHead(headFrom(backend, workId))
+	backend.clearDirty(workId)
 }
 
 function foldWork(backend: RecordBackend, workId: string, records: WorkRecord[]): void {
