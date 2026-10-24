@@ -146,7 +146,7 @@ export function closeBackends(): void {
 	backends.clear()
 }
 
-/** Hash of the canonical record JSON; import hashes the re-stringified parsed line, which is byte-identical. */
+/** Hash used for native capture; imported records retain the hash of their exact original line bytes. */
 export function recordHashOf(record: WorkRecord): string {
 	return createHash("sha256").update(JSON.stringify(record)).digest("hex")
 }

@@ -851,7 +851,8 @@ export function validateBatch(b: Batch): void {
 	}
 }
 
-function validateAccountingRaw(schema: string, raw: RawUsage, partition: boolean): void {
+export function validateAccountingRaw(schema: string, raw: RawUsage, partition: boolean): void {
+	if (!rawValid(raw)) throw new Error("Invalid raw usage")
 	let writes = 0n
 	for (const write of raw.cacheWrites ?? []) writes += BigInt(write.tokens)
 	if (writes > 1_000_000_000_000n) throw new Error("Cache TTL counters exceed total")
