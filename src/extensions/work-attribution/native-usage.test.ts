@@ -287,9 +287,12 @@ it("merges Anthropic cumulative deltas without summing usage or losing TTL bucke
 			message: {
 				id: "msg-observed",
 				model: "claude-observed",
+				service_tier: "ignore-top-level",
 				usage: {
 					input_tokens: 100,
 					output_tokens: 1,
+					service_tier: "standard",
+					inference_geo: "global",
 					cache_read_input_tokens: 10,
 					cache_creation_input_tokens: 6,
 					cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 2 },
@@ -299,12 +302,17 @@ it("merges Anthropic cumulative deltas without summing usage or losing TTL bucke
 		model,
 	)
 	for (const output_tokens of [5, 7])
-		capture.onProviderStreamEvent({ type: "message_delta", usage: { output_tokens } }, model)
+		capture.onProviderStreamEvent(
+			{ type: "message_delta", usage: { output_tokens, service_tier: null, inference_geo: null } },
+			model,
+		)
 	capture.finish()
 	expect(captured()[0].nativeUsage).toMatchObject({
 		schema: "anthropic-messages-v1",
 		responseId: "msg-observed",
 		actualModel: "claude-observed",
+		serviceTier: "standard",
+		region: "global",
 		raw: {
 			inputTokens: 100,
 			outputTokens: 7,
@@ -316,6 +324,33 @@ it("merges Anthropic cumulative deltas without summing usage or losing TTL bucke
 			],
 		},
 	})
+})
+
+it.each([
+	{},
+	{ service_tier: 1, inference_geo: false },
+])("keeps Anthropic pricing dimensions with their observed response when the next omits valid values: %j", (nextUsage) => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent(
+		{
+			type: "message_start",
+			message: { id: "msg-first", usage: { service_tier: "priority", inference_geo: "us" } },
+		},
+		model,
+	)
+	capture.onProviderStreamEvent(
+		{ type: "message_start", message: { id: "msg-second", usage: { input_tokens: 10, ...nextUsage } } },
+		model,
+	)
+	capture.finish()
+	const usage = captured()[0].nativeUsage
+	expect(usage).toMatchObject({ responseId: "msg-second", responseCorrelation: "ambiguous" })
+	expect(usage.serviceTier).toBeUndefined()
+	expect(usage.region).toBeUndefined()
+	expect(usage.previousResponses).toEqual([
+		expect.objectContaining({ responseId: "msg-first", serviceTier: "priority", region: "us" }),
+	])
 })
 
 it.each([

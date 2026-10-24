@@ -28,6 +28,7 @@ interface Observation {
 	actualModel?: string
 	responseId?: string
 	serviceTier?: string
+	region?: string
 	responseStatus?: string
 	incompleteReason?: string
 	rawStopReason?: string
@@ -72,6 +73,7 @@ function observe(observation: Observation, data: unknown): void {
 			actualModel: undefined,
 			responseId: undefined,
 			serviceTier: undefined,
+			region: undefined,
 			responseStatus: undefined,
 			incompleteReason: undefined,
 			rawStopReason: undefined,
@@ -83,6 +85,8 @@ function observe(observation: Observation, data: unknown): void {
 		const usage = object(body.usage) ? body.usage : {}
 		const creation = object(usage.cache_creation) ? usage.cache_creation : {}
 		const output = object(usage.output_tokens_details) ? usage.output_tokens_details : {}
+		if (typeof usage.service_tier === "string" && usage.service_tier) observation.serviceTier = usage.service_tier
+		if (typeof usage.inference_geo === "string" && usage.inference_geo) observation.region = usage.inference_geo
 		stopReason = body.stop_reason ?? (object(data.delta) ? data.delta.stop_reason : undefined)
 		raw = {
 			inputTokens: counter(usage.input_tokens),
@@ -132,7 +136,8 @@ function observe(observation: Observation, data: unknown): void {
 		if (value !== undefined) Object.assign(observation.raw, { [key]: value })
 	if (typeof body.id === "string" && body.id) observation.responseId = body.id
 	if (typeof body.model === "string" && body.model) observation.actualModel = body.model
-	if (typeof body.service_tier === "string" && body.service_tier) observation.serviceTier = body.service_tier
+	if (observation.schema !== "anthropic-messages-v1" && typeof body.service_tier === "string" && body.service_tier)
+		observation.serviceTier = body.service_tier
 	if (typeof body.status === "string" && body.status) observation.responseStatus = body.status
 	const incomplete = object(body.incomplete_details) ? body.incomplete_details.reason : undefined
 	if (typeof incomplete === "string" && incomplete) observation.incompleteReason = incomplete
