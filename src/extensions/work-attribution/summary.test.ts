@@ -603,38 +603,39 @@ describe("readable work summaries", () => {
 			{ path: "other.ts", method: "file-chain", transitionIds: ["other"], worktree: "/origin" },
 		])
 	})
-	it("upgrades old summaries and recovery stamps with unchanged transition journals", async () => {
+	it("imports unchanged transition journals despite an old recovery stamp", async () => {
 		const ctx = context()
 		const request = recordProviderRequest(ctx)
 		await flushWorkSummaries()
-		const existing = summary(request.workId)
+		const existing = structuredClone(summary(request.workId))
+		const originalCount = backendFor(dir).recordCount(request.workId)
 		const journal = join(dir, "work-attribution", "transitions", "old.jsonl")
 		fs.mkdirSync(dirname(journal), { recursive: true })
-		fs.writeFileSync(
-			journal,
-			`${JSON.stringify({ type: "file_transition", version: 1, workId: request.workId, sessionId: "parent", transitionId: "old-transition", toolCallId: "old-tool", repository: "/repo", worktree: "/tree", path: "file.ts", before: null, after: { blob: "blob", mode: "100644" } })}\n`,
-		)
+		const journalBytes = `${JSON.stringify({ type: "file_transition", version: 1, workId: request.workId, sessionId: "parent", transitionId: "old-transition", toolCallId: "old-tool", repository: "/repo", worktree: "/tree", path: "file.ts", before: null, after: { blob: "blob", mode: "100644" } })}\n`
+		fs.writeFileSync(journal, journalBytes)
 		const past = new Date(Date.now() - 60 * 60 * 1000)
 		fs.utimesSync(journal, past, past)
-		fs.writeFileSync(
-			join(dir, "work-attribution", ".recovered.json"),
-			JSON.stringify({ startedAt: Date.now(), summaries: { [request.workId]: "old" } }),
-		)
-		recoverWorkSummaries()
-		await flushWorkSummaries()
+		const stamp = join(dir, "work-attribution", ".recovered.json")
+		const stampBytes = JSON.stringify({ startedAt: Date.now(), summaries: { [request.workId]: "old" } })
+		fs.writeFileSync(stamp, stampBytes)
+		const journalMtime = fs.statSync(journal).mtimeMs
+		vi.resetModules()
+		const relaunched = await import("./summary.js")
+		relaunched.recoverWorkSummaries()
+		await relaunched.flushWorkSummaries()
 		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
 		expect(summary(request.workId).fileTransitions).toEqual([
 			expect.objectContaining({ transitionId: "old-transition", toolCallId: "old-tool" }),
 		])
 		expect(summary(request.workId).fileTransitions[0]).not.toHaveProperty("requestId")
-		expect(JSON.parse(fs.readFileSync(join(dir, "work-attribution", ".recovered.json"), "utf8")).version).toBe(5)
-		fs.rmSync(path(request.workId))
-		vi.resetModules()
-		const relaunched = await import("./summary.js")
-		relaunched.recoverWorkSummaries()
-		await relaunched.flushWorkSummaries()
+		expect(backendFor(dir).recordCount(request.workId)).toBe(originalCount + 1)
+		expect(fs.readFileSync(stamp, "utf8")).toBe(stampBytes)
+		recoverProjection(request.workId)
 		expect(summary(request.workId).fileTransitions).toHaveLength(1)
 		expect(summary(request.workId).requests[0]).toEqual(existing.requests[0])
+		expect(fs.readFileSync(journal, "utf8")).toBe(journalBytes)
+		expect(fs.statSync(journal).mtimeMs).toBe(journalMtime)
+		expect(fs.readFileSync(stamp, "utf8")).toBe(stampBytes)
 	})
 	it("replays unchanged version-4 ledgers to restore observations and hunk evidence", async () => {
 		const ctx = context()
@@ -658,27 +659,52 @@ describe("readable work summaries", () => {
 			complete: false,
 		})
 		await flushWorkSummaries()
-		// A summary saved by a build that did not merge observations or hunk evidence.
-		const { fileObservations: _, ...old } = summary(workId)
+		// Model an old derived view, without modifying any captured observations.
+		const backend = backendFor(dir)
+		const authority = structuredClone(backend.readRecords({ workId }))
+		const old = structuredClone(summary(workId))
+		old.fileObservations = []
 		old.commits[0].fileMatches = []
-		fs.rmSync(dirname(path(workId)), { recursive: true })
-		await saveWorkSummary(dir, old)
-		const { size, mtimeMs } = fs.statSync(path(workId))
+		backend.tx(() => {
+			backend.clearProjection(workId)
+			saveWorkSummary(dir, old)
+			backend.markDirty(workId)
+		})
+		expect(summary(workId).fileObservations).toEqual([])
+		expect(summary(workId).commits[0].fileMatches).toEqual([])
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		const ledgerBytes = `${authority.map((row) => row.body).join("\n")}\n`
+		fs.writeFileSync(ledger, ledgerBytes)
 		const past = new Date(Date.now() - 60 * 60 * 1000)
 		fs.utimesSync(ledger, past, past)
 		const ledgerMtime = fs.statSync(ledger).mtimeMs
-		fs.writeFileSync(
-			join(dir, "work-attribution", ".recovered.json"),
-			JSON.stringify({ version: 4, startedAt: Date.now(), summaries: { [workId]: `${size}:${mtimeMs}` } }),
-		)
-		recoverWorkSummaries()
-		await flushWorkSummaries()
+		fs.mkdirSync(dirname(path(workId)), { recursive: true })
+		const oldBytes = JSON.stringify({ version: 1, ...old })
+		fs.writeFileSync(path(workId), oldBytes)
+		const { size, mtimeMs } = fs.statSync(path(workId))
+		const stamp = join(dir, "work-attribution", ".recovered.json")
+		const stampBytes = JSON.stringify({
+			version: 4,
+			startedAt: Date.now(),
+			summaries: { [workId]: `${size}:${mtimeMs}` },
+		})
+		fs.writeFileSync(stamp, stampBytes)
+		vi.resetModules()
+		const relaunched = await import("./summary.js")
+		relaunched.recoverWorkSummaries()
+		await relaunched.flushWorkSummaries()
 		expect(summary(workId).fileObservations).toEqual([
 			expect.objectContaining({ observationId: "shell-window", complete: false }),
 		])
 		expect(summary(workId).commits[0].fileMatches).toEqual([fileMatch])
+		expect(backend.readRecords({ workId })).toEqual(authority)
+		expect(backend.dirtyWorks()).not.toContain(workId)
+		expect(fs.readFileSync(path(workId), "utf8")).toBe(oldBytes)
+		expect(fs.statSync(path(workId)).mtimeMs).toBe(mtimeMs)
+		expect(fs.readFileSync(ledger, "utf8")).toBe(ledgerBytes)
 		expect(fs.statSync(ledger).mtimeMs).toBe(ledgerMtime)
+		expect(fs.readFileSync(stamp, "utf8")).toBe(stampBytes)
 	})
 	it.each([
 		undefined,
@@ -687,16 +713,19 @@ describe("readable work summaries", () => {
 		"[]",
 		'{"version":1,"workId":"WORK_ID","sessions":[],"requests":[null],"plans":[],"commits":[]}',
 		'{"version":1,"workId":"wrong","sessions":[],"requests":[],"plans":[],"commits":[]}',
-	])("recovers missing or invalid summaries (%s) from existing ledgers on launch", async (corrupt) => {
+	])("imports legacy records despite a missing or invalid legacy summary (%s)", async (corrupt) => {
 		const workId = randomUUID()
-		const ctx = context()
-		appendWorkRecord(ctx, { type: "request", requestId: "old-request", provider: "test", model: "old" }, workId)
-		appendWorkRecord(context("child"), { type: "plan", path: "/old-plan.md" }, workId)
-		await flushWorkSummaries()
-		fs.appendFileSync(join(dir, "work-attribution", "parent.jsonl"), '{"type":"request"')
+		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const childLedger = join(dir, "work-attribution", "child.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		const parentBytes = `${JSON.stringify({ version: 1, type: "request", sessionId: "parent", workId, requestId: "old-request", provider: "test", model: "old" })}\n{"type":"request"`
+		const childBytes = `${JSON.stringify({ version: 1, type: "plan", sessionId: "child", workId, path: "/old-plan.md" })}\n`
+		fs.writeFileSync(ledger, parentBytes)
+		fs.writeFileSync(childLedger, childBytes)
 		fs.mkdirSync(dirname(path(workId)), { recursive: true })
-		if (corrupt === undefined) fs.rmSync(path(workId), { force: true })
-		else fs.writeFileSync(path(workId), corrupt.replace("WORK_ID", workId))
+		const legacySummary = corrupt?.replace("WORK_ID", workId)
+		if (legacySummary !== undefined) fs.writeFileSync(path(workId), legacySummary)
+		expect(backendFor(dir).recordCount()).toBe(0)
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const fresh = context("fresh")
@@ -709,6 +738,12 @@ describe("readable work summaries", () => {
 				requests: [expect.objectContaining({ requestId: "old-request", sessionId: "parent" })],
 				plans: [expect.objectContaining({ path: "/old-plan.md", sessionId: "child" })],
 			})
+			expect(backendFor(dir).recordCount(workId)).toBe(2)
+			expect(fs.readFileSync(ledger, "utf8")).toBe(parentBytes)
+			expect(fs.readFileSync(childLedger, "utf8")).toBe(childBytes)
+			if (legacySummary === undefined) expect(fs.existsSync(path(workId))).toBe(false)
+			else expect(fs.readFileSync(path(workId), "utf8")).toBe(legacySummary)
+			expect(fs.existsSync(join(dir, "work-attribution", ".recovered.json"))).toBe(false)
 		} finally {
 			await api.getHandler<SessionShutdownEvent>("session_shutdown")(
 				{ type: "session_shutdown", reason: "quit" },
