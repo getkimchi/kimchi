@@ -258,6 +258,50 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
 
+async function producerScenario(agent: string): Promise<void> {
+	const { readReportingState, reportingProducer } = await import(
+		"../../../../src/extensions/pr-cost-reporting/queue.js"
+	)
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { observeEvents, pendingBatch } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
+	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
+	const state = await readReportingState(agent)
+	const entry = Object.values(state.entries)[0]
+	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")
+	const account = accountKey(entry.account)
+	const current = () => {}
+	observeEvents(
+		agent,
+		account,
+		[
+			{
+				entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				source: "kimchi",
+				sourceVersion: "test",
+				deviceId: state.producerId,
+				observeTime: "2026-10-24T00:00:00Z",
+				coverage: { code: "observed", count: "1" },
+			},
+		],
+		[],
+		current,
+	)
+	const frozen = pendingBatch(agent, account, current)
+	if (!frozen) throw new Error("Missing frozen producer fixture")
+	const producerId = await reportingProducer(agent, current)
+	const pending = pendingBatch(agent, account, current)
+	out({
+		producerId,
+		machineKnown: !!(await machineFingerprint()),
+		note: JSON.parse(backendFor(agent).getNote("agent", "reporting-producer") ?? "null"),
+		legacyRetained: JSON.stringify(await readReportingState(agent)) === JSON.stringify(state),
+		batchRetained: pending?.id === frozen.id && sameBytes(pending.body, frozen.body),
+		frozenProducer: JSON.parse(Buffer.from(frozen.body).toString("utf8")).batch.events[0].deviceId,
+	})
+	closeBackends()
+}
+
 async function outboxScenario(agent: string, mode: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
@@ -1291,6 +1335,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
+	producer: (agent) => producerScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),

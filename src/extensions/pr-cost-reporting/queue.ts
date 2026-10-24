@@ -8,6 +8,7 @@ import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
+import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
 	accountKey,
@@ -106,7 +107,7 @@ export interface ReportingState {
 	followsTelemetry?: true
 	defaultNoticeShown?: true
 	producerId: string
-	/** Hashed machine ID that owns producerId; a home copied to another machine starts a new producer. */
+	/** Original legacy producer's machine; copied pending uploads keep this identity until acknowledged. */
 	machine?: string
 	entries: Record<string, PendingRepository>
 	/** Account-wide limit pauses, keyed by account. */
@@ -190,6 +191,41 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 	return (await loadReportingState(agentDir)).state
 }
 
+/** The new reporting producer rotates independently; legacy pending uploads keep their original identity. */
+export async function reportingProducer(agentDir: string, assertCurrent: () => void): Promise<string> {
+	assertCurrent()
+	const machine = await machineFingerprint()
+	assertCurrent()
+	const backend = backendFor(agentDir)
+	const legacy =
+		backend.getNote("agent", "reporting-producer") === undefined ? await readReportingState(agentDir) : undefined
+	return backend.tx(() => {
+		assertCurrent()
+		const previous = backend.getNote("agent", "reporting-producer")
+		if (previous === undefined && !legacy) throw new Error("PR reporting producer disappeared")
+		const value: unknown =
+			previous === undefined
+				? { version: 1, producerId: legacy?.producerId, machine: legacy?.machine }
+				: JSON.parse(previous)
+		if (
+			!object(value) ||
+			value.version !== 1 ||
+			!isWorkId(value.producerId) ||
+			(value.machine !== undefined && (typeof value.machine !== "string" || !SHA256_HEX.test(value.machine)))
+		)
+			throw new Error("Invalid PR reporting producer")
+		const next = { version: 1, producerId: value.producerId, machine: value.machine }
+		if (machine) {
+			if (next.machine && next.machine !== machine) next.producerId = randomUUID()
+			next.machine = machine
+		}
+		const body = JSON.stringify(next)
+		if (body !== previous) backend.putNote("agent", "reporting-producer", body)
+		assertCurrent()
+		return next.producerId
+	})
+}
+
 /** Changes with every saved update, since each one replaces the file; empty before the first. */
 export async function reportingStateVersion(agentDir: string): Promise<string> {
 	const saved = await stat(reportingStatePath(agentDir)).catch(() => undefined)
@@ -259,14 +295,6 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 		)
 			throw new Error("Invalid PR reporting state")
 		if (value.followsTelemetry) value.enabled = isTelemetryEnabled()
-		const machine = await machineFingerprint()
-		// Two machines sharing a producer would keep replacing each other's claims; the server deduplicates bills across producers.
-		if (machine && value.machine && value.machine !== machine) {
-			value.producerId = randomUUID()
-			value.machine = machine
-			value.entries = {}
-			value.paused = undefined
-		}
 		trackPRCostMetric({
 			kind: "queueDepth",
 			value: Object.values(value.entries).filter((entry) => entry.pending).length,
@@ -333,14 +361,6 @@ export function setReportingEnabled(agentDir: string, enabled: boolean): Promise
 			entry.uploadedAt = undefined
 			entry.attempts = 0
 			entry.retryAt = 0
-			if (enabled) continue
-			// The discarded replacement may have arrived even if its acknowledgement did not.
-			if (entry.pending) entry.acceptedDigest = undefined
-			entry.pending = undefined
-			entry.pendingDigest = undefined
-			entry.urgent = undefined
-			entry.lastError = undefined
-			entry.held = undefined
 		}
 	})
 }
@@ -373,9 +393,12 @@ export async function queueSnapshots(
 	completeInventory = false,
 	skippedRequests = 0,
 ): Promise<ReportingState> {
+	const machine = await machineFingerprint()
 	let largest: { requests: number; bytes: number } | undefined
 	const state = await update(agentDir, (state) => {
 		if (!state.enabled) return
+		if (machine && state.machine && machine !== state.machine)
+			throw new Error("PR reporting snapshots from another machine must drain unchanged")
 		const now = Date.now()
 		const invalid = new Set<string>()
 		const current = new Map<string, RepositorySnapshot>()

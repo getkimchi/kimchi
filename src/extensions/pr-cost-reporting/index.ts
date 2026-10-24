@@ -19,7 +19,7 @@ import { reconcileReporting } from "./worker.js"
 
 const ARGUMENT_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Report PR costs to your account" },
-	{ value: "off", label: "off", description: "Stop reporting and delete pending uploads" },
+	{ value: "off", label: "off", description: "Pause reporting and retain pending uploads" },
 	{ value: "status", label: "status", description: "Show the setting, queued reports and problems" },
 ]
 
@@ -126,7 +126,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 				} else if (command === "off") {
 					await setReportingEnabled(getAgentDir(), false)
 					ctx.ui.notify(
-						"PR reporting off. Pending uploads were deleted; local work history and revision counters were retained. Previously accepted reports remain on the server.",
+						"PR reporting off. Pending uploads are paused and retained locally. Previously accepted reports remain on the server.",
 						"info",
 					)
 				} else {

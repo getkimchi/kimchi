@@ -526,7 +526,8 @@ describe("account-fenced reporting delivery", () => {
 		expect(retryAt - before).toBeGreaterThanOrEqual(LIMIT_RETRY_MS)
 		expect(retryAt - Date.now()).toBeLessThanOrEqual(LIMIT_RETRY_MS)
 	})
-	it("cancels an in-flight upload when another instance opts out and discards its payload", async () => {
+	it("cancels an in-flight upload when another instance opts out and retains its payload", async () => {
+		const pending = JSON.stringify(Object.values((await readReportingState(directory)).entries)[0].pending)
 		let sent: (() => void) | undefined
 		const sending = new Promise<void>((resolve) => {
 			sent = resolve
@@ -543,9 +544,8 @@ describe("account-fenced reporting delivery", () => {
 		await setReportingEnabled(directory, false)
 		await running
 		const state = await readReportingState(directory)
-		expect(Object.values(state.entries)[0].pending).toBeUndefined()
+		expect(JSON.stringify(Object.values(state.entries)[0].pending)).toBe(pending)
 		expect(Object.values(state.entries)[0].requestHashes).toHaveLength(1)
-		expect(JSON.stringify(state)).not.toContain(requestId)
 	})
 	it("keeps a malformed acknowledgement pending and never records response content", async () => {
 		http.mockImplementation(async (input) =>
