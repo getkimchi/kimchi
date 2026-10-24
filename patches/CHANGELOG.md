@@ -134,6 +134,23 @@ but are only drained by the next fresh run).
 
 ### `pi-mcp-adapter`
 
+- **NEW (2026-10-23, post-1.3.0 rollout) — stored-redirect-URI reuse and
+  preservation (mcp-auth-flow + mcp-oauth-provider).** Upstream 5.3.1's PR #712
+  changed the default OAuth loopback host from `localhost` to `127.0.0.1`, so
+  re-auth of a pre-registered client whose registration was created with the
+  pre-1.3.0 `localhost` URI (e.g. Google/Gmail) sends a redirect the server no
+  longer recognizes (`Error 400: redirect_uri_mismatch`). Two hunks: (1)
+  `startAuth` reuses the stored client registration's first redirect URI when
+  the server has a fixed `oauth.clientId` and no explicit `redirectUri` (DCR
+  clients keep upstream's re-register-and-heal behavior); (2)
+  `clientInformation()` preserves the stored `redirectUris` when it rewrites
+  the clientInfo entry for a config-registered client — without this, the
+  connection attempt's issuer-binding bookkeeping erased the URIs before
+  re-auth could reuse them. Verified by the
+  `re-auth of a pre-registered client reuses the stored redirect URI` TUI e2e
+  (fixture scenario `oauth-pre-registered` rejects any other redirect with a
+  Google-style 400). File an upstream issue and remove both hunks when
+  upstream prefers stored registrations' redirect URIs.
 - **BUMPED — 2.34.0 → 5.3.1** (MCP client 2.0.0 → 2.3.1 for GHSA-6qxp-vccf-f47h).
 - **DROPPED — `@modelcontextprotocol/sdk@1.29.0` patch.** Adapter 5.3.0's OAuth
   path imports `@modelcontextprotocol/client` 2.3.1 exclusively; sdk 1.29
