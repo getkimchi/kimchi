@@ -676,6 +676,14 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		const [workId, name] = JSON.parse(json ?? "[]")
 		out(getNote(agent, workId, name) ?? null)
 	},
+	"pr-checks": async (agent) => {
+		process.env.PI_CODING_AGENT_DIR = agent
+		const { reconcileWorkPullRequests } = await import(
+			"../../../../src/extensions/pull-request-status/pull-requests.js"
+		)
+		await reconcileWorkPullRequests(agent, new AbortController().signal, () => {})
+		out({ note: getNote(agent, "agent", "pr-checks"), records: readRecords(agent).length })
+	},
 	"remove-note": async (agent, json) => {
 		const [workId, name] = JSON.parse(json ?? "[]")
 		const store = openStore(agent)

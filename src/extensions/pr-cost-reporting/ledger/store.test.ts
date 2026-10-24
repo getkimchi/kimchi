@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -64,6 +64,38 @@ test("ledger path sits in the reporting directory", () => {
 })
 
 describe("open via Bun driver", () => {
+	test("PR lookup backoff migrates once and survives a real SQLite reopen", () => {
+		const dir = agentDir()
+		const repository = join(dir, "removed-worktree", ".git")
+		const sha = "a".repeat(40)
+		const now = Date.now()
+		driver(
+			"capture",
+			dir,
+			JSON.stringify({
+				version: 1,
+				type: "commit",
+				workId: "11111111-1111-4111-8111-111111111111",
+				sessionId: "writer",
+				cwd: join(dir, "removed-worktree"),
+				worktree: join(dir, "removed-worktree"),
+				repository,
+				sha,
+				recordedAt: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+				prLookup: { status: "pending", checkedAt: new Date(now - 2 * 60 * 60 * 1000).toISOString() },
+				pullRequests: [],
+			}),
+		)
+		mkdirSync(join(dir, "work-attribution"))
+		const path = join(dir, "work-attribution", "pr-checks.json")
+		const body = `${JSON.stringify({ [repository]: { [sha]: new Date(now).toISOString() } })}\n`
+		writeFileSync(path, body)
+		expect(driver("pr-checks", dir)).toEqual({ note: body, records: 1 })
+		expect(readFileSync(path, "utf8")).toBe(body)
+		writeFileSync(path, "{}\n")
+		expect(driver("pr-checks", dir)).toEqual({ note: body, records: 1 })
+		expect(readFileSync(path, "utf8")).toBe("{}\n")
+	})
 	test("fresh open creates dir/file with modes, schema version and tables", { timeout: 60_000 }, () => {
 		const result = driver("probe", agentDir())
 		expect(result.version).toBe(1)
