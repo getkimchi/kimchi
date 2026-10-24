@@ -146,8 +146,9 @@ function nativeRecord(workId: string, sessionId = "native", requestId: string = 
 		recordedAt: "2026-10-01T00:00:00.000Z",
 	}
 }
-function startNative(record: WorkRecord, count = 1, beforeFlush = false) {
-	const child = spawn("bun", [NATIVE_DRIVER, "summary-writer", dir, JSON.stringify({ record, count, beforeFlush })])
+function startNativeProcess(command: "summary-writer" | "summary-reader", argument: string) {
+	const child = spawn("bun", [NATIVE_DRIVER, command, dir, argument])
+	const label = command === "summary-writer" ? "Native writer" : "Native reader"
 	const lines = createInterface({ input: child.stdout })
 	const messages = lines[Symbol.asyncIterator]()
 	let errors = ""
@@ -156,9 +157,7 @@ function startNative(record: WorkRecord, count = 1, beforeFlush = false) {
 	})
 	const done = new Promise<void>((resolve, reject) => {
 		child.once("error", reject)
-		child.once("close", (code) =>
-			code === 0 ? resolve() : reject(new Error(`Native writer exited ${code}: ${errors}`)),
-		)
+		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited ${code}: ${errors}`))))
 	})
 	const timeout = setTimeout(() => child.kill("SIGKILL"), 10000)
 	void done.finally(() => clearTimeout(timeout)).catch(() => {})
@@ -167,9 +166,9 @@ function startNative(record: WorkRecord, count = 1, beforeFlush = false) {
 		done,
 		async next() {
 			const line = await messages.next()
-			if (line.done) throw new Error(`Native writer ended before its barrier: ${errors}`)
-			const message: { phase: string } = JSON.parse(line.value)
-			return message.phase
+			if (line.done) throw new Error(`${label} ended before its barrier: ${errors}`)
+			const message: { phase: string; state?: NativeSummaryState } = JSON.parse(line.value)
+			return message
 		},
 		async stop() {
 			if (child.exitCode === null) child.kill("SIGKILL")
@@ -177,6 +176,10 @@ function startNative(record: WorkRecord, count = 1, beforeFlush = false) {
 			lines.close()
 		},
 	}
+}
+function startNative(record: WorkRecord, count = 1, beforeFlush = false) {
+	const writer = startNativeProcess("summary-writer", JSON.stringify({ record, count, beforeFlush }))
+	return { ...writer, next: async () => (await writer.next()).phase }
 }
 
 describe("readable work summaries", () => {
@@ -898,6 +901,7 @@ describe("readable work summaries", () => {
 		fs.writeFileSync(ledger, originalBytes)
 		const past = new Date(Date.now() - 60 * 60 * 1000)
 		fs.utimesSync(ledger, past, past)
+		const untouchedTime = fs.statSync(ledger, { bigint: true }).mtimeNs
 		await launch()
 		expect(backend.readRecords({ workId })).toEqual(authority)
 		expect(backend.getHead(workId)).toEqual(published)
@@ -909,7 +913,7 @@ describe("readable work summaries", () => {
 		expect(inserted).not.toHaveBeenCalled()
 		expect(publish).not.toHaveBeenCalled()
 		expect(backend.getJournalCursor(ledger)).toEqual(cursor)
-		expect(fs.statSync(ledger).mtimeMs).toBe(past.getTime())
+		expect(fs.statSync(ledger, { bigint: true }).mtimeNs).toBe(untouchedTime)
 		expect(fs.readFileSync(ledger, "utf8")).toBe(originalBytes)
 
 		// An old process can append after migration without updating the projection.
@@ -1228,16 +1232,22 @@ describe("readable work summaries", () => {
 	it("serializes three native writers while a reader sees coherent authority, markers and projection", async () => {
 		const workId = randomUUID()
 		expect(native<WorkRecord[]>("records", workId)).toEqual([])
-		const writers = Array.from({ length: 3 }, (_, index) => startNative(nativeRecord(workId, `session-${index}`), 8))
+		const reader = startNativeProcess("summary-reader", workId)
+		const writers: ReturnType<typeof startNative>[] = []
 		const observed: number[] = []
 		try {
+			expect((await reader.next()).phase).toBe("ready")
+			writers.push(...Array.from({ length: 3 }, (_, index) => startNative(nativeRecord(workId, `session-${index}`), 8)))
 			await Promise.all(writers.map(async (writer) => expect(await writer.next()).toBe("ready")))
 			await Promise.all(
 				writers.map(async (writer) => {
 					for (let index = 0; index < 8; index++) {
 						expect(await writer.next()).toBe("pending")
-						const state = native<NativeSummaryState>("summary-state", workId)
-						observed.push(coherentState(state).requests.length)
+						reader.child.stdin.write("read\n")
+						const message = await reader.next()
+						expect(message.phase).toBe("snapshot")
+						if (!message.state) throw new Error("Native reader omitted its snapshot")
+						observed.push(coherentState(message.state).requests.length)
 						writer.child.stdin.write("c")
 						expect(await writer.next()).toBe("committed")
 					}
@@ -1263,6 +1273,7 @@ describe("readable work summaries", () => {
 			expect(fs.existsSync(join(dir, "work-attribution"))).toBe(false)
 		} finally {
 			await Promise.all(writers.map((writer) => writer.stop()))
+			await reader.stop()
 		}
 	}, 15000)
 })

@@ -719,6 +719,17 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	},
 	listfiles: (agent) => listFiles(agent),
 	"summary-state": async (agent, workId) => out(summaryState(agent, workId ?? "")),
+	"summary-reader": async (agent, workId) => {
+		// Process startup must finish before the test holds any writer transaction.
+		summaryState(agent, workId ?? "")
+		const input = createInterface({ input: process.stdin })
+		out({ phase: "ready" })
+		try {
+			for await (const _ of input) out({ phase: "snapshot", state: summaryState(agent, workId ?? "") })
+		} finally {
+			input.close()
+		}
+	},
 	"summary-atomic": (agent, json) => summaryAtomic(agent, json ?? "{}"),
 	"summary-writer": (agent, json) => summaryWriter(agent, json ?? "{}"),
 	"known-record-regressions": (agent, json) => knownRecordRegressions(agent, json ?? "{}"),
