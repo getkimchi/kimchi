@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
+import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import { flushWorkSummaries } from "./work-attribution/summary.js"
 
 // All mock functions must be vi.hoisted
@@ -168,9 +169,9 @@ describe("strip-images extension", () => {
 			] as never)
 			completeMock.mockResolvedValue({ content: [{ type: "text", text: "saved description" }], stopReason: "stop" })
 			const blockLedger = () => {
-				const path = join(attributionDir, "work-attribution")
-				rmSync(path, { recursive: true, force: true })
-				writeFileSync(path, "not a directory")
+				vi.spyOn(backendFor(attributionDir), "insertRecord").mockImplementation(() => {
+					throw new Error("attribution storage unavailable")
+				})
 			}
 			if (stage === "identity") blockLedger()
 			const ctx = createMockCtx({

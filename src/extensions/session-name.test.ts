@@ -2,12 +2,13 @@
  * Unit tests for session-name extension
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import sessionNameExtension, {
 	deterministicFallback,
 	extractFirstUserMessage,
@@ -205,10 +206,9 @@ describe("suggestSessionName", () => {
 		const workId = getWorkId(ctx)
 		const requestIds: string[] = []
 		const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-			const rows = readFileSync(join(attributionDir, "work-attribution", "original.jsonl"), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line))
+			const rows = backendFor(attributionDir)
+				.readRecords({ sessionId: "original" })
+				.map((row) => JSON.parse(row.body))
 			const requestId = new Headers(init?.headers).get("X-Request-Id")
 			expect(requestId).toBeTruthy()
 			expect(rows.at(-1)).toMatchObject({
@@ -241,9 +241,9 @@ describe("suggestSessionName", () => {
 			getWorkId(ctx)
 			await flushWorkSummaries()
 		}
-		const path = join(attributionDir, "work-attribution")
-		rmSync(path, { recursive: true, force: true })
-		writeFileSync(path, "not a directory")
+		vi.spyOn(backendFor(attributionDir), "insertRecord").mockImplementation(() => {
+			throw new Error("attribution storage unavailable")
+		})
 		const fetchMock = vi.fn(
 			async () => new Response(JSON.stringify({ choices: [{ message: { content: "Still named" } }] })),
 		)

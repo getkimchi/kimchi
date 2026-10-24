@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -6,6 +6,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
@@ -1176,9 +1177,9 @@ describe("judgeApiCall", () => {
 	it.each(["identity", "request"])("grades normally when %s attribution fails", async (stage) => {
 		const ctx = createContext()
 		if (stage === "request") getWorkId(ctx)
-		const path = join(attributionDir, "work-attribution")
-		rmSync(path, { recursive: true, force: true })
-		writeFileSync(path, "blocked")
+		vi.spyOn(backendFor(attributionDir), "insertRecord").mockImplementation(() => {
+			throw new Error("attribution storage unavailable")
+		})
 		const model = createModel("judge-x")
 		const registry = createContext({
 			modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue({ ok: true, apiKey: "test", headers: {} }) },
@@ -1207,10 +1208,9 @@ describe("judgeApiCall", () => {
 		})
 		captureJudgeContext(model, registry, false, ctx)
 		completeMock.mockImplementation((_model, _context, options) => {
-			const rows = readFileSync(join(attributionDir, "work-attribution", "judge-original.jsonl"), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line))
+			const rows = backendFor(attributionDir)
+				.readRecords({ sessionId: "judge-original" })
+				.map((row) => JSON.parse(row.body))
 			expect(rows.at(-1)).toMatchObject({
 				type: "request",
 				workId,

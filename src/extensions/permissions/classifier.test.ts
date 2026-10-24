@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId } from "../work-attribution.js"
@@ -40,9 +41,10 @@ describe("classifyToolCall", () => {
 		if (stage === "request") {
 			getWorkId(options.context)
 			await flushWorkSummaries()
-			rmSync(join(attributionDir, "work-attribution"), { recursive: true })
 		}
-		writeFileSync(join(attributionDir, "work-attribution"), "blocked")
+		vi.spyOn(backendFor(attributionDir), "insertRecord").mockImplementation(() => {
+			throw new Error("attribution storage unavailable")
+		})
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const diagnostic = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		completeMock.mockResolvedValue(response())
@@ -66,12 +68,9 @@ describe("classifyToolCall", () => {
 	it("persists distinct retry identities before each auxiliary provider call", async () => {
 		const requestIds: string[] = []
 		completeMock.mockImplementation((_model, _context, opts) => {
-			const records = readdirSync(join(attributionDir, "work-attribution")).flatMap((file) =>
-				readFileSync(join(attributionDir, "work-attribution", file), "utf8")
-					.trim()
-					.split("\n")
-					.map((line) => JSON.parse(line)),
-			)
+			const records = backendFor(attributionDir)
+				.readRecords({})
+				.map((row) => JSON.parse(row.body))
 			const request = records.at(-1)
 			expect(request.requestId).toBe(opts.headers["X-Request-Id"])
 			requestIds.push(request.requestId)
