@@ -1,5 +1,12 @@
 import type { LogName, Row, WorkHead } from "../../work-attribution/row-log.js"
-import type { JournalCursor, OutboxBatch, OutboxEvent, RecordBackend, StoredRecord } from "./records.js"
+import type {
+	JournalCursor,
+	OutboxAccountStatus,
+	OutboxBatch,
+	OutboxEvent,
+	RecordBackend,
+	StoredRecord,
+} from "./records.js"
 
 /**
  * Transient memory records backend for vitest: same visible behavior as the
@@ -175,6 +182,45 @@ export function createMemoryRecords(): RecordBackend {
 					.filter((event) => event.accountKey === accountKey && event.ackedAt === null && event.blocked === "")
 					.slice(0, limit),
 			),
+		outboxStatus: () => {
+			const accounts = new Map<string, OutboxAccountStatus>()
+			const account = (accountKey: string) => {
+				let status = accounts.get(accountKey)
+				if (!status) {
+					status = {
+						accountKey,
+						pending: 0,
+						sendable: 0,
+						blocked: 0,
+						acknowledged: 0,
+						lastAcknowledgedAt: null,
+						batches: 0,
+						firstBatchId: null,
+					}
+					accounts.set(accountKey, status)
+				}
+				return status
+			}
+			for (const event of events.values()) {
+				const status = account(event.accountKey)
+				if (event.ackedAt === null) {
+					status.pending++
+					if (event.blocked) status.blocked++
+					else status.sendable++
+				} else {
+					status.acknowledged++
+					status.lastAcknowledgedAt = Math.max(status.lastAcknowledgedAt ?? 0, event.ackedAt)
+				}
+			}
+			for (const batch of [...batches.values()].sort(
+				(a, b) => Buffer.compare(Buffer.from(a.orderKey), Buffer.from(b.orderKey)) || a.createdAt - b.createdAt,
+			)) {
+				const status = account(batch.accountKey)
+				status.batches++
+				status.firstBatchId ??= batch.id
+			}
+			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))
+		},
 		getOutboxBatch: (accountKey) =>
 			structuredClone(
 				[...batches.values()]

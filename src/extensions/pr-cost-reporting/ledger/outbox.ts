@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
+import { isWorkId } from "../../../shared/work-id.js"
+import { object } from "../../work-attribution/summary.js"
 import {
 	type Acknowledgement,
 	type Batch,
@@ -19,6 +21,49 @@ import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } fr
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
 export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseHash">
+
+export interface DeliveryRetry {
+	batchId: string
+	attempts: number
+	retryAt: number
+	resume?: string
+	error?: string
+}
+
+export function deliveryRetry(
+	backend: RecordBackend,
+	accountKey: string,
+	batchId: string | null,
+): DeliveryRetry | undefined {
+	const resume = backend.getNote("agent", "legacy-snapshot-resume")
+	if (resume !== undefined && !isWorkId(resume)) throw new Error("Invalid PR reporting resume marker")
+	const saved = backend.getNote("pr-cost-delivery", accountKey)
+	if (saved === undefined) return undefined
+	const retry: DeliveryRetry = JSON.parse(saved)
+	if (
+		!object(retry) ||
+		!isWorkId(retry.batchId) ||
+		!Number.isSafeInteger(retry.attempts) ||
+		Number(retry.attempts) < 0 ||
+		!Number.isSafeInteger(retry.retryAt) ||
+		Number(retry.retryAt) < 0 ||
+		(retry.resume !== undefined && !isWorkId(retry.resume)) ||
+		(retry.error !== undefined && typeof retry.error !== "string")
+	)
+		throw new Error("Invalid PR cost delivery retry state")
+	return retry.batchId === batchId && retry.resume === resume ? retry : undefined
+}
+
+/** A read never freezes a batch or advances delivery. */
+export function readOutboxStatus(agentDir: string) {
+	const backend = backendFor(agentDir)
+	return backend.tx(() =>
+		backend.outboxStatus().map((status) => ({
+			...status,
+			retry: deliveryRetry(backend, status.accountKey, status.firstBatchId),
+		})),
+	)
+}
 
 function isClaim(event: Event): boolean {
 	return (

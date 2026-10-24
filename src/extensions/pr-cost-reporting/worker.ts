@@ -1,7 +1,6 @@
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
-import { isWorkId } from "../../shared/work-id.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
@@ -12,7 +11,14 @@ import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../
 import { importWorkRecordsAsync, object, type WorkRecord, workJournalFingerprint } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
-import { acknowledgeBatch, effectiveClaim, observeEvents, pendingBatch } from "./ledger/outbox.js"
+import {
+	acknowledgeBatch,
+	deliveryRetry,
+	effectiveClaim,
+	observeEvents,
+	pendingBatch,
+	readOutboxStatus,
+} from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, readStoredRecordsAsync } from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
@@ -312,6 +318,12 @@ export function deliverEvents(
 		const backend = backendFor(agentDir)
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
+			if (
+				!readOutboxStatus(agentDir).some(
+					(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
+				)
+			)
+				return
 			const key = loadConfig({ cwd }).apiKey
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl)) return
@@ -379,22 +391,8 @@ export function deliverEvents(
 				return
 			const sent = batch
 			const resume = backend.getNote("agent", "legacy-snapshot-resume")
-			if (resume !== undefined && !isWorkId(resume)) throw new Error("Invalid PR reporting resume marker")
-			const saved = backend.getNote("pr-cost-delivery", accountId)
-			const retry: unknown = saved === undefined ? undefined : JSON.parse(saved)
-			if (
-				retry !== undefined &&
-				(!object(retry) ||
-					!isWorkId(retry.batchId) ||
-					!Number.isSafeInteger(retry.attempts) ||
-					Number(retry.attempts) < 0 ||
-					!Number.isSafeInteger(retry.retryAt) ||
-					Number(retry.retryAt) < 0 ||
-					(retry.resume !== undefined && !isWorkId(retry.resume)))
-			)
-				throw new Error("Invalid PR cost delivery retry state")
-			const schedule = object(retry) && retry.batchId === sent.id && retry.resume === resume ? retry : undefined
-			if (schedule && Number(schedule.retryAt) > Date.now()) return
+			const schedule = deliveryRetry(backend, accountId, sent.id)
+			if (schedule && schedule.retryAt > Date.now()) return
 			status = undefined
 			retryAfterMs = null
 			try {
@@ -469,6 +467,7 @@ export function deliverEvents(
 							attempts: attempts + 1,
 							retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
 							resume,
+							error: errorMessage,
 						}),
 					)
 					assertOwnership()

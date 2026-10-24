@@ -2,42 +2,27 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is a summary in `~/.config/kimchi/harness/work/<workId>/` in the user's home directory: `work.json` and its row logs. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
+Records, derived summaries, cost caches and delivery state live in one SQLite database, `~/.config/kimchi/harness/pr-cost-reporting/ledger.db`. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend. Incomplete billing stays unknown. The database itself is not uploaded; [PR cost reporting](pr-cost-reporting.md) sends normalized facts when enabled.
 
 ## Where the files live
 
-**The summary is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory, with a separate folder for each work ID. `~` means the home directory of the user running Kimchi.
+**The ledger is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory. SQLite stores capture records and bookkeeping instead of creating a file for every session, work row or cache update. Retained plans and native edit contents still use files. `~` means the home directory of the user running Kimchi.
 
 ```text
 # Project: editable plan
 ~/src/example/.kimchi/plans/add-search.md
 
-# User: summary, cost reports and retained plan versions
-~/.config/kimchi/harness/work/<workId>/work.json
-~/.config/kimchi/harness/work/<workId>/rows/<collection>.<generation>.jsonl
-~/.config/kimchi/harness/work/<workId>/scope.json
-~/.config/kimchi/harness/work/<workId>/cost-totals.json
-~/.config/kimchi/harness/work/<workId>/costs.json
+# User: capture, summaries, bookkeeping and event outbox
+~/.config/kimchi/harness/pr-cost-reporting/ledger.db
+
+# User: retained plan versions
 ~/.config/kimchi/harness/work/<workId>/plans/add-search-<content-hash>.md
 
-# User: saved task text used for later matching
-~/.config/kimchi/harness/work/<workId>/intent.json
-
-# User: the Jira issue chosen with /work issue
-~/.config/kimchi/harness/work/<workId>/issue.json
-
-# User: source history used to rebuild summaries and match later commits
-~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
-~/.config/kimchi/harness/work-attribution/transitions/<repo-worktree-hash>.jsonl
-~/.config/kimchi/harness/work-attribution/ref-tips/<snapshot-hash>.json
+# User: retained native edit contents
 ~/.config/kimchi/harness/work-attribution/objects/<repository-hash>/
 ```
 
-For example, work `6f102360-39a9-4d6e-8ac7-984c97c0e313` is saved at:
-
-```text
-~/.config/kimchi/harness/work/6f102360-39a9-4d6e-8ac7-984c97c0e313/work.json
-```
+Existing JSON/JSONL history remains readable and is imported without deletion. Its original byte hashes and journal cursors make repeated imports idempotent. New capture does not rewrite those files.
 
 Deleting a worktree removes its editable plan but leaves the user-level summary and retained native plan copies. To continue elsewhere, name the **absolute retained path** shown when Kimchi saved the plan. Ordinary Markdown files, such as ADRs written through a skill, are not copied into this plan folder.
 
@@ -373,27 +358,19 @@ All paths below are inside the agent directory.
 
 | File | What it is for |
 | --- | --- |
-| `work/<workId>/work.json` | Manifest: what `/work` lists and the committed length of each row log. Replacing it commits new rows. |
-| `work/<workId>/rows/<collection>.<generation>.jsonl` | Readable summary rows: request attempts, plans, file edits, continuation evidence, commits, PR links and, in `sessions`, the contributing sessions. A later line with the same key replaces an earlier one. |
-| `work/<workId>/cost-totals.json` | What `/work` prints: PR totals, and the work's own requests and priced spend. Rewritten when it changes. |
-| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status, for all connected works. Refreshed at most every five minutes after a journal or refresh failure changes, and rebuilt from source records when missing. |
-| `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
-| `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
-| `work/<workId>/intent.json` | Saved task text for model matching, bound to its original account and repository. Not written while matching is off. |
-| `work/<workId>/issue.json` | The Jira issue chosen with `/work issue`: the current revision, replaced by each selection or clear. The file is not uploaded; PR cost reports send the issue each request recorded with the PRs it went to. |
+| `pr-cost-reporting/ledger.db`: capture and translation | Original work/request/tool/edit records and pending translation intents. An event and its fulfilled source hashes commit together; unresolved evidence stays pending. |
+| `pr-cost-reporting/ledger.db`: summary projection | Rebuildable manifests and keyed rows for work, requests, plans, edits, continuation, commits, PR links and sessions. |
+| `pr-cost-reporting/ledger.db`: bookkeeping | Cost totals, full calculations, billing poll schedules, original scope, matching intent, Jira selection, ref-tip snapshots and reconciliation progress. Existing JSON files supply compatibility reads where supported. |
+| `pr-cost-reporting/ledger.db`: outbox | Revisioned normalized events, exact frozen HTTP bodies, acknowledgement history and durable retry notes. Retained legacy snapshots and receipts use their own bookkeeping namespace. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
-| `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
-| `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
-| `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
 | `work-attribution/objects/<repository hash>/` | Kimchi's own Git object store of native edit text kept for `file-hunks` matching. Nothing is deleted by age; it grows by one object per distinct edited content, without copies of the committed version an edit starts from. |
 | `pr-cost-reporting/ledger.db`: `pr-checks` bookkeeping note | When each recorded repository and commit was last checked for a PR or MR, including unchanged results. A restart keeps the schedule. Kimchi updates the note only when it changes and drops entries for unrecorded commits or checks more than a day old. A retained `work-attribution/pr-checks.json` supplies the initial cache only when the note is absent; Kimchi leaves that file untouched. |
 
 - Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.
-- Kimchi flushes source records before updating the summary. Writers merge under a per-work lock, append only changed rows, sync them, then replace `work.json`, which commits them. Readers stop at each log's committed length, so an interrupted append is ignored and the next writer removes it. Shutdown waits for queued summary writes.
-- When a log's superseded lines outweigh half its current rows and exceed 1 MiB, the writer copies each key's latest row into the next generation, commits it and deletes the old file. A reader that loaded the old manifest rereads it once.
-- Recovery saves the time of its last successful scan plus each manifest's size and modification time. It reads source logs changed since then and skips writing unchanged results.
-- A missing or invalid summary, a log shorter than its committed length, or a damaged row triggers a full replay of the work's source logs, including edit journals, into a new generation. A failed log read or summary write leaves the checkpoint unchanged.
-- A `work.json` that is not a version 2 manifest, such as a `"version": 1` summary saved by v1.7.1 or earlier, is deleted the next time Kimchi lists or updates that work; no other file is touched. The summary is then rebuilt like a missing one, and `/work` leaves the work out until it is. `costs.json`, `cost-totals.json` and PR cost reports come from the source logs, so they do not change. Earlier version 2 manifests that list `sessions` themselves stay readable; the work's next update moves them into the sessions log.
+- Native capture commits the source record, translation intent and summary update in one SQLite transaction. A failed write rolls back rather than leaving a half-recorded event.
+- A missing or version-invalid projection is rebuilt from stored capture records; the authority and pending outbox are preserved. Cost calculations read the authority rather than stale legacy summary files.
+- Import cursors retain file identity, consumed byte offset and boundary hash. Repeated imports preserve original hashes, avoid replaying duplicate old records over newer state, and do not delete the source files. A failed transaction leaves its cursor unchanged.
+- SQLite uses WAL and private local files. Retained content can still grow; moving bookkeeping into the database is not an automatic retention or deletion policy.
 
 </details>
 

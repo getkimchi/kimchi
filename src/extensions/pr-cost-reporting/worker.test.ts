@@ -16,7 +16,7 @@ import { appendWorkRecord } from "../work-attribution.js"
 import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
-import { readRecords } from "./ledger/records.js"
+import { backendFor, readRecords } from "./ledger/records.js"
 import {
 	pendingFrozenSnapshots,
 	queueSnapshots,
@@ -26,7 +26,7 @@ import {
 } from "./queue.js"
 import { accountKey, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
-import { deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
+import { deliverEvents, deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -164,6 +164,45 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it("makes no authentication request when the event outbox is empty", async () => {
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(http).not.toHaveBeenCalled()
+	})
+	it.each([
+		"backoff",
+		"explicit resume",
+		"another eligible account",
+	])("checks event schedules before authentication: %s", async (mode) => {
+		const backend = backendFor(directory)
+		const accountId = accountKey(content.account)
+		const batchId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		const batch = {
+			id: batchId,
+			accountKey: accountId,
+			body: new Uint8Array(),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		backend.insertOutboxBatch(batch)
+		backend.putNote(
+			"pr-cost-delivery",
+			accountId,
+			JSON.stringify({
+				batchId,
+				attempts: 1,
+				retryAt: Date.now() + 60_000,
+				resume: backend.getNote("agent", "legacy-snapshot-resume"),
+			}),
+		)
+		if (mode === "explicit resume") await setReportingEnabled(directory, true)
+		if (mode === "another eligible account")
+			backend.insertOutboxBatch({ ...batch, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", accountKey: "other-account" })
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(http).toHaveBeenCalledTimes(mode === "backoff" ? 0 : 1)
+		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
+	})
+
 	it("queues the producer's facts and original hashes under their original account", async () => {
 		await seedLinked(false)
 		const group = {

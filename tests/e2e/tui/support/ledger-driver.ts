@@ -393,10 +393,12 @@ async function nativeDelivery(agent: string): Promise<void> {
 	let legacyInterleaved = false
 	let racedLegacy = false
 	let abandonedSignal: AbortSignal | null | undefined
+	let verifications = 0
 	globalThis.fetch = async (input, init) => {
 		const url = String(input)
 		redirected ||= init?.redirect !== "error"
 		if (url.endsWith("api-keys:verify")) {
+			verifications++
 			if (mode === "key-change") process.env.KIMCHI_API_KEY = "changed-key"
 			return Response.json({
 				organizationId: account.organizationId,
@@ -458,6 +460,9 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const initialPending = backendFor(agent).pendingOutboxEvents(key, 1000).length
 	const capturedByWorker = initialEvents.filter((event: { usage?: object }) => event.usage)
 	const run = () => deliverEvents(agent, agent, new AbortController().signal, check)
+	const verifiedAfterInitial = verifications
+	await run()
+	const idle = verifications === verifiedAfterInitial
 	const seed = () =>
 		observeEvents(
 			agent,
@@ -487,9 +492,10 @@ async function nativeDelivery(agent: string): Promise<void> {
 	closeBackends()
 	const reopened = body() === lostBody
 	const attempts = posts.length
+	const verifiedBeforeBackoff = verifications
 	mode = "success"
 	await run()
-	const backoff = posts.length === attempts && body() === lostBody
+	const backoff = posts.length === attempts && verifications === verifiedBeforeBackoff && body() === lostBody
 	const retry = JSON.parse(backendFor(agent).getNote("pr-cost-delivery", key) ?? "null")
 	const clock = Date.now
 	Date.now = () => retry.retryAt + 1
@@ -606,6 +612,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 		noNewLegacy: Object.values(after.entries).every((entry) => entry.revision === "1" && !entry.pending),
 		reopened,
 		backoff,
+		idle,
 		replayed,
 		invalidAckRetained,
 		optOutRetained,
@@ -807,7 +814,7 @@ async function producerScenario(agent: string): Promise<void> {
 }
 
 async function outboxScenario(agent: string, mode: string): Promise<void> {
-	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
+	const { observeEvents, pendingBatch, acknowledgeBatch, readOutboxStatus } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 	)
 	const { backendFor, closeBackends, recordHashOf, useBackendFactory } = await import(
@@ -864,6 +871,45 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	backend.insertOutboxBatch({ ...frozen, id: "order-a", accountKey: "ordering", orderKey: "a" })
 	backend.insertOutboxBatch({ ...frozen, id: "order-Z", accountKey: "ordering", orderKey: "Z" })
 	const binaryBatchOrder = backend.getOutboxBatch("ordering")?.id === "order-Z"
+	backend.insertOutboxEvent({ ...other, id: "status-blocked", accountKey: "status-blocked", blocked: "fixture" })
+	backend.insertOutboxEvent({ ...other, id: "status-acked", accountKey: "status-acked", ackedAt: 1234 })
+	const statuses = readOutboxStatus(agent)
+	const statusA = statuses.find((status) => status.accountKey === "account-a")
+	const statusOnlyBatch = statuses.find((status) => status.accountKey === "ordering")
+	const readOnlyStatus =
+		statusA?.pending === 2 &&
+		statusA.sendable === 2 &&
+		statusA.blocked === 0 &&
+		statusA.acknowledged === 0 &&
+		statusA.lastAcknowledgedAt === null &&
+		statusA.batches === 1 &&
+		statusA.firstBatchId === frozen.id &&
+		statusOnlyBatch?.pending === 0 &&
+		statusOnlyBatch.batches === 2 &&
+		statusOnlyBatch.firstBatchId === "order-Z" &&
+		statuses.find((status) => status.accountKey === "status-blocked")?.blocked === 1 &&
+		statuses.find((status) => status.accountKey === "status-acked")?.lastAcknowledgedAt === 1234 &&
+		!backend.getOutboxBatch("account-b") &&
+		JSON.stringify(readOutboxStatus(agent)) === JSON.stringify(statuses)
+	const retryAt = Date.now() + 60_000
+	backend.putNote(
+		"pr-cost-delivery",
+		"account-a",
+		JSON.stringify({ batchId: frozen.id, attempts: 1, retryAt, error: "HTTP 503" }),
+	)
+	const savedRetry = readOutboxStatus(agent).find((status) => status.accountKey === "account-a")?.retry
+	const retryStatus = savedRetry?.retryAt === retryAt && savedRetry.error === "HTTP 503"
+	backend.putNote("agent", "legacy-snapshot-resume", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+	const resumedStatus = !readOutboxStatus(agent).find((status) => status.accountKey === "account-a")?.retry
+	backend.deleteNote("agent", "legacy-snapshot-resume")
+	backend.putNote("pr-cost-delivery", "account-a", JSON.stringify({ batchId: frozen.id, attempts: -1, retryAt }))
+	let invalidRetryRetained = false
+	try {
+		readOutboxStatus(agent)
+	} catch {
+		invalidRetryRetained = backend.getNote("pr-cost-delivery", "account-a") !== undefined
+	}
+	backend.deleteNote("pr-cost-delivery", "account-a")
 	const ack = (batch: typeof frozen) => ({
 		batchId: batch.id,
 		receipts: parse(batch.body).batch.events.map((event: { id: string; revision: string }) => ({
@@ -1259,6 +1305,10 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		noOp,
 		byteIsolation,
 		binaryBatchOrder,
+		readOnlyStatus,
+		retryStatus,
+		resumedStatus,
+		invalidRetryRetained,
 		corruptionRejected,
 		admissionRejected,
 		cumulativePreserved,

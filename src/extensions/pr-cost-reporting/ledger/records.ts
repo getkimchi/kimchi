@@ -71,6 +71,17 @@ export interface OutboxBatch {
 	orderKey: string
 }
 
+export interface OutboxAccountStatus {
+	accountKey: string
+	pending: number
+	sendable: number
+	blocked: number
+	acknowledged: number
+	lastAcknowledgedAt: number | null
+	batches: number
+	firstBatchId: string | null
+}
+
 /** Primitive storage contract; see schema.ts for the SQL tables and memory-records.ts for the test double. */
 export interface RecordBackend {
 	/** Runs `fn` atomically; no await may happen inside. */
@@ -85,6 +96,7 @@ export interface RecordBackend {
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
+	outboxStatus(): OutboxAccountStatus[]
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
@@ -539,6 +551,23 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"UPDATE outbox_events SET acked_at = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL",
 	)
 	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
+	const outboxStatus = db.query<OutboxAccountStatus, []>(`
+		SELECT a.account_key AS accountKey, COALESCE(e.pending, 0) AS pending,
+			COALESCE(e.sendable, 0) AS sendable, COALESCE(e.blocked, 0) AS blocked,
+			COALESCE(e.acknowledged, 0) AS acknowledged, e.lastAcknowledgedAt,
+			COALESCE(b.batches, 0) AS batches,
+			(SELECT id FROM outbox_batches WHERE account_key = a.account_key
+				ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+		FROM (SELECT account_key FROM outbox_events UNION SELECT account_key FROM outbox_batches) a
+		LEFT JOIN (SELECT account_key, SUM(acked_at IS NULL) AS pending,
+			SUM(acked_at IS NULL AND blocked = '') AS sendable,
+			SUM(acked_at IS NULL AND blocked != '') AS blocked,
+			SUM(acked_at IS NOT NULL) AS acknowledged, MAX(acked_at) AS lastAcknowledgedAt
+			FROM outbox_events GROUP BY account_key) e USING (account_key)
+		LEFT JOIN (SELECT account_key, COUNT(*) AS batches FROM outbox_batches GROUP BY account_key) b
+			USING (account_key)
+		ORDER BY a.account_key
+	`)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
@@ -631,6 +660,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				event.blocked,
 			),
 		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
+		outboxStatus: () => outboxStatus.all(),
 		getOutboxBatch: (accountKey) => {
 			const batch = pendingBatch.get(accountKey)
 			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined

@@ -7,6 +7,7 @@ import {
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
+import { readOutboxStatus } from "./ledger/outbox.js"
 import {
 	dueLimitNotices,
 	readReportingState,
@@ -120,7 +121,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					await setReportingEnabled(getAgentDir(), true)
 					if (started && stop) requestWorkReconciliation()
 					ctx.ui.notify(
-						"PR reporting on. Kimchi will send repository/PR metadata, request and billing IDs, timestamps, and matching evidence to your account. Prompts, plans, local work/session IDs, paths, and prices stay local. Delivery runs in the background.",
+						"PR reporting on. Kimchi will send observed usage, work and repository/PR metadata, request and billing IDs, timestamps, and matching evidence to your account. Prompts, plan contents, local paths, and file contents stay local. Delivery runs in the background.",
 						"info",
 					)
 				} else if (command === "off") {
@@ -130,7 +131,12 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 						"info",
 					)
 				} else {
-					const status = statusText(await readReportingState(getAgentDir()), uploadSkipReason(ctx.mode))
+					const status = statusText(
+						await readReportingState(getAgentDir()),
+						uploadSkipReason(ctx.mode),
+						Date.now(),
+						readOutboxStatus(getAgentDir()),
+					)
 					ctx.ui.notify(status.text, status.warning ? "warning" : "info")
 				}
 			} catch {

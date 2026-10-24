@@ -24,6 +24,7 @@ it("uploads real SDK capture through the worker with exact legacy drainage and a
 			noNewLegacy: true,
 			reopened: true,
 			backoff: true,
+			idle: true,
 			replayed: true,
 			invalidAckRetained: true,
 			optOutRetained: true,
