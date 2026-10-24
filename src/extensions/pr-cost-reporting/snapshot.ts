@@ -2,7 +2,12 @@ import { isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
-import { type PullRequestCostReport, type RequestCostAllocation, time } from "../work-attribution/costs.js"
+import {
+	type PullRequestCost,
+	type PullRequestCostReport,
+	type RequestCostAllocation,
+	time,
+} from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
@@ -476,31 +481,28 @@ function method(
 	return request.segment?.attribution === "inferred" ? "model" : "session"
 }
 
-/** Construct fields individually: local identities, paths, prompts and prices never cross this boundary. */
-export function buildSnapshots(
+export interface RequestAttribution {
+	request: RequestCostAllocation
+	candidates: PullRequestCost[]
+	destinations: ReportingRepository[]
+	missing: boolean
+	method: SnapshotRequest["allocation"]["method"]
+	correction?: CorrectionReceipt
+	workIssueKeys: string[]
+	billingAccountVerified: boolean
+	billingRecordIds: string[]
+}
+
+/** Full local attribution before any legacy upload window, detail expiry or size limit. */
+export function requestAttributions(
 	records: WorkRecord[],
 	report: PullRequestCostReport,
-	/** Identities by Git directory; a directory left out has not been looked up successfully yet. */
 	repositories: Map<string, RepositoryIdentity>,
-	costRefreshes = new Map<string, string>(),
-	/** Stricter limits a repository's server rejection taught, by account and repository key. */
-	limits = new Map<string, SnapshotLimits>(),
-): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
-	const groups = new Map<string, RepositorySnapshot>()
-	// The Jira keys of each group's PRs, by group and PR ID: the works' chosen issues and the head branches' keys.
-	const issueKeys = new Map<string, { work: Set<string>; branch: Set<string> }>()
-	let incomplete = false
-	let skippedRequests = 0
+): Map<string, RequestAttribution> {
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
 	const conflictingLinkStatus = new Set<string>()
-	const conflicts = new Set<string>()
-	const cutoff = Date.now() - UPLOAD_WINDOW_MS
-	// Works with repository evidence. Questions asked outside Git have neither scope nor commits.
-	const repositoryWorks = new Set<string>()
 	for (const row of records) {
-		if ((row.type === "request" && isWorkScope(row.scope)) || row.type === "commit")
-			repositoryWorks.add(String(row.workId))
 		if (row.type === "request" && typeof row.requestId === "string")
 			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
 		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
@@ -520,45 +522,149 @@ export function buildSnapshots(
 		records.map((row) => (row.type === "work_link" && row.status === "revoked" ? { ...row, status: "active" } : row)),
 	)
 
-	const byRequest = new Map(report.requests.map((request) => [request.requestId, request]))
-	const corrections = new Map<string, CorrectionReceipt>()
+	const attributions = new Map<string, RequestAttribution>()
 	for (const request of report.requests) {
-		const proof = verified.get(request.requestId)
-		if (!proof || proof.unresolved || [...proof.linkIds].some((id) => conflictingLinkStatus.has(id))) continue
-		const rows = [...proof.linkIds]
-			.flatMap((id) => {
-				const row = links.get(id)
-				return row ? [row] : []
-			})
-			.filter((row) => isWorkId(row.linkId) && Number.isSafeInteger(row.revision) && validTime(row.recordedAt))
-			.sort(
-				(a, b) =>
-					Date.parse(String(b.recordedAt)) - Date.parse(String(a.recordedAt)) ||
-					Number(b.revision) - Number(a.revision),
-			)
-		const row = rows[0]
-		if (!row || !validTime(row.recordedAt)) continue
-		// A correction for PRs whose details the server is about to delete can no longer apply.
 		const account = request.account
 		const candidates = report.pullRequests.filter(
 			(pr) => account && pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
 		)
+		const destinations = new Map<string, ReportingRepository>()
+		let missing = !account
+		for (const candidate of candidates) {
+			const pr = candidate.pullRequest
+			if (!pr) continue
+			if (!pr.id || !pr.repositoryId) {
+				missing = true
+				continue
+			}
+			const repo: ReportingRepository = {
+				provider: pr.provider ?? "github",
+				host: pr.host,
+				id: pr.repositoryId,
+				name: pr.repository,
+			}
+			destinations.set(repositoryKey(repo), repo)
+		}
+		if (!destinations.size || missing)
+			for (const row of original.get(request.requestId) ?? []) {
+				if (!account || !isWorkScope(row.scope) || !sameWorkAccount(row.scope.account, account)) {
+					missing = true
+					continue
+				}
+				const repo = repositories.get(row.scope.repository)
+				if (repo === "unsupported") continue
+				if (repo) destinations.set(repositoryKey(repo), repo)
+				else missing = true
+			}
+
+		let correction: CorrectionReceipt | undefined
+		const proof = verified.get(request.requestId)
+		if (proof && !proof.unresolved && ![...proof.linkIds].some((id) => conflictingLinkStatus.has(id))) {
+			const rows = [...proof.linkIds]
+				.flatMap((id) => {
+					const row = links.get(id)
+					return row ? [row] : []
+				})
+				.filter((row) => isWorkId(row.linkId) && Number.isSafeInteger(row.revision) && validTime(row.recordedAt))
+				.sort(
+					(a, b) =>
+						Date.parse(String(b.recordedAt)) - Date.parse(String(a.recordedAt)) ||
+						Number(b.revision) - Number(a.revision),
+				)
+			const row = rows[0]
+			if (row && validTime(row.recordedAt)) {
+				const evidence = row.evidence
+				const manual = row.status === "revoked" || (object(evidence) && evidence.source === "work-command")
+				correction = {
+					id: String(row.linkId),
+					revision: Number(row.revision),
+					recordedAt: row.recordedAt,
+					source: manual ? "work-command" : "producer-confirmation",
+				}
+			}
+		}
+		const workIssueKeys = new Set<string>()
+		for (const row of original.get(request.requestId) ?? [])
+			if (object(row.issue) && typeof row.issue.key === "string" && isIssueKey(row.issue.key))
+				workIssueKeys.add(row.issue.key)
+		const billingAccountVerified =
+			request.reason !== "work-account-mismatch" && request.reason !== "work-account-unverified"
+		attributions.set(request.requestId, {
+			request,
+			candidates,
+			destinations: [...destinations.values()],
+			missing,
+			method: method(request, links),
+			correction,
+			workIssueKeys: [...workIssueKeys],
+			billingAccountVerified,
+			// Larger bill sets are resolved by the server through the request's exact billing tag.
+			billingRecordIds:
+				billingAccountVerified && request.billingRecordIds.length <= MAX_BILLING_IDS
+					? [...request.billingRecordIds]
+					: [],
+		})
+	}
+	return attributions
+}
+
+export function allocationFor(
+	attribution: RequestAttribution,
+	pullRequestIds: string[],
+): SnapshotRequest["allocation"] {
+	const { request, missing, destinations } = attribution
+	let kind: SnapshotRequest["allocation"]["kind"] =
+		request.allocation === "inferred" ? (pullRequestIds.length > 1 ? "shared" : "pull-request") : request.allocation
+	// The backend applies each candidate's merge cutoff to a shared claim.
+	if (kind === "post-merge" && pullRequestIds.length > 1) kind = "shared"
+	if (
+		missing ||
+		destinations.length > 1 ||
+		(kind !== "unlinked" && pullRequestIds.length !== request.pullRequestIds.length) ||
+		(!pullRequestIds.length && kind !== "unlinked")
+	)
+		kind = "unknown"
+	return {
+		kind,
+		pullRequestIds: kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
+		method: attribution.method,
+	}
+}
+
+/** Construct fields individually: local identities, paths, prompts and prices never cross this boundary. */
+export function buildSnapshots(
+	records: WorkRecord[],
+	report: PullRequestCostReport,
+	/** Identities by Git directory; a directory left out has not been looked up successfully yet. */
+	repositories: Map<string, RepositoryIdentity>,
+	costRefreshes = new Map<string, string>(),
+	/** Stricter limits a repository's server rejection taught, by account and repository key. */
+	limits = new Map<string, SnapshotLimits>(),
+): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
+	const groups = new Map<string, RepositorySnapshot>()
+	const issueKeys = new Map<string, { work: Set<string>; branch: Set<string> }>()
+	let incomplete = false
+	let skippedRequests = 0
+	const conflicts = new Set<string>()
+	const cutoff = Date.now() - UPLOAD_WINDOW_MS
+	const repositoryWorks = new Set<string>()
+	for (const row of records)
+		if ((row.type === "request" && isWorkScope(row.scope)) || row.type === "commit") repositoryWorks.add(row.workId)
+	const attributions = requestAttributions(records, report, repositories)
+	const byRequest = new Map(report.requests.map((request) => [request.requestId, request]))
+	const corrections = new Map<string, CorrectionReceipt>()
+	for (const [id, attribution] of attributions) {
+		if (!attribution.correction) continue
+		// Legacy corrections cannot apply when all affected PR details are about to expire.
 		if (
-			candidates.length &&
-			candidates.every((pr) => {
+			attribution.candidates.length &&
+			attribution.candidates.every((pr) => {
 				const finished = finishedAt(pr.pullRequest)
 				return finished !== undefined && Date.now() >= finished + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS
 			})
 		)
 			continue
-		const evidence = row.evidence
-		const manual = row.status === "revoked" || (object(evidence) && evidence.source === "work-command")
-		corrections.set(request.requestId, {
-			id: String(row.linkId),
-			revision: Number(row.revision),
-			recordedAt: row.recordedAt,
-			source: manual ? "work-command" : "producer-confirmation",
-		})
+		corrections.set(id, attribution.correction)
 	}
 
 	// Send recent attempts, attempts of open or recently finished PRs and corrections the server can still apply.
@@ -642,7 +748,8 @@ export function buildSnapshots(
 			.filter((request) => request.priceStatus === "priced" && !request.billingRecordIds.length)
 			.map((request) => request.requestId),
 	)
-	for (const request of report.requests) {
+	for (const attribution of attributions.values()) {
+		const { request } = attribution
 		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
 			// Unscoped attempts of repository work that would be sent leave its history incomplete.
 			// Questions asked outside Git and older history never count.
@@ -657,43 +764,8 @@ export function buildSnapshots(
 		}
 
 		const account = request.account
-		const candidates = report.pullRequests.filter(
-			(pr) => pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
-		)
-
-		const destinations = new Map<string, ReportingRepository>()
-		let missing = false
-		for (const candidate of candidates) {
-			const pr = candidate.pullRequest
-			// Missing merge metadata leaves this request unknown; its repository can still report.
-			if (!pr) continue
-			if (!pr.id || !pr.repositoryId) {
-				missing = true
-				continue
-			}
-
-			const repo: ReportingRepository = {
-				provider: pr.provider ?? "github",
-				host: pr.host,
-				id: pr.repositoryId,
-				name: pr.repository,
-			}
-			destinations.set(repositoryKey(repo), repo)
-		}
-		if (!destinations.size || missing)
-			for (const row of original.get(request.requestId) ?? []) {
-				if (!isWorkScope(row.scope) || !sameWorkAccount(row.scope.account, account)) {
-					missing = true
-					continue
-				}
-
-				const repo = repositories.get(row.scope.repository)
-				// A repository without a provider identity has no snapshot to report to; nothing is missing from others.
-				if (repo === "unsupported") continue
-				if (repo) destinations.set(repositoryKey(repo), repo)
-				else missing = true
-			}
-		if (!destinations.size) {
+		const { candidates, destinations, missing, billingAccountVerified } = attribution
+		if (!destinations.length) {
 			// Like unscoped attempts, only requests that would be sent leave the history incomplete.
 			if (missing && current(request)) {
 				incomplete = true
@@ -702,7 +774,8 @@ export function buildSnapshots(
 			continue
 		}
 		if (missing) incomplete = true
-		for (const [repoKey, repo] of destinations) {
+		for (const repo of destinations) {
+			const repoKey = repositoryKey(repo)
 			const key = `${accountKey(account)}:${repoKey}`
 			let group = groups.get(key)
 			if (!group) {
@@ -753,40 +826,16 @@ export function buildSnapshots(
 				pullRequestIds.push(pr.id)
 				const keys = issueKeys.get(`${key}\n${pr.id}`) ?? { work: new Set<string>(), branch: new Set<string>() }
 				for (const branchKey of pr.branchIssueKeys ?? []) keys.branch.add(branchKey)
-				for (const row of original.get(request.requestId) ?? [])
-					if (object(row.issue) && typeof row.issue.key === "string" && isIssueKey(row.issue.key))
-						keys.work.add(row.issue.key)
+				for (const issueKey of attribution.workIssueKeys) keys.work.add(issueKey)
 				issueKeys.set(`${key}\n${pr.id}`, keys)
 			}
 
-			let kind: SnapshotContent["requests"][number]["allocation"]["kind"] =
-				request.allocation === "inferred" ? (pullRequestIds.length > 1 ? "shared" : "pull-request") : request.allocation
-			// The backend applies each candidate's merge cutoff to a shared claim.
-			if (kind === "post-merge" && pullRequestIds.length > 1) kind = "shared"
-			if (
-				missing ||
-				destinations.size > 1 ||
-				(kind !== "unlinked" && pullRequestIds.length !== request.pullRequestIds.length) ||
-				(!pullRequestIds.length && kind !== "unlinked")
-			)
-				kind = "unknown"
-			const billingAccountVerified =
-				request.reason !== "work-account-mismatch" && request.reason !== "work-account-unverified"
-			// The server accepts 8 bill IDs per request; it finds a larger set through the request's exact billing tag.
-			const bills =
-				billingAccountVerified && request.billingRecordIds.length <= MAX_BILLING_IDS
-					? [...request.billingRecordIds]
-					: []
 			group.content.requests.push({
 				requestId: request.requestId,
-				billingRecordIds: bills,
+				billingRecordIds: attribution.billingRecordIds,
 				startedAt: request.startedAt,
 				...(corrections.has(request.requestId) ? { correction: corrections.get(request.requestId) } : {}),
-				allocation: {
-					kind,
-					pullRequestIds: kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
-					method: method(request, links),
-				},
+				allocation: allocationFor(attribution, pullRequestIds),
 			})
 
 			const refreshed = billingAccountVerified ? costRefreshes.get(request.requestId) : undefined
