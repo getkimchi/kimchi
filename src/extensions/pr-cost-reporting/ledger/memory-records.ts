@@ -247,7 +247,21 @@ export function createMemoryRecords(): RecordBackend {
 		},
 		hasNote: (workId, name) => notes.has(noteKey(workId, name)),
 		getNote: (workId, name) => notes.get(noteKey(workId, name)),
+		readNotePage: (workId, after, limit) => {
+			const prefix = noteKey(workId, "")
+			return [...notes]
+				.filter(
+					([key]) =>
+						key.startsWith(prefix) && Buffer.compare(Buffer.from(key.slice(prefix.length)), Buffer.from(after)) > 0,
+				)
+				.sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+				.slice(0, limit)
+				.map(([key, body]) => ({ name: key.slice(prefix.length), body }))
+		},
 		putNote: (workId, name, body) => notes.set(noteKey(workId, name), body),
+		deleteNote: (workId, name) => {
+			notes.delete(noteKey(workId, name))
+		},
 		diagnostic: (code) => diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1),
 		getJournalCursor: (path) => cursors.get(path),
 		putJournalCursor: (cursor) => cursors.set(cursor.path, { ...cursor }),

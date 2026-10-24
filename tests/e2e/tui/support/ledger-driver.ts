@@ -258,6 +258,144 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
 
+async function legacyFreezeScenario(agent: string): Promise<void> {
+	const { readFileSync, writeFileSync } = await import("node:fs")
+	const {
+		acknowledgeFrozenSnapshot,
+		freezeSnapshots,
+		pendingFrozenSnapshots,
+		queueSnapshots,
+		readReportingState,
+		reportingStatePath,
+		setReportingEnabled,
+	} = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const check = () => {}
+	const path = reportingStatePath(agent)
+	const originalState = readFileSync(path)
+	const initial = Object.values((await readReportingState(agent)).entries)[0]
+	if (!initial.pending) throw new Error("Missing original legacy fixture")
+	const originalBody = JSON.stringify(initial.pending)
+	const all = () => pendingFrozenSnapshots(agent, check, Date.now() + 30_000)
+	await freezeSnapshots(agent, check)
+	const [first] = await all()
+	if (!first || first.body !== originalBody) throw new Error("Legacy bytes changed during freeze")
+	const backend = backendFor(agent)
+	const remove = backend.deleteNote.bind(backend)
+	let removed = false
+	backend.deleteNote = (workId, name) => {
+		remove(workId, name)
+		removed = true
+		throw new Error("after actual pending deletion")
+	}
+	let rejected = false
+	try {
+		await acknowledgeFrozenSnapshot(
+			agent,
+			first,
+			{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
+			check,
+		)
+	} catch (error) {
+		rejected = error instanceof Error && error.message === "after actual pending deletion"
+	} finally {
+		backend.deleteNote = remove
+	}
+	const ackRollback =
+		removed &&
+		rejected &&
+		(await all())[0]?.body === originalBody &&
+		backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 64).length === 0
+	if (!ackRollback) throw new Error("Frozen ACK did not roll back")
+	await acknowledgeFrozenSnapshot(
+		agent,
+		first,
+		{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
+		check,
+	)
+	const receipt = backend.getNote("legacy-pr-cost-snapshot-receipts", first.id)
+	if (receipt === undefined) throw new Error("Missing completed legacy receipt")
+	const { ack: _ack, ...invalidReceipt } = JSON.parse(receipt)
+	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, JSON.stringify(invalidReceipt))
+	writeFileSync(path, originalState)
+	let receiptCorruptionRejected = false
+	try {
+		await freezeSnapshots(agent, check)
+	} catch {
+		receiptCorruptionRejected = readFileSync(path).equals(originalState)
+	}
+	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, receipt)
+	await freezeSnapshots(agent, check)
+	const cleanupReplay =
+		(await all()).length === 0 && !Object.values((await readReportingState(agent)).entries)[0].pending
+	for (let index = 0; index < 20; index++) {
+		await queueSnapshots(agent, [
+			{
+				account: initial.account,
+				content: {
+					repository: initial.pending.repository,
+					pullRequests: initial.pending.pullRequests,
+					coverage: initial.pending.coverage,
+					requests: initial.pending.requests.map((request) => ({
+						...request,
+						allocation: { ...request.allocation, kind: index % 2 ? "unlinked" : "unknown" },
+					})),
+				},
+			},
+		])
+		await freezeSnapshots(agent, check)
+	}
+	const [partial] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
+	closeBackends()
+	const [next] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
+	const partialScanProgress = !!partial && !!next && partial.id !== next.id
+	const pending = await all()
+	if (pending.length !== 20) throw new Error(`Expected twenty frozen versions, got ${pending.length}`)
+	const latest = pending.reduce((a, b) => (BigInt(a.entry.revision) > BigInt(b.entry.revision) ? a : b))
+	for (const frozen of pending) {
+		if (frozen.id === latest.id) continue
+		await acknowledgeFrozenSnapshot(
+			agent,
+			frozen,
+			{
+				status: "accepted",
+				revision: frozen.entry.revision,
+				receivedAt: new Date().toISOString(),
+			},
+			check,
+		)
+	}
+	const reopened = backendFor(agent)
+	const page = reopened.readNotePage.bind(reopened)
+	const namespaces: string[] = []
+	reopened.readNotePage = (workId, after, limit) => {
+		namespaces.push(workId)
+		return page(workId, after, limit)
+	}
+	await setReportingEnabled(agent, true)
+	const resumeScans = namespaces.length
+	const remaining = await all()
+	const receiptScan = namespaces.some((name) => name === "legacy-pr-cost-snapshot-receipts")
+	reopened.readNotePage = page
+	const receipts = page("legacy-pr-cost-snapshot-receipts", "", 64)
+	const archived = receipts.map((row) => JSON.parse(row.body))
+	out({
+		initialBytes: first.body === originalBody,
+		ackRollback,
+		receiptCorruptionRejected,
+		cleanupReplay,
+		partialScanProgress,
+		retainedReceipts: receipts.length,
+		archivedOriginalBytes: archived.some((row) => row.body === originalBody),
+		pendingAfterArchive: remaining.length,
+		latestRetained: remaining[0]?.body === latest.body,
+		receiptScan,
+		resumeScans,
+		reopened: true,
+	})
+	closeBackends()
+}
+
 async function producerScenario(agent: string): Promise<void> {
 	const { readReportingState, reportingProducer } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
@@ -1336,6 +1474,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
 	producer: (agent) => producerScenario(agent),
+	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),

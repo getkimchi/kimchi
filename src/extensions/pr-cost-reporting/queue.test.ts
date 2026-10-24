@@ -19,6 +19,7 @@ import {
 	acknowledgeSnapshot,
 	deferSnapshot,
 	dueLimitNotices,
+	freezeSnapshots,
 	learnedLimits,
 	limitSnapshot,
 	queueSnapshots,
@@ -121,6 +122,16 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
+	it("keeps an empty disabled freeze read-only while explicit consent still persists", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		const state = await freezeSnapshots(directory, () => {})
+		expect(state.enabled).toBe(false)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" })
+		await setReportingEnabled(directory, true)
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ enabled: true })
+	})
+
 	it.each([
 		true,
 		false,
@@ -722,6 +733,29 @@ describe("producer identity across machines", () => {
 		const saved = await savedOn(original)
 		vi.mocked(machineFingerprint).mockResolvedValue(undefined)
 		expect(await readReportingState(directory)).toEqual(saved)
+	})
+})
+
+it("retains legacy bytes, ACK ownership and bounded scan progress in real SQLite", { timeout: 60_000 }, async () => {
+	await setReportingEnabled(directory, true)
+	await queueSnapshots(directory, [snapshot([requestId])])
+	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+	const result = JSON.parse(
+		(await promisify(execFile)("bun", [driver, "legacy-freeze", directory], { timeout: 60_000 })).stdout,
+	)
+	expect(result).toEqual({
+		initialBytes: true,
+		ackRollback: true,
+		receiptCorruptionRejected: true,
+		cleanupReplay: true,
+		partialScanProgress: true,
+		retainedReceipts: 20,
+		archivedOriginalBytes: true,
+		pendingAfterArchive: 1,
+		latestRetained: true,
+		receiptScan: false,
+		resumeScans: 0,
+		reopened: true,
 	})
 })
 
