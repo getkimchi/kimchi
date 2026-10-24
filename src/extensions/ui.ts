@@ -20,6 +20,7 @@ import {
 } from "../components/status-line.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
+import { getActiveAnchor } from "../shared/active-anchor.js"
 import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
@@ -212,7 +213,7 @@ export function ctrlCCascadeDecision(hasText: boolean, isStreaming: boolean): Ct
 }
 
 const branchPoller = createBranchPoller({
-	refreshBranch: (cb) => refreshGitBranch(cb),
+	refreshBranch: (cb) => refreshGitBranch(cb, getActiveAnchor()),
 })
 
 type DisposableComponent = Component & { dispose?(): void }
