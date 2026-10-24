@@ -8,6 +8,7 @@ import { test } from "@microsoft/tui-test"
 import { waitForText } from "./support/assertions.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { BILLING_ACCOUNT, seedPendingWorkCost } from "./support/work-costs.js"
+import { readWorkNote } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -18,17 +19,18 @@ interface CostTotals {
 }
 
 /** Background passes run every 30 seconds; wait for the one that publishes the expected totals. */
-async function waitForTotals(path: string, ready: (totals: CostTotals) => boolean): Promise<void> {
+async function waitForTotals(agentDir: string, workId: string, ready: (totals: CostTotals) => boolean): Promise<void> {
 	const deadline = Date.now() + 45_000
 	while (Date.now() < deadline) {
 		try {
-			if (ready(JSON.parse(readFileSync(path, "utf8")))) return
+			const note = readWorkNote(agentDir, workId, "cost-totals")
+			if (note !== undefined && ready(JSON.parse(note))) return
 		} catch {
 			// Not published yet.
 		}
 		await sleep(250)
 	}
-	throw new Error(`Timed out waiting for ${path}`)
+	throw new Error(`Timed out waiting for ledger cost totals for ${workId}`)
 }
 
 test("an open PR's pending cost becomes a confirmed and inferred total once it is billed and merged", async ({
@@ -39,7 +41,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 	const extraArgs: string[] = []
 	let billed = false
 	let statePath = ""
-	let totalsPath = ""
+	let totalsAgentDir = ""
 	let headSha = ""
 	const setGitHub = (mode: string) => {
 		writeFileSync(`${statePath}.next`, JSON.stringify({ mode, headSha }))
@@ -98,7 +100,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 						checkedAt: new Date().toISOString(),
 					},
 				})
-				totalsPath = join(agentDir, "work", workId, "cost-totals.json")
+				totalsAgentDir = agentDir
 				const fixtureDir = join(home, "pr-api-fixture")
 				mkdirSync(fixtureDir)
 				statePath = join(fixtureDir, "state.json")
@@ -136,7 +138,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 		},
 		async (_fixture, trace) => {
 			await waitForText(terminal, /ctrl\+p.*· main/, { full: false, timeoutMs: 10_000 })
-			await waitForTotals(totalsPath, (totals) => totals.requests?.total === 1)
+			await waitForTotals(totalsAgentDir, workId, (totals) => totals.requests?.total === 1)
 			terminal.submit("/work")
 			await waitForText(terminal, "Cost so far: unknown; $0.00 priced (open)")
 			await waitForText(terminal, "Prices: 0/1 requests priced, $0.00 known so far.")
@@ -146,7 +148,7 @@ test("an open PR's pending cost becomes a confirmed and inferred total once it i
 			trace.step("an open PR's spend stays unknown while its request has no bill")
 			billed = true
 			setGitHub("merged")
-			await waitForTotals(totalsPath, (totals) =>
+			await waitForTotals(totalsAgentDir, workId, (totals) =>
 				Boolean(totals.pullRequests?.some((row) => row.totalCostUsd === "0.000166000")),
 			)
 			terminal.submit("/work")

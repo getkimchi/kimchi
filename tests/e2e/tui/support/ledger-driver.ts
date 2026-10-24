@@ -20,10 +20,12 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync, readdirSync, statSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
+import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
 	capture,
 	fingerprint,
+	getNote,
 	readRecords,
 	readWorkHead,
 	readWorkSummary,
@@ -81,15 +83,34 @@ async function foreignCheck(agent: string): Promise<void> {
 	out({ ...refused, version, tables })
 }
 
-async function holdWriter(agent: string, ms: number): Promise<void> {
+async function holdWriter(agent: string, ms: number | "release"): Promise<void> {
 	const store = openStore(agent)
-	store.db.exec("BEGIN IMMEDIATE")
-	store.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('hold', '1')")
-	out({ held: true })
-	await sleep(ms)
-	store.db.exec("COMMIT")
-	out({ held: false })
-	store.close()
+	let committed = false
+	try {
+		store.db.exec("BEGIN IMMEDIATE")
+		store.db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('hold', '1')")
+		out({ held: true })
+		if (ms === "release") {
+			const input = createInterface({ input: process.stdin })
+			let released = false
+			try {
+				for await (const line of input) {
+					if (line !== "release") continue
+					released = true
+					break
+				}
+				if (!released) throw new Error("Holder input closed before release")
+			} finally {
+				input.close()
+			}
+		} else await sleep(ms)
+		store.db.exec("COMMIT")
+		committed = true
+		out({ held: false })
+	} finally {
+		if (!committed) store.db.exec("ROLLBACK")
+		store.close()
+	}
 }
 
 async function readOnly(agent: string): Promise<void> {
@@ -317,12 +338,26 @@ async function knownSchemaRace(agent: string): Promise<void> {
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
 	probe: (agent) => probe(agent),
 	"foreign-check": (agent) => foreignCheck(agent),
-	"hold-writer": (agent, ms) => holdWriter(agent, Number(ms ?? "0")),
+	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
 	"read-only": (agent) => readOnly(agent),
 	"write-probe": (agent) => writeProbe(agent),
 	capture: (agent, json) => captureRecord(agent, json ?? "{}"),
 	head: (agent, workId) => printHead(agent, workId ?? ""),
 	rows: (agent, workId) => printRows(agent, workId ?? ""),
+	note: async (agent, json) => {
+		const [workId, name] = JSON.parse(json ?? "[]")
+		out(getNote(agent, workId, name) ?? null)
+	},
+	"remove-note": async (agent, json) => {
+		const [workId, name] = JSON.parse(json ?? "[]")
+		const store = openStore(agent)
+		try {
+			store.db.query("DELETE FROM bookkeeping WHERE work_id = ? AND name = ?").run(workId, name)
+			out(null)
+		} finally {
+			store.close()
+		}
+	},
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),

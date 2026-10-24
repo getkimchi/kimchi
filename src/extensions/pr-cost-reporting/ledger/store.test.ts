@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, describe, expect, test } from "vitest"
+import { afterEach, describe, expect, onTestFinished, test } from "vitest"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
@@ -98,31 +98,40 @@ describe("open via Bun driver", () => {
 	}, async () => {
 		const agent = agentDir()
 		driver("probe", agent) // create schema so the writer doesn't race on creation
-		const holder = spawn("bun", [DRIVER, "hold-writer", agent, "7000"], { cwd: ROOT })
-		let holderOut = ""
-		holder.stdout.on("data", (chunk) => (holderOut += chunk))
+		const holder = spawn("bun", [DRIVER, "hold-writer", agent, "release"], { cwd: ROOT })
 		let holderErr = ""
 		holder.stderr.on("data", (chunk) => (holderErr += chunk))
-		const dead = Date.now() + 30_000
-		while (!holderOut.includes('"held":true')) {
-			if (Date.now() > dead) throw new Error(`hold-writer never acquired the lock: ${holderErr}`)
-			await new Promise((resolve) => setTimeout(resolve, 50))
-		}
-
-		// A reader proceeds under WAL even though the writer holds BEGIN IMMEDIATE.
-		const reader = driver("read-only", agent)
-		expect(reader.count).toBe(0)
-
-		// A writer waiting on the same lock gives up after the 5s busy timeout.
-		const probe = driver("write-probe", agent)
-		expect(probe.acquired).toBe(false)
-		expect(probe.elapsedMs).toBeGreaterThanOrEqual(4000)
-		expect(String(probe.message)).toContain("locked")
-
-		const exitCode = await new Promise<number>((resolve, reject) => {
-			holder.on("exit", (code) => (code === 0 ? resolve(code) : reject(new Error(`holder exit ${code}: ${holderErr}`))))
+		const exited = new Promise<void>((resolve, reject) => {
+			holder.once("error", reject)
+			holder.once("exit", (code, signal) =>
+				code === 0 ? resolve() : reject(new Error(`holder exit ${code}/${signal}: ${holderErr}`)),
+			)
 		})
-		expect(exitCode).toBe(0)
+		void exited.catch(() => {})
+		onTestFinished(() => {
+			if (holder.exitCode === null) holder.kill("SIGKILL")
+		})
+		try {
+			await new Promise<void>((resolve, reject) => {
+				let output = ""
+				holder.stdout.on("data", (chunk) => {
+					output += chunk
+					if (output.includes('"held":true')) resolve()
+				})
+				holder.once("error", reject)
+				holder.once("exit", () => reject(new Error(`holder exited before ready: ${holderErr}`)))
+			})
+			// The holder cannot release during reader/process startup, regardless of CI scheduling delay.
+			const reader = driver("read-only", agent)
+			expect(reader.count).toBe(0)
+			const probe = driver("write-probe", agent)
+			expect(probe.acquired).toBe(false)
+			expect(probe.elapsedMs).toBeGreaterThanOrEqual(4000)
+			expect(String(probe.message)).toContain("locked")
+		} finally {
+			if (holder.exitCode === null) holder.stdin.end("release\n")
+			await exited
+		}
 		// The committed insert is visible afterwards.
 		expect(driver("read-only", agent).count).toBe(1)
 	})

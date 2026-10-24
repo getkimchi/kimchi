@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -18,6 +18,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import { setNote } from "../pr-cost-reporting/ledger/records.js"
 import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
 	appendWorkRecord,
@@ -37,7 +38,7 @@ import * as supervisor from "./reconcile-supervisor.js"
 import type * as WorkAccounts from "./scope.js"
 import { captureWorkAccount, captureWorkScope, readWorkScope } from "./scope.js"
 import type * as Semantic from "./semantic.js"
-import { classifyWorkIntent, rememberWorkIntent, WORK_MATCHING_DEADLINE_MS, workIntentPath } from "./semantic.js"
+import { classifyWorkIntent, rememberWorkIntent as persistWorkIntent, WORK_MATCHING_DEADLINE_MS } from "./semantic.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
 vi.mock("../orchestration/model-roles.js", () => ({
@@ -70,6 +71,14 @@ const model = createModel("chat", "selected")
 const modelRegistry = createModelRegistry([model])
 const planned = "10000000-0000-4000-8000-000000000001"
 const first = "Plan a CSV export that quotes commas and escapes double quotes."
+
+// Production callers establish the work identity before retaining their first input.
+async function rememberWorkIntent(...args: Parameters<typeof persistWorkIntent>) {
+	const [directory, id] = args
+	setWorkId(createContext({ cwd: directory, sessionManager: { getSessionId: () => `intent-${id}` } }), id)
+	await persistWorkIntent(...args)
+}
+
 beforeEach(() => {
 	vi.mocked(readConfigSetting).mockReturnValue(true)
 	vi.mocked(writeConfigSetting).mockReset()
@@ -87,7 +96,7 @@ beforeEach(() => {
 
 it("does not load damaged private history or call the matcher when matching is disabled", async () => {
 	await rememberWorkIntent(cwd, planned, first)
-	writeFileSync(workIntentPath(planned), "unreadable private history")
+	setNote(join(root, "agent"), planned, "intent", "unreadable private history")
 	vi.mocked(readConfigSetting).mockReturnValue(false)
 	const ctx = createContext({ cwd, model, modelRegistry })
 	const api = createExtensionApi()
@@ -430,7 +439,7 @@ it("pins the input's segment for delayed side calls and hidden SDK retries", asy
 
 it("keeps the existing work and request available when private metadata is damaged", async () => {
 	await rememberWorkIntent(cwd, planned, first)
-	writeFileSync(workIntentPath(planned), "private invalid JSON that must not appear in a warning")
+	setNote(join(root, "agent"), planned, "intent", "private invalid JSON that must not appear in a warning")
 	const ctx = createContext({ cwd, model, modelRegistry })
 	const current = getWorkId(ctx)
 	const api = createExtensionApi()
@@ -597,6 +606,10 @@ it.each([
 	"account",
 ])("discards a semantic answer after %s changes its context", async (change) => {
 	await rememberWorkIntent(cwd, planned, first)
+	const initialWorkRows = readWorkRecords(join(root, "agent")).filter(
+		(row) => row.type === "work" && row.workId === planned,
+	)
+	expect(initialWorkRows).toHaveLength(1)
 	let accountCurrent = true
 	if (change === "account") {
 		const snapshot = await captureWorkAccount(cwd)
@@ -656,7 +669,7 @@ it.each([
 	)
 	expect(getWorkId(ctx)).toBe(expected)
 	expect(readWorkRecords(join(root, "agent")).filter((row) => row.type === "work" && row.workId === planned)).toEqual(
-		[],
+		initialWorkRows,
 	)
 	if (["new-input", "extension-input", "new-session", "shutdown"].includes(change))
 		expect(vi.mocked(classifyWorkIntent).mock.calls[0][2]?.aborted).toBe(true)

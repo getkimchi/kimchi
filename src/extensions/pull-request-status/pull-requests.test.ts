@@ -13,6 +13,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
+import { hydrateLegacy } from "../pr-cost-reporting/ledger/import.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import * as summaries from "../work-attribution/summary.js"
 import { lookupBranchPullRequest } from "./branch-status.js"
 import { lookupFailureReason } from "./provider-records.js"
@@ -94,6 +96,8 @@ function seed(overrides: Record<string, unknown> = {}, transitions = false): voi
 			...overrides,
 		})}\n`,
 	)
+	// An older process may append after the first hydration in this test.
+	hydrateLegacy(agentDir)
 }
 function pull(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
@@ -143,10 +147,12 @@ function lookup(signal = new AbortController().signal, assertLease = () => {}): 
 	return reconcileWorkPullRequests(agentDir, signal, assertLease, (update) => updates.push(update))
 }
 function saved(sessionId = "writer") {
-	return readFileSync(join(agentDir, "work-attribution", `${sessionId}.jsonl`), "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line))
+	const path = join(agentDir, "work-attribution", `${sessionId}.jsonl`)
+	const rows = backendFor(agentDir)
+		.readRecords({ sessionId })
+		.filter((row) => row.sourcePath === path)
+	if (!rows.length) throw new Error("No saved PR lookup observations")
+	return rows.map((row) => JSON.parse(row.body))
 }
 /** By default, moves the clock past the shortest delay before a commit is checked again. */
 function later(ms = 31_000): void {
@@ -1834,7 +1840,7 @@ describe("saved check times", () => {
 		expect(saved().filter((row) => row.type === "commit")).toHaveLength(1)
 		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
 	})
-	it("rewrites saved check times only after a change and forgets commits no longer recorded", async () => {
+	it("keeps unchanged check times and imported commits after a legacy journal disappears", async () => {
 		const other = "b".repeat(40)
 		const recordedAt = new Date(Date.now() - day).toISOString()
 		seed({ recordedAt })
@@ -1847,10 +1853,12 @@ describe("saved check times", () => {
 		await lookup()
 		expect(statSync(join(agentDir, "work-attribution", "pr-checks.json")).ino).toBe(ino)
 		rmSync(join(agentDir, "work-attribution", "transitions"), { recursive: true })
-		rmSync(join(agentDir, "work-attribution", "second.jsonl"))
+		expect(existsSync(join(agentDir, "work-attribution", "second.jsonl"))).toBe(false)
+		// File removal is not retraction evidence: the accepted commit remains authoritative.
 		await restartedLookup()
 		expect(commitCalls()).toHaveLength(2)
-		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+		expect(summaries.readWorkRecords(agentDir).some((row) => row.type === "commit" && row.sha === other)).toBe(true)
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
 	})
 	it("drops a saved check time once it no longer delays a lookup", async () => {
 		seed({ recordedAt: new Date(Date.now() - day).toISOString() })
