@@ -1093,7 +1093,13 @@ describe("local work attribution", () => {
 			},
 			ctx,
 		)
-		for (let index = 0; index <= 1000; index++) recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		// Only cache pressure matters; the original request and final tool receipt still use real capture.
+		const capture = vi.spyOn(ledgerRecords, "capture").mockImplementation(() => {})
+		try {
+			for (let index = 0; index <= 1000; index++) recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		} finally {
+			capture.mockRestore()
+		}
 		const id = request.headers["X-Request-Id"]
 		if (!id) throw new Error("Request identity was not captured")
 		recordProviderResponse(id, { status: 200, headers: new Headers() })
