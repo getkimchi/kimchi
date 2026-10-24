@@ -91,6 +91,145 @@ it("joins actual SDK retries and raw stream usage in SQLite after switching sess
 	])
 })
 
+it("retains flat Anthropic attempt usage without aggregating models or copying opaque fields", () => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent(
+		{
+			type: "message_delta",
+			delta: { stop_reason: "end_turn" },
+			usage: {
+				input_tokens: 12,
+				output_tokens: 7,
+				fallback_credit_token: "opaque-credit-must-stay-out",
+				iterations: [
+					{ type: "message", model: "primary", input_tokens: 10, output_tokens: 0 },
+					{
+						type: "fallback_message",
+						model: "fallback",
+						input_tokens: 12,
+						output_tokens: 7,
+						cache_read_input_tokens: 0,
+						cache_creation_input_tokens: 9,
+						cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 5 },
+						fallback_credit_token: "nested-credit-must-stay-out",
+						stop_reason: "not-an-iteration-field",
+					},
+					{ type: "advisor_message", model: null, input_tokens: 3, output_tokens: 2 },
+					{ type: "compaction", input_tokens: 2, output_tokens: 1 },
+				],
+			},
+		},
+		model,
+	)
+	capture.finish(result())
+	const usage = captured()[0].nativeUsage
+	expect(usage.iterations).toEqual([
+		{ type: "message", model: "primary", raw: { inputTokens: 10, outputTokens: 0 } },
+		{
+			type: "fallback_message",
+			model: "fallback",
+			raw: {
+				inputTokens: 12,
+				outputTokens: 7,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 9,
+				cacheWrites: [
+					{ ttlSeconds: 300, tokens: 4 },
+					{ ttlSeconds: 3600, tokens: 5 },
+				],
+			},
+		},
+		{ type: "advisor_message", raw: { inputTokens: 3, outputTokens: 2 } },
+		{ type: "compaction", raw: { inputTokens: 2, outputTokens: 1 } },
+	])
+	expect(usage.raw).toEqual({ inputTokens: 12, outputTokens: 7 })
+	expect(usage.finalUsageObserved).toBe(true)
+	expect(usage.iterationsIncomplete).toBeUndefined()
+	expect(JSON.stringify(usage)).not.toContain("must-stay-out")
+	expect(JSON.stringify(usage)).not.toContain("not-an-iteration-field")
+})
+
+it("retains reported iterations through the actual Anthropic SDK, retry and SQLite reopen", () => {
+	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+	const { original, calls, stopReason, captured } = JSON.parse(
+		execFileSync("bun", [driver, "native-usage-anthropic", dir], { encoding: "utf8", timeout: 30_000 }),
+	)
+	expect(stopReason).toBe("stop")
+	expect(calls).toHaveLength(2)
+	expect(calls.every((call: { persisted: boolean }) => call.persisted)).toBe(true)
+	expect(calls[0].id).toBe(original.requestId)
+	expect(calls[1].id).not.toBe(original.requestId)
+	expect(captured).toHaveLength(1)
+	expect(captured[0]).toMatchObject({
+		workId: original.workId,
+		sessionId: "sdk-original",
+		requestId: calls[1].id,
+		nativeUsage: {
+			finalUsageObserved: true,
+			dispatchObserved: true,
+			raw: { inputTokens: 90, outputTokens: 7 },
+			iterations: [
+				{ type: "message", model: "sdk-primary", raw: { inputTokens: 100, outputTokens: 0 } },
+				{ type: "fallback_message", model: "sdk-fallback", raw: { inputTokens: 90, outputTokens: 7 } },
+			],
+		},
+	})
+})
+
+it("retains known iteration evidence across omitted/null updates and later malformed reports", () => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	const iteration = { type: "message", model: "primary", input_tokens: 10, output_tokens: 0 }
+	for (const usage of [
+		{ iterations: [iteration] },
+		{ iterations: null },
+		{ iterations: [] },
+		{ output_tokens: 7 },
+		{ iterations: "damaged" },
+		{ iterations: [iteration] },
+	])
+		capture.onProviderStreamEvent({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage }, model)
+	capture.finish(result())
+	expect(captured()[0].nativeUsage).toMatchObject({
+		iterations: [{ type: "message", model: "primary", raw: { inputTokens: 10, outputTokens: 0 } }],
+		iterationsIncomplete: true,
+	})
+})
+
+it.each([
+	["empty", []],
+	["malformed", [null, { type: "message", input_tokens: 5 }]],
+	["unknown type", [{ type: "future_attempt", input_tokens: 5 }]],
+	["oversized", Array.from({ length: 17 }, () => ({ type: "message", input_tokens: 5 }))],
+])("marks %s iteration evidence incomplete without truncating known attempts", (_name, iterations) => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent({ type: "message_delta", usage: { iterations } }, model)
+	capture.finish(result())
+	const usage = captured()[0].nativeUsage
+	expect(usage.iterationsIncomplete).toBe(true)
+	expect(usage.iterations).toHaveLength(iterations.length)
+	if (iterations[0] === null) expect(usage.iterations[0]).toEqual({ raw: {} })
+})
+
+it.each(["response", "retry"])("resets iteration evidence on a new %s and retains the previous attempt", (kind) => {
+	const { capture, model, dispatch } = tracked("anthropic-messages")
+	dispatch()
+	capture.onProviderStreamEvent({ type: "message_start", message: { id: "first" } }, model)
+	capture.onProviderStreamEvent({ type: "message_delta", usage: { iterations: [{ type: "message" }, null] } }, model)
+	if (kind === "retry") dispatch()
+	capture.onProviderStreamEvent({ type: "message_start", message: { id: "second" } }, model)
+	capture.finish(result())
+	const rows = captured()
+	const current = rows.at(-1).nativeUsage
+	const previous = kind === "retry" ? rows[0].nativeUsage : current.previousResponses[0]
+	expect(current.iterations).toBeUndefined()
+	expect(current.iterationsIncomplete).toBeUndefined()
+	expect(previous.iterations).toEqual([{ type: "message", raw: {} }, { raw: {} }])
+	expect(previous.iterationsIncomplete).toBe(true)
+})
+
 it("retains Anthropic input/cache counters while requiring the terminal event's own output usage", () => {
 	const { capture, model, dispatch } = tracked("anthropic-messages")
 	dispatch()

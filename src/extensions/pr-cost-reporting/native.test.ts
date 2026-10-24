@@ -176,6 +176,10 @@ for (const [i, raw] of invalidRaw.entries())
 	changed(`invalid-raw-${i}`, (rows) => {
 		rows[2].nativeUsage = { ...nativeUsage, raw }
 	})
+for (const [i, raw] of invalidRaw.entries())
+	changed(`invalid-iteration-raw-${i}`, (rows) => {
+		rows[2].nativeUsage = { ...nativeUsage, iterations: [{ type: "message", raw }] }
+	})
 changed("invalid-openai-partition", (rows) => {
 	rows[2].nativeUsage = {
 		...nativeUsage,
@@ -186,6 +190,45 @@ changed("invalid-openai-partition", (rows) => {
 })
 
 let actual: Record<string, ReturnType<typeof nativeObservations>>
+const iterations = [
+	{ type: "message", model: "primary", raw: { inputTokens: 10, outputTokens: 0 } },
+	{ type: "fallback_message", model: "fallback", raw: { inputTokens: 12, outputTokens: 7 } },
+	{ type: "advisor_message", raw: { inputTokens: 3 } },
+	{ type: "compaction", raw: { inputTokens: 2 } },
+]
+changed("iterations", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, iterations }
+})
+changed("iterations-incomplete", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, iterations, iterationsIncomplete: true }
+})
+changed("iterations-duplicate", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, iterations }
+	rows.push({ ...rows[2], nativeUsage: { ...nativeUsage, iterations, iterationsIncomplete: true } })
+})
+for (const [name, value] of [
+	["empty", []],
+	["oversized", Array.from({ length: 17 }, () => iterations[0])],
+	["future", [{ type: "future_attempt", raw: {} }]],
+] as const)
+	changed(`iterations-${name}`, (rows) => {
+		rows[2].nativeUsage = { ...nativeUsage, iterations: value }
+	})
+for (const [name, value] of [
+	["malformed", "invalid"],
+	["bad-entry", [null]],
+	["bad-model", [{ type: "message", model: 42, raw: {} }]],
+] as const)
+	changed(`iterations-${name}`, (rows) => {
+		rows[2].nativeUsage = { ...nativeUsage, iterations: value }
+	})
+changed("iterations-conflict", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, iterations }
+	rows.push({ ...rows[2], nativeUsage: { ...nativeUsage, iterations: [...iterations].reverse() } })
+})
+changed("iterations-invalid-raw", (rows) => {
+	rows[2].nativeUsage = { ...nativeUsage, iterations: [{ type: "message", raw: { inputTokens: -1 } }] }
+})
 beforeAll(() => {
 	const moduleUrl = new URL("./native.ts", import.meta.url).href
 	actual = JSON.parse(
@@ -255,6 +298,41 @@ it("joins immutable owner and physical dispatch while retaining actual routed us
 	])
 })
 
+it("retains disjoint iteration types/models/counters without adding them to top-level usage", () => {
+	expect(actual.iterations.unresolved).toEqual([])
+	expect(actual.iterations.observations[0].iterations).toEqual([
+		{ type: "message", model: "primary", raw: { inputTokens: "10", outputTokens: "0" } },
+		{ type: "fallback_message", model: "fallback", raw: { inputTokens: "12", outputTokens: "7" } },
+		{ type: "advisor_message", raw: { inputTokens: "3" } },
+		{ type: "compaction", raw: { inputTokens: "2" } },
+	])
+	expect(actual.iterations.observations[0].raw.inputTokens).toBe("12")
+	expect(actual["iterations-incomplete"].observations[0].iterationsIncomplete).toBe(true)
+	expect(actual["iterations-conflict"].observations).toEqual([])
+	expect(actual["iterations-conflict"].unresolved[0].reason).toBe("conflicting_native_observation")
+	expect(actual["iterations-invalid-raw"].observations).toEqual([])
+	expect(actual["iterations-invalid-raw"].unresolved[0].reason).toBe("invalid_raw_usage")
+})
+
+it("merges equivalent incomplete evidence and retains oversized/unknown attempts without claiming completeness", () => {
+	expect(actual["iterations-duplicate"].unresolved).toEqual([])
+	expect(actual["iterations-duplicate"].observations).toHaveLength(1)
+	expect(actual["iterations-duplicate"].observations[0].iterationsIncomplete).toBe(true)
+	expect(actual["iterations-duplicate"].observations[0].recordHashes).toHaveLength(4)
+	for (const name of ["empty", "oversized", "future"])
+		expect(actual[`iterations-${name}`].observations[0].iterationsIncomplete).toBe(true)
+	expect(actual["iterations-oversized"].observations[0].iterations).toHaveLength(17)
+})
+
+it.each([
+	"malformed",
+	"bad-entry",
+	"bad-model",
+])("retains unresolved evidence for %s stored iteration details", (name) => {
+	expect(actual[`iterations-${name}`].observations).toEqual([])
+	expect(actual[`iterations-${name}`].unresolved[0].reason).toBe("invalid_native_iterations")
+})
+
 it("collapses equivalent duplicate observations without adding tokens or replacing original identity", () => {
 	expect(actual.duplicates.unresolved).toEqual([])
 	expect(actual.duplicates.observations).toHaveLength(1)
@@ -311,6 +389,11 @@ it("preserves partial attempts, explicit zeros and absent counters without SDK d
 it.each(invalidRaw.map((_, i) => i))("rejects invalid raw usage bucket %s", (i) => {
 	expect(actual[`invalid-raw-${i}`].observations).toEqual([])
 	expect(actual[`invalid-raw-${i}`].unresolved[0].reason).toBe("invalid_raw_usage")
+})
+
+it.each(invalidRaw.map((_, i) => i))("rejects invalid iteration usage bucket %s", (i) => {
+	expect(actual[`invalid-iteration-raw-${i}`].observations).toEqual([])
+	expect(actual[`invalid-iteration-raw-${i}`].unresolved[0].reason).toBe("invalid_raw_usage")
 })
 
 it("rejects complete OpenAI cache partitions exceeding inclusive input", () => {

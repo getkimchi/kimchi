@@ -26,6 +26,8 @@ export interface NativeObservation {
 	incompleteReason?: string
 	rawStopReason?: string
 	finalUsageObserved?: true
+	iterations?: { type?: string; model?: string; raw: RawUsage }[]
+	iterationsIncomplete?: true
 	raw: RawUsage
 	recordHashes: string[]
 }
@@ -167,8 +169,25 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 				if (!sourceVersion || !api || !schema || !provider || !reportedModel) throw new Error("missing_native_metadata")
 				if (schema !== (schemas.get(api) ?? "unknown")) throw new Error("invalid_native_schema")
 				const raw = rawUsage(usage.raw)
+				let iterations: NativeObservation["iterations"]
+				if (usage.iterations !== undefined) {
+					if (!Array.isArray(usage.iterations) || schema !== "anthropic-messages-v1")
+						throw new Error("invalid_native_iterations")
+					iterations = usage.iterations.map((value) => {
+						if (
+							!object(value) ||
+							(value.type !== undefined && typeof value.type !== "string") ||
+							(value.model !== undefined && typeof value.model !== "string")
+						)
+							throw new Error("invalid_native_iterations")
+						return { type: text(value.type), model: text(value.model), raw: rawUsage(value.raw) }
+					})
+				}
+				if (usage.iterationsIncomplete !== undefined && typeof usage.iterationsIncomplete !== "boolean")
+					throw new Error("invalid_native_iterations")
 				try {
 					validateAccountingRaw(schema, raw, true)
+					for (const iteration of iterations ?? []) validateAccountingRaw(schema, iteration.raw, true)
 				} catch {
 					throw new Error("invalid_raw_usage")
 				}
@@ -187,6 +206,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 					incompleteReason: text(usage.incompleteReason),
 					rawStopReason: text(usage.rawStopReason),
 					raw,
+					iterations,
 				}
 				const next = JSON.stringify(candidate)
 				if (signature !== undefined && signature !== next) throw new Error("conflicting_native_observation")
@@ -203,6 +223,16 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 					recordHashes,
 				}
 				if (usage.finalUsageObserved === true) observation.finalUsageObserved = true
+				if (
+					usage.iterationsIncomplete === true ||
+					(iterations !== undefined &&
+						(!iterations.length ||
+							iterations.length > 16 ||
+							iterations.some(
+								(value) => !["message", "fallback_message", "advisor_message", "compaction"].includes(value.type ?? ""),
+							)))
+				)
+					observation.iterationsIncomplete = true
 			}
 			if (observation) observations.push(observation)
 		} catch (error) {

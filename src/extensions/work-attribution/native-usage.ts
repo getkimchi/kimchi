@@ -18,6 +18,12 @@ export interface NativeRawUsage {
 	cacheWrites?: { ttlSeconds: number; tokens: number }[]
 }
 
+interface NativeUsageIteration {
+	type?: string
+	model?: string
+	raw: NativeRawUsage
+}
+
 interface Observation {
 	attempt: Attempt
 	api: string
@@ -33,6 +39,8 @@ interface Observation {
 	incompleteReason?: string
 	rawStopReason?: string
 	finalUsageObserved?: true
+	iterations?: NativeUsageIteration[]
+	iterationsIncomplete?: true
 	previousResponses?: Omit<Observation, "attempt" | "previousResponses" | "responseCorrelation">[]
 	responseCorrelation?: "ambiguous"
 }
@@ -59,6 +67,56 @@ function counter(value: unknown): number | undefined {
 		: undefined
 }
 
+function anthropicRawUsage(usage: Record<string, unknown>): NativeRawUsage {
+	const creation = object(usage.cache_creation) ? usage.cache_creation : {}
+	const output = object(usage.output_tokens_details) ? usage.output_tokens_details : {}
+	const raw: NativeRawUsage = {
+		inputTokens: counter(usage.input_tokens),
+		outputTokens: counter(usage.output_tokens),
+		cacheReadTokens: counter(usage.cache_read_input_tokens),
+		cacheWriteTokens: counter(usage.cache_creation_input_tokens),
+		reasoningTokens: counter(output.thinking_tokens),
+	}
+	const writes: NonNullable<NativeRawUsage["cacheWrites"]> = []
+	for (const [ttlSeconds, value] of [
+		[300, creation.ephemeral_5m_input_tokens],
+		[3600, creation.ephemeral_1h_input_tokens],
+	] as const) {
+		const tokens = counter(value)
+		if (tokens !== undefined) writes.push({ ttlSeconds, tokens })
+	}
+	if (writes.length) raw.cacheWrites = writes
+	return raw
+}
+
+function observeIterations(observation: Observation, usage: Record<string, unknown>): void {
+	if (usage.iterations == null) return
+	if (!Array.isArray(usage.iterations)) {
+		observation.iterationsIncomplete = true
+		return
+	}
+	// Preserve oversized reports locally; the common wire contract accepts at most 16 iterations.
+	if (!usage.iterations.length || usage.iterations.length > 16) observation.iterationsIncomplete = true
+	const iterations: NativeUsageIteration[] = []
+	for (const value of usage.iterations) {
+		if (!object(value)) {
+			observation.iterationsIncomplete = true
+			iterations.push({ raw: {} })
+			continue
+		}
+		const type = typeof value.type === "string" && value.type ? value.type : undefined
+		const model = typeof value.model === "string" && value.model ? value.model : undefined
+		if (
+			!type ||
+			!["message", "fallback_message", "advisor_message", "compaction"].includes(type) ||
+			(value.model != null && typeof value.model !== "string")
+		)
+			observation.iterationsIncomplete = true
+		iterations.push({ ...(type ? { type } : {}), ...(model ? { model } : {}), raw: anthropicRawUsage(value) })
+	}
+	if (iterations.length || observation.iterations === undefined) observation.iterations = iterations
+}
+
 function observe(observation: Observation, data: unknown): void {
 	if (!object(data)) return
 	let body = data
@@ -79,6 +137,8 @@ function observe(observation: Observation, data: unknown): void {
 			incompleteReason: undefined,
 			rawStopReason: undefined,
 			finalUsageObserved: undefined,
+			iterations: undefined,
+			iterationsIncomplete: undefined,
 		})
 	}
 	let raw: NativeRawUsage
@@ -88,36 +148,21 @@ function observe(observation: Observation, data: unknown): void {
 	if (observation.schema === "anthropic-messages-v1") {
 		const usage = object(body.usage) ? body.usage : {}
 		usageObserved = Object.keys(usage).length > 0
-		const creation = object(usage.cache_creation) ? usage.cache_creation : {}
-		const output = object(usage.output_tokens_details) ? usage.output_tokens_details : {}
+		observeIterations(observation, usage)
 		if (typeof usage.service_tier === "string" && usage.service_tier) observation.serviceTier = usage.service_tier
 		if (typeof usage.inference_geo === "string" && usage.inference_geo) observation.region = usage.inference_geo
 		const deltaStopReason = object(data.delta) ? data.delta.stop_reason : undefined
 		stopReason = body.stop_reason ?? deltaStopReason
-		raw = {
-			inputTokens: counter(usage.input_tokens),
-			outputTokens: counter(usage.output_tokens),
-			cacheReadTokens: counter(usage.cache_read_input_tokens),
-			cacheWriteTokens: counter(usage.cache_creation_input_tokens),
-			reasoningTokens: counter(output.thinking_tokens),
-		}
+		raw = anthropicRawUsage(usage)
 		finalUsageObserved =
 			data.type === "message_delta" &&
 			raw.outputTokens !== undefined &&
 			typeof deltaStopReason === "string" &&
 			deltaStopReason.length > 0
 		const writes = new Map(observation.raw.cacheWrites?.map((write) => [write.ttlSeconds, write.tokens]))
-		for (const [ttl, value] of [
-			[300, creation.ephemeral_5m_input_tokens],
-			[3600, creation.ephemeral_1h_input_tokens],
-		] as const) {
-			const tokens = counter(value)
-			if (tokens !== undefined) writes.set(ttl, tokens)
-		}
+		for (const write of raw.cacheWrites ?? []) writes.set(write.ttlSeconds, write.tokens)
 		if (writes.size)
-			observation.raw.cacheWrites = [...writes]
-				.sort(([a], [b]) => a - b)
-				.map(([ttlSeconds, tokens]) => ({ ttlSeconds, tokens }))
+			raw.cacheWrites = [...writes].sort(([a], [b]) => a - b).map(([ttlSeconds, tokens]) => ({ ttlSeconds, tokens }))
 	} else if (observation.schema === "openai-chat-completions-v1") {
 		const choice = Array.isArray(data.choices) && object(data.choices[0]) ? data.choices[0] : {}
 		const usage = object(data.usage) ? data.usage : object(choice.usage) ? choice.usage : {}

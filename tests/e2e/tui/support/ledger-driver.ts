@@ -175,7 +175,7 @@ async function importJournalsCommand(agent: string): Promise<void> {
 	out(await importJournals(agent))
 }
 
-async function nativeUsage(agent: string): Promise<void> {
+async function nativeUsage(agent: string, anthropic = false): Promise<void> {
 	process.env.PI_CODING_AGENT_DIR = agent
 	const { ModelRuntime } = await import("@earendil-works/pi-coding-agent")
 	const { installGlobalFetchInstrumentation } = await import("../../../../src/http/instrument-fetch.js")
@@ -197,6 +197,41 @@ async function nativeUsage(agent: string): Promise<void> {
 			sessionId = "sdk-next"
 			setWorkId(ctx)
 			return Response.json({ error: { message: "retry" } }, { status: 503, headers: { "Retry-After": "0" } })
+		}
+		if (anthropic) {
+			const events = [
+				{
+					type: "message_start",
+					message: {
+						id: "msg-sdk",
+						type: "message",
+						role: "assistant",
+						model: "sdk-primary",
+						content: [],
+						stop_reason: null,
+						usage: { input_tokens: 100, output_tokens: 1 },
+					},
+				},
+				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+				{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+				{ type: "content_block_stop", index: 0 },
+				{
+					type: "message_delta",
+					delta: { stop_reason: "end_turn" },
+					usage: {
+						input_tokens: 90,
+						output_tokens: 7,
+						iterations: [
+							{ type: "message", model: "sdk-primary", input_tokens: 100, output_tokens: 0 },
+							{ type: "fallback_message", model: "sdk-fallback", input_tokens: 90, output_tokens: 7 },
+						],
+					},
+				},
+				{ type: "message_stop" },
+			]
+			return new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+				headers: { "Content-Type": "text/event-stream" },
+			})
 		}
 		return new Response(
 			`data: ${JSON.stringify({
@@ -224,7 +259,7 @@ async function nativeUsage(agent: string): Promise<void> {
 		allowModelNetwork: false,
 	})
 	runtime.registerProvider("native-test", {
-		api: "openai-completions",
+		api: anthropic ? "anthropic-messages" : "openai-completions",
 		baseUrl: "https://native.invalid/v1",
 		models: [
 			{
@@ -1481,6 +1516,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
+	"native-usage-anthropic": (agent) => nativeUsage(agent, true),
 	producer: (agent) => producerScenario(agent),
 	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
