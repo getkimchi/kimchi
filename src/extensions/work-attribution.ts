@@ -19,6 +19,7 @@ import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { getVersion } from "../utils.js"
 import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
@@ -1058,12 +1059,37 @@ export function createWorkAttributionExtension(
 			if (!identity || event.message.stopReason === "error" || event.message.stopReason === "aborted") return
 			// Pi awaits this event before preparing tools. Keep the response's identity even
 			// if permissions, another work selection, or a queued mutation takes time.
-			const calls = new Map<string, { requestId: string; workId: string }>()
-			for (const block of event.message.content) if (block.type === "toolCall") calls.set(block.id, identity)
+			const calls = new Map<string, ToolRequest>()
+			const request = pendingRequests.get(identity.requestId)
+			for (const block of event.message.content)
+				if (block.type === "toolCall") calls.set(block.id, { ...identity, request })
 			if (calls.size) toolRequests.set(key, calls)
 		})
+		pi.on("tool_execution_start", (event, ctx) => {
+			const calls = toolRequests.get(workLedgerPath(ctx))
+			if (!calls || !event.parentToolCallId || calls.has(event.toolCallId)) return
+			const parent = calls.get(event.parentToolCallId)
+			if (parent) calls.set(event.toolCallId, parent)
+		})
 		pi.on("tool_execution_end", (event, ctx) => {
-			toolRequests.get(workLedgerPath(ctx))?.delete(event.toolCallId)
+			const calls = toolRequests.get(workLedgerPath(ctx))
+			const origin = calls?.get(event.toolCallId)
+			const request = origin?.request
+			if (request && typeof event.isError === "boolean" && event.toolName)
+				tryWorkAttribution(() =>
+					appendRequestRecord(request, {
+						type: "tool_execution",
+						requestId: origin.requestId,
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+						outcome: event.isError ? "failed" : "completed",
+						sourceVersion: getVersion(),
+						...(typeof event.durationMs === "number" && Number.isFinite(event.durationMs) && event.durationMs >= 0
+							? { durationMs: event.durationMs }
+							: {}),
+					}),
+				)
+			calls?.delete(event.toolCallId)
 		})
 		pi.on("turn_end", (_event, ctx) => {
 			toolRequests.delete(workLedgerPath(ctx))
@@ -1208,7 +1234,8 @@ export function createWorkAttributionExtension(
 	}
 }
 const activeRequests = new Map<string, { requestId: string; workId: string }>()
-const toolRequests = new Map<string, Map<string, { requestId: string; workId: string }>>()
+type ToolRequest = { requestId: string; workId: string; request?: PendingRequest }
+const toolRequests = new Map<string, Map<string, ToolRequest>>()
 export function getActiveRequest(ctx: WorkContext): { requestId: string; workId: string } | undefined {
 	return activeRequests.get(workLedgerPath(ctx))
 }
@@ -1217,7 +1244,8 @@ export function getToolRequest(
 	ctx: WorkContext,
 	toolCallId: string,
 ): { requestId: string; workId: string } | undefined {
-	return toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+	const origin = toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+	return origin && { requestId: origin.requestId, workId: origin.workId }
 }
 /**
  * Save a tool's plan in the work of the request that produced it, or else the session's work; a tool that awaits first

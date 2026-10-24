@@ -142,6 +142,212 @@ console.log(JSON.stringify(buildEvents(input.stored, input.report, new Map(input
 	)
 }
 
+it("exports captured tool, file, plan and commit facts with explicit snapshot coverage", () => {
+	const at = "2026-10-24T08:00:03Z"
+	const common = { ...owner, recordedAt: at, repository: scope.repository }
+	const rows = [
+		...records,
+		{
+			...common,
+			type: "tool_execution",
+			toolCallId: "edit",
+			toolName: "edit",
+			outcome: "failed",
+			durationMs: 12.75,
+			args: { content: "private arguments" },
+			result: { content: "private result" },
+		},
+		{
+			...common,
+			type: "file_transition",
+			transitionId: "transition-one",
+			toolCallId: "edit",
+			path: "src/private.ts",
+			before: { blob: "a".repeat(40), mode: "100644" },
+			after: { blob: "b".repeat(40), mode: "100644" },
+		},
+		{
+			...common,
+			type: "plan",
+			path: "plans/private.md",
+			snapshotPath: "/private/retained",
+			contentHash: "c".repeat(64),
+		},
+		{ ...common, type: "commit", sha: "d".repeat(40) },
+		{
+			...common,
+			type: "file_observation",
+			observationId: "observation-one",
+			toolCallId: "shell",
+			source: "bash",
+			complete: false,
+			truncated: true,
+			changedPaths: 3,
+			files: [{ path: "src/another-private.ts", before: null, after: { blob: "e".repeat(40), mode: "100644" } }],
+		},
+	]
+	const result = build(rows)
+	expect(result.unresolved).toEqual([])
+	const group = result.accounts[0]
+	const usage = group.facts.find((fact) => fact.usage)
+	expect(group.facts.find((fact) => fact.tool)?.tool).toMatchObject({
+		callId: expect.any(String),
+		name: "edit",
+		category: "edit",
+		outcome: "failed",
+		durationMs: "12",
+		requestEntityId: usage?.entityId,
+	})
+	expect(group.facts.find((fact) => fact.file)?.file?.toolCallId).toBe(
+		group.facts.find((fact) => fact.tool)?.tool?.callId,
+	)
+	expect(group.facts.filter((fact) => fact.file).map((fact) => [fact.file?.operation, fact.file?.quality])).toEqual([
+		["modified", "observed"],
+		["created", "ambiguous"],
+	])
+	expect(group.facts.find((fact) => fact.work?.planId)?.work).toMatchObject({
+		planId: expect.any(String),
+		planRevision: expect.any(String),
+		reason: "saved_plan",
+		quality: "observed",
+	})
+	expect(group.facts.find((fact) => fact.commit)?.commit).toEqual({ id: "d".repeat(40), quality: "observed" })
+	expect(group.facts.flatMap((fact) => (fact.coverage ? [fact.coverage] : []))).toEqual([
+		{ code: "file_snapshot_incomplete", count: "1" },
+		{ code: "file_paths_omitted", count: "2" },
+	])
+	expect(group.recordHashes).toHaveLength(rows.length)
+	for (const value of [
+		"src/private.ts",
+		"src/another-private.ts",
+		"plans/private.md",
+		"/private/retained",
+		"a".repeat(40),
+		"b".repeat(40),
+		"c".repeat(64),
+		"private arguments",
+		"private result",
+	])
+		expect(JSON.stringify(group.facts)).not.toContain(value)
+})
+
+it("links nested tool and file facts through the same opaque call identity", () => {
+	const common = { ...owner, recordedAt: start, repository: scope.repository, toolCallId: "parent/1" }
+	const result = build([
+		...records,
+		{ ...common, type: "tool_execution", toolName: "read", outcome: "completed" },
+		{
+			...common,
+			type: "file_transition",
+			transitionId: "nested-file",
+			path: "private.ts",
+			before: null,
+			after: { blob: "a".repeat(40), mode: "100644" },
+		},
+	])
+	expect(result.unresolved).toEqual([])
+	const facts = result.accounts[0].facts
+	const call = facts.find((fact) => fact.tool)?.tool?.callId
+	expect(call).toBeTruthy()
+	expect(call).not.toContain("parent/1")
+	expect(facts.find((fact) => fact.file)?.file?.toolCallId).toBe(call)
+})
+
+it("exports nonfinancial work with a unique captured owner without inventing a dispatched request", () => {
+	const rows = [
+		records[0],
+		{
+			...owner,
+			requestId: undefined,
+			type: "plan",
+			recordedAt: start,
+			path: "plans/early.md",
+			contentHash: "c".repeat(64),
+		},
+		{
+			...owner,
+			requestId: undefined,
+			type: "commit",
+			recordedAt: start,
+			repository: scope.repository,
+			sha: "d".repeat(40),
+		},
+	]
+	const result = build(rows)
+	expect(result.accounts).toHaveLength(1)
+	expect(result.accounts[0].facts.some((fact) => fact.usage)).toBe(false)
+	expect(result.accounts[0].facts.some((fact) => fact.work?.planId)).toBe(true)
+	expect(result.accounts[0].facts.some((fact) => fact.commit)).toBe(true)
+	expect(result.accounts[0].recordHashes).toHaveLength(2)
+})
+
+it("retains ambiguous auxiliary ownership across reporting accounts", () => {
+	const otherId = "44444444-4444-4444-8444-444444444444"
+	const otherAccount = { ...account, userId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }
+	const rows = [
+		records[0],
+		{ ...records[0], requestId: otherId, scope: { ...scope, account: otherAccount } },
+		{
+			...owner,
+			requestId: undefined,
+			type: "plan",
+			recordedAt: start,
+			path: "plans/ambiguous.md",
+			contentHash: "c".repeat(64),
+		},
+	]
+	const result = build(rows, {
+		...report,
+		requests: [...report.requests, { ...report.requests[0], requestId: otherId, account: otherAccount }],
+	})
+	expect(result.accounts).toEqual([])
+	expect(result.unresolved).toEqual([
+		expect.objectContaining({ reason: "ambiguous_auxiliary_owner", recordHashes: expect.any(Array) }),
+	])
+})
+
+it("retains the original intent when an observation cannot represent every captured file", () => {
+	const row = {
+		...owner,
+		type: "file_observation",
+		recordedAt: start,
+		repository: scope.repository,
+		observationId: "damaged",
+		toolCallId: "shell",
+		source: "bash",
+		complete: true,
+		files: [
+			{ path: "valid.ts", before: null, after: { blob: "a".repeat(40), mode: "100644" } },
+			{ path: "bad.ts", before: null, after: { blob: "not-a-git-blob", mode: "100644" } },
+		],
+	}
+	const result = build([...records, row])
+	expect(result.unresolved).toHaveLength(1)
+	expect(result.accounts[0].recordHashes).toHaveLength(records.length)
+	expect(result.accounts[0].facts.filter((fact) => fact.file)).toEqual([])
+})
+
+it("retains future versions of a known evidence kind instead of interpreting them as version one", () => {
+	const result = build([
+		...records,
+		{
+			...owner,
+			version: 2,
+			type: "file_transition",
+			recordedAt: start,
+			repository: scope.repository,
+			transitionId: "future",
+			toolCallId: "edit",
+			path: "future.ts",
+			before: null,
+			after: { blob: "a".repeat(40), mode: "100644" },
+		},
+	])
+	expect(result.unresolved).toEqual([expect.objectContaining({ reason: "unsupported_auxiliary_version" })])
+	expect(result.accounts[0].recordHashes).toHaveLength(records.length)
+	expect(result.accounts[0].facts.some((fact) => fact.file)).toBe(false)
+})
+
 it("translates observed native counters and original identity without inventing complete-attempt coverage", () => {
 	const result = build(records)
 	expect(result.accounts).toHaveLength(1)

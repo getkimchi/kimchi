@@ -994,6 +994,115 @@ describe("local work attribution", () => {
 		await input
 		expect(getWorkId(ctx)).toBe(chosen)
 	})
+	it.each([false, true])("records terminal tool outcome under its original request (failed=%s)", async (isError) => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		const workId = getWorkId(ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "edit-original", name: "edit" }],
+				},
+			},
+			ctx,
+		)
+		recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		setWorkId(ctx)
+		await api.getHandler("tool_execution_end")(
+			{
+				toolCallId: "edit-original",
+				toolName: "edit",
+				isError,
+				durationMs: 12.75,
+				args: { content: "private-input" },
+				result: { content: "private-output" },
+			},
+			ctx,
+		)
+		const tools = readWorkRecords(dir).filter((row) => row.type === "tool_execution")
+		expect(tools).toHaveLength(1)
+		expect(tools[0]).toMatchObject({
+			workId,
+			requestId: request.headers["X-Request-Id"],
+			toolCallId: "edit-original",
+			toolName: "edit",
+			outcome: isError ? "failed" : "completed",
+			durationMs: 12.75,
+			sourceVersion: expect.any(String),
+		})
+		expect(JSON.stringify(tools)).not.toMatch(/private-input|private-output/)
+		expect(getToolRequest(ctx, "edit-original")).toBeUndefined()
+	})
+	it("inherits a nested tool's explicit parent without exposing private tool payloads", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "parent", name: "codemode" }],
+				},
+			},
+			ctx,
+		)
+		const origin = getToolRequest(ctx, "parent")
+		setWorkId(ctx)
+		await api.getHandler("tool_execution_start")(
+			{ toolCallId: "child", toolName: "read", parentToolCallId: "parent", args: { path: "/private/file" } },
+			ctx,
+		)
+		expect(getToolRequest(ctx, "child")).toEqual(origin)
+		await api.getHandler("tool_execution_end")(
+			{
+				toolCallId: "child",
+				toolName: "read",
+				isError: false,
+				parentToolCallId: "parent",
+				result: { content: "private nested output" },
+			},
+			ctx,
+		)
+		expect(readWorkRecords(dir).filter((row) => row.type === "tool_execution")).toEqual([
+			expect.objectContaining({ ...origin, toolCallId: "child", toolName: "read", outcome: "completed" }),
+		])
+		expect(getToolRequest(ctx, "parent")).toEqual(origin)
+	})
+	it("retains tool receipts after their request leaves the bounded lookup cache", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		const workId = getWorkId(ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "long-running", name: "bash" }],
+				},
+			},
+			ctx,
+		)
+		for (let index = 0; index <= 1000; index++) recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		const id = request.headers["X-Request-Id"]
+		if (!id) throw new Error("Request identity was not captured")
+		recordProviderResponse(id, { status: 200, headers: new Headers() })
+		expect(readWorkRecords(dir).some((row) => row.type === "request_response" && row.requestId === id)).toBe(false)
+		await api.getHandler("tool_execution_end")({ toolCallId: "long-running", toolName: "bash", isError: false }, ctx)
+		expect(readWorkRecords(dir).filter((row) => row.type === "tool_execution")).toEqual([
+			expect.objectContaining({ workId, requestId: id, toolCallId: "long-running", outcome: "completed" }),
+		])
+	})
 	it("pins tool calls to their successful response across auxiliary requests and work switches", async () => {
 		const api = createExtensionApi()
 		const ctx = createContext({ cwd: dir })

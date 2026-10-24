@@ -33,6 +33,7 @@ const WORK_RECORD_TYPES = [
 	"request_dispatch",
 	"request_response",
 	"request_cost",
+	"tool_execution",
 	"plan",
 	"commit",
 	"file_transition",
@@ -75,6 +76,8 @@ function record(value: unknown): value is WorkRecord {
 		case "request_response":
 		case "request_cost":
 			return entry(value, ["requestId"])
+		case "tool_execution":
+			return entry(value, ["requestId", "toolCallId", "toolName", "outcome"])
 		case "plan":
 			return entry(value, ["path"])
 		case "commit":

@@ -73,12 +73,14 @@ function billingRowKey(row: unknown): string {
 }
 
 /** The summary collection each record type merges into. */
-export const RECORD_COLLECTIONS: Record<Exclude<WorkRecord["type"], "work">, Collection> = {
+export const RECORD_COLLECTIONS: Record<Exclude<WorkRecord["type"], "work">, Collection | undefined> = {
 	work_link: "workLinks",
 	request: "requests",
 	request_dispatch: "requests",
 	request_response: "requests",
 	request_cost: "requests",
+	// Terminal tools are authority facts, not replacements for their originating request projection.
+	tool_execution: undefined,
 	plan: "plans",
 	commit: "commits",
 	file_transition: "fileTransitions",
