@@ -31,7 +31,11 @@ import {
 	readWorkSummary,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
-import { readWorkRecords, type WorkRecord } from "../../../../src/extensions/work-attribution/summary.js"
+import {
+	readWorkRecords,
+	type WorkRecord,
+	type WorkRecordProblem,
+} from "../../../../src/extensions/work-attribution/summary.js"
 
 const [, , command, agentDir, arg] = process.argv
 
@@ -232,6 +236,38 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 		rolledBack = true
 	}
 	closeBackends()
+	const afterRollback = counts()
+	const replay = backendFor(agent)
+	const originalRows = replay.readRecords({})
+	let budgetChecks = 0
+	let iterationAborted = false
+	try {
+		// The backend checks once before iteration, then once per SQL row: abort on row two.
+		replay.readRecords({}, () => {
+			if (++budgetChecks === 3) throw new Error("iteration budget exhausted")
+		})
+	} catch (error) {
+		iterationAborted = error instanceof Error && error.message === "iteration budget exhausted"
+	}
+	// No reconnect: this must reuse the same prepared statement after its iterator was interrupted.
+	const afterAbort = replay.readRecords({})
+	replay.tx(() => replay.putNote(base.workId, "iteration-reuse", "committed"))
+	const transactionWrite = replay.getNote(base.workId, "iteration-reuse") === "committed"
+	closeBackends()
+	const reopened = backendFor(agent)
+	const reopenedRows = reopened.readRecords({})
+	const iteration = {
+		aborted: iterationAborted,
+		budgetChecks,
+		sameConnectionRows: afterAbort.length,
+		sameConnectionUnchanged: JSON.stringify(afterAbort) === JSON.stringify(originalRows),
+		transactionWrite,
+		reopenedRows: reopenedRows.length,
+		reopenedUnchanged: JSON.stringify(reopenedRows) === JSON.stringify(originalRows),
+		reopenedNote: reopened.getNote(base.workId, "iteration-reuse") === "committed",
+		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
+	}
+	closeBackends()
 	out({
 		sessionWorkId: session.work?.workId,
 		sessionRecords: session.recordCount,
@@ -240,7 +276,8 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 		constraintRejected,
 		afterConstraint,
 		rolledBack,
-		afterRollback: counts(),
+		afterRollback,
+		iteration,
 	})
 }
 
@@ -361,6 +398,11 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
+	"read-history": async (agent) => {
+		const problems: WorkRecordProblem[] = []
+		const records = readWorkRecords(agent, undefined, undefined, (problem) => problems.push(problem))
+		out({ records, problems })
+	},
 	listfiles: (agent) => listFiles(agent),
 	"known-record-regressions": (agent, json) => knownRecordRegressions(agent, json ?? "{}"),
 	"known-schema-race": (agent) => knownSchemaRace(agent),

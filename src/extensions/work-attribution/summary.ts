@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
-import { hydrateLegacyOnce } from "../pr-cost-reporting/ledger/import.js"
+import { hydrateLegacy, hydrateLegacyOnce, reportJournalProblems } from "../pr-cost-reporting/ledger/import.js"
 import {
 	readRecords as ledgerReadRecords,
 	fingerprint as recordsFingerprint,
@@ -140,13 +140,14 @@ export function journalParser(
 	path: string,
 	records: WorkRecord[],
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
+	onTruncatedTail: ((problem: WorkRecordProblem) => void) | undefined = onRecordProblem,
 ) {
 	let line = 0
 	let cut: number[] = []
 	return (text: string, final: boolean): void => {
 		line++
 		if (!text.trim()) {
-			if (final) for (const number of cut) onRecordProblem?.({ kind: "invalid", path, line: number })
+			if (final) for (const number of cut) onTruncatedTail?.({ kind: "invalid", path, line: number })
 			return
 		}
 		// A later line shows that the cut-off records before it were interrupted appends.
@@ -188,17 +189,22 @@ export async function workJournals(agentDir: string): Promise<string[]> {
 export function readWorkRecords(
 	agentDir: string,
 	modifiedSince?: number,
-	_checkBudget?: () => void,
-	_onRecordProblem?: (problem: WorkRecordProblem) => void,
+	checkBudget?: () => void,
+	onRecordProblem?: (problem: WorkRecordProblem) => void,
 ): WorkRecord[] {
-	// A2: fold any un-imported legacy journals before the first history-dependent read. A failure must not
-	// break the read — the C3 worker pass and the next read retry it.
-	try {
-		hydrateLegacyOnce(agentDir)
-	} catch (error) {
-		debugWorkAttribution("Legacy hydration unavailable:", error)
+	if (onRecordProblem || checkBudget) {
+		// Strict history readers must see current local coverage, including damage consumed by another reader.
+		// A failed scan or exhausted budget cannot silently authorize work from incomplete history.
+		hydrateLegacy(agentDir, { checkBudget })
+		if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	} else {
+		try {
+			hydrateLegacyOnce(agentDir)
+		} catch (error) {
+			debugWorkAttribution("Legacy hydration unavailable:", error)
+		}
 	}
-	return ledgerReadRecords(agentDir, { modifiedSince })
+	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
 }
 /**
  * Like readWorkRecords, but yields once so a large history never blocks the UI,
@@ -210,7 +216,7 @@ export async function readWorkRecordsAsync(
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
 ): Promise<WorkRecord[]> {
 	signal.throwIfAborted()
-	const records = readWorkRecords(agentDir, undefined, undefined, onRecordProblem)
+	const records = readWorkRecords(agentDir, undefined, () => signal.throwIfAborted(), onRecordProblem)
 	await setImmediate()
 	signal.throwIfAborted()
 	return records

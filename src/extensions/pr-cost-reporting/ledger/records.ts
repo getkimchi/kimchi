@@ -63,7 +63,10 @@ export interface RecordBackend {
 	getHead(workId: string): WorkHead | undefined
 	putHead(head: WorkHead): void
 	allHeads(): WorkHead[]
-	readRecords(opts: { workId?: string; sessionId?: string; modifiedSince?: number }): StoredRecord[]
+	readRecords(
+		opts: { workId?: string; sessionId?: string; modifiedSince?: number },
+		checkBudget?: () => void,
+	): StoredRecord[]
 	recordCount(workId?: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
@@ -192,9 +195,15 @@ export function importBatchInTx(backend: RecordBackend, entries: ImportEntry[]):
 }
 
 /** Replays stored records in capture/import order. */
-export function readRecords(agentDir: string, opts: { workId?: string; modifiedSince?: number } = {}): WorkRecord[] {
+export function readRecords(
+	agentDir: string,
+	opts: { workId?: string; modifiedSince?: number } = {},
+	checkBudget?: () => void,
+): WorkRecord[] {
+	checkBudget?.()
 	const records: WorkRecord[] = []
-	for (const row of backendFor(agentDir).readRecords(opts)) {
+	for (const row of backendFor(agentDir).readRecords(opts, checkBudget)) {
+		checkBudget?.()
 		try {
 			records.push(JSON.parse(row.body) as WorkRecord)
 		} catch {
@@ -497,14 +506,28 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		},
 		putHead: (head) => putHead.run(head.workId, JSON.stringify(head), Date.now()),
 		allHeads: () => allHeads.all().map((row) => JSON.parse(row.body) as WorkHead),
-		readRecords: (opts) => {
-			let rows =
+		readRecords: (opts, checkBudget) => {
+			checkBudget?.()
+			const source =
 				opts.workId !== undefined
-					? readRecordsWork.all(opts.workId)
+					? readRecordsWork.iterate(opts.workId)
 					: opts.modifiedSince !== undefined
-						? readRecordsSince.all(opts.modifiedSince)
-						: readRecordsAll.all()
-			if (opts.sessionId !== undefined) rows = rows.filter((row) => row.sessionId === opts.sessionId)
+						? readRecordsSince.iterate(opts.modifiedSince)
+						: readRecordsAll.iterate()
+			const rows: StoredRecord[] = []
+			try {
+				for (const row of source) {
+					checkBudget?.()
+					if (opts.sessionId === undefined || row.sessionId === opts.sessionId) rows.push(row)
+				}
+			} catch (error) {
+				// Bun 1.4 leaves an interrupted iterator's cursor positioned mid-result.
+				// get() resets before and after one row; it never drains the remaining history.
+				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
+				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
+				else readRecordsAll.get()
+				throw error
+			}
 			return rows
 		},
 		hasProjectionOutput: (workId) =>

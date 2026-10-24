@@ -9,6 +9,7 @@ declare module "bun:sqlite" {
 	export class Statement<R = unknown, P extends unknown[] = unknown[]> {
 		get(...params: P): R | null
 		all(...params: P): R[]
+		iterate(...params: P): IterableIterator<R>
 		run(...params: P): { changes: number; lastInsertRowid: number | bigint }
 	}
 

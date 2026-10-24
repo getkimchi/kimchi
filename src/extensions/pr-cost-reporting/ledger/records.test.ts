@@ -322,6 +322,17 @@ it("known regression: Bun preserves capture/update/reopen and rolls back failed 
 			afterConstraint: { authority: 3, markers: 3, heads: 1, rows: 2, notes: 0, dirty: 0, diagnostics: 0 },
 			rolledBack: true,
 			afterRollback: { authority: 3, markers: 3, heads: 1, rows: 2, notes: 0, dirty: 0, diagnostics: 0 },
+			iteration: {
+				aborted: true,
+				budgetChecks: 3,
+				sameConnectionRows: 3,
+				sameConnectionUnchanged: true,
+				transactionWrite: true,
+				reopenedRows: 3,
+				reopenedUnchanged: true,
+				reopenedNote: true,
+				noLegacyJournal: true,
+			},
 		})
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
