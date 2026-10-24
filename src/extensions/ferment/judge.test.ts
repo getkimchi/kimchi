@@ -1217,9 +1217,21 @@ describe("judgeApiCall", () => {
 				sessionId: "judge-original",
 				requestId: options.headers["X-Request-Id"],
 			})
+			options.onProviderStreamEvent?.({ usage: { prompt_tokens: 7, completion_tokens: 2 } }, _model)
 			return { content: [{ type: "text", text: "ok" }], stopReason: "stop" }
 		})
 		expect(await judgeApiCall("system", "user")).toEqual({ ok: true, text: "ok" })
+		const usage = backendFor(attributionDir)
+			.readRecords({})
+			.map((row) => JSON.parse(row.body))
+			.filter((row) => row.nativeUsage)
+		expect(usage).toEqual([
+			expect.objectContaining({
+				workId,
+				sessionId: "judge-original",
+				nativeUsage: expect.objectContaining({ raw: { inputTokens: 7, outputTokens: 2 }, finalized: true }),
+			}),
+		])
 	})
 
 	it.each(["kimi-k3", "judge-x"])("sends Pi token limits to the judge model (%s)", async (modelId) => {

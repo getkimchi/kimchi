@@ -224,7 +224,15 @@ describe("suggestSessionName", () => {
 				setWorkId(ctx)
 				return new Response("retry", { status: 500 })
 			}
-			return new Response(JSON.stringify({ choices: [{ message: { content: "Name retained" } }] }), { status: 200 })
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "Name retained" } }],
+					id: "chat-title",
+					model: "title-model",
+					usage: { prompt_tokens: 10, completion_tokens: 2 },
+				}),
+				{ status: 200 },
+			)
 		})
 		vi.stubGlobal("fetch", fetchMock)
 		const pending = suggestSessionName(ctx, "Name this task", true)
@@ -232,6 +240,15 @@ describe("suggestSessionName", () => {
 		expect(await pending).toBe("Name retained")
 		expect(fetchMock).toHaveBeenCalledTimes(2)
 		expect(new Set(requestIds).size).toBe(2)
+		const usage = backendFor(attributionDir)
+			.readRecords({})
+			.map((row) => JSON.parse(row.body))
+			.filter((row) => row.nativeUsage)
+		expect(usage.map((row) => [row.requestId, row.workId, row.sessionId, row.nativeUsage.raw])).toEqual([
+			[requestIds[0], workId, "original", {}],
+			[requestIds[1], workId, "original", { inputTokens: 10, outputTokens: 2 }],
+		])
+		expect(usage[1].nativeUsage).toMatchObject({ responseId: "chat-title", actualModel: "title-model" })
 	})
 
 	it.each(["identity", "request"])("keeps naming available when %s persistence fails", async (stage) => {

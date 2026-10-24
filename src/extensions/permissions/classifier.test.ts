@@ -74,12 +74,19 @@ describe("classifyToolCall", () => {
 			const request = records.at(-1)
 			expect(request.requestId).toBe(opts.headers["X-Request-Id"])
 			requestIds.push(request.requestId)
+			opts.onProviderStreamEvent?.({ usage: { prompt_tokens: 10, completion_tokens: 2 } }, _model)
 			return response("invalid")
 		})
 		const result = classifyToolCall([primary], createModelRegistry(), call, options)
 		await vi.runAllTimersAsync()
 		await result
 		expect(new Set(requestIds).size).toBe(3)
+		const usage = backendFor(attributionDir)
+			.readRecords({})
+			.map((row) => JSON.parse(row.body))
+			.filter((row) => row.nativeUsage)
+		expect(usage.map((row) => row.requestId)).toEqual(requestIds)
+		for (const row of usage) expect(row.nativeUsage.raw).toEqual({ inputTokens: 10, outputTokens: 2 })
 	})
 
 	it.each([

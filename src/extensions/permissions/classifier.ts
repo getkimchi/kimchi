@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { complete } from "@earendil-works/pi-ai/compat"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { createNativeUsageCapture } from "../work-attribution/native-usage.js"
 import {
 	getWorkId,
 	pinWorkContext,
@@ -153,37 +154,43 @@ async function runClassifier(
 	const request = attribution.workId
 		? tryWorkAttribution(() => recordProviderRequest(attribution.context, model, attribution.workId))
 		: undefined
+	const usage = createNativeUsageCapture(model)
 	const outcome = await withinDeadline(
-		(attemptSignal) =>
-			complete(
-				model,
-				{
-					systemPrompt: classifierSystemPrompt,
-					messages: [
-						{
-							role: "user",
-							content: [{ type: "text", text: buildUserPrompt(call) }],
-							timestamp: Date.now(),
+		(attemptSignal) => {
+			usage.bind(request?.requestId)
+			return usage.complete(() =>
+				complete(
+					model,
+					{
+						systemPrompt: classifierSystemPrompt,
+						messages: [
+							{
+								role: "user",
+								content: [{ type: "text", text: buildUserPrompt(call) }],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					{
+						apiKey: auth.apiKey,
+						onProviderStreamEvent: usage.onProviderStreamEvent,
+						headers: {
+							...auth.headers,
+							...(request ? { "X-Request-Id": request.requestId } : {}),
 						},
-					],
-				},
-				{
-					apiKey: auth.apiKey,
-					headers: {
-						...auth.headers,
-						...(request ? { "X-Request-Id": request.requestId } : {}),
+						signal: attemptSignal,
+						onPayload: (payload: unknown) => {
+							if (payload && typeof payload === "object") {
+								const p = payload as Record<string, unknown>
+								const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
+								p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
+							}
+							return payload
+						},
 					},
-					signal: attemptSignal,
-					onPayload: (payload: unknown) => {
-						if (payload && typeof payload === "object") {
-							const p = payload as Record<string, unknown>
-							const existing = Array.isArray(p.tags) ? (p.tags as string[]) : []
-							p.tags = [CLASSIFIER_REQUEST_TAG, ...existing]
-						}
-						return payload
-					},
-				},
-			),
+				),
+			)
+		},
 		deadline,
 		signal,
 	)

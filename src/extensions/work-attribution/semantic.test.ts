@@ -92,7 +92,12 @@ function byCheck(candidates: Record<string, Reply>, precheck: Reply = JSON.strin
 	return (data: Record<string, unknown>) =>
 		typeof data.selectedWorkId === "string" ? (candidates[data.selectedWorkId] ?? "{}") : precheck
 }
-async function provider(answer: Answer, status = 200, headers: Record<string, string> = {}) {
+async function provider(
+	answer: Answer,
+	status = 200,
+	headers: Record<string, string> = {},
+	usage?: Record<string, number>,
+) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-selected-model-")))
 	roots.push(root)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
@@ -123,7 +128,7 @@ async function provider(answer: Answer, status = 200, headers: Record<string, st
 		if (!afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		response.end(
 			`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n` +
-				`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+				`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
 		)
 	})
 	servers.push(server)
@@ -147,7 +152,12 @@ const input = {
 }
 
 it("uses the selected model without shared classifier models, with normal auth and a durable ID per request", async () => {
-	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
+	const server = await provider(
+		[JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })],
+		200,
+		{},
+		{ prompt_tokens: 12, completion_tokens: 3 },
+	)
 	vi.mocked(server.registry.getApiKeyAndHeaders).mockResolvedValue({
 		ok: true,
 		apiKey: "selected-key",
@@ -168,6 +178,11 @@ it("uses the selected model without shared classifier models, with normal auth a
 	expect(overhead).toHaveLength(2)
 	expect(overhead.every((row) => row.purpose === "work-matching")).toBe(true)
 	for (const row of overhead) expect(row.segment).toMatchObject({ attribution: "session", reason: "work-matching" })
+	const usages = readWorkRecords(join(server.root, "agent")).filter((row) => row.nativeUsage)
+	expect(usages).toHaveLength(2)
+	expect(usages.map((row) => row.requestId)).toEqual(server.requests.map((r) => r.headers["x-request-id"]))
+	for (const row of usages)
+		expect(row.nativeUsage).toMatchObject({ raw: { inputTokens: 12, outputTokens: 3 }, finalized: true })
 })
 
 it("decides on the matching models in order, the next one answering when a model cannot", async () => {

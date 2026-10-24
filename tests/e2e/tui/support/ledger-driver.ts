@@ -175,6 +175,85 @@ async function importJournalsCommand(agent: string): Promise<void> {
 	out(await importJournals(agent))
 }
 
+async function nativeUsage(agent: string): Promise<void> {
+	process.env.PI_CODING_AGENT_DIR = agent
+	const { ModelRuntime } = await import("@earendil-works/pi-coding-agent")
+	const { installGlobalFetchInstrumentation } = await import("../../../../src/http/instrument-fetch.js")
+	const { prepareProviderRequest, recordProviderRequest, recordProviderResponse, setWorkId } = await import(
+		"../../../../src/extensions/work-attribution.js"
+	)
+	const { withNativeUsage } = await import("../../../../src/extensions/work-attribution/native-usage.js")
+	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	let sessionId = "sdk-original"
+	const ctx = { cwd: agent, sessionManager: { getSessionId: () => sessionId } }
+	const calls: { id: string | null; persisted: boolean }[] = []
+	globalThis.fetch = async (_url, options) => {
+		const id = new Headers(options?.headers).get("X-Request-Id")
+		calls.push({
+			id,
+			persisted: readRecords(agent).some((row) => row.type === "request_dispatch" && row.requestId === id),
+		})
+		if (calls.length === 1) {
+			sessionId = "sdk-next"
+			setWorkId(ctx)
+			return Response.json({ error: { message: "retry" } }, { status: 503, headers: { "Retry-After": "0" } })
+		}
+		return new Response(
+			`data: ${JSON.stringify({
+				id: "chat-sdk",
+				model: "sdk-responding",
+				choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }],
+				usage: { prompt_tokens: 100, completion_tokens: 7 },
+			})}\n\ndata: [DONE]\n\n`,
+			{ headers: { "Content-Type": "text/event-stream" } },
+		)
+	}
+	installGlobalFetchInstrumentation({
+		userAgent: "native-usage-test",
+		onModelRequest: prepareProviderRequest,
+		onModelResponse: recordProviderResponse,
+	})
+	const runtime = await withNativeUsage(ModelRuntime.create.bind(ModelRuntime))({
+		authPath: join(agent, "auth.json"),
+		modelsPath: join(agent, "models.json"),
+		refreshOnCreate: false,
+		allowModelNetwork: false,
+	})
+	runtime.registerProvider("native-test", {
+		api: "openai-completions",
+		baseUrl: "https://native.invalid/v1",
+		models: [
+			{
+				id: "requested",
+				name: "requested",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 10000,
+				maxTokens: 1000,
+			},
+		],
+	})
+	await runtime.setRuntimeApiKey("native-test", "fake")
+	await runtime.refresh({ allowNetwork: false })
+	const model = runtime.getModel("native-test", "requested")
+	if (!model) throw new Error("Missing registered native model")
+	const original = recordProviderRequest(ctx, model)
+	const message = await runtime.completeSimple(
+		model,
+		{ messages: [{ role: "user", content: "Say ok", timestamp: Date.now() }] },
+		{
+			maxRetries: 1,
+			maxRetryDelayMs: 1,
+			transformHeaders: (headers) => ({ ...headers, "X-Request-Id": original.requestId }),
+		},
+	)
+	closeBackends()
+	const captured = readRecords(agent).filter((row) => row.nativeUsage)
+	out({ original, calls, stopReason: message.stopReason, captured })
+	closeBackends()
+}
+
 async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
@@ -696,6 +775,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	},
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
+	"native-usage": (agent) => nativeUsage(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
 	"read-history": async (agent) => {
 		const problems: WorkRecordProblem[] = []

@@ -208,6 +208,12 @@ describe("strip-images extension", () => {
 
 			expect(sentOptions).toMatchObject({ maxTokens: 200 })
 			expect(sentOptions).not.toHaveProperty("onPayload")
+			const usage = backendFor(attributionDir)
+				.readRecords({})
+				.map((row) => JSON.parse(row.body))
+				.filter((row) => row.nativeUsage)
+			expect(usage).toHaveLength(1)
+			expect(usage[0].nativeUsage).toMatchObject({ finalized: true, raw: {} })
 		})
 	})
 })

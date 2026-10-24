@@ -22,6 +22,7 @@ import {
 	type WorkContext,
 } from "../work-attribution.js"
 import { userText } from "./continuation.js"
+import { createNativeUsageCapture } from "./native-usage.js"
 import {
 	captureWorkAccount,
 	isWorkAccount,
@@ -384,52 +385,57 @@ export async function classifyWorkIntent(
 			const request = workId
 				? tryWorkAttribution(() => recordProviderRequest(context, model, workId, "work-matching"))
 				: undefined
-			const response = await completeSimple(
-				{ ...model, baseUrl: auth.baseUrl ?? model.baseUrl },
-				{
-					systemPrompt,
-					messages: [{ role: "user", content, timestamp: Date.now() }],
-				},
-				{
-					apiKey: auth.apiKey,
-					env: auth.env,
-					headers: {
-						...auth.headers,
-						"X-Session-Id": context.sessionManager.getSessionId(),
-						...(request ? { "X-Request-Id": request.requestId } : {}),
+			const usage = createNativeUsageCapture(model)
+			usage.bind(request?.requestId)
+			const response = await usage.complete(() =>
+				completeSimple(
+					{ ...model, baseUrl: auth.baseUrl ?? model.baseUrl },
+					{
+						systemPrompt,
+						messages: [{ role: "user", content, timestamp: Date.now() }],
 					},
-					// The SDK's request timeout ends once headers arrive; a reply can stall after them.
-					signal: handOver
-						? AbortSignal.any([attempt, AbortSignal.timeout(Math.min(WORK_MATCHING_CALL_TIMEOUT_MS, deadlineMs))])
-						: attempt,
-					maxRetries: 0,
-					maxTokens: 128,
-					temperature: 0,
-					// Kimchi's GLM routes can mix reasoning into text or echo input in JSON-object mode.
-					samplingParams:
-						isKimchiProvider(model.provider) && model.api === "openai-completions"
-							? {
-									response_format: {
-										type: "json_schema",
-										json_schema: {
-											name: "work_intent",
-											strict: true,
-											schema: {
-												type: "object",
-												properties: {
-													decision: {
-														type: "string",
-														enum: ["same", "new", "unknown", "specific", "match", "different"],
+					{
+						apiKey: auth.apiKey,
+						onProviderStreamEvent: usage.onProviderStreamEvent,
+						env: auth.env,
+						headers: {
+							...auth.headers,
+							"X-Session-Id": context.sessionManager.getSessionId(),
+							...(request ? { "X-Request-Id": request.requestId } : {}),
+						},
+						// The SDK's request timeout ends once headers arrive; a reply can stall after them.
+						signal: handOver
+							? AbortSignal.any([attempt, AbortSignal.timeout(Math.min(WORK_MATCHING_CALL_TIMEOUT_MS, deadlineMs))])
+							: attempt,
+						maxRetries: 0,
+						maxTokens: 128,
+						temperature: 0,
+						// Kimchi's GLM routes can mix reasoning into text or echo input in JSON-object mode.
+						samplingParams:
+							isKimchiProvider(model.provider) && model.api === "openai-completions"
+								? {
+										response_format: {
+											type: "json_schema",
+											json_schema: {
+												name: "work_intent",
+												strict: true,
+												schema: {
+													type: "object",
+													properties: {
+														decision: {
+															type: "string",
+															enum: ["same", "new", "unknown", "specific", "match", "different"],
+														},
 													},
+													required: ["decision"],
+													additionalProperties: false,
 												},
-												required: ["decision"],
-												additionalProperties: false,
 											},
 										},
-									},
-								}
-							: undefined,
-				},
+									}
+								: undefined,
+					},
+				),
 			)
 			assertAllowed()
 			// Only a complete decision object is the model's answer; anything else leaves the decision to the next model.
