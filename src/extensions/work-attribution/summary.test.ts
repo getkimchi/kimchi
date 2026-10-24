@@ -751,21 +751,23 @@ describe("readable work summaries", () => {
 			)
 		}
 	})
-	it("keeps a durable request header when the derived summary directory is blocked", async () => {
+	it("keeps a durable request header when the legacy summary directory is blocked", async () => {
 		fs.writeFileSync(join(dir, "work"), "blocked")
 		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
 		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, context())
-		const rows = fs
-			.readFileSync(join(dir, "work-attribution", "parent.jsonl"), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line))
-		expect(event.headers["X-Request-Id"]).toBe(rows.find((row) => row.type === "request").requestId)
+		const request = readWorkRecords(dir).find((row) => row.type === "request")
+		if (!request) throw new Error("Expected a durable request")
+		expect(event.headers["X-Request-Id"]).toBe(request.requestId)
 		await flushWorkSummaries()
-		expect(warn).toHaveBeenCalledWith("Work summary unavailable:", expect.any(Error))
+		expect(summary(request.workId).requests).toEqual([
+			expect.objectContaining({ requestId: request.requestId, sessionId: "parent" }),
+		])
+		expect(fs.readFileSync(join(dir, "work"), "utf8")).toBe("blocked")
+		expect(fs.existsSync(join(dir, "work-attribution", "parent.jsonl"))).toBe(false)
+		expect(warn).not.toHaveBeenCalled()
 	})
 	it("does not scan unrelated histories for an ordinary append", async () => {
 		const workId = getWorkId(context())
@@ -777,89 +779,151 @@ describe("readable work summaries", () => {
 		expect(scan).not.toHaveBeenCalled()
 		expect(summary(workId).requests).toHaveLength(1)
 	})
-	it("does not scan histories when a session starts brand-new work", async () => {
+	it("discovers legacy roots once before assigning fresh work, then avoids rescanning", async () => {
 		const scan = vi.spyOn(fs, "readdirSync")
 		const workId = getWorkId(context("fresh"))
 		await flushWorkSummaries()
-		expect(scan).not.toHaveBeenCalled()
+		expect(scan.mock.calls.map(([source]) => String(source))).toEqual([
+			join(dir, "work-attribution"),
+			join(dir, "work-attribution", "transitions"),
+		])
+		scan.mockClear()
+		const nextWorkId = getWorkId(context("next-fresh"))
+		expect(nextWorkId).not.toBe(workId)
 		expect(summary(workId).sessions).toEqual(["fresh"])
+		expect(summary(nextWorkId).sessions).toEqual(["next-fresh"])
+		expect(scan).not.toHaveBeenCalled()
 	})
-	it("relaunches without rereading recovered ledgers or republishing unchanged summaries", async () => {
+	it("relaunches without reimporting unchanged facts or republishing their projection", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)
 		recordProviderRequest(ctx)
 		await flushWorkSummaries()
+		const backend = backendFor(dir)
+		const authority = structuredClone(backend.readRecords({ workId }))
+		const published = structuredClone(backend.getHead(workId))
+		if (!published) throw new Error("Expected a published projection")
+		const inserted = vi.spyOn(backend, "insertRecord")
+		const publish = vi.spyOn(backend, "putHead")
 		const launch = async () => {
 			vi.resetModules()
-			const read = vi.spyOn(fs, "readFileSync")
-			try {
-				const relaunched = await import("./summary.js")
-				relaunched.recoverWorkSummaries()
-				await relaunched.flushWorkSummaries()
-				return { ledgerReads: read.mock.calls.filter(([file]) => String(file).endsWith(".jsonl")).length }
-			} finally {
-				read.mockRestore()
-			}
+			const relaunched = await import("./summary.js")
+			const records = await import("../pr-cost-reporting/ledger/records.js")
+			expect(records.backendFor(dir)).toBe(backend)
+			relaunched.recoverWorkSummaries()
+			await relaunched.flushWorkSummaries()
 		}
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
+		const originalBytes = `${authority.map((row) => row.body).join("\n")}\n`
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		fs.writeFileSync(ledger, originalBytes)
 		const past = new Date(Date.now() - 60 * 60 * 1000)
-		fs.utimesSync(path(workId), past, past)
-		const published = fs.statSync(path(workId)).mtimeMs
-		expect((await launch()).ledgerReads).toBe(1)
-		expect(fs.statSync(path(workId)).mtimeMs).toBe(published)
 		fs.utimesSync(ledger, past, past)
-		expect((await launch()).ledgerReads).toBe(0)
-		expect(fs.statSync(path(workId)).mtimeMs).toBe(published)
-		// A later append is replayed again, even if its live summary update never ran.
+		await launch()
+		expect(backend.readRecords({ workId })).toEqual(authority)
+		expect(backend.getHead(workId)).toEqual(published)
+		expect(publish).not.toHaveBeenCalled()
+		const cursor = structuredClone(backend.getJournalCursor(ledger))
+		expect(cursor?.offset).toBe(Buffer.byteLength(originalBytes))
+		inserted.mockClear()
+		await launch()
+		expect(inserted).not.toHaveBeenCalled()
+		expect(publish).not.toHaveBeenCalled()
+		expect(backend.getJournalCursor(ledger)).toEqual(cursor)
+		expect(fs.statSync(ledger).mtimeMs).toBe(past.getTime())
+		expect(fs.readFileSync(ledger, "utf8")).toBe(originalBytes)
+
+		// An old process can append after migration without updating the projection.
 		fs.appendFileSync(
 			ledger,
-			`${JSON.stringify({ type: "request", requestId: "unpublished", version: 1, sessionId: "parent", workId, cwd: "/project", recordedAt: new Date().toISOString() })}\n`,
+			`${JSON.stringify({ type: "request", requestId: "unpublished", version: 1, sessionId: "parent", workId, cwd: "/project", scope: null, recordedAt: new Date().toISOString() })}\n`,
 		)
-		expect((await launch()).ledgerReads).toBe(1)
-		expect(summary(workId).requests.map((row) => row.requestId)).toContain("unpublished")
-		// Recovered ledgers may be unchanged even when their derived output disappears or is damaged.
-		fs.utimesSync(ledger, past, past)
-		for (const damaged of [undefined, "{"]) {
-			if (damaged === undefined) fs.rmSync(path(workId))
-			else fs.writeFileSync(path(workId), damaged)
+		const appendedBytes = fs.readFileSync(ledger, "utf8")
+		await launch()
+		expect(inserted).toHaveBeenCalledTimes(1)
+		expect(publish).toHaveBeenCalledTimes(1)
+		expect(backend.getHead(workId)).toBeDefined()
+		const expectedRequests = structuredClone(backend.readLog(workId, "requests"))
+		expect(expectedRequests).toHaveLength(2)
+		expect(summary(workId).requests).toHaveLength(2)
+		expect(summary(workId).requests).toContainEqual(expect.objectContaining({ requestId: "unpublished", scope: null }))
+		const replayed = structuredClone(backend.readRecords({ workId }))
+		expect(replayed.slice(0, authority.length)).toEqual(authority)
+		expect(replayed).toHaveLength(authority.length + 1)
+
+		// Missing and stale projections recover even though the imported file is unchanged.
+		for (const damaged of [false, true]) {
+			backend.tx(() => {
+				backend.clearProjection(workId)
+				if (damaged) backend.putHead({ ...published, logs: {}, latest: {} })
+				backend.markDirty(workId)
+			})
+			expect(backend.readLog(workId, "requests")).toEqual([])
+			expect(backend.getHead(workId)).toEqual(damaged ? { ...published, logs: {}, latest: {} } : undefined)
+			expect(backend.dirtyWorks()).toContain(workId)
 			await launch()
+			expect(backend.dirtyWorks()).not.toContain(workId)
+			expect(backend.getHead(workId)).toBeDefined()
+			expect(backend.readLog(workId, "requests")).toEqual(expectedRequests)
 			expect(summary(workId).requests).toHaveLength(2)
+			expect(backend.readRecords({ workId })).toEqual(replayed)
+			expect(fs.readFileSync(ledger, "utf8")).toBe(appendedBytes)
+			expect(fs.existsSync(path(workId))).toBe(false)
 		}
 	})
 	it.each(["session", "transition"])("does not checkpoint a failed %s ledger scan and retries it", async (kind) => {
-		const workId = getWorkId(context())
-		recordProviderRequest(context())
+		const workId = randomUUID()
+		const sessionLedger = join(dir, "work-attribution", "parent.jsonl")
 		const transitionLedger = join(dir, "work-attribution", "transitions", "unreadable.jsonl")
-		appendWorkRecord(
-			context(),
-			{
-				type: "file_transition",
-				transitionId: "edit",
-				toolCallId: "tool",
-				repository: "/repo",
-				worktree: "/tree",
-				path: "file.ts",
-			},
-			workId,
-			transitionLedger,
-		)
-		await flushWorkSummaries()
-		const ledger = kind === "session" ? join(dir, "work-attribution", "parent.jsonl") : transitionLedger
-		fs.rmSync(path(workId))
-		const read = fs.readFileSync
-		const failure = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
-			if (args[0] === ledger) throw new Error("injected ledger read failure")
+		const sessionBytes = `${JSON.stringify({ version: 1, type: "request", sessionId: "parent", workId, requestId: "captured-request", scope: null })}\n`
+		const transitionBytes = `${JSON.stringify({ version: 1, type: "file_transition", sessionId: "parent", workId, transitionId: "edit", toolCallId: "tool", repository: "/repo", worktree: "/tree", path: "file.ts" })}\n`
+		fs.mkdirSync(dirname(transitionLedger), { recursive: true })
+		fs.writeFileSync(sessionLedger, sessionBytes)
+		fs.writeFileSync(transitionLedger, transitionBytes)
+		const backend = backendFor(dir)
+		expect(backend.recordCount()).toBe(0)
+		const ledger = kind === "session" ? sessionLedger : transitionLedger
+		let failedFd: number | undefined
+		const open = fs.openSync
+		const opened = vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+			const fd = open(...args)
+			if (args[0] === ledger) failedFd = fd
+			return fd
+		})
+		const read = fs.readSync
+		const failure = vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+			if (args[0] === failedFd) throw new Error("injected ledger read failure")
 			return read(...args)
 		})
-		vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
+		const closed = vi.spyOn(fs, "closeSync")
+		const warn = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		recoverWorkSummaries()
 		await flushWorkSummaries()
+		expect(failedFd).toEqual(expect.any(Number))
+		expect(closed).toHaveBeenCalledWith(failedFd)
+		expect(warn).toHaveBeenCalledWith(
+			"Work summary recovery unavailable:",
+			expect.objectContaining({ message: "injected ledger read failure" }),
+		)
+		expect(backend.getJournalCursor(ledger)).toBeUndefined()
+		expect(backend.recordCount(workId)).toBe(kind === "session" ? 0 : 1)
+		const accepted = structuredClone(backend.readRecords({ workId }))
 		expect(fs.existsSync(join(dir, "work-attribution", ".recovered.json"))).toBe(false)
 		failure.mockRestore()
+		opened.mockRestore()
+		closed.mockRestore()
 		recoverWorkSummaries()
 		await flushWorkSummaries()
-		expect(summary(workId).requests).toHaveLength(1)
-		expect(summary(workId).fileTransitions).toHaveLength(1)
+		expect(summary(workId).requests).toEqual([expect.objectContaining({ requestId: "captured-request", scope: null })])
+		expect(summary(workId).fileTransitions).toEqual([expect.objectContaining({ transitionId: "edit" })])
+		expect(backend.recordCount(workId)).toBe(2)
+		expect(backend.readRecords({ workId }).slice(0, accepted.length)).toEqual(accepted)
+		expect(backend.getJournalCursor(ledger)?.offset).toBe(
+			Buffer.byteLength(kind === "session" ? sessionBytes : transitionBytes),
+		)
+		expect(fs.readFileSync(sessionLedger, "utf8")).toBe(sessionBytes)
+		expect(fs.readFileSync(transitionLedger, "utf8")).toBe(transitionBytes)
+		expect(fs.existsSync(path(workId))).toBe(false)
 	})
 
 	it("drains an append that arrives while the asynchronous lock is being released", async () => {
@@ -884,10 +948,12 @@ describe("readable work summaries", () => {
 		await flushWorkSummaries()
 		expect(summary(workId).requests.map((row) => row.requestId)).toEqual(["queued", "during-release"])
 	})
-	it("does one recovery scan per agent directory despite child session fanout", async () => {
+	it("does one legacy discovery per agent directory despite child session fanout", async () => {
+		const scan = vi.spyOn(fs, "readdirSync")
 		const workId = getWorkId(context())
 		await flushWorkSummaries()
-		const scan = vi.spyOn(fs, "readdirSync")
+		const roots = [join(dir, "work-attribution"), join(dir, "work-attribution", "transitions")]
+		expect(scan.mock.calls.map(([source]) => String(source))).toEqual(roots)
 		for (const session of ["first", "child", "next-child"]) {
 			const api = createExtensionApi()
 			createWorkAttributionExtension(workId)(api.api)
@@ -896,7 +962,7 @@ describe("readable work summaries", () => {
 				context(session),
 			)
 		}
-		expect(scan).toHaveBeenCalledTimes(1)
+		expect(scan.mock.calls.map(([source]) => String(source))).toEqual(roots)
 	})
 
 	it.each([
