@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
+import { createHash } from "node:crypto"
 import { mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -11,6 +12,8 @@ import {
 	closeBackends,
 	ledgerHasWorkOutput,
 	ledgerSessionInfo,
+	readRecordsAsync,
+	readStoredRecordsAsync,
 	readWorkHead,
 	readWorkSummary,
 	rebuildWork,
@@ -110,6 +113,33 @@ describe("records conformance (memory backend)", () => {
 		useBackendFactory(null)
 		closeBackends()
 		for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("cooperative stored reads retain original source hashes and damaged bodies without changing parsed reads", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const source = `  ${JSON.stringify(records[0])}  `
+		const recordHash = createHash("sha256").update(source).digest("hex")
+		const stored = {
+			recordHash,
+			type: records[0].type,
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[0]),
+			sourcePath: "/legacy/session.jsonl",
+			sourceGeneration: 2,
+			sourceOffset: 17,
+			importedAt: 123,
+		}
+		backend.insertRecord(stored)
+		const damaged = { ...stored, recordHash: "b".repeat(64), body: "{damaged" }
+		backend.insertRecord(damaged)
+		const rows = await readStoredRecordsAsync(dir, () => {})
+		expect(rows).toMatchObject([stored, damaged])
+		expect(rows[0].recordHash).not.toBe(createHash("sha256").update(rows[0].body).digest("hex"))
+		expect(await readRecordsAsync(dir, () => {})).toEqual([records[0]])
 	})
 
 	it("capture folds records into the projection exactly like the legacy summary did", () => {

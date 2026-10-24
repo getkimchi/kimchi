@@ -959,10 +959,14 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 	return Buffer.from(left).equals(Buffer.from(right))
 }
 
-async function knownAsyncReadRegressions(agent: string, recordJson: string): Promise<void> {
-	const { backendFor, closeBackends, recordHashOf, rebuildWork } = await import(
+async function knownAsyncReadRegressions(agent: string, recordJson: string, stored = false): Promise<void> {
+	const { backendFor, closeBackends, recordHashOf, readStoredRecordsAsync, rebuildWork } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 	)
+	const readAsync = stored
+		? async (signal: AbortSignal): Promise<WorkRecord[]> =>
+				(await readStoredRecordsAsync(agent, () => signal.throwIfAborted())).map((row) => JSON.parse(row.body))
+		: (signal: AbortSignal) => readWorkRecordsAsync(agent, signal)
 	const base = JSON.parse(recordJson) as WorkRecord
 	const native = [
 		base,
@@ -1018,7 +1022,7 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string): Pro
 	}
 	let cancelled = false
 	try {
-		await readWorkRecordsAsync(agent, controller.signal)
+		await readAsync(controller.signal)
 	} catch (error) {
 		if (error !== sentinel) throw error
 		cancelled = true
@@ -1039,9 +1043,9 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string): Pro
 		}
 		return rows
 	}
-	const snapshot = await readWorkRecordsAsync(agent, new AbortController().signal)
+	const snapshot = await readAsync(new AbortController().signal)
 	backend.readRecordPage = page
-	const next = await readWorkRecordsAsync(agent, new AbortController().signal)
+	const next = await readAsync(new AbortController().signal)
 	const afterCapture = read({})
 	closeBackends()
 	const reopened = backendFor(agent).readRecords({})
@@ -1527,6 +1531,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"summary-writer": (agent, json) => summaryWriter(agent, json ?? "{}"),
 	"known-record-regressions": (agent, json) => knownRecordRegressions(agent, json ?? "{}"),
 	"known-async-read-regressions": (agent, json) => knownAsyncReadRegressions(agent, json ?? "{}"),
+	"known-async-stored-read-regressions": (agent, json) => knownAsyncReadRegressions(agent, json ?? "{}", true),
 	"known-schema-race": (agent) => knownSchemaRace(agent),
 	"known-schema-race-open": (agent) => knownSchemaRaceOpen(agent),
 }

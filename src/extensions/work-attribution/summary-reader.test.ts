@@ -229,12 +229,15 @@ it("pins asynchronous replay to its starting watermark without materializing the
 	expect(unbounded).not.toHaveBeenCalled()
 })
 
-it("cancels from inside actual native SQLite row reading and preserves same-connection and reopened history", () => {
+it.each([
+	"known-async-read-regressions",
+	"known-async-stored-read-regressions",
+])("%s cancels inside native SQLite reading and preserves same-connection and reopened history", (command) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "kimchi-native-async-reader-"))
 	directories.push(agentDir)
 	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
 	const result = JSON.parse(
-		execFileSync("bun", [driver, "known-async-read-regressions", agentDir, JSON.stringify(work)], {
+		execFileSync("bun", [driver, command, agentDir, JSON.stringify(work)], {
 			encoding: "utf8",
 			timeout: 30_000,
 		}).trim(),

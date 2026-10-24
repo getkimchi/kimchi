@@ -257,11 +257,15 @@ export function readRecords(
 }
 
 /** No transaction or live iterator crosses a yield; appends beyond the watermark belong to the next read. */
-export async function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
+async function readRecordPrefixAsync<T>(
+	agentDir: string,
+	checkBudget: () => void,
+	project: (row: StoredRecord) => T | undefined,
+): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
 	const through = backend.recordWatermark()
-	const records: WorkRecord[] = []
+	const records: T[] = []
 	let after = 0
 	while (after < through) {
 		await setImmediate()
@@ -270,16 +274,29 @@ export async function readRecordsAsync(agentDir: string, checkBudget: () => void
 		if (!page.length) break
 		for (const row of page) {
 			checkBudget()
-			try {
-				records.push(JSON.parse(row.body) as WorkRecord)
-			} catch {
-				// Match the synchronous reader's damaged-body behavior.
-			}
+			const value = project(row)
+			if (value !== undefined) records.push(value)
 		}
 		after = page[page.length - 1].position
 	}
 	checkBudget()
 	return records
+}
+
+/** Retain original capture/import hashes for atomic translation; never hash the reserialized body instead. */
+export function readStoredRecordsAsync(agentDir: string, checkBudget: () => void): Promise<StoredRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row)
+}
+
+export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => {
+		try {
+			return JSON.parse(row.body) as WorkRecord
+		} catch {
+			// Match the synchronous reader's damaged-body behavior.
+			return undefined
+		}
+	})
 }
 
 /** Changes whenever new records exist; capture-skip logic only needs that much honesty. */
