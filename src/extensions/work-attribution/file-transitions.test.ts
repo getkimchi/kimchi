@@ -26,6 +26,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
@@ -40,8 +42,6 @@ import {
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
 } from "./file-transitions.js"
-import { getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:child_process", { spy: true })
@@ -139,7 +139,9 @@ describe("manual commit reconciliation", () => {
 			"agent",
 			"work-attribution",
 			"transitions",
-			`${createHash("sha256").update(JSON.stringify([repository, realpathSync(repo)])).digest("hex")}.jsonl`,
+			`${createHash("sha256")
+				.update(JSON.stringify([repository, realpathSync(repo)]))
+				.digest("hex")}.jsonl`,
 		)
 		const checkpointKey = `${transitionFile}.content-checkpoint`
 		const progress = getNote(join(root, "agent"), checkpointKey, "content-checkpoint")
@@ -199,7 +201,9 @@ describe("manual commit reconciliation", () => {
 			"agent",
 			"work-attribution",
 			"transitions",
-			`${createHash("sha256").update(JSON.stringify([repository, worktree])).digest("hex")}.jsonl`,
+			`${createHash("sha256")
+				.update(JSON.stringify([repository, worktree]))
+				.digest("hex")}.jsonl`,
 		)
 		expect(getNote(join(root, "agent"), `${transitionFile}.content-checkpoint`, "content-checkpoint")).toBeUndefined()
 
@@ -231,7 +235,7 @@ describe("manual commit reconciliation", () => {
 		}
 		await flushWorkSummaries()
 		let clock = 0
-		let deadline = 3000
+		const deadline = 3000
 		const original = asyncFs.open
 		const headers = vi.spyOn(asyncFs, "open").mockImplementation((...args) => {
 			if (String(args[0]).endsWith(".jsonl") && args[1] === "r") clock += 1100
@@ -1043,7 +1047,9 @@ describe("manual commit reconciliation", () => {
 			"agent",
 			"work-attribution",
 			"transitions",
-			`${createHash("sha256").update(JSON.stringify([realpathSync(join(repo, ".git")), realpathSync(repo)])).digest("hex")}.jsonl.content-checkpoint`,
+			`${createHash("sha256")
+				.update(JSON.stringify([realpathSync(join(repo, ".git")), realpathSync(repo)]))
+				.digest("hex")}.jsonl.content-checkpoint`,
 		)
 		const saved = getNote(join(root, "agent"), checkpointPath, "content-checkpoint")
 		if (!saved) throw new Error("Expected a completed content checkpoint")

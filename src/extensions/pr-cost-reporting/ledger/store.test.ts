@@ -132,7 +132,6 @@ test("agentDir stays inside the OS temp dir for tests", () => {
 	mkdirSync(agentDir(), { recursive: true })
 })
 
-
 test("known regression: initialization rechecks a future version after obtaining the lock", { timeout: 60_000 }, () => {
 	const result = driver("known-schema-race", agentDir())
 	expect(result.opened).toBe(false)

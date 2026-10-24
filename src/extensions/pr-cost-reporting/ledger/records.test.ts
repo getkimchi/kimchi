@@ -279,7 +279,6 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 	})
 })
 
-
 it("known regression: memory rollback restores records, projection and bookkeeping", () => {
 	const dir = agentDir()
 	const backend = createMemoryRecords()
@@ -288,13 +287,15 @@ it("known regression: memory rollback restores records, projection and bookkeepi
 		for (const record of records.slice(0, 2)) capture(dir, record, "/ignored/source")
 		backend.putNote(WORK, "rollback-probe", "before")
 		const before = structuredClone(readWorkSummary(dir, WORK))
-		expect(() => backend.tx(() => {
-			capture(dir, records[4], "/ignored/source")
-			backend.putNote(WORK, "rollback-probe", "after")
-			backend.markDirty(WORK)
-			backend.diagnostic("rollback-probe")
-			throw new Error("rollback-probe")
-		})).toThrow("rollback-probe")
+		expect(() =>
+			backend.tx(() => {
+				capture(dir, records[4], "/ignored/source")
+				backend.putNote(WORK, "rollback-probe", "after")
+				backend.markDirty(WORK)
+				backend.diagnostic("rollback-probe")
+				throw new Error("rollback-probe")
+			}),
+		).toThrow("rollback-probe")
 		expect(ledgerSessionInfo(dir, SESSION).recordCount).toBe(2)
 		expect(readWorkSummary(dir, WORK)).toEqual(before)
 		expect(backend.getNote(WORK, "rollback-probe")).toBe("before")

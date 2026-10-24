@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import {
-	existsSync,
-	readFileSync,
-} from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { contentText } from "@earendil-works/pi-ai"
 import {
@@ -20,9 +17,9 @@ import { writeConfigSetting } from "../config/settings.js"
 import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
-import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
@@ -63,12 +60,7 @@ import {
 	workMatchingAvailable,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
-import {
-	flushWorkSummaries,
-	object,
-	recoverWorkSummaries,
-	type WorkRecord,
-} from "./work-attribution/summary.js"
+import { flushWorkSummaries, object, recoverWorkSummaries, type WorkRecord } from "./work-attribution/summary.js"
 
 export interface WorkSegment {
 	id: string

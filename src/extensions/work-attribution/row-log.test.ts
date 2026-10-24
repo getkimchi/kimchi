@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
 	COLLECTIONS,
-	commitPullRequests,
 	type Collection,
+	commitPullRequests,
 	isWorkHead,
 	LOGS,
 	observeLatest,
-	type Row,
 	ROW_KEYS,
+	type Row,
 	summaryLatest,
 	type WorkHead,
 	type WorkLatest,
@@ -34,7 +34,9 @@ describe("collections and keys", () => {
 	})
 
 	it("keys every collection off its stable identity fields", () => {
-		expect(ROW_KEYS.requests({ sessionId: "s", requestId: "r" })).toBe(ROW_KEYS.requests({ sessionId: "x", requestId: "r" }))
+		expect(ROW_KEYS.requests({ sessionId: "s", requestId: "r" })).toBe(
+			ROW_KEYS.requests({ sessionId: "x", requestId: "r" }),
+		)
 		expect(ROW_KEYS.commits({ sessionId: "s", sha: "a", repository: "repo", worktree: "wt" })).not.toBe(
 			ROW_KEYS.commits({ sessionId: "s", sha: "a", repository: "repo", worktree: "wt2" }),
 		)
@@ -71,8 +73,14 @@ describe("observeLatest", () => {
 
 	it("records plan and commit snapshots without dropping repository context", () => {
 		const latest = fold([
-			{ collection: "plans", row: { sessionId: "s", path: "p", snapshotPath: "s/p", recordedAt: "2026-10-01T00:00:00Z" } },
-			{ collection: "commits", row: { sessionId: "s", sha: "x", repository: "/r", worktree: "/r", recordedAt: "2026-10-01T00:01:00Z" } },
+			{
+				collection: "plans",
+				row: { sessionId: "s", path: "p", snapshotPath: "s/p", recordedAt: "2026-10-01T00:00:00Z" },
+			},
+			{
+				collection: "commits",
+				row: { sessionId: "s", sha: "x", repository: "/r", worktree: "/r", recordedAt: "2026-10-01T00:01:00Z" },
+			},
 		])
 		expect(latest.plan).toEqual({ recordedAt: "2026-10-01T00:00:00Z", snapshotPath: "s/p" })
 		expect(latest.commit).toEqual({ recordedAt: "2026-10-01T00:01:00Z", repository: "/r" })

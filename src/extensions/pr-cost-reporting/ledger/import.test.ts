@@ -4,9 +4,17 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
+import {
+	boundaryHashOf,
+	completeLines,
+	hydrateLegacy,
+	hydrateLegacyOnce,
+	importJournals,
+	journalDecision,
+	journalPath,
+} from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
-import { boundaryHashOf, completeLines, hydrateLegacy, hydrateLegacyOnce, importJournals, journalDecision, journalPath } from "./import.js"
-import { capture, closeBackends, readRecords, readWorkRows, useBackendFactory, type JournalCursor } from "./records.js"
+import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 const DRIVER = join(ROOT, "tests/e2e/tui/support/ledger-driver.ts")
@@ -104,7 +112,11 @@ describe("cursor decisions (pure)", () => {
 		expect(journalDecision(cursor, 1, 2, shrunk.length, shrunk)).toEqual({ mode: "mutation", generation: 2, offset: 0 })
 		// Same size, different content: boundary hash no longer matches.
 		const rewritten = Buffer.from(line(request("req-9")) + line(request("req-8")))
-		expect(journalDecision(cursor, 1, 2, rewritten.length, rewritten)).toEqual({ mode: "mutation", generation: 2, offset: 0 })
+		expect(journalDecision(cursor, 1, 2, rewritten.length, rewritten)).toEqual({
+			mode: "mutation",
+			generation: 2,
+			offset: 0,
+		})
 	})
 
 	it("an inode change is a mutation regardless of bytes", () => {
@@ -161,7 +173,14 @@ describe("import loop over the memory backend", () => {
 		const folder = journal(dir)
 		writeFileSync(
 			join(folder, "parent.jsonl"),
-			line(work()) + "not json{{{\n" + line(request("req-1")) + '{"version":1,"type":"future_kind","workId":"' + WORK + '","sessionId":"' + SESSION + '"}\n',
+			line(work()) +
+				"not json{{{\n" +
+				line(request("req-1")) +
+				'{"version":1,"type":"future_kind","workId":"' +
+				WORK +
+				'","sessionId":"' +
+				SESSION +
+				'"}\n',
 		)
 		const result = await importJournals(dir)
 		expect(result.imported).toBe(2)
@@ -218,7 +237,11 @@ describe("import loop over the memory backend", () => {
 		expect(result).toMatchObject({ imported: 1, skipped: 1, files: [{ mode: "mutation", generation: 2 }] })
 		const records = readRecords(dir)
 		expect(records).toHaveLength(3)
-		expect(records.map((record) => (record as { requestId?: string }).requestId).sort()).toEqual(["req-1", "req-2", undefined])
+		expect(records.map((record) => (record as { requestId?: string }).requestId).sort()).toEqual([
+			"req-1",
+			"req-2",
+			undefined,
+		])
 	})
 
 	it("a same-size rewrite is a mutation and both generations' lines survive", async () => {
@@ -268,7 +291,11 @@ describe("import loop over the memory backend", () => {
 		expect(result.imported).toBe(0)
 		expect(readRecords(dir)).toHaveLength(2)
 		// Still replaying identically after the file is gone.
-		expect(readRecords(dir).map((record) => (record as { requestId?: string }).requestId).includes("req-1")).toBe(true)
+		expect(
+			readRecords(dir)
+				.map((record) => (record as { requestId?: string }).requestId)
+				.includes("req-1"),
+		).toBe(true)
 	})
 
 	it("an unterminated partial tail is deferred and retried once complete", async () => {
@@ -293,10 +320,7 @@ describe("import loop over the memory backend", () => {
 		dirs.push(dir)
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
-		writeFileSync(
-			join(folder, "parent.jsonl"),
-			line({ ...request("req-1"), scope: null }),
-		)
+		writeFileSync(join(folder, "parent.jsonl"), line({ ...request("req-1"), scope: null }))
 		await importJournals(dir)
 		const records = readRecords(dir)
 		expect(records).toHaveLength(1)
@@ -475,7 +499,12 @@ describe("legacy journals import into SQLite via the Bun driver", { skip: isBun,
 
 			const rows = (await driver("records", dir, WORK)) as { requestId?: string }[]
 			expect(rows).toHaveLength(3)
-			expect(rows.map((row) => row.requestId).filter(Boolean).sort()).toEqual(["req-1", "req-2"])
+			expect(
+				rows
+					.map((row) => row.requestId)
+					.filter(Boolean)
+					.sort(),
+			).toEqual(["req-1", "req-2"])
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
@@ -507,13 +536,21 @@ describe("legacy journals import into SQLite via the Bun driver", { skip: isBun,
 			expect(shrunk.imported).toBe(0)
 
 			unlinkSync(file)
-			const removed = (await driver("import-journals", dir)) as { anomalies: { code: string; path?: string }[]; imported: number }
+			const removed = (await driver("import-journals", dir)) as {
+				anomalies: { code: string; path?: string }[]
+				imported: number
+			}
 			expect(removed.anomalies).toEqual([{ code: "journal-removed", path: file }])
 			expect(removed.imported).toBe(0)
 
 			// Nothing was ever withdrawn: the gen-1 req-1 line and the gen-2 req-9/req-2 lines all survive.
 			const rows = (await driver("records", dir, WORK)) as { requestId?: string }[]
-			expect(rows.map((row) => row.requestId).filter(Boolean).sort()).toEqual(["req-1", "req-2", "req-9"])
+			expect(
+				rows
+					.map((row) => row.requestId)
+					.filter(Boolean)
+					.sort(),
+			).toEqual(["req-1", "req-2", "req-9"])
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
@@ -525,7 +562,14 @@ describe("legacy journals import into SQLite via the Bun driver", { skip: isBun,
 			const folder = journal(dir)
 			writeFileSync(
 				join(folder, "parent.jsonl"),
-				line(work()) + "not json{{{\n" + line(request("req-2")) + '{"version":1,"type":"future_kind","workId":"' + WORK + '","sessionId":"' + SESSION + '"}\n',
+				line(work()) +
+					"not json{{{\n" +
+					line(request("req-2")) +
+					'{"version":1,"type":"future_kind","workId":"' +
+					WORK +
+					'","sessionId":"' +
+					SESSION +
+					'"}\n',
 			)
 			const result = (await driver("import-journals", dir)) as {
 				problems: { kind: string }[]
@@ -572,7 +616,11 @@ describe("legacy journals import into SQLite via the Bun driver", { skip: isBun,
 		const dir = agentDir()
 		try {
 			journal(dir)
-			const result = (await driver("import-journals", dir)) as { imported: number; anomalies: unknown[]; files: unknown[] }
+			const result = (await driver("import-journals", dir)) as {
+				imported: number
+				anomalies: unknown[]
+				files: unknown[]
+			}
 			expect(result).toMatchObject({ imported: 0, anomalies: [], files: [] })
 		} finally {
 			rmSync(dir, { recursive: true, force: true })

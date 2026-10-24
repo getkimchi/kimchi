@@ -1,5 +1,5 @@
 import { mergePullRequestLinks } from "../../pull-request-status/links.js"
-import { ROW_KEYS, type Collection } from "../../work-attribution/row-log.js"
+import { type Collection, ROW_KEYS } from "../../work-attribution/row-log.js"
 import type { WorkRecord } from "../../work-attribution/summary.js"
 
 /**

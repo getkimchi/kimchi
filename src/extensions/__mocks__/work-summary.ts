@@ -1,5 +1,5 @@
-import { readWorkSummary, seedProjectionRows, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { readWorkSummary, seedProjectionRows, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import type { Collection, Row, WorkSummaryView } from "../work-attribution/row-log.js"
 
 // Node/vitest cannot load bun:sqlite. Every suite that seeds through this fixture mock

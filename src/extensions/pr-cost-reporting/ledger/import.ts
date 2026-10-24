@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto"
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { journalParser, workJournals, type WorkRecord, type WorkRecordProblem } from "../../work-attribution/summary.js"
-import { backendFor, diagnostic, importBatchInTx, type ImportEntry, type JournalCursor } from "./records.js"
+import { journalParser, type WorkRecord, type WorkRecordProblem, workJournals } from "../../work-attribution/summary.js"
+import { backendFor, diagnostic, type ImportEntry, importBatchInTx, type JournalCursor } from "./records.js"
 
 /**
  * C3 — incremental, immutable legacy import.
@@ -64,7 +64,12 @@ export function journalDecision(
 	// clean no-op. Anything else (replaced, shrunk, ino change, same-size content change, prefix
 	// rewritten) is a mutation: generation++, offset 0, re-import the whole file; identical lines
 	// are no-ops via record_hash.
-	if (cursor.dev === dev && cursor.ino === ino && size >= cursor.offset && boundaryHashOf(file, cursor.offset) === cursor.boundaryHash)
+	if (
+		cursor.dev === dev &&
+		cursor.ino === ino &&
+		size >= cursor.offset &&
+		boundaryHashOf(file, cursor.offset) === cursor.boundaryHash
+	)
 		return { mode: "clean-append", generation: cursor.generation, offset: cursor.offset }
 	return { mode: "mutation", generation: cursor.generation + 1, offset: 0 }
 }
@@ -233,7 +238,12 @@ export async function importJournals(
 	agentDir: string,
 	options: { maxBytes?: number; onRecordProblem?: (problem: WorkRecordProblem) => void } = {},
 ): Promise<ImportResult> {
-	return importJournalFiles(agentDir, await workJournals(agentDir), options.maxBytes ?? 512 * 1024, options.onRecordProblem)
+	return importJournalFiles(
+		agentDir,
+		await workJournals(agentDir),
+		options.maxBytes ?? 512 * 1024,
+		options.onRecordProblem,
+	)
 }
 
 /**
@@ -245,7 +255,12 @@ export function hydrateLegacy(
 	agentDir: string,
 	options: { maxBytes?: number; onRecordProblem?: (problem: WorkRecordProblem) => void } = {},
 ): ImportResult {
-	return importJournalFiles(agentDir, syncWorkJournals(agentDir), options.maxBytes ?? Number.POSITIVE_INFINITY, options.onRecordProblem)
+	return importJournalFiles(
+		agentDir,
+		syncWorkJournals(agentDir),
+		options.maxBytes ?? Number.POSITIVE_INFINITY,
+		options.onRecordProblem,
+	)
 }
 
 const hydratedDirs = new Set<string>()

@@ -5,11 +5,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { saveWorkSummary } from "../__mocks__/work-summary.js"
+import { readWorkHead } from "../pr-cost-reporting/ledger/records.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
 import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
 import type { PullRequestCost } from "./costs.js"
 import { changeWorkIssue, MAX_ISSUE_BYTES } from "./issues.js"
-import { readWorkHead } from "../pr-cost-reporting/ledger/records.js"
 import type { Collection, Row } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -184,7 +184,11 @@ describe("work browser rows", () => {
 			await save(
 				workId(index),
 				// The ledger row's activity timestamp replaces the legacy work.json mtime as the recency signal.
-				{ summary: summary(workId(index), { requests: [request(`r${index}`, new Date(NOW - index * HOUR).toISOString())] }) },
+				{
+					summary: summary(workId(index), {
+						requests: [request(`r${index}`, new Date(NOW - index * HOUR).toISOString())],
+					}),
+				},
 				NOW - index * HOUR,
 			)
 

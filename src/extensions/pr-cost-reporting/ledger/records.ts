@@ -1,18 +1,18 @@
 import { createHash } from "node:crypto"
-import { mergeRecordsInto, type SummaryRows } from "./merge.js"
-import { ensureProjectionVersion, openStore, type LedgerStore } from "./store.js"
 import {
 	COLLECTIONS,
-	LOGS,
-	ROW_KEYS,
-	summaryLatest,
 	type Collection,
+	LOGS,
 	type LogName,
+	ROW_KEYS,
 	type Row,
+	summaryLatest,
 	type WorkHead,
 	type WorkSummaryView,
 } from "../../work-attribution/row-log.js"
 import type { WorkRecord } from "../../work-attribution/summary.js"
+import { mergeRecordsInto, type SummaryRows } from "./merge.js"
+import { ensureProjectionVersion, type LedgerStore, openStore } from "./store.js"
 
 /**
  * The one storage engine behind capture, import, the derived summary projection, and tracker bookkeeping. Both
@@ -172,7 +172,10 @@ export function importBatchInTx(backend: RecordBackend, entries: ImportEntry[]):
 		inserted++
 		backend.upsertMarker(recordHash, entry.record.workId, entry.record.type)
 		let list = insertedByWork.get(entry.record.workId)
-		if (!list) insertedByWork.set(entry.record.workId, (list = []))
+		if (!list) {
+			list = []
+			insertedByWork.set(entry.record.workId, list)
+		}
 		list.push(entry.record)
 	}
 	for (const workId of touched) {
@@ -341,8 +344,7 @@ export function seedProjectionRows(agentDir: string, view: WorkSummaryView): voi
 		for (const sessionId of view.sessions)
 			backend.putRow(view.workId, "sessions", ROW_KEYS.sessions({ sessionId }), { sessionId })
 		for (const collection of COLLECTIONS)
-			for (const row of view[collection] ?? [])
-				backend.putRow(view.workId, collection, ROW_KEYS[collection](row), row)
+			for (const row of view[collection] ?? []) backend.putRow(view.workId, collection, ROW_KEYS[collection](row), row)
 		backend.putHead(headFrom(backend, view.workId))
 	})
 }
@@ -462,7 +464,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const rowsOf = (workId: string, log: LogName): Row[] =>
 		readLog.all(workId, log).map((row) => JSON.parse(row.body) as Row)
 	return {
-		tx: <T,>(fn: () => T): T => store.tx(fn),
+		tx: <T>(fn: () => T): T => store.tx(fn),
 		insertRecord: (row) =>
 			insertRecord.run(
 				row.recordHash,
@@ -514,7 +516,15 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		diagnostic: (code) => bumpDiagnostic.run(code, Date.now()),
 		getJournalCursor: (path) => getCursor.get(path) ?? undefined,
 		putJournalCursor: (cursor) =>
-			putCursor.run(cursor.path, cursor.dev, cursor.ino, cursor.generation, cursor.offset, cursor.boundaryHash, cursor.updatedAt),
+			putCursor.run(
+				cursor.path,
+				cursor.dev,
+				cursor.ino,
+				cursor.generation,
+				cursor.offset,
+				cursor.boundaryHash,
+				cursor.updatedAt,
+			),
 		listJournalCursors: () => allCursors.all(),
 		close: () => store.close(),
 	}

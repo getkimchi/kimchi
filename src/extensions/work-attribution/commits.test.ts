@@ -22,12 +22,12 @@ function bashState(registry: ReturnType<typeof createProcessRegistry>) {
 	}
 }
 
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
 import * as diagnostics from "./diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import { useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 
 // Node/vitest cannot load bun:sqlite; suites that read records run on the memory backend,
 // the same contract the shared conformance suite asserts.
@@ -52,7 +52,10 @@ function quote(value: string): string {
 const commitRows = (agentDir: string) =>
 	readWorkRecords(agentDir)
 		.filter((row) => row.type === "commit")
-		.map((row) => ({ sha: String(row.sha), rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined }))
+		.map((row) => ({
+			sha: String(row.sha),
+			rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
+		}))
 
 async function run(command: string, cwd = repository): Promise<number | null> {
 	return (

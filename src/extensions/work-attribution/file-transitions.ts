@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { writeFileDurably } from "../../config/json.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { SHA } from "../pull-request-status/provider-records.js"
 import {
 	appendWorkRecord,
@@ -26,7 +27,6 @@ import {
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
 import { fileMatchStrength, readWorkRecords, SHA256_HEX } from "./summary.js"
-import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024

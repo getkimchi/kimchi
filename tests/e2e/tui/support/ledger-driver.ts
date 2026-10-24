@@ -18,10 +18,9 @@
  */
 
 import { Database } from "bun:sqlite"
-import { mkdirSync, statSync } from "node:fs"
-import { dirname } from "node:path"
-import { readdirSync } from "node:fs"
-import { join, relative } from "node:path"
+import { mkdirSync, readdirSync, statSync } from "node:fs"
+import { dirname, join, relative } from "node:path"
+import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
 	capture,
 	fingerprint,
@@ -29,7 +28,6 @@ import {
 	readWorkHead,
 	readWorkSummary,
 } from "../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
 import { readWorkRecords, type WorkRecord } from "../../../../src/extensions/work-attribution/summary.js"
 
@@ -143,7 +141,6 @@ async function listFiles(agent: string): Promise<void> {
 	out(found.sort())
 }
 
-
 async function printRecords(agent: string, workId?: string): Promise<void> {
 	out(readRecords(agent, workId ? { workId } : {}))
 }
@@ -170,18 +167,20 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 	const counts = (): Record<string, number> => {
 		const store = openStore(agent)
 		try {
-			return Object.fromEntries([
-				["authority", "work_records"],
-				["markers", "pending_translation"],
-				["heads", "work_projection_head"],
-				["rows", "work_projection_rows"],
-				["notes", "bookkeeping"],
-				["dirty", "work_dirty"],
-				["diagnostics", "diagnostics"],
-			].map(([name, table]) => [
-				name,
-				store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM " + table).get()?.count ?? -1,
-			]))
+			return Object.fromEntries(
+				[
+					["authority", "work_records"],
+					["markers", "pending_translation"],
+					["heads", "work_projection_head"],
+					["rows", "work_projection_rows"],
+					["notes", "bookkeeping"],
+					["dirty", "work_dirty"],
+					["diagnostics", "diagnostics"],
+				].map(([name, table]) => [
+					name,
+					store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM " + table).get()?.count ?? -1,
+				]),
+			)
 		} finally {
 			store.close()
 		}
@@ -230,11 +229,11 @@ async function knownSchemaRaceOpen(agent: string): Promise<void> {
 	const prototype = Database.prototype as unknown as { query: (sql: string) => VersionStatement }
 	const original = prototype.query
 	let announced = false
-	prototype.query = function(sql: string): VersionStatement {
+	prototype.query = function (sql: string): VersionStatement {
 		const statement = original.call(this, sql)
 		if (sql === "PRAGMA user_version" && !announced) {
 			const get = statement.get
-			statement.get = function(...args: unknown[]) {
+			statement.get = function (...args: unknown[]) {
 				const value = get.apply(this, args)
 				if (!announced) {
 					announced = true
@@ -283,7 +282,9 @@ async function knownSchemaRace(agent: string): Promise<void> {
 				resolve()
 			}
 		})
-		child.stderr.on("data", (chunk: Buffer) => { errors += chunk.toString() })
+		child.stderr.on("data", (chunk: Buffer) => {
+			errors += chunk.toString()
+		})
 		child.once("error", reject)
 		child.once("exit", () => {
 			if (!sawVersion) reject(new Error("schema opener exited before stale read: " + output + errors))
@@ -299,7 +300,10 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		out({
 			...result,
 			version: writer.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-			tables: writer.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name),
+			tables: writer
+				.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+				.all()
+				.map((row) => row.name),
 		})
 	} finally {
 		clearTimeout(timer)

@@ -185,7 +185,9 @@ export function commitPullRequests(commits: Iterable<Row>): Record<string, unkno
 }
 
 /** `latest` and `pullRequests` recomputed from every row, in log order. */
-export function summaryLatest(rows: (collection: Collection) => Iterable<Row>): Pick<WorkHead, "latest" | "pullRequests"> {
+export function summaryLatest(
+	rows: (collection: Collection) => Iterable<Row>,
+): Pick<WorkHead, "latest" | "pullRequests"> {
 	const latest: WorkLatest = {}
 	for (const collection of COLLECTIONS) for (const row of rows(collection)) observeLatest(latest, collection, row)
 	return { latest, pullRequests: commitPullRequests(rows("commits")) }

@@ -5,11 +5,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
 import { hydrateLegacyOnce } from "../pr-cost-reporting/ledger/import.js"
 import {
-	fingerprint as recordsFingerprint,
 	readRecords as ledgerReadRecords,
+	fingerprint as recordsFingerprint,
 	recoverDirty,
 } from "../pr-cost-reporting/ledger/records.js"
 import { debugWorkAttribution } from "./diagnostics.js"
+
 export { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
 
 /** Kept for trackers that still take a file lease (issues.ts); the record store needs no lease. */
