@@ -134,6 +134,8 @@ interface PendingRequest {
 	purpose?: "work-matching"
 	dispatched: boolean
 	responded: boolean
+	/** Shared by this logical call's attempts; retained observers do not depend on the bounded lookup map. */
+	call: { observers: number; current?: { requestId: string; request: PendingRequest; dispatchObserved: boolean } }
 	billingSource?: BillingSource
 	billingTag?: string
 	headers?: BeforeProviderHeadersEvent["headers"]
@@ -212,13 +214,16 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 	const scope = decided ? (readWorkScope(decided.workId) ?? null) : undefined
 	// A dispatch replaces a request's in-memory entry, so settle every copy that held or later rows come from.
 	const settle = (request: PendingRequest) => {
-		if (decided)
-			Object.assign(request, {
+		if (decided) {
+			const fields = {
 				workId: decided.workId,
 				segment: decided.segment,
 				scope,
 				issue: inputIssue(request.path, decided.workId),
-			})
+			}
+			Object.assign(request, fields)
+			if (request.call.current) Object.assign(request.call.current.request, fields)
+		}
 	}
 	if (decided) {
 		for (const request of pendingRequests.values()) if (request.deferred === deferred) settle(request)
@@ -242,10 +247,11 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 }
 
 function rememberRequest(requestId: string, request: PendingRequest): void {
-	// ponytail: retain at most 1000 attempts for SDK retries; older ledger rows remain durable.
-	if (pendingRequests.size >= 1000) {
-		const oldest = pendingRequests.keys().next().value
-		if (oldest) pendingRequests.delete(oldest)
+	// Keep in-flight native calls; older unobserved attempts remain durable in the ledger.
+	while (pendingRequests.size >= 1000) {
+		const oldest = [...pendingRequests].find(([, pending]) => pending.call.observers === 0)?.[0]
+		if (!oldest) break
+		pendingRequests.delete(oldest)
 	}
 	pendingRequests.set(requestId, request)
 }
@@ -374,8 +380,10 @@ export function recordProviderRequest(
 		issue,
 		dispatched: false,
 		responded: false,
+		call: { observers: 0 },
 		...(deferred && !deferred.written ? { deferred } : {}),
 	}
+	request.call.current = { requestId, request, dispatchObserved: false }
 	if (request.deferred) request.deferred.rows.push({ request, fields })
 	rememberRequest(requestId, request)
 	return { requestId, workId }
@@ -398,6 +406,7 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 	const billingSelector = billingSource && tagging.billingTag ? requestTagSelector(requestId, dispatchedAt) : undefined
 	// Even a failed metadata write represents a dispatch; a subsequent SDK retry needs another ID.
 	request.dispatched = true
+	request.call.current = undefined
 	const active = activeRequests.get(request.path)
 	const isActive = active && pendingRequests.get(active.requestId)?.logicalRequestId === request.logicalRequestId
 	try {
@@ -433,20 +442,52 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 		}
 		throw error
 	}
-	rememberRequest(requestId, {
+	const dispatched: PendingRequest = {
 		...request,
 		startedAt,
 		billingSource,
 		billingTag: billingSelector ? tagging.billingTag : undefined,
 		dispatched: true,
 		responded: false,
-	})
+	}
+	rememberRequest(requestId, dispatched)
+	request.call.current = { requestId, request: dispatched, dispatchObserved: true }
 	headers.set("X-Request-Id", requestId)
 	if (billingSelector && tagging.header) headers.set("X-Tags", tagging.header)
 	if (isActive) {
 		activeRequests.set(request.path, { requestId, workId: request.workId })
 		// Timing retains this same object from before_provider_headers; move both identities together.
 		if (request.headers) request.headers["X-Request-Id"] = requestId
+	}
+}
+/** Retain a logical call until release(); each usage sink keeps the exact attempt it observed. */
+export function pinProviderUsage(requestId: string) {
+	const call = pendingRequests.get(requestId)?.call
+	if (!call) return undefined
+	call.observers++
+	let released = false
+	return {
+		current() {
+			const attempt = call.current
+			if (!attempt || released) return undefined
+			return {
+				requestId: attempt.requestId,
+				save(nativeUsage: Record<string, unknown>): void {
+					tryWorkAttribution(() =>
+						appendRequestRecord(attempt.request, {
+							type: "request_response",
+							requestId: attempt.requestId,
+							nativeUsage: { ...nativeUsage, dispatchObserved: attempt.dispatchObserved },
+						}),
+					)
+				},
+			}
+		},
+		release(): void {
+			if (released) return
+			released = true
+			call.observers--
+		},
 	}
 }
 /** A response belongs to the identity captured before dispatch, even after /work new or /new. */

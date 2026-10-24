@@ -35,6 +35,7 @@ import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import { savedWorkSummary } from "./__mocks__/work-summary.js"
+import * as ledgerRecords from "./pr-cost-reporting/ledger/records.js"
 import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import requestTimingExtension from "./request-timing.js"
 import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
@@ -52,6 +53,7 @@ import {
 	getToolRequest,
 	getWorkId,
 	getWorkSegment,
+	pinProviderUsage,
 	prepareProviderRequest,
 	recordProviderRequest,
 	recordProviderResponse,
@@ -96,6 +98,115 @@ function wireHeaders(values: BeforeProviderHeadersEvent["headers"]): Headers {
 	return headers
 }
 describe("local work attribution", () => {
+	it("pins native usage to its actual retry after another call and session replace the active work", () => {
+		let sessionId = "native-original"
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		sessionId = "native-next"
+		setWorkId(ctx)
+		const side = recordProviderRequest(ctx, ctx.model)
+		prepareProviderRequest(new Headers({ "X-Request-Id": side.requestId }), "", { bodyTags: [] })
+		const retry = new Headers({ "X-Request-Id": original.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		pinned?.current()?.save({ raw: { inputTokens: 12 }, finalized: true })
+		expect(pinned?.current()?.requestId).toBe(retry.get("X-Request-Id"))
+		expect(records().find((row) => row.nativeUsage)).toMatchObject({
+			requestId: retry.get("X-Request-Id"),
+			workId: original.workId,
+			sessionId: "native-original",
+			nativeUsage: { raw: { inputTokens: 12 }, finalized: true },
+		})
+		pinned?.release()
+	})
+	it("keeps native usage sinks independent for concurrent calls and their earlier attempts", () => {
+		const ctx = createContext({ cwd: dir })
+		const first = recordProviderRequest(ctx, ctx.model)
+		const second = recordProviderRequest(ctx, ctx.model)
+		const a = pinProviderUsage(first.requestId)
+		const b = pinProviderUsage(second.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": first.requestId }), "", { bodyTags: [] })
+		const earlier = a?.current()
+		const retry = new Headers({ "X-Request-Id": first.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		prepareProviderRequest(new Headers({ "X-Request-Id": second.requestId }), "", { bodyTags: [] })
+		earlier?.save({ raw: { inputTokens: 1 }, finalized: false })
+		a?.current()?.save({ raw: { inputTokens: 2 }, finalized: true })
+		b?.current()?.save({ raw: { inputTokens: 3 }, finalized: true })
+		expect(
+			records()
+				.filter((row) => row.nativeUsage)
+				.map((row) => [row.requestId, row.nativeUsage.raw.inputTokens]),
+		).toEqual([
+			[first.requestId, 1],
+			[retry.get("X-Request-Id"), 2],
+			[second.requestId, 3],
+		])
+		a?.release()
+		b?.release()
+	})
+	it("invalidates native usage identity when a retry cannot be recorded", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		expect(pinned?.current()).toBeDefined()
+		failPersistence()
+		expect(() =>
+			prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] }),
+		).toThrow("ledger write unavailable")
+		expect(pinned?.current()).toBeUndefined()
+		expect(pinProviderUsage("not-a-request")).toBeUndefined()
+		pinned?.release()
+	})
+	it("keeps logical-only usage distinct from a later recorded dispatch", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		const logicalOnly = pinned?.current()
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		logicalOnly?.save({ raw: { inputTokens: 1 } })
+		pinned?.current()?.save({ raw: { outputTokens: 2 } })
+		expect(
+			records()
+				.filter((row) => row.nativeUsage)
+				.map((row) => row.nativeUsage.dispatchObserved),
+		).toEqual([false, true])
+		pinned?.release()
+	})
+	it("retains a native usage handle and records later retries through unrelated request traffic", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		const otherObserver = pinProviderUsage(original.requestId)
+		otherObserver?.release()
+		otherObserver?.release()
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		const unrelatedTraffic = () => {
+			// Only request-map pressure matters here; the tracked call still uses real capture.
+			const capture = vi.spyOn(ledgerRecords, "capture").mockImplementation(() => {})
+			try {
+				for (let index = 0; index < 1001; index++) recordProviderRequest(ctx, ctx.model)
+			} finally {
+				capture.mockRestore()
+			}
+		}
+		unrelatedTraffic()
+		const retry = new Headers({ "X-Request-Id": original.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		expect(retry.get("X-Request-Id")).not.toBe(original.requestId)
+		pinned?.current()?.save({ raw: { outputTokens: 7 }, finalized: true })
+		expect(records().find((row) => row.nativeUsage)).toMatchObject({
+			requestId: retry.get("X-Request-Id"),
+			workId: original.workId,
+			nativeUsage: { raw: { outputTokens: 7 }, finalized: true },
+		})
+		pinned?.release()
+		expect(pinned?.current()).toBeUndefined()
+		unrelatedTraffic()
+		expect(pinProviderUsage(original.requestId)).toBeUndefined()
+	})
 	it.each([
 		"user",
 		"custom",

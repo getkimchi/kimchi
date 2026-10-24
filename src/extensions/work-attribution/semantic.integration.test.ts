@@ -18,6 +18,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import * as ledgerRecords from "../pr-cost-reporting/ledger/records.js"
 import { setNote } from "../pr-cost-reporting/ledger/records.js"
 import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
@@ -26,6 +27,7 @@ import {
 	getToolRequest,
 	getWorkId,
 	getWorkSegment,
+	pinProviderUsage,
 	pinWorkContext,
 	prepareProviderRequest,
 	recordProviderRequest,
@@ -229,6 +231,49 @@ it("starts the turn before matching decides and writes its held request with the
 	const rows = readWorkRecords(join(root, "agent")).filter((row) => row.requestId === requestId)
 	expect(rows.every((row) => row.workId === planned)).toBe(true)
 	expect(rows[0].segment).toMatchObject({ attribution: "inferred", reason: "model-continue" })
+})
+
+it.each([
+	false,
+	true,
+])("settles evicted native usage handles with their pending matching decision (retry: %s)", async (retry) => {
+	await rememberWorkIntent(cwd, planned, first)
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "native-held" } })
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	let finish!: (value: Awaited<ReturnType<typeof classifyWorkIntent>>) => void
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	await vi.waitFor(() => expect(classifyWorkIntent).toHaveBeenCalledOnce())
+	const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+	const requestId = event.headers["X-Request-Id"]
+	if (!requestId) throw new Error("Missing held request")
+	const pinned = pinProviderUsage(requestId)
+	prepareProviderRequest(new Headers({ "X-Request-Id": requestId }), "", { bodyTags: [] })
+	const attempts = [pinned?.current()]
+	if (retry) {
+		prepareProviderRequest(new Headers({ "X-Request-Id": requestId }), "", { bodyTags: [] })
+		attempts.push(pinned?.current())
+	}
+	pinned?.release()
+	const side = createContext({ cwd, sessionManager: { getSessionId: () => "native-unrelated" } })
+	const capture = vi.spyOn(ledgerRecords, "capture").mockImplementation(() => {})
+	try {
+		for (let index = 0; index < 1001; index++) recordProviderRequest(side, model, planned)
+	} finally {
+		capture.mockRestore()
+	}
+	expect(pinProviderUsage(requestId)).toBeUndefined()
+	finish({ decision: "continue", workId: planned, model: "selected/chat" })
+	await vi.waitFor(() => expect(getWorkId(ctx)).toBe(planned))
+	for (const attempt of attempts) attempt?.save({ raw: { inputTokens: 12 } })
+	const usage = readWorkRecords(join(root, "agent")).filter((row) => row.nativeUsage)
+	expect(usage).toHaveLength(retry ? 2 : 1)
+	expect(usage.map((row) => row.workId)).toEqual(attempts.map(() => planned))
 })
 
 it("writes a held request with the Jira issue of the work matching decides", async () => {
