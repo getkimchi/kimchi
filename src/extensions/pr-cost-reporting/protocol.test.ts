@@ -12,6 +12,8 @@ let actual: {
 	unicode: string
 	validation: boolean[]
 	invalidEvidence: boolean[]
+	author: { body: string; hash: string; emptyBody: string }
+	displayValidation: boolean[]
 }
 
 beforeAll(() => {
@@ -46,6 +48,24 @@ const unicode = structuredClone(fixture.events[0].input);
 unicode.work.title = "\\ud800 <>&\\u2028";
 const usage = fixture.events[1].input;
 const claim = fixture.events[9].input;
+const pr = fixture.events[5].input;
+const authored = {...pr, pullRequest: {...pr.pullRequest, author: "provider-user"}};
+const display = [
+  {title: "Title", author: ""},
+  {title: "Title", author: "a".repeat(255)},
+  {title: "Title", author: "界".repeat(255)},
+  {title: "Title", author: "👩".repeat(255)},
+  {title: "Title", author: "a".repeat(256)},
+  {title: "Title", author: "界".repeat(256)},
+  {title: "Title", author: "provider\\nuser"},
+  {title: "a".repeat(1024)},
+  {title: "界".repeat(1024)},
+  {title: "👩".repeat(1024)},
+  {title: "a".repeat(1025)},
+  {title: "界".repeat(1025)},
+  {title: "Title\\nbody"},
+  {title: "Title", author: 123}
+];
 const rejects = (operation) => { try { operation(); return false } catch { return true } };
 const badEvidence = [
   { ...usage, sourceVersion: "" },
@@ -81,6 +101,8 @@ console.log(JSON.stringify({
   times: ["2026-10-23T12:30:40.123400000+00:00", "2026-10-23T12:30:40.123400000+02:30", "2026-10-23T12:30:40.000Z"].map(canonicalTime),
   errors: invalid.map((event) => { try { encodeEvent(event); return "accepted" } catch (error) { return error.name } }),
   unicode: encodeEvent(unicode),
+  author: {body: encodeEvent(authored), hash: eventHash(authored), emptyBody: encodeEvent({...pr, pullRequest: {...pr.pullRequest, author: ""}})},
+  displayValidation: display.map((fields) => !rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, ...fields}}))),
   validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],
   invalidEvidence: [...badEvidence.map((event) => rejects(() => validateEvent(event))),
     rejects(() => validateBatch({...fixture.batches[0].input, events: [claim, claim]})),
@@ -128,4 +150,29 @@ it("keeps unknown counters distinct from reported zero and omits absent claim ex
 it("preserves nanoseconds and offsets while canonicalizing zero offsets and trailing zeros", () => {
 	expect(JSON.parse(actual.events[0].body).observeTime).toBe("2026-10-23T12:30:40.123456789Z")
 	expect(actual.times).toEqual(["2026-10-23T12:30:40.1234Z", "2026-10-23T12:30:40.1234+02:30", "2026-10-23T12:30:40Z"])
+})
+
+it("appends provider author with Go-compatible bytes and omits it when unknown", () => {
+	expect(actual.author.body).toBe(`${golden.events[5].body.slice(0, -2)},"author":"provider-user"}}`)
+	expect(actual.author.hash).toBe("1cf5ca11687791f75411668c102a695b9526c2fbaca3f2df102f2b5a321239f6")
+	expect(actual.author.emptyBody).toBe(golden.events[5].body)
+})
+
+it("uses legacy Unicode display bounds while rejecting controls and invalid author types", () => {
+	expect(actual.displayValidation).toEqual([
+		true,
+		true,
+		true,
+		true,
+		false,
+		false,
+		false,
+		true,
+		true,
+		true,
+		false,
+		false,
+		false,
+		false,
+	])
 })

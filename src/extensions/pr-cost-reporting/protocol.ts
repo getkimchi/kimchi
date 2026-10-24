@@ -120,6 +120,7 @@ export interface PullRequest {
 	mergeCommitId?: string
 	title?: string
 	issueKeys?: IssueKey[]
+	author?: string
 }
 export interface Link {
 	fromKind: string
@@ -300,6 +301,7 @@ const schemas: Record<string, readonly Field[]> = {
 		["mergeCommitId", "s", "empty"],
 		["title", "s", "empty"],
 		["issueKeys", "[]issue", "empty"],
+		["author", "s", "empty"],
 	],
 	link: [
 		["fromKind", "s"],
@@ -803,7 +805,10 @@ export function validateEvent(e: Event): void {
 			p.number <= 0 ||
 			p.number > 2147483647 ||
 			!["open", "closed", "merged"].includes(p.state) ||
-			!bounded(p.title, 512) ||
+			!bounded(p.title, 1024 * 4) ||
+			Array.from(p.title ?? "").length > 1024 ||
+			!bounded(p.author, 255 * 4) ||
+			Array.from(p.author ?? "").length > 255 ||
 			!issueValid(p.issueKeys) ||
 			(p.mergeCommitId && !gitID(p.mergeCommitId))
 		)
