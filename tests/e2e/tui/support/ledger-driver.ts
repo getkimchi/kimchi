@@ -258,6 +258,521 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
 
+async function outboxScenario(agent: string, mode: string): Promise<void> {
+	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+	)
+	const { backendFor, closeBackends, recordHashOf, useBackendFactory } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+	)
+	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	const { encodeBatch, eventHash } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
+	const backend = backendFor(agent)
+	const required = <T>(value: T | undefined): T => {
+		if (value === undefined) throw new Error("Missing outbox test row")
+		return value
+	}
+	const fence = () => {}
+	const fact = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "codex",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T00:00:00.123456789Z",
+		coverage: { code: "observed", count: "1" },
+	}
+	const record: WorkRecord = {
+		version: 1,
+		type: "request_response",
+		workId: "11111111-1111-4111-8111-111111111111",
+		requestId: "22222222-2222-4222-8222-222222222222",
+		sessionId: "original-session",
+		recordedAt: fact.observeTime,
+	}
+	capture(agent, record, "outbox-test")
+	const hash = recordHashOf(record)
+	observeEvents(agent, "account-a", [fact], [hash], fence)
+	const first = required(backend.latestOutboxEvent("account-a", fact.entityId))
+	observeEvents(agent, "account-a", [{ ...fact, observeTime: "2026-10-24T01:00:00Z" }], [], fence)
+	const noOp = backend.latestOutboxEvent("account-a", fact.entityId)?.id === first.id
+	observeEvents(agent, "account-a", [{ ...fact, coverage: { code: "observed", count: "2" } }], [], fence)
+	const second = required(backend.latestOutboxEvent("account-a", fact.entityId))
+	observeEvents(agent, "account-b", [fact], [], fence)
+	const other = required(backend.latestOutboxEvent("account-b", fact.entityId))
+	const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString("utf8"))
+	const one = parse(first.body)
+	const two = parse(second.body)
+	const frozen = required(pendingBatch(agent, "account-a", fence))
+	const detachedEvent = required(backend.getOutboxEvent("account-a", first.id))
+	detachedEvent.body[0] = 0
+	const detachedBatch = required(backend.getOutboxBatch("account-a"))
+	detachedBatch.body[0] = 0
+	detachedBatch.eventIds[0] = "changed"
+	const byteIsolation =
+		sameBytes(required(backend.getOutboxEvent("account-a", first.id)).body, first.body) &&
+		sameBytes(required(backend.getOutboxBatch("account-a")).body, frozen.body) &&
+		required(backend.getOutboxBatch("account-a")).eventIds[0] === frozen.eventIds[0]
+	backend.insertOutboxBatch({ ...frozen, id: "order-a", accountKey: "ordering", orderKey: "a" })
+	backend.insertOutboxBatch({ ...frozen, id: "order-Z", accountKey: "ordering", orderKey: "Z" })
+	const binaryBatchOrder = backend.getOutboxBatch("ordering")?.id === "order-Z"
+	const ack = (batch: typeof frozen) => ({
+		batchId: batch.id,
+		receipts: parse(batch.body).batch.events.map((event: { id: string; revision: string }) => ({
+			id: event.id,
+			revision: event.revision,
+			status: "accepted",
+		})),
+	})
+	const same = (left: Uint8Array, right: Uint8Array) => Buffer.from(left).equals(Buffer.from(right))
+	const rejects = (operation: () => unknown) => {
+		try {
+			operation()
+			return false
+		} catch {
+			return true
+		}
+	}
+	const corrupted = parse(frozen.body).batch
+	corrupted.events[0].coverage.count = "99"
+	const getBatch = backend.getOutboxBatch.bind(backend)
+	backend.getOutboxBatch = (account) =>
+		account === "account-a"
+			? { ...frozen, body: Buffer.from(`{"batch":${encodeBatch(corrupted)}}`) }
+			: getBatch(account)
+	const corruptedEventRejected = rejects(() => pendingBatch(agent, "account-a", fence))
+	const badBatchIdentity = { ...parse(frozen.body).batch, id: "invalid-batch" }
+	backend.getOutboxBatch = (account) =>
+		account === "account-a"
+			? { ...frozen, id: badBatchIdentity.id, body: Buffer.from(`{"batch":${encodeBatch(badBatchIdentity)}}`) }
+			: getBatch(account)
+	const corruptionRejected = corruptedEventRejected && rejects(() => pendingBatch(agent, "account-a", fence))
+	backend.getOutboxBatch = getBatch
+	const usage = {
+		channel: "native",
+		counterScope: "request",
+		observedRoute: "unknown",
+		schema: "unknown",
+		billingBasis: "unknown",
+		correlation: "exact",
+		raw: {},
+		attemptsComplete: true,
+	}
+	const badFacts = [
+		{ ...fact, coverage: { ...fact.coverage, windowStartTime: "0000-01-01T00:00:00Z" } },
+		{ ...fact, entityId: "not-a-uuid" },
+		{ ...fact, deviceId: "not-a-uuid" },
+		{ ...fact, observeTime: "1969-12-31T23:59:59Z" },
+		{ ...fact, observeTime: new Date(Date.now() + 3_600_000).toISOString() },
+		{ ...fact, coverage: undefined, usage: { ...usage, iterations: [{ id: "", schema: "unknown", raw: {} }] } },
+		{
+			...fact,
+			coverage: undefined,
+			usage: {
+				...usage,
+				iterations: [
+					{ id: "one", schema: "unknown", raw: {} },
+					{ id: "one", schema: "unknown", raw: {} },
+				],
+			},
+		},
+		{ ...fact, coverage: undefined, usage: { ...usage, finalIterationId: "missing" } },
+		{
+			...fact,
+			coverage: undefined,
+			usage: { ...usage, iterations: [{ id: "one", schema: "unknown", raw: {} }], finalIterationId: "missing" },
+		},
+		{
+			...fact,
+			coverage: undefined,
+			usage: {
+				...usage,
+				raw: {
+					cacheWrites: [
+						{ ttlSeconds: 300, tokens: "600000000000" },
+						{ ttlSeconds: 3600, tokens: "600000000000" },
+					],
+				},
+			},
+		},
+		{
+			...fact,
+			coverage: undefined,
+			usage: {
+				...usage,
+				schema: "openai-responses-v1",
+				raw: { inputTokens: "10", cacheReadTokens: "10", cacheWriteTokens: "1" },
+			},
+		},
+		{
+			...fact,
+			coverage: undefined,
+			usage: {
+				...usage,
+				iterations: [
+					{
+						id: "one",
+						schema: "openai-chat-completions-v1",
+						raw: { inputTokens: "10", cacheReadTokens: "10", cacheWriteTokens: "1" },
+					},
+				],
+			},
+		},
+	]
+	const admissionRejected =
+		badFacts.every((event) => rejects(() => observeEvents(agent, "admission", [event], [], fence))) &&
+		backend.pendingOutboxEvents("admission", 100).length === 0
+	observeEvents(
+		agent,
+		"supplemental",
+		[
+			{
+				...fact,
+				coverage: undefined,
+				usage: {
+					...usage,
+					counterScope: "cumulative",
+					iterations: [
+						{ id: "same", schema: "unknown", raw: {} },
+						{ id: "same", schema: "unknown", raw: {} },
+					],
+				},
+			},
+		],
+		[],
+		fence,
+	)
+	const cumulativePreserved = backend.pendingOutboxEvents("supplemental", 100).length === 1
+	const claim = {
+		...fact,
+		source: "kimchi",
+		observeTime: "2026-10-23T10:00:00Z",
+		coverage: undefined,
+		repository: { provider: "github", host: "github.com", id: "repo-one" },
+		usage: { ...usage, requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" },
+		allocation: { kind: "unlinked", method: "native" },
+	}
+	observeEvents(agent, "claims", [claim], [], fence)
+	observeEvents(
+		agent,
+		"claims",
+		[
+			{
+				...claim,
+				observeTime: "2026-10-23T12:00:00Z",
+				allocation: undefined,
+				usage: { ...claim.usage, actualModel: "first-model" },
+			},
+		],
+		[],
+		fence,
+	)
+	observeEvents(
+		agent,
+		"claims",
+		[
+			{
+				...claim,
+				observeTime: "2026-10-23T13:00:00Z",
+				allocation: undefined,
+				startedAt: "2026-10-23T11:00:00+01:00",
+				usage: { ...claim.usage, actualModel: "first-model" },
+			},
+		],
+		[],
+		fence,
+	)
+	const receipt = {
+		id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+		revision: 1,
+		recordedAt: "2026-10-23T12:00:00Z",
+		source: "work-command",
+	}
+	const allocated = {
+		...claim,
+		observeTime: "2026-10-23T14:00:00Z",
+		correction: receipt,
+		allocation: { kind: "pull-request", pullRequestIds: ["pr-one"], method: "user-correction" },
+		claimState: "active",
+	}
+	observeEvents(agent, "claims", [allocated], [], fence)
+	const metadata = {
+		...claim,
+		observeTime: "2026-10-23T15:00:00Z",
+		allocation: undefined,
+		usage: { ...claim.usage, actualModel: "later-model" },
+	}
+	observeEvents(agent, "claims", [metadata], [], fence)
+	observeEvents(
+		agent,
+		"claims",
+		[{ ...metadata, observeTime: "2026-10-23T16:00:00Z", startedAt: claim.observeTime }],
+		[],
+		fence,
+	)
+	const afterOmission = required(backend.latestOutboxEvent("claims", claim.entityId))
+	const claimInheritance =
+		parse(afterOmission.body).startedAt === claim.observeTime &&
+		!Object.hasOwn(parse(afterOmission.body), "correction") &&
+		!Object.hasOwn(parse(afterOmission.body), "allocation")
+	const corrected = {
+		...allocated,
+		observeTime: "2026-10-23T17:00:00Z",
+		startedAt: claim.observeTime,
+		correction: { ...receipt, revision: 2 },
+		allocation: { ...allocated.allocation, pullRequestIds: ["pr-two"] },
+	}
+	observeEvents(agent, "claims", [corrected], [], fence)
+	const badClaims = [
+		{ ...corrected, source: "claude-code" },
+		{ ...corrected, usage: { ...corrected.usage, requestId: "11111111-1111-4111-8111-111111111111" } },
+		{ ...corrected, deviceId: "11111111-1111-4111-8111-111111111111" },
+		{ ...corrected, repository: { ...corrected.repository, id: "other-repo" } },
+		{ ...corrected, startedAt: "2026-10-23T15:00:00Z" },
+		{ ...corrected, allocation: { ...corrected.allocation, pullRequestIds: ["pr-three"] }, correction: undefined },
+		{ ...corrected, claimState: "retracted" },
+		{ ...corrected, correction: receipt },
+		{ ...corrected, correction: { ...receipt, revision: 3, recordedAt: "2026-10-23T11:59:59Z" } },
+		{ ...corrected, correction: { ...receipt, id: "11111111-1111-4111-8111-111111111111", revision: 3 } },
+		{
+			...corrected,
+			correction: { ...receipt, revision: 3, recordedAt: new Date(Date.now() + 3_600_000).toISOString() },
+		},
+	]
+	const claimUpdateRejected = badClaims.every((candidate) =>
+		rejects(() => observeEvents(agent, "claims", [candidate], [], fence)),
+	)
+	const nextReceipt = {
+		...corrected,
+		correction: {
+			...receipt,
+			id: "11111111-1111-4111-8111-111111111111",
+			recordedAt: "2026-10-23T12:00:00.000000001Z",
+		},
+		repository: { ...claim.repository, name: "renamed" },
+	}
+	observeEvents(agent, "claims", [nextReceipt], [], fence)
+	const correctionProgression =
+		parse(required(backend.latestOutboxEvent("claims", claim.entityId)).body).correction.id ===
+		nextReceipt.correction.id
+	observeEvents(agent, "native-claim", [{ ...claim, allocation: undefined }], [], fence)
+	const noNativeUpgrade = rejects(() => observeEvents(agent, "native-claim", [claim], [], fence))
+	const validAck = ack(frozen)
+	const badAcks = [
+		{ ...validAck, batchId: "other-batch" },
+		{ ...validAck, receipts: validAck.receipts.slice(1) },
+		{ ...validAck, receipts: [validAck.receipts[0], validAck.receipts[0]] },
+		{ ...validAck, receipts: validAck.receipts.map((receipt: object) => ({ ...receipt, revision: "999" })) },
+		{ ...validAck, receipts: validAck.receipts.map((receipt: object) => ({ ...receipt, status: "stale" })) },
+	]
+	const invalidAckRetained =
+		badAcks.every((response) => rejects(() => acknowledgeBatch(agent, "account-a", frozen, response, fence))) &&
+		rejects(() => acknowledgeBatch(agent, "account-b", frozen, validAck, fence)) &&
+		same(required(pendingBatch(agent, "account-a", fence)).body, frozen.body)
+	const changed = { ...record, recordedAt: "2026-10-24T02:00:00Z" }
+	capture(agent, changed, "outbox-test")
+	const changedHash = recordHashOf(changed)
+	const clear = backend.clearTranslation.bind(backend)
+	backend.clearTranslation = (id) => {
+		clear(id)
+		throw new Error("after marker removal")
+	}
+	const failedObservation = rejects(() =>
+		observeEvents(agent, "account-a", [{ ...fact, coverage: { code: "observed", count: "3" } }], [changedHash], fence),
+	)
+	backend.clearTranslation = clear
+	const observationRollback =
+		failedObservation &&
+		backend.latestOutboxEvent("account-a", fact.entityId)?.id === second.id &&
+		backend.pendingTranslations(0, backend.recordWatermark(), 100).some((row) => row.recordHash === changedHash)
+	observeEvents(agent, "account-a", [{ ...fact, coverage: { code: "observed", count: "3" } }], [changedHash], fence)
+	const third = required(backend.latestOutboxEvent("account-a", fact.entityId))
+	const frozenReplay =
+		same(required(pendingBatch(agent, "account-a", fence)).body, frozen.body) &&
+		parse(frozen.body).batch.events.length === 2
+	const markAck = backend.ackOutboxEvent.bind(backend)
+	backend.ackOutboxEvent = (...args) => {
+		markAck(...args)
+		throw new Error("after event ACK")
+	}
+	const failedAck = rejects(() => acknowledgeBatch(agent, "account-a", frozen, validAck, fence))
+	backend.ackOutboxEvent = markAck
+	const ackRollback =
+		failedAck &&
+		backend.pendingOutboxEvents("account-a", 100).length === 3 &&
+		same(required(pendingBatch(agent, "account-a", fence)).body, frozen.body)
+	const paused = () => {
+		throw new Error("lease or account changed")
+	}
+	const leasePause =
+		rejects(() => acknowledgeBatch(agent, "account-a", frozen, validAck, paused)) &&
+		rejects(() =>
+			observeEvents(agent, "account-a", [{ ...fact, coverage: { code: "observed", count: "4" } }], [], paused),
+		) &&
+		same(required(pendingBatch(agent, "account-a", fence)).body, frozen.body)
+	acknowledgeBatch(agent, "account-a", frozen, validAck, fence)
+	const insert = backend.insertOutboxBatch.bind(backend)
+	backend.insertOutboxBatch = (batch) => {
+		insert(batch)
+		throw new Error("after batch insert")
+	}
+	const failedBatch = rejects(() => pendingBatch(agent, "account-a", fence))
+	backend.insertOutboxBatch = insert
+	const batchRollback =
+		failedBatch && !backend.getOutboxBatch("account-a") && backend.pendingOutboxEvents("account-a", 100).length === 1
+	const next = required(pendingBatch(agent, "account-a", fence))
+	const oldAckRetainedNewBatch =
+		acknowledgeBatch(agent, "account-a", frozen, validAck, fence) === false &&
+		same(required(pendingBatch(agent, "account-a", fence)).body, next.body)
+	capture(agent, { ...record, requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }, "outbox-unresolved")
+	capture(agent, { ...record, requestId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "outbox-later")
+	const watermark = backend.recordWatermark()
+	const page = backend.pendingTranslations(0, watermark, 1)
+	const later = page[0] ? backend.pendingTranslations(page[0].position, watermark, 1) : []
+	const markerPaging =
+		page.length === 1 &&
+		later.length === 1 &&
+		page[0].recordHash !== later[0].recordHash &&
+		backend.pendingTranslations(0, watermark, 100).length === 2
+	const kindImmutable = rejects(() =>
+		observeEvents(
+			agent,
+			"account-a",
+			[{ ...fact, coverage: undefined, work: { reason: "explicit", quality: "confirmed" } }],
+			[],
+			fence,
+		),
+	)
+	let reopened = false
+	if (mode === "sqlite") {
+		closeBackends()
+		reopened = same(required(pendingBatch(agent, "account-a", fence)).body, next.body)
+	}
+	out({
+		revisions: [one.revision, two.revision, parse(third.body).revision],
+		cas: two.baseRevision === "1" && two.baseHash === first.hash && first.hash === eventHash(one),
+		noOp,
+		byteIsolation,
+		binaryBatchOrder,
+		corruptionRejected,
+		admissionRejected,
+		cumulativePreserved,
+		markerPaging,
+		kindImmutable,
+		claimInheritance,
+		claimUpdateRejected,
+		correctionProgression,
+		noNativeUpgrade,
+		accountIsolation:
+			other.id !== first.id &&
+			parse(other.body).revision === "1" &&
+			backendFor(agent).pendingOutboxEvents("account-b", 100).length === 1,
+		frozenReplay,
+		invalidAckRetained,
+		observationRollback,
+		batchRollback,
+		ackRollback,
+		leasePause,
+		oldAckRetainedNewBatch,
+		acknowledgedHistoryRetained:
+			Boolean(backendFor(agent).getOutboxEvent("account-a", first.id)?.ackedAt) &&
+			Boolean(backendFor(agent).getOutboxEvent("account-a", second.id)?.ackedAt) &&
+			same(required(backendFor(agent).getOutboxEvent("account-a", first.id)).body, first.body) &&
+			backendFor(agent).pendingOutboxEvents("account-a", 100).length === 1,
+		reopened,
+	})
+	closeBackends()
+}
+
+async function outboxTransport(agent: string): Promise<void> {
+	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+	)
+	const { eventHash } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const current = () => {}
+	const coverage = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "codex",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T01:00:00.123456789+01:00",
+		startedAt: "2026-10-24T00:59:00+01:00",
+		correction: {
+			id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+			revision: 1,
+			recordedAt: "2026-10-24T00:30:00+01:00",
+			source: "work-command",
+		},
+		coverage: {
+			code: "transport_time",
+			count: "1",
+			windowStartTime: "2026-10-24T00:00:00.000000001+01:00",
+			windowEndTime: "2026-10-24T00:30:00.000000002+01:00",
+		},
+	}
+	const pullRequest = {
+		...coverage,
+		entityId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		startedAt: undefined,
+		correction: undefined,
+		coverage: undefined,
+		repository: { provider: "github", host: "github.com", id: "repo" },
+		pullRequest: {
+			id: "pr",
+			number: 1,
+			uri: "https://github.com/example/repo/pull/1",
+			state: "merged",
+			createTime: "2026-10-23T09:00:00.123456789+01:00",
+			closeTime: "2026-10-24T00:30:00+01:00",
+			mergeTime: "2026-10-24T00:31:00+01:00",
+		},
+	}
+	observeEvents(agent, "transport", [coverage, pullRequest], [], current)
+	const first = pendingBatch(agent, "transport", current)
+	if (!first) throw new Error("Missing first transport batch")
+	const firstBody = JSON.parse(Buffer.from(first.body).toString("utf8"))
+	acknowledgeBatch(
+		agent,
+		"transport",
+		first,
+		{
+			batchId: first.id,
+			receipts: firstBody.batch.events.map((event: { id: string; revision: string }) => ({
+				id: event.id,
+				revision: event.revision,
+				status: "accepted",
+			})),
+		},
+		current,
+	)
+	observeEvents(
+		agent,
+		"transport",
+		[
+			{
+				...coverage,
+				observeTime: "2026-10-24T02:00:01.123456789+02:00",
+				coverage: { ...coverage.coverage, count: "2" },
+			},
+		],
+		[],
+		current,
+	)
+	const second = pendingBatch(agent, "transport", current)
+	if (!second) throw new Error("Missing second transport batch")
+	out({
+		first: firstBody,
+		second: JSON.parse(Buffer.from(second.body).toString("utf8")),
+		hashes: firstBody.batch.events.map(eventHash),
+	})
+	closeBackends()
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+	return Buffer.from(left).equals(Buffer.from(right))
+}
+
 async function knownAsyncReadRegressions(agent: string, recordJson: string): Promise<void> {
 	const { backendFor, closeBackends, recordHashOf, rebuildWork } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
@@ -776,6 +1291,8 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	records: (agent, workId) => printRecords(agent, workId || undefined),
 	"import-journals": (agent) => importJournalsCommand(agent),
 	"native-usage": (agent) => nativeUsage(agent),
+	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
+	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
 	"read-history": async (agent) => {
 		const problems: WorkRecordProblem[] = []

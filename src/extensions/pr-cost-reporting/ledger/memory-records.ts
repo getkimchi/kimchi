@@ -1,5 +1,5 @@
 import type { LogName, Row, WorkHead } from "../../work-attribution/row-log.js"
-import type { JournalCursor, RecordBackend, StoredRecord } from "./records.js"
+import type { JournalCursor, OutboxBatch, OutboxEvent, RecordBackend, StoredRecord } from "./records.js"
 
 /**
  * Transient memory records backend for vitest: same visible behavior as the
@@ -46,6 +46,8 @@ export function createMemoryRecords(): RecordBackend {
 	const notes = new Map<string, string>()
 	const diagnostics = new Map<string, number>()
 	const cursors = new Map<string, JournalCursor>()
+	const events = new Map<string, OutboxEvent>()
+	const batches = new Map<string, OutboxBatch>()
 	const noteKey = (workId: string, name: string) => `${workId}\u0000${name}`
 	const logKey = (workId: string, log: LogName) => `${workId}\u0000${log}`
 	let inTx = false
@@ -70,6 +72,8 @@ export function createMemoryRecords(): RecordBackend {
 		notes: [string, string][]
 		diagnostics: [string, number][]
 		cursors: [string, JournalCursor][]
+		events: [string, OutboxEvent][]
+		batches: [string, OutboxBatch][]
 	}): void => {
 		records.clear()
 		for (const [key, value] of backup.records) records.set(key, value)
@@ -91,6 +95,10 @@ export function createMemoryRecords(): RecordBackend {
 		for (const [key, value] of backup.diagnostics) diagnostics.set(key, value)
 		cursors.clear()
 		for (const [key, value] of backup.cursors) cursors.set(key, value)
+		events.clear()
+		for (const [key, value] of backup.events) events.set(key, value)
+		batches.clear()
+		for (const [key, value] of backup.batches) batches.set(key, value)
 		headPositions.clear()
 		headVersions.clear()
 	}
@@ -118,6 +126,8 @@ export function createMemoryRecords(): RecordBackend {
 				notes: structuredClone([...notes]),
 				diagnostics: [...diagnostics],
 				cursors: structuredClone([...cursors]),
+				events: structuredClone([...events]),
+				batches: structuredClone([...batches]),
 			}
 			try {
 				const result = fn()
@@ -136,6 +146,54 @@ export function createMemoryRecords(): RecordBackend {
 			return true
 		},
 		upsertMarker: (recordHash, workId, type) => markers.set(recordHash, { workId, type }),
+		pendingTranslations: (after, through, limit) =>
+			order
+				.slice(after, through)
+				.map((row, index) => ({ ...row, position: after + index + 1 }))
+				.filter((row) => markers.has(row.recordHash))
+				.slice(0, limit),
+		clearTranslation: (recordHash) => markers.delete(recordHash),
+		latestOutboxEvent: (accountKey, entityId) =>
+			structuredClone(
+				[...events.values()].findLast((event) => event.accountKey === accountKey && event.entityId === entityId),
+			),
+		getOutboxEvent: (accountKey, id) => {
+			const event = events.get(id)
+			return event?.accountKey === accountKey ? structuredClone(event) : undefined
+		},
+		outboxEntityEvents: (accountKey, entityId) =>
+			structuredClone(
+				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
+			),
+		insertOutboxEvent: (event) => {
+			if (events.has(event.id)) throw new Error("Duplicate outbox event")
+			events.set(event.id, structuredClone(event))
+		},
+		pendingOutboxEvents: (accountKey, limit) =>
+			structuredClone(
+				[...events.values()]
+					.filter((event) => event.accountKey === accountKey && event.ackedAt === null && event.blocked === "")
+					.slice(0, limit),
+			),
+		getOutboxBatch: (accountKey) =>
+			structuredClone(
+				[...batches.values()]
+					.filter((batch) => batch.accountKey === accountKey)
+					.sort(
+						(a, b) => Buffer.compare(Buffer.from(a.orderKey), Buffer.from(b.orderKey)) || a.createdAt - b.createdAt,
+					)[0],
+			),
+		insertOutboxBatch: (batch) => {
+			if (batches.has(batch.id)) throw new Error("Duplicate outbox batch")
+			batches.set(batch.id, structuredClone(batch))
+		},
+		ackOutboxEvent: (accountKey, id, hash, at) => {
+			const event = events.get(id)
+			if (!event || event.accountKey !== accountKey || event.hash !== hash || event.ackedAt !== null) return false
+			event.ackedAt = at
+			return true
+		},
+		deleteOutboxBatch: (accountKey, id) => batches.get(id)?.accountKey === accountKey && batches.delete(id),
 		markDirty: (workId) => dirty.add(workId),
 		clearDirty: (workId) => dirty.delete(workId),
 		dirtyWorks: () => [...dirty],

@@ -50,6 +50,27 @@ export interface JournalCursor {
 	updatedAt: number
 }
 
+export interface OutboxEvent {
+	id: string
+	accountKey: string
+	entityId: string
+	kind: string
+	body: Uint8Array
+	hash: string
+	createdAt: number
+	ackedAt: number | null
+	blocked: string
+}
+
+export interface OutboxBatch {
+	id: string
+	accountKey: string
+	body: Uint8Array
+	eventIds: string[]
+	createdAt: number
+	orderKey: string
+}
+
 /** Primitive storage contract; see schema.ts for the SQL tables and memory-records.ts for the test double. */
 export interface RecordBackend {
 	/** Runs `fn` atomically; no await may happen inside. */
@@ -57,6 +78,17 @@ export interface RecordBackend {
 	/** True when a NEW row was inserted; false when the record hash already exists (import dedup). */
 	insertRecord(row: StoredRecord): boolean
 	upsertMarker(recordHash: string, workId: string, type: string): void
+	pendingTranslations(after: number, through: number, limit: number): PositionedRecord[]
+	clearTranslation(recordHash: string): void
+	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
+	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
+	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
+	insertOutboxEvent(event: OutboxEvent): void
+	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
+	getOutboxBatch(accountKey: string): OutboxBatch | undefined
+	insertOutboxBatch(batch: OutboxBatch): void
+	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
+	deleteOutboxBatch(accountKey: string, id: string): boolean
 	markDirty(workId: string): void
 	clearDirty(workId: string): void
 	dirtyWorks(): string[]
@@ -457,6 +489,37 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const upsertMarker = db.query(
 		"INSERT OR REPLACE INTO pending_translation (record_hash, work_id, type, created_at) VALUES (?, ?, ?, ?)",
 	)
+	const translations = db.query<PositionedRecord, [number, number, number]>(
+		"SELECT w.rowid AS position, w.record_hash AS recordHash, w.type, w.work_id AS workId, w.session_id AS sessionId, w.body, w.source_path AS sourcePath, w.source_generation AS sourceGeneration, w.source_offset AS sourceOffset, w.imported_at AS importedAt FROM pending_translation p JOIN work_records w ON w.record_hash = p.record_hash WHERE w.rowid > ? AND w.rowid <= ? ORDER BY w.rowid LIMIT ?",
+	)
+	const clearTranslation = db.query("DELETE FROM pending_translation WHERE record_hash = ?")
+	const eventColumns =
+		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
+	const latestEvent = db.query<OutboxEvent, [string, string]>(
+		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid DESC LIMIT 1`,
+	)
+	const getEvent = db.query<OutboxEvent, [string, string]>(
+		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND id = ?`,
+	)
+	const entityEvents = db.query<OutboxEvent, [string, string]>(
+		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid`,
+	)
+	const insertEvent = db.query(
+		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	)
+	const pendingEvents = db.query<OutboxEvent, [string, number]>(
+		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND acked_at IS NULL AND blocked = '' ORDER BY rowid LIMIT ?`,
+	)
+	const pendingBatch = db.query<Omit<OutboxBatch, "eventIds"> & { eventIds: Uint8Array }, [string]>(
+		"SELECT id, account_key AS accountKey, body, event_ids AS eventIds, created_at AS createdAt, order_key AS orderKey FROM outbox_batches WHERE account_key = ? ORDER BY order_key, created_at, rowid LIMIT 1",
+	)
+	const insertBatch = db.query(
+		"INSERT INTO outbox_batches (id, account_key, body, event_ids, created_at, order_key) VALUES (?, ?, ?, ?, ?, ?)",
+	)
+	const ackEvent = db.query(
+		"UPDATE outbox_events SET acked_at = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL",
+	)
+	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
@@ -527,6 +590,39 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				row.importedAt,
 			).changes > 0,
 		upsertMarker: (recordHash, workId, type) => upsertMarker.run(recordHash, workId, type, Date.now()),
+		pendingTranslations: (after, through, limit) => translations.all(after, through, limit),
+		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
+		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
+		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
+		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
+		insertOutboxEvent: (event) =>
+			insertEvent.run(
+				event.id,
+				event.accountKey,
+				event.entityId,
+				event.kind,
+				event.body,
+				event.hash,
+				event.createdAt,
+				event.ackedAt,
+				event.blocked,
+			),
+		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
+		getOutboxBatch: (accountKey) => {
+			const batch = pendingBatch.get(accountKey)
+			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined
+		},
+		insertOutboxBatch: (batch) =>
+			insertBatch.run(
+				batch.id,
+				batch.accountKey,
+				batch.body,
+				Buffer.from(JSON.stringify(batch.eventIds)),
+				batch.createdAt,
+				batch.orderKey,
+			),
+		ackOutboxEvent: (accountKey, id, hash, at) => ackEvent.run(at, accountKey, id, hash).changes > 0,
+		deleteOutboxBatch: (accountKey, id) => deleteBatch.run(accountKey, id).changes > 0,
 		markDirty: (workId) => markDirty.run(workId),
 		clearDirty: (workId) => clearDirty.run(workId),
 		dirtyWorks: () => dirty.all().map((row) => row.work_id),

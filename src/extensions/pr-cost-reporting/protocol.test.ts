@@ -10,6 +10,8 @@ let actual: {
 	times: string[]
 	errors: string[]
 	unicode: string
+	validation: boolean[]
+	invalidEvidence: boolean[]
 }
 
 beforeAll(() => {
@@ -19,7 +21,7 @@ beforeAll(() => {
 			"bun",
 			[
 				"--eval",
-				`import { encodeEvent, encodeBatch, eventHash, batchHash, stableID, canonicalTime } from ${JSON.stringify(moduleUrl)};
+				`import { encodeEvent, encodeBatch, eventHash, batchHash, stableID, canonicalTime, validateEvent, validateBatch } from ${JSON.stringify(moduleUrl)};
 const fixture = await Bun.stdin.json();
 const unknown = structuredClone(fixture.events[1].input);
 delete unknown.usage.raw.cacheReadTokens;
@@ -42,6 +44,35 @@ const invalid = [
 ];
 const unicode = structuredClone(fixture.events[0].input);
 unicode.work.title = "\\ud800 <>&\\u2028";
+const usage = fixture.events[1].input;
+const claim = fixture.events[9].input;
+const rejects = (operation) => { try { operation(); return false } catch { return true } };
+const badEvidence = [
+  { ...usage, sourceVersion: "" },
+  { ...usage, baseRevision: "0" },
+  { ...usage, usage: { ...usage.usage, raw: { inputTokens: "-1" } } },
+  { ...usage, usage: { ...usage.usage, raw: { inputTokens: "1000000000001" } } },
+  { ...usage, usage: { ...usage.usage, raw: { cacheWriteTokens: "9", cacheWrites: [{ttlSeconds: 300, tokens: "10"}] } } },
+  { ...usage, usage: { ...usage.usage, raw: { outputTokens: "9", reasoningTokens: "10" } } },
+  { ...usage, usage: { ...usage.usage, durationMs: "-1" } },
+  { ...usage, usage: { ...usage.usage, durationMs: "86400001" } },
+  { ...usage, work: fixture.events[0].input.work },
+  { ...claim, usage: { ...claim.usage, requestId: "not-a-uuid" } },
+  { ...claim, correction: { ...claim.correction, recordedAt: "1969-12-31T23:59:59.999999999Z" } },
+  { ...claim, correction: { ...claim.correction, recordedAt: "2200-01-01T00:00:00Z" } },
+  { ...claim, correction: { ...claim.correction, id: "00000000-0000-0000-0000-000000000000" } },
+  { ...claim, correction: { ...claim.correction, source: "explicit" } },
+  { ...claim, allocation: { ...claim.allocation, kind: "shared" } },
+  { ...claim, allocation: { ...claim.allocation, pullRequestIds: ["pr", "pr"] } },
+  { ...claim, allocation: { ...claim.allocation, kind: "unlinked" } },
+  { ...claim, allocation: { ...claim.allocation, method: "guess" } },
+  { ...claim, startedAt: "2026-10-23T13:44:23.715559001Z" },
+  { ...claim, claimState: "withdrawn" },
+  { ...usage, observeTime: "0001-01-01T00:00:00.000Z" },
+  { ...fixture.events[7].input, coverage: { ...fixture.events[7].input.coverage,
+    windowStartTime: "2026-10-01T00:00:00.000000002Z", windowEndTime: "2026-10-01T00:00:00.000000001Z" } },
+  { ...fixture.events[5].input, pullRequest: { ...fixture.events[5].input.pullRequest, uri: "https://gitlab.com/team/repo/\\npull/1" } }
+];
 console.log(JSON.stringify({
   events: fixture.events.map(({input}) => ({body: encodeEvent(input), hash: eventHash(input)})),
   batches: fixture.batches.map(({input}) => ({body: encodeBatch(input), hash: batchHash(input)})),
@@ -49,7 +80,11 @@ console.log(JSON.stringify({
   unknown: {body: encodeEvent(unknown), hash: eventHash(unknown)},
   times: ["2026-10-23T12:30:40.123400000+00:00", "2026-10-23T12:30:40.123400000+02:30", "2026-10-23T12:30:40.000Z"].map(canonicalTime),
   errors: invalid.map((event) => { try { encodeEvent(event); return "accepted" } catch (error) { return error.name } }),
-  unicode: encodeEvent(unicode)
+  unicode: encodeEvent(unicode),
+  validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],
+  invalidEvidence: [...badEvidence.map((event) => rejects(() => validateEvent(event))),
+    rejects(() => validateBatch({...fixture.batches[0].input, events: [claim, claim]})),
+    rejects(() => validateBatch({...fixture.batches[0].input, events: Array(501).fill(claim)}))]
 }));`,
 			],
 			{ encoding: "utf8", input: JSON.stringify(golden), timeout: 30_000 },
@@ -71,6 +106,11 @@ it("matches Go bytes and hashes for all native payloads and Kimchi claim extensi
 	expect(actual.batches).toEqual(golden.batches.map(({ body, hash }) => ({ body, hash })))
 	expect(actual.batches[0].hash).toBe(golden.oracle.nativeV1BatchHash)
 	expect(actual.stableId).toBe(golden.stableId)
+	expect(actual.validation).toEqual(Array(13).fill(true))
+})
+
+it("rejects invalid usage, claim receipts, identity, CAS and batch bounds", () => {
+	expect(actual.invalidEvidence).toEqual(Array(25).fill(true))
 })
 
 it("keeps unknown counters distinct from reported zero and omits absent claim extensions", () => {
