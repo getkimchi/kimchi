@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import * as files from "node:fs/promises"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
@@ -10,15 +13,18 @@ import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import * as health from "../telemetry/pr-cost.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
+import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
 	acknowledgeSnapshot,
 	deferSnapshot,
 	dueLimitNotices,
+	freezeSnapshots,
 	learnedLimits,
 	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
+	reportingProducer,
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
@@ -116,6 +122,16 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
+	it("keeps an empty disabled freeze read-only while explicit consent still persists", async () => {
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		const state = await freezeSnapshots(directory, () => {})
+		expect(state.enabled).toBe(false)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" })
+		await setReportingEnabled(directory, true)
+		expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ enabled: true })
+	})
+
 	it.each([
 		true,
 		false,
@@ -252,13 +268,18 @@ describe("durable reporting queue", () => {
 		await queueSnapshots(directory, [moved], true)
 		expect((await readReportingState(directory)).entries[key].pending?.requests).toEqual([])
 		if (optOut) {
+			const pending = Object.values((await readReportingState(directory)).entries).map((entry) =>
+				JSON.stringify(entry.pending),
+			)
 			await setReportingEnabled(directory, false)
 			await acknowledgeSnapshot(directory, key, "2", {
 				status: "accepted",
 				revision: "2",
 				receivedAt: new Date().toISOString(),
 			})
-			expect(JSON.stringify(await readReportingState(directory))).not.toContain(requestId)
+			expect(
+				Object.values((await readReportingState(directory)).entries).map((entry) => JSON.stringify(entry.pending)),
+			).toEqual(pending)
 			await setReportingEnabled(directory, true)
 		}
 		// A restarted process sees only an independent repository; neither migration payload was acknowledged.
@@ -302,7 +323,7 @@ describe("durable reporting queue", () => {
 		await queueSnapshots(directory, [], false)
 		expect((await readReportingState(directory)).entries[key].held).toBe(true)
 	})
-	it("resends a same-membership correction after opt-out discarded an unacknowledged replacement", async () => {
+	it("keeps a paused correction and ignores its late ACK after a same-membership replacement", async () => {
 		await setReportingEnabled(directory, true)
 		const original = snapshot([requestId])
 		await queueSnapshots(directory, [original], true)
@@ -534,7 +555,7 @@ describe("durable reporting queue", () => {
 				.revision,
 		).toBe("2")
 	})
-	it("deduplicates concurrent captures and deletes payloads on opt-out without resetting revisions", async () => {
+	it("deduplicates concurrent captures and pauses pending payloads without resetting revisions", async () => {
 		await setReportingEnabled(directory, true)
 		await Promise.all([
 			queueSnapshots(directory, [snapshot([requestId])]),
@@ -542,11 +563,12 @@ describe("durable reporting queue", () => {
 		])
 		const [key] = Object.keys((await readReportingState(directory)).entries)
 		expect((await readReportingState(directory)).entries[key].revision).toBe("1")
+		const pending = JSON.stringify((await readReportingState(directory)).entries[key].pending)
 		await setReportingEnabled(directory, false)
-		expect((await readReportingState(directory)).entries[key].pending).toBeUndefined()
+		expect(JSON.stringify((await readReportingState(directory)).entries[key].pending)).toBe(pending)
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])
-		expect((await readReportingState(directory)).entries[key].pending?.revision).toBe("2")
+		expect(JSON.stringify((await readReportingState(directory)).entries[key].pending)).toBe(pending)
 	})
 	it("separates accounts and advances beyond a server revision without acknowledging newer content", async () => {
 		await setReportingEnabled(directory, true)
@@ -577,18 +599,125 @@ describe("producer identity across machines", () => {
 		return saved
 	}
 
-	it("starts a new producer when the state was copied from another machine", async () => {
+	it("preserves copied legacy pending bytes and refuses new snapshots under the old producer", async () => {
 		const saved = await savedOn(original)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		const bytes = await readFile(path)
 		vi.mocked(machineFingerprint).mockResolvedValue(copy)
+		const next = await reportingProducer(directory, () => {})
+		expect(next).not.toBe(saved.producerId)
+		expect(await reportingProducer(directory, () => {})).toBe(next)
 		const copied = await readReportingState(directory)
-		expect(copied.producerId).not.toBe(saved.producerId)
-		expect(copied.entries).toEqual({})
-		const next = await queueSnapshots(directory, [snapshot([requestId])])
-		expect(next.machine).toBe(copy)
-		expect(Object.values(next.entries).map((entry) => [entry.revision, entry.pending?.producerId])).toEqual([
-			["1", next.producerId],
-		])
-		expect((await readReportingState(directory)).producerId).toBe(next.producerId)
+		expect(copied).toEqual(saved)
+		expect(await readFile(path)).toEqual(bytes)
+		await expect(queueSnapshots(directory, [snapshot([otherRequestId])])).rejects.toThrow("another machine")
+		expect(await readFile(path)).toEqual(bytes)
+		expect(await readReportingState(directory)).toEqual(saved)
+	})
+
+	it("creates one persisted producer for concurrent callers without a legacy queue", async () => {
+		const producers = await Promise.all(Array.from({ length: 3 }, () => reportingProducer(directory, () => {})))
+		expect(new Set(producers).size).toBe(1)
+		expect(await reportingProducer(directory, () => {})).toBe(producers[0])
+		expect(JSON.parse(backendFor(directory).getNote("agent", "reporting-producer") ?? "{}")).toEqual({
+			version: 1,
+			producerId: producers[0],
+		})
+		expect(backendFor(directory).recordCount()).toBe(0)
+	})
+
+	it("keeps legacy and frozen delta bytes across real SQLite producer initialization and process reopen", {
+		timeout: 30_000,
+	}, async () => {
+		const saved = await savedOn(original)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		const bytes = await readFile(path)
+		const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const run = async () =>
+			JSON.parse((await promisify(execFile)("bun", [driver, "producer", directory], { timeout: 30_000 })).stdout)
+		const [first, concurrent] = await Promise.all([run(), run()])
+		expect(concurrent.producerId).toBe(first.producerId)
+		for (const result of [first, concurrent, await run()]) {
+			expect(result).toMatchObject({
+				producerId: first.producerId,
+				legacyRetained: true,
+				batchRetained: true,
+				frozenProducer: saved.producerId,
+				note: { version: 1, producerId: first.producerId },
+			})
+			expect(result.producerId !== saved.producerId).toBe(result.machineKnown)
+		}
+		expect(await readFile(path)).toEqual(bytes)
+	})
+
+	it("seeds the same-machine legacy producer once and ignores later old-writer state", async () => {
+		const saved = await savedOn(original)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		const bytes = await readFile(path)
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+		expect(await readFile(path)).toEqual(bytes)
+		await writeFile(path, "unreadable old writer state")
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+		expect(await readFile(path, "utf8")).toBe("unreadable old writer state")
+	})
+
+	it("fills an initially unknown machine and retains identity while hardware is unavailable", async () => {
+		const saved = await savedOn(undefined)
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+		vi.mocked(machineFingerprint).mockResolvedValue(original)
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+		const note = backendFor(directory).getNote("agent", "reporting-producer")
+		expect(JSON.parse(note ?? "{}").machine).toBe(original)
+		vi.mocked(machineFingerprint).mockResolvedValue(undefined)
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+		expect(backendFor(directory).getNote("agent", "reporting-producer")).toBe(note)
+	})
+
+	it("rolls back producer initialization when its lease is lost after the actual note write", async () => {
+		const saved = await savedOn(original)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		const bytes = await readFile(path)
+		const backend = backendFor(directory)
+		const putNote = backend.putNote.bind(backend)
+		let written = false
+		const write = vi.spyOn(backend, "putNote").mockImplementation((...args) => {
+			putNote(...args)
+			written = true
+		})
+		await expect(
+			reportingProducer(directory, () => {
+				if (written) throw new Error("lease lost")
+			}),
+		).rejects.toThrow("lease lost")
+		expect(written).toBe(true)
+		expect(backend.getNote("agent", "reporting-producer")).toBeUndefined()
+		expect(await readFile(path)).toEqual(bytes)
+		write.mockRestore()
+		expect(await reportingProducer(directory, () => {})).toBe(saved.producerId)
+	})
+
+	it.each([
+		"not JSON",
+		"{}",
+		JSON.stringify({ version: 2, producerId: requestId }),
+		JSON.stringify({ version: 1, producerId: "invalid" }),
+		JSON.stringify({ version: 1, producerId: requestId, machine: false }),
+		JSON.stringify({ version: 1, producerId: requestId, machine: "invalid" }),
+	])("retains an invalid existing producer note instead of reseeding from legacy state (%s)", async (body) => {
+		await savedOn(original)
+		const backend = backendFor(directory)
+		backend.putNote("agent", "reporting-producer", body)
+		await expect(reportingProducer(directory, () => {})).rejects.toThrow()
+		expect(backend.getNote("agent", "reporting-producer")).toBe(body)
+	})
+
+	it("does not initialize over unreadable legacy state", async () => {
+		await savedOn(original)
+		const path = join(directory, "pr-cost-reporting/state.json")
+		await writeFile(path, "unreadable legacy state")
+		await expect(reportingProducer(directory, () => {})).rejects.toThrow("unreadable")
+		expect(backendFor(directory).getNote("agent", "reporting-producer")).toBeUndefined()
+		expect(await readFile(path, "utf8")).toBe("unreadable legacy state")
 	})
 
 	it("keeps the producer on the same machine and records the machine for older state", async () => {
@@ -604,6 +733,29 @@ describe("producer identity across machines", () => {
 		const saved = await savedOn(original)
 		vi.mocked(machineFingerprint).mockResolvedValue(undefined)
 		expect(await readReportingState(directory)).toEqual(saved)
+	})
+})
+
+it("retains legacy bytes, ACK ownership and bounded scan progress in real SQLite", { timeout: 60_000 }, async () => {
+	await setReportingEnabled(directory, true)
+	await queueSnapshots(directory, [snapshot([requestId])])
+	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+	const result = JSON.parse(
+		(await promisify(execFile)("bun", [driver, "legacy-freeze", directory], { timeout: 60_000 })).stdout,
+	)
+	expect(result).toEqual({
+		initialBytes: true,
+		ackRollback: true,
+		receiptCorruptionRejected: true,
+		cleanupReplay: true,
+		partialScanProgress: true,
+		retainedReceipts: 20,
+		archivedOriginalBytes: true,
+		pendingAfterArchive: 1,
+		latestRetained: true,
+		receiptScan: false,
+		resumeScans: 0,
+		reopened: true,
 	})
 })
 

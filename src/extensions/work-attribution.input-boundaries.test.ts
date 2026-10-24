@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -15,6 +15,7 @@ import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "./__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
+import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import * as health from "./telemetry/pr-cost.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
@@ -47,14 +48,9 @@ afterEach(async () => {
 	rmSync(dir, { recursive: true, force: true })
 })
 function requestRow(requestId: unknown) {
-	return readdirSync(join(dir, "work-attribution"))
-		.filter((file) => file.endsWith(".jsonl"))
-		.flatMap((file) =>
-			readFileSync(join(dir, "work-attribution", file), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line)),
-		)
+	return backendFor(dir)
+		.readRecords({})
+		.map((row) => JSON.parse(row.body))
 		.find((row) => row.type === "request" && row.requestId === requestId)
 }
 

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isWorkId } from "../../shared/work-id.js"
+import { getNote } from "../pr-cost-reporting/ledger/records.js"
 import type { BillingDisplay } from "./billing-evidence.js"
 import { decimalNanos, type PullRequestCost, type RequestCostAllocation, roundedUsd, usd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
@@ -176,15 +177,27 @@ function spendSoFar(row: PullRequestCost, requests: SavedRequestCost[]) {
 	}
 }
 
+/** A local report locator accepted by accuracy-cli without creating an automatic export file. */
+export function costReportSource(workId: string): string {
+	return `ledger:${workId}`
+}
+
 /** /work reads the last durable result; opening the command never waits for the network or reads the full report. */
 export function workCostDetails(agentDir: string, workId: string): string[] {
 	if (!isWorkId(workId)) return []
 	const folder = join(agentDir, "work", workId)
+	const report = costReportSource(workId)
+	// A5: the note is the authority for new reports; a legacy cost-totals.json still answers for old installs.
+	const note = getNote(agentDir, workId, "cost-totals")
+	if (note !== undefined) {
+		try {
+			return costDetailLines(JSON.parse(note), report)
+		} catch {
+			return ["Cost: unknown; waiting for billing"]
+		}
+	}
 	try {
-		return costDetailLines(
-			JSON.parse(readFileSync(join(folder, "cost-totals.json"), "utf8")),
-			join(folder, "costs.json"),
-		)
+		return costDetailLines(JSON.parse(readFileSync(join(folder, "cost-totals.json"), "utf8")), report)
 	} catch {
 		return ["Cost: unknown; waiting for billing"]
 	}

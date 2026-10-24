@@ -306,7 +306,7 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | Field | Meaning |
 | --- | --- |
 | `prLookup.status` | `pending` when no PR or MR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
-| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record; `work-attribution/pr-checks.json` keeps their time. |
+| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record; the ledger's `pr-checks` bookkeeping note keeps their time. |
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
@@ -386,7 +386,7 @@ All paths below are inside the agent directory.
 | `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
 | `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
 | `work-attribution/objects/<repository hash>/` | Kimchi's own Git object store of native edit text kept for `file-hunks` matching. Nothing is deleted by age; it grows by one object per distinct edited content, without copies of the committed version an edit starts from. |
-| `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
+| `pr-cost-reporting/ledger.db`: `pr-checks` bookkeeping note | When each recorded repository and commit was last checked for a PR or MR, including unchanged results. A restart keeps the schedule. Kimchi updates the note only when it changes and drops entries for unrecorded commits or checks more than a day old. A retained `work-attribution/pr-checks.json` supplies the initial cache only when the note is absent; Kimchi leaves that file untouched. |
 
 - Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.
 - Kimchi flushes source records before updating the summary. Writers merge under a per-work lock, append only changed rows, sync them, then replace `work.json`, which commits them. Readers stop at each log's committed length, so an interrupted append is ignored and the next writer removes it. Shutdown waits for queued summary writes.

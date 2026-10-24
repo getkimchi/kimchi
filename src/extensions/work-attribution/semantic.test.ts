@@ -1,14 +1,5 @@
 import { execFileSync } from "node:child_process"
-import {
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
@@ -21,12 +12,14 @@ import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import * as redactionConfig from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { backendFor, closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import type * as WorkAccounts from "./scope.js"
 import {
 	classifyWorkIntent,
 	loadWorkIntents,
-	rememberWorkIntent,
+	rememberWorkIntent as persistWorkIntent,
 	WORK_MATCHING_CALL_TIMEOUT_MS,
 	WORK_MATCHING_MODEL_REFS,
 	WorkMatchingLimit,
@@ -59,7 +52,27 @@ vi.mock("../orchestration/model-roles.js", () => ({
 
 const servers: Server[] = []
 const roots: string[] = []
-beforeEach(() => vi.mocked(readConfigSetting).mockReturnValue(true))
+beforeEach(() => {
+	useBackendFactory(() => createMemoryRecords())
+	vi.mocked(readConfigSetting).mockReturnValue(true)
+})
+
+// The caller creates a work identity before retaining its first input.
+async function rememberWorkIntent(...args: Parameters<typeof persistWorkIntent>) {
+	const [cwd, id] = args
+	setWorkId(createContext({ cwd, sessionManager: { getSessionId: () => `intent-${id}` } }), id)
+	await persistWorkIntent(...args)
+}
+function fixtureActivity(root: string, id: string, at: number) {
+	const backend = backendFor(join(root, "agent"))
+	const head = backend.getHead(id)
+	if (!head) throw new Error("Expected a seeded work head")
+	backend.putHead({
+		...head,
+		updatedAt: new Date(at).toISOString(),
+		latest: { ...head.latest, activityAt: new Date(at).toISOString() },
+	})
+}
 afterEach(async () => {
 	await flushWorkSummaries()
 	vi.restoreAllMocks()
@@ -67,6 +80,8 @@ afterEach(async () => {
 	vi.unstubAllEnvs()
 	vi.unstubAllGlobals()
 	await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+	closeBackends()
+	useBackendFactory(null)
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -77,7 +92,12 @@ function byCheck(candidates: Record<string, Reply>, precheck: Reply = JSON.strin
 	return (data: Record<string, unknown>) =>
 		typeof data.selectedWorkId === "string" ? (candidates[data.selectedWorkId] ?? "{}") : precheck
 }
-async function provider(answer: Answer, status = 200, headers: Record<string, string> = {}) {
+async function provider(
+	answer: Answer,
+	status = 200,
+	headers: Record<string, string> = {},
+	usage?: Record<string, number>,
+) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-selected-model-")))
 	roots.push(root)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
@@ -108,7 +128,7 @@ async function provider(answer: Answer, status = 200, headers: Record<string, st
 		if (!afterHeaders) response.writeHead(status, { "content-type": "text/event-stream", ...headers })
 		response.end(
 			`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n` +
-				`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+				`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\ndata: [DONE]\n\n`,
 		)
 	})
 	servers.push(server)
@@ -132,7 +152,12 @@ const input = {
 }
 
 it("uses the selected model without shared classifier models, with normal auth and a durable ID per request", async () => {
-	const server = await provider([JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })])
+	const server = await provider(
+		[JSON.stringify({ decision: "specific" }), JSON.stringify({ decision: "match" })],
+		200,
+		{},
+		{ prompt_tokens: 12, completion_tokens: 3 },
+	)
 	vi.mocked(server.registry.getApiKeyAndHeaders).mockResolvedValue({
 		ok: true,
 		apiKey: "selected-key",
@@ -153,6 +178,11 @@ it("uses the selected model without shared classifier models, with normal auth a
 	expect(overhead).toHaveLength(2)
 	expect(overhead.every((row) => row.purpose === "work-matching")).toBe(true)
 	for (const row of overhead) expect(row.segment).toMatchObject({ attribution: "session", reason: "work-matching" })
+	const usages = readWorkRecords(join(server.root, "agent")).filter((row) => row.nativeUsage)
+	expect(usages).toHaveLength(2)
+	expect(usages.map((row) => row.requestId)).toEqual(server.requests.map((r) => r.headers["x-request-id"]))
+	for (const row of usages)
+		expect(row.nativeUsage).toMatchObject({ raw: { inputTokens: 12, outputTokens: 3 }, finalized: true })
 })
 
 it("decides on the matching models in order, the next one answering when a model cannot", async () => {
@@ -641,19 +671,19 @@ function repositoryFixture() {
 
 const currentId = "20000000-0000-4000-8000-000000000002"
 
-it("keeps the first private intent with restrictive permissions and only skill user arguments", async () => {
-	const { cwd } = repositoryFixture()
+it("keeps the first private intent in the ledger with only skill user arguments", async () => {
+	const { root, cwd } = repositoryFixture()
 	await rememberWorkIntent(
 		cwd,
 		workId,
 		'<skill name="plan" location="/private/SKILL.md">\nPrivate skill instructions\n</skill>\n\nAdd CSV export.',
 	)
 	await rememberWorkIntent(cwd, workId, "An unrelated later question")
-	const saved = JSON.parse(readFileSync(workIntentPath(workId), "utf8"))
+	const saved = JSON.parse(getNote(join(root, "agent"), workId, "intent") ?? "null")
 	expect(saved.summary).toBe("Add CSV export.")
 	expect(JSON.stringify(saved)).not.toContain("Private skill")
-	expect(statSync(workIntentPath(workId)).mode & 0o777).toBe(0o600)
-	expect(statSync(dirname(workIntentPath(workId))).mode & 0o777).toBe(0o700)
+	// Store permissions are asserted through the real Bun store suite; no private JSON export is created.
+	expect(() => statSync(workIntentPath(workId))).toThrow()
 })
 
 it("does not save an oversized or empty task reference", async () => {
@@ -697,9 +727,14 @@ it.each([
 	JSON.stringify({ version: 1, workId, repository: "replace", summary: "x".repeat(4001) }),
 	"x".repeat(20001),
 ])("does not omit malformed candidate metadata and choose from a partial set (%#)", async (content) => {
-	const { cwd } = repositoryFixture()
+	const { root, cwd } = repositoryFixture()
 	await rememberWorkIntent(cwd, workId, "CSV export")
-	writeFileSync(workIntentPath(workId), content.replace('"replace"', JSON.stringify(realpathSync(join(cwd, ".git")))))
+	setNote(
+		join(root, "agent"),
+		workId,
+		"intent",
+		content.replace('"replace"', JSON.stringify(realpathSync(join(cwd, ".git")))),
+	)
 	await expect(loadWorkIntents(cwd, currentId, input.message, true)).rejects.toThrow()
 })
 
@@ -754,10 +789,7 @@ it("compares the repository's most recently active saved tasks, newest first", a
 	const ids = Array.from({ length: 10 }, (_, index) => `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`)
 	for (const [index, id] of ids.entries()) {
 		await rememberWorkIntent(cwd, id, `Task ${index}`)
-		// A work's summary is rewritten whenever it records something; its age orders the history.
-		const summary = join(root, "agent", "work", id, "work.json")
-		writeFileSync(summary, "{}")
-		utimesSync(summary, 1_700_000_000 + index, 1_700_000_000 + index)
+		fixtureActivity(root, id, (1_700_000_000 + index) * 1000)
 	}
 	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
 	expect(loaded.input.candidates.map((candidate) => candidate.summary)).toEqual(
@@ -776,7 +808,7 @@ it("leaves older history out instead of refusing to match", async () => {
 			JSON.stringify({ version: 2, workId: id, repository: "/elsewhere/.git", summary: "Other repository task" }),
 		)
 	}
-	utimesSync(workIntentPath(workId), 1_700_000_000, 1_700_000_000)
+	fixtureActivity(root, workId, 1_700_000_000_000)
 	const loaded = await loadWorkIntents(cwd, currentId, input.message, true)
 	// 520 newer tasks from other repositories exceed the scan, so the old CSV task is not compared.
 	expect(loaded.input.candidates).toEqual([])

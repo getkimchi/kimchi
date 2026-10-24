@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
+import { createNativeUsageCapture } from "./work-attribution/native-usage.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 export const SESSION_NAME_MODEL = "deepseek-v4-flash-0731"
@@ -139,6 +140,8 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 		warnWorkAttribution(ctx, error)
 	}
 
+	const namingModel = { provider: "kimchi-dev", id: SESSION_NAME_MODEL, api: "openai-completions" }
+	let usage: ReturnType<typeof createNativeUsageCapture> | undefined
 	try {
 		const maxRetries = getSessionNameMaxRetries(ctx.cwd)
 		const response = await fetchWithRetry(
@@ -166,6 +169,8 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				timeoutMs: SESSION_NAME_TIMEOUT_MS,
 				retry: { maxRetries },
 				fetchImpl: (url, init) => {
+					usage?.finish()
+					usage = createNativeUsageCapture(namingModel)
 					const headers = new Headers(init?.headers)
 					if (workId) {
 						try {
@@ -175,6 +180,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 								workId,
 							)
 							headers.set("X-Request-Id", request.requestId)
+							usage.bind(request.requestId)
 						} catch (error) {
 							warnWorkAttribution(ctx, error)
 						}
@@ -195,6 +201,8 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 		}
 
 		const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+		usage?.onProviderStreamEvent(data, namingModel)
+		usage?.finish()
 		const suggestion = data.choices?.[0]?.message?.content?.trim()
 		return suggestion ? deterministicFallback(suggestion) : fallback
 	} catch (err) {
@@ -204,6 +212,8 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 			else console.error(`[kimchi] ${message}`)
 		}
 		return fallback
+	} finally {
+		usage?.finish()
 	}
 }
 

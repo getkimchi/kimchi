@@ -9,15 +9,19 @@ import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { object, readWorkRecordsAsync, workJournalFingerprint } from "../work-attribution/summary.js"
+import { reportJournalProblems } from "./ledger/import.js"
 import {
 	ACCOUNT_SCOPES,
-	acknowledgeSnapshot,
-	deferSnapshot,
+	acknowledgeFrozenSnapshot,
+	deferFrozenSnapshot,
+	freezeSnapshots,
+	frozenSnapshotPending,
 	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
 	learnedLimits,
-	limitSnapshot,
+	limitFrozenSnapshot,
+	pendingFrozenSnapshots,
 	queueSnapshots,
 	type ReportingState,
 	readReportingState,
@@ -100,6 +104,10 @@ export async function deliverSnapshots(
 	const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()))
 	timer.unref()
 	const combined = AbortSignal.any([signal, controller.signal])
+	const check = () => {
+		assertLease()
+		combined.throwIfAborted()
+	}
 	// Seeing an opt-out from another process mid-upload is an optimisation: each upload rereads the state anyway.
 	// Stat polling has no inotify or FSEvents involvement, and a failure to start it still leaves delivery working.
 	// The state can reach 24 MiB, so one reread runs at a time; changes seen during it cause one more.
@@ -131,15 +139,12 @@ export async function deliverSnapshots(
 		poller = startStatPoller(statePath, OPT_OUT_POLL_MS, reread)
 	} catch {}
 	try {
-		const state = await readReportingState(agentDir)
+		const state = await freezeSnapshots(agentDir, check)
 		if (!state.enabled) return
+		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
 		const configuredKey = loadConfig({ cwd }).apiKey
 		const configuredEndpoint = platformApiUrl(cwd)
-		if (
-			Object.values(state.entries).some(
-				(entry) => entry.pending && (!configuredKey || entry.account.apiUrl !== configuredEndpoint),
-			)
-		)
+		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
 			await recordReportingError(
 				agentDir,
 				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
@@ -152,11 +157,25 @@ export async function deliverSnapshots(
 				.map(([account]) => account),
 		)
 
-		const due = Object.entries(state.entries)
-			.filter(([, entry]) => entry.pending && !entry.held && entry.retryAt <= now && !inUploadWindow(entry, now))
-			.sort(([, a], [, b]) => Number(!a.urgent) - Number(!b.urgent) || a.retryAt - b.retryAt)
+		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
+		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
+		const due = frozen
+			.filter(
+				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
+			)
+			.sort((a, b) => {
+				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
+				if (priority) return priority
+				const position =
+					(positions.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (positions.get(b.key) ?? Number.MAX_SAFE_INTEGER)
+				if (position) return position
+				if (a.key !== b.key) return a.key < b.key ? -1 : 1
+				const revision = BigInt(a.entry.revision) - BigInt(b.entry.revision)
+				return revision < 0n ? -1 : revision > 0n ? 1 : a.entry.retryAt - b.entry.retryAt
+			})
 		let attempts = 0
-		for (const [id, entry] of due) {
+		for (const job of due) {
+			const entry = job.entry
 			const snapshot = entry.pending
 			if (!snapshot) continue
 			if (paused.has(accountKey(entry.account)) && (snapshot.requests.length || snapshot.pullRequests.length)) continue
@@ -169,22 +188,21 @@ export async function deliverSnapshots(
 			let retryAfterMs: number | null = null
 			let limit: ServerLimit | undefined
 			let errorMessage = "PR reporting request unavailable"
-			const assertCurrent = () => {
+			const assertOwnership = () => {
 				assertLease()
-				combined.throwIfAborted()
 				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
+			}
+			const assertCurrent = () => {
+				assertOwnership()
+				combined.throwIfAborted()
 			}
 
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
 				const current = await readReportingState(agentDir)
 				assertCurrent()
-				if (
-					!current.enabled ||
-					current.entries[id]?.held ||
-					current.entries[id]?.pending?.revision !== snapshot.revision
-				)
+				if (!current.enabled || current.entries[job.key]?.held || !frozenSnapshotPending(agentDir, job))
 					throw new Error("PR reporting snapshot changed")
 				const response = await fetch(input, { ...init, redirect: "error", signal: combined })
 				assertCurrent()
@@ -226,7 +244,7 @@ export async function deliverSnapshots(
 					{
 						method: "POST",
 						headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
-						body: JSON.stringify(snapshot),
+						body: job.body,
 					},
 				)
 				assertCurrent()
@@ -234,21 +252,26 @@ export async function deliverSnapshots(
 				if (!response.ok) throw new Error(errorMessage)
 				const ack: SnapshotAck = await response.json()
 				assertCurrent()
-				await acknowledgeSnapshot(agentDir, id, snapshot.revision, ack)
+				await acknowledgeFrozenSnapshot(agentDir, job, ack, assertCurrent)
 				trackPRCostMetric({ kind: "delivery", outcome: "success" })
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
 				if (signal.aborted) return
+				try {
+					assertOwnership()
+				} catch {
+					return
+				}
 				if (limit) {
-					await limitSnapshot(agentDir, id, snapshot.revision, limit, Date.now() + jitter(LIMIT_RETRY_MS))
+					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
 					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
 				} else
-					await deferSnapshot(
+					await deferFrozenSnapshot(
 						agentDir,
-						id,
-						snapshot.revision,
+						job,
 						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
 						errorMessage,
+						assertOwnership,
 					)
 			}
 		}
@@ -266,7 +289,10 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
-	const state = await readReportingState(agentDir)
+	const state = await freezeSnapshots(agentDir, () => {
+		assertLease()
+		signal.throwIfAborted()
+	})
 	if (!state.enabled) return
 	try {
 		await captureSnapshots(agentDir, state, signal, assertLease)
@@ -306,12 +332,28 @@ async function captureSnapshots(
 		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
 	}
 	check()
-	// Fingerprint before reading: an append during the read only makes the next pass capture again.
-	const journals = await workJournalFingerprint(agentDir)
-	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
-	if (lastCapture?.inputs === (await inputs()) && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) return
-	const startedAt = Date.now()
+	// Retain known coverage failures without rehashing unchanged legacy bodies on idle passes.
 	let historyComplete = true
+	reportJournalProblems(
+		agentDir,
+		() => {
+			historyComplete = false
+		},
+		check,
+	)
+	// Fingerprint before reading: an append during the read only makes the next pass capture again.
+	const journals = await workJournalFingerprint(agentDir, check)
+	check()
+	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
+	const currentInputs = await inputs()
+	check()
+	if (lastCapture?.inputs === currentInputs && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) {
+		if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
+		return
+	}
+	// Changed legacy input may repair a torn append. Re-evaluate coverage after the bounded import.
+	historyComplete = true
+	const startedAt = Date.now()
 	const records = await readWorkRecordsAsync(agentDir, bounded, () => {
 		historyComplete = false
 	})
@@ -378,7 +420,7 @@ async function captureSnapshots(
 
 	const built = buildSnapshots(records, report, repositories, costRefreshes, learnedLimits(state))
 	check()
-	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests)
+	await queueSnapshots(agentDir, built.snapshots, !built.incomplete, built.skippedRequests, check)
 	// A repository lookup that failed or ran out of time is retried by the next pass.
 	if ([...needed].every((repository) => repositories.has(repository)))
 		lastCapture = { inputs: await inputs(), at: startedAt }

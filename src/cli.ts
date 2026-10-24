@@ -178,6 +178,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
@@ -513,6 +514,7 @@ async function cliMain(): Promise<void> {
 				throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 			}
 			const modelsJsonPath = resolve(agentDir, "models.json")
+			installNativeUsageCapture()
 
 			let currentApiKey = apiKey
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in

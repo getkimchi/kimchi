@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process"
-import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
 import { isWorkMatchingRequest } from "../tui/support/fake-openai-server.js"
+import { readWorkRecords } from "../tui/support/work-summary.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor } from "./support/scenarios.js"
 
@@ -64,11 +64,7 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 	])
 
 	expect((await prompt(active, sessionId, "Implement it")).stopReason).toBe("end_turn")
-	const ledger = join(active.homeDir, ".config", "kimchi", "harness", "work-attribution")
-	const rows = readdirSync(ledger)
-		.filter((file) => file.endsWith(".jsonl"))
-		.flatMap((file) => readFileSync(join(ledger, file), "utf8").split("\n").filter(Boolean))
-		.map((line) => JSON.parse(line))
+	const rows = readWorkRecords(join(active.homeDir, ".config", "kimchi", "harness"))
 	const chats = active.fake.requests.filter(
 		(request) => request.url.startsWith("/openai/v1/chat/completions") && !isWorkMatchingRequest(request),
 	)
