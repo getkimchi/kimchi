@@ -1,15 +1,23 @@
 import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import * as fileSystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, it, vi } from "vitest"
 import { backendFor, capture } from "../pr-cost-reporting/ledger/records.js"
 import { pinWorkContinuation, readContinuationHistory } from "./links.js"
-import { readWorkRecords, readWorkRecordsAsync, type WorkRecord, type WorkRecordProblem } from "./summary.js"
+import {
+	readWorkRecords,
+	readWorkRecordsAsync,
+	type WorkRecord,
+	type WorkRecordProblem,
+	workJournalFingerprint,
+} from "./summary.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
+vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof fileSystem>()) }))
 
 const WORK = "11111111-1111-4111-8111-111111111111"
 const directories: string[] = []
@@ -29,6 +37,44 @@ const work: WorkRecord = { version: 1, type: "work", workId: WORK, sessionId: "l
 afterEach(() => {
 	vi.restoreAllMocks()
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
+})
+
+it("aborts fingerprinting when cancellation arrives during a real legacy stat", async () => {
+	const { agentDir, path } = journal([work])
+	writeFileSync(
+		join(agentDir, "work-attribution", "second.jsonl"),
+		`${JSON.stringify({ ...work, sessionId: "later" })}\n`,
+	)
+	const controller = new AbortController()
+	const failure = new Error("legacy stat aborted")
+	const original = fileSystem.stat
+	const stats = vi.spyOn(fileSystem, "stat").mockImplementationOnce(async () => {
+		const value = await original(path, { bigint: true })
+		controller.abort(failure)
+		return value
+	})
+	await expect(workJournalFingerprint(agentDir, () => controller.signal.throwIfAborted())).rejects.toBe(failure)
+	expect(stats).toHaveBeenCalledOnce()
+})
+
+it("fingerprints a same-size middle rewrite when modification time is restored", async () => {
+	const trailing = { ...work, sessionId: "unchanged-tail" }
+	const { agentDir, path } = journal([work, trailing])
+	const time = new Date("2026-10-01T00:00:00Z")
+	fs.utimesSync(path, time, time)
+	const before = fs.statSync(path, { bigint: true })
+	const fingerprint = await workJournalFingerprint(agentDir)
+	writeFileSync(path, `${JSON.stringify({ ...work, cwd: "/src/apt" })}\n${JSON.stringify(trailing)}\n`)
+	fs.utimesSync(path, time, time)
+	const after = fs.statSync(path, { bigint: true })
+	expect([after.dev, after.ino, after.size, after.mtimeNs]).toEqual([
+		before.dev,
+		before.ino,
+		before.size,
+		before.mtimeNs,
+	])
+	expect(after.ctimeNs).not.toBe(before.ctimeNs)
+	expect(await workJournalFingerprint(agentDir)).not.toBe(fingerprint)
 })
 
 it("reports consumed malformed and unknown-type history on every read, not just the import pass", () => {

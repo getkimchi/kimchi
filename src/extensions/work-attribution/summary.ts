@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
@@ -229,9 +229,28 @@ export async function readWorkRecordsAsync(
 	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
 	return ledgerReadRecordsAsync(agentDir, checkBudget)
 }
-/** Changes exactly when the stored history changes, like the journal name/size/mtime list did. */
-export async function workJournalFingerprint(agentDir: string): Promise<string> {
-	return recordsFingerprint(agentDir)
+/** Notice old-process appends and rewrites without reading journal bodies on idle passes. */
+export async function workJournalFingerprint(agentDir: string, checkBudget?: () => void): Promise<string> {
+	checkBudget?.()
+	const paths = (await workJournals(agentDir)).sort()
+	checkBudget?.()
+	const files: string[][] = []
+	for (const path of paths) {
+		checkBudget?.()
+		const value = await stat(path, { bigint: true })
+		checkBudget?.()
+		files.push([
+			path,
+			String(value.dev),
+			String(value.ino),
+			String(value.size),
+			String(value.mtimeNs),
+			String(value.ctimeNs),
+		])
+	}
+	const fingerprint = JSON.stringify([recordsFingerprint(agentDir), files])
+	checkBudget?.()
+	return fingerprint
 }
 /** Projections commit with their records; recovery just folds stranded intents from an interrupted import. */
 export function recoverWorkSummaries(): void {

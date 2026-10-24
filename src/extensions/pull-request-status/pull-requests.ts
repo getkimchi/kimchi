@@ -2,7 +2,9 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { writeFileDurably } from "../../config/json.js"
-import { object, readWorkRecords } from "../work-attribution/summary.js"
+import { importJournals } from "../pr-cost-reporting/ledger/import.js"
+import { readRecords } from "../pr-cost-reporting/ledger/records.js"
+import { object, workJournalFingerprint } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -78,6 +80,7 @@ export interface WorkPullRequestUpdate {
 interface DiscoveryState {
 	commits: Map<string, WorkPullRequestUpdate>
 	readThrough?: number
+	journalFingerprint?: string
 	nextCommit?: string
 	running?: Promise<void>
 }
@@ -182,10 +185,9 @@ function commitKey(row: WorkPullRequestUpdate): string {
 
 function readCommits(agentDir: string, state: DiscoveryState): void {
 	const started = Date.now()
-	const records = readWorkRecords(
-		agentDir,
-		state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
-	)
+	const records = readRecords(agentDir, {
+		modifiedSince: state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
+	})
 	for (const row of records) {
 		if (
 			row.type !== "commit" ||
@@ -241,8 +243,25 @@ async function scan(
 	assertLease: () => void,
 	onUpdate?: (update: WorkPullRequestUpdate) => void,
 ): Promise<void> {
-	signal.throwIfAborted()
+	const deadline = Date.now() + PASS_BUDGET_MS
+	const check = () => {
+		assertLease()
+		signal.throwIfAborted()
+		if (Date.now() >= deadline) throw new Error("PR discovery pass time limit exceeded")
+	}
+	const fingerprint = await workJournalFingerprint(agentDir, check)
+	check()
+	if (state.journalFingerprint !== fingerprint) {
+		let pending: boolean
+		do {
+			check()
+			const imported = await importJournals(agentDir, { checkBudget: check })
+			pending = imported.pending === true
+		} while (pending)
+	}
+	check()
 	readCommits(agentDir, state)
+	state.journalFingerprint = fingerprint
 	const groups = new Map<string, WorkPullRequestUpdate[]>()
 	for (const commit of state.commits.values()) {
 		onUpdate?.(commit)
@@ -259,7 +278,6 @@ async function scan(
 		jobs.findIndex(([key]) => key === state.nextCommit),
 	)
 
-	const deadline = Date.now() + PASS_BUDGET_MS
 	const repositories = new Map<string, Promise<Repository>>()
 	const tokens = new Map<string, Promise<string | undefined>>()
 	const associations = new Map<string, Promise<WorkPullRequest[]>>()

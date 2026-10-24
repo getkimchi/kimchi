@@ -172,7 +172,8 @@ let lastCostState: CostState | undefined
 /** The calculation is a pure function of the journals, so passes reuse it until a journal changes. */
 async function costState(agentDir: string, signal: AbortSignal): Promise<CostState> {
 	// Fingerprint before reading: an append during the read only makes the next pass recalculate.
-	const fingerprint = await workJournalFingerprint(agentDir)
+	const fingerprint = await workJournalFingerprint(agentDir, () => signal.throwIfAborted())
+	signal.throwIfAborted()
 	if (lastCostState?.agentDir === agentDir && lastCostState.fingerprint === fingerprint) return lastCostState
 	const records = await readWorkRecordsAsync(agentDir, signal)
 	// The calculation cannot stop midway; a closing session must not wait for one it no longer needs.

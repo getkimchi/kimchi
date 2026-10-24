@@ -13,6 +13,8 @@ import * as costs from "../work-attribution/costs.js"
 import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
+import { reportJournalProblems } from "./ledger/import.js"
+import { readRecords } from "./ledger/records.js"
 import { queueSnapshots, readReportingState, setReportingEnabled, UPLOAD_INTERVAL_MS } from "./queue.js"
 import { buildSnapshots, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
@@ -1003,6 +1005,79 @@ describe("repository identity for work without a PR", () => {
 })
 
 describe("idle reporting passes", () => {
+	it("performs no journal body reads on an unchanged idle pass", async () => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		await run()
+		const reads = vi.spyOn(fs, "readSync")
+		await run()
+		expect(reads).not.toHaveBeenCalled()
+		expect(posts()).toHaveLength(1)
+	})
+
+	it.each([
+		"new",
+		"unknown",
+	] as const)("drains a duplicate-only window before judging %s trailing evidence", async (kind) => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		await run()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const duplicate = `${(await readFile(path, "utf8")).split("\n")[0]}\n`
+		const duplicates = duplicate.repeat(Math.ceil((512 * 1024) / Buffer.byteLength(duplicate)) + 2)
+		expect(Buffer.byteLength(duplicates)).toBeGreaterThan(512 * 1024)
+		const tail = {
+			version: 1,
+			type: kind === "new" ? "request" : "future_retraction",
+			workId: "55555555-5555-4555-8555-555555555555",
+			sessionId: "private-session",
+			requestId: "66666666-6666-4666-8666-666666666666",
+			scope: null,
+		}
+		await appendFile(path, `${duplicates}${JSON.stringify(tail)}\n`)
+		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		await run()
+		if (kind === "new") {
+			expect(readRecords(directory)).toContainEqual(tail)
+			expect(calculate).toHaveBeenCalledOnce()
+		} else {
+			const problems: summary.WorkRecordProblem[] = []
+			reportJournalProblems(directory, (problem) => problems.push(problem))
+			expect(problems).toContainEqual(expect.objectContaining({ kind: "unknown-type", record: tail }))
+			expect(calculate).not.toHaveBeenCalled()
+			expect((await readReportingState(directory)).error).toContain("complete inventory")
+		}
+		expect(posts()).toHaveLength(1)
+	})
+
+	it("rechecks changed legacy input after a recoverable torn append", async () => {
+		await seedLinked()
+		respond(accepted)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		await run()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const valid = (await readFile(path, "utf8")).split("\n")[0]
+		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		await appendFile(path, '{"type":"request"\n')
+		await run()
+		expect(calculate).not.toHaveBeenCalled()
+		expect((await readReportingState(directory)).error).toContain("complete inventory")
+		await appendFile(path, `${valid}\n`)
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60 * 60_000)
+		await run()
+		expect(calculate).toHaveBeenCalledOnce()
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		const problems: summary.WorkRecordProblem[] = []
+		reportJournalProblems(directory, (problem) => problems.push(problem))
+		expect(problems).toEqual([])
+		expect(posts()).toHaveLength(1)
+	})
+
 	it("skips an unchanged pass, reads journals in the background and still moves the window", async () => {
 		await seedLinked()
 		respond(accepted)

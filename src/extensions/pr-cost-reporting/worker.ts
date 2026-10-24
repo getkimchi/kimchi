@@ -9,6 +9,7 @@ import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { object, readWorkRecordsAsync, workJournalFingerprint } from "../work-attribution/summary.js"
+import { reportJournalProblems } from "./ledger/import.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeSnapshot,
@@ -306,12 +307,28 @@ async function captureSnapshots(
 		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
 	}
 	check()
-	// Fingerprint before reading: an append during the read only makes the next pass capture again.
-	const journals = await workJournalFingerprint(agentDir)
-	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
-	if (lastCapture?.inputs === (await inputs()) && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) return
-	const startedAt = Date.now()
+	// Retain known coverage failures without rehashing unchanged legacy bodies on idle passes.
 	let historyComplete = true
+	reportJournalProblems(
+		agentDir,
+		() => {
+			historyComplete = false
+		},
+		check,
+	)
+	// Fingerprint before reading: an append during the read only makes the next pass capture again.
+	const journals = await workJournalFingerprint(agentDir, check)
+	check()
+	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
+	const currentInputs = await inputs()
+	check()
+	if (lastCapture?.inputs === currentInputs && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) {
+		if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
+		return
+	}
+	// Changed legacy input may repair a torn append. Re-evaluate coverage after the bounded import.
+	historyComplete = true
+	const startedAt = Date.now()
 	const records = await readWorkRecordsAsync(agentDir, bounded, () => {
 		historyComplete = false
 	})

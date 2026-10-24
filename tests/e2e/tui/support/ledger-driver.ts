@@ -18,7 +18,7 @@
  */
 
 import { Database } from "bun:sqlite"
-import { mkdirSync, readdirSync, statSync } from "node:fs"
+import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
@@ -279,6 +279,140 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string): Pro
 		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
 	})
 	closeBackends()
+}
+
+function summaryState(agent: string, workId: string) {
+	const store = openStore(agent)
+	try {
+		return store.db
+			.transaction(() => ({
+				authority: store.db.query("SELECT * FROM work_records WHERE work_id = ? ORDER BY rowid").all(workId),
+				markers: store.db.query("SELECT * FROM pending_translation WHERE work_id = ? ORDER BY record_hash").all(workId),
+				head:
+					store.db
+						.query<{ body: string }, [string]>("SELECT body FROM work_projection_head WHERE work_id = ?")
+						.get(workId)?.body ?? null,
+				rows: store.db.query("SELECT * FROM work_projection_rows WHERE work_id = ? ORDER BY log, pos").all(workId),
+			}))
+			.deferred()
+	} finally {
+		store.close()
+	}
+}
+
+async function summaryAtomic(agent: string, json: string): Promise<void> {
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { record, failure, failedWorkId } = JSON.parse(json) as {
+		record: WorkRecord
+		failure: "authority" | "translation" | "projection"
+		failedWorkId: string
+	}
+	capture(agent, { ...record, type: "work" }, "summary-native")
+	capture(agent, { ...record, requestId: "prior" }, "summary-native")
+	const before = summaryState(agent, record.workId)
+	const backend = backendFor(agent)
+	const insert = backend.insertRecord
+	const mark = backend.upsertMarker
+	const publish = backend.putHead
+	const sentinel = new Error("after-write cancellation")
+	let mutations = 0
+	if (failure === "authority")
+		backend.insertRecord = (row) => {
+			const inserted = insert(row)
+			if (inserted) {
+				mutations++
+				throw sentinel
+			}
+			return inserted
+		}
+	if (failure === "translation")
+		backend.upsertMarker = (...args) => {
+			mark(...args)
+			mutations++
+			throw sentinel
+		}
+	if (failure === "projection")
+		backend.putHead = (head) => {
+			publish(head)
+			mutations++
+			throw sentinel
+		}
+	let rejected = 0
+	try {
+		for (const next of [record, { ...record, type: "work" as const, workId: failedWorkId }]) {
+			try {
+				capture(agent, next, "summary-native")
+			} catch (error) {
+				if (error !== sentinel) throw error
+				rejected++
+			}
+		}
+	} finally {
+		backend.insertRecord = insert
+		backend.upsertMarker = mark
+		backend.putHead = publish
+		closeBackends()
+	}
+	const after = summaryState(agent, record.workId)
+	const failedHeader = summaryState(agent, failedWorkId)
+	capture(agent, record, "summary-native")
+	capture(agent, record, "summary-native")
+	closeBackends()
+	out({ before, after, failedHeader, mutations, rejected, recovered: summaryState(agent, record.workId) })
+}
+
+/** A synchronous pipe gate holds a real transaction after its head write, never across await. */
+async function summaryWriter(agent: string, json: string): Promise<void> {
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { flushWorkSummaries } = await import("../../../../src/extensions/work-attribution/summary.js")
+	const {
+		record,
+		count = 1,
+		beforeFlush = false,
+	} = JSON.parse(json) as {
+		record: WorkRecord
+		count?: number
+		beforeFlush?: boolean
+	}
+	const backend = backendFor(agent)
+	const publish = backend.putHead
+	const cancelled = new Error("writer ownership cancelled before commit")
+	const gate = () => {
+		const byte = Buffer.alloc(1)
+		if (readSync(0, byte, 0, 1, null) !== 1) throw new Error("Missing writer release")
+		return byte[0] === 99
+	}
+	const signal = (phase: string) => writeSync(1, `${JSON.stringify({ phase })}\n`)
+	backend.putHead = (head) => {
+		publish(head)
+		signal("pending")
+		if (!gate()) throw cancelled
+	}
+	try {
+		signal("ready")
+		for (let index = 0; index < count; index++) {
+			try {
+				capture(
+					agent,
+					count === 1 ? record : { ...record, requestId: `${record.sessionId}-${index}` },
+					"summary-native",
+				)
+			} catch (error) {
+				if (error !== cancelled) throw error
+				signal("rolled-back")
+				// Stay alive while the competing writer commits: the cancelled head must never reappear.
+				gate()
+				return
+			}
+			signal("committed")
+		}
+		if (beforeFlush && !gate()) throw new Error("Missing flush release")
+		await flushWorkSummaries()
+		signal("flushed")
+	} finally {
+		backend.putHead = publish
+		closeBackends()
+	}
 }
 
 async function knownRecordRegressions(agent: string, recordJson: string): Promise<void> {
@@ -584,6 +718,9 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		}
 	},
 	listfiles: (agent) => listFiles(agent),
+	"summary-state": async (agent, workId) => out(summaryState(agent, workId ?? "")),
+	"summary-atomic": (agent, json) => summaryAtomic(agent, json ?? "{}"),
+	"summary-writer": (agent, json) => summaryWriter(agent, json ?? "{}"),
 	"known-record-regressions": (agent, json) => knownRecordRegressions(agent, json ?? "{}"),
 	"known-async-read-regressions": (agent, json) => knownAsyncReadRegressions(agent, json ?? "{}"),
 	"known-schema-race": (agent) => knownSchemaRace(agent),

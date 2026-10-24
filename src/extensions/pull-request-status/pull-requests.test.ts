@@ -1,4 +1,5 @@
 import type { ExecFileOptions } from "node:child_process"
+import * as fs from "node:fs"
 import {
 	appendFileSync,
 	existsSync,
@@ -14,11 +15,13 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
 import { hydrateLegacy } from "../pr-cost-reporting/ledger/import.js"
-import { backendFor } from "../pr-cost-reporting/ledger/records.js"
+import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import * as summaries from "../work-attribution/summary.js"
 import { lookupBranchPullRequest } from "./branch-status.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
+
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 const cli = vi.hoisted(() => ({
 	git: vi.fn<(args: string[], options: ExecFileOptions) => Promise<string | undefined>>(),
@@ -148,7 +151,8 @@ function lookup(signal = new AbortController().signal, assertLease = () => {}): 
 }
 function saved(sessionId = "writer") {
 	const path = join(agentDir, "work-attribution", `${sessionId}.jsonl`)
-	const rows = backendFor(agentDir)
+	const rows = ledger
+		.backendFor(agentDir)
 		.readRecords({ sessionId })
 		.filter((row) => row.sourcePath === path)
 	if (!rows.length) throw new Error("No saved PR lookup observations")
@@ -1196,6 +1200,31 @@ describe("bounded and safe HTTP lookup", () => {
 })
 
 describe("durable work pull request discovery", () => {
+	it("does not read legacy bodies on an unchanged PR pass", async () => {
+		// Unknown-age commits are deliberately checked every pass; keep this one within its normal backoff.
+		seed({ recordedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() })
+		await lookup()
+		await lookup()
+		const reads = vi.spyOn(fs, "readSync")
+		const requests = http.mock.calls.length
+		await lookup()
+		expect(reads).not.toHaveBeenCalled()
+		expect(http).toHaveBeenCalledTimes(requests)
+	})
+
+	it("keeps passive display DB-backed when a legacy journal cannot be opened", () => {
+		seed({ pullRequests: [stored()] })
+		const before = readWorkPullRequestUpdates(agentDir)
+		expect(before).toHaveLength(1)
+		const opens = vi.spyOn(fs, "openSync").mockImplementation(() => {
+			throw new Error("legacy journal unavailable")
+		})
+		expect(() => readWorkPullRequestUpdates(agentDir)).not.toThrow()
+		expect(readWorkPullRequestUpdates(agentDir)).toEqual(before)
+		expect(opens).not.toHaveBeenCalled()
+		expect(http).not.toHaveBeenCalled()
+	})
+
 	it("reads another process's saved links without network requests or ledger writes", () => {
 		seed()
 		expect(readWorkPullRequestUpdates(agentDir)[0]).toMatchObject({
@@ -1505,16 +1534,18 @@ describe("durable work pull request discovery", () => {
 	})
 	it("reads changed journals and does not advance its checkpoint after a failed source read", async () => {
 		seed()
-		const reads = vi.spyOn(summaries, "readWorkRecords")
+		const reads = vi.spyOn(ledger, "readRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, undefined])
+		expect(reads.mock.calls[0]).toEqual([agentDir, { modifiedSince: undefined }])
+		later()
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
 		})
 		await expect(lookup()).rejects.toThrow("ledger unavailable")
-		const checkpoint = reads.mock.calls[1][1]
+		const checkpoint = reads.mock.calls[1][1]?.modifiedSince
+		expect(checkpoint).toEqual(expect.any(Number))
 		await lookup()
-		expect(reads.mock.calls[2][1]).toBe(checkpoint)
+		expect(reads.mock.calls[2]).toEqual([agentDir, { modifiedSince: checkpoint }])
 		expect(commitCalls()).toHaveLength(2)
 	})
 })
