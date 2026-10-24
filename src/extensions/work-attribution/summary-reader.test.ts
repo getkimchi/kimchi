@@ -5,9 +5,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, it, vi } from "vitest"
-import { backendFor } from "../pr-cost-reporting/ledger/records.js"
+import { backendFor, capture } from "../pr-cost-reporting/ledger/records.js"
 import { pinWorkContinuation, readContinuationHistory } from "./links.js"
-import { readWorkRecords, type WorkRecordProblem } from "./summary.js"
+import { readWorkRecords, readWorkRecordsAsync, type WorkRecord, type WorkRecordProblem } from "./summary.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
@@ -24,7 +24,7 @@ function journal(lines: unknown[]) {
 	return { agentDir, path }
 }
 
-const work = { version: 1, type: "work", workId: WORK, sessionId: "legacy", cwd: "/src/app" }
+const work: WorkRecord = { version: 1, type: "work", workId: WORK, sessionId: "legacy", cwd: "/src/app" }
 
 afterEach(() => {
 	vi.restoreAllMocks()
@@ -57,6 +57,35 @@ it("honors a read budget before import commits and allows a later retry", () => 
 	expect(backendFor(agentDir).recordCount()).toBe(0)
 	expect(readWorkRecords(agentDir)).toEqual([work])
 	expect(() => readWorkRecords(agentDir, undefined, budget)).toThrow("history budget exhausted")
+})
+
+it("aborts between committed import batches and resumes without losing or duplicating authority", async () => {
+	const requests = Array.from({ length: 1500 }, (_, index) => ({
+		...work,
+		type: "request",
+		requestId: `async-${index}`,
+		scope: null,
+		padding: "x".repeat(1024),
+	}))
+	const { agentDir, path } = journal([work, ...requests])
+	const bytes = fs.readFileSync(path, "utf8")
+	const backend = backendFor(agentDir)
+	const controller = new AbortController()
+	const putCursor = backend.putJournalCursor.bind(backend)
+	const cursor = vi.spyOn(backend, "putJournalCursor").mockImplementation((value) => {
+		putCursor(value)
+		setImmediate(() => controller.abort(new Error("history reader closed")))
+	})
+	await expect(readWorkRecordsAsync(agentDir, controller.signal)).rejects.toThrow("history reader closed")
+	const authority = backend.readRecords({ workId: WORK })
+	expect(authority.length).toBeGreaterThan(0)
+	expect(authority.length).toBeLessThan(requests.length + 1)
+	expect(backend.getJournalCursor(path)?.offset).toBeLessThan(Buffer.byteLength(bytes))
+	cursor.mockRestore()
+	expect(await readWorkRecordsAsync(agentDir, new AbortController().signal)).toEqual([work, ...requests])
+	expect(backend.readRecords({ workId: WORK }).slice(0, authority.length)).toEqual(authority)
+	expect(backend.recordCount()).toBe(requests.length + 1)
+	expect(fs.readFileSync(path, "utf8")).toBe(bytes)
 })
 
 it("rolls coverage back with authority and cursor when the cursor write fails", () => {
@@ -127,6 +156,85 @@ it("replays consumed unknown-type coverage after a real SQLite process restart",
 			problems: [{ kind: "unknown-type", path, line: 2, record: unknown }],
 		})
 	}
+}, 30_000)
+
+it("pins asynchronous replay to its starting watermark without materializing the whole store", async () => {
+	const requests = Array.from({ length: 260 }, (_, index) => ({
+		...work,
+		type: "request",
+		requestId: `watermark-${index}`,
+	}))
+	const { agentDir } = journal([work, ...requests])
+	readWorkRecords(agentDir)
+	const backend = backendFor(agentDir)
+	const page = backend.readRecordPage.bind(backend)
+	const later: WorkRecord = { ...work, type: "request", requestId: "captured-between-pages" }
+	vi.spyOn(backend, "readRecordPage").mockImplementation((after, through, limit, checkBudget) => {
+		const rows = page(after, through, limit, checkBudget)
+		if (after === 0) setImmediate(() => capture(agentDir, later, null))
+		return rows
+	})
+	const unbounded = vi.spyOn(backend, "readRecords").mockImplementation(() => {
+		throw new Error("Unbounded native history materialization")
+	})
+	expect(await readWorkRecordsAsync(agentDir, new AbortController().signal)).toEqual([work, ...requests])
+	vi.mocked(backend.readRecordPage).mockRestore()
+	expect(await readWorkRecordsAsync(agentDir, new AbortController().signal)).toEqual([work, ...requests, later])
+	expect(unbounded).not.toHaveBeenCalled()
+})
+
+it("cancels from inside actual native SQLite row reading and preserves same-connection and reopened history", () => {
+	const agentDir = mkdtempSync(join(tmpdir(), "kimchi-native-async-reader-"))
+	directories.push(agentDir)
+	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+	const result = JSON.parse(
+		execFileSync("bun", [driver, "known-async-read-regressions", agentDir, JSON.stringify(work)], {
+			encoding: "utf8",
+			timeout: 30_000,
+		}).trim(),
+	)
+	expect(result).toMatchObject({
+		observerEntered: true,
+		callbackRan: true,
+		cancelled: true,
+		nativeRows: 1025,
+		sameConnectionComplete: true,
+		captureCommitted: true,
+		reopenedComplete: true,
+		noLegacyJournal: true,
+		snapshotComplete: true,
+		nextReadSeesCapture: true,
+	})
+	expect(result.rowsAtAbort).toBeGreaterThan(0)
+	expect(result.rowsAtAbort).toBeLessThan(result.nativeRows)
+}, 30_000)
+
+it("yields while importing real SQLite history and replays coverage after process restart", () => {
+	const requests = Array.from({ length: 1500 }, (_, index) => ({
+		...work,
+		type: "request",
+		requestId: `async-${index}`,
+		scope: null,
+		padding: "x".repeat(1024),
+	}))
+	const unknown = { ...work, type: "future_retraction", requestId: "original-request" }
+	const { agentDir, path } = journal([work, ...requests, unknown])
+	const bytes = fs.readFileSync(path, "utf8")
+	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+	const run = () =>
+		JSON.parse(
+			execFileSync("bun", [driver, "read-history-async", agentDir], { encoding: "utf8", timeout: 30_000 }).trim(),
+		)
+	const expected = {
+		records: requests.length + 1,
+		requestIds: requests.map((row) => row.requestId),
+		problems: [{ kind: "unknown-type", path, line: requests.length + 2, record: unknown }],
+	}
+	const imported = run()
+	expect(imported).toMatchObject(expected)
+	expect(imported.turns).toBeGreaterThanOrEqual(3)
+	expect(run()).toMatchObject(expected)
+	expect(fs.readFileSync(path, "utf8")).toBe(bytes)
 }, 30_000)
 
 it("repairs a truncated EOF diagnostic after a later complete line without clearing unknown records", () => {

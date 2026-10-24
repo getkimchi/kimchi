@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { setImmediate } from "node:timers/promises"
 import {
 	COLLECTIONS,
 	type Collection,
@@ -31,6 +32,11 @@ export interface StoredRecord {
 	sourceGeneration: number
 	sourceOffset: number | null
 	importedAt: number
+}
+
+/** A stable insertion position for bounded authority reads; never a projection position. */
+export interface PositionedRecord extends StoredRecord {
+	position: number
 }
 
 /** Where the C3 importer stopped in one journal file; bytes [0, offset) are the consumed prefix. */
@@ -67,6 +73,9 @@ export interface RecordBackend {
 		opts: { workId?: string; sessionId?: string; modifiedSince?: number },
 		checkBudget?: () => void,
 	): StoredRecord[]
+	/** Pins an async read to the records committed when it started. */
+	recordWatermark(): number
+	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
 	recordCount(workId?: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
@@ -210,6 +219,32 @@ export function readRecords(
 			// A damaged body cannot happen through capture or import; skip rather than fail every reader.
 		}
 	}
+	return records
+}
+
+/** No transaction or live iterator crosses a yield; appends beyond the watermark belong to the next read. */
+export async function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
+	checkBudget()
+	const backend = backendFor(agentDir)
+	const through = backend.recordWatermark()
+	const records: WorkRecord[] = []
+	let after = 0
+	while (after < through) {
+		await setImmediate()
+		checkBudget()
+		const page = backend.readRecordPage(after, through, 128, checkBudget)
+		if (!page.length) break
+		for (const row of page) {
+			checkBudget()
+			try {
+				records.push(JSON.parse(row.body) as WorkRecord)
+			} catch {
+				// Match the synchronous reader's damaged-body behavior.
+			}
+		}
+		after = page[page.length - 1].position
+	}
+	checkBudget()
 	return records
 }
 
@@ -445,6 +480,10 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const readRecordsSince = db.query<StoredRecord, [number]>(
 		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE imported_at >= ? ORDER BY rowid",
 	)
+	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
+	const recordPage = db.query<PositionedRecord, [number, number, number]>(
+		"SELECT rowid AS position, record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?",
+	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records WHERE work_id = ?",
@@ -527,6 +566,22 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
 				else readRecordsAll.get()
+				throw error
+			}
+			return rows
+		},
+		recordWatermark: () => watermark.get()?.position ?? 0,
+		readRecordPage: (after, through, limit, checkBudget) => {
+			checkBudget?.()
+			const rows: PositionedRecord[] = []
+			try {
+				for (const row of recordPage.iterate(after, through, limit)) {
+					checkBudget?.()
+					rows.push(row)
+				}
+			} catch (error) {
+				// The same Bun cursor-reset rule as the synchronous replay above.
+				recordPage.get(after, through, limit)
 				throw error
 			}
 			return rows

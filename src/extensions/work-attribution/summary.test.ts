@@ -25,7 +25,15 @@ import {
 } from "../work-attribution.js"
 
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries, readWorkRecords, readWorkRecordsAsync, recoverWorkSummaries } from "./summary.js"
+import {
+	flushWorkSummaries,
+	journalParser,
+	readWorkRecords,
+	readWorkRecordsAsync,
+	recoverWorkSummaries,
+	type WorkRecord,
+	type WorkRecordProblem,
+} from "./summary.js"
 
 vi.mock("proper-lockfile", async (importOriginal) => ({ ...(await importOriginal<typeof locks>()) }))
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
@@ -71,6 +79,18 @@ function recoverProjection(workId: string): void {
 	expect(backend.readRecords({ workId })).toEqual(authority)
 }
 
+function parseLegacyJournal(
+	ledger: string,
+	text: string,
+	onProblem?: (problem: WorkRecordProblem) => void,
+): WorkRecord[] {
+	const records: WorkRecord[] = []
+	const parse = journalParser(ledger, records, onProblem)
+	const lines = text.split("\n")
+	for (const [index, line] of lines.entries()) parse(line, index === lines.length - 1)
+	return records
+}
+
 describe("readable work summaries", () => {
 	it("keeps one PR after provider IDs are added and the repository is renamed", async () => {
 		const ctx = context()
@@ -104,6 +124,7 @@ describe("readable work summaries", () => {
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).not.toHaveBeenCalled()
+		fs.mkdirSync(dirname(ledger), { recursive: true })
 		fs.appendFileSync(ledger, '\n{broken\n{"type":"request"}\n')
 		readWorkRecords(dir, undefined, () => {}, invalid)
 		expect(invalid).toHaveBeenCalledTimes(2)
@@ -111,27 +132,38 @@ describe("readable work summaries", () => {
 	it.each(["", "transitions"])("skips only interrupted appends in %s journals", async (source) => {
 		const row = { version: 1, type: "work", workId: randomUUID(), sessionId: "writer" }
 		const complete = JSON.stringify(row)
-		const directory = join(dir, "work-attribution", source)
-		fs.mkdirSync(directory, { recursive: true })
-		const ledger = join(directory, "interrupted.jsonl")
-		for (const [suffix, invalidCount, rows] of [
-			['{"type":"request"', 0, [row]],
-			['{"type":"request"\n', 1, [row]],
+		// Keep the legacy parser matrix; the importer consumes only LF-terminated lines and dedups authority.
+		const cases = [
+			['{"type":"request"', 0, [row], 0, 1],
+			['{"type":"request"\n', 1, [row], 1, 1],
 			// Released writers start a new line after a cut-off record and append the next one.
-			['{"type":"request"}', 1, [row]],
-			[`{"type":"request"\n${complete}`, 0, [row, row]],
-			[`{"type":"request","workId":"12\n${complete}`, 0, [row, row]],
-			[`{"type":"request"}x\n${complete}`, 1, [row, row]],
-			[complete, 0, [row, row]],
-		] as const) {
-			fs.writeFileSync(ledger, `${complete}\n${suffix}`)
+			['{"type":"request"}', 1, [row], 0, 1],
+			[`{"type":"request"\n${complete}`, 0, [row, row], 1, 0],
+			[`{"type":"request","workId":"12\n${complete}`, 0, [row, row], 1, 0],
+			[`{"type":"request"}x\n${complete}`, 1, [row, row], 1, 1],
+			[complete, 0, [row, row], 0, 0],
+		] as const
+		for (const [index, [suffix, invalidCount, rows, beforeLf, afterLf]] of cases.entries()) {
+			const agentDir = join(dir, `${source || "sessions"}-${index}`)
+			const directory = join(agentDir, "work-attribution", source)
+			fs.mkdirSync(directory, { recursive: true })
+			const ledger = join(directory, "interrupted.jsonl")
+			const text = `${complete}\n${suffix}`
+			fs.writeFileSync(ledger, text)
+			const legacyProblems = vi.fn()
+			expect(parseLegacyJournal(ledger, text, legacyProblems)).toEqual(rows)
+			expect(legacyProblems).toHaveBeenCalledTimes(invalidCount)
 			const invalid = vi.fn()
-			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual(rows)
-			expect(invalid).toHaveBeenCalledTimes(invalidCount)
-			// The background reader sees the same damage.
+			expect(readWorkRecords(agentDir, undefined, () => {}, invalid)).toEqual([row])
+			expect(invalid).toHaveBeenCalledTimes(beforeLf)
+			// The background reader sees the same durable coverage, without importing duplicate rows.
 			const background = vi.fn()
-			expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual(rows)
+			expect(await readWorkRecordsAsync(agentDir, new AbortController().signal, background)).toEqual([row])
 			expect(background.mock.calls).toEqual(invalid.mock.calls)
+			if (!text.endsWith("\n")) fs.appendFileSync(ledger, "\n")
+			const completed = vi.fn()
+			expect(readWorkRecords(agentDir, undefined, () => {}, completed)).toEqual([row])
+			expect(completed).toHaveBeenCalledTimes(afterLf)
 		}
 	})
 	it("reports damage and complete records of unknown types as separate problems", async () => {
@@ -143,9 +175,12 @@ describe("readable work summaries", () => {
 		const lines = [row, newer, { ...newer, workId: "not-a-work-id" }, { ...row, type: "request" }].map((value) =>
 			JSON.stringify(value),
 		)
-		fs.writeFileSync(ledger, `${lines.join("\n")}\n{broken\n${JSON.stringify(row)}\n`)
+		const text = `${lines.join("\n")}\n{broken\n${JSON.stringify(row)}\n`
+		fs.writeFileSync(ledger, text)
+		const legacyProblems = vi.fn()
+		expect(parseLegacyJournal(ledger, text, legacyProblems)).toEqual([row, row])
 		const problems = vi.fn()
-		expect(readWorkRecords(dir, undefined, () => {}, problems)).toEqual([row, row])
+		expect(readWorkRecords(dir, undefined, () => {}, problems)).toEqual([row])
 		// Both kinds reach the callback, so readers that need complete history still see an unknown type.
 		expect(problems.mock.calls).toEqual([
 			[{ kind: "unknown-type", path: ledger, line: 2, record: newer }],
@@ -153,8 +188,9 @@ describe("readable work summaries", () => {
 			[{ kind: "invalid", path: ledger, line: 4 }],
 			[{ kind: "invalid", path: ledger, line: 5 }],
 		])
+		expect(legacyProblems.mock.calls).toEqual(problems.mock.calls)
 		const background = vi.fn()
-		expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual([row, row])
+		expect(await readWorkRecordsAsync(dir, new AbortController().signal, background)).toEqual([row])
 		expect(background.mock.calls).toEqual(problems.mock.calls)
 	})
 	it("skips a record cut at any position, including inside a \\u escape", () => {
@@ -170,12 +206,17 @@ describe("readable work summaries", () => {
 		})
 		const escapes = [...cut.matchAll(/\\u001b/g)].map((match) => match.index)
 		expect(escapes).toHaveLength(2)
-		const ledger = join(dir, "work-attribution", "interrupted.jsonl")
-		fs.mkdirSync(dirname(ledger), { recursive: true })
 		for (let end = 1; end < cut.length; end++) {
-			fs.writeFileSync(ledger, `${complete}\n${cut.slice(0, end)}\n${complete}\n`)
+			const agentDir = join(dir, `cut-${end}`)
+			const ledger = join(agentDir, "work-attribution", "interrupted.jsonl")
+			fs.mkdirSync(dirname(ledger), { recursive: true })
+			const text = `${complete}\n${cut.slice(0, end)}\n${complete}\n`
+			fs.writeFileSync(ledger, text)
+			const legacyProblems = vi.fn()
+			expect(parseLegacyJournal(ledger, text, legacyProblems)).toEqual([row, row])
+			expect({ end, invalid: legacyProblems.mock.calls.length }).toEqual({ end, invalid: 0 })
 			const invalid = vi.fn()
-			expect(readWorkRecords(dir, undefined, () => {}, invalid)).toEqual([row, row])
+			expect(readWorkRecords(agentDir, undefined, () => {}, invalid)).toEqual([row])
 			expect({ end, invalid: invalid.mock.calls.length }).toEqual({ end, invalid: 0 })
 		}
 	})
@@ -237,38 +278,33 @@ describe("readable work summaries", () => {
 			billingLookup: older,
 		})
 		await flushWorkSummaries()
-		// A second process can capture an older ledger before waiting for the summary lock.
-		vi.resetModules()
-		const recovering = await import("./summary.js")
-		const originalLock = locks.lock
-		let release!: () => void
-		let waiting!: () => void
-		const blocked = new Promise<void>((resolve) => {
-			release = resolve
+		const captured = readWorkRecords(dir).find(
+			(row) => row.type === "request_cost" && row.requestId === request.requestId,
+		)
+		if (!captured) throw new Error("Expected the older billing observation")
+		// A legacy writer can publish an older observation after a newer one has already committed.
+		// Give it distinct record bytes so this exercises timestamp precedence, not only hash dedup.
+		const delayed = { ...captured, recordedAt: "2026-10-04T09:01:00Z" }
+		appendWorkRecord(ctx, {
+			type: "request_cost",
+			requestId: request.requestId,
+			billingRows: newer.status === "priced" ? [charge] : [],
+			billingLookup: newer,
 		})
-		const entered = new Promise<void>((resolve) => {
-			waiting = resolve
-		})
-		vi.spyOn(locks, "lock").mockImplementationOnce(async (...args) => {
-			waiting()
-			await blocked
-			return originalLock(...args)
-		})
-		recovering.recoverWorkSummaries()
-		try {
-			await entered
-			appendWorkRecord(ctx, {
-				type: "request_cost",
-				requestId: request.requestId,
-				billingRows: newer.status === "priced" ? [charge] : [],
-				billingLookup: newer,
-			})
-			await flushWorkSummaries()
-			expect(summary(workId).requests[0].billingLookup).toEqual(newer)
-		} finally {
-			release()
-			await recovering.flushWorkSummaries()
-		}
+		await flushWorkSummaries()
+		expect(summary(workId).requests[0].billingLookup).toEqual(newer)
+		const authority = backendFor(dir).readRecords({ workId })
+		const ledger = join(dir, "work-attribution", "delayed-billing.jsonl")
+		fs.mkdirSync(dirname(ledger), { recursive: true })
+		fs.writeFileSync(ledger, `${JSON.stringify(delayed)}\n`)
+		const problems = vi.fn()
+		readWorkRecords(dir, undefined, () => {}, problems)
+		expect(problems).not.toHaveBeenCalled()
+		expect(backendFor(dir).readRecords({ workId })).toHaveLength(authority.length + 1)
+		expect(backendFor(dir).readRecords({ workId }).slice(0, authority.length)).toEqual(authority)
+		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
+		recoverProjection(workId)
+		await flushWorkSummaries()
 		expect(summary(workId).requests[0]).toMatchObject({ billingLookup: newer, billingRows: [charge] })
 	})
 	it("reads large journals in the background without blocking the event loop", async () => {
@@ -279,8 +315,17 @@ describe("readable work summaries", () => {
 			JSON.stringify({ version: 1, type: "request", workId, sessionId: "large", requestId, note })
 		// About 6 MiB in several files; one multi-byte note crosses a read chunk boundary.
 		const lines = Array.from({ length: 20_000 }, () => row(randomUUID(), "x".repeat(200)))
-		fs.writeFileSync(join(ledgers, "large.jsonl"), `${row(randomUUID(), "é".repeat(700_000))}\n${lines.join("\n")}\n`)
-		fs.writeFileSync(join(ledgers, "transitions", "edits.jsonl"), `${lines.slice(0, 1000).join("\n")}\ninterrupted`)
+		const primary = `${row(randomUUID(), "é".repeat(700_000))}\n${lines.join("\n")}\n`
+		const transitions = `${lines.slice(0, 1000).join("\n")}\ninterrupted`
+		const primaryPath = join(ledgers, "large.jsonl")
+		const transitionsPath = join(ledgers, "transitions", "edits.jsonl")
+		fs.writeFileSync(primaryPath, primary)
+		fs.writeFileSync(transitionsPath, transitions)
+		// The legacy parser sees all 21,001 observations; the authority dedups the repeated 1,000 exact lines.
+		expect([
+			...parseLegacyJournal(primaryPath, primary),
+			...parseLegacyJournal(transitionsPath, transitions),
+		]).toHaveLength(21_001)
 		let turns = 0
 		let reading = true
 		const spin = () => {
@@ -290,8 +335,10 @@ describe("readable work summaries", () => {
 		setImmediate(spin)
 		const records = await readWorkRecordsAsync(dir, new AbortController().signal)
 		reading = false
-		expect(records).toHaveLength(21_001)
+		expect(records).toHaveLength(20_001)
 		expect(records).toEqual(readWorkRecords(dir))
+		expect(fs.readFileSync(primaryPath, "utf8")).toBe(primary)
+		expect(fs.readFileSync(transitionsPath, "utf8")).toBe(transitions)
 		// The synchronous reader would let no other callback run until it finished.
 		expect(turns).toBeGreaterThanOrEqual(6)
 	})

@@ -176,6 +176,12 @@ export function createMemoryRecords(): RecordBackend {
 					(opts.modifiedSince === undefined || row.importedAt >= opts.modifiedSince)
 				)
 			}),
+		recordWatermark: () => order.length,
+		readRecordPage: (after, through, limit, checkBudget) =>
+			order.slice(after, Math.min(through, after + limit)).map((row, index) => {
+				checkBudget?.()
+				return { ...row, position: after + index + 1 }
+			}),
 		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)

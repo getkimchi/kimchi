@@ -33,6 +33,7 @@ import {
 import { ledgerDbPath, openStore } from "../../../../src/extensions/pr-cost-reporting/ledger/store.js"
 import {
 	readWorkRecords,
+	readWorkRecordsAsync,
 	type WorkRecord,
 	type WorkRecordProblem,
 } from "../../../../src/extensions/work-attribution/summary.js"
@@ -176,6 +177,108 @@ async function importJournalsCommand(agent: string): Promise<void> {
 
 async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
+}
+
+async function knownAsyncReadRegressions(agent: string, recordJson: string): Promise<void> {
+	const { backendFor, closeBackends, recordHashOf, rebuildWork } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+	)
+	const base = JSON.parse(recordJson) as WorkRecord
+	const native = [
+		base,
+		...Array.from(
+			{ length: 1024 },
+			(_, index): WorkRecord => ({
+				...base,
+				type: "request",
+				requestId: `native-${index}`,
+				scope: null,
+				padding: "x".repeat(1024),
+			}),
+		),
+	]
+	const sourcePath = join(agent, "work-attribution", `${encodeURIComponent(base.sessionId)}.jsonl`)
+	const backend = backendFor(agent)
+	backend.tx(() => {
+		for (const record of native) {
+			const recordHash = recordHashOf(record)
+			backend.insertRecord({
+				recordHash,
+				type: record.type,
+				workId: record.workId,
+				sessionId: record.sessionId,
+				body: JSON.stringify(record),
+				sourcePath,
+				sourceGeneration: 0,
+				sourceOffset: null,
+				importedAt: Date.now(),
+			})
+			backend.upsertMarker(recordHash, record.workId, record.type)
+		}
+	})
+	rebuildWork(agent, base.workId)
+	const read = backend.readRecords.bind(backend)
+	const page = backend.readRecordPage.bind(backend)
+	const before = read({})
+	const controller = new AbortController()
+	const sentinel = new Error("native reader closed")
+	let visited = 0
+	let callbackRan = false
+	let rowsAtAbort = 0
+	backend.readRecordPage = (after, through, limit, checkBudget) => {
+		return page(after, through, limit, () => {
+			if (++visited === 2)
+				setImmediate(() => {
+					callbackRan = true
+					rowsAtAbort = visited
+					controller.abort(sentinel)
+				})
+			checkBudget?.()
+		})
+	}
+	let cancelled = false
+	try {
+		await readWorkRecordsAsync(agent, controller.signal)
+	} catch (error) {
+		if (error !== sentinel) throw error
+		cancelled = true
+	} finally {
+		await new Promise<void>((resolve) => setImmediate(resolve))
+		backend.readRecordPage = page
+	}
+	const sameConnectionComplete = JSON.stringify(read({})) === JSON.stringify(before)
+	const added: WorkRecord = { ...base, type: "request", requestId: "native-after-abort", scope: null }
+	capture(agent, added, sourcePath)
+	const committed = read({})
+	let insertedDuringRead = false
+	backend.readRecordPage = (after, through, limit, checkBudget) => {
+		const rows = page(after, through, limit, checkBudget)
+		if (!insertedDuringRead) {
+			insertedDuringRead = true
+			setImmediate(() => capture(agent, { ...added, requestId: "native-during-page" }, sourcePath))
+		}
+		return rows
+	}
+	const snapshot = await readWorkRecordsAsync(agent, new AbortController().signal)
+	backend.readRecordPage = page
+	const next = await readWorkRecordsAsync(agent, new AbortController().signal)
+	const afterCapture = read({})
+	closeBackends()
+	const reopened = backendFor(agent).readRecords({})
+	out({
+		observerEntered: visited > 0,
+		callbackRan,
+		cancelled,
+		nativeRows: before.length,
+		rowsAtAbort,
+		sameConnectionComplete,
+		captureCommitted: committed.length === before.length + 1,
+		snapshotComplete: JSON.stringify(snapshot) === JSON.stringify(committed.map((row) => JSON.parse(row.body))),
+		nextReadSeesCapture: next.length === snapshot.length + 1 && next.at(-1)?.requestId === "native-during-page",
+		reopenedComplete: JSON.stringify(reopened) === JSON.stringify(afterCapture),
+		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
+	})
+	closeBackends()
 }
 
 async function knownRecordRegressions(agent: string, recordJson: string): Promise<void> {
@@ -457,8 +560,32 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		const records = readWorkRecords(agent, undefined, undefined, (problem) => problems.push(problem))
 		out({ records, problems })
 	},
+	"read-history-async": async (agent) => {
+		const problems: WorkRecordProblem[] = []
+		let turns = 0
+		let reading = true
+		const spin = () => {
+			turns++
+			if (reading) setImmediate(spin)
+		}
+		setImmediate(spin)
+		try {
+			const records = await readWorkRecordsAsync(agent, new AbortController().signal, (problem) =>
+				problems.push(problem),
+			)
+			out({
+				records: records.length,
+				requestIds: records.filter((row) => row.type === "request").map((row) => row.requestId),
+				problems,
+				turns,
+			})
+		} finally {
+			reading = false
+		}
+	},
 	listfiles: (agent) => listFiles(agent),
 	"known-record-regressions": (agent, json) => knownRecordRegressions(agent, json ?? "{}"),
+	"known-async-read-regressions": (agent, json) => knownAsyncReadRegressions(agent, json ?? "{}"),
 	"known-schema-race": (agent) => knownSchemaRace(agent),
 	"known-schema-race-open": (agent) => knownSchemaRaceOpen(agent),
 }

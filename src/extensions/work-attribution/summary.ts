@@ -3,9 +3,15 @@ import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
-import { hydrateLegacy, hydrateLegacyOnce, reportJournalProblems } from "../pr-cost-reporting/ledger/import.js"
+import {
+	hydrateLegacy,
+	hydrateLegacyOnce,
+	importJournals,
+	reportJournalProblems,
+} from "../pr-cost-reporting/ledger/import.js"
 import {
 	readRecords as ledgerReadRecords,
+	readRecordsAsync as ledgerReadRecordsAsync,
 	fingerprint as recordsFingerprint,
 	recoverDirty,
 } from "../pr-cost-reporting/ledger/records.js"
@@ -206,20 +212,22 @@ export function readWorkRecords(
 	}
 	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
 }
-/**
- * Like readWorkRecords, but yields once so a large history never blocks the UI,
- * and aborts there so a closing session need not wait for the read.
- */
+/** Like readWorkRecords, but yields between bounded imports and honors shutdown between each committed batch. */
 export async function readWorkRecordsAsync(
 	agentDir: string,
 	signal: AbortSignal,
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
 ): Promise<WorkRecord[]> {
-	signal.throwIfAborted()
-	const records = readWorkRecords(agentDir, undefined, () => signal.throwIfAborted(), onRecordProblem)
-	await setImmediate()
-	signal.throwIfAborted()
-	return records
+	const checkBudget = () => signal.throwIfAborted()
+	checkBudget()
+	for (;;) {
+		await setImmediate()
+		checkBudget()
+		const imported = await importJournals(agentDir, { checkBudget })
+		if (!imported.pending) break
+	}
+	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
+	return ledgerReadRecordsAsync(agentDir, checkBudget)
 }
 /** Changes exactly when the stored history changes, like the journal name/size/mtime list did. */
 export async function workJournalFingerprint(agentDir: string): Promise<string> {
