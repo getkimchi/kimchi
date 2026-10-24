@@ -1846,9 +1846,8 @@ describe("billing refresh after the request tag window closes", () => {
 		})
 	}
 	const ledgerBytes = () =>
-		readdirSync(join(dir, "work-attribution"))
-			.filter((name) => name.endsWith(".jsonl"))
-			.reduce((sum, name) => sum + statSync(join(dir, "work-attribution", name)).size, 0)
+		// The journal has moved into the ledger; its serialized record size still bounds idle growth.
+		Buffer.byteLength(JSON.stringify(readWorkRecords(dir)))
 	const costRows = () => readWorkRecords(dir).filter((row) => row.type === "request_cost")
 	const billingCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("llm-requests")).length
 
@@ -2027,26 +2026,27 @@ function seedJournal(
 	requests: { requestId: string; dispatchedAt: string; lookup?: "priced" | "pending"; checkedAt?: string }[],
 ) {
 	const sessionId = randomUUID()
-	const workId = randomUUID()
+	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+	const workId = getWorkId(ctx)
 	const source = captureBillingSource(new Headers({ Authorization: `Bearer ${currentKey}` }), GATEWAY, dir)
-	const base = { version: 1, sessionId, workId, cwd: dir }
-	const lines = requests.flatMap(({ requestId, dispatchedAt, lookup, checkedAt }) => {
+	for (const { requestId, dispatchedAt, lookup, checkedAt } of requests) {
 		const selector = requestTagSelector(requestId, dispatchedAt)
-		const rows: Record<string, unknown>[] = [
-			{ ...base, type: "request", requestId, startedAt: dispatchedAt, recordedAt: dispatchedAt },
-			{
-				...base,
-				type: "request_dispatch",
-				requestId,
-				dispatchedAt,
-				billingSource: source,
-				billingSelector: selector,
-				recordedAt: dispatchedAt,
-			},
-		]
+		appendWorkRecord(ctx, {
+			type: "request",
+			requestId,
+			startedAt: dispatchedAt,
+			recordedAt: dispatchedAt,
+		})
+		appendWorkRecord(ctx, {
+			type: "request_dispatch",
+			requestId,
+			dispatchedAt,
+			billingSource: source,
+			billingSelector: selector,
+			recordedAt: dispatchedAt,
+		})
 		if (lookup)
-			rows.push({
-				...base,
+			appendWorkRecord(ctx, {
 				type: "request_cost",
 				requestId,
 				billingSource: source,
@@ -2055,13 +2055,7 @@ function seedJournal(
 				billingLookup: { status: lookup, checkedAt, organizationId: ORG, userId: PROMPT },
 				recordedAt: checkedAt,
 			})
-		return rows
-	})
-	mkdirSync(join(dir, "work-attribution"), { recursive: true })
-	writeFileSync(
-		join(dir, "work-attribution", `${sessionId}.jsonl`),
-		`${lines.map((row) => JSON.stringify(row)).join("\n")}\n`,
-	)
+	}
 }
 const billingIds = new Map<string, string>()
 function billingId(requestId: string): string {

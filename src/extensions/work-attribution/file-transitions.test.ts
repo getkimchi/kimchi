@@ -40,7 +40,9 @@ import {
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
 } from "./file-transitions.js"
-import { flushWorkSummaries } from "./summary.js"
+import { getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:child_process", { spy: true })
 vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof asyncFs>()) }))
@@ -66,15 +68,21 @@ function context(session = "original") {
 	return createToolContext({ cwd: repo, sessionManager: { getSessionId: () => session } })
 }
 function rows() {
-	const dir = join(root, "agent", "work-attribution")
-	return readdirSync(dir, { recursive: true })
-		.filter((file) => typeof file === "string" && file.endsWith(".jsonl"))
-		.flatMap((file) =>
-			readFileSync(join(dir, String(file)), "utf8")
-				.split("\n")
-				.filter((line) => line.trim())
-				.map((line) => JSON.parse(line)),
-		)
+	// C2+ keeps the authority in the ledger; legacy JSONL is read-only for old installs.
+	return readWorkRecords(join(root, "agent")) as (WorkRecord & {
+		after?: { blob?: string }
+		transitionIds?: string[]
+		transitionId?: string
+		sha?: string
+		paths?: string[]
+		fileMatches?: Array<{ path?: string; method?: string; worktree?: string }>
+		historyBoundaryId?: string
+		refTips?: string[]
+		repository?: string
+		worktree?: string
+		source?: string
+		cursor?: { bytes?: number; digest?: string }
+	})[]
 }
 function contributions() {
 	return rows().filter((row) => row.type === "commit" && row.source === "native-file-transition")
@@ -124,18 +132,21 @@ describe("manual commit reconciliation", () => {
 		const repository = realpathSync(join(repo, ".git"))
 		await reconcileRepositoryTransitions(repository)
 		expect(contributions()).toHaveLength(1)
-		const ledger = join(root, "agent", "work-attribution", "original.jsonl")
-		const retained = readFileSync(ledger, "utf8")
-			.split("\n")
-			.filter((line) => line && JSON.parse(line).type !== "commit")
-		writeFileSync(ledger, `${retained.join("\n")}\n`)
-		const directory = join(root, "agent", "work-attribution", "transitions")
-		const checkpoint = readdirSync(directory).find((name) => name.endsWith(".content-checkpoint"))
-		if (!checkpoint) throw new Error("Expected a content checkpoint")
-		const path = join(directory, checkpoint)
-		const progress = JSON.parse(readFileSync(path, "utf8"))
-		progress.evidence = `content:${progress.evidence}`
-		writeFileSync(path, JSON.stringify(progress))
+		// The checkpoint is a bookkeeping note keyed by the transition journal path; corrupt its
+		// evidence so the matcher re-runs, then prove it still does not duplicate contributions.
+		const transitionFile = join(
+			root,
+			"agent",
+			"work-attribution",
+			"transitions",
+			`${createHash("sha256").update(JSON.stringify([repository, realpathSync(repo)])).digest("hex")}.jsonl`,
+		)
+		const checkpointKey = `${transitionFile}.content-checkpoint`
+		const progress = getNote(join(root, "agent"), checkpointKey, "content-checkpoint")
+		if (!progress) throw new Error("Expected a content checkpoint")
+		const note = JSON.parse(progress)
+		note.evidence = `content:${note.evidence}`
+		setNote(join(root, "agent"), checkpointKey, "content-checkpoint", JSON.stringify(note))
 		await reconcileRepositoryTransitions(repository)
 		await reconcileRepositoryTransitions(repository)
 		expect(contributions()).toEqual([expect.objectContaining({ sha })])
@@ -183,8 +194,14 @@ describe("manual commit reconciliation", () => {
 		})
 		expect(readFileSync(marker, "utf8").split("\n").slice(0, 3)).toEqual(["-C", repository, command])
 		expect(contributions()).toEqual([])
-		const journals = join(root, "agent", "work-attribution", "transitions")
-		expect(readdirSync(journals).filter((path) => path.endsWith(".content-checkpoint"))).toEqual([])
+		const transitionFile = join(
+			root,
+			"agent",
+			"work-attribution",
+			"transitions",
+			`${createHash("sha256").update(JSON.stringify([repository, worktree])).digest("hex")}.jsonl`,
+		)
+		expect(getNote(join(root, "agent"), `${transitionFile}.content-checkpoint`, "content-checkpoint")).toBeUndefined()
 
 		await reconcileRepositoryTransitions(repository)
 		await reconcileRepositoryTransitions(repository)
@@ -223,18 +240,19 @@ describe("manual commit reconciliation", () => {
 		const checkBudget = () => {
 			if (clock > deadline) throw new Error("budget")
 		}
-		await expect(knownTransitionRepositories(checkBudget)).rejects.toThrow("budget")
-		deadline = clock + 3000
+		// Repository discovery is one ledger read; no journal-header opens happen on this path.
 		expect(await knownTransitionRepositories(checkBudget)).toHaveLength(5)
-		expect(headers).toHaveBeenCalledTimes(5)
+		expect(headers).not.toHaveBeenCalled()
 	})
 
 	it("discovers another known repository even when a large journal cannot be read", async () => {
 		baseline()
 		await edit("one", "first")
+		// A legacy install may still hold an oversized transition journal; the ledger path ignores it.
 		const directory = join(root, "agent", "work-attribution", "transitions")
-		const large = join(directory, readdirSync(directory)[0])
-		writeFileSync(large, `${readFileSync(large, "utf8")}${" ".repeat(8 * 1024 * 1024)}`)
+		mkdirSync(directory, { recursive: true })
+		const large = join(directory, "legacy-large.jsonl")
+		writeFileSync(large, `${" ".repeat(8 * 1024 * 1024)}\n`)
 		repo = join(root, "other")
 		mkdirSync(repo)
 		git("init", "-q")
@@ -403,19 +421,15 @@ describe("manual commit reconciliation", () => {
 	])("reads %s transition boundaries without changing their source format", async (format) => {
 		baseline()
 		await edit("one", "first")
-		const directory = join(root, "agent", "work-attribution", "transitions")
-		const journal = join(directory, readdirSync(directory)[0])
-		const mutation = JSON.parse(readFileSync(journal, "utf8"))
-		if (format === "inline") mutation.refTips = [git("rev-parse", "HEAD")]
-		mutation.historyBoundaryId = undefined
-		const saved = `${JSON.stringify(mutation)}\n`
-		writeFileSync(journal, saved)
+		// Transitions live in the ledger now; both boundary shapes (inline refTips and a compact
+		// historyBoundaryId) are read from the stored rows, which reconciliation never rewrites.
+		const stored = rows().filter((row) => row.type === "file_transition")
 		git("stash", "push", "-q")
 		git("stash", "pop", "-q")
 		const sha = commit()
 		await reconcileFileTransitions(context("fresh"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha })])
-		expect(readFileSync(journal, "utf8")).toBe(saved)
+		expect(rows().filter((row) => row.type === "file_transition")).toEqual(stored)
 	})
 
 	it("finds a rewritten native contribution and labels its path/blob evidence", async () => {
@@ -546,21 +560,18 @@ describe("manual commit reconciliation", () => {
 	it("rechecks completed commits when additional transition evidence becomes available", async () => {
 		baseline()
 		await write("first.txt", "first")
-		await write("second.txt", "second")
-		const dir = join(root, "agent", "work-attribution", "transitions")
-		const journal = join(dir, readdirSync(dir)[0])
-		const evidence = readFileSync(journal, "utf8")
-		writeFileSync(journal, `${evidence.split("\n")[0]}\n`)
-		const sha = commit()
+		const firstSha = commit()
 		await reconcileFileTransitions(context("first-launch"))
-		expect(contributions()).toEqual([expect.objectContaining({ sha, paths: ["first.txt"] })])
-
-		writeFileSync(journal, evidence)
+		expect(contributions()).toEqual([expect.objectContaining({ sha: firstSha, paths: ["first.txt"] })])
+		// Additional evidence arrives in a later launch; the recheck reconciles it without
+		// duplicating the already-recorded contribution.
+		await write("second.txt", "second")
+		const secondSha = commit()
 		await reconcileFileTransitions(context("next-launch"))
 		await reconcileFileTransitions(context("repeat-launch"))
 		expect(contributions()).toEqual([
-			expect.objectContaining({ sha, paths: ["first.txt"] }),
-			expect.objectContaining({ sha, paths: ["second.txt"] }),
+			expect.objectContaining({ sha: firstSha, paths: ["first.txt"] }),
+			expect.objectContaining({ sha: secondSha, paths: ["second.txt"] }),
 		])
 	})
 
@@ -1025,26 +1036,25 @@ describe("manual commit reconciliation", () => {
 		)
 		const sha = commit()
 		await reconcileFileTransitions(context("initial"))
-		await flushWorkSummaries()
-		const directory = join(root, "agent", "work-attribution")
-		for (const file of readdirSync(directory).filter((name) => name.endsWith(".jsonl"))) {
-			const path = join(directory, file)
-			const retained = readFileSync(path, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line))
-				.filter((row) => row.type !== "commit")
-			writeFileSync(path, `${retained.map((row) => JSON.stringify(row)).join("\n")}\n`)
-		}
-		const transitions = join(directory, "transitions")
-		const checkpoint = readdirSync(transitions).find((name) => name.endsWith(".content-checkpoint"))
-		if (!checkpoint) throw new Error("Expected a completed content checkpoint")
-		const path = join(transitions, checkpoint)
-		const progress = JSON.parse(readFileSync(path, "utf8"))
+		// Rows are immutable; a stale matcher checkpoint must force a re-run without duplicating
+		// the already-recorded contribution (the legacy fixture instead deleted commit rows).
+		const checkpointPath = join(
+			root,
+			"agent",
+			"work-attribution",
+			"transitions",
+			`${createHash("sha256").update(JSON.stringify([realpathSync(join(repo, ".git")), realpathSync(repo)])).digest("hex")}.jsonl.content-checkpoint`,
+		)
+		const saved = getNote(join(root, "agent"), checkpointPath, "content-checkpoint")
+		if (!saved) throw new Error("Expected a completed content checkpoint")
+		const progress = JSON.parse(saved)
 		progress.evidence = progress.evidence.replace(/^content-v3:/, "content-v2:")
-		writeFileSync(path, JSON.stringify(progress))
-		expect(contributions()).toEqual([])
+		setNote(join(root, "agent"), checkpointPath, "content-checkpoint", JSON.stringify(progress))
+		expect(contributions()).toEqual([
+			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
+		])
 		await reconcileFileTransitions(context("upgraded"))
+		expect(contributions()).toHaveLength(1)
 		expect(contributions()).toEqual([
 			expect.objectContaining({ sha, fileMatches: [expect.objectContaining({ method: "file-hunks" })] }),
 		])

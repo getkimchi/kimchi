@@ -25,7 +25,8 @@ import {
 	workLedgerPath,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { fileMatchStrength, SHA256_HEX } from "./summary.js"
+import { fileMatchStrength, readWorkRecords, SHA256_HEX } from "./summary.js"
+import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -497,6 +498,13 @@ async function journalOwner(path: string): Promise<FileTransition | undefined> {
 }
 export async function knownTransitionRepositories(checkBudget: () => void = () => {}): Promise<string[]> {
 	const repositories = new Set<string>()
+	// Native captures live in the store; include their repositories alongside legacy journal files.
+	try {
+		for (const row of readWorkRecords(getAgentDir()))
+			if (row.type === "file_transition" && typeof row.repository === "string") repositories.add(row.repository)
+	} catch {
+		// No store; the JSONL scan below still works.
+	}
 	for (const path of await journalPaths()) {
 		checkBudget()
 		const owner = await journalOwner(path)
@@ -507,6 +515,51 @@ export async function knownTransitionRepositories(checkBudget: () => void = () =
 async function readJournals(repository: string, checkBudget: () => void): Promise<TransitionJournal[]> {
 	const journals: TransitionJournal[] = []
 	const boundaries = new Map<string, string[] | undefined>()
+	// Native captures write transitions only into the ledger (C2): they are the journal now. The
+	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
+	let ledgerTransitions: Transition[] = []
+	try {
+		ledgerTransitions = readWorkRecords(getAgentDir())
+			.filter((row) => row.type === "file_transition" && isTransition(row) && row.repository === repository)
+			.map((row) => row as unknown as Transition)
+	} catch {
+		// No store (e.g. Node unit tests without a backend); the JSONL scan below still works.
+	}
+	if (ledgerTransitions.length) {
+		const sortKey = (row: Transition) =>
+			`${row.sessionId}\u0000${row.path}\u0000${row.cursor.bytes}\u0000${row.cursor.digest}`
+		const byWorktree = new Map<string, Transition[]>()
+		for (const row of ledgerTransitions) {
+			checkBudget()
+			const group = byWorktree.get(row.worktree) ?? []
+			group.push(row)
+			byWorktree.set(row.worktree, group)
+		}
+		for (const [worktree, rows] of byWorktree) {
+			rows.sort((left, right) => (sortKey(left) < sortKey(right) ? -1 : sortKey(left) > sortKey(right) ? 1 : 0))
+			for (const row of rows) {
+				const id = row.historyBoundaryId
+				if (!id) continue
+				checkBudget()
+				if (!boundaries.has(id)) boundaries.set(id, await tryWorkAttributionAsync(() => readHistoryBoundary(id)))
+				if (!row.refTips?.length) row.refTips = boundaries.get(id)
+			}
+			// digest is stable while the rows don't change, so progress checkpoints resume exactly like a growing file.
+			const digestData = Buffer.from(
+				JSON.stringify(
+					rows.map((row) => ({
+						sessionId: row.sessionId,
+						path: row.path,
+						cursor: row.cursor,
+						recordedAt: row.recordedAt,
+						historyBoundaryId: row.historyBoundaryId ?? null,
+					})),
+				),
+			)
+			journals.push({ path: transitionJournal(repository, worktree), digest: digest(digestData), transitions: rows })
+		}
+		return journals
+	}
 	for (const path of await journalPaths()) {
 		checkBudget()
 		const owner = await journalOwner(path)
@@ -776,7 +829,7 @@ async function reconcileExactHistory(
 	// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
 	const evidence = `${journal.digest}:${digest(log)}`
 	const progressPath = `${journal.path}.progress`
-	const progress = records(progressPath).at(-1)
+	const progress = checkpointOf(progressPath, "progress")
 	const completed =
 		progress?.evidence === evidence ? candidates.findIndex((row) => row.position === progress.position) : -1
 	for (const candidate of candidates.slice(completed + 1)) {
@@ -785,8 +838,21 @@ async function reconcileExactHistory(
 		appendCommitContributions(candidate.sha, matched, recordedCommits, "file-chain", assertLease)
 		// Checkpoint only after the whole candidate was evaluated and its contributions were saved.
 		assertLease()
-		writeFileSync(progressPath, JSON.stringify({ evidence, position: candidate.position }))
+		setNote(getAgentDir(), progressPath, "progress", JSON.stringify({ evidence, position: candidate.position }))
 	}
+}
+
+/** Progress resumption markers are named ledger notes now; legacy installs keep their file copies. */
+function checkpointOf(progressPath: string, name: string): Record<string, unknown> | undefined {
+	const note = getNote(getAgentDir(), progressPath, name)
+	if (note !== undefined) {
+		try {
+			return JSON.parse(note) as Record<string, unknown>
+		} catch {
+			return undefined
+		}
+	}
+	return records(progressPath).at(-1)
 }
 
 /** HEAD actions that actually create a commit, unlike checkout/reset/pull of existing history. */
@@ -995,7 +1061,7 @@ async function reconcileContentHistory(
 	const candidates = await contentCandidates(repository, histories, checkBudget, signal)
 	const evidence = `content-v3:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
 	const progressPath = `${histories[0].journal.path}.content-checkpoint`
-	const progress = records(progressPath).at(-1)
+	const progress = checkpointOf(progressPath, "content-checkpoint")
 	const entries = [...candidates]
 	const completed = progress?.evidence === evidence ? entries.findIndex(([sha]) => sha === progress.sha) : -1
 	for (const [sha, transitions] of entries.slice(completed + 1)) {
@@ -1004,7 +1070,7 @@ async function reconcileContentHistory(
 		appendCommitContributions(sha, matched.blobs, recordedCommits, "path-blob", assertLease)
 		appendCommitContributions(sha, matched.hunks, recordedCommits, "file-hunks", assertLease)
 		assertLease()
-		writeFileSync(progressPath, JSON.stringify({ evidence, sha }))
+		setNote(getAgentDir(), progressPath, "content-checkpoint", JSON.stringify({ evidence, sha }))
 	}
 }
 /** The supervisor supplies its shared deadline and lease; direct callers get one bounded pass. */
@@ -1018,20 +1084,13 @@ export async function reconcileRepositoryTransitions(
 	const journals = await readJournals(repository, checkBudget)
 	if (!journals.length) return
 	const histories: JournalHistory[] = []
-	const recordedCommits: Record<string, unknown>[] = []
-	const sessions = new Set<string>()
+	// Commit contributions live in the ledger now; the old session journal files were imported (A2).
+	const recordedCommits: Record<string, unknown>[] = readWorkRecords(getAgentDir()).filter(
+		(record) => record.type === "commit",
+	)
 	for (const journal of journals) {
 		checkBudget()
 		histories.push(await readJournalHistory(journal, signal))
-		for (const row of journal.transitions) {
-			if (sessions.has(row.sessionId)) continue
-			sessions.add(row.sessionId)
-			recordedCommits.push(
-				...records(workLedgerPath({ cwd: row.cwd, sessionManager: { getSessionId: () => row.sessionId } })).filter(
-					(record) => record.type === "commit",
-				),
-			)
-		}
 	}
 	for (const history of histories)
 		await reconcileExactHistory(history, recordedCommits, checkBudget, assertLease, signal)

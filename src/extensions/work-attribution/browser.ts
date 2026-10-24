@@ -10,7 +10,8 @@ import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"
 import { MAX_ISSUE_BYTES, parseWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
-import { readWorkHead, type WorkHead } from "./row-log.js"
+import { listWorks, readWorkHead } from "../pr-cost-reporting/ledger/records.js"
+import type { WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
 /** Besides the current work, the panel lists works with activity this recent. */
@@ -61,7 +62,7 @@ export async function readWorkBrowser(
 	now = Date.now(),
 ): Promise<WorkBrowser> {
 	const directory = join(agentDir, "work")
-	// Recording any activity commits a new work.json, so its modification time bounds what is read.
+	// A legacy work.json modification time bounds what is read; ledger-only works carry no file.
 	const modified = new Map<string, number>()
 	await Promise.all(
 		(await readdir(directory).catch(() => [])).filter(isWorkId).map(async (workId) => {
@@ -69,6 +70,12 @@ export async function readWorkBrowser(
 			if (info) modified.set(workId, info.mtimeMs)
 		}),
 	)
+	// Works whose rows live only in the ledger have no work.json; their head stamps bound recency instead.
+	for (const { workId, head } of listWorks(agentDir)) {
+		if (modified.has(workId)) continue
+		const at = time(head.latest?.activityAt) ?? time(head.updatedAt)
+		if (at !== undefined) modified.set(workId, at)
+	}
 
 	const candidates = [...modified]
 		.filter(([workId, at]) => workId !== current.workId && at >= now - RECENT_MS)

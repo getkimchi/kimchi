@@ -22,7 +22,7 @@ import {
 import { debugWorkAttribution } from "./diagnostics.js"
 import { observeToolFiles } from "./file-observations.js"
 import { COST_PER_PR_RESOURCE_ID } from "./resource.js"
-import { readWorkRows } from "./row-log.js"
+import { readWorkRows } from "../pr-cost-reporting/ledger/records.js"
 
 const GIT_LOOKUP_TIMEOUT_MS = 2000
 
