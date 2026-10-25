@@ -1,8 +1,8 @@
 /**
- * The row of suggested-action chips under the main editor:
- * `( ◉ Watch PR #1531 ) ×`, one chip per suggestion. A click on a chip runs it,
- * a click on `×` dismisses it; a chip whose action is running is shown as
- * `◌ Watching PR #1531` and ignores clicks.
+ * The row of suggested-action chips under the main editor, one chip per
+ * suggestion. A click on a chip runs its action; a click on `×` dismisses it.
+ * A chip whose action is running renders in a disabled state and ignores
+ * clicks on the chip itself (its `×` still works).
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent"
