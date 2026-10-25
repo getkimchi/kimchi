@@ -33,7 +33,7 @@ import { type Frame, rectContains, rectOf, type SideChatHost } from "./harness.j
 import { type HeaderAction, PanelHeader } from "./header.js"
 import { type HistoryItem, HistoryList } from "./history-list.js"
 import { compositeKeepingCursor, reapplyBackground, withoutCursorMarker } from "./line-paint.js"
-import { contentText, isWrapUpPrompt } from "./records.js"
+import { contentText } from "./records.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
 
 export type SidePanelMode = "chat" | "wrapping" | "review"
@@ -80,8 +80,6 @@ export class SideChatPanel {
 	private spinnerFrame = 0
 	private spinnerTimer?: ReturnType<typeof setInterval>
 	private notice = ""
-	/** Skip rendering the next user message (the hidden wrap-up instruction). */
-	private hideNextUserMessage = false
 
 	constructor(options: SidePanelOptions) {
 		const { host, theme } = options
@@ -203,17 +201,17 @@ export class SideChatPanel {
 		this.host.requestRender()
 	}
 
-	expectHiddenUserMessage(): void {
-		this.hideNextUserMessage = true
+	/** Show the spinner for work outside the side session (the `/wrap` draft). */
+	setWorking(working: boolean): void {
+		this.setBusy(working)
+		this.host.requestRender()
 	}
 
 	/** Re-render a stored side thread (history resume). */
 	replay(messages: AgentSession["messages"]): void {
 		for (const message of messages) {
 			if (message.role === "user") {
-				const text = contentText(message.content)
-				if (isWrapUpPrompt(text)) this.addInfo("⤴ Wrapped up — drafted a steering prompt for the main session")
-				else this.addUserLine(text)
+				this.addUserLine(contentText(message.content))
 			} else if (message.role === "assistant") {
 				this.transcript.addChild(this.assistantComponent(message))
 				for (const part of message.content) {
@@ -238,10 +236,6 @@ export class SideChatPanel {
 				break
 			case "message_start":
 				if (event.message.role === "user") {
-					if (this.hideNextUserMessage) {
-						this.hideNextUserMessage = false
-						break
-					}
 					this.addUserLine(contentText(event.message.content))
 				} else if (event.message.role === "assistant") {
 					this.streaming = this.assistantComponent(event.message)

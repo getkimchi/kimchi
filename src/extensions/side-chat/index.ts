@@ -12,8 +12,10 @@
  * - the side chat is a real sub-session branched from the main session's
  *   current leaf, with read-only tools; `/side:new` starts a fresh one
  *   without the main session's messages;
- * - `/wrap` drafts a steering prompt you review/edit; enter sends it to the
- *   main session (as a steer while it runs), `/close` discards;
+ * - `/wrap` drafts a steering prompt in a separate session that sees only
+ *   the side thread (not the inherited main context), streaming it into the
+ *   side editor to review/edit; enter sends it to the main session (as a
+ *   steer while it runs), esc keeps chatting, `/close` discards;
  * - every side chat is kept as a hidden session entry; `/side:history`
  *   reopens one.
  *
@@ -46,15 +48,15 @@ import {
 	type SideChatRecord,
 	titleFrom,
 	UNTITLED_SIDE_CHAT,
-	wrapUpPrompt,
 } from "./records.js"
 import { SelectionPill } from "./selection-pill.js"
 import {
 	createSideSession,
-	lastAssistantText,
+	draftSteeringPrompt,
 	SIDE_CHAT_TOOLS,
 	type SideChatSession,
 	sideThreadMessages,
+	type WrapUpRun,
 } from "./session.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
 
@@ -69,6 +71,8 @@ interface ActiveSideChat {
 	ctx: ExtensionContext
 	/** Side-thread message count at the last persist; skips no-op appends. */
 	persistedCount: number
+	/** The in-flight `/wrap` draft, if any. */
+	wrapUp?: WrapUpRun
 	dispose: () => void
 }
 
@@ -136,6 +140,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		persist(chat, outcome)
 		chat.dispose()
 		const side = chat.side ?? (await chat.ready.catch(() => undefined))
+		chat.wrapUp?.abort()
 		if (side) {
 			await side.session.abort().catch(() => {})
 			side.session.dispose()
@@ -165,25 +170,41 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 
 	async function wrapUp(chat: ActiveSideChat, extra: string): Promise<void> {
 		const side = await chat.ready
-		if (!side || active !== chat) return
-		if (sideThreadMessages(side).length === 0) {
+		if (!side || active !== chat || chat.wrapUp) return
+		const thread = sideThreadMessages(side)
+		if (thread.length === 0) {
 			chat.panel.setNotice("Nothing to wrap up yet — ask something first.")
 			return
 		}
-		chat.panel.setMode("wrapping")
-		chat.panel.addInfo("⤴ Wrapping up — drafting a steering prompt for the main session…")
-		chat.panel.expectHiddenUserMessage()
-		await prompt(chat, wrapUpPrompt(extra))
-		if (active !== chat || chat.panel.currentMode !== "wrapping") return
-		const draft = lastAssistantText(side.session)
-		if (!draft) {
-			chat.panel.setMode("chat")
-			chat.panel.setNotice("Could not draft a steering prompt.")
+		if (side.session.isStreaming) {
+			chat.panel.setNotice("Wait for the reply (or press esc) before /wrap.")
 			return
 		}
-		chat.panel.setMode("review")
-		chat.panel.editor.setText(draft)
-		chat.panel.focus()
+		const { panel } = chat
+		panel.setMode("wrapping")
+		panel.setWorking(true)
+		const run = draftSteeringPrompt(chat.ctx, thread, extra, (partial) => {
+			if (active === chat && panel.currentMode === "wrapping") panel.editor.setText(partial)
+		})
+		chat.wrapUp = run
+		let draft = ""
+		try {
+			draft = await run.result
+		} catch (error) {
+			if (active === chat) panel.setNotice(`Wrap-up failed: ${error instanceof Error ? error.message : String(error)}`)
+		} finally {
+			chat.wrapUp = undefined
+			panel.setWorking(false)
+		}
+		if (active !== chat || panel.currentMode !== "wrapping") return
+		if (!draft) {
+			panel.setMode("chat")
+			panel.editor.setText("")
+			return
+		}
+		panel.setMode("review")
+		panel.editor.setText(draft)
+		panel.focus()
 	}
 
 	function handleSubmit(chat: ActiveSideChat, raw: string): void {
@@ -215,8 +236,13 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 
 	function handleEscape(chat: ActiveSideChat): void {
 		const { panel, side } = chat
+		if (chat.wrapUp) {
+			chat.wrapUp.abort()
+			panel.setMode("chat")
+			panel.editor.setText("")
+			return
+		}
 		if (side?.session.isStreaming) {
-			if (panel.currentMode === "wrapping") panel.setMode("chat")
 			void side.session.abort()
 			return
 		}

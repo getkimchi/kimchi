@@ -14,8 +14,6 @@ export const UNTITLED_SIDE_CHAT = "New side chat"
 
 const TITLE_MAX = 60
 
-const WRAP_UP_PREFIX = "Wrap up this side chat."
-
 /** Persisted record of one side chat. */
 export interface SideChatRecord {
 	id: string
@@ -36,20 +34,46 @@ export function contentText(content: string | unknown[]): string {
 	return typeof content === "string" ? content : extractText(content)
 }
 
-export function isWrapUpPrompt(text: string): boolean {
-	return text.startsWith(WRAP_UP_PREFIX)
+/**
+ * System prompt of the `/wrap` session. That session sees only the side
+ * thread (never the main context the side chat inherited), so the steering
+ * message is built from what was decided on the side.
+ */
+export const WRAP_UP_SYSTEM_PROMPT = [
+	"<side_chat_wrap_up>",
+	"You turn a side conversation into a steering message the user will send to the main agent working on their main session.",
+	"Address the main agent directly, in the second person. State the conclusions, decisions and concrete action items from the conversation, with the file paths and identifiers that matter.",
+	"Skip pleasantries and do not mention the side conversation itself. Output only the message.",
+	"</side_chat_wrap_up>",
+].join("\n")
+
+/** Plain-text transcript of side-thread messages: user and assistant text, plus the tools the assistant called. */
+export function formatSideThread(messages: SideChatRecord["messages"]): string {
+	const parts: string[] = []
+	for (const message of messages) {
+		if (message.role === "user") {
+			const text = contentText(message.content).trim()
+			if (text) parts.push(`[User]: ${text}`)
+		} else if (message.role === "assistant") {
+			const text = extractText(message.content).trim()
+			if (text) parts.push(`[Assistant]: ${text}`)
+			for (const part of message.content) {
+				if (part.type === "toolCall") parts.push(`[Assistant called ${part.name}]: ${JSON.stringify(part.arguments)}`)
+			}
+		}
+	}
+	return parts.join("\n\n")
 }
 
-/** Instruction sent to the side session when the user wraps up. */
-export function wrapUpPrompt(extra: string): string {
+/** The single prompt sent to the `/wrap` session. */
+export function wrapUpRequest(messages: SideChatRecord["messages"], extra: string): string {
 	return [
-		`${WRAP_UP_PREFIX} Write a steering message the user will send to the main agent working on the main session.`,
-		"Address the main agent directly, in the second person. State the conclusions, decisions and concrete action items from this side chat, with the file paths and identifiers that matter.",
-		"Skip pleasantries and do not mention 'side chat' mechanics. Do not call tools. Output only the message.",
+		`<side_conversation>\n${formatSideThread(messages)}\n</side_conversation>`,
+		"Write the steering message for the main agent.",
 		extra ? `Additional instructions from the user: ${extra}` : "",
 	]
 		.filter(Boolean)
-		.join("\n")
+		.join("\n\n")
 }
 
 /** Latest record per side chat id, most recently updated first. */
@@ -76,9 +100,7 @@ export function titleFrom(text: string): string {
 /** One `/side:history` picker row. */
 export function historyLabel(record: SideChatRecord): string {
 	const when = new Date(record.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-	const questions = record.messages.filter(
-		(message) => message.role === "user" && !isWrapUpPrompt(contentText(message.content)),
-	).length
+	const questions = record.messages.filter((message) => message.role === "user").length
 	const fresh = record.fresh ? " · fresh" : ""
 	const outcome = record.outcome === "sent" ? " · sent to main" : ""
 	return `${when}  ${record.title}  (${questions} question${questions === 1 ? "" : "s"}${fresh}${outcome})`

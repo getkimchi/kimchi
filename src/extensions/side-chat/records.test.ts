@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest"
 import {
 	contentText,
 	historyLabel,
-	isWrapUpPrompt,
 	readSideChatHistory,
 	SIDE_CHAT_ENTRY_TYPE,
 	type SideChatRecord,
 	titleFrom,
 	UNTITLED_SIDE_CHAT,
-	wrapUpPrompt,
+	wrapUpRequest,
 } from "./records.js"
 
 function record(overrides: Partial<SideChatRecord>): SideChatRecord {
@@ -39,15 +38,46 @@ describe("titleFrom", () => {
 	})
 })
 
-describe("wrapUpPrompt", () => {
-	it("is recognised as a wrap-up prompt", () => {
-		expect(isWrapUpPrompt(wrapUpPrompt(""))).toBe(true)
-		expect(isWrapUpPrompt("Wrap it up")).toBe(false)
+describe("wrapUpRequest", () => {
+	it("renders the side thread with the tools the assistant called", () => {
+		const request = wrapUpRequest(
+			[
+				{ role: "user", content: "Which cache?", timestamp: 0 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Let me look." },
+						{ type: "toolCall", id: "t1", name: "read", arguments: { path: "cache.ts" } },
+					],
+					timestamp: 0,
+				} as SideChatRecord["messages"][number],
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Use the LRU cache." }],
+					timestamp: 0,
+				} as SideChatRecord["messages"][number],
+			],
+			"",
+		)
+
+		expect(request).toContain(
+			[
+				"<side_conversation>",
+				"[User]: Which cache?",
+				"",
+				"[Assistant]: Let me look.",
+				"",
+				'[Assistant called read]: {"path":"cache.ts"}',
+				"",
+				"[Assistant]: Use the LRU cache.",
+				"</side_conversation>",
+			].join("\n"),
+		)
+		expect(request).not.toContain("Additional instructions")
 	})
 
-	it("appends the user's extra instructions", () => {
-		expect(wrapUpPrompt("keep it short")).toContain("Additional instructions from the user: keep it short")
-		expect(wrapUpPrompt("")).not.toContain("Additional instructions")
+	it("appends the user's extra /wrap instructions", () => {
+		expect(wrapUpRequest([], "keep it short")).toContain("Additional instructions from the user: keep it short")
 	})
 })
 
@@ -80,16 +110,13 @@ describe("readSideChatHistory", () => {
 })
 
 describe("historyLabel", () => {
-	it("counts questions without the wrap-up prompt and marks fresh, sent chats", () => {
+	it("counts questions and marks fresh, sent chats", () => {
 		const label = historyLabel(
 			record({
 				title: "Caching",
 				fresh: true,
 				outcome: "sent",
-				messages: [
-					{ role: "user", content: "why?", timestamp: 0 },
-					{ role: "user", content: [{ type: "text", text: wrapUpPrompt("") }], timestamp: 0 },
-				],
+				messages: [{ role: "user", content: "why?", timestamp: 0 }],
 			}),
 		)
 

@@ -15,6 +15,9 @@ const CTRL_ALT_RIGHT = "\x1b[1;7C"
 
 /** Side-session requests carry the side chat's system-prompt block. */
 const isSideRequest = (request: FakeResponseRequest) => JSON.stringify(request.body).includes("<side_chat>")
+/** `/wrap` drafts in its own session, marked by the wrap-up system prompt. */
+const isWrapUpRequest = (request: FakeResponseRequest) => JSON.stringify(request.body).includes("<side_chat_wrap_up>")
+const isMainRequest = (request: FakeResponseRequest) => !isSideRequest(request) && !isWrapUpRequest(request)
 
 function enableSideChat(homeDir: string): void {
 	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
@@ -42,31 +45,41 @@ test("side chat answers next to the session and wraps up into a steer for the ma
 			extraArgs: ["--plan=false"],
 			seedHome: enableSideChat,
 			responses: [
+				{ match: isMainRequest, stream: ["Noted."] },
 				{ match: isSideRequest, stream: ["Use the LRU cache."] },
-				{ match: isSideRequest, stream: ["Switch to the LRU cache."] },
-				{ match: (request) => !isSideRequest(request), stream: ["Main switched caches."] },
+				{ match: isWrapUpRequest, stream: ["Switch to the LRU cache."] },
+				{ match: isMainRequest, stream: ["Main switched caches."] },
 			],
 		},
 		async (fixture, trace) => {
 			const chatRequests = () =>
 				fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
 
+			terminal.submit("The codeword is PAPAYA-42.")
+			await waitForText(terminal, "Noted.", { full: false })
+
 			terminal.submit("/side Which cache?")
 			await waitForText(terminal, "Use the LRU cache.", { full: false })
 			expect(viewText(terminal)).toContain("Side chat · Which cache?")
-			trace.step("/side opens a docked side chat that answers the first question")
+			expect(JSON.stringify(chatRequests().find(isSideRequest)?.body)).toContain("PAPAYA-42")
+			trace.step("/side opens a docked side chat, branched with the main context, that answers the first question")
 
 			terminal.submit("/wrap")
 			await waitForText(terminal, "Steering prompt for main session", { full: false })
 			expect(viewText(terminal)).toContain("Switch to the LRU cache.")
-			trace.step("/wrap drafts a steering prompt for review in the side editor")
+			const wrapUpBody = JSON.stringify(chatRequests().find(isWrapUpRequest)?.body)
+			expect(wrapUpBody).toContain("[User]: Which cache?")
+			expect(wrapUpBody).toContain("[Assistant]: Use the LRU cache.")
+			expect(wrapUpBody).not.toContain("PAPAYA-42")
+			expect(wrapUpBody).not.toContain("<side_chat>")
+			trace.step("/wrap drafts a steering prompt from the side thread only, for review in the side editor")
 
 			terminal.write("\r")
 			await waitForText(terminal, "Main switched caches.", { full: false })
 			expect(viewText(terminal)).not.toContain("Side chat · Which cache?")
-			const mainRequest = chatRequests().find((request) => !isSideRequest(request))
+			const mainRequest = chatRequests().filter(isMainRequest).at(-1)
 			expect(JSON.stringify(mainRequest?.body)).toContain("Switch to the LRU cache.")
-			expect(await poll(() => chatRequests().length === 3, 100, 5_000)).toBe(true)
+			expect(await poll(() => chatRequests().length === 4, 100, 5_000)).toBe(true)
 			trace.step("enter sends the draft to the main agent and closes the side chat")
 		},
 	)
