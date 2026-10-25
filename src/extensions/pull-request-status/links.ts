@@ -1,5 +1,8 @@
 import type { WorkPullRequest } from "./pull-requests.js"
 
+/** A shell command that pushes a branch or opens a PR/MR. */
+export const PUBLISH_COMMAND = /\b(?:git\s+push|gh\s+pr\s+create|glab\s+mr\s+create)\b/
+
 interface PullRequestObservation {
 	provider?: unknown
 	host?: unknown

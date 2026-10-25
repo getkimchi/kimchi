@@ -158,6 +158,8 @@ import statusExtension from "./extensions/status/index.js"
 import { steerAbortTrackerExtension } from "./extensions/steer-events.js"
 import { steerOutcomeWatcherExtension } from "./extensions/steer-outcome-watcher.js"
 import stripImagesExtension from "./extensions/strip-images.js"
+import suggestedActionsExtension from "./extensions/suggested-actions/index.js"
+import { SUGGESTED_ACTIONS_RESOURCE_ID } from "./extensions/suggested-actions/resource.js"
 import surveysExtension from "./extensions/surveys/index.js"
 import tagsExtension from "./extensions/tags.js"
 import { buildConfigSnapshot } from "./extensions/telemetry/config-snapshot.js"
@@ -923,6 +925,7 @@ async function cliMain(): Promise<void> {
 					{ id: "tools.web_fetch", factory: webFetchExtension },
 					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
+					{ id: SUGGESTED_ACTIONS_RESOURCE_ID, factory: suggestedActionsExtension },
 				] satisfies ManagedExtensionFactory[]),
 				modelWindowSnapshotExtension,
 				modelSwitchExtension,
