@@ -9,7 +9,7 @@ disables-skills: pdf
 
 All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
 - With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/pdf.mjs <command> ...`
-- Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/pdf.mjs ...`
+- Fallback: run the same script under plain Node — `node <skill-dir>/scripts/pdf.mjs ...` — whenever the bun runtime fails to start (`bun is unable to write files to tempdir: EPERM` and other sandbox/bootstrap errors), or when `kimchi` isn't on PATH. Same commands, same output.
 
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
 
@@ -77,12 +77,34 @@ both are unavailable does the error name the install options — fall back to
 just wrote before calling the work done: you are looking for text touching
 box edges, overflowing lines, and colors that die against the background.
 
-## read `<file.pdf> [N-M]`
+## read `<file.pdf> [N-M] [--strip-noise]`
 
 Pages as Markdown — the real text of the PDF, nothing inferred. Read in ranges for
 long documents: `read file.pdf 1-20`, then `21-40`, etc. (20 pages per call; the
 output names the next range when more pages exist.) Quote numbers from the output
-rather than re-deriving them.
+rather than re-deriving them. `--strip-noise` drops barcode/anti-forgery glyph
+blocks (short lines of high-entropy text); leave it off when the document has no
+such clutter — it can hide genuine text that merely looks like noise.
+
+### Reading tables
+
+`read` emits text in layout order and does not reconstruct columns, so a wrapped
+table row arrives as several lines: the label wraps mid-word and the numeric
+columns land on the line where the wrapped text ends. For row-anchored statements
+(bank/card statements where each record starts with a fixed-shape leading token,
+e.g. two dates `DD/MM/YYYY DD/MM/YYYY`):
+
+1. Split the page text into chunks starting at each anchor occurrence.
+2. One chunk = one record; join its lines with spaces.
+3. Numbers keep the document's own formatting (e.g. `1.234,56` = 1234.56) —
+   take the trailing decimal-number tokens of each chunk for the amount columns
+   instead of a naive number regex across lines.
+4. Cut the record label where the country/currency code token appears
+   (e.g. `… - MERCHANT NAME PT 12,34 EUR …` → label ends before `PT`).
+
+With `--strip-noise` the statement tables read back clean of the surrounding
+glyph garbage. When exact rows matter, cross-check a few records against the
+rendered page (`render`).
 
 ## info `<file.pdf>`
 

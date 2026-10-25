@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomXlsx, makeOfficeShapedXlsx, makeSimpleXlsx } from "./fixtures/builders.js"
+import { makeCustomXlsx, makeOfficeShapedXlsx, makePrefixedNsXlsx, makeSimpleXlsx } from "./fixtures/builders.js"
 import { type CliIo, runXlsxCli } from "./xlsx-cli.js"
 
 function testIo(files: Record<string, Uint8Array> = {}) {
@@ -79,6 +79,22 @@ describe("runXlsxCli info", () => {
 		expect(await runXlsxCli(["info", "a.xlsx"], io)).toBe(0)
 		expect(out[0]).toContain('sheet 1: "Data" — 3 rows × D columns')
 		expect(out[0]).toContain('sheet 2: "Scratch" (hidden) — 1 rows × A columns')
+	})
+
+	it("reports real dimensions for a namespace-prefixed workbook", async () => {
+		const { io, out, err } = testIo({ "p.xlsx": await makePrefixedNsXlsx() })
+		expect(await runXlsxCli(["info", "p.xlsx"], io)).toBe(0)
+		expect(out[0]).toContain('sheet 1: "Mov" — 3 rows × C columns')
+		expect(err.some((l) => l.includes("may not be empty"))).toBe(false)
+	})
+
+	it("warns when a dimension declares rows the parser cannot find", async () => {
+		const { io, out, err } = testIo({
+			"e.xlsx": await makeCustomXlsx([{ name: "S", inner: `<dimension ref="A1:E5"/><sheetData/>` }]),
+		})
+		expect(await runXlsxCli(["info", "e.xlsx"], io)).toBe(0)
+		expect(out[0]).toContain('sheet 1: "S" — 5 rows × E columns')
+		expect(err.some((l) => l.includes("note:") && l.includes("may not be empty"))).toBe(true)
 	})
 })
 

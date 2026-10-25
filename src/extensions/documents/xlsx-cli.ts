@@ -85,6 +85,11 @@ function selectSheet(selector: string | undefined): number | string {
 	return /^\d+$/.test(selector) ? Number(selector) : selector
 }
 
+/** Extraction notes (macros, hidden sheets, suspicious dimensions) go to stderr. */
+function emitNotes(doc: XlsxExtraction, io: CliIo): void {
+	for (const note of doc.notes) io.stderr(`note: ${note}`)
+}
+
 export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 	const readFile = io.readFile ?? ((path: string) => new Uint8Array(readFileSync(path)))
 	const [command, ...args] = argv
@@ -119,7 +124,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 					`# ${path} — sheet "${w.sheet}" rows ${w.fromRow}-${w.toRow}${w.truncated ? " (truncated, continue with --start-row)" : ""}\n\n${w.markdown}`,
 				)
 				if (w.merged.length > 0) io.stdout(`\nmerged cells on this sheet: ${w.merged.join(", ")}`)
-				for (const note of doc.notes) io.stderr(`note: ${note}`)
+				emitNotes(doc, io)
 				return 0
 			}
 			case "info": {
@@ -144,6 +149,7 @@ export async function runXlsxCli(argv: string[], io: CliIo): Promise<number> {
 				if (doc.info.hasMacros) lines.push("macros: yes (vbaProject.bin) — preserved untouched by edits")
 				if (doc.info.hasExternalLinks) lines.push("external links: yes — never recalculated")
 				io.stdout(lines.join("\n"))
+				emitNotes(doc, io)
 				return 0
 			}
 			case "create": {

@@ -68,7 +68,7 @@ export interface PdfCliIo {
 const USAGE = `usage: pdf.mjs <command> [args]
 
 commands:
-  read <file.pdf> [N-M]                          pages as Markdown (20 per call)
+  read <file.pdf> [N-M] [--strip-noise]          pages as Markdown (20 per call)
   info <file.pdf>                                page count, encryption
   fields <file.pdf>                              form fields as JSON lines
   fill-form <in.pdf> --out <out.pdf> --values <f.json>
@@ -147,8 +147,26 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 	try {
 		switch (command) {
 			case "read": {
-				const [path, rangeArg] = rest
-				if (!path) throw new DocumentError("corrupt", "read needs a file path: pdf.mjs read <file.pdf> [N-M]", "pdf")
+				const [path, ...args] = rest
+				if (!path || path.startsWith("--"))
+					throw new DocumentError(
+						"corrupt",
+						"read needs a file path: pdf.mjs read <file.pdf> [N-M] [--strip-noise]",
+						"pdf",
+					)
+				const knownReadFlags = ["--strip-noise"]
+				const positional: string[] = []
+				for (const f of args) {
+					if (f.startsWith("--")) {
+						if (!knownReadFlags.includes(f))
+							throw new DocumentError("corrupt", `unknown flag ${f} — options: ${knownReadFlags.join(", ")}`, "pdf")
+					} else {
+						positional.push(f)
+					}
+				}
+				if (positional.length > 1)
+					throw new DocumentError("corrupt", `read takes at most a page range, got: ${positional.join(" ")}`, "pdf")
+				const rangeArg = positional[0]
 				const data = readBytes(readFile, path)
 				enforceSizeCap(path, data)
 				const info = await pdfInfo(data)
@@ -159,7 +177,7 @@ export async function runPdfCli(argv: string[], io: PdfCliIo): Promise<number> {
 					!wanted && info.pageCount > MAX_UNITS_PER_CALL
 						? Array.from({ length: MAX_UNITS_PER_CALL }, (_, i) => i + 1)
 						: window
-				const doc = await extractPdf(data, { pages: extractWindow })
+				const doc = await extractPdf(data, { pages: extractWindow, stripNoise: args.includes("--strip-noise") })
 				const rendered = renderDocument(doc, { toolName: "pdf.mjs read", path })
 				io.stdout(rendered.text)
 				if (wanted && wanted.length > MAX_UNITS_PER_CALL) {
