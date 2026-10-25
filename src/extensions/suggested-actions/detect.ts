@@ -5,6 +5,7 @@
  */
 
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+import { BASH_BACKGROUND_EXIT_MESSAGE_TYPE } from "../bash-background/bash-control-extension.js"
 import { PUBLISH_COMMAND } from "../pull-request-status/links.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 
@@ -45,14 +46,44 @@ function label(url: string): string {
 
 interface PublishEvidence {
 	command: string
+	/** Everything the command printed, including output delivered after it moved to the background. */
 	output: string
 }
 
-/** Successful `git push` / `gh pr create` / `glab mr create` bash calls this session made, oldest first. */
+function text(content: string | readonly { type: string; text?: string }[]): string {
+	if (typeof content === "string") return content
+	return content.flatMap((part) => (part.type === "text" && part.text ? [part.text] : [])).join("\n")
+}
+
+/** String items of `details[key]`, for the background-command handles a result or notification names. */
+function handles(details: unknown, ...keys: string[]): string[] {
+	if (!details || typeof details !== "object") return []
+	return keys.flatMap((key) => {
+		const value: unknown = Reflect.get(details, key)
+		return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+	})
+}
+
+/**
+ * Successful `git push` / `gh pr create` / `glab mr create` bash calls this session made, oldest first. A bash call
+ * still running after its handoff returns only its first output; the rest (e.g. the push summary after a slow
+ * pre-push hook) arrives later, keyed by the command's handle, in a `bash_control` result or an exit notification.
+ */
 export function publishEvidence(entries: readonly SessionEntry[]): PublishEvidence[] {
 	const commands = new Map<string, string>()
 	const evidence: PublishEvidence[] = []
+	const backgrounded = new Map<string, PublishEvidence>()
+	const deliver = (ids: string[], output: string) => {
+		for (const id of new Set(ids)) {
+			const item = backgrounded.get(id)
+			if (item) item.output += `\n${output}`
+		}
+	}
 	for (const entry of entries) {
+		if (entry.type === "custom_message" && entry.customType === BASH_BACKGROUND_EXIT_MESSAGE_TYPE) {
+			deliver(handles(entry.details, "handles"), text(entry.content))
+			continue
+		}
 		if (entry.type !== "message") continue
 		const { message } = entry
 		if (message.role === "assistant") {
@@ -61,14 +92,28 @@ export function publishEvidence(entries: readonly SessionEntry[]): PublishEviden
 				const { command } = part.arguments
 				if (typeof command === "string" && PUBLISH_COMMAND.test(command)) commands.set(part.id, command)
 			}
+		} else if (message.role === "toolResult" && message.toolName === "bash_control") {
+			deliver(handles(message.details, "exitedHandles", "runningHandles"), text(message.content))
 		} else if (message.role === "toolResult" && !message.isError) {
 			const command = commands.get(message.toolCallId)
 			if (command === undefined) continue
-			const output = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
-			evidence.push({ command, output })
+			const item = { command, output: text(message.content) }
+			evidence.push(item)
+			// A command still running after the handoff names the handle its later output arrives under.
+			const handle = message.details && typeof message.details === "object" && Reflect.get(message.details, "handle")
+			if (typeof handle === "string") backgrounded.set(handle, item)
 		}
 	}
 	return evidence
+}
+
+/** A `git push` summary line that updated `branch` on the remote; rejected (`!`) lines do not count. */
+function pushedBranch(output: string, branch: string): boolean {
+	const name = branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+	return new RegExp(
+		String.raw`^\s*(?:\+\s*)?(?:[0-9a-f]+\.\.\.?[0-9a-f]+|\* \[new branch\])\s+\S+\s+->\s+${name}(?:\s|$)`,
+		"m",
+	).test(output)
 }
 
 /**
@@ -81,8 +126,9 @@ export function detectSuggestions(input: DetectInput): Suggestion[] {
 	const urls = evidence.flatMap(({ output }) => pullRequestUrls(output))
 	const branchPr = branch?.pullRequest
 	if (
+		branch &&
 		branchPr?.state === "open" &&
-		evidence.some(({ command, output }) => /\bgit\s+push\b/.test(command) && output.includes(`-> ${branch?.name}`))
+		evidence.some(({ command, output }) => /\bgit\s+push\b/.test(command) && pushedBranch(output, branch.name))
 	)
 		urls.push(branchPr.url)
 	const closed = branchPr && branchPr.state !== "open" ? branchPr.url : undefined

@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
+import { BASH_BACKGROUND_EXIT_MESSAGE_TYPE } from "../bash-background/bash-control-extension.js"
 import { detectSuggestions, pullRequestUrls } from "./detect.js"
 
 const PR = "https://github.com/acme/app/pull/1531"
@@ -37,13 +38,13 @@ function reply(text: string): SessionEntry {
 	})
 }
 
-/** An assistant bash call and its result. */
-function bash(command: string, output: string, isError = false): SessionEntry[] {
+/** An assistant tool call and its result. */
+function tool(name: string, args: Record<string, string | boolean>, output: string, details?: object, isError = false) {
 	const id = `call-${++nextId}`
 	return [
 		entry({
 			role: "assistant",
-			content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+			content: [{ type: "toolCall", id, name, arguments: args }],
 			api: "openai-completions",
 			provider: "kimchi",
 			model: "fake",
@@ -61,13 +62,44 @@ function bash(command: string, output: string, isError = false): SessionEntry[] 
 		entry({
 			role: "toolResult",
 			toolCallId: id,
-			toolName: "bash",
+			toolName: name,
 			content: [{ type: "text", text: output }],
+			...(details ? { details: { ...details } } : {}),
 			isError,
 			timestamp: 0,
 		}),
 	]
 }
+
+function bash(command: string, output: string, isError = false): SessionEntry[] {
+	return tool("bash", { command }, output, undefined, isError)
+}
+
+/** A bash call still running after its handoff: its result carries only the first output. */
+function backgroundBash(command: string, firstOutput: string, handle: string): SessionEntry[] {
+	return tool("bash", { command }, `[Background bash process\n handle: ${handle}\n]\n${firstOutput}`, {
+		handle,
+		exited: false,
+		handoff: true,
+	})
+}
+
+/** The harness's unattended exit notification for background commands. */
+function exitNotice(handles: string[], output: string): SessionEntry {
+	nextId++
+	return {
+		type: "custom_message",
+		id: `e${nextId}`,
+		parentId: null,
+		timestamp: "2026-10-25T00:00:00.000Z",
+		customType: BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+		content: [{ type: "text", text: output }],
+		details: { deliveryId: "d1", sessionId: "s1", handles },
+		display: false,
+	}
+}
+
+const PUSHED = "To github.com:acme/app.git\n   509290d8..d8b310bc  feat-x -> feat-x\n"
 
 const none = new Set<string>()
 
@@ -134,6 +166,47 @@ describe("detectSuggestions", () => {
 		expect(detectSuggestions({ entries, dismissed: none, watching: new Set([PR]) })).toEqual([
 			{ key: PR, label: "PR #1531", skill: "watch-pr", args: PR, watching: true },
 		])
+	})
+
+	it("follows a backgrounded git push to its output in a bash_control result", () => {
+		// The pre-push hook outlasts the handoff, so the push summary arrives with the exit.
+		const entries = [
+			...backgroundBash("git commit -m docs && git push", "[feat-x d8b310bc] docs\n> lint", "h-1"),
+			...tool("bash_control", { wait: true }, `Final output:\nFound 2 warnings.\n${PUSHED}`, {
+				exitedHandles: ["h-1"],
+				runningHandles: [],
+			}),
+		]
+		const branch = { name: "feat-x", pullRequest: { url: PR, state: "open" as const } }
+
+		expect(detectSuggestions({ entries, branch, dismissed: none, watching: none }).map((s) => s.key)).toEqual([PR])
+	})
+
+	it("follows a backgrounded git push to its output in an exit notification", () => {
+		const entries = [...backgroundBash("git push", "> lint", "h-1"), exitNotice(["h-1"], PUSHED)]
+		const branch = { name: "feat-x", pullRequest: { url: PR, state: "open" as const } }
+
+		expect(detectSuggestions({ entries, branch, dismissed: none, watching: none }).map((s) => s.key)).toEqual([PR])
+	})
+
+	it("ignores another command's background output", () => {
+		const entries = [
+			...backgroundBash("git push", "> lint", "h-1"),
+			...tool("bash_control", { wait: true }, PUSHED, { exitedHandles: ["h-2"] }),
+		]
+		const branch = { name: "feat-x", pullRequest: { url: PR, state: "open" as const } }
+
+		expect(detectSuggestions({ entries, branch, dismissed: none, watching: none })).toEqual([])
+	})
+
+	it("ignores a rejected push", () => {
+		const entries = bash(
+			"git push",
+			"To github.com:acme/app.git\n ! [rejected]        feat-x -> feat-x (fetch first)\n",
+		)
+		const branch = { name: "feat-x", pullRequest: { url: PR, state: "open" as const } }
+
+		expect(detectSuggestions({ entries, branch, dismissed: none, watching: none })).toEqual([])
 	})
 
 	it("shows one chip per PR", () => {
