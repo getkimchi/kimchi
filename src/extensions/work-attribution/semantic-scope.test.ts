@@ -12,14 +12,9 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { saveWorkSummary } from "../__mocks__/work-summary.js"
 import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import {
-	closeBackends,
-	getNote,
-	seedProjection,
-	setNote,
-	useBackendFactory,
-} from "../pr-cost-reporting/ledger/records.js"
+import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import {
 	createWorkAttributionExtension,
 	getWorkId,
@@ -47,7 +42,7 @@ beforeEach(() => {
 	execFileSync("git", ["init", "-q", cwd])
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
 	useBackendFactory(() => createMemoryRecords())
-	seedProjection(join(root, "agent"), WORK, {})
+	saveWorkSummary(join(root, "agent"), { workId: WORK, sessions: ["seed"] })
 	key = randomUUID()
 	endpoint = "https://account.example/api"
 	identity = { organizationId: ORG, userId: USER }

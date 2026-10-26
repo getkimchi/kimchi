@@ -17,7 +17,6 @@ import {
 	readWorkHead,
 	readWorkSummary,
 	rebuildWork,
-	seedProjection,
 	seedProjectionRows,
 	useBackendFactory,
 } from "./records.js"
@@ -161,25 +160,25 @@ describe("records conformance (memory backend)", () => {
 		expect(readdirSyncSafe(dir)).toEqual([])
 	})
 
-	it("seedProjection and seedProjectionRows stand up the same snapshot shape digests expect", () => {
+	it("seedProjectionRows stands up the snapshot shape digests expect", () => {
 		const dir = agentDir()
 		dirs.push(dir)
 		useBackendFactory(() => createMemoryRecords())
-		seedProjection(dir, WORK, { requestIds: ["req-x"] })
-		expect(readWorkSummary(dir, WORK)?.requests).toHaveLength(1)
-		seedProjectionRows(dir, {
+		const view = {
 			workId: WORK,
 			sessions: [SESSION],
 			workLinks: [],
-			requests: [{ sessionId: SESSION, requestId: "req-y" }],
+			requests: [{ sessionId: SESSION, requestId: "req-x" }],
 			plans: [],
 			commits: [],
 			fileTransitions: [],
 			fileObservations: [],
 			continuations: [],
-		})
-		const view = readWorkSummary(dir, WORK)
-		expect(view?.requests.map((row) => row.requestId)).toEqual(["req-x", "req-y"])
+		}
+		seedProjectionRows(dir, view)
+		expect(readWorkSummary(dir, WORK)?.requests).toHaveLength(1)
+		seedProjectionRows(dir, { ...view, requests: [{ sessionId: SESSION, requestId: "req-y" }] })
+		expect(readWorkSummary(dir, WORK)?.requests.map((row) => row.requestId)).toEqual(["req-x", "req-y"])
 	})
 
 	it("dedupes by record hash: capturing the same record twice folds once", () => {

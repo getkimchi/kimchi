@@ -472,40 +472,6 @@ export function ledgerHasWorkOutput(agentDir: string, workId: string): boolean {
 	return backendFor(agentDir).hasProjectionOutput(workId)
 }
 
-/**
- * Test seam for the suites that seeded a derived summary directly (the old file fixtures): writes projection
- * rows and the head without inserting records, mirroring the old suite fixture behavior.
- */
-export function seedProjection(
-	agentDir: string,
-	workId: string,
-	options: {
-		sessions?: string[]
-		requestIds?: string[]
-		plan?: { path: string; snapshotPath: string; repository: string }
-	} = {},
-): void {
-	const backend = backendFor(agentDir)
-	backend.tx(() => {
-		for (const sessionId of options.sessions ?? ["seed"])
-			backend.putRow(workId, "sessions", ROW_KEYS.sessions({ sessionId }), { sessionId })
-		for (const requestId of options.requestIds ?? []) {
-			const row = { sessionId: "seed", requestId }
-			backend.putRow(workId, "requests", ROW_KEYS.requests(row), row)
-		}
-		if (options.plan) {
-			const row = {
-				sessionId: "seed",
-				path: options.plan.path,
-				snapshotPath: options.plan.snapshotPath,
-				repository: options.plan.repository,
-			}
-			backend.putRow(workId, "plans", ROW_KEYS.plans(row), row)
-		}
-		backend.putHead(headFrom(backend, workId))
-	})
-}
-
 /** The production backend over the C1 store. */
 function sqliteBackend(agentDir: string): RecordBackend {
 	const store: LedgerStore = openStore(agentDir)
