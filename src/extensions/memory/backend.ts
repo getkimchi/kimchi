@@ -17,9 +17,23 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Memory as Mem0Memory, MemoryConfig } from "mem0ai/oss"
+import {
+	GATEWAY_ORGANIZATION_HEADER,
+	gatewayAuthHeaders,
+	resolveGatewayCredentials,
+} from "../../auth/gateway-credentials.js"
 import { type KimchiConfig, loadConfig } from "../../config.js"
 import type { SharedEmbedder } from "./embedder.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
+
+/**
+ * Thrown when neither a configured API key nor an SSO credential in
+ * auth.json can drive the memory gateway calls. Shared by every memory
+ * entry point so the message is authored once; mentions both auth
+ * paths — the old text misdirected SSO users to the API-key setup.
+ */
+export const MEMORY_CREDENTIALS_ERROR =
+	"memory backend requires gateway credentials — set KIMCHI_API_KEY or run `kimchi setup` (API key), or sign in with CAST AI SSO"
 
 export const MEMORY_EMBEDDING_MODEL = "bge-m3"
 export const MEMORY_EMBEDDING_DIMS = 1024
@@ -81,7 +95,7 @@ export interface ExtractionModelOptions {
  * at temperature 0.
  */
 export async function resolveExtractionModel(
-	gateway: { baseURL: string; apiKey: string },
+	gateway: { baseURL: string; apiKey: string; organizationId?: string },
 	options: ExtractionModelOptions = {},
 ): Promise<string> {
 	if (options.configuredModel) return options.configuredModel
@@ -98,13 +112,13 @@ export async function resolveExtractionModel(
 
 /** The gateway's model ids, or undefined when the list is unreachable. */
 async function fetchAvailableModelIds(
-	gateway: { baseURL: string; apiKey: string },
+	gateway: { baseURL: string; apiKey: string; organizationId?: string },
 	fetchImpl: typeof fetch,
 ): Promise<Set<string> | undefined> {
 	try {
 		const response = await fetchImpl(
 			new URL("models", gateway.baseURL.endsWith("/") ? gateway.baseURL : `${gateway.baseURL}/`),
-			{ headers: { authorization: `Bearer ${gateway.apiKey}` } },
+			{ headers: gatewayAuthHeaders({ token: gateway.apiKey, organizationId: gateway.organizationId }) },
 		)
 		if (!response.ok) return undefined
 		const body = (await response.json()) as { data?: Array<{ id?: string }> }
@@ -118,8 +132,24 @@ async function fetchAvailableModelIds(
 export const MEMORY_EMBEDDING_TAG = "memory:embedding"
 
 /**
- * Tag the OpenAI embedder's gateway requests for usage tracking. mem0's
- * OpenAI embedder doesn't support extra body fields through its config
+ * Interceptor state, refreshed on every tagEmbeddingRequests call: the
+ * SSO org header comes and goes with the login method (re-login to an API
+ * key in the same process must stop adding it), while the wrapper itself
+ * stays installed (the OpenAI SDK captures the fetch reference at client
+ * construction — reinstalling would strand already-constructed clients).
+ * Module-level because globalThis.fetch is module-level; the two move
+ * together. The org header matches what models.json stamps on every
+ * Kimchi provider for SSO, so pre-stamped requests keep their value.
+ */
+let gatewayInterceptorState: { origin: string | undefined; organizationId: string | undefined } = {
+	origin: undefined,
+	organizationId: undefined,
+}
+
+/**
+ * Tag the OpenAI embedder's gateway requests for usage tracking, and
+ * carry the SSO organization routing header. mem0's OpenAI embedder/LLM
+ * support neither extra body fields nor custom headers through config
  * (the constructor only picks apiKey and baseURL), so the tag is injected
  * by wrapping globalThis.fetch — narrowly: only /embeddings requests to
  * the kimchi gateway get the tag added to their JSON body, in the same
@@ -130,27 +160,39 @@ export const MEMORY_EMBEDDING_TAG = "memory:embedding"
  * backend creation since the OpenAI SDK may capture the fetch reference at
  * client construction.
  */
-export function tagEmbeddingRequests(gatewayBaseUrl: string): void {
-	const current = globalThis.fetch as typeof fetch & { _memoryEmbeddingTagged?: boolean }
-	if (current._memoryEmbeddingTagged) return
+export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: string): void {
+	gatewayInterceptorState = { origin: requestOrigin(gatewayBaseUrl), organizationId }
+	const current = globalThis.fetch as typeof fetch & { _memoryGatewayIntercepted?: boolean }
+	if (current._memoryGatewayIntercepted) return
 	const original = globalThis.fetch
-	const gatewayOrigin = requestOrigin(gatewayBaseUrl)
-	const tagged: typeof fetch & { _memoryEmbeddingTagged?: boolean } = async (input, init) => {
+	const intercepted: typeof fetch & { _memoryGatewayIntercepted?: boolean } = async (input, init) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
-		if (url.includes("/embeddings") && init?.body && requestOrigin(url) === gatewayOrigin) {
+		const state = gatewayInterceptorState
+		if (!state.origin || requestOrigin(url) !== state.origin) return original(input, init)
+		// Headers: only the SSO org routing value, only when missing — a
+		// models.json-stamped provider request keeps its own (identical) value.
+		let headers: Headers | undefined
+		if (state.organizationId) {
+			headers = new Headers(init?.headers)
+			if (!headers.has(GATEWAY_ORGANIZATION_HEADER)) headers.set(GATEWAY_ORGANIZATION_HEADER, state.organizationId)
+		}
+		if (url.includes("/embeddings") && init?.body) {
 			try {
 				const body = JSON.parse(String(init.body)) as Record<string, unknown> & { tags?: string[] }
 				const tags = Array.isArray(body.tags) ? [...body.tags] : []
 				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
-				return original(input, { ...init, body: JSON.stringify({ ...body, tags }) })
+				const taggedBody = JSON.stringify({ ...body, tags })
+				return headers
+					? original(input, { ...init, headers, body: taggedBody })
+					: original(input, { ...init, body: taggedBody })
 			} catch {
 				// Not a JSON body — pass through untouched
 			}
 		}
-		return original(input, init)
+		return headers ? original(input, { ...init, headers }) : original(input, init)
 	}
-	tagged._memoryEmbeddingTagged = true
-	globalThis.fetch = tagged
+	intercepted._memoryGatewayIntercepted = true
+	globalThis.fetch = intercepted
 }
 
 function requestOrigin(url: string): string | undefined {
@@ -268,7 +310,9 @@ function resolveEndpoint(
  * vitest on Node.
  */
 export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiConfig = loadConfig()): MemoryConfig {
-	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
+	// Pure (never throws): a credential-less resolution yields apiKey "",
+	// the same keyless shape builders produced from a key-free config.
+	const gateway = { baseURL: config.llmEndpoint, apiKey: resolveGatewayCredentials(config).token }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
 	const llm = resolveEndpoint(options.llm, gateway, config.memoryExtraction?.model ?? EXTRACTION_MODEL)
 	return {
@@ -338,23 +382,22 @@ export async function createMemoryBackend(
 	options: MemoryBackendOptions,
 	config: KimchiConfig = loadConfig(),
 ): Promise<Mem0Memory> {
-	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
+	// Configured API key or the SSO credential in auth.json
+	// (src/auth/gateway-credentials.ts) — both endpoints share the one
+	// credential source; an explicit per-endpoint override can still win.
+	const credentials = resolveGatewayCredentials(config)
+	const gateway = { baseURL: config.llmEndpoint, apiKey: credentials.token }
 	const embedder = resolveEmbeddingEndpoint(options.embedder, gateway, config)
 	const llm = resolveEndpoint(options.llm, gateway, config.memoryExtraction?.model ?? EXTRACTION_MODEL)
-	for (const [name, ep] of [
-		["embedder", embedder],
-		["llm", llm],
-	] as const) {
-		if (!ep.apiKey) {
-			throw new Error(`memory backend ${name} requires an API key — set KIMCHI_API_KEY or run \`kimchi setup\``)
-		}
+	if (!embedder.apiKey || !llm.apiKey) {
+		throw new Error(MEMORY_CREDENTIALS_ERROR)
 	}
 	// mem0's OSS telemetry phones home to PostHog unless MEM0_TELEMETRY is
 	// "false" when the module loads. Memory content and usage must not
 	// egress to third parties. An explicitly set value wins, so an operator
 	// who opts in deliberately keeps it.
 	disableMem0Telemetry()
-	tagEmbeddingRequests(config.llmEndpoint)
+	tagEmbeddingRequests(config.llmEndpoint, credentials.organizationId)
 	const { Memory } = await import("mem0ai/oss")
 	return new Memory(buildMemoryConfig(options, config))
 }

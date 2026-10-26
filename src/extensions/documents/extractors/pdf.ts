@@ -27,6 +27,112 @@ function isPasswordError(err: unknown): boolean {
 	return /password/i.test(msg)
 }
 
+// --- pdf.js console chatter ----------------------------------------------------
+
+/**
+ * pdf.js reports font-repair chatter through `console.warn`, once per affected
+ * page (e.g. "Incorrect 'loca' table length"). During an extraction call the
+ * first occurrence of each distinct message passes through; repeats drop.
+ * Overlapping extractions (ACP hosts several sessions in one process) dedupe
+ * independently; the hook unpins only when the last extraction exits.
+ */
+const activeWarnSinks = new Set<Set<string>>()
+let warnPassthrough: ((...args: unknown[]) => void) | undefined
+let warnHook: ((...args: unknown[]) => void) | undefined
+
+function installWarnDedupe(sink: Set<string>): void {
+	if (activeWarnSinks.size === 0) {
+		const passthrough = console.warn
+		warnPassthrough = passthrough
+		// Mutate the method, not the object: pdf.js holds a `console` reference.
+		warnHook = (...args: unknown[]) => {
+			const key = args.map((a) => String(a)).join(" ")
+			for (const s of activeWarnSinks) {
+				if (!s.has(key)) {
+					s.add(key)
+					passthrough(...args)
+				}
+			}
+		}
+		console.warn = warnHook
+	}
+	activeWarnSinks.add(sink)
+}
+
+function uninstallWarnDedupe(sink: Set<string>): void {
+	activeWarnSinks.delete(sink)
+	if (activeWarnSinks.size === 0 && warnPassthrough) {
+		// Restore by identity, not by position: only unpin when console.warn is
+		// still OUR hook — never clobber a foreign override installed mid-span.
+		if (console.warn === warnHook) console.warn = warnPassthrough
+		warnHook = undefined
+		warnPassthrough = undefined
+	}
+}
+
+/** Run `fn` with console.warn repeats suppressed for the duration of this
+ *  call: the first occurrence of each distinct message always prints. Any
+ *  warn traffic during the span dedupes by message text, not only pdf.js's. */
+export async function withWarnDedupe<T>(fn: () => Promise<T>): Promise<T> {
+	const sink = new Set<string>()
+	installWarnDedupe(sink)
+	try {
+		return await fn()
+	} finally {
+		uninstallWarnDedupe(sink)
+	}
+}
+
+// --- glyph-garbage filter ------------------------------------------------------
+
+/**
+ * `read --strip-noise` filter. Barcode/anti-forgery blocks arrive as runs of
+ * short lines from a symbol font: no inner punctuation beyond `;:!`, no
+ * words, high case-flip density. Real text (accents, `,.%€`-style characters,
+ * dictionary words, IBANs) never matches because its character set or case
+ * pattern fails. Only runs of ≥2 consecutive matches are removed, so a lone
+ * odd line (a font name, a camel-cased identifier) always survives.
+ */
+const GLYPH_NOISE_TOKEN = /^[A-Za-z0-9;:!]{6,64}$/
+
+function isGlyphNoiseLine(line: string): boolean {
+	const t = line.trim()
+	if (t.length < 6) return false
+	const tokens = t.split(/\s+/)
+	if (tokens.length > 2) return false
+	for (const tok of tokens) {
+		if (!GLYPH_NOISE_TOKEN.test(tok)) return false
+	}
+	if (!/[a-z]/.test(t) || !/[A-Z]/.test(t)) return false
+	if (/[0-9]/.test(t) || /[;:]/.test(t) || /(.)\1\1/.test(t)) return true
+	// Pure-letter line: glyph only when it flips case constantly ("mikWXQRmikW"),
+	// unlike words and identifiers ("JavaScript" flips three times but is a word —
+	// it still survives through the ≥2-run rule in practice).
+	const flips = t.match(/[a-z][A-Z]|[A-Z][a-z]/g)?.length ?? 0
+	return flips >= 3
+}
+
+/** Remove runs of ≥2 glyph-garbage lines from extracted page text. */
+export function stripGlyphNoise(markdown: string): string {
+	const lines = markdown.split("\n")
+	const out: string[] = []
+	let run: string[] = []
+	const flush = () => {
+		if (run.length < 2) out.push(...run)
+		run = []
+	}
+	for (const line of lines) {
+		if (isGlyphNoiseLine(line)) {
+			run.push(line)
+		} else {
+			flush()
+			out.push(line)
+		}
+	}
+	flush()
+	return out.join("\n")
+}
+
 /**
  * Extract text pages. `pages` is a 1-based page filter (already clamped by
  * the caller) — undefined extracts all pages (still capped at
@@ -40,7 +146,10 @@ type Destroyable = Awaited<ReturnType<typeof getDocumentProxy>> & {
 /**
  * MAX_UNITS_PER_CALL of them inside one CLI call).
  */
-export async function extractPdf(data: Uint8Array, options: { pages?: number[] } = {}): Promise<ExtractedDocument> {
+export async function extractPdf(
+	data: Uint8Array,
+	options: { pages?: number[]; stripNoise?: boolean } = {},
+): Promise<ExtractedDocument> {
 	if (!data.subarray(0, 5).every((b, i) => b === "%PDF-".charCodeAt(i))) {
 		throw new DocumentError("not-a-document", "not a PDF (missing %PDF- header)", "pdf")
 	}
@@ -54,66 +163,71 @@ export async function extractPdf(data: Uint8Array, options: { pages?: number[] }
 		throw new DocumentError("corrupt", `PDF failed to parse: ${(err as Error).message ?? err}`, "pdf")
 	}
 
-	try {
-		const total = pdf.numPages
-		const wanted = options.pages && options.pages.length > 0 ? options.pages : range(total)
-		const units = []
-		const notes: string[] = []
-		let anyText = false
-		for (const n of wanted) {
-			if (n < 1 || n > total) continue
-			let markdown: string
-			try {
-				const page = await pdf.getPage(n)
-				const content = await page.getTextContent()
-				const parts: string[] = []
-				for (const item of content.items) {
-					if (typeof item !== "object" || item === null || !("str" in item)) continue
-					const it = item as { str?: unknown; hasEOL?: unknown }
-					parts.push(typeof it.str === "string" ? it.str : "")
-					if (it.hasEOL === true) parts.push("\n")
+	return withWarnDedupe(async () => {
+		try {
+			const total = pdf.numPages
+			const wanted = options.pages && options.pages.length > 0 ? options.pages : range(total)
+			const units = []
+			const notes: string[] = []
+			let anyText = false
+			for (const n of wanted) {
+				if (n < 1 || n > total) continue
+				let markdown: string
+				try {
+					const page = await pdf.getPage(n)
+					const content = await page.getTextContent()
+					const parts: string[] = []
+					for (const item of content.items) {
+						if (typeof item !== "object" || item === null || !("str" in item)) continue
+						const it = item as { str?: unknown; hasEOL?: unknown }
+						parts.push(typeof it.str === "string" ? it.str : "")
+						if (it.hasEOL === true) parts.push("\n")
+					}
+					markdown = parts
+						.join("")
+						.replace(/[ \t]+\n/g, "\n")
+						.replace(/\n{3,}/g, "\n\n")
+						.trim()
+				} catch {
+					// Fail-soft per page — a damaged page must not sink the whole read.
+					notes.push(`page ${n} failed to parse — skipped`)
+					continue
 				}
-				markdown = parts
-					.join("")
-					.replace(/[ \t]+\n/g, "\n")
-					.replace(/\n{3,}/g, "\n\n")
-					.trim()
-			} catch {
-				// Fail-soft per page — a damaged page must not sink the whole read.
-				notes.push(`page ${n} failed to parse — skipped`)
-				continue
+				// A pure-noise page still HAS a text layer — judge on unfiltered text.
+				const hasText = markdown.length >= MIN_PAGE_TEXT_CHARS
+				if (options.stripNoise === true) markdown = stripGlyphNoise(markdown)
+				if (hasText) {
+					anyText = true
+				} else {
+					notes.push(`page ${n} has no text layer`)
+				}
+				units.push({
+					index: n,
+					label: `Page ${n}`,
+					markdown,
+				})
 			}
-			if (markdown.length >= MIN_PAGE_TEXT_CHARS) {
-				anyText = true
-			} else {
-				notes.push(`page ${n} has no text layer`)
+			if (!anyText) {
+				throw new DocumentError(
+					"extraction-failed",
+					`no text layer on ${wanted.length > 1 ? "any of " : ""}${wanted.length === 1 ? `page ${wanted[0]}` : `${wanted.length} pages`} — likely a scanned/image-only PDF. Describe the limitation instead of guessing content.`,
+					"pdf",
+				)
 			}
-			units.push({
-				index: n,
-				label: `Page ${n}`,
-				markdown,
-			})
+			return {
+				format: "pdf",
+				unitKind: "page",
+				units,
+				outline: units.map((u) => `${u.label}: ${u.markdown.split("\n")[0]?.slice(0, 80) ?? ""}`),
+				notes,
+				meta: { pageCount: total },
+			}
+		} finally {
+			// destroy() itself must not become an unhandled rejection, and the
+			// CLI's exit must not outrun cleanup.
+			await pdf.loadingTask.destroy().catch(() => {})
 		}
-		if (!anyText) {
-			throw new DocumentError(
-				"extraction-failed",
-				`no text layer on ${wanted.length > 1 ? "any of " : ""}${wanted.length === 1 ? `page ${wanted[0]}` : `${wanted.length} pages`} — likely a scanned/image-only PDF. Describe the limitation instead of guessing content.`,
-				"pdf",
-			)
-		}
-		return {
-			format: "pdf",
-			unitKind: "page",
-			units,
-			outline: units.map((u) => `${u.label}: ${u.markdown.split("\n")[0]?.slice(0, 80) ?? ""}`),
-			notes,
-			meta: { pageCount: total },
-		}
-	} finally {
-		// destroy() itself must not become an unhandled rejection, and the
-		// CLI's exit must not outrun cleanup.
-		await pdf.loadingTask.destroy().catch(() => {})
-	}
+	})
 }
 
 function range(n: number): number[] {

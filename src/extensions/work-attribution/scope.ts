@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { backendFor, getNote, hasNote, setNote } from "../pr-cost-reporting/ledger/records.js"
@@ -130,6 +131,8 @@ export function saveNewWorkScope(workId: string, scope: WorkScope): void {
 interface CachedIdentity {
 	key: string
 	apiUrl: string
+	/** SSO organization routing header for OAuth credentials; absent for API keys. */
+	organizationId?: string
 	expiresAt: number
 	/** The verification in flight, if any. */
 	pending?: Promise<VerifyApiKeyResponse>
@@ -141,6 +144,7 @@ let cached: CachedIdentity | undefined
 function verifyIdentity(entry: CachedIdentity): void {
 	const pending = verifyApiKey(entry.key, {
 		endpoint: entry.apiUrl,
+		organizationId: entry.organizationId,
 		signal: AbortSignal.timeout(1000),
 		retry: { maxRetries: 0 },
 	})
@@ -172,12 +176,14 @@ export function platformApiUrl(cwd: string): string {
 	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
 }
 
-/** The configured API key and platform API, from one read of the configuration. */
-function credentialOf(cwd: string): { key: string; apiUrl: string } {
+/** The configured credential (API key or SSO) and platform API, from one read of the configuration. */
+function credentialOf(cwd: string): { key: string; apiUrl: string; organizationId?: string } {
 	const config = loadConfig({ cwd })
+	const credentials = resolveGatewayCredentials(config)
 	return {
-		key: config.apiKey ?? "",
+		key: credentials.token,
 		apiUrl: resolveEndpoints({ cwd, config }).platformApiUrl.replace(/\/+$/, ""),
+		organizationId: credentials.organizationId,
 	}
 }
 
@@ -195,14 +201,15 @@ export function workCredential(cwd: string): string {
  * while one background check refreshes it.
  */
 export async function captureWorkAccount(cwd: string): Promise<WorkAccountSnapshot | undefined> {
-	const { key, apiUrl } = credentialOf(cwd)
+	const { key, apiUrl, organizationId } = credentialOf(cwd)
 	if (!key) return
 	const isCurrent = () => {
 		const current = credentialOf(cwd)
 		return current.key === key && current.apiUrl === apiUrl
 	}
 	try {
-		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl) cached = { key, apiUrl, expiresAt: 0 }
+		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl)
+			cached = { key, apiUrl, organizationId, expiresAt: 0 }
 		const entry = cached
 		if (!entry.pending && entry.expiresAt <= Date.now()) verifyIdentity(entry)
 		const identity = entry.verified ?? (await entry.pending)

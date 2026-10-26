@@ -1,3 +1,4 @@
+import { GATEWAY_ORGANIZATION_HEADER } from "../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
@@ -26,6 +27,8 @@ export async function verifyApiKey(
 	options?: {
 		fetch?: typeof globalThis.fetch
 		endpoint?: string
+		/** SSO organization routing header — set when the bearer is an OAuth credential. */
+		organizationId?: string
 		signal?: AbortSignal
 		retry?: { maxRetries: number }
 	},
@@ -40,6 +43,7 @@ export async function verifyApiKey(
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
+				...(options?.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 				Accept: "application/json",
 			},
 		},
@@ -68,7 +72,10 @@ export async function verifyApiKey(
 export async function getOrganization(
 	apiKey: string,
 	organizationId: string,
-	options?: { fetch?: typeof globalThis.fetch },
+	options?: {
+		fetch?: typeof globalThis.fetch /** SSO organization routing header for OAuth bearers. */
+		organizationId?: string
+	},
 ): Promise<Organization> {
 	const endpoint = resolveEndpoint()
 	const fetchImpl = options?.fetch ?? globalThis.fetch
@@ -80,6 +87,7 @@ export async function getOrganization(
 			method: "GET",
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
+				...(options?.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 				Accept: "application/json",
 			},
 		},

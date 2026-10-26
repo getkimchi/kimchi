@@ -1,4 +1,5 @@
 import { verifyApiKey } from "../../api/organizations.js"
+import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
@@ -170,7 +171,9 @@ export function deliverSnapshots(
 		const state = await freezeSnapshots(agentDir, check)
 		if (!state.enabled) return
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
-		const configuredKey = loadConfig({ cwd }).apiKey
+		/** The configured credential: API key, or the SSO token from auth.json. */
+		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
+		const configuredKey = configuredCredentials().token
 		const configuredEndpoint = platformApiUrl(cwd)
 		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
 			await recordReportingError(
@@ -208,7 +211,7 @@ export function deliverSnapshots(
 			if (!snapshot) continue
 			if (paused.has(accountKey(entry.account)) && (snapshot.requests.length || snapshot.pullRequests.length)) continue
 			if (combined.aborted || attempts >= 3) break
-			const key = loadConfig({ cwd }).apiKey
+			const { token: key, organizationId } = configuredCredentials()
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
 			attempts++
@@ -218,7 +221,7 @@ export function deliverSnapshots(
 			let errorMessage = "PR reporting request unavailable"
 			const assertOwnership = () => {
 				assertLease()
-				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
+				if (configuredCredentials().token !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
 			}
 			const assertCurrent = () => {
@@ -256,6 +259,7 @@ export function deliverSnapshots(
 					apiUrl,
 					...(await verifyApiKey(key, {
 						endpoint: apiUrl,
+						organizationId,
 						fetch: fetchBounded,
 						signal: combined,
 						retry: { maxRetries: 0 },
@@ -271,7 +275,12 @@ export function deliverSnapshots(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
 						method: "POST",
-						headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
+						headers: {
+							Authorization: `Bearer ${key}`,
+							...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
+							"Content-Type": "application/json",
+							Accept: "application/json",
+						},
 						body: job.body,
 					},
 				)

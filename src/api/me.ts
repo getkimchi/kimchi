@@ -1,3 +1,4 @@
+import { GATEWAY_ORGANIZATION_HEADER } from "../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
@@ -11,6 +12,8 @@ export interface MeResponse {
 export interface GetMeOptions {
 	/** Override the API endpoint (defaults to KIMCHI_REMOTE_ENDPOINT or https://app.kimchi.dev/api). */
 	endpoint?: string
+	/** SSO organization routing header — set when the bearer is an OAuth credential. */
+	organizationId?: string
 	/** Override global fetch (used by tests). */
 	fetch?: typeof globalThis.fetch
 	/** Abort signal. */
@@ -38,6 +41,7 @@ export async function getMe(apiKey: string, options?: GetMeOptions): Promise<MeR
 			method: "GET",
 			headers: {
 				Authorization: `Bearer ${apiKey}`,
+				...(options?.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 				Accept: "application/json",
 			},
 		},
