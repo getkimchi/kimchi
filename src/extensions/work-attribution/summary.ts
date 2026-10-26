@@ -103,7 +103,7 @@ function unknownType(value: unknown): value is Record<string, unknown> {
 function truncated(line: string): boolean {
 	const closing: string[] = []
 	let inString = false
-	// Where an escape sequence such as \n or  began, and how many  hex digits it still needs.
+	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.
 	let escapeStart = -1
 	let hexDigits = 0
 	for (let index = 0; index < line.length; index++) {
