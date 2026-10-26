@@ -5,12 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import {
-	AgentSession,
-	type ExtensionAPI,
-	parseArgs as parsePiArgs,
-	readStoredCredential,
-} from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
@@ -41,6 +36,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
+import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
@@ -520,9 +516,9 @@ async function cliMain(): Promise<void> {
 			// metadata refresh so OAuth users get fresh models like key users;
 			// request-time token refresh is owned by the provider's OAuth config.
 			const authJsonPath = resolve(agentDir, "auth.json")
-			const storedOAuth = readStoredCredential("kimchi-dev", authJsonPath)
-			const oauthAccessToken = storedOAuth?.type === "oauth" ? storedOAuth.access : undefined
-			const oauthOrganizationId = storedOAuth?.type === "oauth" ? (storedOAuth as { orgId?: string }).orgId : undefined
+			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
+			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
+			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]

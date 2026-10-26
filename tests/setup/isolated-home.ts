@@ -20,6 +20,12 @@ process.env.USERPROFILE = testHome
 process.env.XDG_CONFIG_HOME = join(testHome, ".config")
 process.env.XDG_DATA_HOME = join(testHome, ".local", "share")
 process.env.XDG_CACHE_HOME = join(testHome, ".cache")
+// The agent dir (models.json, auth.json) is overridable via
+// KIMCHI_CODING_AGENT_DIR and developer shells commonly export it. Without
+// this default, unit tests resolve the developer's REAL auth.json as a
+// credential source (keyless code paths silently become authenticated).
+// Per-test vi.stubEnv still wins over this default.
+process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
 
 afterAll(() => {
 	// Retry through transient Windows EBUSY; a leftover only costs temp space,

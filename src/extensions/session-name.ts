@@ -13,6 +13,7 @@ import {
 	SettingsManager,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent"
+import { gatewayAuthHeaders, resolveGatewayCredentials } from "../auth/gateway-credentials.js"
 import { loadConfig, RETRY_DEFAULTS } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
@@ -127,9 +128,9 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 
 	const fallback = deterministicFallback(resolvedHint)
 	const config = loadConfig({ cwd: ctx.cwd })
-	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
+	const credentials = resolveGatewayCredentials(config)
 
-	if (!apiKey) return fallback
+	if (!credentials.token) return fallback
 
 	const workContext = pinWorkContext(ctx)
 	let workId: string | undefined
@@ -147,7 +148,7 @@ export async function suggestSessionName(ctx: ExtensionContext, hint?: string, q
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: `Bearer ${apiKey}`,
+					...gatewayAuthHeaders(credentials),
 				},
 				body: JSON.stringify({
 					model: SESSION_NAME_MODEL,
