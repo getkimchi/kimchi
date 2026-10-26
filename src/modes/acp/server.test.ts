@@ -7790,6 +7790,44 @@ describe("newSession model state", () => {
 		})
 	})
 
+	it("prettifies slug-only catalog names for the picker", async () => {
+		// The catalog falls back to the slug when display_name is empty (see
+		// metadataToModel in src/models.ts); ACP clients must see a human name.
+		const sessionId = "session-slug-names"
+		const fake = new FakeAgentSession(sessionId)
+		fake.model = {
+			provider: "kimchi-dev/anthropic",
+			id: "claude-opus-4-6",
+			name: "claude-opus-4-6",
+			input: ["text"],
+			contextWindow: 200_000,
+		}
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "auto", name: "auto" },
+				{ provider: "kimchi-dev", id: "kimi-k3", name: "kimi-k3" },
+				{ provider: "kimchi-dev/anthropic", id: "claude-opus-4-6", name: "claude-opus-4-6" },
+			],
+		}
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: factory,
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/auto")?.name).toBe("Auto")
+		expect(options.find((o) => o.value === "kimchi-dev/kimi-k3")?.name).toBe("Kimi K3")
+		expect(options.find((o) => o.value === "kimchi-dev/anthropic/claude-opus-4-6")?.name).toBe("Claude Opus 4.6")
+		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/anthropic/claude-opus-4-6")?.name).toBe(
+			"Claude Opus 4.6",
+		)
+	})
+
 	it("returns configOptions in newSession response", async () => {
 		const fake = new FakeAgentSession("test-session-config")
 		const sessionFactory: AcpSessionFactory = async () => asSession(fake)
