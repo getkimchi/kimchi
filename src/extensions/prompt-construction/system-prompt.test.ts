@@ -221,7 +221,7 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		// The gh/glab CLI bullet moved into resources/skills/{gh-cli,glab-cli}:
+		// The gh/glab CLI bullet moved into src/extensions/behaviours/bodies/{gh-cli,glab-cli}.md:
 		// the prompt keeps only the generic Bash cap.
 		expect(result).not.toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
 		expect(result).toContain("git diff --stat")
@@ -243,6 +243,49 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("## Orchestration")
 			expect(result).toContain("Token budgets")
 			expect(result).toContain("token_budget")
+		})
+
+		it("threads backgroundNotificationsReachUser into orchestrator delegation guidance", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+				backgroundNotificationsReachUser: false,
+			})
+			expect(result).toContain("Agents run in the foreground by default in this session")
+			expect(result).not.toContain("background by default")
+			expect(result).not.toContain("backgrounded by default")
+		})
+
+		it("defaults backgroundNotificationsReachUser to true when omitted", () => {
+			const withDefault = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+			})
+			const withExplicitTrue = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "orchestrator",
+				backgroundNotificationsReachUser: true,
+			})
+			expect(withExplicitTrue).toBe(withDefault)
+			expect(withDefault).toContain("Agents run in the background by default")
+		})
+
+		it("leaves single-model prompts unaffected by backgroundNotificationsReachUser", () => {
+			const singleDefault = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "single",
+			})
+			const singleDetached = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				mode: "single",
+				backgroundNotificationsReachUser: false,
+			})
+			expect(singleDetached).toBe(singleDefault)
 		})
 
 		it("includes all tool names (descriptions live in the API payload)", () => {

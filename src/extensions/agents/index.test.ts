@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getParsedCliArgs } from "../../cli-args.js"
 import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
-	AGENT_TOOL_GUIDELINES,
+	buildAgentToolGuidelines,
 	buildAutoResumeNote,
+	buildRunInBackgroundParameterDescription,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
@@ -49,27 +50,59 @@ describe("summaryForStatus", () => {
 	})
 })
 
-describe("AGENT_TOOL_GUIDELINES", () => {
+describe("buildAgentToolGuidelines", () => {
 	it("points orchestrators to the Orchestration section instead of duplicating delegation rules", () => {
-		expect(AGENT_TOOL_GUIDELINES).toContain("Follow the **Orchestration** section")
-		expect(AGENT_TOOL_GUIDELINES).toContain("Explore-agent prompt shaping")
-		expect(AGENT_TOOL_GUIDELINES).not.toContain("Return decision-ready findings to the parent; do not write files.")
-		expect(AGENT_TOOL_GUIDELINES).not.toContain("write a complete implementation spec")
+		expect(buildAgentToolGuidelines(true)).toContain("Follow the **Orchestration** section")
+		expect(buildAgentToolGuidelines(true)).toContain("Explore-agent prompt shaping")
+		expect(buildAgentToolGuidelines(true)).not.toContain(
+			"Return decision-ready findings to the parent; do not write files.",
+		)
+		expect(buildAgentToolGuidelines(true)).not.toContain("write a complete implementation spec")
 	})
 	it("keeps companion-tool references and parallel-work guidance after the Phase 1 diet", () => {
 		// Chunk 2 diet regression guard: these are the behavioral contracts a trim must not drop.
-		expect(AGENT_TOOL_GUIDELINES).toContain("run_in_background")
-		expect(AGENT_TOOL_GUIDELINES).toContain("resume_subagent")
-		expect(AGENT_TOOL_GUIDELINES).toContain("get_subagent_result")
-		expect(AGENT_TOOL_GUIDELINES).toContain("steer_subagent")
+		const guidelines = buildAgentToolGuidelines(true)
+		expect(guidelines).toContain("run_in_background")
+		expect(guidelines).toContain("resume_subagent")
+		expect(guidelines).toContain("get_subagent_result")
+		expect(guidelines).toContain("steer_subagent")
 	})
 	it("steers orchestrators away from blocking on backgrounded agents", () => {
 		// Backgrounding regression guard: results arrive via completion
 		// notification, so the guidelines must not endorse polling/blocking.
-		expect(AGENT_TOOL_GUIDELINES).not.toContain("(poll)")
-		expect(AGENT_TOOL_GUIDELINES).toContain("blocks your very next action")
-		expect(AGENT_TOOL_GUIDELINES).toContain("join it with get_subagent_result wait: true")
-		expect(AGENT_TOOL_GUIDELINES).toContain("completion notification")
+		const guidelines = buildAgentToolGuidelines(true)
+		expect(guidelines).not.toContain("(poll)")
+		expect(guidelines).toContain("blocks your very next action")
+		expect(guidelines).toContain("join it with get_subagent_result wait: true")
+		expect(guidelines).toContain("completion notification")
+	})
+	it("makes foreground the default on surfaces without turn-end notifications", () => {
+		// ACP/headless runs never see the background completion notification
+		// after the turn ends, so the detached guidance must require joining.
+		const guidelines = buildAgentToolGuidelines(false)
+		expect(guidelines).toContain("foreground by default")
+		expect(guidelines).toContain("MUST join")
+		expect(guidelines).not.toContain("end your turn")
+		expect(guidelines).not.toContain("background by default")
+	})
+})
+
+describe("buildRunInBackgroundParameterDescription", () => {
+	it("keeps the interactive notification promise in the TUI variant", () => {
+		const description = buildRunInBackgroundParameterDescription(true)
+		expect(description).toContain("Default: true in interactive sessions")
+		expect(description).toContain("you will be notified on completion")
+	})
+
+	it("never promises a turn-end notification on detached surfaces", () => {
+		// Foreground is the default there, so the description must not tell the
+		// model to opt out of backgrounding nor promise a notification the
+		// surface never delivers.
+		const description = buildRunInBackgroundParameterDescription(false)
+		expect(description).toContain("Default: false in this session")
+		expect(description).toContain("MUST join it with get_subagent_result wait: true")
+		expect(description).not.toContain("you will be notified on completion")
+		expect(description).not.toContain("Set to false only")
 	})
 })
 
@@ -181,9 +214,9 @@ vi.mock("../orchestration/model-roles.js", () => ({
 	}),
 }))
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
-import { createContext } from "../__mocks__/context.js"
+import { createContext, createLiveContext, createToolContext } from "../__mocks__/context.js"
 import { AUTO_MODEL_PROVIDER } from "../auto-model/constants.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -782,6 +815,37 @@ describe("Agent tool multi-mode model guard", () => {
 			expect.any(String),
 			expect.objectContaining({ isBackground: true }),
 		)
+	})
+
+	it("background spawn result in rpc mode requires joining before the turn ends", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+
+		const registry = makeMockModelRegistry([
+			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
+		])
+		const ctx = {
+			...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object),
+			hasUI: true,
+			mode: "rpc",
+		}
+		const tool = getRegisteredAgentTool(pi)
+
+		const result = await tool.execute(
+			"call-acp-bg-text",
+			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("join it with get_subagent_result wait: true")
+		expect(text).not.toContain("stop your turn")
+		expect(text).not.toContain("You will be notified when this agent completes")
 	})
 })
 
@@ -1474,7 +1538,13 @@ describe("get_subagent_result wait contract", () => {
 	it("caps wait: true at 60s, keeps the result unconsumed, and the completion notification still fires", async () => {
 		const { pi, manager, record, run, tool } = setupRunningAgent()
 
-		const execPromise = tool.execute("call-w1", { agent_id: record.id, wait: true }, undefined, undefined, undefined)
+		const execPromise = tool.execute(
+			"call-w1",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			createToolContext({ mode: "tui" }),
+		)
 		let settled = false
 		void execPromise.then(() => {
 			settled = true
@@ -1509,6 +1579,33 @@ describe("get_subagent_result wait contract", () => {
 		)
 	})
 
+	it("returns text when the session is invalidated mid-wait (surface captured at entry)", async () => {
+		const { record, tool } = setupRunningAgent()
+		const live = createLiveContext({ mode: "tui" })
+
+		const execPromise = tool.execute(
+			"call-stale-midwait",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			live.ctx as unknown as ExtensionToolContext,
+		)
+		// Session replaced/forked while the join pends: every later ctx read
+		// now throws (Pi's assertActive). The tool captured ctx.mode before
+		// the wait, so the timed-out join must resolve with guidance text, not
+		// a stale-ctx tool error.
+		live.invalidate()
+		await vi.advanceTimersByTimeAsync(61_000)
+		const result = await execPromise
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("60s (cap)")
+		expect(text).toContain("wait: true again to re-join")
+		// The TUI variant was selected at entry — the response still carries the
+		// interactive notification promise rather than the detached join text.
+		expect(text).toContain("you will be notified when it completes")
+	})
+
 	it("wait: true returns promptly when the tool's abort signal fires mid-wait", async () => {
 		const { record, tool } = setupRunningAgent()
 		const controller = new AbortController()
@@ -1518,7 +1615,7 @@ describe("get_subagent_result wait contract", () => {
 			{ agent_id: record.id, wait: true },
 			controller.signal,
 			undefined,
-			undefined,
+			createToolContext({ mode: "tui" }),
 		)
 		// The wait registers its abort listener synchronously, so aborting
 		// immediately interrupts the wait without touching the 60s timer.
@@ -1534,7 +1631,13 @@ describe("get_subagent_result wait contract", () => {
 	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
 		const { record, run, tool } = setupRunningAgent()
 
-		const execPromise = tool.execute("call-w3", { agent_id: record.id, wait: true }, undefined, undefined, undefined)
+		const execPromise = tool.execute(
+			"call-w3",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			createToolContext({ mode: "tui" }),
+		)
 		// Mirror the manager's completion ordering: status flips before the
 		// run promise settles.
 		record.status = "completed"
@@ -1551,7 +1654,13 @@ describe("get_subagent_result wait contract", () => {
 	it("still-running report points at the completion notification instead of wait/poll", async () => {
 		const { record, tool } = setupRunningAgent()
 
-		const result = await tool.execute("call-w4", { agent_id: record.id }, undefined, undefined, undefined)
+		const result = await tool.execute(
+			"call-w4",
+			{ agent_id: record.id },
+			undefined,
+			undefined,
+			createToolContext({ mode: "tui" }),
+		)
 		const text = result.content[0]?.text ?? ""
 		expect(text).toContain("still running")
 		expect(text).toContain("notified")
@@ -1576,7 +1685,7 @@ describe("get_subagent_result wait contract", () => {
 				{ agent_id: record.id, wait },
 				undefined,
 				undefined,
-				undefined,
+				createToolContext({ mode: "tui" }),
 			)
 			const text = result.content[0]?.text ?? ""
 			expect(text).toContain("queued")
@@ -1584,6 +1693,62 @@ describe("get_subagent_result wait contract", () => {
 			expect(text).not.toBe("No output.")
 			expect(record.resultConsumed).not.toBe(true)
 		}
+	})
+
+	it("non-TUI surfaces require joining running agents instead of promising notifications", async () => {
+		const { record, tool } = setupRunningAgent()
+
+		const result = await tool.execute(
+			"call-rpc-running",
+			{ agent_id: record.id },
+			undefined,
+			undefined,
+			createToolContext({ mode: "rpc" }),
+		)
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("Join it with get_subagent_result wait: true")
+		expect(text).not.toContain("end your turn")
+	})
+
+	it("non-TUI timed-out waits tell the caller to keep waiting, not to end the turn", async () => {
+		const { record, tool } = setupRunningAgent()
+
+		const execPromise = tool.execute(
+			"call-rpc-timeout",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			createToolContext({ mode: "rpc" }),
+		)
+		await vi.advanceTimersByTimeAsync(61_000)
+		const result = await execPromise
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("wait: true again to keep waiting")
+		expect(text).not.toContain("end your turn")
+	})
+
+	it("non-TUI queued bodies require joining before the turn ends", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = latestManagerInstance()
+		const record = makeRunningRecord({ status: "queued" })
+		manager._records.set(record.id as string, record)
+		const tool = getRegisteredTool(pi, "get_subagent_result")
+
+		const result = await tool.execute(
+			"call-rpc-queued",
+			{ agent_id: record.id },
+			undefined,
+			undefined,
+			createToolContext({ mode: "rpc" }),
+		)
+
+		const text = result.content[0]?.text ?? ""
+		expect(text).toContain("queued")
+		expect(text).toContain("Join it with get_subagent_result wait: true")
+		expect(text).not.toContain("end your turn")
 	})
 })
 
@@ -1602,7 +1767,7 @@ describe("Agent tool background spawn result contract", () => {
 		const registry = makeMockModelRegistry([
 			{ id: "kimi-k2.7", name: "Kimi K2.7", provider: "kimchi-dev", input: ["text"] },
 		])
-		const ctx = makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" })
+		const ctx = { ...(makeMockCtx(registry, { id: "kimi-k2.7", provider: "kimchi-dev" }) as object), mode: "tui" }
 		const tool = getRegisteredAgentTool(pi)
 
 		const result = await tool.execute(

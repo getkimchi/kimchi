@@ -1,3 +1,4 @@
+import { isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
@@ -37,6 +38,11 @@ export interface SnapshotContent {
 		title?: string
 		/** The author's provider login, at most 255 characters; left out when unknown. */
 		author?: string
+		/**
+		 * Jira keys the PR is for, at most 20: the issue chosen with `/work issue` for the work behind its requests, then
+		 * the keys its head branch names. Left out when there are none.
+		 */
+		issueKeys?: PullRequestIssueKey[]
 	}[]
 	requests: {
 		requestId: string
@@ -60,6 +66,31 @@ export interface SnapshotContent {
 }
 
 type SnapshotRequest = SnapshotContent["requests"][number]
+
+/** A Jira key a PR is for and how the client knows it. */
+export interface PullRequestIssueKey {
+	key: string
+	source: "work" | "branch"
+}
+
+/** Whether a PR's issue keys are what buildSnapshots sends: valid, distinct and within the bound. */
+function validIssueKeys(keys: unknown): boolean {
+	if (!Array.isArray(keys) || !keys.length || keys.length > MAX_PULL_REQUEST_ISSUE_KEYS) return false
+	const seen = new Set<string>()
+	return keys.every((entry) => {
+		if (!object(entry) || !onlyKeys(entry, ["key", "source"])) return false
+		const id = `${entry.source}:${entry.key}`
+		if (
+			typeof entry.key !== "string" ||
+			!isIssueKey(entry.key) ||
+			(entry.source !== "work" && entry.source !== "branch") ||
+			seen.has(id)
+		)
+			return false
+		seen.add(id)
+		return true
+	})
+}
 
 export interface RepositorySnapshot {
 	account: WorkAccount
@@ -188,7 +219,7 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 		fail()
 	const pulls = new Set<string>()
 	for (const pr of pullRequests) {
-		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt", "closedAt", "title", "author"])) fail()
+		if (!onlyKeys(pr, ["id", "number", "url", "state", "mergedAt", "closedAt", "title", "author", "issueKeys"])) fail()
 		if (
 			!providerId(pr.id) ||
 			pulls.has(pr.id) ||
@@ -203,7 +234,8 @@ export function validateSnapshot(snapshot: WireSnapshot): void {
 			(pr.closedAt !== undefined && (pr.state !== "closed" || !validTime(pr.closedAt))) ||
 			// Only what buildSnapshots sends unchanged: non-empty text within its bound.
 			(pr.title !== undefined && pullRequestTitle(pr.title) !== pr.title) ||
-			(pr.author !== undefined && pullRequestAuthor(pr.author) !== pr.author)
+			(pr.author !== undefined && pullRequestAuthor(pr.author) !== pr.author) ||
+			(pr.issueKeys !== undefined && !validIssueKeys(pr.issueKeys))
 		)
 			fail()
 		if (plainURL(pr.url)?.host !== repo.host) fail()
@@ -455,6 +487,8 @@ export function buildSnapshots(
 	limits = new Map<string, SnapshotLimits>(),
 ): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
 	const groups = new Map<string, RepositorySnapshot>()
+	// The Jira keys of each group's PRs, by group and PR ID: the works' chosen issues and the head branches' keys.
+	const issueKeys = new Map<string, { work: Set<string>; branch: Set<string> }>()
 	let incomplete = false
 	let skippedRequests = 0
 	const original = new Map<string, WorkRecord[]>()
@@ -717,6 +751,12 @@ export function buildSnapshots(
 				}
 				if (!existing) group.content.pullRequests.push(metadata)
 				pullRequestIds.push(pr.id)
+				const keys = issueKeys.get(`${key}\n${pr.id}`) ?? { work: new Set<string>(), branch: new Set<string>() }
+				for (const branchKey of pr.branchIssueKeys ?? []) keys.branch.add(branchKey)
+				for (const row of original.get(request.requestId) ?? [])
+					if (object(row.issue) && typeof row.issue.key === "string" && isIssueKey(row.issue.key))
+						keys.work.add(row.issue.key)
+				issueKeys.set(`${key}\n${pr.id}`, keys)
 			}
 
 			let kind: SnapshotContent["requests"][number]["allocation"]["kind"] =
@@ -784,6 +824,14 @@ export function buildSnapshots(
 				return keep
 			})
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
+			for (const pr of group.content.pullRequests) {
+				const keys = issueKeys.get(`${key}\n${pr.id}`)
+				const chosen: PullRequestIssueKey[] = [
+					...[...(keys?.work ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
+					...[...(keys?.branch ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
+				].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+				if (chosen.length) pr.issueKeys = chosen
+			}
 			group.content.coverage.observedRequests = retained.length
 			group.content.coverage.unpricedRequests = retained.filter(isUnpriced).length
 			if (!retained.length) group.content.coverage.lastCostRefreshAt = undefined

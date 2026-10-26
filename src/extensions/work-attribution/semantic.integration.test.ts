@@ -32,6 +32,7 @@ import {
 	setWorkId,
 	WORK_CHANGED_EVENT,
 } from "../work-attribution.js"
+import { changeWorkIssue } from "./issues.js"
 import * as supervisor from "./reconcile-supervisor.js"
 import type * as WorkAccounts from "./scope.js"
 import { captureWorkAccount, captureWorkScope, readWorkScope } from "./scope.js"
@@ -220,6 +221,41 @@ it("starts the turn before matching decides and writes its held request with the
 	expect(rows.every((row) => row.workId === planned)).toBe(true)
 	expect(rows[0].segment).toMatchObject({ attribution: "inferred", reason: "model-continue" })
 })
+
+it("writes a held request with the Jira issue of the work matching decides", async () => {
+	await rememberWorkIntent(cwd, planned, first)
+	const agentDir = join(root, "agent")
+	await changeWorkIssue(agentDir, planned, "planner", "ABC-123")
+	const ctx = createContext({ cwd, model, modelRegistry, sessionManager: { getSessionId: () => "issue" } })
+	await changeWorkIssue(agentDir, getWorkId(ctx), "issue", "ABC-1")
+	const api = createExtensionApi()
+	createWorkAttributionExtension()(api.api)
+	let finish!: (value: Awaited<ReturnType<typeof classifyWorkIntent>>) => void
+	vi.mocked(classifyWorkIntent).mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+	await api.getHandler<InputEvent>("input")(
+		{ type: "input", source: "interactive", text: "Build the comma-separated download with quoted cells." },
+		ctx,
+	)
+	await vi.waitFor(() => expect(classifyWorkIntent).toHaveBeenCalledOnce())
+	const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+	await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+
+	finish({ decision: "continue", workId: planned, model: "selected/chat" })
+
+	// The decision writes several synced records before the held row; a busy disk can take seconds.
+	await vi.waitFor(
+		() =>
+			expect(readWorkRecords(agentDir)).toContainEqual(
+				expect.objectContaining({
+					type: "request",
+					requestId: request.headers["X-Request-Id"],
+					workId: planned,
+					issue: { key: "ABC-123", revision: 1 },
+				}),
+			),
+		{ timeout: 10_000 },
+	)
+}, 15_000)
 
 it("runs a response's tools only after the pending decision, for the decided work", async () => {
 	await rememberWorkIntent(cwd, planned, first)

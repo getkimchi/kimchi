@@ -179,6 +179,46 @@ describe("allowlisted repository snapshots", () => {
 			expect(JSON.stringify(content)).not.toContain(privateValue)
 		expect(() => validateSnapshot(wire())).not.toThrow()
 	})
+	it("sends the Jira issue chosen for a work, then the keys of its PR's head branch, with the PR", () => {
+		const pr = { ...pull(), branchIssueKeys: ["ABC-123", "DEF-7"] }
+		const content = build(records([pr], { issue: { key: "ABC-123", revision: 1 } })).snapshots[0].content
+		expect(content.pullRequests[0].issueKeys).toEqual([
+			{ key: "ABC-123", source: "work" },
+			{ key: "ABC-123", source: "branch" },
+			{ key: "DEF-7", source: "branch" },
+		])
+		expect(() => validateSnapshot({ ...wire(), pullRequests: content.pullRequests })).not.toThrow()
+		expect(build().snapshots[0].content.pullRequests[0]).not.toHaveProperty("issueKeys")
+	})
+	it("sends at most 20 Jira keys for a PR, the work's issue first", () => {
+		const branchIssueKeys = Array.from({ length: 20 }, (_, index) => `ABC-${index + 1}`)
+		const content = build(records([{ ...pull(), branchIssueKeys }], { issue: { key: "WORK-9", revision: 2 } }))
+			.snapshots[0].content
+		expect(content.pullRequests[0].issueKeys).toHaveLength(20)
+		expect(content.pullRequests[0].issueKeys?.[0]).toEqual({ key: "WORK-9", source: "work" })
+	})
+	it.each([
+		["a source the server does not take", [{ key: "ABC-1", source: "title" }]],
+		["a token that is not a Jira key", [{ key: "abc-1", source: "branch" }]],
+		[
+			"a key sent twice from the same source",
+			[
+				{ key: "ABC-1", source: "work" },
+				{ key: "ABC-1", source: "work" },
+			],
+		],
+		["a field the server does not declare", [{ key: "ABC-1", source: "work", branch: "ABC-1-fix" }]],
+		["an empty list", []],
+		[
+			"more keys than a PR carries",
+			Array.from({ length: 21 }, (_, index) => ({ key: `ABC-${index + 1}`, source: "branch" })),
+		],
+	])("refuses a PR's issue keys with %s", (_name, issueKeys) => {
+		const snapshot = wire()
+		expect(() =>
+			validateSnapshot({ ...snapshot, pullRequests: [{ ...snapshot.pullRequests[0], issueKeys }] } as WireSnapshot),
+		).toThrow()
+	})
 	it("keeps missing prices in the complete inventory", () => {
 		const content = build(records(), false).snapshots[0].content
 		expect(content.requests[0].billingRecordIds).toEqual([])

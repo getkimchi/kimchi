@@ -67,6 +67,11 @@ export interface SystemPromptBuildOptions {
 	 *  (Consent, Harness Notes, Documents, the orient-the-user ritual) are replaced by
 	 *  a short autonomous-session note. Default: true. */
 	hasUserLoop?: boolean
+	/** Whether background-subagent completion notifications reach the user
+	 *  after the turn ends (TUI only; see session-user-loop.ts). When
+	 *  false, orchestrator delegation guidance requires joining backgrounded
+	 *  agents before turn end. Default: true. */
+	backgroundNotificationsReachUser?: boolean
 }
 
 export const SET_PHASE = "set_phase"
@@ -91,6 +96,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		roles,
 		customConfigs: options.customConfigs,
 		hasUserLoop,
+		backgroundNotificationsReachUser: options.backgroundNotificationsReachUser ?? true,
 	})
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
@@ -186,6 +192,7 @@ function resolveModeInstructions(args: {
 	roles?: ModelRoles
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 	hasUserLoop: boolean
+	backgroundNotificationsReachUser: boolean
 }): string {
 	if (args.mode === "orchestrator") {
 		return resolveOrchestrationInstructions({
@@ -193,6 +200,7 @@ function resolveModeInstructions(args: {
 			registry: args.registry,
 			roles: args.roles,
 			customConfigs: args.customConfigs,
+			backgroundNotificationsReachUser: args.backgroundNotificationsReachUser,
 		}).instructionsSection
 	}
 	if (args.mode === "subagent") {

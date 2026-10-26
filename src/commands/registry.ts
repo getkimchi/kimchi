@@ -23,7 +23,11 @@ import { runVersion } from "./version.js"
 
 export const COMMANDS: CommandDefinition[] = [
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
-	{ name: "login", summary: "Log in via browser and update your API key", run: runLogin },
+	{
+		name: "login",
+		summary: "Log in via browser — or to a self-hosted console URL — and update your API key",
+		run: runLogin,
+	},
 	{ name: "setup-tools", summary: "Configure coding tools in one pass", run: runSetupTools },
 	{ name: "claude", summary: "Configure Claude Code to use Kimchi (and launch it)", run: runClaude },
 	{ name: "opencode", summary: "Configure OpenCode to use Kimchi (and launch it)", run: runOpenCode },
