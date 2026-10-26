@@ -557,6 +557,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const readRecordsSince = db.query<StoredRecord, [number]>(
 		`SELECT ${recordColumns} FROM work_records WHERE imported_at >= ? ORDER BY rowid`,
 	)
+	const readRecordsSession = db.query<StoredRecord, [string]>(
+		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
+	)
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
@@ -668,7 +671,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 					? readRecordsWork.iterate(opts.workId)
 					: opts.modifiedSince !== undefined
 						? readRecordsSince.iterate(opts.modifiedSince)
-						: readRecordsAll.iterate()
+						: opts.sessionId !== undefined
+							? readRecordsSession.iterate(opts.sessionId)
+							: readRecordsAll.iterate()
 			const rows: StoredRecord[] = []
 			try {
 				for (const row of source) {
@@ -680,6 +685,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
+				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
 				else readRecordsAll.get()
 				throw error
 			}
