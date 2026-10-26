@@ -382,16 +382,12 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
-	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
-		"../../../../src/extensions/pr-cost-reporting/queue.js"
-	)
+	const { setReportingEnabled } = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
 	const key = accountKey(account)
 	const check = () => {}
 	const posts: { url: string; body: string }[] = []
 	let mode = "success"
 	let redirected = false
-	let legacyInterleaved = false
-	let racedLegacy = false
 	let abandonedSignal: AbortSignal | null | undefined
 	let verifications = 0
 	globalThis.fetch = async (input, init) => {
@@ -409,8 +405,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		const body = String(init?.body)
 		posts.push({ url, body })
 		const parsed = JSON.parse(body)
-		if (url.endsWith("pr-cost-snapshots"))
-			return Response.json({ status: "accepted", revision: parsed.revision, receivedAt: new Date().toISOString() })
 		if (!url.endsWith("pr-cost-events:batchIngest")) throw new Error("Unexpected reporting route")
 		if (mode === "lease-loss") {
 			abandonedSignal = init?.signal
@@ -418,7 +412,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 				abandonedSignal?.addEventListener("abort", () => reject(new Error("aborted held upload")), { once: true })
 			})
 		}
-		if (mode === "interleave" && legacyInterleaved) racedLegacy = true
 		if (mode === "lost") throw new Error("ACK lost")
 		if (mode === "invalid") return Response.json({ batchId: "wrong", receipts: [] })
 		if (mode === "off") await setReportingEnabled(agent, false)
@@ -434,29 +427,9 @@ async function nativeDelivery(agent: string): Promise<void> {
 		})
 	}
 	await setReportingEnabled(agent, true)
-	await queueSnapshots(agent, [
-		{
-			account,
-			content: {
-				repository: { provider: "github", host: "github.com", id: "999" },
-				pullRequests: [],
-				requests: [
-					{
-						requestId: request.requestId,
-						startedAt: request.startedAt,
-						billingRecordIds: [],
-						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-					},
-				],
-				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
-			},
-		},
-	])
-	const originalLegacy = JSON.stringify(Object.values((await readReportingState(agent)).entries)[0].pending)
 	await reconcileReporting(agent, agent, new AbortController().signal, check)
 	const initial = posts.filter((post) => post.url.endsWith("pr-cost-events:batchIngest"))
 	const initialEvents = initial.flatMap((post) => JSON.parse(post.body).batch.events)
-	const after = await readReportingState(agent)
 	const initialPending = backendFor(agent).pendingOutboxEvents(key, 1000).length
 	const capturedByWorker = initialEvents.filter((event: { usage?: object }) => event.usage)
 	const run = () => deliverEvents(agent, agent, new AbortController().signal, check)
@@ -537,60 +510,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 	process.env.KIMCHI_API_KEY = "fake-reporting"
 	mode = "success"
 	await run()
-	const { readFileSync, writeFileSync, existsSync } = await import("node:fs")
-	const { lockSync } = await import("proper-lockfile")
-	const queueDirectory = join(agent, "pr-cost-reporting")
-	const statePath = join(queueDirectory, "state.json")
-	const drainedState = readFileSync(statePath)
-	await queueSnapshots(agent, [
-		{
-			account,
-			content: {
-				repository: { provider: "github", host: "github.com", id: "999" },
-				pullRequests: [],
-				requests: [
-					{
-						requestId: crypto.randomUUID(),
-						startedAt: new Date().toISOString(),
-						billingRecordIds: [],
-						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-					},
-				],
-				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
-			},
-		},
-	])
-	const oldWriterState = readFileSync(statePath)
-	writeFileSync(statePath, drainedState)
-	seed()
-	const backend = backendFor(agent)
-	const readPage = backend.readNotePage.bind(backend)
-	let scans = 0
-	let armed = false
-	backend.readNotePage = (...args) => {
-		const page = readPage(...args)
-		if (args[0] === "legacy-pr-cost-snapshots" && !page.length && ++scans === 2) armed = true
-		return page
-	}
-	mode = "interleave"
-	try {
-		await deliverEvents(agent, agent, new AbortController().signal, () => {
-			if (!armed || legacyInterleaved || existsSync(`${queueDirectory}.lock`)) return
-			const release = lockSync(queueDirectory)
-			try {
-				writeFileSync(statePath, oldWriterState)
-			} finally {
-				release()
-			}
-			legacyInterleaved = true
-		})
-	} finally {
-		backend.readNotePage = readPage
-	}
-	mode = "success"
-	const { deliverSnapshots } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
-	await deliverSnapshots(agent, agent, new AbortController().signal, check)
-	await run()
 	seed()
 	const abandonedBody = body()
 	mode = "lease-loss"
@@ -607,9 +526,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		capturedByWorker,
 		initialBody: initial[0]?.body,
 		initialPending,
-		legacyExact: posts[0]?.body === originalLegacy,
-		legacyFirst: posts[0]?.url.endsWith("pr-cost-snapshots"),
-		noNewLegacy: Object.values(after.entries).every((entry) => entry.revision === "1" && !entry.pending),
 		reopened,
 		backoff,
 		idle,
@@ -618,7 +534,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		optOutRetained,
 		accountFenced,
 		keyFenced,
-		legacyBoundary: legacyInterleaved && !racedLegacy,
 		failedPassAborted,
 		abandonedRetained,
 		redirectsRejected: !redirected,
@@ -631,144 +546,6 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
 
-async function legacyFreezeScenario(agent: string): Promise<void> {
-	const { readFileSync, writeFileSync } = await import("node:fs")
-	const {
-		acknowledgeFrozenSnapshot,
-		freezeSnapshots,
-		pendingFrozenSnapshots,
-		queueSnapshots,
-		readReportingState,
-		reportingStatePath,
-		setReportingEnabled,
-	} = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
-	const check = () => {}
-	const path = reportingStatePath(agent)
-	const originalState = readFileSync(path)
-	const initial = Object.values((await readReportingState(agent)).entries)[0]
-	if (!initial.pending) throw new Error("Missing original legacy fixture")
-	const originalBody = JSON.stringify(initial.pending)
-	const all = () => pendingFrozenSnapshots(agent, check, Date.now() + 30_000)
-	await freezeSnapshots(agent, check)
-	const [first] = await all()
-	if (!first || first.body !== originalBody) throw new Error("Legacy bytes changed during freeze")
-	const backend = backendFor(agent)
-	const remove = backend.deleteNote.bind(backend)
-	let removed = false
-	backend.deleteNote = (workId, name) => {
-		remove(workId, name)
-		removed = true
-		throw new Error("after actual pending deletion")
-	}
-	let rejected = false
-	try {
-		await acknowledgeFrozenSnapshot(
-			agent,
-			first,
-			{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
-			check,
-		)
-	} catch (error) {
-		rejected = error instanceof Error && error.message === "after actual pending deletion"
-	} finally {
-		backend.deleteNote = remove
-	}
-	const ackRollback =
-		removed &&
-		rejected &&
-		(await all())[0]?.body === originalBody &&
-		backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 64).length === 0
-	if (!ackRollback) throw new Error("Frozen ACK did not roll back")
-	await acknowledgeFrozenSnapshot(
-		agent,
-		first,
-		{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
-		check,
-	)
-	const receipt = backend.getNote("legacy-pr-cost-snapshot-receipts", first.id)
-	if (receipt === undefined) throw new Error("Missing completed legacy receipt")
-	const { ack: _ack, ...invalidReceipt } = JSON.parse(receipt)
-	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, JSON.stringify(invalidReceipt))
-	writeFileSync(path, originalState)
-	let receiptCorruptionRejected = false
-	try {
-		await freezeSnapshots(agent, check)
-	} catch {
-		receiptCorruptionRejected = readFileSync(path).equals(originalState)
-	}
-	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, receipt)
-	await freezeSnapshots(agent, check)
-	const cleanupReplay =
-		(await all()).length === 0 && !Object.values((await readReportingState(agent)).entries)[0].pending
-	for (let index = 0; index < 20; index++) {
-		await queueSnapshots(agent, [
-			{
-				account: initial.account,
-				content: {
-					repository: initial.pending.repository,
-					pullRequests: initial.pending.pullRequests,
-					coverage: initial.pending.coverage,
-					requests: initial.pending.requests.map((request) => ({
-						...request,
-						allocation: { ...request.allocation, kind: index % 2 ? "unlinked" : "unknown" },
-					})),
-				},
-			},
-		])
-		await freezeSnapshots(agent, check)
-	}
-	const [partial] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
-	closeBackends()
-	const [next] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
-	const partialScanProgress = !!partial && !!next && partial.id !== next.id
-	const pending = await all()
-	if (pending.length !== 20) throw new Error(`Expected twenty frozen versions, got ${pending.length}`)
-	const latest = pending.reduce((a, b) => (BigInt(a.entry.revision) > BigInt(b.entry.revision) ? a : b))
-	for (const frozen of pending) {
-		if (frozen.id === latest.id) continue
-		await acknowledgeFrozenSnapshot(
-			agent,
-			frozen,
-			{
-				status: "accepted",
-				revision: frozen.entry.revision,
-				receivedAt: new Date().toISOString(),
-			},
-			check,
-		)
-	}
-	const reopened = backendFor(agent)
-	const page = reopened.readNotePage.bind(reopened)
-	const namespaces: string[] = []
-	reopened.readNotePage = (workId, after, limit) => {
-		namespaces.push(workId)
-		return page(workId, after, limit)
-	}
-	await setReportingEnabled(agent, true)
-	const resumeScans = namespaces.length
-	const remaining = await all()
-	const receiptScan = namespaces.some((name) => name === "legacy-pr-cost-snapshot-receipts")
-	reopened.readNotePage = page
-	const receipts = page("legacy-pr-cost-snapshot-receipts", "", 64)
-	const archived = receipts.map((row) => JSON.parse(row.body))
-	out({
-		initialBytes: first.body === originalBody,
-		ackRollback,
-		receiptCorruptionRejected,
-		cleanupReplay,
-		partialScanProgress,
-		retainedReceipts: receipts.length,
-		archivedOriginalBytes: archived.some((row) => row.body === originalBody),
-		pendingAfterArchive: remaining.length,
-		latestRetained: remaining[0]?.body === latest.body,
-		receiptScan,
-		resumeScans,
-		reopened: true,
-	})
-	closeBackends()
-}
-
 async function producerScenario(agent: string): Promise<void> {
 	const { readReportingState, reportingProducer } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
@@ -778,9 +555,11 @@ async function producerScenario(agent: string): Promise<void> {
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 	const state = await readReportingState(agent)
-	const entry = Object.values(state.entries)[0]
-	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")
-	const account = accountKey(entry.account)
+	const account = accountKey({
+		apiUrl: "https://api.example",
+		organizationId: "11111111-1111-4111-8111-111111111111",
+		userId: "22222222-2222-4222-8222-222222222222",
+	})
 	const current = () => {}
 	observeEvents(
 		agent,
@@ -806,7 +585,7 @@ async function producerScenario(agent: string): Promise<void> {
 		producerId,
 		machineKnown: !!(await machineFingerprint()),
 		note: JSON.parse(backendFor(agent).getNote("agent", "reporting-producer") ?? "null"),
-		legacyRetained: JSON.stringify(await readReportingState(agent)) === JSON.stringify(state),
+		stateRetained: JSON.stringify(await readReportingState(agent)) === JSON.stringify(state),
 		batchRetained: pending?.id === frozen.id && sameBytes(pending.body, frozen.body),
 		frozenProducer: JSON.parse(Buffer.from(frozen.body).toString("utf8")).batch.events[0].deviceId,
 	})
@@ -1955,7 +1734,6 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"native-common-events": (agent) => nativeUsage(agent, true, true),
 	"native-common-delivery": (agent) => nativeUsage(agent, true, true, true),
 	producer: (agent) => producerScenario(agent),
-	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),

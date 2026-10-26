@@ -11,7 +11,7 @@ import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } f
 import { CI_VARIABLES } from "./automation.js"
 import reportingExtension from "./index.js"
 import * as queue from "./queue.js"
-import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
+import { readReportingState, setReportingEnabled } from "./queue.js"
 import { reconcileReporting } from "./worker.js"
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
@@ -222,7 +222,6 @@ describe("optional PR reporting", () => {
 				"PR reporting   Enabled (SaaS default)",
 				"This session   No uploads; local attribution continues",
 				"               Reason: CI environment (GITHUB_ACTIONS)",
-				"Repositories   0 queued · 0 acknowledged",
 			].join("\n"),
 			"info",
 		)
@@ -243,49 +242,5 @@ describe("optional PR reporting", () => {
 		expect(await values("OF")).toEqual([["off", "off"]])
 		expect(await values(" st")).toEqual([["status", "status"]])
 		expect(await values("x")).toEqual([])
-	})
-	it.each([false, true])("warns once that a repository is partially reported (Studio=%s)", async (acp) => {
-		mode.acp = acp
-		try {
-			await setReportingEnabled(directory, true)
-			await queueSnapshots(directory, [
-				{
-					account: {
-						apiUrl: "https://api.example",
-						organizationId: "11111111-1111-4111-8111-111111111111",
-						userId: "22222222-2222-4222-8222-222222222222",
-					},
-					content: {
-						repository: { provider: "github", host: "github.com", id: "42", name: "owner/repo" },
-						pullRequests: [],
-						requests: [
-							{
-								requestId: "33333333-3333-4333-8333-333333333333",
-								billingRecordIds: [],
-								startedAt: "2026-10-04T12:00:00Z",
-								allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-							},
-						],
-						coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: false, trimmedRequests: 3 },
-					},
-				},
-			])
-			const text = "PR costs for owner/repo are partially reported: limit reached. See /pr-reporting status."
-			const ctx = createContext()
-			for (let launch = 0; launch < 2; launch++) {
-				const api = trackedApi(() => ctx)
-				reportingExtension(api.api)
-				await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
-				// Studio drops notifications for a session it has not registered yet.
-				if (acp && launch === 0) expect(ctx.ui.notify).not.toHaveBeenCalled()
-				await api.getHandler("agent_end")({}, ctx)
-				await api.getHandler("session_shutdown")({}, ctx)
-			}
-			expect(vi.mocked(ctx.ui.notify).mock.calls.filter(([, level]) => level === "warning")).toEqual([
-				[text, "warning"],
-			])
-		} finally {
-			mode.acp = false
-		}
 	})
 })

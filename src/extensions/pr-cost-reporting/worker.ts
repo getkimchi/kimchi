@@ -7,8 +7,8 @@ import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
-import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
-import { importWorkRecordsAsync, object, type WorkRecord, workJournalFingerprint } from "../work-attribution/summary.js"
+import { isWorkAccount, isWorkScope, platformApiUrl } from "../work-attribution/scope.js"
+import { importWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import {
@@ -22,24 +22,12 @@ import {
 import { backendFor, type OutboxBatch, readStoredRecordsAsync } from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
-	ACCOUNT_SCOPES,
-	acknowledgeFrozenSnapshot,
-	deferFrozenSnapshot,
-	freezeSnapshots,
-	frozenSnapshotPending,
-	inUploadWindow,
-	LIMIT_NAMES,
-	LIMIT_SCOPES,
-	limitFrozenSnapshot,
-	pendingFrozenSnapshots,
 	readReportingState,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
 	reportingStateVersion,
-	type ServerLimit,
-	type SnapshotAck,
-	withDrainedLegacyAccount,
+	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
@@ -51,12 +39,12 @@ const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
 /** Provider repository IDs are stable, so a found identity, or the lack of a supported remote, is kept a day. */
 const REPOSITORY_CACHE_MS = 24 * HOUR_MS
-/** A limit rejection waits about six hours; the server frees space on its own schedule. */
+/** The longest wait between attempts: about six hours. */
 export const LIMIT_RETRY_MS = 6 * HOUR_MS
 /** ±20%, so that clients rejected together do not come back together. */
 const jitter = (ms: number) => Math.round(ms * (0.8 + 0.4 * Math.random()))
 /**
- * Transient failures (timeouts, 408, 5xx and 429 without a limit) honor a bounded Retry-After, or back
+ * Transient failures (timeouts, 408, 429 and 5xx) honor a bounded Retry-After, or back
  * off from 30 seconds to 30 minutes. Other 4xx responses, such as an endpoint not deployed yet, cannot
  * be fixed by retrying and wait one to six hours.
  */
@@ -67,33 +55,6 @@ export function retryDelay(status: number | undefined, attempts: number, retryAf
 	return jitter(Math.min(30 * MINUTE_MS, 30_000 * 2 ** attempts))
 }
 
-/** Reads the PR_COST_LIMIT ErrorInfo of a 429 body; anything else is not a limit. */
-export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undefined {
-	if (!object(body) || !Array.isArray(body.details)) return undefined
-	const info = body.details.find(
-		(detail) =>
-			object(detail) &&
-			detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
-			detail.reason === "PR_COST_LIMIT" &&
-			detail.domain === "ai-optimizer",
-	)
-	if (!object(info)) return undefined
-	const metadata = object(info.metadata) ? info.metadata : {}
-	const number = (value: unknown) =>
-		typeof value === "string" && /^\d{1,15}$/.test(value) ? { value: Number(value) } : undefined
-	const scope = LIMIT_SCOPES.find((value) => value === metadata.scope)
-	const limit = LIMIT_NAMES.find((value) => value === metadata.limit)
-	const current = number(metadata.current)
-	const maximum = number(metadata.maximum)
-	return {
-		...(scope ? { scope } : {}),
-		...(limit ? { limit } : {}),
-		...(current ? { current: current.value } : {}),
-		...(maximum ? { maximum: maximum.value } : {}),
-		at,
-	}
-}
-
 /** A failed lookup keeps its kind: a repository without a GitHub or GitLab identity is not missing evidence. */
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository; unsupported?: true }>()
 
@@ -102,7 +63,7 @@ function safeEndpoint(value: string): boolean {
 	return url?.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "")
 }
 
-/** Both transports share the same cancellation, opt-out polling and lease boundary. */
+/** Delivery shares one cancellation, opt-out polling and lease boundary per pass. */
 async function reportingDelivery(
 	agentDir: string,
 	signal: AbortSignal,
@@ -156,154 +117,6 @@ async function reportingDelivery(
 		poller = undefined
 		clearTimeout(timer)
 	}
-}
-
-/** Preserve the old route and each frozen body's exact bytes until its original account acknowledges it. */
-export function deliverSnapshots(
-	agentDir: string,
-	cwd: string,
-	signal: AbortSignal,
-	assertLease: () => void,
-	deadline = Date.now() + PASS_MS,
-): Promise<void> {
-	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
-		const state = await freezeSnapshots(agentDir, check)
-		if (!state.enabled) return
-		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
-		const configuredKey = loadConfig({ cwd }).apiKey
-		const configuredEndpoint = platformApiUrl(cwd)
-		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
-			await recordReportingError(
-				agentDir,
-				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
-			)
-		const now = Date.now()
-		// Withdrawals free space, so an account-wide limit only holds snapshots that add claims.
-		const paused = new Set(
-			Object.entries(state.paused ?? {})
-				.filter(([, pause]) => pause.retryAt > now)
-				.map(([account]) => account),
-		)
-
-		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
-		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
-		const due = frozen
-			.filter(
-				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
-			)
-			.sort((a, b) => {
-				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
-				if (priority) return priority
-				const position =
-					(positions.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (positions.get(b.key) ?? Number.MAX_SAFE_INTEGER)
-				if (position) return position
-				if (a.key !== b.key) return a.key < b.key ? -1 : 1
-				const revision = BigInt(a.entry.revision) - BigInt(b.entry.revision)
-				return revision < 0n ? -1 : revision > 0n ? 1 : a.entry.retryAt - b.entry.retryAt
-			})
-		let attempts = 0
-		for (const job of due) {
-			const entry = job.entry
-			const snapshot = entry.pending
-			if (!snapshot) continue
-			if (paused.has(accountKey(entry.account)) && (snapshot.requests.length || snapshot.pullRequests.length)) continue
-			if (combined.aborted || attempts >= 3) break
-			const key = loadConfig({ cwd }).apiKey
-			const apiUrl = platformApiUrl(cwd)
-			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
-			attempts++
-			let status: number | undefined
-			let retryAfterMs: number | null = null
-			let limit: ServerLimit | undefined
-			let errorMessage = "PR reporting request unavailable"
-			const assertOwnership = () => {
-				assertLease()
-				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
-					throw new Error("PR reporting credentials changed")
-			}
-			const assertCurrent = () => {
-				assertOwnership()
-				combined.throwIfAborted()
-			}
-
-			const fetchBounded: typeof fetch = async (input, init) => {
-				assertCurrent()
-				const current = await readReportingState(agentDir)
-				assertCurrent()
-				if (!current.enabled || current.entries[job.key]?.held || !frozenSnapshotPending(agentDir, job))
-					throw new Error("PR reporting snapshot changed")
-				const response = await fetch(input, { ...init, redirect: "error", signal: combined })
-				assertCurrent()
-				status = response.status
-				retryAfterMs = parseRetryAfterMs(response)
-				if (!response.ok)
-					errorMessage =
-						response.status === 403
-							? "PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
-							: `PR reporting returned HTTP ${response.status}`
-				// Verify, acknowledgement and error bodies are small; neither response text nor headers enter durable state.
-				const bounded = await boundedResponse(
-					response,
-					RESPONSE_BYTES,
-					combined,
-					"PR reporting response exceeds the size limit",
-				)
-				assertCurrent()
-				return bounded
-			}
-			try {
-				const verified = {
-					apiUrl,
-					...(await verifyApiKey(key, {
-						endpoint: apiUrl,
-						fetch: fetchBounded,
-						signal: combined,
-						retry: { maxRetries: 0 },
-					})),
-				}
-				assertCurrent()
-				if (!isWorkAccount(verified) || !sameWorkAccount(entry.account, verified)) {
-					errorMessage = "PR reporting is waiting for the original account"
-					throw new Error(errorMessage)
-				}
-
-				const response = await fetchBounded(
-					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
-					{
-						method: "POST",
-						headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", Accept: "application/json" },
-						body: job.body,
-					},
-				)
-				assertCurrent()
-				if (response.status === 429) limit = serverLimit(await response.json().catch(() => undefined))
-				if (!response.ok) throw new Error(errorMessage)
-				const ack: SnapshotAck = await response.json()
-				assertCurrent()
-				await acknowledgeFrozenSnapshot(agentDir, job, ack, assertCurrent)
-				trackPRCostMetric({ kind: "delivery", outcome: "success" })
-			} catch {
-				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
-				if (signal.aborted) return
-				try {
-					assertOwnership()
-				} catch {
-					return
-				}
-				if (limit) {
-					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
-				} else
-					await deferFrozenSnapshot(
-						agentDir,
-						job,
-						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-						errorMessage,
-						assertOwnership,
-					)
-			}
-		}
-	})
 }
 
 /** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */
@@ -378,9 +191,8 @@ export function deliverEvents(
 			const accountId = accountKey(account)
 			let batch: OutboxBatch | undefined
 			if (
-				!(await withDrainedLegacyAccount(
+				!(await withReportingConsent(
 					agentDir,
-					account,
 					(fence) => {
 						batch = pendingBatch(agentDir, accountId, fence)
 					},
@@ -398,15 +210,14 @@ export function deliverEvents(
 			try {
 				let dispatched: Promise<Response> | undefined
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							const current = pendingBatch(agentDir, accountId, fence)
 							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
 								throw new Error("PR cost event batch changed")
 							fence()
-							// Launch under the old-writer lock; await network and body reads after releasing it.
+							// Launch right after the consent check; await network and body reads outside it.
 							dispatched = fetch(
 								`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
 								{
@@ -435,9 +246,8 @@ export function deliverEvents(
 				assertCurrent()
 				let acknowledged = false
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							backend.tx(() => {
 								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
@@ -486,10 +296,9 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
-	const state = await freezeSnapshots(agentDir, () => {
-		assertLease()
-		signal.throwIfAborted()
-	})
+	const state = await readReportingState(agentDir)
+	assertLease()
+	signal.throwIfAborted()
 	if (!state.enabled) return
 	try {
 		await captureEvents(agentDir, signal, assertLease)
@@ -500,10 +309,9 @@ export async function reconcileReporting(
 				"PR reporting could not capture a complete inventory; previous reports were retained",
 			)
 	}
-	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
+	// Batches already queued go out even when this pass could not capture new evidence.
 	if (signal.aborted) return
 	try {
-		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 	} catch {
 		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
@@ -515,7 +323,7 @@ const CAPTURE_REFRESH_MS = HOUR_MS
 /** What the last capture that settled every repository identity read and left behind, and when it started. */
 let lastCapture: { inputs: string; at: number } | undefined
 
-/** Translate one imported authority prefix without creating any new legacy snapshot inventory. */
+/** Translate one imported authority prefix into events. */
 async function captureEvents(agentDir: string, signal: AbortSignal, assertLease: () => void): Promise<void> {
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])

@@ -51,7 +51,7 @@ function bunSqlite(): Sqlite {
 	return sqlite
 }
 
-/** The ledger lives beside the legacy state.json queue, inheriting its directory's lock discipline. */
+/** The ledger lives beside the reporting state.json, in the same private directory. */
 export function ledgerDbPath(agentDir: string): string {
 	return join(reportingDirectory(agentDir), "ledger.db")
 }

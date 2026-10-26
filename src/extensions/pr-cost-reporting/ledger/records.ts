@@ -125,7 +125,6 @@ export interface RecordBackend {
 	hasProjectionOutput(workId: string): boolean
 	hasNote(workId: string, name: string): boolean
 	getNote(workId: string, name: string): string | undefined
-	readNotePage(workId: string, after: string, limit: number): { name: string; body: string }[]
 	putNote(workId: string, name: string, body: string): void
 	deleteNote(workId: string, name: string): void
 	diagnostic(code: string): void
@@ -610,9 +609,6 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const putNote = db.query("INSERT OR REPLACE INTO bookkeeping (work_id, name, body, updated_at) VALUES (?, ?, ?, ?)")
 	const deleteNote = db.query("DELETE FROM bookkeeping WHERE work_id = ? AND name = ?")
-	const notePage = db.query<{ name: string; body: string }, [string, string, number]>(
-		"SELECT name, body FROM bookkeeping WHERE work_id = ? AND name > ? ORDER BY name LIMIT ?",
-	)
 	const getCursor = db.query<JournalCursor, [string]>(
 		"SELECT path, dev, ino, generation, offset, boundary_hash AS boundaryHash, updated_at AS updatedAt FROM journal_cursor WHERE path = ?",
 	)
@@ -740,7 +736,6 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),
 		hasNote: (workId, name) => hasNote.get(workId, name) != null,
 		getNote: (workId, name) => getNote.get(workId, name)?.body,
-		readNotePage: (workId, after, limit) => notePage.all(workId, after, limit),
 		putNote: (workId, name, body) => putNote.run(workId, name, body, Date.now()),
 		deleteNote: (workId, name) => {
 			deleteNote.run(workId, name)
