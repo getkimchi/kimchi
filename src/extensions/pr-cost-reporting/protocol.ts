@@ -576,7 +576,7 @@ function opaque(value: unknown): boolean {
 }
 const quality = (value: string) =>
 	["observed", "inferred", "confirmed", "tool_observed", "ambiguous", "unknown"].includes(value)
-const gitID = (value: string) =>
+export const gitID = (value: string) =>
 	typeof value === "string" &&
 	(value.length === 40 || value.length === 64) &&
 	Buffer.from(value, "hex").toString("hex") === value
