@@ -44,7 +44,7 @@ beforeEach(async () => {
 	directory = await mkdtemp(join(tmpdir(), "kimchi-reporting-http-"))
 	vi.mocked(eventBuilder.buildEvents).mockClear()
 	vi.mocked(outbox.observeEvents).mockClear()
-	vi.mocked(outbox.pendingBatch).mockClear()
+	vi.mocked(outbox.pendingBatch).mockReset()
 	config.key = "test-key"
 	config.endpoint = "https://api.example"
 	http.mockReset().mockImplementation(async () => Response.json({ organizationId: org, userId: user }))
@@ -68,6 +68,14 @@ function queueBatch(id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", accountId = acc
 	backendFor(directory).insertOutboxBatch(batch)
 	return batch
 }
+/** A queued batch that the mocked freeze hands to dispatch, so a pass uploads it. */
+function sendableBatch() {
+	const batch = queueBatch()
+	vi.mocked(outbox.pendingBatch).mockReturnValue(batch)
+	return batch
+}
+const retryNote = (accountId: string) =>
+	JSON.parse(backendFor(directory).getNote("pr-cost-delivery", accountId) ?? "{}")
 async function seedLinked(priced = true) {
 	const at = "2026-10-04T12:00:00.000Z"
 	const common = {
@@ -324,6 +332,52 @@ describe("account-fenced reporting delivery", () => {
 		await setReportingEnabled(directory, false)
 		await expect(running).rejects.toThrow()
 		expect(backendFor(directory).getOutboxBatch(accountKey(account))).toBeDefined()
+	})
+	it("explains a role that cannot upload and retries the batch slowly", async () => {
+		const batch = sendableBatch()
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: Response.json({ message: "permission denied" }, { status: 403 }),
+		)
+		const before = Date.now()
+		await deliver()
+		const role =
+			"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
+		expect((await readReportingState(directory)).error).toBe(role)
+		const retry = retryNote(batch.accountKey)
+		expect(retry).toMatchObject({ batchId: batch.id, attempts: 1, error: role })
+		expect(retry.retryAt - before).toBeGreaterThanOrEqual(0.8 * 60 * 60 * 1000)
+	})
+	it("stops reading a response after 64 KiB and keeps the batch for retry", async () => {
+		const batch = sendableBatch()
+		let read = 0
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(
+						new ReadableStream({
+							pull(controller) {
+								read += 16 * 1024
+								controller.enqueue(new Uint8Array(16 * 1024))
+								if (read >= 1024 * 1024) controller.close()
+							},
+						}),
+					),
+		)
+		await deliver()
+		expect(read).toBeLessThanOrEqual(128 * 1024)
+		expect(retryNote(batch.accountKey)).toMatchObject({ batchId: batch.id, attempts: 1 })
+	})
+	it("does not upload after the configured endpoint changes during the pass", async () => {
+		const batch = sendableBatch()
+		http.mockImplementation(async () => {
+			config.endpoint = "https://other.example"
+			return Response.json({ organizationId: org, userId: user })
+		})
+		await expect(deliver()).rejects.toThrow()
+		expect(http).toHaveBeenCalledOnce()
+		expect(backendFor(directory).getOutboxBatch(batch.accountKey)?.id).toBe(batch.id)
 	})
 	it("still delivers when the opt-out poller cannot start", async () => {
 		vi.spyOn(fs, "watchFile").mockImplementation(() => {

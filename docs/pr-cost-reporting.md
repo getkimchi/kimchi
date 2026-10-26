@@ -29,7 +29,7 @@ Only main sessions with work tracking run this extension. Child sessions contrib
 
 The existing reconciliation worker captures local history at startup, after agent turns and every 30 seconds while Kimchi runs. New observations become revisioned events in the same SQLite database as work tracking. There is no separate daemon or model call for delivery. A request can appear as unlinked or unknown, then acquire a PR or price through a later revision without adding the same charge again.
 
-Kimchi reports PR costs only through these events. Snapshots that an older version left pending in `state.json` stay on disk but are neither read nor sent. A change still queued when Kimchi exits remains durable for the next session.
+Kimchi reports PR costs only through these events. Snapshots that an older version left pending, in `state.json` or frozen in the SQLite database, stay on disk but are neither read nor sent. A change still queued when Kimchi exits remains durable for the next session.
 
 ## Event uploads
 

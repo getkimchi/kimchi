@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { existsSync } from "node:fs"
 import * as files from "node:fs/promises"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -95,6 +96,19 @@ describe("reporting state", () => {
 		await setReportingEnabled(directory, false)
 		expect(await withReportingConsent(directory, action, () => {})).toBe(false)
 		expect(action).toHaveBeenCalledOnce()
+	})
+
+	it("holds the state lock during an event step, so an opt-out saves before or after it", async () => {
+		await setReportingEnabled(directory, true)
+		let locked = false
+		await withReportingConsent(
+			directory,
+			() => {
+				locked = existsSync(`${join(directory, "pr-cost-reporting")}.lock`)
+			},
+			() => {},
+		)
+		expect(locked).toBe(true)
 	})
 
 	it("never runs an event step after its lease or credentials changed", async () => {
