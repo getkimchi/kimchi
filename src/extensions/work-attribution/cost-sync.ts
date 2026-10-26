@@ -50,10 +50,12 @@ interface BillingPoll {
 	failure?: { checkedAt: string; reason: string }
 }
 
-function parseBillingPolls(text: string): Record<string, BillingPoll> {
+/** A5: the note is the authority; a legacy billing-polls.json still answers for old installs. */
+function readBillingPolls(agentDir: string, path: string): Record<string, BillingPoll> {
+	const note = getNote(agentDir, "agent", "billing-polls")
 	const polls: Record<string, BillingPoll> = Object.create(null)
 	try {
-		const value: unknown = JSON.parse(text)
+		const value: unknown = JSON.parse(note ?? readFileSync(path, "utf8"))
 		if (object(value))
 			for (const [id, entry] of Object.entries(value)) {
 				if (
@@ -78,21 +80,6 @@ function parseBillingPolls(text: string): Record<string, BillingPoll> {
 			}
 	} catch {}
 	return polls
-}
-
-function readBillingPolls(path: string): Record<string, BillingPoll> {
-	try {
-		return parseBillingPolls(readFileSync(path, "utf8"))
-	} catch {
-		return Object.create(null)
-	}
-}
-
-/** A5: the note is the authority; a legacy billing-polls.json still answers for old installs. */
-function loadBillingPolls(agentDir: string, path: string): Record<string, BillingPoll> {
-	const note = getNote(agentDir, "agent", "billing-polls")
-	if (note !== undefined) return parseBillingPolls(note)
-	return readBillingPolls(path)
 }
 
 /** Scheduling state applies only to the journal observation it was written for. */
@@ -327,7 +314,7 @@ export async function reconcileWorkCosts(
 	assertLease()
 	let changed = false
 	const pollingPath = join(agentDir, "work-attribution", "billing-polls.json")
-	const polls = loadBillingPolls(agentDir, pollingPath)
+	const polls = readBillingPolls(agentDir, pollingPath)
 	const previousPolls = JSON.stringify(polls)
 	const deadline = Date.now() + PASS_MS
 	const controller = new AbortController()
