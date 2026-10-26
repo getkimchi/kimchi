@@ -48,7 +48,8 @@ export const USAGE_SCHEMAS = new Map([
 ])
 
 function instant(value: unknown): bigint | undefined {
-	if (typeof value !== "string" || !/^(?!0000)\d{4}-/.test(value)) return
+	if (typeof value !== "string" || value[4] !== "-" || value.startsWith("0000")) return
+	if (![...value.slice(0, 4)].every((character) => character >= "0" && character <= "9")) return
 	try {
 		return timeNanos(value)
 	} catch {
