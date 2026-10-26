@@ -109,6 +109,45 @@ describe("pdf.mjs read", () => {
 		expect(await runPdfCli(["read", "scan.pdf"], t.io)).toBe(2)
 		expect(t.err.join("\n")).toContain("error [extraction-failed]")
 	})
+
+	it("--strip-noise drops glyph blocks; default output keeps them", async () => {
+		const make = async () => {
+			const doc = await PDFDocument.create()
+			const font = await doc.embedFont(StandardFonts.Helvetica)
+			const page = doc.addPage([400, 300])
+			const lines = ["Statement January", "Q8vMKtRwEz", "mP4wKq2zVb", "Amount due 12,34 EUR"]
+			for (const [i, line] of lines.entries()) page.drawText(line, { x: 20, y: 260 - i * 16, size: 12, font })
+			return new Uint8Array(await doc.save())
+		}
+		const stripped = io()
+		stripped.files.set("doc.pdf", await make())
+		expect(await runPdfCli(["read", "doc.pdf", "--strip-noise"], stripped.io)).toBe(0)
+		expect(stripped.out.join("\n")).toContain("Amount due 12,34 EUR")
+		expect(stripped.out.join("\n")).not.toContain("Q8vMKtRwEz")
+		const plain = io()
+		plain.files.set("doc.pdf", await make())
+		expect(await runPdfCli(["read", "doc.pdf"], plain.io)).toBe(0)
+		expect(plain.out.join("\n")).toContain("Q8vMKtRwEz")
+	})
+
+	it("rejects unknown read flags with the standard shape", async () => {
+		const t = io()
+		t.files.set("doc.pdf", await makePdf(["hello world"]))
+		expect(await runPdfCli(["read", "doc.pdf", "--bogus"], t.io)).toBe(2)
+		expect(t.err.join("\n")).toContain("error [corrupt]: unknown flag --bogus")
+	})
+
+	it("rejects a flag in the path position before touching the file", async () => {
+		const t = io()
+		expect(await runPdfCli(["read", "--strip-noise", "doc.pdf"], t.io)).toBe(2)
+		expect(t.err.join("\n")).toContain("read needs a file path")
+	})
+
+	it("usage lists read --strip-noise", async () => {
+		const t = io()
+		expect(await runPdfCli(["--help"], t.io)).toBe(0)
+		expect(t.out.join("\n")).toContain("--strip-noise")
+	})
 })
 
 describe("pdf.mjs info", () => {
