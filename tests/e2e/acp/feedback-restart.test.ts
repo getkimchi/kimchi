@@ -9,15 +9,16 @@
 import { readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { AVAILABLE_EXT_METHODS } from "../../../src/modes/acp/capabilities.js"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { FEEDBACK_METHOD, newSession } from "./support/scenarios.js"
+import { newSession } from "./support/scenarios.js"
 
 function rate(
 	fixture: AcpFixture,
 	sessionId: string,
 	params: { sentiment: string; reason?: string },
 ): Promise<unknown> {
-	return fixture.conn.extMethod(FEEDBACK_METHOD, {
+	return fixture.conn.extMethod(AVAILABLE_EXT_METHODS.feedback, {
 		sessionId,
 		action: "rate_response",
 		...params,
