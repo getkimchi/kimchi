@@ -17,8 +17,6 @@ import {
 } from "../pr-cost-reporting/ledger/records.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 
-export { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
-
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown

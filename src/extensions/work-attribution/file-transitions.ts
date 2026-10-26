@@ -12,6 +12,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
+import { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
 import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { SHA } from "../pull-request-status/provider-records.js"
 import {
@@ -24,7 +25,7 @@ import {
 	type WorkContext,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { fileMatchStrength, readWorkRecords, SHA256_HEX } from "./summary.js"
+import { readWorkRecords, SHA256_HEX } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
