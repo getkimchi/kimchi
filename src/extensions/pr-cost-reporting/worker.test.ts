@@ -203,6 +203,36 @@ describe("account-fenced reporting delivery", () => {
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
 	})
 
+	it("uploads snapshots and events with the SSO credential when no API key is configured", async () => {
+		config.key = ""
+		const agentDir = join(directory, "agent")
+		await mkdir(agentDir, { recursive: true })
+		await writeFile(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: org } }),
+		)
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		await deliver()
+		const batch = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountKey(content.account),
+			body: new TextEncoder().encode("{}"),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		backendFor(directory).insertOutboxBatch(batch)
+		// Only the request headers matter here, so skip encoding a valid event batch.
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(batch)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		for (const route of ["pr-cost-snapshots", "pr-cost-events:batchIngest"]) {
+			const upload = http.mock.calls.find(([url]) => String(url).endsWith(route))
+			const headers = new Headers(upload?.[1]?.headers)
+			expect(headers.get("authorization")).toBe("Bearer oauth-access")
+			expect(headers.get("x-castai-organization-id")).toBe(org)
+		}
+	})
+
 	it("queues the producer's facts and original hashes under their original account", async () => {
 		await seedLinked(false)
 		const group = {

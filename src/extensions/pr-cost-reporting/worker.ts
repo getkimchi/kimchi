@@ -333,12 +333,12 @@ export function deliverEvents(
 				)
 			)
 				return
-			const key = loadConfig({ cwd }).apiKey
+			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl)) return
 			const assertOwnership = () => {
 				assertLease()
-				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
+				if (resolveGatewayCredentials(loadConfig({ cwd })).token !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
 			}
 			const assertCurrent = () => {
@@ -377,6 +377,7 @@ export function deliverEvents(
 				apiUrl,
 				...(await verifyApiKey(key, {
 					endpoint: apiUrl,
+					organizationId,
 					fetch: fetchBounded,
 					signal: combined,
 					retry: { maxRetries: 0 },
@@ -425,6 +426,7 @@ export function deliverEvents(
 									signal: combined,
 									headers: {
 										Authorization: `Bearer ${key}`,
+										...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
 										"Content-Type": "application/json",
 										Accept: "application/json",
 									},
