@@ -2,7 +2,7 @@
  * Unit tests for session-name extension
  */
 
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -62,6 +62,10 @@ let attributionDir: string
 beforeEach(() => {
 	attributionDir = mkdtempSync(join(tmpdir(), "name-attribution-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", attributionDir)
+	// Isolate from the ambient Kimchi agent dir: keyless configs now fall back
+	// to $KIMCHI_CODING_AGENT_DIR/auth.json, and a developer shell's real login
+	// would make the fallback tests send live requests.
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", join(attributionDir, "agent"))
 	mockGetRetrySettings.mockReset()
 	mockGetRetrySettings.mockReturnValue({ enabled: true, maxRetries: 1, baseDelayMs: 2000 })
 	mockLoadConfig.mockReset()
@@ -268,6 +272,28 @@ describe("suggestSessionName", () => {
 		expect(await suggestSessionName(ctx, "Task", true)).toBe("Still named")
 		expect(fetchMock).toHaveBeenCalledOnce()
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Work attribution unavailable"), "warning")
+	})
+
+	it("names via the SSO credential (bearer + org header) when no API key is configured", async () => {
+		// mockLoadConfig returns apiKey "" — auth comes from auth.json.
+		const agentDir = process.env.KIMCHI_CODING_AGENT_DIR as string
+		mkdirSync(agentDir, { recursive: true })
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-9" } }),
+		)
+		const ctx = createContext({ cwd: attributionDir })
+		const seen: Array<{ headers: Headers }> = []
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+				seen.push({ headers: new Headers(init?.headers) })
+				return new Response(JSON.stringify({ choices: [{ message: { content: "SSO named" } }] }), { status: 200 })
+			}),
+		)
+		expect(await suggestSessionName(ctx, "Task", true)).toBe("SSO named")
+		expect(seen[0]?.headers.get("authorization")).toBe("Bearer oauth-access")
+		expect(seen[0]?.headers.get("x-castai-organization-id")).toBe("org-9")
 	})
 
 	it("should fall back to basename when no hint and no user messages", async () => {

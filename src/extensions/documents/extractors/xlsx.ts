@@ -83,6 +83,15 @@ export interface XlsxExtraction {
 
 // --- shared strings --------------------------------------------------------------
 
+/** Namespace-optional element-name source for the local-name scanners below:
+ *  prefix-writing producers (Office web / Graph) bind the main schema to a
+ *  prefix, e.g. `<x:row>` / `<x:dimension>`. Compose with `new RegExp`. */
+const PREFIX_SRC = String.raw`[\w.-]+:`
+
+/** Strip control chars from untrusted strings before they reach CLI output. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+const sanitizeForNote = (s: string): string => s.replace(/[\x00-\x1f\x7f]+/g, "")
+
 /** sharedStrings.xml → plain array by string scan (rich runs = concat of <t>). */
 function loadSharedStrings(pkg: OoxmlPackage): string[] {
 	const bytes = pkg.getBytes("xl/sharedStrings.xml")
@@ -97,9 +106,9 @@ function loadSharedStrings(pkg: OoxmlPackage): string[] {
 	pkg.remove("xl/sharedStrings.xml")
 	const xml = new TextDecoder().decode(bytes)
 	const out: string[] = []
-	const si = /<si\b[^>]*>([\s\S]*?)<\/si>/g
+	const si = new RegExp(`<(${PREFIX_SRC})?si\\b[^>]*>([\\s\\S]*?)<\\/\\1si>`, "g")
 	for (let m = si.exec(xml); m !== null; m = si.exec(xml)) {
-		out.push(unescapeXml(stripAllTags(m[1])))
+		out.push(unescapeXml(stripAllTags(m[2])))
 	}
 	return out
 }
@@ -239,18 +248,22 @@ function loadSheets(pkg: OoxmlPackage): { sheets: WorkbookSheet[]; epoch1904: bo
 /** Row spans in a sheet's XML string (string scan only) — shared with the editor. */
 export function scanRowSpans(sheetXml: string): Array<{ row: number; start: number; end: number }> {
 	const out: Array<{ row: number; start: number; end: number }> = []
-	const openTag = /<row\s+([^>]*?)(\/?)>/g
+	// Local-name matching: prefix-writing producers emit `<x:row>`; an
+	// attribute-less `<row>` is legal too. The captured prefix includes its
+	// colon, so it can be reused verbatim in the close tag.
+	const openTag = new RegExp(`<(?:(${PREFIX_SRC}))?row\\b([^>]*?)(\\/?)>`, "g")
 	for (let m = openTag.exec(sheetXml); m !== null; m = openTag.exec(sheetXml)) {
-		const rowAttr = /\br="(\d+)"/.exec(m[1])
+		const rowAttr = /\br="(\d+)"/.exec(m[2])
 		const row = rowAttr ? Number(rowAttr[1]) : out.length + 1
-		if (m[2] === "/") {
+		if (m[3] === "/") {
 			out.push({ row, start: m.index, end: m.index + m[0].length })
 			continue
 		}
-		const close = sheetXml.indexOf("</row>", m.index)
+		const closeTag = `</${m[1] ?? ""}row>`
+		const close = sheetXml.indexOf(closeTag, m.index)
 		if (close < 0) throw new DocumentError("corrupt", `Unclosed <row r="${row}">`, "xlsx")
-		out.push({ row, start: m.index, end: close + "</row>".length })
-		openTag.lastIndex = close + "</row>".length
+		out.push({ row, start: m.index, end: close + closeTag.length })
+		openTag.lastIndex = close + closeTag.length
 	}
 	return out
 }
@@ -352,6 +365,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 	const nsDeclsBySheet: string[] = []
 	const mergedBySheet: string[][] = []
 	const infos: SheetInfo[] = []
+	const sheetWarnings: string[] = []
 	for (const sh of wbSheets) {
 		const bytes = pkg.getBytes(sh.part)
 		if (!bytes) throw new DocumentError("corrupt", `Missing sheet part ${sh.part}`, "xlsx")
@@ -363,14 +377,28 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 		nsDeclsBySheet.push(fragmentNamespaces(xml, ROW_FRAGMENT_REQUIRED))
 		const spans = scanRowSpans(xml)
 		spansBySheet.push(spans)
-		mergedBySheet.push([...xml.matchAll(/<mergeCell\s+ref="([A-Za-z0-9:]+)"/g)].map((m) => m[1]).sort())
+		mergedBySheet.push(
+			[...xml.matchAll(new RegExp(`<(?:${PREFIX_SRC})?mergeCell\\s+ref="([A-Za-z0-9:]+)"`, "g"))]
+				.map((m) => m[1])
+				.sort(),
+		)
 		let lastRow = 0
 		let lastCol = 0
-		const dim = /<dimension\s+ref="[^"]*?([A-Z]{1,3})(\d+)"/.exec(xml)
+		let declaredRef: string | undefined
+		const dim = new RegExp(`<(?:${PREFIX_SRC})?dimension\\s+ref="([^"]*)"`).exec(xml)
 		if (dim) {
-			lastRow = Number(dim[2])
-			const col = parseCellRef(`${dim[1]}1`)
-			lastCol = col?.column ?? 0
+			declaredRef = dim[1]
+			const tail = /([A-Z]{1,3})(\d+)$/.exec(dim[1])
+			if (tail) {
+				lastRow = Number(tail[2])
+				const col = parseCellRef(`${tail[1]}1`)
+				lastCol = col?.column ?? 0
+			}
+		}
+		if (spans.length === 0 && lastRow > 1) {
+			sheetWarnings.push(
+				`sheet ${JSON.stringify(sanitizeForNote(sh.name))} declares dimension ${sanitizeForNote(declaredRef ?? "")} but no rows parsed (unsupported producer shape) — the file may not be empty; cross-check with Excel or openpyxl before treating it as empty`,
+			)
 		}
 		const lastSpan = spans[spans.length - 1]
 		infos.push({
@@ -393,6 +421,7 @@ export async function extractXlsx(data: Uint8Array): Promise<XlsxExtraction> {
 				.map((s) => s.name)
 				.join(", ")}`,
 		)
+	notes.push(...sheetWarnings)
 	return {
 		format: "xlsx",
 		sheets: infos,

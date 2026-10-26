@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { makeCustomXlsx, makeOfficeShapedXlsx, makeSimplePptx, makeSimpleXlsx } from "../fixtures/builders.js"
+import {
+	makeCustomXlsx,
+	makeOfficeShapedXlsx,
+	makePrefixedNsXlsx,
+	makeSimplePptx,
+	makeSimpleXlsx,
+} from "../fixtures/builders.js"
 import { extractCsv, extractXlsx, isDateFormatCode, parseCsv, serialToIso } from "./xlsx.js"
 
 describe("extractXlsx", () => {
@@ -34,6 +40,48 @@ describe("extractXlsx", () => {
 		const doc = await extractXlsx(await makeOfficeShapedXlsx())
 		const w = doc.window({ sheet: "Data", startRow: 1, endRow: 1, showFormulas: true })
 		expect(w.markdown).toContain("=A1&B1 → 0")
+	})
+
+	it("reads a namespace-prefixed workbook (prefixed root, rows, sst, dimension, mergeCell)", async () => {
+		const doc = await extractXlsx(await makePrefixedNsXlsx())
+		expect(doc.sheets.map((s) => s.name)).toEqual(["Mov"])
+		expect(doc.sheets[0].rowCount).toBe(3)
+		expect(doc.sheets[0].lastRow).toBe(3)
+		expect(doc.sheets[0].lastColumn).toBe("C")
+		expect(doc.notes.some((n) => n.includes("may not be empty"))).toBe(false)
+		const w = doc.window({ sheet: 1, startRow: 1, endRow: 3 })
+		expect(w.markdown).toContain("| 1 | movement | amount | kind |")
+		expect(w.markdown).toContain("| 2 | 2.5 | -7 | 0 |")
+		expect(w.markdown).toContain("| 3 | tail |  |  |")
+		expect(w.merged).toEqual(["B3:C3"])
+	})
+
+	it("reads attribute-less <row> elements", async () => {
+		const doc = await extractXlsx(
+			await makeCustomXlsx([
+				{
+					name: "S",
+					inner: `<sheetData><row><c r="A1"><v>7</v></c></row><row><c r="A2"><v>8</v></c></row></sheetData>`,
+				},
+			]),
+		)
+		expect(doc.sheets[0].rowCount).toBe(2)
+		expect(doc.window({}).markdown).toContain("| 2 | 8 |")
+	})
+
+	it("warns when a sheet declares a non-trivial dimension but no rows parse", async () => {
+		const doc = await extractXlsx(await makeCustomXlsx([{ name: "S", inner: `<dimension ref="A1:E5"/><sheetData/>` }]))
+		expect(doc.sheets[0].rowCount).toBe(0)
+		expect(
+			doc.notes.some((n) => n.includes('sheet "S" declares dimension A1:E5') && n.includes("may not be empty")),
+		).toBe(true)
+	})
+
+	it("emits no empty-read warning on genuinely empty sheets", async () => {
+		const single = await extractXlsx(await makeCustomXlsx([{ name: "S", inner: `<dimension ref="A1"/><sheetData/>` }]))
+		expect(single.notes.some((n) => n.includes("may not be empty"))).toBe(false)
+		const bare = await extractXlsx(await makeCustomXlsx([{ name: "S", inner: `<sheetData/>` }]))
+		expect(bare.notes.some((n) => n.includes("may not be empty"))).toBe(false)
 	})
 
 	it("throws a typed corrupt error on a malformed row instead of a raw stack", async () => {

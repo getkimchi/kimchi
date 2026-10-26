@@ -9,9 +9,9 @@ disables-skills: xlsx
 
 All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
 - With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/xlsx.mjs <command> ...`
-- Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/xlsx.mjs ...`
+- Fallback: run the same script under plain Node — `node <skill-dir>/scripts/xlsx.mjs ...` — whenever the bun runtime fails to start (`bun is unable to write files to tempdir: EPERM` and other sandbox/bootstrap errors), or when `kimchi` isn't on PATH. Same commands, same output.
 
-Do NOT use openpyxl, ExcelJS, or SheetJS directly — the bundled CLI is the supported route. Writes are atomic and never in place: `--out` must differ from the input. Files over the size cap (default 20 MB; raise via `KIMCHI_DOCUMENT_MAX_MB`) fail `too-large`.
+Do NOT use openpyxl, ExcelJS, or SheetJS directly — the bundled CLI is the supported route. One exception: if `info` or `read` reports 0 rows or nothing for a workbook that plausibly holds data, suspect a producer shape the parser doesn't cover — the command prints a `note:` when it suspects this itself. Cross-check with openpyxl or Excel before concluding the file is empty, and say which route produced the numbers. Writes are atomic and never in place: `--out` must differ from the input. Files over the size cap (default 20 MB; raise via `KIMCHI_DOCUMENT_MAX_MB`) fail `too-large`.
 
 ## Choosing an approach
 
@@ -35,7 +35,7 @@ Sheets in order (with hidden state), dimensions, 1904 date system, macros and ex
 
 One sheet as a Markdown table: a leading row-number column, column letters as the header. `--sheet` is a 1-based number or the exact title from `info`. Output is capped (≈50 KB); narrow with `--start-row/--end-row` and continue at the printed `toRow`. Dates render ISO (UTC) regardless of timezone; booleans as TRUE/FALSE; errors (#DIV/0!) as text. With `--show-formulas`, formula cells show `=SUM(…) → <cached value>`.
 
-`info` and `read` note macros, external links and hidden sheets — mention them when they matter.
+`info` and `read` note macros, external links and hidden sheets — and warn on a sheet that declares rows the parser couldn't read (`… may not be empty`). Relay these when they matter; on that warning, treat the file as unread, not empty.
 
 ## create `<spec.json> --out <out.xlsx>`
 

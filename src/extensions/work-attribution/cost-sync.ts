@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -394,7 +395,11 @@ export async function reconcileWorkCosts(
 				const credentialKey = JSON.stringify([cwd, item.source.gatewayUrl])
 				let credential = credentials.get(credentialKey)
 				if (!credential) {
-					const key = cwd ? loadConfig({ cwd }).apiKey : ""
+					// Same resolution as every other harness caller: the SSO credential
+					// in auth.json when no key is configured. The dispatch-time
+					// credentialHash (billing-source) fingerprints the same token the
+					// provider sent, so lookups stay pinned to the requesting account.
+					const { token: key } = cwd ? resolveGatewayCredentials(loadConfig({ cwd })) : { token: "" }
 					credential = {
 						key,
 						source: cwd

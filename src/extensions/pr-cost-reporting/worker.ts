@@ -1,4 +1,5 @@
 import { verifyApiKey } from "../../api/organizations.js"
+import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
@@ -137,12 +138,12 @@ export function deliverEvents(
 				)
 			)
 				return
-			const key = loadConfig({ cwd }).apiKey
+			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl)) return
 			const assertOwnership = () => {
 				assertLease()
-				if (loadConfig({ cwd }).apiKey !== key || platformApiUrl(cwd) !== apiUrl)
+				if (resolveGatewayCredentials(loadConfig({ cwd })).token !== key || platformApiUrl(cwd) !== apiUrl)
 					throw new Error("PR reporting credentials changed")
 			}
 			const assertCurrent = () => {
@@ -181,6 +182,7 @@ export function deliverEvents(
 				apiUrl,
 				...(await verifyApiKey(key, {
 					endpoint: apiUrl,
+					organizationId,
 					fetch: fetchBounded,
 					signal: combined,
 					retry: { maxRetries: 0 },
@@ -227,6 +229,7 @@ export function deliverEvents(
 									signal: combined,
 									headers: {
 										Authorization: `Bearer ${key}`,
+										...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
 										"Content-Type": "application/json",
 										Accept: "application/json",
 									},

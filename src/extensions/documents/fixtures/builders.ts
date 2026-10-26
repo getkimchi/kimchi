@@ -532,3 +532,85 @@ export function makeOfficeShapedXlsx(): Promise<Uint8Array> {
 		{ sheetRootAttrs: OFFICE_XLSX_SHEET_ROOT_ATTRS },
 	)
 }
+
+/**
+ * A workbook shaped like prefix-writing producers emit it (e.g. Office web /
+ * Graph exports): the main schema bound to `x:` with NO default namespace,
+ * and EVERY part prefixed — `<x:workbook>`, `<x:sst>`, `<x:worksheet>` —
+ * with `mc:Ignorable x14ac` on the sheet root. Ground truth (sheet "Mov"):
+ * 3 rows × C columns; A1 = shared string "movement", B1 = shared string
+ * "amount", C1 = shared string "kind"; A2 = 2.5, B2 = -7, C2 = formula
+ * `A2&amp;B2` → 0; merged range B3:C3; a `<x:tableParts>` reference to a
+ * real table part (prefix-writing producers emit those routinely).
+ */
+export function makePrefixedNsXlsx(): Promise<Uint8Array> {
+	const zip = new JSZip()
+	const M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+	const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+	zip.file(
+		"[Content_Types].xml",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>
+</Types>`,
+	)
+	zip.file(
+		"_rels/.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"xl/_rels/workbook.xml.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+  <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"xl/worksheets/_rels/sheet1.xml.rels",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdT1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>
+</Relationships>`,
+	)
+	zip.file(
+		"xl/tables/table1.xml",
+		`<?xml version="1.0" encoding="utf-8"?>
+<x:table xmlns:x="${M}" id="1" name="Table1" displayName="Table1" ref="A1:C2" totalsRowShown="0"><x:autoFilter ref="A1:C2"/><x:tableColumns count="3"><x:tableColumn id="1" name="movement"/><x:tableColumn id="2" name="amount"/><x:tableColumn id="3" name="kind"/></x:tableColumns><x:tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></x:table>`,
+	)
+	zip.file(
+		"xl/workbook.xml",
+		`<?xml version="1.0" encoding="utf-8"?>
+<x:workbook xmlns:r="${R}" xmlns:x="${M}"><x:workbookPr codeName="ThisWorkbook"/><x:bookViews><x:workbookView firstSheet="0" activeTab="0"/></x:bookViews><x:sheets><x:sheet name="Mov" sheetId="1" r:id="rId2"/></x:sheets><x:definedNames/><x:calcPr calcId="125725"/></x:workbook>`,
+	)
+	zip.file(
+		"xl/sharedStrings.xml",
+		`<?xml version="1.0" encoding="utf-8"?>
+<x:sst xmlns:x="${M}" count="3" uniqueCount="3"><x:si><x:t>movement</x:t></x:si><x:si><x:t>amount</x:t></x:si><x:si><x:t>kind</x:t></x:si></x:sst>`,
+	)
+	zip.file(
+		"xl/styles.xml",
+		`<?xml version="1.0" encoding="UTF-8"?>
+<styleSheet xmlns="${M}">
+  <fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders>
+  <cellStyleXfs count="1"><xf/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0"/></cellXfs>
+</styleSheet>`,
+	)
+	zip.file(
+		"xl/worksheets/sheet1.xml",
+		`<?xml version="1.0" encoding="utf-8"?>
+<x:worksheet xmlns:r="${R}" xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac" mc:Ignorable="x14ac" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:x="${M}"><x:sheetPr/><x:dimension ref="A1:C3"/><x:sheetViews><x:sheetView workbookViewId="0"/></x:sheetViews><x:sheetData><x:row r="1" spans="1:3"><x:c r="A1" t="s"><x:v>0</x:v></x:c><x:c r="B1" t="s"><x:v>1</x:v></x:c><x:c r="C1" t="s"><x:v>2</x:v></x:c></x:row><x:row r="2" spans="1:3"><x:c r="A2"><x:v>2.5</x:v></x:c><x:c r="B2"><x:v>-7</x:v></x:c><x:c r="C2"><x:f>A2&amp;B2</x:f><x:v>0</x:v></x:c></x:row><x:row r="3" spans="1:3"><x:c r="A3" t="inlineStr"><x:is><x:t>tail</x:t></x:is></x:c><x:c r="B3"/><x:c r="C3"/></x:row></x:sheetData><x:mergeCells count="1"><x:mergeCell ref="B3:C3"/></x:mergeCells><x:tableParts count="1"><x:tablePart r:id="rIdT1"/></x:tableParts></x:worksheet>`,
+	)
+	return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+}
