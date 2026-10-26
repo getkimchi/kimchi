@@ -196,22 +196,29 @@ export function recordReportingError(agentDir: string, error: string | undefined
 }
 
 /**
- * Rereads consent before an event batch is frozen, sent or acknowledged. The action's check also fails once SaaS
- * uploads that this state follows are turned off.
+ * Rereads consent before an event batch is frozen, sent or acknowledged. The action runs under the state lock, so
+ * turning reporting off cannot interleave with it; its check also fails once SaaS uploads that this state follows are
+ * turned off.
  */
 export async function withReportingConsent(
 	agentDir: string,
 	action: (check: () => void) => void,
 	assertCurrent: () => void,
 ): Promise<boolean> {
-	const state = await readReportingState(agentDir)
-	assertCurrent()
-	if (!state.enabled) return false
-	const consent = () => {
-		assertCurrent()
-		if (state.followsTelemetry && !isTelemetryEnabled()) throw new Error("PR reporting is disabled")
-	}
-	action(consent)
-	consent()
-	return true
+	let ready = false
+	await update(
+		agentDir,
+		(state) => {
+			if (!state.enabled) return
+			const consent = () => {
+				assertCurrent()
+				if (state.followsTelemetry && !isTelemetryEnabled()) throw new Error("PR reporting is disabled")
+			}
+			action(consent)
+			consent()
+			ready = true
+		},
+		assertCurrent,
+	)
+	return ready
 }

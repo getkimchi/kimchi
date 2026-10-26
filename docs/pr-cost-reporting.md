@@ -88,7 +88,7 @@ Repository lookups share the capture budget. A found identity is kept for a day,
 Failed attempts retain their payload and retry time. Event failures retain their local error with the batch until a matching acknowledgement; older retry notes without an error show a generic failure.
 
 - Transient: timeouts, network errors, HTTP 408, 429 and 5xx. A `Retry-After` is honored between 30 seconds and six hours. Without one, the wait doubles from 30 seconds to 30 minutes with ±20% jitter.
-- Rejection that retrying cannot fix, such as HTTP 404 from a backend without this endpoint: one hour, doubling to six hours, with ±20% jitter. HTTP 403 means the API key may not upload; `/pr-reporting status` says so.
+- Rejection that retrying cannot fix, such as HTTP 404 from a backend without this endpoint: one hour, doubling to six hours, with ±20% jitter. HTTP 403 means the API key may not upload; `/pr-reporting status` says that an Owner or Member role is needed.
 
 The reason appears in `/pr-reporting status` until an upload is accepted. An unavailable or older backend therefore leaves a visible pending report. Nothing is sent to a different account to clear that queue.
 

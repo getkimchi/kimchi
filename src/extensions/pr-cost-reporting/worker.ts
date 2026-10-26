@@ -159,7 +159,7 @@ export function deliverEvents(
 				if (!response.ok)
 					errorMessage =
 						response.status === 403
-							? "PR reporting is not allowed for this API key (HTTP 403)"
+							? "PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
 							: `PR cost event upload returned HTTP ${response.status}`
 				const bounded = await boundedResponse(
 					response,

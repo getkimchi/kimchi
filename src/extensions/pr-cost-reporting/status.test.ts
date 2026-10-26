@@ -115,7 +115,9 @@ describe("/pr-reporting status", () => {
 					acknowledged: 1_234_567,
 					lastAcknowledgedAt: now,
 					batches: 12,
-					retry: retry("PR reporting is not allowed for this API key (HTTP 403)"),
+					retry: retry(
+						"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)",
+					),
 				}),
 			],
 		)
