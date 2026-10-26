@@ -1,6 +1,7 @@
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "../../utils.js"
+import { USAGE_SCHEMAS } from "../pr-cost-reporting/native.js"
 import { pinProviderUsage } from "../work-attribution.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 import { object } from "./summary.js"
@@ -43,21 +44,6 @@ interface Observation {
 	iterationsIncomplete?: true
 	previousResponses?: Omit<Observation, "attempt" | "previousResponses" | "responseCorrelation">[]
 	responseCorrelation?: "ambiguous"
-}
-
-function schema(api: string): string {
-	switch (api) {
-		case "anthropic-messages":
-			return "anthropic-messages-v1"
-		case "openai-completions":
-			return "openai-chat-completions-v1"
-		case "openai-responses":
-		case "azure-openai-responses":
-		case "openai-codex-responses":
-			return "openai-responses-v1"
-		default:
-			return "unknown"
-	}
 }
 
 /** Match the shared protocol's token range; invalid or absent values remain unknown. */
@@ -255,7 +241,7 @@ export function createNativeUsageCapture(model: RequestModel) {
 				api: actual.api,
 				provider: actual.provider,
 				reportedModel: actual.id,
-				schema: schema(actual.api),
+				schema: USAGE_SCHEMAS.get(actual.api) ?? "unknown",
 				raw: {},
 			}
 			observations.set(attempt.requestId, observation)
