@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import open from "open"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { deleteRemoteSession, type RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
@@ -328,9 +329,9 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 			return false
 		}
 
-		const apiKey = loadConfig().apiKey
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
 		if (!apiKey) {
-			ctx.ui.notify("No API key configured. Run `kimchi login`.", "error")
+			ctx.ui.notify("No credentials configured. Run `kimchi` and sign in (API key or SSO).", "error")
 			return false
 		}
 
@@ -602,9 +603,9 @@ async function handlePrCompletion(
 	opts: HandleRemoteCompletionOpts & { gitWorkflow: PersistedGitWorkflow; remoteSession: RemoteSessionMeta },
 ): Promise<boolean> {
 	const git = opts.gitWorkflow
-	const apiKey = loadConfig().apiKey
+	const apiKey = resolveGatewayCredentials(loadConfig()).token
 	if (!apiKey) {
-		ctx.ui.notify("No API key configured. Run `kimchi login`.", "error")
+		ctx.ui.notify("No credentials configured. Run `kimchi` and sign in (API key or SSO).", "error")
 		return false
 	}
 	const review = await resolvePrReviewContext(ctx, apiKey, git, opts.remoteSession)
