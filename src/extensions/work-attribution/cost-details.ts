@@ -186,18 +186,13 @@ export function costReportSource(workId: string): string {
 export function workCostDetails(agentDir: string, workId: string): string[] {
 	if (!isWorkId(workId)) return []
 	const folder = join(agentDir, "work", workId)
-	const report = costReportSource(workId)
 	// A5: the note is the authority for new reports; a legacy cost-totals.json still answers for old installs.
 	const note = getNote(agentDir, workId, "cost-totals")
-	if (note !== undefined) {
-		try {
-			return costDetailLines(JSON.parse(note), report)
-		} catch {
-			return ["Cost: unknown; waiting for billing"]
-		}
-	}
 	try {
-		return costDetailLines(JSON.parse(readFileSync(join(folder, "cost-totals.json"), "utf8")), report)
+		return costDetailLines(
+			JSON.parse(note ?? readFileSync(join(folder, "cost-totals.json"), "utf8")),
+			costReportSource(workId),
+		)
 	} catch {
 		return ["Cost: unknown; waiting for billing"]
 	}

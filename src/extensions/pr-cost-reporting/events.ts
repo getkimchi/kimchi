@@ -12,7 +12,7 @@ import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary
 import type { Fact } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
-import { type Event, type IssueKey, stableID, timeNanos, type Usage, validateIngestEvent } from "./protocol.js"
+import { type Event, gitID, type IssueKey, stableID, timeNanos, type Usage, validateIngestEvent } from "./protocol.js"
 import {
 	accountKey,
 	allocationFor,
@@ -377,9 +377,9 @@ export function buildEvents(
 					if (
 						!object(state) ||
 						typeof state.blob !== "string" ||
-						!/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(state.blob) ||
+						!gitID(state.blob.toLowerCase()) ||
 						typeof state.mode !== "string" ||
-						!/^(?:100644|100755|120000|160000)$/.test(state.mode)
+						!["100644", "100755", "120000", "160000"].includes(state.mode)
 					)
 						throw new Error("invalid_file_revision")
 					return stableID(key, producerId, owner.scope.repository, path, state.blob.toLowerCase(), state.mode)

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -197,6 +198,21 @@ describe("account-fenced reporting delivery", () => {
 		expect(headers.get("x-castai-organization-id")).toBe(org)
 	})
 
+	it("keeps an event batch without an error when the credential changes during its upload", async () => {
+		const batch = sendableBatch()
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			// An SSO refresh rewrites the credential while the batch is in flight.
+			config.key = "refreshed-key"
+			return Response.json({ batchId: batch.id, receipts: [] })
+		})
+		await expect(deliverEvents(directory, "/project", new AbortController().signal, () => {})).resolves.toBeUndefined()
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		expect(backendFor(directory).getOutboxBatch(batch.accountKey)?.id).toBe(batch.id)
+		expect(backendFor(directory).getNote("pr-cost-delivery", batch.accountKey)).toBeUndefined()
+	})
+
 	it("queues the producer's facts and original hashes under their original account", async () => {
 		await seedLinked(false)
 		const group = {
@@ -330,7 +346,11 @@ describe("account-fenced reporting delivery", () => {
 			billingRecordIds: priced ? ["44444444-4444-4444-8444-444444444444"] : [],
 		})
 		const stored = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[0]
-		expect(stored?.every((row) => /^[a-f0-9]{64}$/.test(row.recordHash))).toBe(true)
+		// The producer receives each journal line's original hash, not a hash of its reserialized body.
+		const lines = (await readFile(join(directory, "work-attribution", "source.jsonl"), "utf8")).trimEnd().split("\n")
+		expect(stored?.map((row) => row.recordHash)).toEqual(
+			lines.map((line) => createHash("sha256").update(line).digest("hex")),
+		)
 	})
 	it("cancels an in-flight request when another instance opts out", async () => {
 		queueBatch()

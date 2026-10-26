@@ -1,9 +1,8 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { importJournals } from "../pr-cost-reporting/ledger/import.js"
 import { backendFor, getNote, readRecords, setNote } from "../pr-cost-reporting/ledger/records.js"
-import { object, workJournalFingerprint } from "../work-attribution/summary.js"
+import { importWorkRecordsAsync, object, workJournalFingerprint } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -253,14 +252,7 @@ async function scan(
 	}
 	const fingerprint = await workJournalFingerprint(agentDir, check)
 	check()
-	if (state.journalFingerprint !== fingerprint) {
-		let pending: boolean
-		do {
-			check()
-			const imported = await importJournals(agentDir, { checkBudget: check })
-			pending = imported.pending === true
-		} while (pending)
-	}
+	if (state.journalFingerprint !== fingerprint) await importWorkRecordsAsync(agentDir, check)
 	check()
 	readCommits(agentDir, state)
 	state.journalFingerprint = fingerprint

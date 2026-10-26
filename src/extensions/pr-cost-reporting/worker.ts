@@ -267,7 +267,11 @@ export function deliverEvents(
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
 				if (signal.aborted) return
-				assertOwnership()
+				try {
+					assertOwnership()
+				} catch {
+					return
+				}
 				const attempts = Number(schedule?.attempts ?? 0)
 				backend.tx(() => {
 					assertOwnership()

@@ -12,6 +12,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
+import { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
 import { getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { SHA } from "../pull-request-status/provider-records.js"
 import {
@@ -24,7 +25,7 @@ import {
 	type WorkContext,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { fileMatchStrength, readWorkRecords, SHA256_HEX } from "./summary.js"
+import { readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -518,9 +519,9 @@ async function readJournals(repository: string, checkBudget: () => void): Promis
 	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
 	let ledgerTransitions: Transition[] = []
 	try {
-		ledgerTransitions = readWorkRecords(getAgentDir())
-			.filter((row) => row.type === "file_transition" && isTransition(row) && row.repository === repository)
-			.map((row) => row as unknown as Transition)
+		ledgerTransitions = readWorkRecords(getAgentDir()).filter(
+			(row): row is WorkRecord & Transition => isTransition(row) && row.repository === repository,
+		)
 	} catch {
 		// No store (e.g. Node unit tests without a backend); the JSONL scan below still works.
 	}

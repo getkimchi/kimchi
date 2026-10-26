@@ -38,7 +38,8 @@ export interface UnresolvedNativeObservation {
 	reason: string
 }
 
-const schemas = new Map([
+/** The common usage schema of each pi-ai API; capture labels native usage with it. */
+export const USAGE_SCHEMAS = new Map([
 	["anthropic-messages", "anthropic-messages-v1"],
 	["openai-completions", "openai-chat-completions-v1"],
 	["openai-responses", "openai-responses-v1"],
@@ -47,7 +48,8 @@ const schemas = new Map([
 ])
 
 function instant(value: unknown): bigint | undefined {
-	if (typeof value !== "string" || !/^(?!0000)\d{4}-/.test(value)) return
+	if (typeof value !== "string" || value[4] !== "-" || value.startsWith("0000")) return
+	if (![...value.slice(0, 4)].every((character) => character >= "0" && character <= "9")) return
 	try {
 		return timeNanos(value)
 	} catch {
@@ -167,7 +169,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 				const provider = text(usage.provider)
 				const reportedModel = text(usage.reportedModel)
 				if (!sourceVersion || !api || !schema || !provider || !reportedModel) throw new Error("missing_native_metadata")
-				if (schema !== (schemas.get(api) ?? "unknown")) throw new Error("invalid_native_schema")
+				if (schema !== (USAGE_SCHEMAS.get(api) ?? "unknown")) throw new Error("invalid_native_schema")
 				const raw = rawUsage(usage.raw)
 				let iterations: NativeObservation["iterations"]
 				if (usage.iterations !== undefined) {

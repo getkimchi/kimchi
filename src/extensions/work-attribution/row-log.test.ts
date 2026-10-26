@@ -3,13 +3,11 @@ import {
 	COLLECTIONS,
 	type Collection,
 	commitPullRequests,
-	isWorkHead,
 	LOGS,
 	observeLatest,
 	ROW_KEYS,
 	type Row,
 	summaryLatest,
-	type WorkHead,
 	type WorkLatest,
 } from "./row-log.js"
 
@@ -123,24 +121,5 @@ describe("commitPullRequests and summaryLatest", () => {
 		const summary = summaryLatest((collection) => rows(collection))
 		expect(summary.latest.activityAt).toBe("2026-10-03T00:00:00Z")
 		expect(summary.pullRequests).toEqual([])
-	})
-})
-
-describe("isWorkHead", () => {
-	const head: WorkHead = {
-		version: 2,
-		workId: "11111111-1111-4111-8111-111111111111",
-		updatedAt: "2026-10-01T00:00:00.000Z",
-		logs: { requests: { generation: 1, bytes: 40, rows: 1 } },
-		latest: {},
-		pullRequests: [],
-	}
-	it("accepts the current manifest shape", () => {
-		expect(isWorkHead(head, head.workId)).toBe(true)
-	})
-	it("rejects foreign work ids, missing logs and wrong versions", () => {
-		expect(isWorkHead(head, "22222222-2222-4222-8222-222222222222")).toBe(false)
-		expect(isWorkHead({ ...head, logs: undefined }, head.workId)).toBe(false)
-		expect(isWorkHead({ ...head, version: 1 }, head.workId)).toBe(false)
 	})
 })

@@ -471,40 +471,6 @@ export function ledgerHasWorkOutput(agentDir: string, workId: string): boolean {
 	return backendFor(agentDir).hasProjectionOutput(workId)
 }
 
-/**
- * Test seam for the suites that seeded a derived summary directly (the old file fixtures): writes projection
- * rows and the head without inserting records, mirroring the old suite fixture behavior.
- */
-export function seedProjection(
-	agentDir: string,
-	workId: string,
-	options: {
-		sessions?: string[]
-		requestIds?: string[]
-		plan?: { path: string; snapshotPath: string; repository: string }
-	} = {},
-): void {
-	const backend = backendFor(agentDir)
-	backend.tx(() => {
-		for (const sessionId of options.sessions ?? ["seed"])
-			backend.putRow(workId, "sessions", ROW_KEYS.sessions({ sessionId }), { sessionId })
-		for (const requestId of options.requestIds ?? []) {
-			const row = { sessionId: "seed", requestId }
-			backend.putRow(workId, "requests", ROW_KEYS.requests(row), row)
-		}
-		if (options.plan) {
-			const row = {
-				sessionId: "seed",
-				path: options.plan.path,
-				snapshotPath: options.plan.snapshotPath,
-				repository: options.plan.repository,
-			}
-			backend.putRow(workId, "plans", ROW_KEYS.plans(row), row)
-		}
-		backend.putHead(headFrom(backend, workId))
-	})
-}
-
 /** The production backend over the C1 store. */
 function sqliteBackend(agentDir: string): RecordBackend {
 	const store: LedgerStore = openStore(agentDir)
@@ -581,18 +547,21 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const allHeads = db.query<{ body: string }, []>("SELECT body FROM work_projection_head")
 	const clearRows = db.query("DELETE FROM work_projection_rows WHERE work_id = ?")
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
-	const readRecordsAll = db.query<StoredRecord, []>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records ORDER BY rowid",
-	)
+	const recordColumns =
+		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE work_id = ? ORDER BY rowid",
+		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
 	)
 	const readRecordsSince = db.query<StoredRecord, [number]>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE imported_at >= ? ORDER BY rowid",
+		`SELECT ${recordColumns} FROM work_records WHERE imported_at >= ? ORDER BY rowid`,
+	)
+	const readRecordsSession = db.query<StoredRecord, [string]>(
+		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
 	)
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
-		"SELECT rowid AS position, record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?",
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
@@ -698,7 +667,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 					? readRecordsWork.iterate(opts.workId)
 					: opts.modifiedSince !== undefined
 						? readRecordsSince.iterate(opts.modifiedSince)
-						: readRecordsAll.iterate()
+						: opts.sessionId !== undefined
+							? readRecordsSession.iterate(opts.sessionId)
+							: readRecordsAll.iterate()
 			const rows: StoredRecord[] = []
 			try {
 				for (const row of source) {
@@ -710,6 +681,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
+				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
 				else readRecordsAll.get()
 				throw error
 			}

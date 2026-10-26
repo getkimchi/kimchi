@@ -127,9 +127,7 @@ async function readWorkTotals(agentDir: string, workId: string, folder: string):
 
 /** The work's issue: the ledger note first, then a legacy issue.json. A missing record shows no issue. */
 async function readWorkIssueFile(agentDir: string, workId: string, issuePath: string): Promise<WorkIssue | undefined> {
-	const note = getNote(agentDir, workId, "issue")
-	if (note !== undefined) return parseWorkIssue(issuePath, workId, note)
-	const text = await readText(issuePath, MAX_ISSUE_BYTES)
+	const text = getNote(agentDir, workId, "issue") ?? (await readText(issuePath, MAX_ISSUE_BYTES))
 	return text === undefined ? undefined : parseWorkIssue(issuePath, workId, text)
 }
 

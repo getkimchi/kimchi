@@ -17,11 +17,6 @@ import {
 } from "../pr-cost-reporting/ledger/records.js"
 import { debugWorkAttribution } from "./diagnostics.js"
 
-export { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
-
-/** Kept for trackers that still take a file lease (issues.ts); the record store needs no lease. */
-export const LOCK_STALE_MS = 5000
-export const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown
@@ -108,7 +103,7 @@ function unknownType(value: unknown): value is Record<string, unknown> {
 function truncated(line: string): boolean {
 	const closing: string[] = []
 	let inString = false
-	// Where an escape sequence such as \n or  began, and how many  hex digits it still needs.
+	// Where an escape sequence such as \n or \u001b began, and how many \u hex digits it still needs.
 	let escapeStart = -1
 	let hexDigits = 0
 	for (let index = 0; index < line.length; index++) {

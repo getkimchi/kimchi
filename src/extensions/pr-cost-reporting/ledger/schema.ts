@@ -112,8 +112,7 @@ CREATE TABLE IF NOT EXISTS work_dirty (
 );
 `
 
-/** Meta keys. */
-export const META_PRODUCER_ID = "producerId"
+/** Meta key. */
 export const META_PROJECTION_VERSION = "projectionVersion"
 /** Current derived-projection format; bump when the projection layout changes (forces rebuild). */
 export const PROJECTION_VERSION = 1

@@ -26,11 +26,6 @@ export type Collection = (typeof COLLECTIONS)[number]
 /** Every log: the collections and the work's sessions in first-seen order. */
 export const LOGS = [...COLLECTIONS, "sessions"] as const
 export type LogName = (typeof LOGS)[number]
-const LOG_NAMES = new Set<string>(LOGS)
-
-function isLog(name: string): name is LogName {
-	return LOG_NAMES.has(name)
-}
 
 /** Row identity per log. */
 export const ROW_KEYS: Record<LogName, (row: Row) => string> = {
@@ -92,41 +87,12 @@ export interface WorkHead {
 /** Every row of a work, as folding its logs returns them. */
 export type WorkSummaryView = { workId: string; sessions: string[] } & Record<Collection, Row[]>
 
-/** Validates one committed row; a failure means the logs are damaged and the work is rebuilt from its records. */
-export type RowCheck = (collection: Collection, row: Row) => boolean
-
-/** A projection that does not match its manifest. */
-export class RowLogDamage extends Error {}
-
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function count(value: unknown, minimum = 0): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum
-}
-
 function text(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined
-}
-
-/** A version 2 manifest for `workId`, checked without opening its logs. */
-export function isWorkHead(value: unknown, workId: string): value is WorkHead {
-	return (
-		object(value) &&
-		value.version === 2 &&
-		value.workId === workId &&
-		typeof value.updatedAt === "string" &&
-		(value.sessions === undefined ||
-			(Array.isArray(value.sessions) && value.sessions.every((session) => typeof session === "string"))) &&
-		object(value.logs) &&
-		Object.entries(value.logs).every(
-			([name, log]) =>
-				isLog(name) && object(log) && count(log.generation, 1) && count(log.rows, 1) && count(log.bytes, log.rows + 1),
-		) &&
-		object(value.latest) &&
-		Array.isArray(value.pullRequests)
-	)
 }
 
 /** Milliseconds of an ISO 8601 timestamp, as `/work` orders rows; impossible dates are not times. */
