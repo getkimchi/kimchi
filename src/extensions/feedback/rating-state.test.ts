@@ -32,7 +32,7 @@ function userEntry(text = "fix it"): SessionEntry {
 
 function assistantEntry(
 	text: string,
-	opts?: { model?: string; provider?: string; responseModel?: string; textless?: boolean },
+	opts?: { model?: string; provider?: string; responseModel?: string; textless?: boolean; stopReason?: string },
 ): SessionEntry {
 	const message: AssistantMessage = {
 		role: "assistant",
@@ -51,7 +51,10 @@ function assistantEntry(
 			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
+		// pi-mono's vocabulary: "stop" is a clean end_turn; a cancelled or
+		// errored turn persists its reply with "aborted"/"error" — the durable
+		// settle fact the rating derivation reads.
+		stopReason: (opts?.stopReason ?? "stop") as AssistantMessage["stopReason"],
 		timestamp: 0,
 	}
 	return messageEntry(message)
@@ -69,10 +72,6 @@ function toolResultEntry(): SessionEntry {
 	return messageEntry(message)
 }
 
-function turnEndEntry(stopReason: unknown): SessionEntry {
-	return customEntry("turn_end", { stopReason })
-}
-
 function feedbackSummaryEntry(): SessionEntry {
 	return customEntry("feedback-summary", { sentiment: "positive", reason: "ok" })
 }
@@ -82,57 +81,57 @@ function log(...entries: SessionEntry[]): SessionEntry[] {
 }
 
 describe("deriveRatingState", () => {
-	it("arms for an end_turn-stamped tail with a concrete model", () => {
-		const state = deriveRatingState(log(userEntry(), assistantEntry("done"), turnEndEntry("end_turn")))
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
-	})
-
-	it("does not arm when the tail's turn aborted", () => {
-		const state = deriveRatingState(log(userEntry(), assistantEntry("partial"), turnEndEntry("aborted")))
-		expect(state).toEqual({ armable: false })
-	})
-
-	it("does not arm when the tail's turn errored", () => {
-		const state = deriveRatingState(log(userEntry(), assistantEntry("boom"), turnEndEntry("error")))
-		expect(state).toEqual({ armable: false })
-	})
-
-	it("legacy: a log with no turn_end stamps counts its tail as settled", () => {
+	it("arms for a clean end_turn tail with a concrete model", () => {
 		const state = deriveRatingState(log(userEntry(), assistantEntry("done")))
 		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
 	})
 
-	it("a stamp-bearing log with an unstamped tail does not arm", () => {
-		const state = deriveRatingState(
-			log(userEntry(), assistantEntry("first"), turnEndEntry("end_turn"), userEntry("again"), assistantEntry("second")),
-		)
+	it("does not arm when the reply was cancelled mid-response", () => {
+		const state = deriveRatingState(log(userEntry(), assistantEntry("partial answer", { stopReason: "aborted" })))
 		expect(state).toEqual({ armable: false })
 	})
 
-	it("does not arm when the tail reply is already rated", () => {
-		const state = deriveRatingState(
-			log(userEntry(), assistantEntry("done"), turnEndEntry("end_turn"), feedbackSummaryEntry()),
-		)
+	it("does not arm when the reply errored", () => {
+		const state = deriveRatingState(log(userEntry(), assistantEntry("boom", { stopReason: "error" })))
 		expect(state).toEqual({ armable: false })
 	})
 
-	it("a rating of an older reply does not close the tail", () => {
+	it("does not arm when the reply was truncated", () => {
+		const state = deriveRatingState(log(userEntry(), assistantEntry("so far", { stopReason: "length" })))
+		expect(state).toEqual({ armable: false })
+	})
+
+	it("does not arm when the reply carries no stop reason (conservative)", () => {
+		const state = deriveRatingState(log(userEntry(), assistantEntry("done", { stopReason: "pending" })))
+		expect(state).toEqual({ armable: false })
+	})
+
+	it("a later clean reply is rateable even after an earlier cancelled one", () => {
 		const state = deriveRatingState(
 			log(
 				userEntry(),
-				assistantEntry("older"),
-				turnEndEntry("end_turn"),
-				feedbackSummaryEntry(),
+				assistantEntry("cancelled reply", { stopReason: "aborted" }),
 				userEntry("again"),
-				assistantEntry("newer"),
-				turnEndEntry("end_turn"),
+				assistantEntry("good"),
 			),
 		)
 		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
 	})
 
+	it("does not arm when the tail reply is already rated", () => {
+		const state = deriveRatingState(log(userEntry(), assistantEntry("done"), feedbackSummaryEntry()))
+		expect(state).toEqual({ armable: false })
+	})
+
+	it("a rating of an older reply does not close the tail", () => {
+		const state = deriveRatingState(
+			log(userEntry(), assistantEntry("older"), feedbackSummaryEntry(), userEntry("again"), assistantEntry("newer")),
+		)
+		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
+	})
+
 	it("a log with no assistant reply does not arm", () => {
-		const state = deriveRatingState(log(userEntry(), turnEndEntry("end_turn")))
+		const state = deriveRatingState(log(userEntry()))
 		expect(state).toEqual({ armable: false })
 	})
 
@@ -141,95 +140,38 @@ describe("deriveRatingState", () => {
 	})
 
 	it("textless trailing assistant messages do not move the target", () => {
+		// A cancel during a tool loop: the visible reply before the loop is a
+		// clean artifact and stays rateable; the textless aborted tail is
+		// skipped.
 		const state = deriveRatingState(
-			log(
-				userEntry(),
-				assistantEntry("the real tail"),
-				assistantEntry("", { textless: true }),
-				turnEndEntry("end_turn"),
-			),
+			log(userEntry(), assistantEntry("the real tail"), assistantEntry("", { textless: true, stopReason: "aborted" })),
 		)
 		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
 	})
 
 	it("a tail that only produced a toolCall reply does not arm", () => {
-		const state = deriveRatingState(log(userEntry(), assistantEntry("", { textless: true }), turnEndEntry("end_turn")))
+		const state = deriveRatingState(log(userEntry(), assistantEntry("", { textless: true, stopReason: "aborted" })))
 		expect(state).toEqual({ armable: false })
 	})
 
-	it("toolResults between the reply and its terminator keep the attribution", () => {
+	it("tool results after the tail do not move the attribution target", () => {
 		const state = deriveRatingState(
-			log(
-				userEntry(),
-				assistantEntry("thinking"),
-				assistantEntry("", { textless: true }),
-				toolResultEntry(),
-				assistantEntry("final"),
-				turnEndEntry("end_turn"),
-			),
-		)
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
-	})
-
-	it("a terminator after the next user prompt does not stamp the previous reply", () => {
-		const state = deriveRatingState(
-			log(userEntry(), assistantEntry("orphan"), userEntry("again"), turnEndEntry("aborted")),
+			log(userEntry(), assistantEntry("the reply"), toolResultEntry(), feedbackSummaryEntry()),
 		)
 		expect(state).toEqual({ armable: false })
-	})
-
-	it("an earlier aborted terminator does not poison a later clean tail", () => {
-		const state = deriveRatingState(
-			log(
-				userEntry(),
-				assistantEntry("aborted reply"),
-				turnEndEntry("aborted"),
-				userEntry("again"),
-				assistantEntry("good"),
-				turnEndEntry("end_turn"),
-			),
-		)
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
 	})
 
 	it("reports the routed pick for an Auto turn", () => {
 		const state = deriveRatingState(
-			log(
-				userEntry(),
-				assistantEntry("done", { provider: "kimchi-dev", model: "auto", responseModel: "glm-5.3" }),
-				turnEndEntry("end_turn"),
-			),
+			log(userEntry(), assistantEntry("done", { provider: "kimchi-dev", model: "auto", responseModel: "glm-5.3" })),
 		)
 		expect(state).toEqual({ armable: true, window: { autoModelUsed: true, routedModelId: "glm-5.3" } })
 	})
 
 	it("reports no routed pick for an Auto turn whose responseModel is absent", () => {
 		const state = deriveRatingState(
-			log(
-				userEntry(),
-				assistantEntry("done", { provider: "kimchi-dev", model: "auto-beta" }),
-				turnEndEntry("end_turn"),
-			),
+			log(userEntry(), assistantEntry("done", { provider: "kimchi-dev", model: "auto-beta" })),
 		)
 		expect(state).toEqual({ armable: true, window: { autoModelUsed: true, routedModelId: undefined } })
-	})
-
-	it("skips malformed turn_end entries and still honors a later valid stamp", () => {
-		const state = deriveRatingState(
-			log(userEntry(), assistantEntry("done"), turnEndEntry({ nope: true }), turnEndEntry("end_turn")),
-		)
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
-	})
-
-	it("treats a turn_end whose stopReason is not a string as malformed (skipped, legacy tail rule)", () => {
-		const state = deriveRatingState(
-			log(userEntry(), assistantEntry("done"), customEntry("turn_end", { stopReason: 42 })),
-		)
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
-	})
-
-	it("treats a log whose turn_end data is not a record as stamp-less (legacy)", () => {
-		const state = deriveRatingState(log(userEntry(), assistantEntry("done"), customEntry("turn_end", "garbage")))
-		expect(state).toEqual({ armable: true, window: { autoModelUsed: false, routedModelId: undefined } })
 	})
 })

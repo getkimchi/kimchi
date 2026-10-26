@@ -201,6 +201,12 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 			// All stale-prone ctx reads happen before any module-state mutation,
 			// so a torn-down session leaves the extension state fully untouched.
 			const sessionId = ctx.sessionManager.getSessionId()
+			// The same derivation the restored path arms from: a turn that died
+			// (cancel, error) has no clean reply to rate, so nothing arms. The
+			// final message persists before this event fires, so the entries are
+			// current.
+			const derived = deriveRatingState(ctx.sessionManager.getEntries())
+			if (!derived.armable) return
 			// Capture the concrete pick the router served, so `routing_model` reports
 			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
 			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.

@@ -1,13 +1,21 @@
 // Transcript-derived rating state: walks the session's persisted entries and
 // decides whether the rating window may arm for the session's last settled,
-// unrated reply — the same fact the live `agent_settled` path arms from,
-// reconstructed from the log so a session loaded in a fresh process (TUI
-// resume, ACP `session/load`) rates exactly like one that just settled.
+// unrated reply — the same fact the live settle path arms from, reconstructed
+// from the log so a session loaded in a fresh process (TUI resume, ACP
+// `session/load`) rates exactly like one that just settled.
 //
 // The walk mirrors Studio's sessionJsonlParser so both derivations agree on
-// every log: the target of a terminator or rating stamp is the last
-// assistant reply with visible text (textless entries never render), a user
-// prompt moves the target off the reply, and stamps are first-wins.
+// every log: the target of a rating stamp is the last assistant reply with
+// visible text (textless entries never render), and a user prompt moves the
+// target off the reply.
+//
+// The settled fact is the reply's own persisted `stopReason` — written into
+// every assistant message entry since always ("stop" is a clean end_turn in
+// pi-mono's vocabulary, the ACP wire calls it "end_turn"; a cancelled or
+// errored turn persists its partial reply with "aborted"/"error"), so no
+// separate termination record is needed. A cancel before the reply's first
+// token leaves no entry and is invisible on disk: the previous settled reply
+// remains the tail and arms — accepted, documented divergence.
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { SessionEntry } from "@earendil-works/pi-coding-agent"
@@ -16,8 +24,6 @@ import type { RatingWindow } from "./rating-window.js"
 import { FEEDBACK_SUMMARY_CUSTOM_TYPE } from "./record-rating.js"
 
 export type DerivedRatingState = { armable: false } | { armable: true; window: RatingWindow }
-
-const TURN_END_CUSTOM_TYPE = "turn_end"
 
 /** The assistant message a rendered reply belongs to, or undefined for
  * anything without visible text (toolCall-only tails, empty text). */
@@ -28,17 +34,6 @@ function visibleAssistant(entry: SessionEntry): AssistantMessage | undefined {
 		if (block.type === "text") text += block.text
 	}
 	return text.trim().length > 0 ? entry.message : undefined
-}
-
-/** The stop reason a `turn_end` entry carries; a malformed entry (non-record
- * data, non-string reason) is undefined and skipped like Studio's parser
- * skips it — the log then counts as stamp-less for that entry. */
-function turnEndStopReason(entry: SessionEntry): string | undefined {
-	if (entry.type !== "custom" || entry.customType !== TURN_END_CUSTOM_TYPE) return undefined
-	const data: unknown = entry.data
-	if (typeof data !== "object" || data === null || !("stopReason" in data)) return undefined
-	const stopReason: unknown = data.stopReason
-	return typeof stopReason === "string" ? stopReason : undefined
 }
 
 /** The settled turn's window payload, from the rated reply's own persisted
@@ -67,9 +62,15 @@ export function deriveRatingState(entries: readonly SessionEntry[]): DerivedRati
 	}
 	if (tail === undefined || tailIndex < 0) return { armable: false }
 
+	// Only a clean end_turn reply is rateable: the reply's own persisted
+	// stop reason records what happened to it ("aborted" = cancelled,
+	// "error" = failed, "length" = truncated). A turn-level cancel is
+	// therefore not rateable on restore — matching the live gate.
+	if (tail.stopReason !== "stop") return { armable: false }
+
 	// Whether an entry moves the positional target off the tail: a user
-	// prompt clears it and a newer visible reply replaces it. Tool results,
-	// terminators and ratings keep it.
+	// prompt clears it and a newer visible reply replaces it. Tool results
+	// and ratings keep it.
 	const movesTarget = (entry: SessionEntry): boolean =>
 		visibleAssistant(entry) !== undefined || (entry.type === "message" && entry.message.role === "user")
 
@@ -84,27 +85,5 @@ export function deriveRatingState(entries: readonly SessionEntry[]): DerivedRati
 		}
 	}
 
-	const window = ratingWindowFor(tail)
-
-	// Legacy fallback: a log written before turn_end stamps existed carries
-	// none — its unstamped tail counts as settled (old tails are
-	// overwhelmingly completed turns).
-	const hasTurnEnd = entries.some((entry) => turnEndStopReason(entry) !== undefined)
-	if (!hasTurnEnd) return { armable: true, window }
-
-	// Stamp-bearing log: the tail's own terminator decides — first-wins, so a
-	// reply-less turn's later terminator cannot restamp it.
-	for (let i = tailIndex + 1; i < entries.length; i++) {
-		const entry = entries[i]
-		if (movesTarget(entry)) break
-		if (entry.type === "custom" && entry.customType === TURN_END_CUSTOM_TYPE) {
-			const stopReason = turnEndStopReason(entry)
-			if (stopReason === undefined) continue
-			return stopReason === "end_turn" ? { armable: true, window } : { armable: false }
-		}
-	}
-
-	// Stamps exist elsewhere but none terminates the tail: the tail turn did
-	// not settle end_turn (aborted, errored, still in flight).
-	return { armable: false }
+	return { armable: true, window: ratingWindowFor(tail) }
 }

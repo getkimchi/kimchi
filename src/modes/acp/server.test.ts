@@ -9939,8 +9939,9 @@ describe("KimchiAcpAgent loadSession", () => {
 	}
 
 	/** A minimal persisted log a restart-rate test loads: session header, one
-	 * user prompt, one assistant reply, optionally a turn_end stamp and/or a
-	 * pre-seeded rating. Returns the session file path. */
+	 * user prompt, one assistant reply carrying its own persisted stop reason
+	 * (the settle fact the derivation reads), optionally pre-rated. Returns
+	 * the session file path. */
 	function writeRestartRateLog(
 		agentDir: string,
 		cwd: string,
@@ -9978,27 +9979,17 @@ describe("KimchiAcpAgent loadSession", () => {
 						totalTokens: 0,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					stopReason: "stop",
+					stopReason: opts?.stopReason ?? "stop",
 					timestamp: 0,
 				},
 			},
 		]
-		if (opts?.stopReason !== undefined) {
+		if (opts?.rated) {
 			lines.push({
 				type: "custom",
 				id: "m3",
 				parentId: "m2",
 				timestamp: "2026-05-09T00:00:03Z",
-				customType: "turn_end",
-				data: { stopReason: opts.stopReason },
-			})
-		}
-		if (opts?.rated) {
-			lines.push({
-				type: "custom",
-				id: "m4",
-				parentId: "m3",
-				timestamp: "2026-05-09T00:00:04Z",
 				customType: "feedback-summary",
 				data: { sentiment: "positive", reason: "already recorded" },
 			})
@@ -10347,7 +10338,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rate-")
 		try {
 			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
-			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId, { stopReason: "end_turn" })
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId)
 
 			// A fresh process: the session is not live in it, only its log.
 			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
@@ -10407,7 +10398,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rated-")
 		try {
 			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
-			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId, { stopReason: "end_turn", rated: true })
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId, { rated: true })
 
 			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
 			await agent.loadSession({ sessionId, cwd, mcpServers: [] })

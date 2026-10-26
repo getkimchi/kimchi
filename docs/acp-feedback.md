@@ -75,14 +75,21 @@ Invalid submissions fail with distinct errors:
 A session constructed from its persisted log (TUI resume, ACP `session/load`
 — Studio's app-restart flow ensures the session is loaded before
 submitting) arms the same window from the transcript: the log's last
-assistant reply with visible text is rateable when its turn settled
-`end_turn` and no `feedback-summary` entry already attributes to it. The
-settle fact comes from `turn_end` custom entries where present (first stamp
-per reply wins); a log carrying no `turn_end` stamps at all counts its
-unstamped tail as settled (pre-stamp logs). Telemetry derives from the
-rated reply's own entry: `model` names the routed virtual (`auto*` on the
-kimchi-dev provider) and `responseModel` the concrete pick the backend
-served — the same facts the settle-time window captured.
+assistant reply with visible text is rateable when its own persisted
+`stopReason` records a clean end_turn (pi-mono's `"stop"` — the ACP wire
+calls it `end_turn`) and no `feedback-summary` entry already attributes to
+it. A reply whose entry says `aborted`, `error`, or `length` was cancelled,
+errored, or truncated: never rateable, live or restored — the live settle
+path reads the same fact, so a cancelled turn invites nothing on any
+surface. Telemetry derives from the rated reply's own entry: `model` names
+the routed virtual (`auto*` on the kimchi-dev provider) and `responseModel`
+the concrete pick the backend served — the same facts the settle-time
+window captured.
+
+One divergence is accepted: a cancel *before the reply's first token*
+persists nothing, so the previous settled reply remains the log's tail and
+arms on restore where the live process had cleared it. The cancel is
+invisible on disk; the reply itself is a clean end_turn artifact.
 
 `session/load` of an id with no persisted log fabricates an empty session
 (pre-existing loader behavior): nothing arms and a rating rejects with the
