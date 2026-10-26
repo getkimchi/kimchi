@@ -19,9 +19,6 @@ import { debugWorkAttribution } from "./diagnostics.js"
 
 export { fileMatchStrength } from "../pr-cost-reporting/ledger/merge.js"
 
-/** Kept for trackers that still take a file lease (issues.ts); the record store needs no lease. */
-export const LOCK_STALE_MS = 5000
-export const LOCK_RETRIES = { retries: 60, factor: 1.5, minTimeout: 25, maxTimeout: 100 }
 interface SummaryEntry {
 	sessionId: string
 	[key: string]: unknown

@@ -384,7 +384,3 @@ export function hydrateLegacyOnce(agentDir: string): void {
 	hydrateLegacy(agentDir)
 	hydratedDirs.add(agentDir)
 }
-
-export function journalPath(agentDir: string, name: string): string {
-	return join(agentDir, "work-attribution", name)
-}

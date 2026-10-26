@@ -92,12 +92,6 @@ export interface WorkHead {
 /** Every row of a work, as folding its logs returns them. */
 export type WorkSummaryView = { workId: string; sessions: string[] } & Record<Collection, Row[]>
 
-/** Validates one committed row; a failure means the logs are damaged and the work is rebuilt from its records. */
-export type RowCheck = (collection: Collection, row: Row) => boolean
-
-/** A projection that does not match its manifest. */
-export class RowLogDamage extends Error {}
-
 function object(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 }

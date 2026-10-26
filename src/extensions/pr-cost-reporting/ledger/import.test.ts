@@ -11,7 +11,6 @@ import {
 	hydrateLegacyOnce,
 	importJournals,
 	journalDecision,
-	journalPath,
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
 import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
