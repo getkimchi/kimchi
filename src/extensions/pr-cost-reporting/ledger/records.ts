@@ -582,18 +582,18 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const allHeads = db.query<{ body: string }, []>("SELECT body FROM work_projection_head")
 	const clearRows = db.query("DELETE FROM work_projection_rows WHERE work_id = ?")
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
-	const readRecordsAll = db.query<StoredRecord, []>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records ORDER BY rowid",
-	)
+	const recordColumns =
+		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE work_id = ? ORDER BY rowid",
+		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
 	)
 	const readRecordsSince = db.query<StoredRecord, [number]>(
-		"SELECT record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE imported_at >= ? ORDER BY rowid",
+		`SELECT ${recordColumns} FROM work_records WHERE imported_at >= ? ORDER BY rowid`,
 	)
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
-		"SELECT rowid AS position, record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?",
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
