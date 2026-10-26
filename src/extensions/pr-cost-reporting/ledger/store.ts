@@ -84,13 +84,10 @@ export function openStore(agentDir: string): LedgerStore {
 		db.exec("PRAGMA busy_timeout=5000")
 		// Read the version before any persisting pragma so a foreign database is left exactly as found.
 		const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
-		switch (classifyUserVersion(version)) {
-			case "foreign":
-				throw new LedgerSchemaError(version)
-			default:
-				db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
-		}
-		if (classifyUserVersion(version) === "create") {
+		const decision = classifyUserVersion(version)
+		if (decision === "foreign") throw new LedgerSchemaError(version)
+		db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
+		if (decision === "create") {
 			db.transaction(() => {
 				// Re-read inside the immediate lock: a concurrent process may have finished creating (or written a
 				// foreign version) between the outer read and this transaction.
