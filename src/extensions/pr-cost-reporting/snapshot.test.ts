@@ -1086,3 +1086,39 @@ describe("trimming a snapshot to the upload limits", () => {
 		expect(snapshot.observedRequestIds).toEqual([later, requestId].sort())
 	})
 })
+
+describe("first-linked narrowing", () => {
+	it("names only the MR a stacked commit was first linked to", () => {
+		// The stacked journal order: the feature MR first, then both MRs after the feature MR merges.
+		const feature = pull(11, "lumbrook/platform", "4242")
+		const integration = { ...pull(22, "lumbrook/platform", "4242"), state: "open" as const, mergedAt: null }
+		const listedFirst = "2026-10-04T12:21:00.000Z"
+		const listedAgain = "2026-10-04T12:45:00.000Z"
+		const [request, commit] = records()
+		const commitRow = (pullRequests: WorkPullRequest[], recordedAt: string): WorkRecord => ({
+			...commit,
+			recordedAt,
+			pullRequests,
+			prLookup: { status: "linked", checkedAt: recordedAt },
+		})
+		const rows: WorkRecord[] = [
+			request,
+			commitRow([{ ...feature, state: "open", mergedAt: null, checkedAt: listedFirst }], listedFirst),
+			commitRow(
+				[
+					{ ...feature, checkedAt: listedAgain },
+					{ ...integration, checkedAt: listedAgain },
+				],
+				listedAgain,
+			),
+		]
+		const snapshot = build(rows).snapshots[0]
+		expect(snapshot.content.requests).toHaveLength(1)
+		expect(snapshot.content.requests[0]).toMatchObject({
+			allocation: { kind: "pull-request", pullRequestIds: [feature.id] },
+		})
+		expect(snapshot.content.pullRequests).toHaveLength(1)
+		expect(snapshot.content.pullRequests[0]).toMatchObject({ id: feature.id })
+		expect(snapshot.content).not.toHaveProperty("windowedPullRequestIds")
+	})
+})

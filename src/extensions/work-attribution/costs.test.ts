@@ -1733,3 +1733,112 @@ describe("roundedUsd", () => {
 		expect(roundedUsd(nanos)).toBe(text)
 	})
 })
+
+describe("first-linked narrowing", () => {
+	const feature = (overrides: Record<string, unknown> = {}) =>
+		pullRequest({
+			repository: "lumbrook/platform",
+			number: 11,
+			url: "https://github.com/lumbrook/platform/pull/11",
+			...overrides,
+		})
+	const integration = (overrides: Record<string, unknown> = {}) =>
+		pullRequest({
+			repository: "lumbrook/platform",
+			number: 22,
+			url: "https://github.com/lumbrook/platform/pull/22",
+			state: "open",
+			mergedAt: null,
+			...overrides,
+		})
+	const featureKey = "github:github.com/lumbrook/platform#11"
+	const integrationKey = "github:github.com/lumbrook/platform#22"
+	const lookup = (minutes: number) => ({ status: "linked", checkedAt: time(minutes) })
+
+	it("keeps only the first-listed PR when a later row lists the commit in a second PR", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit("work-a", [feature({ checkedAt: time(45) }), integration({ checkedAt: time(45) })], "session-a", {
+					recordedAt: time(45),
+					prLookup: lookup(45),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
+		expect(report.pullRequests.map((row) => row.key)).toEqual([featureKey])
+	})
+
+	it("drops a first-listed PR the last time it was seen closed when another stays open", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit(
+					"work-a",
+					[feature({ state: "closed", mergedAt: null, checkedAt: time(45) }), integration({ checkedAt: time(45) })],
+					"session-a",
+					{ recordedAt: time(45), prLookup: lookup(45) },
+				),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0]).toMatchObject({ allocation: "unmerged", pullRequestIds: [integrationKey] })
+		expect(report.pullRequests.map((row) => row.key)).toEqual([integrationKey])
+	})
+
+	it("keeps a commit shared when its very first row already lists it in two PRs", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature(), integration()], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0]).toMatchObject({
+			allocation: "shared",
+			pullRequestIds: [featureKey, integrationKey],
+		})
+	})
+
+	it("keeps a request shared across two commits in different PRs", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ mergedAt: time(50), closedAt: time(50) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit("work-a", [integration()], "session-a", {
+					recordedAt: time(45),
+					prLookup: lookup(45),
+					sha: "b".repeat(40),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0]).toMatchObject({
+			allocation: "shared",
+			pullRequestIds: [featureKey, integrationKey],
+		})
+	})
+
+	it("keeps a commit in one PR exactly as today", () => {
+		const report = calculatePullRequestCosts(
+			[request("a"), commit("work-a", [feature()], "session-a", { recordedAt: time(21), prLookup: lookup(21) })],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
+	})
+})
