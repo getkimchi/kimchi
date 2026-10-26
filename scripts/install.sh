@@ -91,6 +91,15 @@ fi
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
+# Adapter releases are vMAJOR.MINOR.PATCH with an optional -rc.N suffix.
+valid_adapters_version() {
+	local core="${1#v}" rc=0
+	[ "v$core" = "$1" ] || return 1
+	case "$core" in *-rc.*) rc="${core#*-rc.}"; core="${core%%-rc.*}" ;; esac
+	case "$core" in .* | *. | *..* | *.*.*.* | *[!0123456789.]*) return 1 ;; *.*.*) ;; *) return 1 ;; esac
+	case "$rc" in "" | *[!0123456789]*) return 1 ;; esac
+}
+
 # Resolve private access before changing an existing Kimchi installation.
 if [ -n "$ADAPTERS" ]; then
 	if [ -z "$ADAPTERS_VERSION" ]; then
@@ -99,7 +108,7 @@ if [ -n "$ADAPTERS" ]; then
 			exit 1
 		}
 	fi
-	[[ "$ADAPTERS_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo 'Invalid adapter release version.' >&2; exit 1; }
+	valid_adapters_version "$ADAPTERS_VERSION" || { echo 'Invalid adapter release version.' >&2; exit 1; }
 	mkdir -p "$TEMP_DIR/adapters"
 	if ! gh release download "$ADAPTERS_VERSION" --repo getkimchi/kimchi-adapters --pattern install.sh --dir "$TEMP_DIR/adapters"; then
 		echo 'Could not download the private adapter installer. Check gh auth login and repository access.' >&2
