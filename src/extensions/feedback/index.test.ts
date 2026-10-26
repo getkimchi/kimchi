@@ -1,5 +1,5 @@
 import type { Model } from "@earendil-works/pi-ai"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
@@ -164,6 +164,172 @@ describe("feedbackExtension rating window registry", () => {
 
 		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+
+	// A session constructed from a persisted log (TUI resume, ACP
+	// session/load) re-derives its rating state at session_start — the same
+	// facts the settle path arms from, read back from the transcript.
+	describe("rating window armed from a loaded transcript", () => {
+		function settledEntries(): SessionEntry[] {
+			return [
+				{
+					type: "message",
+					id: "e1",
+					parentId: null,
+					timestamp: "t",
+					message: { role: "user", content: "fix it", timestamp: 0 },
+				},
+				{
+					type: "message",
+					id: "e2",
+					parentId: "e1",
+					timestamp: "t",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "done" }],
+						api: "openai-completions",
+						provider: "kimchi-dev",
+						model: "kimi-k3",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: 0,
+					},
+				},
+				{
+					type: "custom",
+					id: "e3",
+					parentId: "e2",
+					timestamp: "t",
+					customType: "turn_end",
+					data: { stopReason: "end_turn" },
+				},
+			]
+		}
+
+		function makeApiWithEntries(entries: SessionEntry[]) {
+			const harness = createExtensionApi()
+			const ctx = createContext({ sessionManager: { getEntries: () => entries } })
+			return { ...harness, ctx }
+		}
+
+		it("arms the window from a loaded log whose last reply settled end_turn", async () => {
+			const { api, ctx, getHandler } = makeApiWithEntries(settledEntries())
+			feedbackExtension(api)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({
+				autoModelUsed: false,
+				routedModelId: undefined,
+			})
+		})
+
+		it("reports the transcript's routed pick for an Auto reply", async () => {
+			const entries = settledEntries()
+			const assistant = entries[1]
+			if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
+			assistant.message.model = "auto"
+			assistant.message.responseModel = "glm-5.3"
+			const { api, ctx, getHandler } = makeApiWithEntries(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: true, routedModelId: "glm-5.3" })
+		})
+
+		it("does not arm from a log whose tail aborted", async () => {
+			const entries = settledEntries()
+			const turnEnd = entries[2]
+			if (turnEnd.type !== "custom") throw new Error("fixture")
+			turnEnd.data = { stopReason: "aborted" }
+			const { api, ctx, getHandler } = makeApiWithEntries(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("does not arm from an already-rated log", async () => {
+			const entries: SessionEntry[] = [
+				...settledEntries(),
+				{
+					type: "custom",
+					id: "e4",
+					parentId: "e3",
+					timestamp: "t",
+					customType: "feedback-summary",
+					data: { sentiment: "positive", reason: "ok" },
+				},
+			]
+			const { api, ctx, getHandler } = makeApiWithEntries(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("does not arm for a fresh session with no entries", async () => {
+			const { api, ctx, getHandler } = makeApi()
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "startup" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("a settle-armed window is replaced by what the replacement session's log derives", async () => {
+			const { api, ctx, getHandler } = makeApi()
+			feedbackExtension(api)
+			getHandler("agent_settled")({}, ctx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: false, routedModelId: undefined })
+
+			const entries = settledEntries()
+			const assistant = entries[1]
+			if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
+			assistant.message.model = "auto"
+			assistant.message.responseModel = "glm-5.3"
+			const resumeCtx = createContext({ sessionManager: { getEntries: () => entries } })
+			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+			await getHandler("session_start")({ reason: "resume" }, resumeCtx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: true, routedModelId: "glm-5.3" })
+		})
+
+		it("a forked session's inherited tail arms from the copied log", async () => {
+			// /fork and /clone replace the session: session_shutdown then
+			// session_start, and the new session's entries are the parent's
+			// copied log — its settled tail arms by the same rule.
+			const { api, ctx, getHandler } = makeApiWithEntries(settledEntries())
+			feedbackExtension(api)
+
+			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+
+			await getHandler("session_start")({ reason: "resume" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({
+				autoModelUsed: false,
+				routedModelId: undefined,
+			})
+		})
+
+		it("invites on resume so the restored reply can be rated", async () => {
+			const { api, ctx, getHandler, getShortcutHandler, getAppendedEntries } = makeApiWithEntries(settledEntries())
+			feedbackExtension(api)
+			await getHandler("session_start")({ reason: "resume" }, ctx)
+
+			dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
+			await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+
+			expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: false })
+			expect(getAppendedEntries("feedback-summary")).toHaveLength(1)
+			// The window is consumed — one rating per settled response.
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
 	})
 })
 

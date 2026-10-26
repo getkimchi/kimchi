@@ -12,6 +12,9 @@ export interface ScenarioResult {
 	stopReason: acp.StopReason | "TIMEOUT" | "ERROR"
 }
 
+/** The `_kimchi.dev/feedback` wire method (contract: docs/acp-feedback.md). */
+export const FEEDBACK_METHOD = "_kimchi.dev/feedback"
+
 export async function newSession(fixture: AcpFixture, cwd: string): Promise<string> {
 	const ns = await fixture.conn.newSession({ cwd, mcpServers: [] })
 	process.stderr.write(`[acp-e2e] newSession=${ns.sessionId}\n`)
