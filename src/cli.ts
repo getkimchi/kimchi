@@ -291,7 +291,10 @@ async function cliMain(): Promise<void> {
 	// reporting) before telemetry and session setup so both read the same view.
 	// Blocking only on the first run per API key (cache miss, capped at 1.5s);
 	// afterwards the cached policy applies and refreshes in the background.
-	await initOrgPolicy(resolveEffectiveApiKey() ?? "")
+	// SSO users resolve their credential from auth.json — same precedence as
+	// every other gateway/API call (resolver ignores the request-time refresh).
+	const orgPolicyCredentials = resolveGatewayCredentials({ apiKey: resolveEffectiveApiKey() ?? "" })
+	await initOrgPolicy(orgPolicyCredentials.token, { organizationId: orgPolicyCredentials.organizationId })
 
 	// --- Telemetry ---
 	// The org usage-reporting policy clamp applies at this single construction

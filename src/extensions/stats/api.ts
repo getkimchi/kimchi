@@ -4,6 +4,7 @@
  * Fetches analytics, productivity metrics, and timeseries data from Cast AI.
  */
 
+import { GATEWAY_ORGANIZATION_HEADER } from "../../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 import type {
@@ -16,15 +17,19 @@ import type {
 
 interface ApiClientConfig {
 	apiKey: string
+	/** SSO organization routing header — set when the bearer is an OAuth credential. */
+	organizationId?: string
 	baseUrl?: string
 }
 
 export class CastAiStatsApi {
 	private apiKey: string
+	private organizationId?: string
 	private baseUrl: string
 
 	constructor(config: ApiClientConfig) {
 		this.apiKey = config.apiKey
+		this.organizationId = config.organizationId
 		this.baseUrl = config.baseUrl ?? resolveEndpoints().castApiUrl
 	}
 
@@ -35,6 +40,7 @@ export class CastAiStatsApi {
 		const url = `${this.baseUrl}${path}`
 		const headers = new Headers(options.headers)
 		headers.set("Authorization", `Bearer ${this.apiKey}`)
+		if (this.organizationId) headers.set(GATEWAY_ORGANIZATION_HEADER, this.organizationId)
 		headers.set("Content-Type", "application/json")
 		headers.set("Accept", "application/json")
 

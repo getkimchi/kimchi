@@ -37,6 +37,16 @@ describe("getMe", () => {
 		expect(opts.headers.Authorization).toBe("Bearer test-key")
 	})
 
+	it("sends the SSO organization header when one is given", async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ id: "user-3" }),
+		})
+		await getMe("oauth-token", { fetch: mockFetch, organizationId: "org-1" })
+		const [, opts] = mockFetch.mock.calls[0]
+		expect(opts.headers["X-CastAi-Organization-Id"]).toBe("org-1")
+	})
+
 	it("uses custom endpoint when provided", async () => {
 		const mockFetch = vi.fn().mockResolvedValue({
 			ok: true,

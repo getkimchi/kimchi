@@ -133,7 +133,11 @@ function clearCache(cachePath: string): void {
  */
 export async function initOrgPolicy(
 	apiKey: string,
-	options?: { cachePath?: string; fetch?: typeof globalThis.fetch },
+	options?: {
+		cachePath?: string
+		fetch?: typeof globalThis.fetch /** SSO organization routing header for OAuth bearers. */
+		organizationId?: string
+	},
 ): Promise<void> {
 	const cachePath = options?.cachePath ?? ORG_POLICY_CACHE_PATH
 
@@ -144,7 +148,7 @@ export async function initOrgPolicy(
 	}
 
 	const fingerprint = keyFingerprint(apiKey)
-	const outcome = await fetchOrgPolicy(apiKey, { fetch: options?.fetch })
+	const outcome = await fetchOrgPolicy(apiKey, { fetch: options?.fetch, organizationId: options?.organizationId })
 	switch (outcome.kind) {
 		case "policy":
 			// Wire truth wins over anything on disk: the fresh policy replaces
