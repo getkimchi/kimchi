@@ -12,6 +12,7 @@
  * a writer that cannot get the lock within it surfaces SQLITE_BUSY (proven by the
  * store test via the Bun driver), never corruption.
  */
+import type * as Sqlite from "bun:sqlite"
 import { closeSync, mkdirSync, openSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
@@ -36,14 +37,11 @@ export class LedgerSchemaError extends Error {
 	}
 }
 
-type Sqlite = typeof import("bun:sqlite")
-type Database = import("bun:sqlite").Database
-
-let sqlite: Sqlite | undefined
-function bunSqlite(): Sqlite {
+let sqlite: typeof Sqlite | undefined
+function bunSqlite(): typeof Sqlite {
 	if (!sqlite) {
 		try {
-			sqlite = createRequire(import.meta.url)("bun:sqlite") as Sqlite
+			sqlite = createRequire(import.meta.url)("bun:sqlite") as typeof Sqlite
 		} catch (error) {
 			throw new LedgerUnavailableError(error)
 		}
@@ -63,7 +61,7 @@ export function classifyUserVersion(version: number): "create" | "open" | "forei
 }
 
 export interface LedgerStore {
-	readonly db: Database
+	readonly db: Sqlite.Database
 	readonly path: string
 	/** Run fn in an immediate transaction: all-or-nothing commit for capture/import/ACK points. */
 	tx<T>(fn: () => T): T
