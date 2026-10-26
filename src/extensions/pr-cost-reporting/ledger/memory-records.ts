@@ -8,38 +8,6 @@ import type {
 	StoredRecord,
 } from "./records.js"
 
-/**
- * Transient memory records backend for vitest: same visible behavior as the
- * SQLite backend, including rollback, so suite results carry over to Bun.
- */
-type MemoryState = {
-	readonly logs: Map<string, Map<LogName, Map<string, { pos: number; body: Row }>>>
-	readonly heads: Map<string, WorkHead>
-	readonly logsMeta: Map<string, { generation: number; bytes: number; rows: number }>
-	readonly dirty: Set<string>
-	readonly diagnostics: Map<string, number>
-	readonly notes: Map<string, Map<string, string>>
-	readonly records: Map<string, StoredRecord>
-	readonly order: StoredRecord[]
-	readonly cursors: Map<string, JournalCursor>
-	readonly counters: { pos: Map<string, number>; diagnosticsVersion: number }
-}
-
-function freshMemoryState(): MemoryState {
-	return {
-		logs: new Map(),
-		heads: new Map(),
-		logsMeta: new Map(),
-		dirty: new Set(),
-		diagnostics: new Map(),
-		notes: new Map(),
-		records: new Map(),
-		order: [],
-		cursors: new Map(),
-		counters: { pos: new Map(), diagnosticsVersion: 0 },
-	}
-}
-
 /** The in-memory RecordBackend used by vitest: identical semantics to the SQLite one, over plain Maps. The shared
  * conformance suite runs the same scenario against both, so this double cannot drift from production behavior. */
 export function createMemoryRecords(): RecordBackend {
@@ -106,13 +74,7 @@ export function createMemoryRecords(): RecordBackend {
 		for (const [key, value] of backup.events) events.set(key, value)
 		batches.clear()
 		for (const [key, value] of backup.batches) batches.set(key, value)
-		headPositions.clear()
-		headVersions.clear()
 	}
-
-	// headPositions mimics legacy work.json manifest state for behaviors needing it.
-	const headPositions = new Map<string, number>()
-	const headVersions = new Map<string, number>()
 
 	return {
 		/**
@@ -266,7 +228,6 @@ export function createMemoryRecords(): RecordBackend {
 		clearProjection: (workId) => {
 			logs.delete(workId)
 			heads.delete(workId)
-			for (const log of [...(workLogs(workId).keys() ?? [])]) positions.delete(logKey(workId, log))
 		},
 		getHead: (workId) => heads.get(workId),
 		putHead: (head) => heads.set(head.workId, head),
@@ -315,6 +276,3 @@ export function createMemoryRecords(): RecordBackend {
 		close: () => {},
 	}
 }
-
-/** Alias kept for suites that referenced the earlier draft name. */
-export const createInMemoryRecords = createMemoryRecords
