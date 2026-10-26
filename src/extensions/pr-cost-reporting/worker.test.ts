@@ -233,6 +233,32 @@ describe("account-fenced reporting delivery", () => {
 		}
 	})
 
+	it("keeps an event batch without an error when the credential changes during its upload", async () => {
+		// Events wait until the legacy snapshot queued for this account drains.
+		await deliver()
+		const batch = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountKey(content.account),
+			body: new TextEncoder().encode("{}"),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		backendFor(directory).insertOutboxBatch(batch)
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(batch)
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			// An SSO refresh rewrites the credential while the batch is in flight.
+			config.key = "refreshed-key"
+			return Response.json({ batchId: batch.id, receipts: [] })
+		})
+		await expect(deliverEvents(directory, "/project", new AbortController().signal, () => {})).resolves.toBeUndefined()
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		expect(backendFor(directory).getOutboxBatch(batch.accountKey)?.id).toBe(batch.id)
+		expect(backendFor(directory).getNote("pr-cost-delivery", batch.accountKey)).toBeUndefined()
+	})
+
 	it("queues the producer's facts and original hashes under their original account", async () => {
 		await seedLinked(false)
 		const group = {
