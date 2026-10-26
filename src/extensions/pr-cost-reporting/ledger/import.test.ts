@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -149,10 +150,10 @@ describe("line splitting (pure)", () => {
 
 	it("boundaryHashOf hashes the consumed prefix", () => {
 		const empty = Buffer.alloc(0)
-		expect(boundaryHashOf(empty, 0)).toMatch(/^[a-f\d]{64}$/)
+		expect(boundaryHashOf(empty, 0)).toBe(createHash("sha256").digest("hex"))
 		expect(boundaryHashOf(empty, 0)).toBe(boundaryHashOf(empty, 0))
 		const file = Buffer.from("abc")
-		expect(boundaryHashOf(file, 3)).toMatch(/^[a-f\d]{64}$/)
+		expect(boundaryHashOf(file, 3)).toBe(createHash("sha256").update(file).digest("hex"))
 		expect(boundaryHashOf(file, 3)).not.toBe(boundaryHashOf(file, 2))
 	})
 })

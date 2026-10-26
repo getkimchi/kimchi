@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -553,7 +554,11 @@ describe("account-fenced reporting delivery", () => {
 			billingRecordIds: priced ? ["44444444-4444-4444-8444-444444444444"] : [],
 		})
 		const stored = vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[0]
-		expect(stored?.every((row) => /^[a-f0-9]{64}$/.test(row.recordHash))).toBe(true)
+		// The producer receives each journal line's original hash, not a hash of its reserialized body.
+		const lines = (await readFile(join(directory, "work-attribution", "source.jsonl"), "utf8")).trimEnd().split("\n")
+		expect(stored?.map((row) => row.recordHash)).toEqual(
+			lines.map((line) => createHash("sha256").update(line).digest("hex")),
+		)
 		expect(posts().map((snapshot) => snapshot.revision)).toEqual(["1"])
 	})
 	it("does not look up or send with a different configured endpoint", async () => {

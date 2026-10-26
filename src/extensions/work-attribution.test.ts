@@ -1035,7 +1035,8 @@ describe("local work attribution", () => {
 			durationMs: 12.75,
 			sourceVersion: expect.any(String),
 		})
-		expect(JSON.stringify(tools)).not.toMatch(/private-input|private-output/)
+		expect(JSON.stringify(tools)).not.toContain("private-input")
+		expect(JSON.stringify(tools)).not.toContain("private-output")
 		expect(getToolRequest(ctx, "edit-original")).toBeUndefined()
 	})
 	it("inherits a nested tool's explicit parent without exposing private tool payloads", async () => {

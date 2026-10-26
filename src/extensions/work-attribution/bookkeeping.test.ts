@@ -74,7 +74,7 @@ console.log(JSON.stringify({ scope: readWorkScope(${JSON.stringify(WORK)}), issu
 `,
 	)
 	expect(reopened).toEqual({ scope, issue: { revision: 1, selected: { key: "ABC-123", revision: 1 } }, transitions: 1 })
-	expect(files(agentDir).filter((path) => /\.jsonl?$/.test(path))).toEqual([])
+	expect(files(agentDir).filter((path) => path.endsWith(".jsonl") || path.endsWith(".json"))).toEqual([])
 	expect(files(agentDir)).toContain(join("pr-cost-reporting", "ledger.db"))
 })
 
