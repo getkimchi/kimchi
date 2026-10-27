@@ -5,15 +5,8 @@
  */
 import { resolve } from "node:path"
 import { parseArgs } from "node:util"
-import { runAnalyze } from "./analyze.ts"
+import { DEFAULT_STEPS, runAll } from "./all.ts"
 import { ALL_SUITES, LOCAL_DEFAULT_SUITES, type RunConfig, readBaseline, type Suite } from "./config.ts"
-import { runDryRun } from "./dry-run.ts"
-import { runFetch } from "./fetch.ts"
-import { runInternals } from "./internals.ts"
-import { runPublish } from "./publish.ts"
-import { runRender } from "./render.ts"
-import { runSettle } from "./settle.ts"
-import { runTests } from "./tests.ts"
 
 const USAGE = `usage: pnpm pi-upgrade <step> [options]
 
@@ -30,16 +23,7 @@ options:
 
 type Step = (cfg: RunConfig) => Promise<unknown>
 
-const STEPS: Record<string, Step> = {
-	settle: runSettle,
-	fetch: runFetch,
-	"dry-run": runDryRun,
-	internals: runInternals,
-	tests: (cfg) => runTests(cfg),
-	analyze: runAnalyze,
-	render: runRender,
-	publish: runPublish,
-}
+const STEPS: Record<string, Step> = { ...DEFAULT_STEPS, all: runAll }
 
 function parseSuites(value: string | undefined): Suite[] {
 	if (!value) return LOCAL_DEFAULT_SUITES
