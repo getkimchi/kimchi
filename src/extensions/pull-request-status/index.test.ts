@@ -800,6 +800,24 @@ describe("expected lookup failures", () => {
 		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "feature"))
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
+	// Regression for the user-reported warning spam: a GH/GL remote that returns 404 for the branch/commit
+	// must be treated like an unsupported remote (no warnOnce, branch-only footer).
+	it("stays silent when the provider returns 404 for the branch", async () => {
+		await startStandalone()
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "feature · PR #7 open"))
+		vi.mocked(branches.lookupBranchPullRequest).mockRejectedValue(
+			new LookupError(
+				"GitHub could not find this repository, commit or pull request. It may require authentication.",
+				"missing",
+			),
+		)
+		afterBranchRefresh()
+		await vi.advanceTimersByTimeAsync(30_000)
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledTimes(2))
+		// Branch-only footer: the same behavior we want for non-GH/GL remotes.
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "feature"))
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
 	it("waits through retryable work lookups, ignores unsupported repositories and still lists both in /work", async () => {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)

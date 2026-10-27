@@ -333,8 +333,11 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 | Token but no CLI | Uses the token directly. |
 | No token and no CLI | Tries public repository access. Private repositories require credentials. |
 | No access, network failure or rate limit | Shows the reason and retries later; local request, edit and commit recording continue. |
+| Provider returns 404 for the branch, commit or PR | Branch-only footer; `/work` lists the reason; no warning notification. |
 
 `GH_TOKEN` or `GITHUB_TOKEN` apply to github.com and to GHE.com hosts (`<subdomain>.ghe.com`). GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
+
+A provider 404 — GitHub's *"could not find this repository, commit or pull request"* or GitLab's *"404 Project / Commit Not Found"* — is a `missing` lookup: the remote answered correctly but the branch, commit or PR isn't theirs. The footer falls back to the branch name and `/work` records the reason, so the user can investigate there without a recurring notification.
 
 ### 5. Build the local summary
 

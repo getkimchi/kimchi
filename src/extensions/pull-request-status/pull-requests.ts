@@ -58,8 +58,9 @@ export interface WorkPullRequestLookup {
 	status: "pending" | "linked" | "error"
 	checkedAt: string
 	error?: string
-	/** An error the user cannot act on: a retryable outage, or a repository without a supported provider. */
-	reason?: "retry" | "unsupported"
+	/** An error the user cannot act on: a retryable outage, a repository without a supported provider,
+	 *  or a provider 404 for a branch/commit/PR that isn't theirs to find. */
+	reason?: "retry" | "unsupported" | "missing"
 }
 
 export interface WorkPullRequestUpdate {
@@ -224,7 +225,9 @@ function readCommits(agentDir: string, state: DiscoveryState): void {
 					status,
 					checkedAt: lookup.checkedAt,
 					...(typeof lookup.error === "string" ? { error: lookup.error } : {}),
-					...(lookup.reason === "retry" || lookup.reason === "unsupported" ? { reason: lookup.reason } : {}),
+					...(lookup.reason === "retry" || lookup.reason === "unsupported" || lookup.reason === "missing"
+						? { reason: lookup.reason }
+						: {}),
 				}
 		}
 		commit.pullRequests = mergePullRequests(existing?.pullRequests ?? [], storedPullRequests(row.pullRequests))

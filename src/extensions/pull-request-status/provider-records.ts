@@ -14,7 +14,9 @@ export interface Repository {
 	defaultBranch?: string
 }
 
-/** `retry` and `unsupported` failures are expected; they never need the user's attention. */
+/** `retry`, `unsupported` and `missing` failures are expected; they never need the user's attention.
+ *  A `missing` lookup means the provider returned 404 for a branch/commit/PR that isn't theirs to find —
+ *  the right response is to show the branch without a PR, not to spam the warning channel. */
 export class LookupError extends Error {
 	constructor(
 		message: string,
@@ -29,7 +31,8 @@ export class LookupError extends Error {
 export function lookupFailureReason(error: unknown): WorkPullRequestLookup["reason"] {
 	if (!(error instanceof LookupError)) return undefined
 	if (error.kind === "retry" || error.kind === "invalid") return "retry"
-	return error.kind === "unsupported" ? "unsupported" : undefined
+	if (error.kind === "unsupported" || error.kind === "missing") return error.kind
+	return undefined
 }
 
 export const SHA = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i

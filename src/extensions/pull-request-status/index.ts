@@ -105,9 +105,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		]
 		return {
 			links: mergePullRequestLinks(links),
-			// A repository without GitHub or GitLab never gets a PR; it is not waiting for one.
+			// A repository without a supported provider, or a 404 the user can't act on, never counts as waiting.
 			pending: latest.filter(
-				([key, row]) => !linked.has(key) && !stopped.has(key) && row.prLookup?.reason !== "unsupported",
+				([key, row]) =>
+					!linked.has(key) &&
+					!stopped.has(key) &&
+					row.prLookup?.reason !== "unsupported" &&
+					row.prLookup?.reason !== "missing",
 			).length,
 			// Only actionable failures trigger warnings; /work also lists retries and stopped checks.
 			errors: messages(false),
@@ -210,11 +214,13 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 					})
 					.catch((error) => {
 						if (!current()) return
-						// A retryable outage keeps the last result; a repository without GitHub or GitLab has none.
+						// A retryable outage keeps the last result; a repository without GitHub or GitLab, or a
+						// 404 the user can't act on (their remote is GH/GL but the branch/commit/PR is not),
+						// has none either. Only actionable failures should reach the warning channel.
 						const reason = lookupFailureReason(error)
 						if (reason === "retry") return
 						footer(branchName)
-						if (reason !== "unsupported" && !tracking) warnOnce(error)
+						if (reason !== "unsupported" && reason !== "missing" && !tracking) warnOnce(error)
 					}),
 			// A lookup replaced by a new session hands over to that session's first check.
 			(current) => {

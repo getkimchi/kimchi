@@ -1405,7 +1405,11 @@ describe("durable work pull request discovery", () => {
 				http.mockImplementation(async () =>
 					Response.json({ message: "Not Found", documentation_url: "https://docs.github.com/rest" }, { status: 404 }),
 				),
-			{ status: "error", error: expect.stringContaining("could not find this repository") },
+			{
+				status: "error",
+				error: expect.stringContaining("could not find this repository"),
+				reason: "missing",
+			},
 		],
 	] as const)("checks an aging commit less often and stops checking one without a PR after the upload window: %s", async (_result, respond, result) => {
 		const day = 24 * 60 * 60 * 1000
@@ -1917,14 +1921,17 @@ describe("lookup failure reasons", () => {
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
 		expect(lookupFailureReason(failure)).toBe("unsupported")
 	})
-	it("keeps a self-hosted GitLab's own 404 actionable without GITLAB_HOST", async () => {
+	// A self-hosted GitLab whose own 404 reaches us is still treated as `missing`: the branch-only
+	// footer is the right UX even without GITLAB_HOST set, and the prior "actionable" classification
+	// caused the same warning spam this fix removes. /work still surfaces the error for inspection.
+	it("classifies a self-hosted GitLab's own 404 as missing without GITLAB_HOST", async () => {
 		remote("https://gitlab.corp.example/team/repo.git")
 		vi.stubEnv("GITLAB_TOKEN", "gitlab-com-token")
 		http.mockImplementation(async () => Response.json({ message: "404 Project Not Found" }, { status: 404 }))
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
 		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
 			message: expect.stringContaining("GitLab could not find this repository"),
-			reason: undefined,
+			reason: "missing",
 		})
 	})
 	it("keeps an expired saved GitLab token actionable on an unconfigured host", async () => {
