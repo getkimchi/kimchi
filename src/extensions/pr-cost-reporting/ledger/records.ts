@@ -91,6 +91,8 @@ export interface RecordBackend {
 	insertRecord(row: StoredRecord): boolean
 	upsertMarker(recordHash: string, workId: string, type: string): void
 	pendingTranslations(after: number, through: number, limit: number): PositionedRecord[]
+	/** Every record not yet translated into events, by work. */
+	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
@@ -115,7 +117,7 @@ export interface RecordBackend {
 	putHead(head: WorkHead): void
 	allHeads(): WorkHead[]
 	readRecords(
-		opts: { workId?: string; sessionId?: string; modifiedSince?: number },
+		opts: { workId?: string; sessionId?: string; modifiedSince?: number; type?: string },
 		checkBudget?: () => void,
 	): StoredRecord[]
 	/** Pins an async read to the records committed when it started. */
@@ -527,6 +529,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"SELECT w.rowid AS position, w.record_hash AS recordHash, w.type, w.work_id AS workId, w.session_id AS sessionId, w.body, w.source_path AS sourcePath, w.source_generation AS sourceGeneration, w.source_offset AS sourceOffset, w.imported_at AS importedAt FROM pending_translation p JOIN work_records w ON w.record_hash = p.record_hash WHERE w.rowid > ? AND w.rowid <= ? ORDER BY w.rowid LIMIT ?",
 	)
 	const clearTranslation = db.query("DELETE FROM pending_translation WHERE record_hash = ?")
+	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
+		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
+	)
 	const eventColumns =
 		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
 	const latestEvent = db.query<OutboxEvent, [string, string]>(
@@ -597,6 +602,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const readRecordsSession = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
 	)
+	const readRecordsType = db.query<StoredRecord, [string]>(
+		`SELECT ${recordColumns} FROM work_records WHERE type = ? ORDER BY rowid`,
+	)
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
@@ -650,6 +658,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			).changes > 0,
 		upsertMarker: (recordHash, workId, type) => upsertMarker.run(recordHash, workId, type, Date.now()),
 		pendingTranslations: (after, through, limit) => translations.all(after, through, limit),
+		markedRecords: () => marked.all(),
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
@@ -711,7 +720,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 						? readRecordsSince.iterate(opts.modifiedSince)
 						: opts.sessionId !== undefined
 							? readRecordsSession.iterate(opts.sessionId)
-							: readRecordsAll.iterate()
+							: opts.type !== undefined
+								? readRecordsType.iterate(opts.type)
+								: readRecordsAll.iterate()
 			const rows: StoredRecord[] = []
 			try {
 				for (const row of source) {
@@ -724,6 +735,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
 				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
+				else if (opts.type !== undefined) readRecordsType.get(opts.type)
 				else readRecordsAll.get()
 				throw error
 			}

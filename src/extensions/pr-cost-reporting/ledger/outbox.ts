@@ -186,6 +186,8 @@ export function observeEvents(
 			if (previous) {
 				old = unpack(previous)
 				if (eventKind(old) !== eventKind(event)) throw new Error("Outbox entity kind is immutable")
+				// The stored revision already passed every check below.
+				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 			}
 			const raw: Event = JSON.parse(encodeEvent(event))
 			validateClaimUpdate(
@@ -195,7 +197,6 @@ export function observeEvents(
 					: old,
 			)
 			if (previous && old) {
-				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 				event.revision = (BigInt(old.revision) + 1n).toString()
 				event.baseRevision = old.revision
 				event.baseHash = previous.hash

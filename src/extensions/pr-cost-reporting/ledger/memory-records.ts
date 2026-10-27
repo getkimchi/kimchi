@@ -116,6 +116,7 @@ export function createMemoryRecords(): RecordBackend {
 				.filter((row) => markers.has(row.recordHash))
 				.slice(0, limit),
 		clearTranslation: (recordHash) => markers.delete(recordHash),
+		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
 				[...events.values()].findLast((event) => event.accountKey === accountKey && event.entityId === entityId),
@@ -228,6 +229,7 @@ export function createMemoryRecords(): RecordBackend {
 				return (
 					(opts.workId === undefined || row.workId === opts.workId) &&
 					(opts.sessionId === undefined || row.sessionId === opts.sessionId) &&
+					(opts.type === undefined || row.type === opts.type) &&
 					(opts.modifiedSince === undefined || row.importedAt >= opts.modifiedSince)
 				)
 			}),
