@@ -169,7 +169,11 @@ export function buildEvents(
 						schema: ["message", "fallback_message", "advisor_message", "compaction"].includes(iteration.type ?? "")
 							? observed.schema
 							: "unknown",
-						model: iteration.model,
+						// A lone "message" iteration is the reply itself, so it ran on the reply's model; Anthropic
+						// names a model only when iterations can differ, as with a fallback.
+						model:
+							iteration.model ??
+							(observed.iterations?.length === 1 && iteration.type === "message" ? observed.actualModel : undefined),
 						raw: iteration.raw,
 					}))
 					const serving = observed.iterations.flatMap((iteration, index) =>
