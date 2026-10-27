@@ -161,7 +161,11 @@ fi
 # found. They run on this Kimchi binary, report with Kimchi's sign-in and
 # leave inference settings alone.
 BRIDGE_INSTALLER="$DATA_DIR/kimchi/bridge/install.sh"
-if [ -f "$BRIDGE_INSTALLER" ]; then
+if [ -f "$BRIDGE_INSTALLER" ] && [ -n "${SUDO_USER:-}" ]; then
+	# Under sudo the plugins would be registered by another user, leaving files in this home that
+	# Claude Code and Codex could no longer write.
+	echo -e "${YELLOW}Skipping Kimchi work reporting under sudo. Rerun this installer without sudo to add it to Claude Code and Codex.${NC}" >&2
+elif [ -f "$BRIDGE_INSTALLER" ]; then
 	for client in claude codex; do
 		command -v "$client" >/dev/null 2>&1 || continue
 		echo ""

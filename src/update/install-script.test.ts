@@ -128,6 +128,14 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 		expect(read("bridge.log")).toBe("")
 	})
 
+	it("installs Kimchi without the plugins under sudo and says how to add them", () => {
+		const result = run({ SUDO_USER: "someone" })
+		expect(result.status, result.stderr).toBe(0)
+		expect(existsSync(join(installBin, "kimchi"))).toBe(true)
+		expect(result.stderr).toContain("Rerun this installer without sudo")
+		expect(read("bridge.log")).toBe("")
+	})
+
 	it("keeps Kimchi installed and says how to retry when a plugin fails", () => {
 		const result = run({ KIMCHI_INSTALL_TEST_ADAPTER_FAILURE: "claude" })
 		expect(result.status).toBe(0)
