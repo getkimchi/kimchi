@@ -565,7 +565,8 @@ export async function repositoryIdentity(
 			if (repository.token && !saved) {
 				if (error.kind === "retry") throw error
 				break
-			}}
+			}
+		}
 	}
 	throw new LookupError("This repository has no supported GitHub or GitLab API.", "unsupported")
 }
