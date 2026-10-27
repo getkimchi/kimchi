@@ -73,18 +73,18 @@ describe.skipIf(process.platform === "win32")("shared Kimchi shell installer", (
 			const actual = execFileSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim()
 			symlinkSync(actual, join(commands, name))
 		}
-		for (const name of ["curl.log", "adapters.log"]) writeFileSync(join(root, name), "")
+		for (const name of ["curl.log", "bridge.log"]) writeFileSync(join(root, name), "")
 		stage = join(root, "release")
 		mkdirSync(join(stage, "bin"), { recursive: true })
-		mkdirSync(join(stage, "share", "kimchi", "adapters"), { recursive: true })
+		mkdirSync(join(stage, "share", "kimchi", "bridge"), { recursive: true })
 		writeFileSync(join(stage, "bin", "kimchi"), "#!/bin/sh\nprintf 'fixture Kimchi\\n'\n")
 		writeFileSync(join(stage, "share", "kimchi", "theme.txt"), "fixture theme")
 		// The bundled plugin installer; reading stdin would swallow a piped install.sh.
 		writeFileSync(
-			join(stage, "share", "kimchi", "adapters", "install.sh"),
+			join(stage, "share", "kimchi", "bridge", "install.sh"),
 			`#!/bin/sh
 cat > /dev/null
-printf '%s\\n' "$*" >> "$KIMCHI_INSTALL_TEST_ROOT/adapters.log"
+printf '%s\\n' "$*" >> "$KIMCHI_INSTALL_TEST_ROOT/bridge.log"
 printf '%s\\n' "$KIMCHI_BIN" > "$KIMCHI_INSTALL_TEST_ROOT/kimchi-bin"
 [ "\${KIMCHI_INSTALL_TEST_ADAPTER_FAILURE:-}" != "$2" ]
 `,
@@ -105,7 +105,7 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 		expect(result.status, result.stderr).toBe(0)
 		expect(readFileSync(join(installBin, "kimchi"), "utf8")).toContain("fixture Kimchi")
 		expect(readFileSync(join(root, "data", "kimchi", "theme.txt"), "utf8")).toBe("fixture theme")
-		expect(read("adapters.log")).toBe("install claude\ninstall codex\n")
+		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
 		// The plugins run on the Kimchi binary just installed.
 		expect(read("kimchi-bin")).toBe(`${join(installBin, "kimchi")}\n`)
 	})
@@ -113,19 +113,19 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 	it("skips clients that are not installed", () => {
 		rmSync(join(commands, "codex"))
 		expect(run().status).toBe(0)
-		expect(read("adapters.log")).toBe("install claude\n")
+		expect(read("bridge.log")).toBe("install claude\n")
 		rmSync(join(commands, "claude"))
-		writeFileSync(join(root, "adapters.log"), "")
+		writeFileSync(join(root, "bridge.log"), "")
 		expect(run().status).toBe(0)
-		expect(read("adapters.log")).toBe("")
+		expect(read("bridge.log")).toBe("")
 	})
 
 	it("installs Kimchi alone from a release without the plugins", () => {
-		rmSync(join(stage, "share", "kimchi", "adapters"), { recursive: true })
+		rmSync(join(stage, "share", "kimchi", "bridge"), { recursive: true })
 		const result = run()
 		expect(result.status, result.stderr).toBe(0)
 		expect(existsSync(join(installBin, "kimchi"))).toBe(true)
-		expect(read("adapters.log")).toBe("")
+		expect(read("bridge.log")).toBe("")
 	})
 
 	it("keeps Kimchi installed and says how to retry when a plugin fails", () => {
@@ -133,13 +133,13 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 		expect(result.status).toBe(0)
 		expect(existsSync(join(installBin, "kimchi"))).toBe(true)
 		expect(result.stderr).toContain("work reporting for claude is not. Rerun this installer to retry.")
-		expect(read("adapters.log")).toBe("install claude\ninstall codex\n")
+		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
 	})
 
 	it("supports the documented piped installer entry point", () => {
 		const result = run({}, true)
 		expect(result.status, result.stderr).toBe(0)
-		expect(read("adapters.log")).toBe("install claude\ninstall codex\n")
+		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
 		expect(result.stdout).toContain("Next:")
 	})
 })

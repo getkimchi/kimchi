@@ -31,7 +31,7 @@ brew install getkimchi/tap/kimchi
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
 
-The install script also adds Kimchi's work-reporting plugins to the official Claude Code and Codex CLIs it finds. They show what those sessions cost per pull request in the Kimchi console, using your Kimchi sign-in, and leave your inference settings unchanged. Kimchi's updates keep them current. To remove them, run `kimchi-adapters uninstall both`.
+The install script also adds Kimchi's work-reporting plugins to the official Claude Code and Codex CLIs it finds. They show what those sessions cost per pull request in the Kimchi console, using your Kimchi sign-in, and leave your inference settings unchanged. Kimchi's updates keep them current. To remove them, run `kimchi-bridge uninstall both`.
 
 **PowerShell (Windows):**
 

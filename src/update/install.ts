@@ -216,7 +216,7 @@ function copyFile(src: string, dst: string): void {
 
 /**
  * The release carries the work-reporting plugins for official Claude Code
- * and Codex in share/kimchi/adapters (scripts/bundle-adapters.sh), and
+ * and Codex in share/kimchi/bridge (scripts/bundle-bridge.sh), and
  * install.sh adds them to the clients it finds. Their code runs on this
  * binary. After an update that brings new plugin code, rerun the bundled
  * installer for the added clients: it relinks the code, and registers the
@@ -224,10 +224,10 @@ function copyFile(src: string, dst: string): void {
  * capture worker: registering takes seconds, and a failure keeps the old
  * code receipt, so the next update retries.
  */
-export function refreshAdapters(
+export function refreshBridge(
 	shareDir: string,
 	kimchiBin: string,
-	prefix = process.env.KIMCHI_ADAPTERS_PREFIX || join(homedir(), ".local", "share", "kimchi-adapters"),
+	prefix = process.env.KIMCHI_BRIDGE_PREFIX || join(homedir(), ".local", "share", "kimchi-bridge"),
 ): string[] {
 	const read = (path: string) => {
 		try {
@@ -236,8 +236,8 @@ export function refreshAdapters(
 			return undefined
 		}
 	}
-	const bundled = read(join(shareDir, "adapters", "VERSION"))
-	// Clients without a receipt were never added, or were removed with kimchi-adapters uninstall.
+	const bundled = read(join(shareDir, "bridge", "VERSION"))
+	// Clients without a receipt were never added, or were removed with kimchi-bridge uninstall.
 	const clients = ["claude", "codex"].filter((client) => read(join(prefix, "installed", client)) !== undefined)
 	if (!bundled || clients.length === 0 || read(join(prefix, "installed", "code")) === bundled) return []
 	// One client at a time: the installer holds a lock for its whole run. $0 is the installer.
@@ -246,7 +246,7 @@ export function refreshAdapters(
 		[
 			"-c",
 			'for client in "$@"; do bash "$0" update "$client"; done',
-			join(shareDir, "adapters", "install.sh"),
+			join(shareDir, "bridge", "install.sh"),
 			...clients,
 		],
 		{ detached: true, stdio: "ignore", env: { ...process.env, KIMCHI_BIN: kimchiBin } },
