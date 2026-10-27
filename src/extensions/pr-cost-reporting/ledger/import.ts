@@ -234,9 +234,9 @@ function syncWorkJournals(agentDir: string): string[] {
 function importJournalFiles(
 	agentDir: string,
 	journals: string[],
-	maxBytes: number,
-	onProblem?: (problem: WorkRecordProblem) => void,
-	checkBudget?: () => void,
+	{ maxBytes = WINDOW_BYTES, onRecordProblem: onProblem, checkBudget, until }: ImportOptions,
+	/** Report cursors of journals missing from this listing; only a full listing can tell. */
+	sweep: boolean,
 ): ImportResult {
 	checkBudget?.()
 	const result: ImportResult = { files: [], anomalies: [], problems: [], imported: 0, skipped: 0 }
@@ -351,19 +351,25 @@ function importJournalFiles(
 			imported,
 			skipped: entries.length - imported,
 		})
-	}
-	for (const cursor of backend.listJournalCursors()) {
-		checkBudget?.()
-		if (journals.includes(cursor.path)) continue
-		try {
-			statSync(cursor.path)
-		} catch (error) {
-			if (!object(error) || error.code !== "ENOENT") throw error
-			result.anomalies.push({ path: cursor.path, code: "journal-removed" })
-			backend.tx(() => saveCoverage(backend, cursor.path, [{ kind: "invalid", path: cursor.path, line: 1 }]))
-			diagnostic(agentDir, "journal-removed")
+		// Unchanged journals cost a stat each; only journals that imported spend the slice.
+		if (until !== undefined && Date.now() >= until) {
+			result.pending = true
+			break
 		}
 	}
+	if (sweep)
+		for (const cursor of backend.listJournalCursors()) {
+			checkBudget?.()
+			if (journals.includes(cursor.path)) continue
+			try {
+				statSync(cursor.path)
+			} catch (error) {
+				if (!object(error) || error.code !== "ENOENT") throw error
+				result.anomalies.push({ path: cursor.path, code: "journal-removed" })
+				backend.tx(() => saveCoverage(backend, cursor.path, [{ kind: "invalid", path: cursor.path, line: 1 }]))
+				diagnostic(agentDir, "journal-removed")
+			}
+		}
 	return result
 }
 
@@ -371,44 +377,24 @@ interface ImportOptions {
 	maxBytes?: number
 	onRecordProblem?: (problem: WorkRecordProblem) => void
 	checkBudget?: () => void
+	/** After a journal that imported something, stop once this time has passed; the result is then pending. */
+	until?: number
 }
+
+/** How long one import slice may hold the event loop before yielding. */
+export const IMPORT_SLICE_MS = 50
 
 export async function importJournals(agentDir: string, options: ImportOptions = {}): Promise<ImportResult> {
-	return importJournalFiles(
-		agentDir,
-		await workJournals(agentDir),
-		options.maxBytes ?? WINDOW_BYTES,
-		options.onRecordProblem,
-		options.checkBudget,
-	)
+	return importJournalFiles(agentDir, await workJournals(agentDir), options, true)
 }
 
-/** Synchronous history hydration drains bounded batches without holding a transaction between them. */
-export function hydrateLegacy(agentDir: string, options: ImportOptions = {}): ImportResult {
-	const journals = syncWorkJournals(agentDir)
-	const result = importJournalFiles(
-		agentDir,
-		journals,
-		options.maxBytes ?? WINDOW_BYTES,
-		options.onRecordProblem,
-		options.checkBudget,
-	)
-	while (result.pending && options.maxBytes === undefined) {
-		const next = importJournalFiles(agentDir, journals, WINDOW_BYTES, options.onRecordProblem, options.checkBudget)
-		result.files.push(...next.files)
-		result.anomalies.push(...next.anomalies)
-		result.problems.push(...next.problems)
-		result.imported += next.imported
-		result.skipped += next.skipped
-		result.pending = next.pending
-	}
-	if (!result.pending) delete result.pending
-	return result
+/** One synchronous slice over every journal; true while more input remains for a later slice. */
+export function importJournalSlice(agentDir: string, checkBudget?: () => void): boolean {
+	const options = { checkBudget, until: Date.now() + IMPORT_SLICE_MS }
+	return importJournalFiles(agentDir, syncWorkJournals(agentDir), options, true).pending === true
 }
 
-const hydratedDirs = new Set<string>()
-export function hydrateLegacyOnce(agentDir: string): void {
-	if (hydratedDirs.has(agentDir)) return
-	hydrateLegacy(agentDir)
-	hydratedDirs.add(agentDir)
+/** One session's journal in full, so a resumed legacy session keeps its work before the background import arrives. */
+export function importSessionJournal(agentDir: string, path: string): void {
+	for (;;) if (!importJournalFiles(agentDir, [path], {}, false).pending) return
 }

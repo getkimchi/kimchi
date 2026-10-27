@@ -876,6 +876,25 @@ describe("readable work summaries", () => {
 		expect(summary(nextWorkId).sessions).toEqual(["next-fresh"])
 		expect(scan).not.toHaveBeenCalled()
 	})
+	it("resumes a legacy session's work at once while the rest of the history imports in the background", async () => {
+		const legacy = join(dir, "work-attribution")
+		fs.mkdirSync(legacy, { recursive: true })
+		const works = new Map(["older", "other", "resumed"].map((sessionId) => [sessionId, randomUUID()]))
+		for (const [sessionId, workId] of works)
+			fs.writeFileSync(
+				join(legacy, `${sessionId}.jsonl`),
+				`${JSON.stringify({ version: 1, type: "work", workId, sessionId, cwd: "/project", recordedAt: "2026-10-01T00:00:00.000Z" })}\n`,
+			)
+		// Each journal takes longer than an import slice.
+		const start = Date.now()
+		let calls = 0
+		vi.spyOn(Date, "now").mockImplementation(() => start + 60 * calls++)
+		expect(getWorkId(context("resumed"))).toBe(works.get("resumed"))
+		// The session's own journal and one slice imported before returning; the third journal waits.
+		expect(backendFor(dir).recordCount()).toBe(2)
+		await flushWorkSummaries()
+		expect(backendFor(dir).recordCount()).toBe(3)
+	})
 	it("relaunches without reimporting unchanged facts or republishing their projection", async () => {
 		const ctx = context()
 		const workId = getWorkId(ctx)

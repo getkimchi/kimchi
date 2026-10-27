@@ -1,12 +1,13 @@
 import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
-import { setImmediate } from "node:timers/promises"
+import { setImmediate, setTimeout } from "node:timers/promises"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
 import {
-	hydrateLegacy,
-	hydrateLegacyOnce,
+	IMPORT_SLICE_MS,
+	importJournalSlice,
 	importJournals,
+	importSessionJournal,
 	reportJournalProblems,
 } from "../pr-cost-reporting/ledger/import.js"
 import {
@@ -187,8 +188,8 @@ export async function workJournals(agentDir: string): Promise<string[]> {
 	return paths
 }
 /**
- * The authority records, oldest first. Journals are hydrated into the store before history-dependent reads
- * (fire-hose A2); only the C3 importer still parses files.
+ * The authority records, oldest first. Legacy journals import in the background; only the C3 importer still parses
+ * files.
  */
 export function readWorkRecords(
 	agentDir: string,
@@ -198,12 +199,12 @@ export function readWorkRecords(
 ): WorkRecord[] {
 	if (onRecordProblem || checkBudget) {
 		// Strict history readers must see current local coverage, including damage consumed by another reader.
-		// A failed scan or exhausted budget cannot silently authorize work from incomplete history.
-		hydrateLegacy(agentDir, { checkBudget })
+		// A failed scan, exhausted budget or unfinished import cannot silently authorize work from incomplete history.
+		if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
 		if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
 	} else {
 		try {
-			hydrateLegacyOnce(agentDir)
+			hydrate(agentDir)
 		} catch (error) {
 			debugWorkAttribution("Legacy hydration unavailable:", error)
 		}
@@ -231,7 +232,7 @@ export async function importWorkRecordsAsync(
 	for (;;) {
 		await setImmediate()
 		checkBudget()
-		const imported = await importJournals(agentDir, { checkBudget })
+		const imported = await importJournals(agentDir, { checkBudget, until: Date.now() + IMPORT_SLICE_MS })
 		if (!imported.pending) break
 	}
 	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
@@ -259,14 +260,49 @@ export async function workJournalFingerprint(agentDir: string, checkBudget?: () 
 	checkBudget?.()
 	return fingerprint
 }
-/** Projections commit with their records; recovery just folds stranded intents from an interrupted import. */
-export function recoverWorkSummaries(): void {
+/** Agent directories whose legacy journals finished importing in this process. */
+const hydrated = new Set<string>()
+/** The background legacy import of each agent directory while one runs. */
+const importing = new Map<string, Promise<void>>()
+/**
+ * Imports one short slice of legacy history now and the rest in the background, once per process; reporting passes
+ * and strict readers import later appends themselves. Cursors resume an import cut short by an exit.
+ */
+function hydrate(agentDir: string): void {
+	if (hydrated.has(agentDir) || importing.has(agentDir)) return
+	if (!importJournalSlice(agentDir)) {
+		hydrated.add(agentDir)
+		return
+	}
+	const run = (async () => {
+		try {
+			// An unreferenced timer lets a finished command exit mid-import.
+			do await setTimeout(0, undefined, { ref: false })
+			while (importJournalSlice(agentDir))
+			hydrated.add(agentDir)
+		} catch (error) {
+			debugWorkAttribution("Work summary recovery unavailable:", error)
+		} finally {
+			importing.delete(agentDir)
+		}
+	})()
+	importing.set(agentDir, run)
+}
+/**
+ * Projections commit with their records; recovery folds stranded intents and imports a resumed session's own journal
+ * at once. The rest of the legacy history imports in the background.
+ */
+export function recoverWorkSummaries(journal?: string): void {
 	try {
-		hydrateLegacyOnce(getAgentDir())
-		recoverDirty(getAgentDir())
+		const agentDir = getAgentDir()
+		if (journal) importSessionJournal(agentDir, journal)
+		hydrate(agentDir)
+		recoverDirty(agentDir)
 	} catch (error) {
 		debugWorkAttribution("Work summary recovery unavailable:", error)
 	}
 }
-/** Writes are synchronous now; this remains only so callers draining the old async queue still compile. */
-export async function flushWorkSummaries(): Promise<void> {}
+/** Waits for the background import of legacy history. */
+export async function flushWorkSummaries(): Promise<void> {
+	await Promise.all(importing.values())
+}

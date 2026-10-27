@@ -15,14 +15,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import {
-	boundaryHashOf,
-	completeLines,
-	hydrateLegacy,
-	hydrateLegacyOnce,
-	importJournals,
-	journalDecision,
-} from "./import.js"
+import { readWorkRecords } from "../../work-attribution/summary.js"
+import { boundaryHashOf, completeLines, importJournalSlice, importJournals, journalDecision } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
 import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
 
@@ -424,7 +418,7 @@ describe("import loop over the memory backend", () => {
 		const reads = vi.spyOn(fs, "readSync")
 		for (let window = 0; window < 3; window++) expect((await importJournals(dir, { maxBytes: 1 })).imported).toBe(1)
 		// Each window continues from the last one; none rereads the start of the file.
-		expect(reads.mock.calls.filter(([, , , , position]) => position === 0)).toHaveLength(1)
+		expect(reads.mock.calls.filter((call) => call.at(4) === 0)).toHaveLength(1)
 		reads.mockClear()
 		expect((await importJournals(dir)).files).toEqual([])
 		expect(reads).not.toHaveBeenCalled()
@@ -464,8 +458,7 @@ describe("A2 hydration before history-dependent reads", () => {
 		const file = join(folder, "parent.jsonl")
 		const original = line(work()) + line(request("req-1"))
 		writeFileSync(file, original)
-		hydrateLegacyOnce(dir)
-		const records = readRecords(dir)
+		const records = readWorkRecords(dir, undefined, () => {})
 		expect(records.map((record) => record.type).sort()).toEqual(["request", "work"])
 		// Legacy files are read-only inputs: hydration never deletes, converts, or rewrites them.
 		expect(readFileSync(file, "utf8")).toBe(original)
@@ -477,9 +470,9 @@ describe("A2 hydration before history-dependent reads", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
 		writeFileSync(join(folder, "parent.jsonl"), line(work()) + line(request("req-1")))
-		hydrateLegacy(dir)
+		expect(importJournalSlice(dir)).toBe(false)
 		expect(readRecords(dir)).toHaveLength(2)
-		hydrateLegacy(dir)
+		expect(importJournalSlice(dir)).toBe(false)
 		expect(readRecords(dir)).toHaveLength(2)
 	})
 })

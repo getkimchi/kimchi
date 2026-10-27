@@ -61,7 +61,7 @@ import {
 	workMatchingAvailable,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
-import { flushWorkSummaries, object, recoverWorkSummaries, type WorkRecord } from "./work-attribution/summary.js"
+import { object, recoverWorkSummaries, type WorkRecord } from "./work-attribution/summary.js"
 
 export interface WorkSegment {
 	id: string
@@ -328,7 +328,7 @@ export function getWorkId(ctx: WorkContext): string {
 	const cached = identities.get(path)
 	if (cached) return cached
 	const sessionId = ctx.sessionManager.getSessionId()
-	recoverWorkSummaries()
+	recoverWorkSummaries(path)
 	const info = ledgerSessionInfo(getAgentDir(), sessionId)
 	if (info.work && isWorkId(info.work.workId)) {
 		identities.set(path, info.work.workId)
@@ -670,7 +670,7 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const branch = ctx.sessionManager.getBranch()
-			recoverWorkSummaries()
+			recoverWorkSummaries(key)
 			// C2 keeps session records in the ledger: a session with records is restored, not fresh.
 			const restored = ledgerSessionInfo(getAgentDir(), ctx.sessionManager.getSessionId()).recordCount > 0
 			const fresh = !restored || freshSessionLedgers.has(key)
@@ -1109,7 +1109,6 @@ export function createWorkAttributionExtension(
 			stopCosts = undefined
 			continuationEligible.delete(key)
 			await Promise.all([costStop?.(), stop?.()])
-			await flushWorkSummaries()
 			activeRequests.delete(key)
 			activeSegments.delete(key)
 			toolRequests.delete(key)
