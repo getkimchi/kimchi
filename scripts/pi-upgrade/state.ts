@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { gunzipSync, gzipSync } from "node:zlib"
+import { HOOKED_FILES } from "./hooks.ts"
 
 /** GitHub caps issue bodies and comments at this many characters. */
 export const GITHUB_TEXT_LIMIT = 65_536
@@ -48,13 +49,6 @@ export function serializeState(state: State, limit = GITHUB_TEXT_LIMIT): string 
 	throw new Error(`pi-upgrade state is ${gz.length} chars compressed, exceeds the ${limit} limit`)
 }
 
-/** Files besides patches/ whose change invalidates a report (see hooks.ts for the runtime-patch list). */
-export const HASHED_FILES = [
-	"scripts/patch-pi-ai-oauth.js",
-	"src/upstream-retry-patch.ts",
-	"src/upstream-inline-compact-patch.ts",
-]
-
 function listFiles(dir: string): string[] {
 	if (!existsSync(dir)) return []
 	return readdirSync(dir).flatMap((name) => {
@@ -64,7 +58,7 @@ function listFiles(dir: string): string[] {
 }
 
 /** Fingerprint of everything a report depends on besides src/ (refreshed weekly instead). */
-export function inputsHash(repoRoot: string, baseline: string, target: string, files = HASHED_FILES): string {
+export function inputsHash(repoRoot: string, baseline: string, target: string, files = HOOKED_FILES): string {
 	const hash = createHash("sha256").update(`${baseline}\n${target}\n`)
 	const paths = [...listFiles(join(repoRoot, "patches")), ...files.map((f) => join(repoRoot, f))]
 		.filter((p) => existsSync(p))

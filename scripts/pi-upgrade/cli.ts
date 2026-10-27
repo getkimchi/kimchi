@@ -8,11 +8,12 @@ import { parseArgs } from "node:util"
 import { ALL_SUITES, LOCAL_DEFAULT_SUITES, type RunConfig, readBaseline, type Suite } from "./config.ts"
 import { runDryRun } from "./dry-run.ts"
 import { runFetch } from "./fetch.ts"
+import { runInternals } from "./internals.ts"
 import { runSettle } from "./settle.ts"
 
 const USAGE = `usage: pnpm pi-upgrade <step> [options]
 
-steps: settle, fetch, dry-run
+steps: settle, fetch, dry-run, internals
 
 options:
   --repo <dir>        checkout to analyse (default: current repo)
@@ -29,6 +30,7 @@ const STEPS: Record<string, Step> = {
 	settle: runSettle,
 	fetch: runFetch,
 	"dry-run": runDryRun,
+	internals: runInternals,
 }
 
 function parseSuites(value: string | undefined): Suite[] {
