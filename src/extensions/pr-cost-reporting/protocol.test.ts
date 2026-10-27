@@ -13,6 +13,7 @@ let actual: {
 	validation: boolean[]
 	invalidEvidence: boolean[]
 	author: { body: string; hash: string; emptyBody: string }
+	includes: { body: string; emptyBody: string; invalid: boolean[] }
 	displayValidation: boolean[]
 	target: { body: string; hash: string; invalid: boolean[] }
 }
@@ -104,6 +105,13 @@ console.log(JSON.stringify({
   errors: invalid.map((event) => { try { encodeEvent(event); return "accepted" } catch (error) { return error.name } }),
   unicode: encodeEvent(unicode),
   author: {body: encodeEvent(authored), hash: eventHash(authored), emptyBody: encodeEvent({...pr, pullRequest: {...pr.pullRequest, author: ""}})},
+  includes: {
+    body: encodeEvent({...pr, pullRequest: {...pr.pullRequest, includedPullRequestIds: ["pr-1", "pr-2"]}}),
+    emptyBody: encodeEvent({...pr, pullRequest: {...pr.pullRequest, includedPullRequestIds: []}}),
+    invalid: [Array(251).fill("pr"), ["pr", "pr"], [""], ["a".repeat(129)]].map((includedPullRequestIds) =>
+      rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, includedPullRequestIds}}))
+    )
+  },
   displayValidation: display.map((fields) => !rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, ...fields}}))),
   target: {body: encodeEvent(target), hash: eventHash(target), invalid: ["invalid", {}, {provider: "other", host: "github.com", id: "42"}, {provider: "github", host: "secret@github.com", id: "42"}, {provider: "github", host: "github.com", id: "42", name: "repo?secret"}].map((targetRepository) => rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository}})))},
   validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],

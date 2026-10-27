@@ -1840,5 +1840,139 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
+		expect(report.includes).toEqual([])
+	})
+
+	it("records that a dropped later-listed PR includes the first-listed one", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit("work-a", [feature({ checkedAt: time(45) }), integration({ checkedAt: time(45) })], "session-a", {
+					recordedAt: time(45),
+					prLookup: lookup(45),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0].pullRequestIds).toEqual([featureKey])
+		expect(report.pullRequests.map((row) => row.key)).toEqual([featureKey])
+		expect(report.includes).toMatchObject([
+			{
+				key: integrationKey,
+				account: testScope.account,
+				pullRequest: integration({ checkedAt: time(45) }),
+				includes: [featureKey],
+			},
+		])
+	})
+
+	it("records nothing when a closed-without-merge PR yields", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit(
+					"work-a",
+					[feature({ state: "closed", mergedAt: null, checkedAt: time(45) }), integration({ checkedAt: time(45) })],
+					"session-a",
+					{ recordedAt: time(45), prLookup: lookup(45) },
+				),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0].pullRequestIds).toEqual([integrationKey])
+		expect(report.includes).toEqual([])
+	})
+
+	it("records nothing for a pair first listed together", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature(), integration()], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.includes).toEqual([])
+	})
+
+	it("records nothing for a dropped PR in another repository", () => {
+		const elsewhere = pullRequest({
+			repository: "lumbrook/other",
+			number: 33,
+			url: "https://github.com/lumbrook/other/pull/33",
+			state: "open",
+			mergedAt: null,
+		})
+		const elsewhereKey = "github:github.com/lumbrook/other#33"
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit("work-a", [feature({ checkedAt: time(45) }), { ...elsewhere, checkedAt: time(45) }], "session-a", {
+					recordedAt: time(45),
+					prLookup: lookup(45),
+				}),
+			],
+			[charge("a", "1")],
+		)
+		expect(report.requests[0].pullRequestIds).toEqual([featureKey])
+		expect(report.includes).toEqual([])
+		expect(report.pullRequests.map((row) => row.key)).not.toContain(elsewhereKey)
+	})
+
+	it("unions includes across works and commits, keeping the latest observation", () => {
+		const branch = pullRequest({
+			repository: "lumbrook/platform",
+			number: 33,
+			url: "https://github.com/lumbrook/platform/pull/33",
+		})
+		const branchKey = "github:github.com/lumbrook/platform#33"
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				request("b", "work-b", "session-b", time(10)),
+				commit("work-a", [feature({ state: "open", mergedAt: null, checkedAt: time(21) })], "session-a", {
+					recordedAt: time(21),
+					prLookup: lookup(21),
+				}),
+				commit("work-a", [feature({ checkedAt: time(45) }), integration({ checkedAt: time(45) })], "session-a", {
+					recordedAt: time(45),
+					prLookup: lookup(45),
+				}),
+				commit("work-b", [{ ...branch, state: "open", mergedAt: null, checkedAt: time(22) }], "session-b", {
+					recordedAt: time(22),
+					prLookup: lookup(22),
+					sha: "c".repeat(40),
+				}),
+				commit("work-b", [{ ...branch, checkedAt: time(46) }, integration({ checkedAt: time(46) })], "session-b", {
+					recordedAt: time(46),
+					prLookup: lookup(46),
+					sha: "c".repeat(40),
+				}),
+			],
+			[charge("a", "1"), charge("b", "1")],
+		)
+		expect(report.includes).toMatchObject([
+			{
+				key: integrationKey,
+				account: testScope.account,
+				pullRequest: integration({ checkedAt: time(46) }),
+				includes: [featureKey, branchKey],
+			},
+		])
 	})
 })

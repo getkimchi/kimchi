@@ -98,6 +98,7 @@ const records = [
 ]
 const report = {
 	pullRequests: [],
+	includes: [],
 	requests: [
 		{
 			requestId,
@@ -439,6 +440,85 @@ it("keeps fork origin separate from parent PR allocation and recorded Jira metad
 		toId: "PR1",
 		quality: "confirmed",
 	})
+})
+
+const featureKey = "github:github.com/lumbrook/platform#11"
+const integrationKey = "github:github.com/lumbrook/platform#22"
+const featurePr = {
+	id: "PR-A",
+	repositoryId: "42",
+	provider: "github",
+	host: "github.com",
+	repository: "lumbrook/platform",
+	number: 11,
+	url: "https://github.com/lumbrook/platform/pull/11",
+	state: "merged",
+	title: "Cache the usage rollup",
+	author: "lisa",
+	branchIssueKeys: [],
+	mergeCommitSha: "dca87900c9845aa629568aee4468c1b4a847bf02",
+	mergedAt: "2026-10-25T17:30:00Z",
+	closedAt: "2026-10-25T17:30:00Z",
+	checkedAt: "2026-10-24T08:00:03Z",
+}
+const integrationPr = {
+	id: "PR-B",
+	repositoryId: "42",
+	provider: "github",
+	host: "github.com",
+	repository: "lumbrook/platform",
+	number: 22,
+	url: "https://github.com/lumbrook/platform/pull/22",
+	state: "open",
+	title: "Integration window",
+	author: "pat",
+	branchIssueKeys: [],
+	mergeCommitSha: null,
+	mergedAt: null,
+	closedAt: null,
+	checkedAt: "2026-10-24T08:00:05Z",
+}
+const includesReport = {
+	...report,
+	requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: [featureKey] }],
+	pullRequests: [{ key: featureKey, account, workIds: [workId], pullRequest: featurePr }],
+	includes: [{ key: integrationKey, account, pullRequest: integrationPr, includes: [featureKey] }],
+}
+
+it("names the first-linked PRs an integration PR carries without allocating to it", () => {
+	const result = build(records, includesReport)
+	const facts = result.accounts[0].facts
+	expect(facts.find((fact) => fact.pullRequest?.id === "PR-B")).toMatchObject({
+		repository: { id: "42" },
+		pullRequest: {
+			id: "PR-B",
+			state: "open",
+			title: "Integration window",
+			includedPullRequestIds: ["PR-A"],
+		},
+	})
+	expect(facts.some((fact) => fact.link?.toId === "PR-B")).toBe(false)
+	expect(facts.every((fact) => !(fact.allocation?.pullRequestIds ?? []).includes("PR-B"))).toBe(true)
+	expect(facts.find((fact) => fact.link)?.link).toMatchObject({ toKind: "pull_request", toId: "PR-A" })
+	expect(facts.find((fact) => fact.pullRequest?.id === "PR-A")?.pullRequest).not.toHaveProperty(
+		"includedPullRequestIds",
+	)
+})
+
+it("merges the relation into an integration PR that is also first-linked elsewhere", () => {
+	const input = {
+		...includesReport,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: [featureKey, integrationKey] }],
+		pullRequests: [
+			...includesReport.pullRequests,
+			{ key: integrationKey, account, workIds: [workId], pullRequest: integrationPr },
+		],
+	}
+	const result = build(records, input)
+	const facts = result.accounts[0].facts.filter((fact) => fact.pullRequest?.id === "PR-B")
+	expect(facts).toHaveLength(1)
+	expect(facts[0].pullRequest).toMatchObject({ id: "PR-B", includedPullRequestIds: ["PR-A"] })
+	expect(result.accounts[0].facts.some((fact) => fact.link?.toId === "PR-B")).toBe(true)
 })
 
 it("does not interpret an unknown iteration type as independently billable usage", () => {

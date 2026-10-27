@@ -121,6 +121,7 @@ export interface PullRequest {
 	title?: string
 	issueKeys?: IssueKey[]
 	author?: string
+	includedPullRequestIds?: string[]
 }
 export interface Link {
 	fromKind: string
@@ -303,6 +304,7 @@ const schemas: Record<string, readonly Field[]> = {
 		["title", "s", "empty"],
 		["issueKeys", "[]issue", "empty"],
 		["author", "s", "empty"],
+		["includedPullRequestIds", "[]s", "empty"],
 	],
 	link: [
 		["fromKind", "s"],
@@ -786,6 +788,13 @@ export function validateEvent(e: Event): void {
 	if (e.pullRequest) {
 		const r = e.repository
 		const p = e.pullRequest
+		const included = p.includedPullRequestIds ?? []
+		if (
+			included.length > 250 ||
+			included.some((id) => !id || !opaque(id)) ||
+			new Set(included).size !== included.length
+		)
+			invalid()
 		if (Array.from(p.uri).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127))
 			invalid()
 		let u: URL

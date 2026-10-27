@@ -301,6 +301,66 @@ export function buildEvents(
 			})
 		}
 	}
+	const firstLinkedIds = new Map<string, string>()
+	for (const { key: included, pullRequest } of report.pullRequests)
+		if (pullRequest?.id && pullRequest.repositoryId) firstLinkedIds.set(included, pullRequest.id)
+	for (const entry of report.includes) {
+		check()
+		const pr = entry.pullRequest
+		if (!entry.account || !pr?.id || !pr.repositoryId || !validTime(pr.checkedAt)) continue
+		const repo = { provider: pr.provider ?? "github", host: pr.host, id: pr.repositoryId, name: pr.repository }
+		const group = accounts.get(accountKey(entry.account))
+		if (!group) continue
+		const ids = [
+			...new Set(
+				entry.includes.flatMap((key) => {
+					const id = firstLinkedIds.get(key)
+					return id ? [id] : []
+				}),
+			),
+		]
+			.sort()
+			.slice(0, 250)
+		if (!ids.length) continue
+		const prEntity = stableID(
+			"kimchi",
+			"pull_request",
+			accountKey(entry.account),
+			producerId,
+			repositoryKey(repo),
+			pr.id,
+		)
+		const existing = group.facts.get(prEntity)
+		const previous = existing?.pullRequest
+		const includedPullRequestIds = [...new Set([...(previous?.includedPullRequestIds ?? []), ...ids])]
+			.sort()
+			.slice(0, 250)
+		if (previous) {
+			group.facts.set(prEntity, { ...existing, pullRequest: { ...previous, includedPullRequestIds } })
+			continue
+		}
+		group.facts.set(prEntity, {
+			source: "kimchi",
+			sourceVersion: "unknown",
+			deviceId: producerId,
+			entityId: prEntity,
+			repository: repo,
+			observeTime: pr.checkedAt,
+			pullRequest: {
+				id: pr.id,
+				number: pr.number,
+				uri: pr.url,
+				state: pr.state,
+				title: pullRequestTitle(pr.title),
+				author: pullRequestAuthor(pr.author),
+				mergeTime: pr.mergedAt ?? undefined,
+				closeTime: pr.closedAt ?? undefined,
+				mergeCommitId: pr.mergeCommitSha ?? undefined,
+				issueKeys: (pr.branchIssueKeys ?? []).map((key) => ({ key, source: "branch" })),
+				includedPullRequestIds,
+			},
+		})
+	}
 	const workOwners = new Map<string, Map<string, RequestOwner>>()
 	for (const owner of owners.values()) {
 		check()

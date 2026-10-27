@@ -78,10 +78,20 @@ export interface PullRequestCost extends CostTotal {
 	unknownRequestIds: string[]
 }
 
+/** A PR the first-linked rule dropped for a commit another PR kept: the dropped PR also carries that commit. */
+export interface PullRequestIncludes {
+	key: string
+	account: WorkAccount | null
+	pullRequest: WorkPullRequest | null
+	/** Sorted keys of the first-linked PRs whose commits this PR also carries. */
+	includes: string[]
+}
+
 export interface PullRequestCostReport {
 	pullRequests: PullRequestCost[]
 	requests: RequestCostAllocation[]
 	unallocated: Record<Exclude<Allocation, "pull-request">, CostTotal>
+	includes: PullRequestIncludes[]
 }
 
 const NANOS_PER_USD = 1_000_000_000n
@@ -574,6 +584,8 @@ export function calculatePullRequestCosts(
 	const pulls = new Map<string, PullObservation>()
 	const commitPulls = new Map<string, Set<string>>()
 	const identitiesByUrl = new Map<string, Set<string>>()
+	/** Per dropped key: the surviving earliest keys dropped from the same repository, and the works that saw it. */
+	const includesByKey = new Map<string, { includes: Set<string>; workIds: Set<string> }>()
 	/** Per commit: identity parts and the earliest row time each PR key was listed for that commit. */
 	const commitLinks = new Map<
 		string,
@@ -717,8 +729,20 @@ export function calculatePullRequestCosts(
 			const known = [...keys].map((key) => links.listedAt.get(key)).filter((listedAt) => listedAt !== undefined)
 			if (known.length) {
 				const earliest = Math.min(...known)
-				for (const key of [...keys])
-					if (links.listedAt.get(key) !== earliest && links.listedAt.get(key) !== undefined) keys.delete(key)
+				const kept = [...keys].filter((key) => links.listedAt.get(key) === earliest)
+				for (const key of [...keys]) {
+					if (links.listedAt.get(key) === earliest || links.listedAt.get(key) === undefined) continue
+					// The dropped PR also carries this commit; the relation is per repository, like the rule itself.
+					const repository = key.split("#")[0]
+					const direct = kept.filter((keptKey) => keptKey.split("#")[0] === repository)
+					if (direct.length) {
+						const entry = includesByKey.get(key) ?? { includes: new Set<string>(), workIds: new Set<string>() }
+						for (const keptKey of direct) entry.includes.add(keptKey)
+						entry.workIds.add(links.workId)
+						includesByKey.set(key, entry)
+					}
+					keys.delete(key)
+				}
 			}
 		}
 		const recordedAt = firstRecorded(JSON.stringify([links.workId, links.repository, links.sha]))
@@ -908,10 +932,24 @@ export function calculatePullRequestCosts(
 					}
 				})
 		})
+	const includes = [...includesByKey]
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+		.map(([key, entry]) => {
+			const accounts = new Map<string, WorkAccount | null>()
+			for (const workId of entry.workIds)
+				for (const [id, account] of accountsByWork.get(workId) ?? []) accounts.set(id, account)
+			return {
+				key,
+				account: accounts.size === 1 ? [...accounts.values()][0] : null,
+				pullRequest: pulls.get(key)?.pullRequest ?? null,
+				includes: [...entry.includes].sort(),
+			}
+		})
 	const bucket = (kind: Allocation) => totalRequestCosts(requests.filter((row) => row.allocation === kind))
 	return {
 		pullRequests,
 		requests,
+		includes,
 		unallocated: {
 			inferred: bucket("inferred"),
 			shared: bucket("shared"),

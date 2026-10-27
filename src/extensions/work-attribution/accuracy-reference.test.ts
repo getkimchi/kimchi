@@ -47,6 +47,7 @@ function fixture() {
 		],
 	}
 	const report: PullRequestCostReport = {
+		includes: [],
 		requests: [
 			{
 				requestId: "r1",
