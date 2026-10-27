@@ -152,14 +152,9 @@ function unpack(row: OutboxEvent): Event {
 	if (createHash("sha256").update(body).digest("hex") !== row.hash) throw new Error("Outbox event hash mismatch")
 	const event: Event = JSON.parse(body.toString("utf8"))
 	validateIngestEvent(event)
-	if (
-		event.id !== row.id ||
-		event.entityId !== row.entityId ||
-		eventKind(event) !== row.kind ||
-		!body.equals(Buffer.from(encodeEvent(event)))
-	)
+	if (event.id !== row.id || event.entityId !== row.entityId || eventKind(event) !== row.kind)
 		throw new Error("Outbox event identity mismatch")
-	if (!body.equals(Buffer.from(encodeEvent(normalizeIngestTimes(event)))))
+	if (encodeEvent(event) !== encodeEvent(normalizeIngestTimes(event)))
 		throw new Error("Outbox event differs from protobuf transport")
 	return event
 }
@@ -225,7 +220,7 @@ export function observeEvents(
 	})
 }
 
-function unpackBatch(row: OutboxBatch, backend: RecordBackend): Batch {
+function unpackBatch(row: OutboxBatch, backend: RecordBackend): { batch: Batch; events: OutboxEvent[] } {
 	const body = Buffer.from(row.body)
 	const batch: Batch = JSON.parse(body.toString("utf8")).batch
 	validateIngestBatch(batch)
@@ -233,21 +228,28 @@ function unpackBatch(row: OutboxBatch, backend: RecordBackend): Batch {
 		batch.id !== row.id ||
 		!Array.isArray(row.eventIds) ||
 		row.eventIds.length !== batch.events.length ||
-		batch.events.some((event, index) => event.id !== row.eventIds[index]) ||
-		!body.equals(wireBytes(batch))
+		batch.events.some((event, index) => event.id !== row.eventIds[index])
 	)
 		throw new Error("Outbox batch identity mismatch")
-	for (const event of batch.events) {
+	const events = batch.events.map((event) => {
 		const stored = backend.getOutboxEvent(row.accountKey, event.id)
-		if (!stored || !Buffer.from(stored.body).equals(Buffer.from(encodeEvent(event))))
-			throw new Error("Outbox batch event mismatch")
-		unpack(stored)
-	}
-	return batch
+		if (!stored) throw new Error("Outbox batch event mismatch")
+		return stored
+	})
+	for (const stored of events) unpack(stored)
+	const expected = wireBody(
+		row.id,
+		events.map((stored) => stored.body),
+	)
+	if (!body.equals(expected)) throw new Error("Outbox batch identity mismatch")
+	return { batch, events }
 }
 
-function wireBytes(batch: Batch): Buffer {
-	return Buffer.from(`{"batch":${encodeBatch(batch)}}`)
+/** Splice stored event bodies verbatim so fields from newer builds survive delivery. */
+function wireBody(id: string, bodies: readonly Uint8Array[]): Buffer {
+	const head = encodeBatch({ version: Version, id, events: [] }).slice(0, -2)
+	const events = bodies.map((bytes) => Buffer.from(bytes).toString("utf8")).join(",")
+	return Buffer.from(`{"batch":${head}${events}]}}`)
 }
 
 /** Freeze the HTTP body once; newer observations cannot replace it while its acknowledgement is pending. */
@@ -262,10 +264,13 @@ export function pendingBatch(agentDir: string, accountKey: string, assertCurrent
 			return existing
 		}
 		const batch: Batch = { version: Version, id: randomUUID(), events: [] }
+		const bodies: Uint8Array[] = []
 		for (const row of backend.pendingOutboxEvents(accountKey, BATCH_EVENTS)) {
 			batch.events.push(unpack(row))
-			if (wireBytes(batch).length > BATCH_BYTES) {
+			bodies.push(row.body)
+			if (wireBody(batch.id, bodies).length > BATCH_BYTES) {
 				batch.events.pop()
+				bodies.pop()
 				break
 			}
 		}
@@ -274,7 +279,7 @@ export function pendingBatch(agentDir: string, accountKey: string, assertCurrent
 		const frozen: OutboxBatch = {
 			id: batch.id,
 			accountKey,
-			body: wireBytes(batch),
+			body: wireBody(batch.id, bodies),
 			eventIds: batch.events.map((event) => event.id),
 			createdAt: Date.now(),
 			orderKey: "",
@@ -300,7 +305,7 @@ export function acknowledgeBatch(
 		const current = backend.getOutboxBatch(accountKey)
 		if (!current || current.id !== sent.id) return false
 		if (!Buffer.from(current.body).equals(Buffer.from(sent.body))) throw new Error("Outbox batch changed")
-		const batch = unpackBatch(current, backend)
+		const { batch, events } = unpackBatch(current, backend)
 		if (
 			acknowledgement.batchId !== batch.id ||
 			!Array.isArray(acknowledgement.receipts) ||
@@ -319,8 +324,8 @@ export function acknowledgeBatch(
 		}
 		if (expected.size) throw new Error("Missing event acknowledgement")
 		const at = Date.now()
-		for (const event of batch.events)
-			if (!backend.ackOutboxEvent(accountKey, event.id, eventHash(event), at)) throw new Error("Outbox event changed")
+		for (const stored of events)
+			if (!backend.ackOutboxEvent(accountKey, stored.id, stored.hash, at)) throw new Error("Outbox event changed")
 		if (!backend.deleteOutboxBatch(accountKey, batch.id)) throw new Error("Outbox batch changed")
 		assertCurrent()
 		return true

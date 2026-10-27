@@ -601,6 +601,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	)
 	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
 	const { encodeBatch, eventHash } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)
 	const required = <T>(value: T | undefined): T => {
@@ -721,6 +722,50 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 			: getBatch(account)
 	const corruptionRejected = corruptedEventRejected && rejects(() => pendingBatch(agent, "account-a", fence))
 	backend.getOutboxBatch = getBatch
+	// A newer build's body carries a field this build does not know; its hash matches the stored bytes.
+	const forwardId = "88888888-8888-4888-8888-888888888888"
+	const forwardBase = { ...parse(second.body), id: forwardId, revision: "1", baseRevision: "0", baseHash: "" }
+	const forwardBodyText = `${JSON.stringify(forwardBase).slice(0, -1)},"futureField":{"from":"newer-build"}}`
+	const forwardBody = Buffer.from(forwardBodyText)
+	backend.insertOutboxEvent({
+		id: forwardId,
+		accountKey: "account-forward",
+		entityId: fact.entityId,
+		kind: "coverage",
+		body: forwardBody,
+		hash: createHash("sha256").update(forwardBody).digest("hex"),
+		createdAt: Date.now(),
+		ackedAt: null,
+		blocked: "",
+	})
+	const attempt = <T>(operation: () => T): T | undefined => {
+		try {
+			return operation()
+		} catch {
+			return undefined
+		}
+	}
+	const forwardBatch = attempt(() => pendingBatch(agent, "account-forward", fence))
+	const forwardCompat =
+		forwardBatch !== undefined &&
+		attempt(() => acknowledgeBatch(agent, "account-forward", forwardBatch, ack(forwardBatch), fence)) === true
+	const forwardBytesPreserved =
+		forwardBatch !== undefined &&
+		Buffer.from(forwardBatch.body).toString("utf8").includes('"futureField":{"from":"newer-build"}')
+	const tamperedBody = Buffer.from(forwardBodyText)
+	tamperedBody[tamperedBody.length >> 1] ^= 1
+	backend.insertOutboxEvent({
+		id: "77777777-7777-4777-8777-777777777777",
+		accountKey: "account-tampered",
+		entityId: fact.entityId,
+		kind: "coverage",
+		body: tamperedBody,
+		hash: createHash("sha256").update(forwardBody).digest("hex"),
+		createdAt: Date.now(),
+		ackedAt: null,
+		blocked: "",
+	})
+	const hashMismatchRejected = rejects(() => pendingBatch(agent, "account-tampered", fence))
 	const usage = {
 		channel: "native",
 		counterScope: "request",
@@ -1089,6 +1134,9 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		resumedStatus,
 		invalidRetryRetained,
 		corruptionRejected,
+		forwardCompat,
+		forwardBytesPreserved,
+		hashMismatchRejected,
 		admissionRejected,
 		cumulativePreserved,
 		markerPaging,
