@@ -399,6 +399,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 		redirected ||= init?.redirect !== "error"
 		if (url.endsWith("api-keys:verify")) {
 			verifications++
+			if (mode === "rejected") return new Response("{}", { status: 401 })
 			if (mode === "key-change") process.env.KIMCHI_API_KEY = "changed-key"
 			return Response.json({
 				organizationId: account.organizationId,
@@ -527,13 +528,20 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const beforeOther = posts.length
 	await run()
 	const accountFenced = posts.length === beforeOther && body() === originalBody
+	// Events of an account that is not signed in wait like a failed upload instead of verifying every pass.
+	const verifiedBeforeOther = verifications
+	await run()
+	const otherBackoff = verifications === verifiedBeforeOther
+	mode = "rejected"
+	await setReportingEnabled(agent, true)
+	const verifiedBeforeRejection = verifications
+	await run()
+	await run()
+	const rejectedBackoff = verifications === verifiedBeforeRejection + 1 && body() === originalBody
 	mode = "key-change"
-	let keyFenced = false
-	try {
-		await run()
-	} catch {
-		keyFenced = posts.length === beforeOther && body() === originalBody
-	}
+	await setReportingEnabled(agent, true)
+	await run()
+	const keyFenced = posts.length === beforeOther && body() === originalBody
 	process.env.KIMCHI_API_KEY = "fake-reporting"
 	mode = "success"
 	await run()
@@ -617,6 +625,8 @@ async function nativeDelivery(agent: string): Promise<void> {
 		invalidAckRetained,
 		optOutRetained,
 		accountFenced,
+		otherBackoff,
+		rejectedBackoff,
 		keyFenced,
 		legacyBoundary: legacyInterleaved && !racedLegacy,
 		failedPassAborted,

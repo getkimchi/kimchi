@@ -204,6 +204,29 @@ describe("account-fenced reporting delivery", () => {
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
 	})
 
+	it.each([
+		[401, 48 * 60_000],
+		[503, 24_000],
+	])("backs off an event account after a verification answered HTTP %i instead of verifying every pass", async (code, least) => {
+		const accountId = accountKey(content.account)
+		backendFor(directory).insertOutboxBatch({
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountId,
+			body: new Uint8Array(),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		})
+		http.mockResolvedValue(new Response("{}", { status: code }))
+		const run = () => deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		await run()
+		expect(http).toHaveBeenCalledOnce()
+		const retry = JSON.parse(backendFor(directory).getNote("pr-cost-delivery", accountId) ?? "null")
+		expect(retry).toMatchObject({ attempts: 1, error: `PR cost event upload returned HTTP ${code}` })
+		expect(retry.retryAt - Date.now()).toBeGreaterThan(least)
+	})
+
 	it("uploads snapshots and events with the SSO credential when no API key is configured", async () => {
 		config.key = ""
 		const agentDir = join(directory, "agent")

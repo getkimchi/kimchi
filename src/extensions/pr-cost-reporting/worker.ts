@@ -327,12 +327,10 @@ export function deliverEvents(
 		const backend = backendFor(agentDir)
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
-			if (
-				!readOutboxStatus(agentDir).some(
-					(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
-				)
+			const due = readOutboxStatus(agentDir).filter(
+				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
 			)
-				return
+			if (!due.length) return
 			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl)) return
@@ -373,34 +371,61 @@ export function deliverEvents(
 				if (!current.enabled) throw new Error("PR reporting is disabled")
 				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
 			}
-			const account = {
-				apiUrl,
-				...(await verifyApiKey(key, {
+			const resume = backend.getNote("agent", "legacy-snapshot-resume")
+			/** Each waiting account backs off on its own schedule, as each legacy snapshot did. */
+			const defer = (accounts: typeof due, error: string) =>
+				backend.tx(() => {
+					assertOwnership()
+					for (const { accountKey: id, firstBatchId, retry } of accounts) {
+						const attempts = retry?.attempts ?? 0
+						const retryAt = Date.now() + retryDelay(status, attempts, retryAfterMs)
+						const body = { batchId: firstBatchId, attempts: attempts + 1, retryAt, resume, error }
+						backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
+					}
+				})
+			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
+			try {
+				const value = await verifyApiKey(key, {
 					endpoint: apiUrl,
 					organizationId,
 					fetch: fetchBounded,
 					signal: combined,
 					retry: { maxRetries: 0 },
-				})),
-			}
-			assertCurrent()
-			if (!isWorkAccount(account)) throw new Error("PR reporting account verification failed")
-			const accountId = accountKey(account)
-			let batch: OutboxBatch | undefined
-			if (
-				!(await withDrainedLegacyAccount(
-					agentDir,
-					account,
-					(fence) => {
-						batch = pendingBatch(agentDir, accountId, fence)
-					},
-					assertCurrent,
-				)) ||
-				!batch
-			)
+				})
+				assertCurrent()
+				verified = value
+			} catch {}
+			const account = verified && { apiUrl, ...verified }
+			if (!account || !isWorkAccount(account)) {
+				if (signal.aborted) return
+				try {
+					assertOwnership()
+				} catch {
+					return
+				}
+				// A rejected or unreachable verification waits like a failed upload instead of repeating every pass.
+				defer(due, errorMessage)
+				await recordReportingError(agentDir, errorMessage)
 				return
+			}
+			const accountId = accountKey(account)
+			// Events captured under another account wait for its credential without verifying on every pass.
+			const others = due.filter((status) => status.accountKey !== accountId)
+			if (others.length) defer(others, "PR reporting is waiting for the original account")
+			const own = due.filter((status) => status.accountKey === accountId)
+			if (!own.length) return
+			let batch: OutboxBatch | undefined
+			const ready = await withDrainedLegacyAccount(
+				agentDir,
+				account,
+				(fence) => {
+					batch = pendingBatch(agentDir, accountId, fence)
+				},
+				assertCurrent,
+			)
+			if (!ready) defer(own, "PR cost events are waiting for queued snapshots to upload")
+			if (!ready || !batch) return
 			const sent = batch
-			const resume = backend.getNote("agent", "legacy-snapshot-resume")
 			const schedule = deliveryRetry(backend, accountId, sent.id)
 			if (schedule && schedule.retryAt > Date.now()) return
 			status = undefined
