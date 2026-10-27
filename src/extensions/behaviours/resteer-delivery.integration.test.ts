@@ -66,6 +66,7 @@ const stubIO: ResolverIO = {
 	readGitRemoteHost: () => undefined,
 	isGitRepo: () => false,
 	walkPaths: () => new Set<string>(),
+	detectLspExtensions: () => new Set<string>(),
 }
 
 // ─── Session fixture ─────────────────────────────────────────────────────────

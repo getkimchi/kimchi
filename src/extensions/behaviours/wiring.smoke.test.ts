@@ -12,7 +12,7 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { markHarnessSteer } from "../steer-marker.js"
 import type { ResolverIO } from "./session-context.js"
 import { BEHAVIOUR_EVAL_TYPE, BEHAVIOUR_LOADED_TYPE, BEHAVIOUR_SESSION_SUMMARY_TYPE } from "./stats.js"
-import { cli, tool } from "./triggers.js"
+import { any, cli, lspServes, not, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "./wiring.js"
 
@@ -89,6 +89,7 @@ const stubIO: ResolverIO = {
 	readGitRemoteHost: () => undefined,
 	isGitRepo: () => false,
 	walkPaths: () => new Set<string>(),
+	detectLspExtensions: () => new Set<string>(),
 }
 
 const baseline: Behaviour = {
@@ -129,10 +130,10 @@ const standingGlabCli: Behaviour = {
 	standing: true,
 }
 
-function setupWired(behaviours: Behaviour[]): FakePi {
+function setupWired(behaviours: Behaviour[], resolverIO: ResolverIO = stubIO): FakePi {
 	const pi = new FakePi()
 	activePis.push(pi)
-	wireBehaviours(pi.asExtensionAPI(), behaviours, { resolverIO: stubIO })
+	wireBehaviours(pi.asExtensionAPI(), behaviours, { resolverIO })
 	return pi
 }
 
@@ -265,6 +266,99 @@ describe("wireBehaviours — tool_call", () => {
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
 
 		expect(pi.entries(BEHAVIOUR_EVAL_TYPE)).toEqual([])
+	})
+})
+
+describe("wireBehaviours — gate (LSP-vs-AST-nudge branch A, full path)", () => {
+	/** The python-edit shape: .py edit/write matcher + not(lspServes("py")) gate. */
+	const gatedPythonEdit: Behaviour = {
+		kind: "triggered",
+		name: "python-edit",
+		description: "Python validation guidance",
+		body: "When editing or creating Python.",
+		triggers: {
+			tool: any(
+				tool("edit", (i) => i.path.endsWith(".py")),
+				tool("write", (i) => i.path.endsWith(".py")),
+			),
+			gate: not(lspServes("py")),
+		},
+	}
+
+	/** stubIO with the lsp detection leg wired to a mutable set — exercises
+	 *  collectSessionSpecs (gate specs reach the resolver) →
+	 *  resolveSessionContext → evaluateToolTriggers(sessionCtx) end-to-end. */
+	function lspIO(lspExtensions: ReadonlySet<string>): ResolverIO {
+		return { ...stubIO, detectLspExtensions: () => new Set(lspExtensions) }
+	}
+
+	const pyEdit = { toolName: "edit", input: { path: "src/main.py" } }
+
+	it("does not load (or steer) a gated behaviour when the session-start LSP winner serves py", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set(["py", "pyw"])))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		await pi.fire("tool_result", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([])
+		expect(pi.sent).toEqual([])
+	})
+
+	it("loads and steers a gated behaviour when no LSP winner serves py", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set()))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		await pi.fire("tool_result", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([
+			{
+				type: BEHAVIOUR_LOADED_TYPE,
+				data: { name: "python-edit", trigger: "tool", turnIndex: 1, toolArgs: pyEdit.input },
+			},
+		])
+		expect(pi.sent).toEqual([
+			{
+				message: expect.objectContaining({
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: markHarnessSteer("When editing or creating Python."),
+					display: false,
+				}),
+				options: { deliverAs: "steer" },
+			},
+		])
+	})
+
+	it("a non-py LSP winner (gopls/TS) does not suppress the gate — py edits still load", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set(["ts", "tsx", "go"])))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1)
+	})
+
+	it("a re-fired session_start re-resolves the gate against the fresh session", async () => {
+		// The detection set is mutable through the resolver stub: the first
+		// session is LSP-less (loads), the second (a resume into a pyright
+		// project) must re-gate — engine.reset() plus the fresh SessionContext
+		// snapshot handle both halves.
+		let detected = new Set<string>()
+		const pi = setupWired([gatedPythonEdit], {
+			...stubIO,
+			detectLspExtensions: () => new Set(detected),
+		})
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1)
+
+		detected = new Set(["py", "pyw"])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 2 })
+		await pi.fire("tool_call", pyEdit)
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1) // still one — gated off
 	})
 })
 

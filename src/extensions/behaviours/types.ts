@@ -23,6 +23,14 @@ export type EvalVerdict = "observed" | "violated"
 export interface BehaviourTriggers {
 	session?: SessionProbe
 	tool?: ToolMatcher
+	/** Probe-as-veto for the tool load path only: a tool-matching event loads
+	 *  the behaviour only when the gate also passes against the session-start
+	 *  `SessionContext`. Unlike `session`, a gate is never a load path on its
+	 *  own — `evaluateSessionTriggers` ignores it — so a gated behaviour
+	 *  stays dormant at turn 0 in sessions where the gate fails, and still
+	 *  loads on tool matches when it passes. Requires `tool` (a gate without
+	 *  a tool trigger is meaningless). */
+	gate?: SessionProbe
 }
 
 export interface BehaviourEvals {

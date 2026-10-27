@@ -70,11 +70,18 @@ export class TriggerEngine {
 	 * events for behaviours that newly transitioned to loaded. Already-loaded
 	 * behaviours are skipped, so a behaviour cannot fire twice on tool events
 	 * even when many subsequent calls also match the matcher.
+	 *
+	 * A behaviour declaring `gate` must additionally pass it against the
+	 * session-start `SessionContext` (probe-as-veto on the tool path only).
+	 * Without a snapshot (a tool event before `session_start` — not expected
+	 * in practice) the gate is skipped: fail-open, so the nudge still firing
+	 * is the safe direction (no missed validation guidance).
 	 */
-	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number): LoadEvent[] {
+	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number, sessionCtx?: SessionContext): LoadEvent[] {
 		return this.evaluateAll((b) => {
 			const matcher = b.triggers.tool
 			if (!matcher?.(event)) return undefined
+			if (b.triggers.gate && sessionCtx && !b.triggers.gate(sessionCtx)) return undefined
 			return { trigger: "tool", turnIndex, toolName: event.toolName, toolArgs: event.input }
 		})
 	}

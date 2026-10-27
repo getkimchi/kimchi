@@ -456,3 +456,101 @@ describe("lazy activation — workspace relaxation for sessions started elsewher
 		}
 	})
 })
+
+describe("lazy activation — one-time activation steer (branch B)", () => {
+	/** All sendMessage calls with the lsp_activation custom type. */
+	function activationSteers(ext: ReturnType<typeof makeSession>) {
+		return ext.sendMessage.mock.calls.filter((call) => call[0].customType === "lsp_activation")
+	}
+
+	it("pyright: sends exactly one steer with the supersession + fallback clauses and the root", async () => {
+		const dir = makeTempDir("kimchi-lsp-steer-py-")
+		const project = path.join(dir, "proj")
+		const ext = makeSession()
+		const ctx = await startSession(ext, dir)
+
+		seedMarker(project, "pyproject.toml")
+		await fireToolResult(ext, writeToolResult(path.join(project, "main.py")), ctx)
+
+		// Exactly one activation steer — the single-winner stop bounds it; a
+		// second .py touch must not re-send (activation already final).
+		await fireToolResult(ext, writeToolResult(path.join(project, "other.py")), ctx)
+
+		const steers = activationSteers(ext)
+		expect(steers).toHaveLength(1)
+		const [message, options] = steers[0]
+		expect(message.display).toBe(false)
+		expect(options).toEqual({ deliverAs: "steer" })
+		expect(message.content).toContain("Language server pyright is now active")
+		expect(message.content).toContain(project)
+		expect(message.content).toContain("supersedes the earlier ast.parse post-edit validation")
+		// Content-keyed fallback shapes, not "if it errors": the refusal is an
+		// ordinary tool result.
+		expect(message.content).toContain("If it reports no server available")
+		expect(message.content).toContain('python3 -c "import ast..."')
+	})
+
+	it("gopls: sends the generic steer without the Python supersession clause", async () => {
+		const dir = makeTempDir("kimchi-lsp-steer-go-")
+		const project = path.join(dir, "goproj")
+		binaries.available = ["gopls"]
+		const ext = makeSession()
+		const ctx = await startSession(ext, dir)
+
+		seedMarker(project, "go.mod")
+		await fireToolResult(ext, writeToolResult(path.join(project, "main.go")), ctx)
+
+		const steers = activationSteers(ext)
+		expect(steers).toHaveLength(1)
+		const [message] = steers[0]
+		expect(message.content).toContain("Language server gopls is now active")
+		expect(message.content).toContain("lsp_diagnostics")
+		expect(message.content).not.toContain("supersedes")
+		expect(message.content).not.toContain("ast.parse")
+	})
+
+	it("session-start-active sessions send no activation steer", async () => {
+		const dir = makeTempDir("kimchi-lsp-steer-start-")
+		seedMarker(dir, "pyproject.toml")
+		const ext = makeSession()
+		const ctx = await startSession(ext, dir)
+		expect(activeTools(ext)).toContain("lsp_diagnostics")
+
+		// The session-start winner serves every subsequent file op — the lazy
+		// path never runs, so no activation steer (the lsp-tools prompt block
+		// has covered guidance from turn 0).
+		await fireToolResult(ext, writeToolResult(path.join(dir, "main.py")), ctx)
+		expect(activationSteers(ext)).toHaveLength(0)
+	})
+
+	it("the steer precedes the diagnostics of the same tool_result — both reach the model", async () => {
+		// The materializing write also file-syncs and may steer diagnostics;
+		// the activation steer is sent before that async sync work begins
+		// (maybeActivateForPath runs first in the handler), so ordering within
+		// the same turn is activation → diagnostics.
+		const dir = makeTempDir("kimchi-lsp-steer-order-")
+		const project = path.join(dir, "proj")
+		binaries.available = ["pyright-langserver"]
+		const ext = makeSession()
+		const ctx = await startSession(ext, dir)
+
+		seedMarker(project, "pyproject.toml")
+		mocks.waitForDiagnostics.mockResolvedValue(true)
+		const diagMap = new Map([
+			[
+				`file://${path.join(project, "main.py")}`,
+				{ diagnostics: [{ range: { start: { line: 0, character: 0 } }, message: "err", severity: 1 }] },
+			],
+		])
+		mocks.getOrCreateClient.mockResolvedValue({ diagnostics: diagMap })
+
+		await fireToolResult(ext, writeToolResult(path.join(project, "main.py")), ctx)
+
+		const calls = ext.sendMessage.mock.calls
+		const activationIndex = calls.findIndex((call) => call[0].customType === "lsp_activation")
+		const diagIndex = calls.findIndex((call) => call[0].customType === "lsp_diagnostics")
+		expect(activationIndex).toBeGreaterThanOrEqual(0)
+		expect(diagIndex).toBeGreaterThanOrEqual(0)
+		expect(activationIndex).toBeLessThan(diagIndex)
+	})
+})

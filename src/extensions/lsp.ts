@@ -46,6 +46,7 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 }
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
+const LSP_ACTIVATION_CUSTOM_TYPE = "lsp_activation"
 const DIAG_WAIT_TIMEOUT_MS = 2000
 
 /** Diagnostic log for LSP failures — silent unless NODE_DEBUG=kimchi:lsp. A
@@ -234,6 +235,34 @@ export default function (pi: ExtensionAPI) {
 		if (statusUi) {
 			statusUi.setStatus("lsp", `LSP: ${hit.server.name}`)
 		}
+		// One-time activation steer: this path only runs when LSP was NOT
+		// active at session start, so sessions that had the lsp-tools prompt
+		// block from turn 0 (the branch-A geometry) never see it. Announces
+		// the server and the lsp_* tools; for a pyright winner it explicitly
+		// supersedes any already-steered ast.parse post-edit validation (steer
+		// recency would otherwise favor the later AST body) and keys the
+		// fallback on the tool's ordinary-result refusal shapes ("No LSP server
+		// available for this file type.", unavailable/failed server), not
+		// isError — those refusals are ordinary results. Hidden harness steer,
+		// same channel as LSP diagnostics steers and behaviour bodies; works on
+		// both TUI and ACP.
+		const activationParts = [
+			`Language server ${hit.server.name} is now active (project root ${hit.root}).`,
+			"The `lsp_*` tools are available — call `lsp_diagnostics` after editing files it serves, and use `lsp_hover` / `lsp_definition` / `lsp_references` / `lsp_rename` for navigation instead of grep-based lookups.",
+		]
+		if (hit.server.extensions.includes("py")) {
+			activationParts.push(
+				'For Python files this supersedes the earlier ast.parse post-edit validation — call `lsp_diagnostics` on the edited file (it reports syntax, type, and import errors). If it reports no server available, the server is unavailable, or it fails, fall back to the `python3 -c "import ast..."` check.',
+			)
+		}
+		pi.sendMessage(
+			{
+				customType: LSP_ACTIVATION_CUSTOM_TYPE,
+				content: markHarnessSteer(activationParts.join(" ")),
+				display: false,
+			},
+			{ deliverAs: "steer" },
+		)
 		debug(`LSP: ${hit.server.name} activated mid-session for ${hit.root}`)
 	}
 

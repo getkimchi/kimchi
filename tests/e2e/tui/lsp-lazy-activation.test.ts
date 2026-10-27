@@ -22,6 +22,10 @@ test.use(TUI_TEST_CONFIG)
  *  lsp-tools prompt block is active (i.e. at least one server activated). */
 const LSP_PROMPT_PHRASE = "Prefer them over text-based alternatives"
 
+/** Phrase from the one-time activation steer sent by maybeActivateForPath
+ *  when a language server activates mid-session. */
+const ACTIVATION_STEER_PHRASE = "Language server pyright is now active"
+
 const FIRST_PROMPT = "set up a python project here"
 const SECOND_PROMPT = "is the language server active now"
 
@@ -89,6 +93,16 @@ test("LSP activates mid-session when the agent scaffolds a Python project in an 
 			// server (poll — footer statuses are applied asynchronously).
 			await waitForText(terminal, "LSP: pyright", { full: false })
 			trace.step("status footer shows the activated server")
+
+			// The activation steer was delivered during the materializing edit's
+			// tool_result, so it already reached the model on the first request
+			// after that edit — the in-turn continuation inside the same turn,
+			// before any second prompt or prompt rebuild. (The steer also
+			// carries the Python supersession + fallback clauses.)
+			const activationRequests = fixture.fake.requests.filter((r) => bodyText(r).includes(ACTIVATION_STEER_PHRASE))
+			expect(activationRequests.length).toBeGreaterThan(0)
+			expect(bodyText(activationRequests[0])).toContain("supersedes the earlier ast.parse post-edit validation")
+			trace.step("activation steer reached the in-turn continuation request")
 
 			// The request built before any materializing edit advertised no
 			// lsp_* tools and no LSP guidance.

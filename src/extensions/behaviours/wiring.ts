@@ -16,7 +16,7 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
 import { registerRulesBlock } from "./rules-block.js"
-import { type ResolverIO, resolveSessionContext } from "./session-context.js"
+import { type ResolverIO, resolveSessionContext, type SessionContext } from "./session-context.js"
 import {
 	BEHAVIOUR_EVAL_TYPE,
 	BEHAVIOUR_LOADED_TYPE,
@@ -45,8 +45,13 @@ export interface WireOptions {
 function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpec[] {
 	const specs: ProbeSpec[] = []
 	for (const b of triggered) {
-		const probe = b.triggers.session
-		if (probe) specs.push(probe.__spec)
+		const { session, gate } = b.triggers
+		if (session) specs.push(session.__spec)
+		// Gate-declared probes must reach the resolver too: a probe used only
+		// as a gate (e.g. not(lspServes("py"))) never runs on the session load
+		// path, so without harvesting its spec the resolver leaves
+		// ctx.lspServes empty and the gate silently never applies.
+		if (gate) specs.push(gate.__spec)
 	}
 	return specs
 }
@@ -62,6 +67,10 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 	const evalEngine = new EvalEngine(behaviours, (name) => engine.isLoaded(name))
 	let summaryEmitted = false
 	let currentTurnIndex = 0
+	// Session-start snapshot passed to evaluateToolTriggers for gate checks.
+	// Cleared on session_shutdown — a tool event between shutdown and the
+	// next session_start fails open rather than reusing a stale snapshot.
+	let currentSessionCtx: SessionContext | undefined
 
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		// Reset per-session state so re-fired session_start events (reload, new,
@@ -71,6 +80,7 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		summaryEmitted = false
 		currentTurnIndex = 0
 		const sessionContext = resolveSessionContext(sessionSpecs, ctx.cwd, options.resolverIO)
+		currentSessionCtx = sessionContext
 		const events = engine.evaluateSessionTriggers(sessionContext, currentTurnIndex)
 		if (events.length > 0) {
 			deferExtensionAction(() => {
@@ -105,7 +115,7 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 			})
 		}
 
-		const loadEvents = engine.evaluateToolTriggers(callEvent, currentTurnIndex)
+		const loadEvents = engine.evaluateToolTriggers(callEvent, currentTurnIndex, currentSessionCtx)
 		for (const e of loadEvents) {
 			pi.appendEntry<BehaviourLoadedData>(BEHAVIOUR_LOADED_TYPE, {
 				name: e.name,
@@ -174,6 +184,7 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 	// can still reconstruct totals from them; only the rolled-up snapshot is
 	// lost.
 	pi.on("session_shutdown", async () => {
+		currentSessionCtx = undefined
 		if (summaryEmitted) return
 		summaryEmitted = true
 		const entries: BehaviourSummaryEntry[] = []

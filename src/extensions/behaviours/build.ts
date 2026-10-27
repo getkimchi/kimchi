@@ -56,6 +56,9 @@ export function buildBehaviours(sources: readonly BehaviourSource[]): Behaviour[
 		if (!src.triggers.session && !src.triggers.tool) {
 			throw new Error(`triggered behaviour ${name} has no session or tool trigger`)
 		}
+		if (src.triggers.gate && !src.triggers.tool) {
+			throw new Error(`triggered behaviour ${name} declares gate without a tool trigger`)
+		}
 		result.push({
 			kind: "triggered",
 			name,

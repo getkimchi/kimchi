@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { TriggerEngine } from "./engine.js"
 import type { SessionContext } from "./session-context.js"
-import { any, cli, gitRemote, type ToolCallEvent, tool } from "./triggers.js"
+import { any, cli, gitRemote, lspServes, not, type ToolCallEvent, tool } from "./triggers.js"
 import type { Behaviour, BehaviourEvals, BehaviourTriggers } from "./types.js"
 
 type MakeArgs =
@@ -37,6 +37,7 @@ function makeContext(
 		gitRemoteHost: string | undefined
 		inGitRepo: boolean
 		paths: Iterable<string>
+		lspServes: Iterable<string>
 	}> = {},
 ): SessionContext {
 	return {
@@ -44,6 +45,7 @@ function makeContext(
 		gitRemoteHost: overrides.gitRemoteHost,
 		inGitRepo: overrides.inGitRepo ?? false,
 		pathMatches: new Set(overrides.paths ?? []),
+		lspServes: new Set(overrides.lspServes ?? []),
 	}
 }
 
@@ -296,5 +298,110 @@ describe("TriggerEngine.evaluateToolTriggers", () => {
 		const engine = new TriggerEngine([a, b])
 		const events = engine.evaluateToolTriggers(bashCall("ls"), 0)
 		expect(events.map((e) => e.name)).toEqual(["a", "b"])
+	})
+})
+
+describe("TriggerEngine.evaluateToolTriggers — gate (probe-as-veto on the tool path)", () => {
+	/** The python-edit shape: tool matcher + not(lspServes("py")) gate. */
+	function gatedNudge() {
+		return makeBehaviour({
+			name: "python-edit",
+			kind: "triggered",
+			triggers: {
+				tool: any(
+					tool("edit", (i) => i.path.endsWith(".py")),
+					tool("write", (i) => i.path.endsWith(".py")),
+				),
+				gate: not(lspServes("py")),
+			},
+		})
+	}
+
+	const pyEdit = { toolName: "edit", input: { path: "src/main.py" } }
+
+	it("does not load a gated behaviour when the gate fails", () => {
+		const engine = new TriggerEngine([gatedNudge()])
+		const events = engine.evaluateToolTriggers(pyEdit, 0, makeContext({ lspServes: ["py", "pyw"] }))
+
+		expect(events).toEqual([])
+		expect(engine.isLoaded("python-edit")).toBe(false)
+		expect(engine.pendingNames()).toEqual([])
+	})
+
+	it("loads a gated behaviour when the gate passes", () => {
+		const engine = new TriggerEngine([gatedNudge()])
+		const events = engine.evaluateToolTriggers(pyEdit, 2, makeContext({}))
+
+		expect(events).toEqual([
+			{
+				name: "python-edit",
+				trigger: "tool",
+				turnIndex: 2,
+				toolName: "edit",
+				toolArgs: { path: "src/main.py" },
+			},
+		])
+		expect(engine.isLoaded("python-edit")).toBe(true)
+	})
+
+	it("loads on tool match alone when no gate is declared (back-compat)", () => {
+		const b = makeBehaviour({
+			name: "ungated",
+			kind: "triggered",
+			triggers: { tool: tool("bash") },
+		})
+		const engine = new TriggerEngine([b])
+		expect(engine.evaluateToolTriggers(bashCall("ls"), 0, makeContext({ lspServes: ["py"] }))).toHaveLength(1)
+		expect(engine.isLoaded("ungated")).toBe(true)
+	})
+
+	it("fails open when no session snapshot exists (tool event before session_start)", () => {
+		const engine = new TriggerEngine([gatedNudge()])
+		// No third argument — the gate is skipped, the nudge still fires.
+		expect(engine.evaluateToolTriggers(pyEdit, 0)).toHaveLength(1)
+		expect(engine.isLoaded("python-edit")).toBe(true)
+	})
+
+	it("keeps checking the gate across repeated tool events (stays unloaded while it fails)", () => {
+		const engine = new TriggerEngine([gatedNudge()])
+		const ctx = makeContext({ lspServes: ["py"] })
+		expect(engine.evaluateToolTriggers(pyEdit, 0, ctx)).toEqual([])
+		expect(engine.evaluateToolTriggers(pyEdit, 1, ctx)).toEqual([])
+		expect(engine.isLoaded("python-edit")).toBe(false)
+	})
+
+	it("ignores the gate on the session-trigger path", () => {
+		// A gate that would veto the tool path must not veto a session probe —
+		// gate is probe-as-veto for tool loads only, never a load path itself.
+		const b = makeBehaviour({
+			name: "gated-with-session",
+			kind: "triggered",
+			triggers: {
+				session: cli("gh"),
+				tool: tool("bash"),
+				gate: not(lspServes("py")),
+			},
+		})
+		const engine = new TriggerEngine([b])
+		const events = engine.evaluateSessionTriggers(makeContext({ clis: ["gh"], lspServes: ["py"] }), 0)
+
+		expect(events).toEqual([{ name: "gated-with-session", trigger: "session", turnIndex: 0 }])
+		expect(engine.isLoaded("gated-with-session")).toBe(true)
+	})
+
+	it("a session-loaded behaviour cannot be re-gated by later tool events", () => {
+		const b = makeBehaviour({
+			name: "session-then-gated",
+			kind: "triggered",
+			triggers: {
+				session: cli("gh"),
+				tool: tool("bash"),
+				gate: not(lspServes("py")),
+			},
+		})
+		const engine = new TriggerEngine([b])
+		engine.evaluateSessionTriggers(makeContext({ clis: ["gh"] }), 0)
+		expect(engine.evaluateToolTriggers(bashCall("ls"), 1, makeContext({ lspServes: ["py"] }))).toEqual([])
+		expect(engine.isLoaded("session-then-gated")).toBe(true)
 	})
 })
