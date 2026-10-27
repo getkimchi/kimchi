@@ -2,15 +2,16 @@
 #
 # Put the work-reporting plugins for official Claude Code and Codex
 # (getkimchi/kimchi-adapters) into dist/share/kimchi/adapters, where
-# install.sh and the updater install them from.
+# install.sh and the updater install them from. The package is the same
+# on every platform: its code runs on this binary's runtime.
 #
-# Usage: scripts/bundle-adapters.sh darwin|linux amd64|arm64
+# Usage: scripts/bundle-adapters.sh
 # Needs GH_TOKEN with read access to getkimchi/kimchi-adapters releases.
 
 set -euo pipefail
 
 VERSION=v0.1.0-rc.6
-ASSET="kimchi-adapters_${1}_${2}.tar.gz"
+ASSET=kimchi-adapters.tar.gz
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT

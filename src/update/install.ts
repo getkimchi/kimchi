@@ -217,32 +217,29 @@ function copyFile(src: string, dst: string): void {
 /**
  * The release carries the work-reporting plugins for official Claude Code
  * and Codex in share/kimchi/adapters (scripts/bundle-adapters.sh), and
- * install.sh adds them to the clients it finds. After an update, rerun the
- * bundled installer for each added client whose plugin version differs.
- * Detached, like the memory capture worker: the plugin managers take
- * seconds, and a failure keeps the old receipt, so the next update retries.
- * Running Codex sessions stop recording until they restart, and Codex asks
- * the user to trust the new version's hooks.
+ * install.sh adds them to the clients it finds. Their code runs on this
+ * binary. After an update that brings new plugin code, rerun the bundled
+ * installer for the added clients: it relinks the code, and registers the
+ * plugins again only when their hooks changed. Detached, like the memory
+ * capture worker: registering takes seconds, and a failure keeps the old
+ * code receipt, so the next update retries.
  */
 export function refreshAdapters(
 	shareDir: string,
+	kimchiBin: string,
 	prefix = process.env.KIMCHI_ADAPTERS_PREFIX || join(homedir(), ".local", "share", "kimchi-adapters"),
 ): string[] {
-	let bundled: string
-	try {
-		bundled = readFileSync(join(shareDir, "adapters", "VERSION"), "utf8").trim()
-	} catch {
-		return []
-	}
-	const clients = ["claude", "codex"].filter((client) => {
+	const read = (path: string) => {
 		try {
-			return readFileSync(join(prefix, "installed", client), "utf8").trim() !== bundled
+			return readFileSync(path, "utf8").trim()
 		} catch {
-			// Never added, or removed with kimchi-adapters uninstall.
-			return false
+			return undefined
 		}
-	})
-	if (clients.length === 0) return clients
+	}
+	const bundled = read(join(shareDir, "adapters", "VERSION"))
+	// Clients without a receipt were never added, or were removed with kimchi-adapters uninstall.
+	const clients = ["claude", "codex"].filter((client) => read(join(prefix, "installed", client)) !== undefined)
+	if (!bundled || clients.length === 0 || read(join(prefix, "installed", "code")) === bundled) return []
 	// One client at a time: the installer holds a lock for its whole run. $0 is the installer.
 	const child = spawn(
 		"/bin/sh",
@@ -252,7 +249,7 @@ export function refreshAdapters(
 			join(shareDir, "adapters", "install.sh"),
 			...clients,
 		],
-		{ detached: true, stdio: "ignore" },
+		{ detached: true, stdio: "ignore", env: { ...process.env, KIMCHI_BIN: kimchiBin } },
 	)
 	child.on("error", (err) => {
 		console.error("kimchi update: work-reporting plugin update failed to start:", err.message)

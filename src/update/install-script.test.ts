@@ -85,6 +85,7 @@ describe.skipIf(process.platform === "win32")("shared Kimchi shell installer", (
 			`#!/bin/sh
 cat > /dev/null
 printf '%s\\n' "$*" >> "$KIMCHI_INSTALL_TEST_ROOT/adapters.log"
+printf '%s\\n' "$KIMCHI_BIN" > "$KIMCHI_INSTALL_TEST_ROOT/kimchi-bin"
 [ "\${KIMCHI_INSTALL_TEST_ADAPTER_FAILURE:-}" != "$2" ]
 `,
 		)
@@ -105,6 +106,8 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 		expect(readFileSync(join(installBin, "kimchi"), "utf8")).toContain("fixture Kimchi")
 		expect(readFileSync(join(root, "data", "kimchi", "theme.txt"), "utf8")).toBe("fixture theme")
 		expect(read("adapters.log")).toBe("install claude\ninstall codex\n")
+		// The plugins run on the Kimchi binary just installed.
+		expect(read("kimchi-bin")).toBe(`${join(installBin, "kimchi")}\n`)
 	})
 
 	it("skips clients that are not installed", () => {

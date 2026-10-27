@@ -158,7 +158,8 @@ fi
 
 # The release carries Kimchi's work-reporting plugins for the official Claude
 # Code and Codex CLIs (getkimchi/kimchi-adapters). Add them to each client
-# found; they report with Kimchi's sign-in and leave inference settings alone.
+# found. They run on this Kimchi binary, report with Kimchi's sign-in and
+# leave inference settings alone.
 ADAPTERS_INSTALLER="$DATA_DIR/kimchi/adapters/install.sh"
 if [ -f "$ADAPTERS_INSTALLER" ]; then
 	for client in claude codex; do
@@ -166,7 +167,7 @@ if [ -f "$ADAPTERS_INSTALLER" ]; then
 		echo ""
 		echo -e "${BLUE}Adding Kimchi work reporting to ${client}…${NC}"
 		# stdin stays with this script when it is piped into bash.
-		bash "$ADAPTERS_INSTALLER" install "$client" </dev/null ||
+		KIMCHI_BIN="$INSTALL_PATH" bash "$ADAPTERS_INSTALLER" install "$client" </dev/null ||
 			echo -e "${YELLOW}Kimchi is installed, but work reporting for ${client} is not. Rerun this installer to retry.${NC}" >&2
 	done
 fi

@@ -235,7 +235,7 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// Always clean up the vendored and bundled-plugin directories to fully override them.
 			for (const dir of ["vendor", "adapters"]) rmSync(join(shareDst, dir), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
-			refreshAdapters(shareDst)
+			refreshAdapters(shareDst, targetPath)
 
 			return { from: opts.tag, to: opts.tag, backupPath }
 		} finally {

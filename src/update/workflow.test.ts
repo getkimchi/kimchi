@@ -438,7 +438,7 @@ describe("applyUpdate share destination", () => {
 		})
 
 		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
-		expect(mocks.refreshAdapters).toHaveBeenCalledWith(siblingShare)
+		expect(mocks.refreshAdapters).toHaveBeenCalledWith(siblingShare, fakeBinPath)
 		expect(existsSync(join(siblingShare, "adapters"))).toBe(false)
 	})
 

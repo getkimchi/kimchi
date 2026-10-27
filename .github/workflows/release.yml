@@ -121,7 +121,7 @@ jobs:
         env:
           # A token that can read getkimchi/kimchi-adapters releases; the job token once that repository is public.
           GH_TOKEN: ${{ secrets.KIMCHI_ADAPTERS_TOKEN || github.token }}
-        run: bash scripts/bundle-adapters.sh ${{ matrix.os }} ${{ matrix.arch }}
+        run: bash scripts/bundle-adapters.sh
 
       - name: Install Linux credential-store service
         if: ${{ matrix.os == 'linux' }}
