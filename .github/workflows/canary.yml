@@ -171,8 +171,7 @@ jobs:
       - name: Bundle work-reporting plugins
         if: ${{ matrix.os != 'windows' }}
         env:
-          # A token that can read getkimchi/kimchi-bridge releases; the job token once that repository is public.
-          GH_TOKEN: ${{ secrets.KIMCHI_BRIDGE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/bundle-bridge.sh
 
       - name: Install Linux credential-store service
