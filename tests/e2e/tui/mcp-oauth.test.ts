@@ -129,11 +129,126 @@ test("logs into an HTTP MCP server with OAuth authorization code and PKCE", asyn
 				description: "dynamic client registration used the default loopback redirect URI",
 			})
 			expect(dcr.redirectUris).toEqual(["http://127.0.0.1:19876/callback"])
+			// Offline access is only requested from Google's authorization endpoint.
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request to a non-Google server",
+			})
+			expect(authorized.accessType).toBeUndefined()
+			expect(authorized.prompt).toBeUndefined()
 			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(true)
 			expect(fixture.mcp.hasEvent("oauth_browser_completed")).toBe(true)
 			expect(fixture.mcp.hasEvent("http_request", { authorized: true })).toBe(true)
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-login")
 			trace.step("authenticated MCP call and every OAuth protocol boundary verified")
+		},
+	)
+})
+
+/** Replace the auto-completing browser driver with a record-only one: it logs the authorize URL and never fetches it. */
+function useRecordOnlyBrowser(homeDir: string): void {
+	const agentDir = join(homeDir, ".config", "kimchi", "harness")
+	const browserPath = join(agentDir, "mcp-oauth-browser", "open")
+	const eventPath = join(agentDir, "mcp-fixture-fixture.jsonl")
+	writeFileSync(browserPath, oauthBrowserDriverScript(eventPath, { autoComplete: false }), "utf8")
+	chmodSync(browserPath, 0o755)
+}
+
+test("requests offline access from Google's authorization endpoint", async ({ terminal }) => {
+	// Google only issues a refresh token for access_type=offline (and re-issues one to
+	// an already-consented user only with prompt=consent). The fixture advertises
+	// Google's endpoint; the browser driver records the URL without fetching it.
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-google-offline",
+			mcp: { transport: "oauth", scenario: "oauth-google-authorization-endpoint" },
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for Google's endpoint",
+			})
+			const target = new URL(opened.target)
+			expect(target.origin + target.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth")
+			expect(target.searchParams.get("access_type")).toBe("offline")
+			expect(target.searchParams.get("prompt")).toBe("consent")
+			trace.step("Google authorize URL carries access_type=offline and prompt=consent")
+		},
+	)
+})
+
+test("user-supplied authorizationParams win over the Google offline-access defaults", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-google-user-params",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-google-authorization-endpoint",
+				oauth: { scope: "mcp:tools", authorizationParams: { access_type: "online" } },
+			},
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for Google's endpoint",
+			})
+			const target = new URL(opened.target)
+			expect(target.searchParams.get("access_type")).toBe("online")
+			expect(target.searchParams.get("prompt")).toBe("consent")
+			trace.step("configured access_type kept; unset prompt still defaults to consent")
+		},
+	)
+})
+
+test("appends the advertised offline_access scope to a configured scope", async ({ terminal }) => {
+	// OIDC providers (Microsoft, Okta, ...) advertise offline_access in scopes_supported;
+	// the client must request that scope, not a vendor parameter.
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-offline-scope",
+			mcp: { transport: "oauth", scenario: "oauth-offline-access-scope", oauth: { scope: "mcp:tools" } },
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for the scope-advertising fixture",
+			})
+			const target = new URL(opened.target)
+			expect(target.searchParams.get("scope")).toBe("mcp:tools offline_access")
+			expect(target.searchParams.get("access_type")).toBeNull()
+			trace.step("authorize URL scope carries the advertised offline_access and no vendor parameters")
+		},
+	)
+})
+
+test("passes user-supplied authorizationParams through to the authorization request", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-authorization-params",
+			mcp: {
+				transport: "oauth",
+				oauth: { scope: "mcp:tools", authorizationParams: { access_type: "online", prompt: "login" } },
+			},
+			responses: [modelReply("unused")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the configured params",
+			})
+			expect(authorized.accessType).toBe("online")
+			expect(authorized.prompt).toBe("login")
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("configured authorizationParams reached the authorization endpoint unchanged")
 		},
 	)
 })
