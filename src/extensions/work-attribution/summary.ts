@@ -202,14 +202,20 @@ export function readWorkRecords(
 		// A failed scan, exhausted budget or unfinished import cannot silently authorize work from incomplete history.
 		if (importJournalSlice(agentDir, checkBudget)) throw new Error("Legacy work history is still importing")
 		if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)
-	} else {
-		try {
-			hydrate(agentDir)
-		} catch (error) {
-			debugWorkAttribution("Legacy hydration unavailable:", error)
-		}
-	}
+	} else hydrateQuietly(agentDir)
 	return ledgerReadRecords(agentDir, { modifiedSince }, checkBudget)
+}
+/** Records of one type, oldest first; background scans read only the rows they use through the type index. */
+export function readWorkRecordsOfType(agentDir: string, type: WorkRecord["type"]): WorkRecord[] {
+	hydrateQuietly(agentDir)
+	return ledgerReadRecords(agentDir, { type })
+}
+function hydrateQuietly(agentDir: string): void {
+	try {
+		hydrate(agentDir)
+	} catch (error) {
+		debugWorkAttribution("Legacy hydration unavailable:", error)
+	}
 }
 /** Like readWorkRecords, but yields between bounded imports and honors shutdown between each committed batch. */
 export async function readWorkRecordsAsync(

@@ -1527,7 +1527,7 @@ describe("durable work pull request discovery", () => {
 		seed()
 		const reads = vi.spyOn(ledger, "readRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, { modifiedSince: undefined }])
+		expect(reads.mock.calls[0]).toEqual([agentDir, { type: "commit", modifiedSince: undefined }])
 		later()
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
@@ -1536,7 +1536,7 @@ describe("durable work pull request discovery", () => {
 		const checkpoint = reads.mock.calls[1][1]?.modifiedSince
 		expect(checkpoint).toEqual(expect.any(Number))
 		await lookup()
-		expect(reads.mock.calls[2]).toEqual([agentDir, { modifiedSince: checkpoint }])
+		expect(reads.mock.calls[2]).toEqual([agentDir, { type: "commit", modifiedSince: checkpoint }])
 		expect(commitCalls()).toHaveLength(2)
 	})
 })

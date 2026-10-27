@@ -256,7 +256,7 @@ export function importBatchInTx(backend: RecordBackend, entries: ImportEntry[]):
 /** Replays stored records in capture/import order. */
 export function readRecords(
 	agentDir: string,
-	opts: { workId?: string; modifiedSince?: number } = {},
+	opts: { workId?: string; modifiedSince?: number; type?: WorkRecord["type"] } = {},
 	checkBudget?: () => void,
 ): WorkRecord[] {
 	checkBudget?.()
@@ -713,29 +713,35 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		allHeads: () => allHeads.all().map((row) => JSON.parse(row.body) as WorkHead),
 		readRecords: (opts, checkBudget) => {
 			checkBudget?.()
+			// An index narrows the read; any other option filters its rows.
 			const source =
 				opts.workId !== undefined
 					? readRecordsWork.iterate(opts.workId)
-					: opts.modifiedSince !== undefined
-						? readRecordsSince.iterate(opts.modifiedSince)
-						: opts.sessionId !== undefined
-							? readRecordsSession.iterate(opts.sessionId)
-							: opts.type !== undefined
-								? readRecordsType.iterate(opts.type)
+					: opts.type !== undefined
+						? readRecordsType.iterate(opts.type)
+						: opts.modifiedSince !== undefined
+							? readRecordsSince.iterate(opts.modifiedSince)
+							: opts.sessionId !== undefined
+								? readRecordsSession.iterate(opts.sessionId)
 								: readRecordsAll.iterate()
 			const rows: StoredRecord[] = []
 			try {
 				for (const row of source) {
 					checkBudget?.()
-					if (opts.sessionId === undefined || row.sessionId === opts.sessionId) rows.push(row)
+					if (
+						(opts.sessionId === undefined || row.sessionId === opts.sessionId) &&
+						(opts.type === undefined || row.type === opts.type) &&
+						(opts.modifiedSince === undefined || row.importedAt >= opts.modifiedSince)
+					)
+						rows.push(row)
 				}
 			} catch (error) {
 				// Bun 1.4 leaves an interrupted iterator's cursor positioned mid-result.
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
+				else if (opts.type !== undefined) readRecordsType.get(opts.type)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
 				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
-				else if (opts.type !== undefined) readRecordsType.get(opts.type)
 				else readRecordsAll.get()
 				throw error
 			}
