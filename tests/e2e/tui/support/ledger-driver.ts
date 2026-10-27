@@ -540,8 +540,12 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const rejectedBackoff = verifications === verifiedBeforeRejection + 1 && body() === originalBody
 	mode = "key-change"
 	await setReportingEnabled(agent, true)
-	await run()
-	const keyFenced = posts.length === beforeOther && body() === originalBody
+	let keyFenced = false
+	try {
+		await run()
+	} catch {
+		keyFenced = posts.length === beforeOther && body() === originalBody
+	}
 	process.env.KIMCHI_API_KEY = "fake-reporting"
 	mode = "success"
 	await run()

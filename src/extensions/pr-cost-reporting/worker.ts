@@ -388,24 +388,18 @@ export function deliverEvents(
 				})
 			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
 			try {
-				const value = await verifyApiKey(key, {
+				verified = await verifyApiKey(key, {
 					endpoint: apiUrl,
 					organizationId,
 					fetch: fetchBounded,
 					signal: combined,
 					retry: { maxRetries: 0 },
 				})
-				assertCurrent()
-				verified = value
 			} catch {}
+			// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
+			assertCurrent()
 			const account = verified && { apiUrl, ...verified }
 			if (!account || !isWorkAccount(account)) {
-				if (signal.aborted) return
-				try {
-					assertOwnership()
-				} catch {
-					return
-				}
 				// A rejected or unreachable verification waits like a failed upload instead of repeating every pass.
 				defer(due, errorMessage)
 				await recordReportingError(agentDir, errorMessage)

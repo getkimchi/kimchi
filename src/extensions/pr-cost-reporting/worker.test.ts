@@ -230,6 +230,34 @@ describe("account-fenced reporting delivery", () => {
 		expect(retry.retryAt - Date.now()).toBeGreaterThan(least)
 	})
 
+	it.each([
+		"an opt-out",
+		"an endpoint change",
+	])("ends the pass without a backoff when %s interrupts the verification", async (interruption) => {
+		const accountId = accountKey(content.account)
+		backendFor(directory).insertOutboxBatch({
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountId,
+			body: new Uint8Array(),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		})
+		http.mockImplementation(async (_input, init) => {
+			if (interruption === "an endpoint change") {
+				config.endpoint = "https://other.example"
+				return Response.json({ organizationId: org, userId: user })
+			}
+			await setReportingEnabled(directory, false)
+			return new Promise((_resolve, reject) =>
+				init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }),
+			)
+		})
+		await expect(deliverEvents(directory, "/project", new AbortController().signal, () => {})).rejects.toThrow()
+		expect(http).toHaveBeenCalledOnce()
+		expect(backendFor(directory).getNote("pr-cost-delivery", accountId)).toBeUndefined()
+	})
+
 	it("uploads snapshots and events with the SSO credential when no API key is configured", async () => {
 		config.key = ""
 		const agentDir = join(directory, "agent")
