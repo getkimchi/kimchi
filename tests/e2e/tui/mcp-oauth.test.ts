@@ -253,6 +253,57 @@ test("passes user-supplied authorizationParams through to the authorization requ
 	)
 })
 
+test("a transient metadata failure while renewing a token does not fall back to the MCP origin", async ({
+	terminal,
+}) => {
+	// The authorization server (issuer .../as) differs from the MCP origin. If the
+	// protected-resource metadata request fails once, falling back to the MCP origin
+	// would discover the wrong issuer and abort with "issuer changed".
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-flaky-metadata",
+			mcp: { transport: "oauth", scenario: "oauth-split-issuer-flaky-prm" },
+			responses: [modelReply("unused")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const firstToken = await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "first sign-in against the split-issuer authorization server",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForOAuthTokenExpiry(firstToken)
+
+			// Re-authenticating with the expired token: the first metadata request fails.
+			const beforeRenew = fixture.mcp.checkpoint()
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_resource_metadata_failed", {
+				after: beforeRenew,
+				description: "protected-resource metadata failed once while renewing the token",
+			})
+			trace.step("transient metadata failure injected while the client renewed its token")
+
+			// The failed attempt stops there (no fallback to the MCP origin); the
+			// user's next attempt refreshes the stored token without a browser sign-in.
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "refresh_token" },
+				after: beforeRenew,
+				description: "retry refreshed the token once the metadata endpoint recovered",
+			})
+			await fixture.mcp.waitForEvent("tools_listed", {
+				after: beforeRenew,
+				description: "client reconnected and listed tools with the refreshed token",
+			})
+			// Falling back to the MCP origin as the authorization server is the
+			// wrong-issuer path (the fixture's origin serves no authorization metadata).
+			expect(fixture.mcp.hasEvent("oauth_origin_fallback_attempted")).toBe(false)
+			trace.step("retry succeeded once the metadata endpoint recovered")
+		},
+	)
+})
+
 test("completes a pre-registered https redirect OAuth flow through the loopback callback", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", { message: "oauth-remote-redirect" })
 	await runMcpKimchiSession(

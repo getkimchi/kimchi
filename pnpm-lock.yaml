@@ -33,7 +33,7 @@ patchedDependencies:
     hash: e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937
     path: patches/@earendil-works__pi-tui@1.3.0.patch
   '@modelcontextprotocol/client@2.3.1':
-    hash: 6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03
+    hash: 7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec
     path: patches/@modelcontextprotocol__client@2.3.1.patch
   pi-mcp-adapter@5.3.1:
     hash: fe3aa3ac530165c46449e61955d59a95947b19b525fd01fa31982a9c8cbad976
@@ -75,7 +75,7 @@ importers:
         version: 0.0.10(@earendil-works/pi-coding-agent@1.3.0(patch_hash=ef194e2708b3894b6162a1c9e7e4c0754f134eba29b1f8a417309023099fd7b5)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(@opentelemetry/api@1.9.0)(typebox@1.3.7)(vite@7.3.7(@types/node@22.19.18)(jiti@2.7.0)(tsx@4.21.0)(yaml@2.8.4))
       '@modelcontextprotocol/client':
         specifier: 2.3.1
-        version: 2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03)
+        version: 2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec)
       '@modelcontextprotocol/ext-apps':
         specifier: ^1.7.1
         version: 1.7.1(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(zod@4.4.3)
@@ -4238,7 +4238,7 @@ snapshots:
 
   '@mixmark-io/domino@2.2.0': {}
 
-  '@modelcontextprotocol/client@2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03)':
+  '@modelcontextprotocol/client@2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec)':
     dependencies:
       '@modelcontextprotocol/core': 2.3.1
       cross-spawn: 7.0.6
@@ -4273,11 +4273,11 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       zod: 4.4.3
 
-  '@modelcontextprotocol/ext-tasks@0.1.0(@modelcontextprotocol/client@2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03))':
+  '@modelcontextprotocol/ext-tasks@0.1.0(@modelcontextprotocol/client@2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec))':
     dependencies:
       zod: 4.6.7
     optionalDependencies:
-      '@modelcontextprotocol/client': 2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03)
+      '@modelcontextprotocol/client': 2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec)
 
   '@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3)':
     dependencies:
@@ -6065,9 +6065,9 @@ snapshots:
   pi-mcp-adapter@5.3.1(patch_hash=fe3aa3ac530165c46449e61955d59a95947b19b525fd01fa31982a9c8cbad976)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
       '@earendil-works/pi-tui': 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
-      '@modelcontextprotocol/client': 2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03)
+      '@modelcontextprotocol/client': 2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec)
       '@modelcontextprotocol/core': 2.3.1
-      '@modelcontextprotocol/ext-tasks': 0.1.0(@modelcontextprotocol/client@2.3.1(patch_hash=6818576eba7396828c654c5c7a184eacc8d82eba91d0f97ab1e459de45023e03))
+      '@modelcontextprotocol/ext-tasks': 0.1.0(@modelcontextprotocol/client@2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec))
       '@napi-rs/keyring': 2.1.1
       '@typesafe-ai/sdk': 0.6.0
       ajv: 8.20.0
