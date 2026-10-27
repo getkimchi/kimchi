@@ -58,7 +58,7 @@ function normalizeThinkingScopeKey(scopeKey?: string): string {
 }
 
 function normalizeThinkingMode(mode: unknown): ThinkingStepsMode {
-	return mode === "collapsed" || mode === "expanded" || mode === "none" ? mode : "expanded"
+	return mode === "collapsed" || mode === "expanded" || mode === "none" ? mode : "collapsed"
 }
 
 function normalizeActiveThinkingState(value: unknown): ActiveThinkingState {
@@ -207,7 +207,7 @@ const globalState = (() => {
 	}
 	const created: ThinkingStepsGlobalState = {
 		currentScopeKey: DEFAULT_SCOPE_KEY,
-		modeByScopeKey: { [DEFAULT_SCOPE_KEY]: "expanded" },
+		modeByScopeKey: { [DEFAULT_SCOPE_KEY]: "collapsed" },
 		activeByScopeKey: { [DEFAULT_SCOPE_KEY]: {} },
 		lastActiveByScopeKey: { [DEFAULT_SCOPE_KEY]: { active: false } },
 		refreshToggleByScope: {},
@@ -224,7 +224,7 @@ const globalState = (() => {
 
 function ensureScopeState(scopeKey: string): void {
 	if (!(scopeKey in globalState.modeByScopeKey)) {
-		globalState.modeByScopeKey[scopeKey] = "expanded"
+		globalState.modeByScopeKey[scopeKey] = "collapsed"
 	}
 	if (!(scopeKey in globalState.activeByScopeKey)) {
 		globalState.activeByScopeKey[scopeKey] = {}
@@ -256,7 +256,7 @@ export function setCurrentThinkingScopeKey(scopeKey: string): void {
 export function getThinkingStepsMode(scopeKey?: string): ThinkingStepsMode {
 	const normalizedScopeKey = normalizeThinkingScopeKey(scopeKey ?? globalState.currentScopeKey)
 	ensureScopeState(normalizedScopeKey)
-	return globalState.modeByScopeKey[normalizedScopeKey] ?? "expanded"
+	return globalState.modeByScopeKey[normalizedScopeKey] ?? "collapsed"
 }
 
 export function setThinkingStepsMode(mode: ThinkingStepsMode, scopeKey?: string): void {
@@ -423,7 +423,7 @@ export function resetThinkingStepsViewState(scopeKey?: string): void {
 	if (scopeKey !== undefined) {
 		const normalizedScopeKey = normalizeThinkingScopeKey(scopeKey)
 		globalState.currentScopeKey = normalizedScopeKey
-		globalState.modeByScopeKey[normalizedScopeKey] = "expanded"
+		globalState.modeByScopeKey[normalizedScopeKey] = "collapsed"
 		globalState.refreshToggleByScope[normalizedScopeKey] = false
 		globalState.activeByScopeKey[normalizedScopeKey] = {}
 		globalState.lastActiveByScopeKey[normalizedScopeKey] = { active: false }
@@ -432,7 +432,7 @@ export function resetThinkingStepsViewState(scopeKey?: string): void {
 	}
 
 	globalState.currentScopeKey = DEFAULT_SCOPE_KEY
-	globalState.modeByScopeKey = { [DEFAULT_SCOPE_KEY]: "expanded" }
+	globalState.modeByScopeKey = { [DEFAULT_SCOPE_KEY]: "collapsed" }
 	globalState.activeByScopeKey = { [DEFAULT_SCOPE_KEY]: {} }
 	globalState.lastActiveByScopeKey = { [DEFAULT_SCOPE_KEY]: { active: false } }
 	globalState.refreshToggleByScope = {}
