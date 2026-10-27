@@ -27,7 +27,7 @@
 		"typecheck": "tsc --noEmit",
 		"check": "pnpm run lint && pnpm run typecheck",
 		"test": "vitest run --dir src",
-		"test:pi-upgrade": "vitest run scripts/pi-upgrade",
+		"test:pi-upgrade": "tsc -p scripts/pi-upgrade/tsconfig.workflow.json && vitest run scripts/pi-upgrade",
 		"pi-upgrade": "tsx scripts/pi-upgrade/cli.ts",
 		"test:dap-integration": "vitest run --config vitest.dap-integration.config.ts",
 		"test:smoke": "vitest run --config tests/smoke/vitest.config.ts",
