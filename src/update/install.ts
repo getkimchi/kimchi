@@ -1,5 +1,15 @@
-import { spawnSync } from "node:child_process"
-import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
+import { spawn, spawnSync } from "node:child_process"
+import {
+	chmodSync,
+	copyFileSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+} from "node:fs"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { backupDir } from "./paths.js"
 
@@ -202,4 +212,51 @@ function copyDir(src: string, dst: string): void {
  */
 function copyFile(src: string, dst: string): void {
 	copyFileSync(src, dst)
+}
+
+/**
+ * The release carries the work-reporting plugins for official Claude Code
+ * and Codex in share/kimchi/adapters (scripts/bundle-adapters.sh), and
+ * install.sh adds them to the clients it finds. After an update, rerun the
+ * bundled installer for each added client whose plugin version differs.
+ * Detached, like the memory capture worker: the plugin managers take
+ * seconds, and a failure keeps the old receipt, so the next update retries.
+ * Running Codex sessions stop recording until they restart, and Codex asks
+ * the user to trust the new version's hooks.
+ */
+export function refreshAdapters(
+	shareDir: string,
+	prefix = process.env.KIMCHI_ADAPTERS_PREFIX || join(homedir(), ".local", "share", "kimchi-adapters"),
+): string[] {
+	let bundled: string
+	try {
+		bundled = readFileSync(join(shareDir, "adapters", "VERSION"), "utf8").trim()
+	} catch {
+		return []
+	}
+	const clients = ["claude", "codex"].filter((client) => {
+		try {
+			return readFileSync(join(prefix, "installed", client), "utf8").trim() !== bundled
+		} catch {
+			// Never added, or removed with kimchi-adapters uninstall.
+			return false
+		}
+	})
+	if (clients.length === 0) return clients
+	// One client at a time: the installer holds a lock for its whole run. $0 is the installer.
+	const child = spawn(
+		"/bin/sh",
+		[
+			"-c",
+			'for client in "$@"; do bash "$0" update "$client"; done',
+			join(shareDir, "adapters", "install.sh"),
+			...clients,
+		],
+		{ detached: true, stdio: "ignore" },
+	)
+	child.on("error", (err) => {
+		console.error("kimchi update: work-reporting plugin update failed to start:", err.message)
+	})
+	child.unref()
+	return clients
 }

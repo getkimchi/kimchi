@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { atomicInstall, copySupportingFiles } from "./install.js"
+import { atomicInstall, copySupportingFiles, refreshAdapters } from "./install.js"
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -206,5 +206,42 @@ describe("atomicInstall", () => {
 		if (tempPathSeen) {
 			expect(() => readFileSync(tempPathSeen)).toThrow()
 		}
+	})
+})
+
+describe.skipIf(process.platform === "win32")("refreshAdapters", () => {
+	let root: string
+	let share: string
+	let prefix: string
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "kimchi-adapters-refresh-"))
+		share = join(root, "share")
+		prefix = join(root, "prefix")
+		mkdirSync(join(share, "adapters"), { recursive: true })
+		mkdirSync(join(prefix, "installed"), { recursive: true })
+		writeFileSync(join(share, "adapters", "VERSION"), "v0.2.0\n")
+		writeFileSync(
+			join(share, "adapters", "install.sh"),
+			`printf '%s\\n' "$*" >> "${join(root, "calls")}"\n[ "$2" != claude ] || exit 1\n`,
+		)
+	})
+
+	afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+	it("updates each added client whose plugins differ from the bundle, one after another", async () => {
+		writeFileSync(join(prefix, "installed", "claude"), "v0.1.0\n")
+		writeFileSync(join(prefix, "installed", "codex"), "v0.1.0\n")
+		expect(refreshAdapters(share, prefix)).toEqual(["claude", "codex"])
+		await vi.waitFor(() => expect(readFileSync(join(root, "calls"), "utf8")).toBe("update claude\nupdate codex\n"))
+	})
+
+	it("leaves current, never-added and Windows installs alone", () => {
+		writeFileSync(join(prefix, "installed", "codex"), "v0.2.0\n")
+		expect(refreshAdapters(share, prefix)).toEqual([])
+		rmSync(join(share, "adapters"), { recursive: true })
+		writeFileSync(join(prefix, "installed", "claude"), "v0.1.0\n")
+		expect(refreshAdapters(share, prefix)).toEqual([])
+		expect(existsSync(join(root, "calls"))).toBe(false)
 	})
 })

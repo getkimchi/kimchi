@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 	atomicInstall: vi.fn(),
 	copySupportingFiles: vi.fn(),
 	macosCodesignReSign: vi.fn(),
+	refreshAdapters: vi.fn(),
 	smokeTestBinary: vi.fn(),
 }))
 
@@ -25,6 +26,7 @@ vi.mock("./install.js", () => ({
 	atomicInstall: mocks.atomicInstall,
 	copySupportingFiles: mocks.copySupportingFiles,
 	macosCodesignReSign: mocks.macosCodesignReSign,
+	refreshAdapters: mocks.refreshAdapters,
 	smokeTestBinary: mocks.smokeTestBinary,
 }))
 
@@ -374,6 +376,7 @@ describe("applyUpdate share destination", () => {
 		mocks.downloadArchive.mockReset()
 		mocks.atomicInstall.mockReset()
 		mocks.copySupportingFiles.mockReset()
+		mocks.refreshAdapters.mockReset()
 		mocks.macosCodesignReSign.mockReset()
 		mocks.smokeTestBinary.mockReset()
 
@@ -434,6 +437,7 @@ describe("applyUpdate share destination", () => {
 		})
 
 		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
+		expect(mocks.refreshAdapters).toHaveBeenCalledWith(siblingShare)
 	})
 
 	it("falls back to ~/.local/share/kimchi when the sibling share does not exist", async () => {

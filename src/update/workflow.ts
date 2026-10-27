@@ -5,7 +5,7 @@ import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
 import { extractArchive, verifyChecksum } from "./extract.js"
 import { assetName, GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
-import { atomicInstall, copySupportingFiles, macosCodesignReSign, smokeTestBinary } from "./install.js"
+import { atomicInstall, copySupportingFiles, macosCodesignReSign, refreshAdapters, smokeTestBinary } from "./install.js"
 import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
 
@@ -235,6 +235,7 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// Always cleanup vendored directory to fully override it.
 			rmSync(join(shareDst, "vendor"), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
+			refreshAdapters(shareDst)
 
 			return { from: opts.tag, to: opts.tag, backupPath }
 		} finally {

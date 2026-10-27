@@ -168,6 +168,13 @@ jobs:
         if: ${{ matrix.os == 'windows' }}
         run: node scripts/build-binary.js --target ${{ matrix.target }}
 
+      - name: Bundle work-reporting plugins
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          # A token that can read getkimchi/kimchi-adapters releases; the job token once that repository is public.
+          GH_TOKEN: ${{ secrets.KIMCHI_ADAPTERS_TOKEN || github.token }}
+        run: bash scripts/bundle-adapters.sh ${{ matrix.os }} ${{ matrix.arch }}
+
       - name: Install Linux credential-store service
         if: ${{ matrix.os == 'linux' }}
         run: |
