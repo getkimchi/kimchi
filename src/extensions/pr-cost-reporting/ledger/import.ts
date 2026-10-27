@@ -255,11 +255,7 @@ function importJournalFiles(
 			)
 		} catch (error) {
 			if (!object(error) || error.code !== "ENOENT") throw error
-			if (cursor) {
-				result.anomalies.push({ path, code: "journal-removed" })
-				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
-				diagnostic(agentDir, "journal-removed")
-			}
+			if (cursor) forgetJournal(agentDir, backend, path, result)
 			continue
 		}
 		if (!prepared) continue
@@ -365,12 +361,25 @@ function importJournalFiles(
 				statSync(cursor.path)
 			} catch (error) {
 				if (!object(error) || error.code !== "ENOENT") throw error
-				result.anomalies.push({ path: cursor.path, code: "journal-removed" })
-				backend.tx(() => saveCoverage(backend, cursor.path, [{ kind: "invalid", path: cursor.path, line: 1 }]))
-				diagnostic(agentDir, "journal-removed")
+				forgetJournal(agentDir, backend, cursor.path, result)
 			}
 		}
 	return result
+}
+
+/**
+ * A removed journal's imported records stay; its cursor and coverage go, so it is reported once instead of marking
+ * history incomplete on every later pass, as the journal-era reader also stopped counting a file that was gone.
+ */
+function forgetJournal(agentDir: string, backend: RecordBackend, path: string, result: ImportResult): void {
+	result.anomalies.push({ path, code: "journal-removed" })
+	backend.tx(() => {
+		backend.deleteJournalCursor(path)
+		backend.deleteNote(COVERAGE_NOTES, path)
+		backend.deleteNote(TAIL_NOTES, path)
+	})
+	continued.delete(path)
+	diagnostic(agentDir, "journal-removed")
 }
 
 interface ImportOptions {

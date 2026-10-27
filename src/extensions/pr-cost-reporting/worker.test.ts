@@ -504,6 +504,9 @@ describe("account-fenced reporting delivery", () => {
 		await run()
 		expect(posts()).toHaveLength(before)
 		expect(Object.values((await readReportingState(directory)).entries).map((entry) => entry.revision)).toEqual(["1"])
+		// The removed journal's records stay in the ledger, so later captures still see complete history.
+		await run()
+		expect((await readReportingState(directory)).error).toBeUndefined()
 	})
 	it("reports valid scoped work beside unrelated unscoped legacy history with incomplete coverage", async () => {
 		await seedLinked()

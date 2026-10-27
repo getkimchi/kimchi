@@ -262,6 +262,9 @@ export function createMemoryRecords(): RecordBackend {
 		diagnostic: (code) => diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1),
 		getJournalCursor: (path) => cursors.get(path),
 		putJournalCursor: (cursor) => cursors.set(cursor.path, { ...cursor }),
+		deleteJournalCursor: (path) => {
+			cursors.delete(path)
+		},
 		listJournalCursors: () => [...cursors.values()],
 		close: () => {},
 	}

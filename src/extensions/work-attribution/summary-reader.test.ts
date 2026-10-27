@@ -178,16 +178,20 @@ it("retains absolute line numbers when damage arrives after a consumed prefix", 
 	expect(problems).toEqual([{ kind: "invalid", path, line: 3 }])
 })
 
-it("keeps imported authority and incomplete coverage after a source is rewritten or removed", () => {
+it("keeps imported authority after a source is rewritten or removed, and stops reporting a removed one", () => {
 	const { agentDir, path } = journal([work])
 	expect(readWorkRecords(agentDir)).toEqual([work])
 	writeFileSync(path, "")
-	for (let attempt = 0; attempt < 2; attempt++) {
+	const read = () => {
 		const problems: WorkRecordProblem[] = []
 		expect(readWorkRecords(agentDir, undefined, undefined, (problem) => problems.push(problem))).toEqual([work])
-		expect(problems).toEqual([{ kind: "invalid", path, line: 1 }])
-		if (attempt === 0) unlinkSync(path)
+		return problems
 	}
+	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
+	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
+	unlinkSync(path)
+	expect(read()).toEqual([])
+	expect(read()).toEqual([])
 })
 
 it("propagates budget interruption during stored-row replay instead of treating it as damaged JSON", () => {

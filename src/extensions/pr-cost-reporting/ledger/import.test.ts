@@ -16,7 +16,14 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { readWorkRecords } from "../../work-attribution/summary.js"
-import { boundaryHashOf, completeLines, importJournalSlice, importJournals, journalDecision } from "./import.js"
+import {
+	boundaryHashOf,
+	completeLines,
+	importJournalSlice,
+	importJournals,
+	journalDecision,
+	reportJournalProblems,
+} from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
 import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
 
@@ -296,6 +303,11 @@ describe("import loop over the memory backend", () => {
 		expect(result.anomalies).toEqual([{ path: file, code: "journal-removed" }])
 		expect(result.imported).toBe(0)
 		expect(readRecords(dir)).toHaveLength(2)
+		// Reported once: the removal leaves no coverage problem that would hold every later pass.
+		expect((await importJournals(dir)).anomalies).toEqual([])
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toEqual([])
 		// Still replaying identically after the file is gone.
 		expect(
 			readRecords(dir)

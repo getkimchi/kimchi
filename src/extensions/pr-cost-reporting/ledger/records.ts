@@ -132,6 +132,7 @@ export interface RecordBackend {
 	diagnostic(code: string): void
 	getJournalCursor(path: string): JournalCursor | undefined
 	putJournalCursor(cursor: JournalCursor): void
+	deleteJournalCursor(path: string): void
 	/** Every cursor on record, so import can report files removed since the last pass. */
 	listJournalCursors(): JournalCursor[]
 	close(): void
@@ -627,6 +628,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const putCursor = db.query(
 		"INSERT OR REPLACE INTO journal_cursor (path, dev, ino, generation, offset, boundary_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	)
+	const deleteCursor = db.query("DELETE FROM journal_cursor WHERE path = ?")
 	const bumpDiagnostic = db.query(
 		"INSERT INTO diagnostics (code, count, updated_at) VALUES (?, 1, ?) ON CONFLICT (code) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at",
 	)
@@ -765,6 +767,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				cursor.boundaryHash,
 				cursor.updatedAt,
 			),
+		deleteJournalCursor: (path) => {
+			deleteCursor.run(path)
+		},
 		listJournalCursors: () => allCursors.all(),
 		close: () => store.close(),
 	}
