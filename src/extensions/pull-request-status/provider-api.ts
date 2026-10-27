@@ -559,8 +559,13 @@ export async function repositoryIdentity(
 		} catch (error) {
 			// Unknown self-hosts can probe both API shapes with the same saved identity. Only the provider's own
 			// error identifies the host; sign-in pages, redirects and network failures mean an unsupported remote.
-			// A rejected CLI identity must never fall through to another account/provider.
-			if (provider || (repository.token && !saved) || !(error instanceof LookupError) || error.fromProvider) throw error
+			// A rejected CLI identity must never fall through to another account/provider; without the provider's own
+			// error it was never this provider's identity (gh returns GH_ENTERPRISE_TOKEN for any host, even Bitbucket).
+			if (provider || !(error instanceof LookupError) || error.fromProvider) throw error
+			if (repository.token && !saved) {
+				if (error.kind === "retry") throw error
+				break
+			}
 		}
 	}
 	throw new LookupError("This repository has no supported GitHub or GitLab API.", "unsupported")
