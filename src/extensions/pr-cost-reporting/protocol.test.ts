@@ -15,6 +15,27 @@ let actual: {
 	author: { body: string; hash: string; emptyBody: string }
 	displayValidation: boolean[]
 	target: { body: string; hash: string; invalid: boolean[] }
+	hosts: boolean[]
+}
+
+const hosts = {
+	"gitlab.example.com": true,
+	"gitlab.example.com:8443": true,
+	"gitlab.example.com:1": true,
+	"gitlab.example.com:65535": true,
+	"gitlab.example.com:00080": true,
+	":8443": false,
+	"gitlab.example.com:": false,
+	"gitlab.example.com:0": false,
+	"gitlab.example.com:65536": false,
+	"gitlab.example.com:123456": false,
+	"gitlab.example.com:80:1": false,
+	"gitlab.example.com:8a": false,
+	"gitlab.example.com:+80": false,
+	"gitlab example.com": false,
+	"gitlab.example.com/x": false,
+	"user@gitlab.example.com": false,
+	"gitlab.example.com:80#": false,
 }
 
 beforeAll(() => {
@@ -106,13 +127,14 @@ console.log(JSON.stringify({
   author: {body: encodeEvent(authored), hash: eventHash(authored), emptyBody: encodeEvent({...pr, pullRequest: {...pr.pullRequest, author: ""}})},
   displayValidation: display.map((fields) => !rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, ...fields}}))),
   target: {body: encodeEvent(target), hash: eventHash(target), invalid: ["invalid", {}, {provider: "other", host: "github.com", id: "42"}, {provider: "github", host: "secret@github.com", id: "42"}, {provider: "github", host: "github.com", id: "42", name: "repo?secret"}].map((targetRepository) => rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository}})))},
+  hosts: fixture.hosts.map((host) => !rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository: {provider: "gitlab", host, id: "42"}}}))),
   validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],
   invalidEvidence: [...badEvidence.map((event) => rejects(() => validateEvent(event))),
     rejects(() => validateBatch({...fixture.batches[0].input, events: [claim, claim]})),
     rejects(() => validateBatch({...fixture.batches[0].input, events: Array(501).fill(claim)}))]
 }));`,
 			],
-			{ encoding: "utf8", input: JSON.stringify(golden), timeout: 30_000 },
+			{ encoding: "utf8", input: JSON.stringify({ ...golden, hosts: Object.keys(hosts) }), timeout: 30_000 },
 		),
 	)
 })
@@ -127,6 +149,10 @@ it("appends and validates an independent allocation target without changing the 
 	expect(Object.keys(allocation).at(-1)).toBe("targetRepository")
 	expect(actual.target.hash).not.toBe(golden.events[9].hash)
 	expect(actual.target.invalid).toEqual(Array(5).fill(true))
+})
+
+it("accepts a repository host with a port from 1 to 65535 and nothing else after one colon", () => {
+	expect(actual.hosts).toEqual(Object.values(hosts))
 })
 
 it("uses Go-compatible UTF8 replacement and HTML escaping", () => {
