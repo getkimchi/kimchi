@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { atomicInstall, copySupportingFiles } from "./install.js"
+import { atomicInstall, copySupportingFiles, refreshBridge } from "./install.js"
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -206,5 +206,47 @@ describe("atomicInstall", () => {
 		if (tempPathSeen) {
 			expect(() => readFileSync(tempPathSeen)).toThrow()
 		}
+	})
+})
+
+describe.skipIf(process.platform === "win32")("refreshBridge", () => {
+	let root: string
+	let share: string
+	let prefix: string
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "kimchi-bridge-refresh-"))
+		share = join(root, "share")
+		prefix = join(root, "prefix")
+		mkdirSync(join(share, "bridge"), { recursive: true })
+		mkdirSync(join(prefix, "installed"), { recursive: true })
+		writeFileSync(join(share, "bridge", "VERSION"), "v0.2.0\n")
+		writeFileSync(
+			join(share, "bridge", "install.sh"),
+			`printf '%s %s\\n' "$*" "$KIMCHI_BIN" >> "${join(root, "calls")}"\n[ "$2" != claude ] || exit 1\n`,
+		)
+	})
+
+	afterEach(() => rmSync(root, { recursive: true, force: true }))
+
+	it("runs the bundled installer for each added client when the code is newer, one after another", async () => {
+		writeFileSync(join(prefix, "installed", "claude"), "kimchi-work-0123456789ab\n")
+		writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+		writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual(["claude", "codex"])
+		await vi.waitFor(() =>
+			expect(readFileSync(join(root, "calls"), "utf8")).toBe("update claude /opt/kimchi\nupdate codex /opt/kimchi\n"),
+		)
+	})
+
+	it("leaves current, never-added and Windows installs alone", () => {
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
+		writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+		writeFileSync(join(prefix, "installed", "code"), "v0.2.0\n")
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
+		rmSync(join(share, "bridge"), { recursive: true })
+		writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
+		expect(existsSync(join(root, "calls"))).toBe(false)
 	})
 })
