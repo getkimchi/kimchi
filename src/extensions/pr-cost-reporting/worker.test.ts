@@ -206,9 +206,10 @@ describe("account-fenced reporting delivery", () => {
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
 	})
 
+	// Lower bounds below the ±20% jitter: 4xx waits about an hour, a transient failure about 30 seconds.
 	it.each([
-		[401, 48 * 60_000],
-		[503, 24_000],
+		[401, 40 * 60_000],
+		[503, 20_000],
 	])("backs off an event account after a verification answered HTTP %i instead of verifying every pass", async (code, least) => {
 		const accountId = accountKey(content.account)
 		backendFor(directory).insertOutboxBatch({
