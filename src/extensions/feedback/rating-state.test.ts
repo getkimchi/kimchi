@@ -32,7 +32,13 @@ function userEntry(text = "fix it"): SessionEntry {
 
 function assistantEntry(
 	text: string,
-	opts?: { model?: string; provider?: string; responseModel?: string; textless?: boolean; stopReason?: string },
+	opts?: {
+		model?: string
+		provider?: string
+		responseModel?: string
+		textless?: boolean
+		stopReason?: AssistantMessage["stopReason"]
+	},
 ): SessionEntry {
 	const message: AssistantMessage = {
 		role: "assistant",
@@ -54,7 +60,7 @@ function assistantEntry(
 		// pi-mono's vocabulary: "stop" is a clean end_turn; a cancelled or
 		// errored turn persists its reply with "aborted"/"error" — the durable
 		// settle fact the rating derivation reads.
-		stopReason: (opts?.stopReason ?? "stop") as AssistantMessage["stopReason"],
+		stopReason: opts?.stopReason ?? "stop",
 		timestamp: 0,
 	}
 	return messageEntry(message)

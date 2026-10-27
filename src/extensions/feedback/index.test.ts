@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -76,6 +76,14 @@ function settledEntries(): SessionEntry[] {
 	]
 }
 
+/** The fixture's tail reply, narrowed for mutation — tests state only the
+ * fact they vary instead of repeating the narrow-then-throw dance. */
+function tailAssistant(entries: SessionEntry[]): AssistantMessage {
+	const entry = entries.at(-1)
+	if (entry?.type !== "message" || entry.message.role !== "assistant") throw new Error("fixture")
+	return entry.message
+}
+
 const feedbackMock = vi.hoisted(() => ({ trackFeedback: vi.fn() }))
 const trackModelSwitchFeedbackMock = vi.hoisted(() => vi.fn())
 const dialogMock = vi.hoisted(() => ({ show: vi.fn() }))
@@ -146,9 +154,7 @@ describe("feedbackExtension rating window registry", () => {
 		// The partial reply persists with stopReason "aborted" — the same fact
 		// the restored path reads, so live and restored agree.
 		const entries = settledEntries()
-		const assistant = entries[1]
-		if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
-		assistant.message.stopReason = "aborted"
+		tailAssistant(entries).stopReason = "aborted"
 		const { api, ctx, getHandler } = makeApi(entries)
 		feedbackExtension(api)
 
@@ -157,13 +163,10 @@ describe("feedbackExtension rating window registry", () => {
 	})
 
 	it("captures the resolved routed pick when the settle ran on a routed virtual model", () => {
-		const { api, ctx, getHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
-		setAutoRoutingState("test-session", {
-			status: "resolved",
-			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
-			requestedId: "auto-beta",
-		})
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto-beta"
+		tailAssistant(entries).responseModel = "glm-5.3"
+		const { api, ctx, getHandler } = makeApi(entries)
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -237,10 +240,8 @@ describe("feedbackExtension rating window registry", () => {
 
 		it("reports the transcript's routed pick for an Auto reply", async () => {
 			const entries = settledEntries()
-			const assistant = entries[1]
-			if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
-			assistant.message.model = "auto"
-			assistant.message.responseModel = "glm-5.3"
+			tailAssistant(entries).model = "auto"
+			tailAssistant(entries).responseModel = "glm-5.3"
 			const { api, ctx, getHandler } = makeApi(entries)
 			feedbackExtension(api)
 
@@ -250,9 +251,7 @@ describe("feedbackExtension rating window registry", () => {
 
 		it("does not arm from a log whose tail aborted", async () => {
 			const entries = settledEntries()
-			const assistant = entries[1]
-			if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
-			assistant.message.stopReason = "aborted"
+			tailAssistant(entries).stopReason = "aborted"
 			const { api, ctx, getHandler } = makeApi(entries)
 			feedbackExtension(api)
 
@@ -294,10 +293,8 @@ describe("feedbackExtension rating window registry", () => {
 			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: false, routedModelId: undefined })
 
 			const entries = settledEntries()
-			const assistant = entries[1]
-			if (assistant.type !== "message" || assistant.message.role !== "assistant") throw new Error("fixture")
-			assistant.message.model = "auto"
-			assistant.message.responseModel = "glm-5.3"
+			tailAssistant(entries).model = "auto"
+			tailAssistant(entries).responseModel = "glm-5.3"
 			const resumeCtx = createContext({ sessionManager: { getEntries: () => entries } })
 			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 			await getHandler("session_start")({ reason: "resume" }, resumeCtx)
@@ -456,8 +453,9 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("detects auto-model and passes autoModelUsed=true to the details dialog", async () => {
-		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto", name: "Auto" }
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto"
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi(entries)
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -470,14 +468,12 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("reports the resolved concrete pick as routing_model for a routed virtual model", async () => {
-		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
-		// Seed the routing state so the settled turn resolves auto-beta → glm-5.3.
-		setAutoRoutingState("test-session", {
-			status: "resolved",
-			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
-			requestedId: "auto-beta",
-		})
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto-beta"
+		tailAssistant(entries).responseModel = "glm-5.3"
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi(entries)
+		// The reply's own entry carries the routed pick — the same fact the
+		// restored path reads.
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -1060,7 +1056,7 @@ describe("feedbackExtension stale ctx handling", () => {
 		feedbackExtension(api)
 		const ctx = createContext({
 			sessionManager: {
-				getSessionId: () => {
+				getEntries: () => {
 					throw new Error("boom")
 				},
 			},

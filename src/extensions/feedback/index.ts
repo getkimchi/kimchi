@@ -2,7 +2,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
-import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { trackModelSwitchFeedback } from "../telemetry/index.js"
@@ -198,23 +197,14 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// stale ctx here. The rating bookkeeping below is best-effort, so bail
 		// on stale-ctx instead of surfacing the error.
 		try {
-			// All stale-prone ctx reads happen before any module-state mutation,
-			// so a torn-down session leaves the extension state fully untouched.
-			const sessionId = ctx.sessionManager.getSessionId()
-			// The same derivation the restored path arms from: a turn that died
-			// (cancel, error) has no clean reply to rate, so nothing arms. The
+			// The same derivation the restored path arms from — payload included:
+			// the reply's own persisted entry (model/responseModel) is the
+			// per-reply truth for what the turn ran on, so live and restored
+			// telemetry cannot disagree with each other or with the log. The
 			// final message persists before this event fires, so the entries are
 			// current.
 			const derived = deriveRatingState(ctx.sessionManager.getEntries())
-			if (!derived.armable) return
-			// Capture the concrete pick the router served, so `routing_model` reports
-			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
-			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
-			const routingState = getAutoRoutingState(sessionId)
-			invite(ctx, {
-				autoModelUsed: isAutoRoutedModel(ctx.model),
-				routedModelId: routingState.status === "resolved" ? routingState.model.id : undefined,
-			})
+			if (derived.armable) invite(ctx, derived.window)
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}

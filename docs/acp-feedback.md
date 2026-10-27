@@ -81,10 +81,10 @@ calls it `end_turn`) and no `feedback-summary` entry already attributes to
 it. A reply whose entry says `aborted`, `error`, or `length` was cancelled,
 errored, or truncated: never rateable, live or restored — the live settle
 path reads the same fact, so a cancelled turn invites nothing on any
-surface. Telemetry derives from the rated reply's own entry: `model` names
-the routed virtual (`auto*` on the kimchi-dev provider) and `responseModel`
-the concrete pick the backend served — the same facts the settle-time
-window captured.
+surface. Telemetry derives from the rated reply's own entry — `model`
+names the routed virtual (`auto*` on the kimchi-dev provider) and
+`responseModel` the concrete pick the backend served — identical live and
+restored, so the two paths cannot attribute differently.
 
 One divergence is accepted: a cancel *before the reply's first token*
 persists nothing, so the previous settled reply remains the log's tail and
