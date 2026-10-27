@@ -23,7 +23,8 @@ const hosts = {
 	"gitlab.example.com:8443": true,
 	"gitlab.example.com:1": true,
 	"gitlab.example.com:65535": true,
-	"gitlab.example.com:00080": true,
+	"gitlab.example.com:00080": false,
+	"gitlab.example.com:08443": false,
 	":8443": false,
 	"gitlab.example.com:": false,
 	"gitlab.example.com:0": false,
@@ -151,7 +152,7 @@ it("appends and validates an independent allocation target without changing the 
 	expect(actual.target.invalid).toEqual(Array(5).fill(true))
 })
 
-it("accepts a repository host with a port from 1 to 65535 and nothing else after one colon", () => {
+it("accepts a repository host with a port from 1 to 65535, no leading zero and nothing else after one colon", () => {
 	expect(actual.hosts).toEqual(Object.values(hosts))
 })
 

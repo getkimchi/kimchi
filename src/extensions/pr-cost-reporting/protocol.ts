@@ -570,7 +570,7 @@ function bounded(value: unknown, maximum: number): boolean {
 		})
 	)
 }
-/** A Git remote host: a name, or a name and a port from 1 to 65535 after one colon. */
+/** A Git remote host: a name, or a name and a port from 1 to 65535 without a leading zero after one colon. */
 function repositoryHost(host: string): boolean {
 	const [name, port, ...rest] = host.split(":")
 	return (
@@ -580,8 +580,8 @@ function repositoryHost(host: string): boolean {
 		(port === undefined ||
 			(port.length >= 1 &&
 				port.length <= 5 &&
+				port[0] !== "0" &&
 				Array.from(port).every(digit) &&
-				Number(port) >= 1 &&
 				Number(port) <= 65535))
 	)
 }
