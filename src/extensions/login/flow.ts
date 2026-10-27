@@ -43,9 +43,9 @@ import {
 	selectableRegions,
 } from "../../regions.js"
 import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
+import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
-export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const KIMCHI_SSO_LABEL = "Sign in with CAST AI (SSO)"
@@ -340,6 +340,10 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 export interface KimchiBrowserLoginHost {
 	modelRegistry: ModelRegistryLike
 	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown
+	/** Currently active model, used to decide whether login should keep it
+	 *  (when it's already a Kimchi provider) or pick a fresh one. Returning
+	 *  `undefined` means "nothing active" — login will then set the default. */
+	getCurrentModel?: () => { provider: string; id?: string } | undefined
 	showStatus?: (message: string) => void
 	showError?: (message: string) => void
 	addFeedback?: (message: string) => void
@@ -383,6 +387,46 @@ function formatKimchiTokenError(error: unknown, options: { saved: boolean }): st
 		return `Invalid API key. Please check your key and try again.${savedSuffix}`
 	}
 	return `Kimchi model refresh failed: ${detail}.${savedSuffix}`
+}
+
+/**
+ * Apply the post-login model selection: keep a prior Kimchi model (login is a
+ * credential/registry refresh, not a model switch), otherwise select the
+ * catalog default and announce it. A preserved prior model stays silent — the
+ * user already knows what they're running.
+ */
+async function applyPostLoginModel(host: KimchiBrowserLoginHost, providerModels: ProviderModelLike[]): Promise<void> {
+	const priorModel = host.getCurrentModel?.()
+	const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
+	const selectedModel = priorKimchiModel
+		? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
+		: defaultLoginModel(providerModels)
+	if (!priorKimchiModel) {
+		await host.setModel?.(selectedModel)
+	}
+	// Announce the model whenever login auto-selected one: the catalog default
+	// is dynamic, so the user can't predict it.
+	const announceModel = priorKimchiModel ? undefined : selectedModel.id
+	host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+}
+
+/**
+ * Resolve the catalog default for login, mirroring the auto-model extension's
+ * fresh-session heir order: the Auto router when the catalog serves it, else
+ * the gated flash candidates (orgs not served `auto`), else the first served
+ * model. Keeping the order aligned means login and the next fresh session
+ * land on the same default instead of login installing a model the fresh
+ * session then rolls back.
+ */
+function defaultLoginModel(providerModels: ProviderModelLike[]): ProviderModelLike {
+	return (
+		providerModels.find((m) => isAutoRoutedModel(m)) ??
+		GATED_DEFAULT_MODEL_CANDIDATES.reduce<ProviderModelLike | undefined>(
+			(found, id) => found ?? providerModels.find((m) => m.id === id),
+			undefined,
+		) ??
+		providerModels[0]
+	)
 }
 
 async function configureKimchiToken(
@@ -434,9 +478,7 @@ async function configureKimchiToken(
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		await applyPostLoginModel(host, providerModels)
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
 		return true
@@ -528,9 +570,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		await applyPostLoginModel(host, providerModels)
 		return true
 	}
 
@@ -682,6 +722,7 @@ export async function performKimchiBrowserLoginWithDialog(
 				{
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
@@ -765,6 +806,7 @@ export async function performKimchiSsoLoginWithExtensionUI(
 				const ok = await completeKimchiSsoLogin({
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),

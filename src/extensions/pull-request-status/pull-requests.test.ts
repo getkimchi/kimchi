@@ -166,7 +166,8 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 					id: 42,
 					default_branch: "main",
 					full_name: github[1],
-					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host}/${github[1]}`,
+					// GitHub.com and GHE.com serve their API from an api. subdomain of the web host.
+					html_url: `https://${url.host.startsWith("api.") ? url.host.slice("api.".length) : url.host}/${github[1]}`,
 				}
 			: gitlab
 				? {
@@ -366,6 +367,50 @@ describe("native provider credentials", () => {
 		for (const [url, options] of http.mock.calls) {
 			expect(url.origin).toBe("https://enterprise.example")
 			expect(new Headers(options.headers).get("authorization")).toBe("Bearer enterprise-token")
+		}
+	})
+	it("finds a GHE.com pull request through the enterprise's API subdomain with that host's CLI login", async () => {
+		seed()
+		remote("git@octocorp.ghe.com:team/repo.git")
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "gh" && args.join(" ") === "auth token --hostname octocorp.ghe.com" ? "tenant-cli-token" : undefined,
+		)
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ provider: "github", host: "octocorp.ghe.com", number: 7, repository: "team/repo" }],
+		})
+		expect(commitCalls()[0].href).toBe(`https://api.octocorp.ghe.com/repos/team/repo/commits/${sha}/pulls?per_page=100`)
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-cli-token")
+		}
+	})
+	it("sends GH_TOKEN to a GHE.com host as gh does, never the Enterprise Server token", async () => {
+		seed()
+		remote("https://octocorp.ghe.com/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-token")
+		vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-server-secret")
+		// The Enterprise Server token would win if this host were treated as GH_HOST's Server host.
+		vi.stubEnv("GH_HOST", "octocorp.ghe.com")
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "linked" })
+		expect(cli.auth).not.toHaveBeenCalled()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-token")
+		}
+	})
+	it("does not treat a host that merely contains ghe.com as GitHub Enterprise Cloud", async () => {
+		seed()
+		remote("https://octocorp.ghe.com.attacker.example/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-secret")
+		await lookup()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.host).toBe("octocorp.ghe.com.attacker.example")
+			expect(new Headers(options.headers).has("authorization")).toBe(false)
 		}
 	})
 	it("keeps a cloud GitHub token on github.com even when GH_HOST names another host", async () => {
@@ -1508,6 +1553,36 @@ describe("PR titles and author logins", () => {
 		expect(link).toMatchObject({ provider, number: 7, state: "open" })
 		expect(link).not.toHaveProperty("title")
 		expect(link).not.toHaveProperty("author")
+	})
+	it.each(
+		providers,
+	)("keeps the branch keys of a %s PR across a restart, so an unchanged check adds no row", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-add-jira"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const rows = saved().length
+		vi.resetModules()
+		const relaunched = await import("./pull-requests.js")
+		expect(relaunched.readWorkPullRequestUpdates(agentDir)[0].pullRequests).toEqual([
+			expect.objectContaining({ provider, number: 7, branchIssueKeys: ["ABC-12"] }),
+		])
+		const checks = commitCalls().length
+		later()
+		await relaunched.reconcileWorkPullRequests(agentDir, new AbortController().signal, () => {})
+		expect(commitCalls().length).toBeGreaterThan(checks)
+		expect(saved()).toHaveLength(rows)
+	})
+	it.each(providers)("keeps the Jira keys of a %s PR's head branch, not the branch name", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-and-DEF-3"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const [link] = saved().at(-1).pullRequests
+		expect(link.branchIssueKeys).toEqual(["ABC-12", "DEF-3"])
+		expect(JSON.stringify(saved().at(-1))).not.toContain(branch)
 	})
 	it.each(providers)("keeps reading %s links saved without them and adds them on the next check", async (provider) => {
 		const id = String(provider === "github" ? pull().id : mr().id)

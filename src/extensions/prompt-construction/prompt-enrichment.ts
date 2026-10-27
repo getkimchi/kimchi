@@ -29,9 +29,13 @@ import { arch, homedir, version as osVersion, platform, userInfo } from "node:os
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
-import { resolveSkillPathsForDiscovery } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import {
+	collectBundledDisabledSkillNames,
+	resolveSkillPathsForDiscovery,
+} from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -321,7 +325,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// state startup auth owns the first-run login path, so role warnings
 			// would be misleading noise before the user has a usable model.
 			const availableIds = new Set(getAvailableModels().map((m) => m.slug))
-			if (loadConfig().apiKey && availableIds.size > 0) {
+			if (resolveGatewayCredentials(loadConfig()).token && availableIds.size > 0) {
 				const replacements = new Map<string, string>()
 				for (const [slug, info] of readModelDeprecations(join(loadConfig().agentConfigDir, "models.json"))) {
 					const replacement = pickReplacementSlug(info)
@@ -432,7 +436,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			 */
 			function maybeRemapUnavailableOrchestratorDefault(ctx: ExtensionContext): void {
 				const config = loadConfig()
-				if (!config.apiKey) return
+				if (!resolveGatewayCredentials(config).token) return
 				const defaultRef = DEFAULT_MODEL_ROLES.orchestrator
 				if (getModelRoles().orchestrator !== defaultRef) return
 				const defaultId = modelIdFromRef(defaultRef)
@@ -832,7 +836,13 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// every downstream surface (base prompt skills section, /skill:<name>,
 			// autocomplete, /resources) sees them. All discovery, filtering, and
 			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
-			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig())
+			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig(), {
+				// Bundled skills may shadow external skills by name while their own
+				// resource toggle is enabled (documents → Anthropic office skills);
+				// configured .claude paths are a second advertisement channel for the
+				// same tree, so the shadowing must gate this channel too.
+				excludeSkillNames: collectBundledDisabledSkillNames().keys(),
+			})
 			const skillPaths = resolveSkillPathsForDiscovery(event.cwd, { extraPaths })
 			if (skillPaths.length === 0) return undefined
 			return { skillPaths }

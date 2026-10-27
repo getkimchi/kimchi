@@ -12,9 +12,20 @@
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { createRequire } from "node:module"
 import { platform, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -111,6 +122,152 @@ if (!isDev) {
 	mkdirSync(proxyHelperBinDest, { recursive: true })
 	cpSync(proxyHelperSrc, join(proxyHelperBinDest, proxyHelperName))
 }
+
+// Bundle each document skill's CLI with one shared recipe: stage the skill's
+// documents module tree under a temp dir, stage the runtime deps AND their
+// transitive trees flat into the staging node_modules (pnpm nests them;
+// children resolve via a require anchored at their parent's real manifest),
+// build with bun, and move the bundle into place. Staging under the system
+// temp dir keeps bun away from ancestors a sandbox can't read, and
+// dereferences pnpm's symlinks at the same time.
+function cleanup(dir) {
+	// Best-effort: cleanup must never mask a build error — a stale temp dir is
+	// the accepted worst case.
+	try {
+		rmSync(dir, { recursive: true, force: true })
+	} catch {
+		// ignore — the OS reclaims temp dirs
+	}
+}
+
+function stageDocuments(staging, entryName) {
+	const stagedEntry = join(staging, entryName)
+	cpSync(join(projectRoot, "src", "extensions", "documents", entryName), stagedEntry)
+	// The entry imports its siblings — stage the whole module tree and rewrite
+	// the entry's relative imports at it.
+	cpSync(join(projectRoot, "src", "extensions", "documents"), join(staging, "documents"), {
+		recursive: true,
+		filter: (src) => !src.endsWith(".test.ts"),
+	})
+	const entry = readFileSync(stagedEntry, "utf-8")
+	writeFileSync(stagedEntry, entry.replaceAll('from "./', 'from "./documents/'))
+	return stagedEntry
+}
+
+function stageDeps(staging, roots) {
+	const stagedPkgs = new Set()
+	const stageDep = (name, anchor) => {
+		if (stagedPkgs.has(name)) return
+		stagedPkgs.add(name)
+		const requireFrom = createRequire(anchor ?? join(projectRoot, "package.json"))
+		let realPkg
+		try {
+			realPkg = realpathSync(requireFrom.resolve(`${name}/package.json`))
+		} catch {
+			// package.json not exported (e.g. marked): anchor to the main entry
+			// and walk up to its manifest.
+			let dir = dirname(realpathSync(requireFrom.resolve(name)))
+			while (!existsSync(join(dir, "package.json"))) {
+				const up = dirname(dir)
+				if (up === dir) throw new Error(`no package.json above ${name}`)
+				dir = up
+			}
+			realPkg = join(dir, "package.json")
+		}
+		cpSync(dirname(realPkg), join(staging, "node_modules", name), { dereference: true, recursive: true })
+		const manifest = JSON.parse(readFileSync(realPkg, "utf-8"))
+		for (const child of Object.keys(manifest.dependencies ?? {})) {
+			try {
+				stageDep(child, realPkg)
+			} catch {
+				// optional dep not installed — bundling fails loudly if it's truly needed
+			}
+		}
+	}
+	for (const dep of roots) {
+		stageDep(dep)
+	}
+}
+
+// jszip's package root resolves lib/index.js (→ lie, pako, … not staged); its
+// dist/jszip.min.js is self-contained, so point the staged manifest at it.
+function pointJszipAtSelfContainedDist(staging) {
+	const jszipPkgPath = join(staging, "node_modules", "jszip", "package.json")
+	const jszipPkg = JSON.parse(readFileSync(jszipPkgPath, "utf-8"))
+	jszipPkg.main = "dist/jszip.min.js"
+	writeFileSync(jszipPkgPath, JSON.stringify(jszipPkg))
+}
+
+function bundleSkillCli({ skill, entry, deps, rewriteJszip = false }) {
+	const cliDest = join(projectRoot, isDev ? "resources" : "dist/share/kimchi", `skills/${skill}/scripts/${skill}.mjs`)
+	mkdirSync(dirname(cliDest), { recursive: true })
+	const staging = mkdtempSync(join(tmpdir(), `kimchi-${skill}-build-`))
+	try {
+		const stagedEntry = stageDocuments(staging, entry)
+		stageDeps(staging, deps)
+		if (rewriteJszip) pointJszipAtSelfContainedDist(staging)
+		const stagedOut = join(staging, `${skill}.mjs`)
+		execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
+			stdio: "inherit",
+		})
+		cpSync(stagedOut, cliDest)
+		return cliDest
+	} finally {
+		cleanup(staging)
+	}
+}
+
+// pdf: unpdf/@cantoo/pdf-lib are dependency graphs pnpm nests. Fonts are
+// discovered on the host at runtime (pdf-fonts.ts scans the OS font dirs).
+const pdfCliDest = bundleSkillCli({
+	skill: "pdf",
+	entry: "pdf-cli.ts",
+	deps: ["@cantoo/pdf-lib", "@pdf-lib/fontkit", "unpdf", "marked", "@hyzyla/pdfium"],
+})
+{
+	// The LO-edit macro ships beside the CLI: the CLI stages it into a
+	// throwaway LibreOffice profile at run time. In dev mode the skill dir
+	// IS the source dir, so the copy would be src === dest — skip it.
+	const lodrawSrc = join(projectRoot, "resources", "skills", "pdf", "scripts", "lodraw_edit.py")
+	const lodrawDest = join(dirname(pdfCliDest), "lodraw_edit.py")
+	if (resolve(lodrawSrc) !== resolve(lodrawDest)) {
+		cpSync(lodrawSrc, lodrawDest)
+	}
+	// Same self-copy guard for the bundled PDFium WASM used by render's
+	// in-process core route.
+	const requireFrom = createRequire(join(projectRoot, "package.json"))
+	const wasmSrc = realpathSync(requireFrom.resolve("@hyzyla/pdfium/pdfium.wasm"))
+	const wasmDest = join(dirname(pdfCliDest), "pdfium.wasm")
+	if (resolve(wasmSrc) !== resolve(wasmDest)) {
+		cpSync(wasmSrc, wasmDest)
+	}
+}
+
+// docx: stage the `docx` dependency graph (jszip, nanoid, hash.js).
+bundleSkillCli({
+	skill: "docx",
+	entry: "docx-cli.ts",
+	deps: ["docx", "@xmldom/xmldom", "jszip", "marked", "yauzl"],
+	rewriteJszip: true,
+})
+
+// xlsx: the jszip/@xmldom/yauzl graph the extractor/editor needs.
+bundleSkillCli({
+	skill: "xlsx",
+	entry: "xlsx-cli.ts",
+	deps: ["@xmldom/xmldom", "jszip", "yauzl"],
+	rewriteJszip: true,
+})
+
+// pptx: @xmldom/xmldom and image-size are dependency-free; pptxgenjs depends
+// only on jszip/image-size, and yauzl pulls pend — nested deps resolve through
+// the graph walk anchored at each parent's manifest.
+bundleSkillCli({
+	skill: "pptx",
+	entry: "pptx-cli.ts",
+	deps: ["@xmldom/xmldom", "pptxgenjs", "marked", "yauzl", "jszip"],
+	rewriteJszip: true,
+})
 
 // Bundle YAML into the validator: discovered skills are copied to temporary
 // directories, and installed binaries have no node_modules to resolve it from.

@@ -1,3 +1,4 @@
+import { GATEWAY_ORGANIZATION_HEADER } from "../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
@@ -186,7 +187,10 @@ const STARTUP_FETCH_OPTIONS = { timeoutMs: 1500, retry: { maxRetries: 0 } } as c
  */
 export async function fetchOrgPolicy(
 	apiKey: string,
-	options?: { fetch?: typeof globalThis.fetch },
+	options?: {
+		fetch?: typeof globalThis.fetch /** SSO organization routing header for OAuth bearers. */
+		organizationId?: string
+	},
 ): Promise<OrgPolicyFetchOutcome> {
 	const endpoint = resolveEndpoints().platformApiUrl
 	const fetchImpl = options?.fetch ?? globalThis.fetch
@@ -204,6 +208,7 @@ export async function fetchOrgPolicy(
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
+					...(options?.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 					Accept: "application/json",
 				},
 			},
@@ -235,6 +240,7 @@ export async function fetchOrgPolicy(
 				method: "GET",
 				headers: {
 					Authorization: `Bearer ${apiKey}`,
+					...(options?.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 					Accept: "application/json",
 				},
 			},

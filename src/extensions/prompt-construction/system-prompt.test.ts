@@ -221,7 +221,7 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		// The gh/glab CLI bullet moved into resources/skills/{gh-cli,glab-cli}:
+		// The gh/glab CLI bullet moved into src/extensions/behaviours/bodies/{gh-cli,glab-cli}.md:
 		// the prompt keeps only the generic Bash cap.
 		expect(result).not.toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
 		expect(result).toContain("git diff --stat")
