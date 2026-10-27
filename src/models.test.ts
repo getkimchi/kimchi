@@ -76,6 +76,30 @@ const MINIMAX: unknown = {
 	thinking_levels: [],
 }
 
+const HAIKU_45_CURATED_NONE: unknown = {
+	slug: "claude-haiku-4-5",
+	display_name: "Claude Haiku 4.5",
+	provider: "anthropic",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: false,
+	limits: { context_window: 200_000, max_output_tokens: 32_000 },
+	// Curated-none on a native anthropic model routed via /v1/messages.
+	thinking_levels: [],
+}
+
+const GPT_51_CURATED_NONE: unknown = {
+	slug: "gpt-5.1",
+	display_name: "GPT-5.1",
+	provider: "openai",
+	reasoning: true,
+	input_modalities: ["text"],
+	is_serverless: true,
+	limits: { context_window: 400_000, max_output_tokens: 128_000 },
+	// Curated-none on a Responses-API model.
+	thinking_levels: [],
+}
+
 const SONNET_46: unknown = {
 	slug: "claude-sonnet-4-6",
 	display_name: "",
@@ -1647,6 +1671,45 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 		expect(getModelThinkingLevels("kimchi-dev/glm-5-fp8")).toEqual(["low", "high", "max"])
 		expect(getModelThinkingLevels("kimchi-dev/minimax-m3")).toEqual([])
 		expect(getModelThinkingLevels("kimchi-dev/claude-sonnet-4-6")).toBeUndefined()
+	})
+
+	it("stamps curated-none models so the wire carries no explicit effort", async () => {
+		fetchOnce([KIMI, MINIMAX, HAIKU_45_CURATED_NONE, GPT_51_CURATED_NONE])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+		vi.restoreAllMocks()
+
+		const config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+		const byId = (id: string) =>
+			Object.entries(config.providers)
+				.filter(([name]) => name.startsWith("kimchi-dev"))
+				.flatMap(
+					([, provider]) =>
+						(
+							provider as {
+								models: Array<{
+									id: string
+									compat?: Record<string, unknown>
+									thinkingLevelMap?: Record<string, unknown>
+								}>
+							}
+						).models,
+				)
+				.find((m) => m.id === id)
+
+		// Curated and uncurated ai-enabler models keep their effort plumbing.
+		expect(byId("kimi-k2.5")?.compat).toBeUndefined()
+		// Curated-none on the openai-completions family: neither the per-level
+		// branch nor the map's off fallback ("none" would disable thinking) —
+		// reasoning_effort is absent from requests entirely.
+		expect(byId("minimax-m3")?.compat).toMatchObject({ supportsReasoningEffort: false })
+		// Native anthropic curated-none: thinking cannot be disabled (off: null)
+		// and no mid-conversation effort messages — the request carries no
+		// thinking parameter, so Claude decides (provider default).
+		expect(byId("claude-haiku-4-5")?.thinkingLevelMap).toMatchObject({ off: null })
+		expect(byId("claude-haiku-4-5")?.compat).toMatchObject({ supportsMidConvoEffort: false })
+		// Responses-API curated-none: the "none" disable fallback is stamped
+		// out too (gpt-5.1's map would otherwise send effort "none").
+		expect(byId("gpt-5.1")?.thinkingLevelMap).toMatchObject({ off: null })
 	})
 
 	it("round-trips thinking_levels onto the cached ModelMetadata", async () => {

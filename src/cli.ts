@@ -32,6 +32,7 @@ import { isKnownCommand } from "./commands/registry.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
+import { installThinkingLevelAdvisor } from "./thinking-selection.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -229,6 +230,7 @@ import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
 installModelTableRenderer()
+installThinkingLevelAdvisor()
 installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
