@@ -496,17 +496,20 @@ export function deliverEvents(
 				backend.tx(() => {
 					assertOwnership()
 					if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
-					backend.putNote(
-						"pr-cost-delivery",
-						accountId,
-						JSON.stringify({
-							batchId: sent.id,
-							attempts: attempts + 1,
-							retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
-							resume,
-							error: errorMessage,
-						}),
-					)
+					// 409: the server holds other content under this batch ID, so its events go out in a new batch.
+					if (status === 409) backend.deleteOutboxBatch(accountId, sent.id)
+					else
+						backend.putNote(
+							"pr-cost-delivery",
+							accountId,
+							JSON.stringify({
+								batchId: sent.id,
+								attempts: attempts + 1,
+								retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
+								resume,
+								error: errorMessage,
+							}),
+						)
 					assertOwnership()
 				})
 				await recordReportingError(agentDir, errorMessage)
