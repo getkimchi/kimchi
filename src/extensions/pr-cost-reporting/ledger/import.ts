@@ -142,6 +142,8 @@ export function completeLines(file: Buffer, from: number, to: number): Line[] {
 const MTIME_SLACK_MS = 2000
 /** The prefix hash behind each cursor this process wrote mid-file, so its next window skips rereading the prefix. */
 const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: number }>()
+/** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
+const stopped = new Map<string, string>()
 
 /** Prefix verification and body reads both yield to the synchronous deadline between fixed-size reads. */
 function prepareJournal(
@@ -241,7 +243,8 @@ function importJournalFiles(
 	checkBudget?.()
 	const result: ImportResult = { files: [], anomalies: [], problems: [], imported: 0, skipped: 0 }
 	const backend = backendFor(agentDir)
-	for (const path of journals) {
+	const start = until === undefined ? 0 : Math.max(0, journals.indexOf(stopped.get(agentDir) ?? ""))
+	for (const path of [...journals.slice(start), ...journals.slice(0, start)]) {
 		checkBudget?.()
 		const cursor = backend.getJournalCursor(path)
 		let prepared: ReturnType<typeof prepareJournal>
@@ -350,13 +353,15 @@ function importJournalFiles(
 		// Unchanged journals cost a stat each; only journals that imported spend the slice.
 		if (until !== undefined && Date.now() >= until) {
 			result.pending = true
+			stopped.set(agentDir, path)
 			break
 		}
 	}
+	const listed = new Set(journals)
 	if (sweep)
 		for (const cursor of backend.listJournalCursors()) {
 			checkBudget?.()
-			if (journals.includes(cursor.path)) continue
+			if (listed.has(cursor.path)) continue
 			try {
 				statSync(cursor.path)
 			} catch (error) {

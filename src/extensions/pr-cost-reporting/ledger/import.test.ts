@@ -437,6 +437,19 @@ describe("import loop over the memory backend", () => {
 		reads.mockRestore()
 	})
 
+	it("starts each timed slice at the journal where the last one stopped", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const files = ["a", "b", "c"].map((name) => join(journal(dir), `${name}.jsonl`))
+		for (const [index, file] of files.entries()) writeFileSync(file, line(request(`req-${index}`)))
+		const opens = vi.spyOn(fs, "openSync")
+		for (let slice = 0; slice < 3; slice++) expect((await importJournals(dir, { until: 0 })).imported).toBe(1)
+		// Rewalking from the start would open the first journal in every slice.
+		expect(Math.max(...files.map((file) => opens.mock.calls.filter(([path]) => path === file).length))).toBe(2)
+		opens.mockRestore()
+	})
+
 	it("an LF-terminated malformed final line is reported, not suppressed as an unfinished tail", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
