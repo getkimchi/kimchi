@@ -13,8 +13,6 @@ export interface State {
 	/** Per-release digests keyed `"<from>..<to>"`. Facts about Pi, reused across runs. */
 	digests: Record<string, unknown>
 	lastRun?: { baseline: string; target: string; inputsHash: string; at: string }
-	/** Target a human skipped by closing the issue; stays quiet until a newer one settles. */
-	skippedTarget?: string
 	/** The job closed the issue itself because we were up to date. */
 	closedByJob?: boolean
 }
