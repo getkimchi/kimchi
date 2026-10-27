@@ -1995,4 +1995,30 @@ describe("lookup failure reasons", () => {
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
 		expect(lookupFailureReason(failure)).toBe("unsupported")
 	})
+	it("keeps a Bitbucket repository unsupported when gh returns a token for its host", async () => {
+		seed()
+		remote("https://bitbucket.org/team/repo.git")
+		// gh returns GH_ENTERPRISE_TOKEN for any host that is not github.com.
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "gh" && args.join(" ") === "auth token --hostname bitbucket.org" ? "enterprise-token" : undefined,
+		)
+		http.mockImplementation(async () => new Response("<html>Not Found</html>", { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "error", reason: "unsupported" })
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect(lookupFailureReason(failure)).toBe("unsupported")
+		expect(http.mock.calls.every(([url]) => !url.pathname.startsWith("/api/v4/"))).toBe(true)
+	})
+	it("keeps a GitHub Enterprise 404 actionable when gh returns a token for an unconfigured host", async () => {
+		remote("https://github.corp.example/team/repo.git")
+		cli.auth.mockImplementation(async (command) => (command === "gh" ? "enterprise-token" : undefined))
+		http.mockImplementation(async () =>
+			Response.json({ message: "Not Found", documentation_url: "https://docs.github.com/rest" }, { status: 404 }),
+		)
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+			message: expect.stringContaining("GitHub could not find this repository"),
+			reason: undefined,
+		})
+	})
 })
