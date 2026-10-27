@@ -1,4 +1,4 @@
-import type { SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import {
 	contentText,
@@ -14,11 +14,12 @@ import {
 function record(overrides: Partial<SideChatRecord>): SideChatRecord {
 	return {
 		id: "chat-1",
+		sessionId: "main-1",
 		branchLeafId: null,
 		startedAt: 0,
 		updatedAt: 0,
 		title: "Title",
-		messages: [],
+		questions: 0,
 		...overrides,
 	}
 }
@@ -50,12 +51,12 @@ describe("wrapUpRequest", () => {
 						{ type: "toolCall", id: "t1", name: "read", arguments: { path: "cache.ts" } },
 					],
 					timestamp: 0,
-				} as SideChatRecord["messages"][number],
+				} as AgentSession["messages"][number],
 				{
 					role: "assistant",
 					content: [{ type: "text", text: "Use the LRU cache." }],
 					timestamp: 0,
-				} as SideChatRecord["messages"][number],
+				} as AgentSession["messages"][number],
 			],
 			"",
 		)
@@ -107,6 +108,16 @@ describe("readSideChatHistory", () => {
 
 		expect(readSideChatHistory(entries).map((chat) => chat.title)).toEqual(["new a", "b"])
 	})
+
+	it("ignores records whose ids are not safe path segments", () => {
+		const entries = [
+			customEntry(record({ id: "../../etc/passwd" })),
+			customEntry(record({ id: "ok", sessionId: "../other" })),
+			customEntry(record({ id: "kept" })),
+		]
+
+		expect(readSideChatHistory(entries).map((chat) => chat.id)).toEqual(["kept"])
+	})
 })
 
 describe("historyLabel", () => {
@@ -116,7 +127,7 @@ describe("historyLabel", () => {
 				title: "Caching",
 				fresh: true,
 				outcome: "sent",
-				messages: [{ role: "user", content: "why?", timestamp: 0 }],
+				questions: 1,
 			}),
 		)
 

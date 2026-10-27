@@ -1,11 +1,13 @@
 /**
- * Side chat records: every side chat is persisted as a hidden custom entry
+ * Side chat records: every side chat is referenced by a hidden custom entry
  * in the main session (latest entry per id wins), so `/side:history` can
- * list and reopen it after a restart.
+ * list and reopen it after a restart. The record is lightweight metadata;
+ * the side thread itself lives in the side chat's own file (store.ts).
  */
 
-import type { AgentSession, CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { extractText } from "../agents/prompt/context.js"
+import { isSafeId, type SideThread } from "./store.js"
 
 export const SIDE_CHAT_ENTRY_TYPE = "kimchi-side-chat"
 
@@ -14,9 +16,14 @@ export const UNTITLED_SIDE_CHAT = "New side chat"
 
 const TITLE_MAX = 60
 
-/** Persisted record of one side chat. */
+/** Persisted record of one side chat, kept in the main session. */
 export interface SideChatRecord {
 	id: string
+	/**
+	 * Main session that owns the side chat's file. A forked or resumed copy
+	 * of the main session carries the record but not the ownership.
+	 */
+	sessionId: string
 	/** Main-session leaf the side chat branched from. */
 	branchLeafId: string | null
 	/** Started with `/side:new`: no main-session messages inherited. */
@@ -24,8 +31,8 @@ export interface SideChatRecord {
 	startedAt: number
 	updatedAt: number
 	title: string
-	/** Side-thread messages only (after the inherited context). */
-	messages: AgentSession["messages"]
+	/** User questions asked so far, for the history list. */
+	questions: number
 	outcome?: "sent" | "closed"
 }
 
@@ -48,7 +55,7 @@ export const WRAP_UP_SYSTEM_PROMPT = [
 ].join("\n")
 
 /** Plain-text transcript of side-thread messages: user and assistant text, plus the tools the assistant called. */
-export function formatSideThread(messages: SideChatRecord["messages"]): string {
+export function formatSideThread(messages: SideThread): string {
 	const parts: string[] = []
 	for (const message of messages) {
 		if (message.role === "user") {
@@ -66,7 +73,7 @@ export function formatSideThread(messages: SideChatRecord["messages"]): string {
 }
 
 /** The single prompt sent to the `/wrap` session. */
-export function wrapUpRequest(messages: SideChatRecord["messages"], extra: string): string {
+export function wrapUpRequest(messages: SideThread, extra: string): string {
 	return [
 		`<side_conversation>\n${formatSideThread(messages)}\n</side_conversation>`,
 		"Write the steering message for the main agent.",
@@ -76,13 +83,13 @@ export function wrapUpRequest(messages: SideChatRecord["messages"], extra: strin
 		.join("\n\n")
 }
 
-/** Latest record per side chat id, most recently updated first. */
+/** Latest record per side chat id, most recently updated first; records with unsafe ids are ignored. */
 export function readSideChatHistory(entries: readonly SessionEntry[]): SideChatRecord[] {
 	const byId = new Map<string, SideChatRecord>()
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== SIDE_CHAT_ENTRY_TYPE) continue
 		const data = (entry as CustomEntry<SideChatRecord>).data
-		if (data?.id) byId.set(data.id, data)
+		if (isSafeId(data?.id) && isSafeId(data.sessionId)) byId.set(data.id, data)
 	}
 	return [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
 }
@@ -100,7 +107,7 @@ export function titleFrom(text: string): string {
 /** One `/side:history` picker row. */
 export function historyLabel(record: SideChatRecord): string {
 	const when = new Date(record.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-	const questions = record.messages.filter((message) => message.role === "user").length
+	const { questions } = record
 	const fresh = record.fresh ? " · fresh" : ""
 	const outcome = record.outcome === "sent" ? " · sent to main" : ""
 	return `${when}  ${record.title}  (${questions} question${questions === 1 ? "" : "s"}${fresh}${outcome})`

@@ -16,8 +16,8 @@
  *   the side thread (not the inherited main context), streaming it into the
  *   side editor to review/edit; enter sends it to the main session (as a
  *   steer while it runs), esc keeps chatting, `/close` discards;
- * - every side chat is kept as a hidden session entry; `/side:history`
- *   reopens one.
+ * - every side chat keeps its own transcript file next to the main session,
+ *   referenced by a hidden main-session entry; `/side:history` reopens one.
  *
  * ACP has no split view, so this is TUI-only by design.
  *
@@ -59,6 +59,7 @@ import {
 	type WrapUpRun,
 } from "./session.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
+import { openSideChatLog, type SideChatLog, type SideThread } from "./store.js"
 
 /** Side panel width chosen by dragging the divider; kept for the process lifetime. */
 let sideWidth: number | undefined
@@ -69,8 +70,12 @@ interface ActiveSideChat {
 	ready: Promise<SideChatSession | undefined>
 	side?: SideChatSession
 	ctx: ExtensionContext
-	/** Side-thread message count at the last persist; skips no-op appends. */
+	/** The side chat's own transcript file. */
+	log: SideChatLog
+	/** Side-thread messages already in `log`. */
 	persistedCount: number
+	/** The main session holds a record of this side chat. */
+	recorded: boolean
 	/** The in-flight `/wrap` draft, if any. */
 	wrapUp?: WrapUpRun
 	dispose: () => void
@@ -123,14 +128,42 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		return text
 	}
 
-	function persist(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
+	const countQuestions = (thread: SideThread) => thread.filter((message) => message.role === "user").length
+
+	function writeRecord(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
+		const questions = chat.side ? countQuestions(sideThreadMessages(chat.side)) : chat.record.questions
+		chat.record = { ...chat.record, questions, updatedAt: Date.now(), ...(outcome ? { outcome } : {}) }
+		chat.recorded = true
+		pi.appendEntry(SIDE_CHAT_ENTRY_TYPE, chat.record)
+	}
+
+	/**
+	 * Append the unsaved side-thread messages to the side chat's own file
+	 * (after every turn). The first save also records the side chat in the
+	 * main session, so a crash keeps it reachable from `/side:history`.
+	 */
+	function saveThread(chat: ActiveSideChat): void {
 		if (!chat.side) return
 		const messages = sideThreadMessages(chat.side)
-		if (messages.length === 0) return
-		if (messages.length === chat.persistedCount && (!outcome || outcome === chat.record.outcome)) return
-		chat.record = { ...chat.record, messages, updatedAt: Date.now(), ...(outcome ? { outcome } : {}) }
+		const unsaved = messages.slice(chat.persistedCount)
+		if (unsaved.length === 0) return
+		try {
+			chat.log.append(unsaved)
+		} catch (error) {
+			chat.panel.addInfo(`Could not save the side chat: ${error instanceof Error ? error.message : String(error)}`)
+			return
+		}
 		chat.persistedCount = messages.length
-		pi.appendEntry(SIDE_CHAT_ENTRY_TYPE, chat.record)
+		if (!chat.recorded) writeRecord(chat)
+	}
+
+	/** Save the thread and refresh the main-session record when its summary changed. */
+	function persist(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
+		saveThread(chat)
+		if (!chat.recorded || !chat.side) return
+		const questions = countQuestions(sideThreadMessages(chat.side))
+		if (questions === chat.record.questions && (!outcome || outcome === chat.record.outcome)) return
+		writeRecord(chat, outcome)
 	}
 
 	async function closeSideChat(outcome: SideChatRecord["outcome"]): Promise<void> {
@@ -293,14 +326,36 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		}
 
 		const now = Date.now()
-		const record: SideChatRecord = options.resume ?? {
-			id: randomUUID(),
-			branchLeafId: ctx.sessionManager.getLeafId(),
-			...(options.fresh ? { fresh: true } : {}),
-			startedAt: now,
-			updatedAt: now,
-			title: options.prompt ? titleFrom(options.prompt) : options.quote ? titleFrom(options.quote) : UNTITLED_SIDE_CHAT,
-			messages: [],
+		const sessionId = ctx.sessionManager.getSessionId()
+		const { resume } = options
+		let thread: SideThread = []
+		if (resume) {
+			try {
+				thread = openSideChatLog(ctx.sessionManager, resume.id, resume.sessionId).read()
+			} catch {
+				// Unreadable transcript: reopen with the inherited context only.
+			}
+		}
+		const owned = resume?.sessionId === sessionId
+		let record: SideChatRecord
+		if (resume && owned) {
+			record = resume
+		} else if (resume) {
+			// Inherited from another main session (a fork or copy): continue it as a
+			// new side chat of this session, leaving the original file untouched.
+			record = { ...resume, id: randomUUID(), sessionId, outcome: undefined }
+		} else {
+			const opening = options.prompt ?? options.quote
+			record = {
+				id: randomUUID(),
+				sessionId,
+				branchLeafId: ctx.sessionManager.getLeafId(),
+				...(options.fresh ? { fresh: true } : {}),
+				startedAt: now,
+				updatedAt: now,
+				title: opening ? titleFrom(opening) : UNTITLED_SIDE_CHAT,
+				questions: 0,
+			}
 		}
 		const { theme } = ctx.ui
 		let chat: ActiveSideChat | undefined
@@ -339,7 +394,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			branchLeafId: record.branchLeafId,
 			fresh: record.fresh === true,
 			thinkingLevel: pi.getThinkingLevel(),
-			resume: options.resume,
+			thread,
 		}).then(
 			(side) => {
 				if (active !== chat) {
@@ -355,7 +410,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				}
 				unsubscribe = side.session.subscribe((event) => {
 					panel.handleEvent(event)
-					if (event.type === "agent_end") panel.setNotice("")
+					if (event.type !== "agent_end") return
+					panel.setNotice("")
+					if (chat) saveThread(chat)
 				})
 				return side
 			},
@@ -370,7 +427,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			panel,
 			ready,
 			ctx,
-			persistedCount: options.resume?.messages.length ?? 0,
+			log: openSideChatLog(ctx.sessionManager, record.id),
+			persistedCount: owned ? thread.length : 0,
+			recorded: owned,
 			dispose: () => {
 				unsubscribe?.()
 				panel.dispose()
@@ -385,9 +444,10 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		}
 		active = chat
 
-		if (options.resume) {
+		if (resume) {
 			panel.addInfo(`↺ Reopened side chat from ${new Date(record.startedAt).toLocaleString()}`)
-			panel.replay(options.resume.messages)
+			if (thread.length === 0 && resume.questions > 0) panel.addInfo("Its transcript is no longer available.")
+			panel.replay(thread)
 		}
 		host.setSidePanel(panel.root, { divider: divider.component, width: sideWidth })
 		if (options.quote) panel.addQuote(options.quote)

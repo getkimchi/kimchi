@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs"
+import { readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
@@ -27,6 +27,13 @@ function enableSideChat(homeDir: string): void {
 		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat": true } }),
 		"utf-8",
 	)
+}
+
+/** Side chat transcripts kept next to the main sessions: `side-chats/<main session id>/<side chat id>.jsonl`. */
+function sideChatFiles(homeDir: string): string[] {
+	return readdirSync(homeDir, { recursive: true, encoding: "utf-8" })
+		.filter((path) => /(^|[/\\])side-chats[/\\][^/\\]+[/\\][^/\\]+\.jsonl$/.test(path))
+		.map((path) => join(homeDir, path))
 }
 
 /** Click the first on-screen occurrence of `text` (`offset` cells into it). */
@@ -94,9 +101,13 @@ test("side chat header closes it, lists past chats to reopen, and ctrl+alt+arrow
 			seedHome: enableSideChat,
 			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			terminal.submit("/side Which cache?")
 			await waitForText(terminal, "Use the LRU cache.", { full: false })
+			expect(await poll(() => sideChatFiles(fixture.homeDir).length === 1, 100, 5_000)).toBe(true)
+			expect(readFileSync(sideChatFiles(fixture.homeDir)[0], "utf-8")).toContain("Use the LRU cache.")
+			trace.step("the side thread is saved to its own file after the reply")
+
 			clickText(terminal, "✕")
 			expect(await poll(() => !viewText(terminal).includes("Side chat ·"), 100, 5_000)).toBe(true)
 			expect(viewText(terminal)).not.toContain("Use the LRU cache.")

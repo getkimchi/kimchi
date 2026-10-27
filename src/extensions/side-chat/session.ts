@@ -24,7 +24,8 @@ import { extractText } from "../agents/prompt/context.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../auto-model/index.js"
 import { getEffectiveModel } from "../auto-model/state.js"
-import { type SideChatRecord, WRAP_UP_SYSTEM_PROMPT, wrapUpRequest } from "./records.js"
+import { WRAP_UP_SYSTEM_PROMPT, wrapUpRequest } from "./records.js"
+import type { SideThread } from "./store.js"
 
 export const SIDE_CHAT_TOOLS = ["read", "grep", "find", "ls"]
 
@@ -109,14 +110,15 @@ export async function createSideSession(
 		branchLeafId: string | null
 		fresh: boolean
 		thinkingLevel: AgentSession["thinkingLevel"]
-		resume?: SideChatRecord
+		/** Side thread of a reopened side chat, replayed after the inherited context. */
+		thread?: SideThread
 	},
 ): Promise<SideChatSession> {
 	const sessionManager = SessionManager.inMemory(ctx.cwd)
 	const inherited = options.fresh
 		? []
 		: buildSessionContext(ctx.sessionManager.getEntries(), options.branchLeafId).messages
-	for (const message of [...inherited, ...(options.resume?.messages ?? [])]) {
+	for (const message of [...inherited, ...(options.thread ?? [])]) {
 		sessionManager.appendMessage(message as AppendableMessage)
 	}
 	const session = await createChildSession(ctx, {
@@ -143,7 +145,7 @@ export interface WrapUpRun {
  */
 export function draftSteeringPrompt(
 	ctx: ExtensionContext,
-	thread: SideChatRecord["messages"],
+	thread: SideThread,
 	extra: string,
 	onPartial: (text: string) => void,
 ): WrapUpRun {
@@ -182,7 +184,7 @@ export function draftSteeringPrompt(
 	}
 }
 
-export function sideThreadMessages(side: SideChatSession): SideChatRecord["messages"] {
+export function sideThreadMessages(side: SideChatSession): SideThread {
 	return side.session.messages.slice(side.contextLength)
 }
 
