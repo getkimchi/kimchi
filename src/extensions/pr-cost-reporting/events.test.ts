@@ -455,6 +455,15 @@ it("does not interpret an unknown iteration type as independently billable usage
 	expect(result.unresolved).toHaveLength(1)
 })
 
+it("gives a lone message iteration the reply's model", () => {
+	const response = {
+		...records[2],
+		nativeUsage: { ...nativeUsage, iterations: [{ type: "message", raw: { inputTokens: 12, outputTokens: 7 } }] },
+	}
+	const usage = build([...records.slice(0, 2), response]).accounts[0].facts.find((fact) => fact.usage)?.usage
+	expect(usage?.iterations?.[0]).toMatchObject({ model: "responding" })
+})
+
 it("keeps unreported iteration models unknown and retains oversized input for later translation", () => {
 	const response = {
 		...records[2],
