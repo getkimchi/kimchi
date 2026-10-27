@@ -31,8 +31,7 @@
 					}
 				]
 			},
-			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true}}]}",
-			"hash": "1628ac928e2267c1c7f7f3bbb04e6052e0f2d8449484523275a89df7783f20d8"
+			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true}}]}"
 		},
 		{
 			"input": {
@@ -78,8 +77,7 @@
 					}
 				]
 			},
-			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true},\"allocation\":{\"kind\":\"pull-request\",\"pullRequestIds\":[\"2000000000\"],\"method\":\"model\"},\"claimState\":\"retracted\",\"correction\":{\"id\":\"6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f\",\"revision\":3,\"recordedAt\":\"2026-10-23T12:34:23.715559Z\",\"source\":\"producer-confirmation\"},\"startedAt\":\"2026-10-23T11:34:23.715559Z\"}]}",
-			"hash": "7ed749bf7fd1c456fbc75b6373fa54c728fe7f46560550a10690cfe0eb217317"
+			"body": "{\"version\":1,\"id\":\"0be5af29-c6c0-41a4-b1e6-96e779ab1c2d\",\"events\":[{\"id\":\"1aae22b9-0b69-8b60-8526-e9c3a4805b17\",\"entityId\":\"fc4d5bcd-7b11-4497-ed93-f29b8f22397a\",\"revision\":\"1\",\"source\":\"kimchi\",\"sourceVersion\":\"2.1.309\",\"deviceId\":\"b0c8ee08-2158-46df-a2e8-4b4e944d0a57\",\"observeTime\":\"2026-10-23T13:34:23.715559Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"600a5684-c3af-425c-b289-3b79082e9eff\",\"responseId\":\"msg_01ABC\",\"schema\":\"anthropic-messages\",\"counterScope\":\"request\",\"observedRoute\":\"castai\",\"reportedModel\":\"glm-5.3-flash\",\"billingBasis\":\"api\",\"correlation\":\"\",\"raw\":{\"inputTokens\":\"1200\",\"outputTokens\":\"350\"},\"attemptsComplete\":true},\"allocation\":{\"kind\":\"pull-request\",\"pullRequestIds\":[\"2000000000\"],\"method\":\"model\"},\"claimState\":\"retracted\",\"correction\":{\"id\":\"6d0e2b7a-8f8b-4e5f-9a4d-1c2b3a4d5e6f\",\"revision\":3,\"recordedAt\":\"2026-10-23T12:34:23.715559Z\",\"source\":\"producer-confirmation\"},\"startedAt\":\"2026-10-23T11:34:23.715559Z\"}]}"
 		}
 	],
 	"events": [
@@ -126,7 +124,7 @@
 				"entityId": "entity-usage",
 				"revision": "2",
 				"baseRevision": "1",
-				"baseHash": "previous",
+				"baseEventId": "previous",
 				"source": "claude-code",
 				"sourceVersion": "2.1.0",
 				"deviceId": "device",
@@ -196,8 +194,8 @@
 					]
 				}
 			},
-			"body": "{\"id\":\"e-usage\",\"entityId\":\"entity-usage\",\"revision\":\"2\",\"baseRevision\":\"1\",\"baseHash\":\"previous\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.0\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40.1Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"req_1\",\"responseId\":\"msg_1\",\"schema\":\"anthropic-messages-v1\",\"counterScope\":\"request\",\"observedRoute\":\"provider-api\",\"reportedModel\":\"sonnet\",\"actualModel\":\"claude-sonnet\",\"provider\":\"anthropic\",\"serviceTier\":\"default\",\"region\":\"us\",\"billingBasis\":\"api\",\"correlation\":\"exact\",\"raw\":{\"inputTokens\":\"1000000000000\",\"outputTokens\":\"400\",\"cacheReadTokens\":\"0\",\"cacheWriteTokens\":\"90\",\"cacheWrites\":[{\"ttlSeconds\":300,\"tokens\":\"70\"},{\"ttlSeconds\":3600,\"tokens\":\"20\"}],\"reasoningTokens\":\"10\"},\"iterations\":[{\"id\":\"one\",\"model\":\"sonnet\",\"schema\":\"anthropic-messages-v1\",\"raw\":{\"inputTokens\":\"10\",\"cacheReadTokens\":\"0\"},\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\"}],\"finalIterationId\":\"one\",\"attemptsComplete\":false,\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\",\"durationMs\":\"0\",\"credits\":[{\"amount\":\"0.01\",\"unit\":\"credit\",\"basis\":\"reported\"}],\"aliases\":[{\"namespace\":\"provider-request-id\",\"id\":\"req_1\",\"source\":\"transcript\"}]}}",
-			"hash": "fffe54972724bbe6d49557a941582220b856826bd6e29f7277f39bb1b83f6aaa"
+			"body": "{\"id\":\"e-usage\",\"entityId\":\"entity-usage\",\"revision\":\"2\",\"baseRevision\":\"1\",\"baseEventId\":\"previous\",\"source\":\"claude-code\",\"sourceVersion\":\"2.1.0\",\"deviceId\":\"device\",\"observeTime\":\"2026-10-23T12:30:40.1Z\",\"usage\":{\"channel\":\"transcript\",\"requestId\":\"req_1\",\"responseId\":\"msg_1\",\"schema\":\"anthropic-messages-v1\",\"counterScope\":\"request\",\"observedRoute\":\"provider-api\",\"reportedModel\":\"sonnet\",\"actualModel\":\"claude-sonnet\",\"provider\":\"anthropic\",\"serviceTier\":\"default\",\"region\":\"us\",\"billingBasis\":\"api\",\"correlation\":\"exact\",\"raw\":{\"inputTokens\":\"1000000000000\",\"outputTokens\":\"400\",\"cacheReadTokens\":\"0\",\"cacheWriteTokens\":\"90\",\"cacheWrites\":[{\"ttlSeconds\":300,\"tokens\":\"70\"},{\"ttlSeconds\":3600,\"tokens\":\"20\"}],\"reasoningTokens\":\"10\"},\"iterations\":[{\"id\":\"one\",\"model\":\"sonnet\",\"schema\":\"anthropic-messages-v1\",\"raw\":{\"inputTokens\":\"10\",\"cacheReadTokens\":\"0\"},\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\"}],\"finalIterationId\":\"one\",\"attemptsComplete\":false,\"stopReason\":\"end_turn\",\"billingStatus\":\"billable\",\"durationMs\":\"0\",\"credits\":[{\"amount\":\"0.01\",\"unit\":\"credit\",\"basis\":\"reported\"}],\"aliases\":[{\"namespace\":\"provider-request-id\",\"id\":\"req_1\",\"source\":\"transcript\"}]}}",
+			"hash": "875d0d8a4a68047b14179304997aaeaa9fadb90126b9594af4032b87a5467e80"
 		},
 		{
 			"input": {
@@ -442,10 +440,5 @@
 		}
 	],
 	"stableId": "6490dfe6-85e3-d581-eb3e-619e0491bfe2",
-	"stableParts": ["codex", "session <&> \ud83e\udd6c\u2028", "plan/path.md"],
-	"oracle": {
-		"backendHead": "c12eed1de707fa401eb3f5b078363ecba0b263fa",
-		"wireSha256": "6760f8eb914b6a8ff01b8a867dcabbb5057ac856d18dad3f6a19fc743af5dbcb",
-		"nativeV1BatchHash": "1628ac928e2267c1c7f7f3bbb04e6052e0f2d8449484523275a89df7783f20d8"
-	}
+	"stableParts": ["codex", "session <&> \ud83e\udd6c\u2028", "plan/path.md"]
 }

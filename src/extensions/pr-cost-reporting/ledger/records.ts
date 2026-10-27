@@ -94,6 +94,7 @@ export interface RecordBackend {
 	/** Every record not yet translated into events, by work. */
 	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
+	/** The entity's newest event that was not set aside. */
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
@@ -103,6 +104,8 @@ export interface RecordBackend {
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
+	/** Sets an unacknowledged event aside for `reason`; it stays out of every later batch. */
+	blockOutboxEvent(accountKey: string, id: string, hash: string, reason: string): boolean
 	deleteOutboxBatch(accountKey: string, id: string): boolean
 	markDirty(workId: string): void
 	clearDirty(workId: string): void
@@ -534,7 +537,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const eventColumns =
 		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
 	const latestEvent = db.query<OutboxEvent, [string, string]>(
-		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid DESC LIMIT 1`,
+		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? AND blocked = '' ORDER BY rowid DESC LIMIT 1`,
 	)
 	const getEvent = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND id = ?`,
@@ -556,6 +559,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const ackEvent = db.query(
 		"UPDATE outbox_events SET acked_at = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL",
+	)
+	const blockEvent = db.query(
+		"UPDATE outbox_events SET blocked = ? WHERE account_key = ? AND id = ? AND hash = ? AND acked_at IS NULL AND blocked = ''",
 	)
 	const deleteBatch = db.query("DELETE FROM outbox_batches WHERE account_key = ? AND id = ?")
 	const outboxStatus = db.query<OutboxAccountStatus, []>(`
@@ -687,6 +693,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				batch.orderKey,
 			),
 		ackOutboxEvent: (accountKey, id, hash, at) => ackEvent.run(at, accountKey, id, hash).changes > 0,
+		blockOutboxEvent: (accountKey, id, hash, reason) => blockEvent.run(reason, accountKey, id, hash).changes > 0,
 		deleteOutboxBatch: (accountKey, id) => deleteBatch.run(accountKey, id).changes > 0,
 		markDirty: (workId) => markDirty.run(workId),
 		clearDirty: (workId) => clearDirty.run(workId),

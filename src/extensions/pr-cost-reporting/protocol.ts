@@ -155,7 +155,8 @@ export interface Event {
 	entityId: string
 	revision: string
 	baseRevision?: string
-	baseHash?: string
+	/** The ID of the entity's previous event, which the server compares with its current one. */
+	baseEventId?: string
 	source: string
 	sourceVersion: string
 	deviceId: string
@@ -185,6 +186,7 @@ export interface Batch {
 }
 export interface Receipt {
 	id: string
+	/** accepted, unchanged, or conflict when the server kept the entity's current revision instead. */
 	status: string
 	revision: string
 }
@@ -337,7 +339,7 @@ const schemas: Record<string, readonly Field[]> = {
 		["entityId", "s"],
 		["revision", "q"],
 		["baseRevision", "q", "empty"],
-		["baseHash", "s", "empty"],
+		["baseEventId", "s", "empty"],
 		["source", "s"],
 		["sourceVersion", "s"],
 		["deviceId", "s"],
@@ -384,7 +386,7 @@ export function timeNanos(value: string): bigint {
 	return Temporal.Instant.from(value).epochNanoseconds
 }
 
-/** The generated ingestion API normalizes protobuf timestamps before computing its stored hashes. */
+/** Protobuf carries timestamps in UTC; normalizing first keeps an event's local hash and ID independent of its offset. */
 export function normalizeIngestTimes(event: Event): Event {
 	const utc = (value: string): string => {
 		const text = Temporal.Instant.from(value).toString()
@@ -489,9 +491,6 @@ export function encodeBatch(batch: Batch): string {
 }
 export function eventHash(event: Event): string {
 	return createHash("sha256").update(encodeEvent(event)).digest("hex")
-}
-export function batchHash(batch: Batch): string {
-	return createHash("sha256").update(encodeBatch(batch)).digest("hex")
 }
 export function stableID(...parts: string[]): string {
 	const hash = createHash("sha256").update(encode(parts)).digest("hex").slice(0, 32)
@@ -682,7 +681,7 @@ export function validateEvent(e: Event): void {
 	if (Temporal.Instant.from(e.observeTime).epochNanoseconds === Temporal.Instant.from(ZeroTime).epochNanoseconds)
 		throw new Error("missing event identity")
 	if (payloads.filter((k) => e[k] != null).length !== 1) throw new Error("exactly one typed event is required")
-	if (base !== rev - 1n || (rev > 1n && !e.baseHash)) throw new Error("invalid revision chain")
+	if (base !== rev - 1n || (rev > 1n && !e.baseEventId)) throw new Error("invalid revision chain")
 	for (const id of [e.id, e.entityId, e.deviceId, e.workId, e.sessionId, e.turnId, e.agentId])
 		if (Buffer.byteLength(id ?? "") > 128 || containsAny(id ?? "", "\r\n\0")) throw new Error("invalid identity")
 	if (Buffer.byteLength(encodeEvent(e)) > 65536) throw new Error("event exceeds bound")

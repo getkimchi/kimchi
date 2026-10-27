@@ -119,7 +119,9 @@ export function createMemoryRecords(): RecordBackend {
 		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
-				[...events.values()].findLast((event) => event.accountKey === accountKey && event.entityId === entityId),
+				[...events.values()].findLast(
+					(event) => event.accountKey === accountKey && event.entityId === entityId && event.blocked === "",
+				),
 			),
 		getOutboxEvent: (accountKey, id) => {
 			const event = events.get(id)
@@ -194,6 +196,13 @@ export function createMemoryRecords(): RecordBackend {
 			const event = events.get(id)
 			if (!event || event.accountKey !== accountKey || event.hash !== hash || event.ackedAt !== null) return false
 			event.ackedAt = at
+			return true
+		},
+		blockOutboxEvent: (accountKey, id, hash, reason) => {
+			const event = events.get(id)
+			if (!event || event.accountKey !== accountKey || event.hash !== hash || event.ackedAt !== null || event.blocked)
+				return false
+			event.blocked = reason
 			return true
 		},
 		deleteOutboxBatch: (accountKey, id) => batches.get(id)?.accountKey === accountKey && batches.delete(id),

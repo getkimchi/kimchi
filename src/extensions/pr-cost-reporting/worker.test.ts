@@ -230,6 +230,19 @@ describe("account-fenced reporting delivery", () => {
 		expect(backendFor(directory).getNote("pr-cost-delivery", batch.accountKey)).toBeUndefined()
 	})
 
+	it("sends a batch's events under a new ID after the server answers 409 for its ID", async () => {
+		const batch = sendableBatch()
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response("{}", { status: 409 }),
+		)
+		await deliver()
+		// The server holds other content under this ID, so resending the frozen batch could never succeed.
+		expect(backendFor(directory).getOutboxBatch(batch.accountKey)).toBeUndefined()
+		expect(retryNote(batch.accountKey)).toEqual({})
+	})
+
 	it("queues the producer's facts and original hashes under their original account", async () => {
 		await seedLinked(false)
 		const group = {
