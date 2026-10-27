@@ -54,7 +54,11 @@ describe("compareInternals", () => {
 			writeFileSync(join(root, side, file), text)
 		}
 		write("base", "dist/s.js", SOURCE)
-		write("target", "dist/s.js", SOURCE.replace("overloaded", "overloaded|rate_limit").replace("_prepareRetry", "_prepRetry"))
+		write(
+			"target",
+			"dist/s.js",
+			SOURCE.replace("overloaded", "overloaded|rate_limit").replace("_prepareRetry", "_prepRetry"),
+		)
 		write("base", "dist/page.js", "same")
 		write("target", "dist/page.js", "same")
 

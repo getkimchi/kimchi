@@ -10,10 +10,11 @@ import { runDryRun } from "./dry-run.ts"
 import { runFetch } from "./fetch.ts"
 import { runInternals } from "./internals.ts"
 import { runSettle } from "./settle.ts"
+import { runTests } from "./tests.ts"
 
 const USAGE = `usage: pnpm pi-upgrade <step> [options]
 
-steps: settle, fetch, dry-run, internals
+steps: settle, fetch, dry-run, internals, tests
 
 options:
   --repo <dir>        checkout to analyse (default: current repo)
@@ -31,6 +32,7 @@ const STEPS: Record<string, Step> = {
 	fetch: runFetch,
 	"dry-run": runDryRun,
 	internals: runInternals,
+	tests: (cfg) => runTests(cfg),
 }
 
 function parseSuites(value: string | undefined): Suite[] {
