@@ -10,14 +10,18 @@
 
 set -euo pipefail
 
+# Bump both together. The pinned SHA-256 makes a re-uploaded release asset fail the build.
 VERSION=v0.1.0-rc.6
+SHA256=
 ASSET=kimchi-adapters.tar.gz
+
+[ -n "$SHA256" ] || { echo "Set the SHA-256 of kimchi-adapters $VERSION in $0." >&2; exit 1; }
 
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-gh release download "$VERSION" --repo getkimchi/kimchi-adapters --dir "$TEMP_DIR" --pattern "$ASSET" --pattern SHA256SUMS
-(cd "$TEMP_DIR" && awk -v asset="$ASSET" '$2 == asset' SHA256SUMS | shasum -a 256 -c -)
+gh release download "$VERSION" --repo getkimchi/kimchi-adapters --dir "$TEMP_DIR" --pattern "$ASSET"
+echo "$SHA256  $TEMP_DIR/$ASSET" | shasum -a 256 -c -
 mkdir -p dist/share/kimchi/adapters
 tar -xzf "$TEMP_DIR/$ASSET" -C dist/share/kimchi/adapters
 [ "$(cat dist/share/kimchi/adapters/VERSION)" = "$VERSION" ]
