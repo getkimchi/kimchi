@@ -17,6 +17,8 @@ export interface SuiteResult {
 
 export interface TestsResult {
 	install: { ok: boolean; log: string }
+	/** First pnpm error line when the target install failed. */
+	installError?: string
 	/** Patches left out of the target install because they don't apply (pnpm refuses otherwise). */
 	excludedPatches: string[]
 	target: SuiteResult[]
@@ -298,6 +300,8 @@ export async function runTests(cfg: RunConfig, exec: Exec = nodeExec): Promise<T
 		const typecheck = targetResults.find((r) => r.suite === "typecheck")
 		const result: TestsResult = {
 			install: { ok: install === 0, log: installLog },
+			installError:
+				install === 0 ? undefined : /^.*ERR_PNPM_\w+.*$/m.exec(readFileSync(installLog, "utf8"))?.[0]?.trim(),
 			excludedPatches: excluded,
 			target: targetResults,
 			baseline: baselineResults,
