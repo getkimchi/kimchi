@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -422,8 +422,9 @@ describe("applyUpdate share destination", () => {
 		// Create the sibling share directory with package.json so
 		// resolveAuxiliaryFilesDir resolves to it.
 		const siblingShare = join(fakePrefix, "share", "kimchi")
-		mkdirSync(siblingShare, { recursive: true })
+		mkdirSync(join(siblingShare, "adapters"), { recursive: true })
 		writeFileSync(join(siblingShare, "package.json"), "{}")
+		writeFileSync(join(siblingShare, "adapters", "dropped-by-the-new-release"), "")
 
 		const client = {
 			fetchChecksum: mocks.fetchChecksum,
@@ -438,6 +439,7 @@ describe("applyUpdate share destination", () => {
 
 		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
 		expect(mocks.refreshAdapters).toHaveBeenCalledWith(siblingShare)
+		expect(existsSync(join(siblingShare, "adapters"))).toBe(false)
 	})
 
 	it("falls back to ~/.local/share/kimchi when the sibling share does not exist", async () => {
