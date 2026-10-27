@@ -141,10 +141,14 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 		throw new Error("Correction receipt is in the future")
 }
 
-/** Rebuild only this entity's effective claim facts; raw bytes remain the CAS and upload authority. */
+/**
+ * Rebuild only this entity's effective claim facts; raw bytes remain the CAS and upload authority. An event the server
+ * refused as a conflict never became part of the claim.
+ */
 export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
 	let effective: Event | undefined
-	for (const row of backend.outboxEntityEvents(accountKey, entityId)) effective = projectClaim(unpack(row), effective)
+	for (const row of backend.outboxEntityEvents(accountKey, entityId))
+		if (!row.blocked) effective = projectClaim(unpack(row), effective)
 	return effective
 }
 
@@ -181,6 +185,7 @@ export function observeEvents(
 			const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseEventId: "" })
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
 			validateIngestEvent(event)
+			// The entity's last event the server may hold; one it refused as a conflict is set aside.
 			const previous = backend.latestOutboxEvent(accountKey, event.entityId)
 			let old: Event | undefined
 			if (previous) {
@@ -203,6 +208,8 @@ export function observeEvents(
 			}
 			event.id = ""
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
+			// The server refused this exact event once; it is never sent again.
+			if (backend.getOutboxEvent(accountKey, event.id)) continue
 			validateIngestEvent(event)
 			const body = Buffer.from(encodeEvent(event))
 			backend.insertOutboxEvent({
@@ -315,19 +322,26 @@ export function acknowledgeBatch(
 		)
 			throw new Error("Incomplete batch acknowledgement")
 		const expected = new Map(batch.events.map((event) => [event.id, event.revision]))
+		const conflicts = new Set<string>()
 		for (const receipt of acknowledgement.receipts) {
 			if (
 				!expected.has(receipt.id) ||
 				expected.get(receipt.id) !== receipt.revision ||
-				!["accepted", "unchanged"].includes(receipt.status)
+				!["accepted", "unchanged", "conflict"].includes(receipt.status)
 			)
 				throw new Error("Invalid event acknowledgement")
 			expected.delete(receipt.id)
+			if (receipt.status === "conflict") conflicts.add(receipt.id)
 		}
 		if (expected.size) throw new Error("Missing event acknowledgement")
 		const at = Date.now()
-		for (const stored of events)
-			if (!backend.ackOutboxEvent(accountKey, stored.id, stored.hash, at)) throw new Error("Outbox event changed")
+		for (const stored of events) {
+			// The server kept the entity's current revision instead: the event is set aside, never sent again.
+			const settled = conflicts.has(stored.id)
+				? backend.blockOutboxEvent(accountKey, stored.id, stored.hash, "conflict")
+				: backend.ackOutboxEvent(accountKey, stored.id, stored.hash, at)
+			if (!settled) throw new Error("Outbox event changed")
+		}
 		if (!backend.deleteOutboxBatch(accountKey, batch.id)) throw new Error("Outbox batch changed")
 		assertCurrent()
 		return true

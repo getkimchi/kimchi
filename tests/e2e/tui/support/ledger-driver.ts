@@ -1353,6 +1353,29 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 			fence,
 		),
 	)
+	// A conflict receipt settles its batch but sets the event aside: it is never sent again, and the entity's next
+	// revision builds on the last event the server stored.
+	observeEvents(agent, "conflicts", [fact], [], fence)
+	const storedBatch = required(pendingBatch(agent, "conflicts", fence))
+	acknowledgeBatch(agent, "conflicts", storedBatch, ack(storedBatch), fence)
+	const kept = required(backend.latestOutboxEvent("conflicts", fact.entityId))
+	const refused = { ...fact, coverage: { code: "observed", count: "2" } }
+	observeEvents(agent, "conflicts", [refused], [], fence)
+	const conflicting = required(pendingBatch(agent, "conflicts", fence))
+	const conflictAck = {
+		...ack(conflicting),
+		receipts: ack(conflicting).receipts.map((receipt: object) => ({ ...receipt, status: "conflict" })),
+	}
+	const conflictSettled = acknowledgeBatch(agent, "conflicts", conflicting, conflictAck, fence)
+	observeEvents(agent, "conflicts", [refused], [], fence)
+	const conflictSetAside =
+		conflictSettled &&
+		!backend.getOutboxBatch("conflicts") &&
+		!pendingBatch(agent, "conflicts", fence) &&
+		readOutboxStatus(agent).find((status) => status.accountKey === "conflicts")?.blocked === 1
+	observeEvents(agent, "conflicts", [{ ...fact, coverage: { code: "observed", count: "3" } }], [], fence)
+	const rebased = parse(required(pendingBatch(agent, "conflicts", fence)).body).batch.events[0]
+	const conflictRebased = rebased.revision === "2" && rebased.baseEventId === kept.id
 	let reopened = false
 	if (mode === "sqlite") {
 		closeBackends()
@@ -1392,6 +1415,8 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		ackRollback,
 		leasePause,
 		oldAckRetainedNewBatch,
+		conflictSetAside,
+		conflictRebased,
 		acknowledgedHistoryRetained:
 			Boolean(backendFor(agent).getOutboxEvent("account-a", first.id)?.ackedAt) &&
 			Boolean(backendFor(agent).getOutboxEvent("account-a", second.id)?.ackedAt) &&

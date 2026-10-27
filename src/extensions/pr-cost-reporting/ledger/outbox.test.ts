@@ -43,6 +43,8 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 			ackRollback: true,
 			leasePause: true,
 			oldAckRetainedNewBatch: true,
+			conflictSetAside: true,
+			conflictRebased: true,
 			acknowledgedHistoryRetained: true,
 			reopened: mode === "sqlite",
 		})

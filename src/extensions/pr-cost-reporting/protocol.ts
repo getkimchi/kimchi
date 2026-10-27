@@ -186,6 +186,7 @@ export interface Batch {
 }
 export interface Receipt {
 	id: string
+	/** accepted, unchanged, or conflict when the server kept the entity's current revision instead. */
 	status: string
 	revision: string
 }
