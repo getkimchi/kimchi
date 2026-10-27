@@ -1257,8 +1257,17 @@ export default function (pi: ExtensionAPI) {
 					// Esc is the product's ferment-pause signal (the ferment extension
 					// pauses and says "Run /ferment resume to continue"), so the ferment
 					// stays paused. Only leave a breadcrumb so the finished run isn't
-					// forgotten.
-					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					// forgotten. Guarded: a stale spawnCtx (session replaced mid-run)
+					// must not turn this suppressed completion into an onComplete throw —
+					// the manager chain would mark the successful run as failed and skip
+					// its queue draining. On stale, the breadcrumb still reaches
+					// currentUi (the live session's surface).
+					let ui: ExtensionUIContext | undefined = currentUi
+					try {
+						if (completionCtx?.hasUI) ui = completionCtx.ui
+					} catch (err) {
+						if (!isStaleCtxError(err)) throw err
+					}
 					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
 				}
 				agentActivity.delete(record.id)

@@ -172,7 +172,10 @@ vi.mock("./manager/agent-manager.js", () => {
 	}
 })
 
-vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("./telemetry/index.js", () => ({
+	trackSubagentSpawned: vi.fn().mockResolvedValue(undefined),
+	trackRemoteExecution: vi.fn(),
+}))
 vi.mock("../remote-run/post-completion.js", () => ({
 	handleRemoteCompletion: vi.fn().mockResolvedValue(undefined),
 	handleRemoteFailure: vi.fn(),
@@ -2012,5 +2015,63 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		// The terminal remote_run:state entry is skipped for the dead session's
 		// transcript, not thrown through the stale API.
 		expect(piMock.getAppendedEntries("remote_run:state")).toEqual([])
+	})
+
+	it("a user-aborted remote ferment completion does not throw out of onComplete when the session was replaced", async () => {
+		const piMock = createExtensionApi()
+		agentsExtension(piMock.api)
+		const manager = latestManagerInstance()
+
+		// The spawning session's ctx — invalidated below (session replaced
+		// mid-run: every property read throws, Pi's assertActive).
+		const live = createLiveContext({ mode: "tui" })
+
+		const record = makeRunningRecord({
+			status: "completed",
+			result: "done",
+			completedAt: Date.now(),
+			remote: true,
+			acpSessionId: "acp-session-1",
+			remoteSession: { sessionName: "sandbox-1" },
+			isBackground: true,
+			triggersRemoteCompletion: true,
+			fermentId: "ferment-1",
+			startedAt: Date.now() - 5000,
+			spawnCtx: live.ctx,
+		})
+
+		// The user Escape-aborted a streaming turn AFTER the agent started —
+		// the completion must be suppressed rather than surfaced.
+		await piMock.getHandler<{ message: { role: string; stopReason?: string } }>("turn_end")(
+			{ message: { role: "assistant", stopReason: "aborted" } },
+			live.ctx,
+		)
+
+		// Session replaced mid-run: the spawning session's ctx and runtime are
+		// dead, but the remote run still completed.
+		live.invalidate()
+		piMock.invalidate()
+
+		// The userAbortedRun + fermentId branch reads completionCtx.hasUI — a
+		// stale read here would escape onComplete, and the manager's
+		// then-chain would mark this SUCCESSFUL run as failed and skip its
+		// queue draining.
+		expect(() => manager.onComplete(record)).not.toThrow()
+	})
+
+	it("non-stale errors from the guarded helpers still propagate out of onComplete", () => {
+		const piMock = createExtensionApi()
+		agentsExtension(piMock.api)
+		const manager = latestManagerInstance()
+
+		// A fresh runtime whose appendEntry fails for a REAL reason (not
+		// staleness): the safe wrappers must discriminate — only stale-ctx
+		// errors are dropped; anything else still surfaces.
+		vi.mocked(piMock.api.appendEntry).mockImplementationOnce(() => {
+			throw new Error("transcript disk full")
+		})
+
+		const record = makeRunningRecord({ status: "completed", result: "done", completedAt: Date.now() })
+		expect(() => manager.onComplete(record)).toThrowError("transcript disk full")
 	})
 })
