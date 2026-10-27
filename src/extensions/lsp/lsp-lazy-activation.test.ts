@@ -12,7 +12,7 @@ import os from "node:os"
 import path from "node:path"
 import type * as NodeUtil from "node:util"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 const mocks = vi.hoisted(() => ({
@@ -379,13 +379,15 @@ describe("lazy activation — workspace relaxation for sessions started elsewher
 
 		const hover = ext.getRegisteredTool("lsp_hover")
 		// Inside the activation root (outside the session cwd): accepted,
-		// client keyed at the activation root.
+		// client keyed at the activation root. (upstream pi 1.3: tool execute
+		// receives an ExtensionToolContext — the lsp tools ignore it, but the
+		// call must type-check.)
 		const result = await hover.execute(
 			"call-1",
 			{ file_path: path.join(project, "main.py"), line: 0, character: 0 },
 			undefined,
 			undefined,
-			ctx,
+			createToolContext(),
 		)
 		expect(firstContentText(result)).not.toContain("outside the session workspace")
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(2)
@@ -399,7 +401,7 @@ describe("lazy activation — workspace relaxation for sessions started elsewher
 			{ file_path: path.join(elsewhere, "main.py"), line: 0, character: 0 },
 			undefined,
 			undefined,
-			ctx,
+			createToolContext(),
 		)
 		expect(firstContentText(refused)).toContain("outside the session workspace")
 		expect(mocks.getOrCreateClient).toHaveBeenCalledTimes(2)

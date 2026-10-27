@@ -188,9 +188,15 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 		const requests: Context[] = []
 		const streamSimple = (_m: Model<Api>, context: Context) => {
 			requests.push(context)
-			// The compaction summarizer serializes the whole conversation into a
-			// single user message wrapped in <conversation> tags.
-			const isSummarizer = messageText(context.messages[0]).startsWith("<conversation>")
+			// pi 1.3 compaction issues two summarizer shapes: the history summary
+			// (user message wrapped in <conversation> tags) and, for split turns,
+			// a turn-prefix checkpoint ("# Conversation" + structured
+			// instructions). Both must answer with plain text — a tool-call
+			// answer fails compaction. The transcript carries a leading system
+			// message, so scan the transcript instead of messages[0].
+			const isSummarizer = context.messages.some(
+				(msg) => messageText(msg).startsWith("<conversation>") || messageText(msg).startsWith("# Conversation\n"),
+			)
 			const text = () => context.messages.map(messageText).join("\n")
 			const toolResultCount = context.messages.filter((msg) => (msg as { role?: string }).role === "toolResult").length
 			if (isSummarizer) {
@@ -275,14 +281,18 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 		const retriedIdx = requestTexts.findIndex((t) => t.includes(SUMMARY_MARKER))
 		expect(retriedIdx, "a post-compaction (retried) request exists").toBeGreaterThan(-1)
 
-		// THE delivery guarantee: the retried request — built from the rewritten
-		// context — carries both behaviour bodies again, delivered as marked
-		// steers. The bulk tool result pushed the first steers out of the
-		// keep-recent window, so these can only be the re-steers.
+		// THE delivery guarantee: the post-compaction requests — built from the
+		// rewritten context — carry both behaviour bodies again, delivered as
+		// marked steers. The bulk tool result pushed the first steers out of
+		// the keep-recent window, so these can only be the re-steers. Under
+		// pi 1.3 the steering queue drains one message per inference, so the
+		// second re-steer rides the inference after the retried one (the turn
+		// continues while steering messages are pending).
 		const retried = requestTexts[retriedIdx]
 		expect(retried).toContain(HABIT_BODY)
-		expect(retried).toContain(POLICY_BODY)
 		expect(retried).toContain("<system-reminder>")
+		const policyIdx = requestTexts.findIndex((t, i) => i >= retriedIdx && t.includes(POLICY_BODY))
+		expect(policyIdx, "the standing body re-steers into the post-compaction turn").toBeGreaterThan(-1)
 
 		// Session-log evidence through the real extension runner: persisted
 		// re-steer entries positioned after the compaction entry.
