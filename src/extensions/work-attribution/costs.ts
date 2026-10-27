@@ -91,7 +91,7 @@ export interface PullRequestCostReport {
 	pullRequests: PullRequestCost[]
 	requests: RequestCostAllocation[]
 	unallocated: Record<Exclude<Allocation, "pull-request">, CostTotal>
-	includes: PullRequestIncludes[]
+	includes?: PullRequestIncludes[]
 }
 
 const NANOS_PER_USD = 1_000_000_000n
@@ -949,7 +949,7 @@ export function calculatePullRequestCosts(
 	return {
 		pullRequests,
 		requests,
-		includes,
+		...(includes.length ? { includes } : {}),
 		unallocated: {
 			inferred: bucket("inferred"),
 			shared: bucket("shared"),

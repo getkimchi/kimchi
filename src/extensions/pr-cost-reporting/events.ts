@@ -304,7 +304,7 @@ export function buildEvents(
 	const firstLinkedIds = new Map<string, string>()
 	for (const { key: included, pullRequest } of report.pullRequests)
 		if (pullRequest?.id && pullRequest.repositoryId) firstLinkedIds.set(included, pullRequest.id)
-	for (const entry of report.includes) {
+	for (const entry of report.includes ?? []) {
 		check()
 		const pr = entry.pullRequest
 		if (!entry.account || !pr?.id || !pr.repositoryId || !validTime(pr.checkedAt)) continue

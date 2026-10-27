@@ -1840,7 +1840,7 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
-		expect(report.includes).toEqual([])
+		expect(report.includes).toBeUndefined()
 	})
 
 	it("records that a dropped later-listed PR includes the first-listed one", () => {
@@ -1888,7 +1888,7 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0].pullRequestIds).toEqual([integrationKey])
-		expect(report.includes).toEqual([])
+		expect(report.includes).toBeUndefined()
 	})
 
 	it("records nothing for a pair first listed together", () => {
@@ -1903,7 +1903,7 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0].allocation).toBe("shared")
-		expect(report.includes).toEqual([])
+		expect(report.includes).toBeUndefined()
 	})
 
 	it("records nothing for a dropped PR in another repository", () => {
@@ -1930,7 +1930,7 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0].pullRequestIds).toEqual([featureKey])
-		expect(report.includes).toEqual([])
+		expect(report.includes).toBeUndefined()
 		expect(report.pullRequests.map((row) => row.key)).not.toContain(elsewhereKey)
 	})
 
