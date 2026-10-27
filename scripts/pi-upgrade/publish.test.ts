@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { IssueSnapshot } from "./github.ts"
-import { type PublishInput, planPublish } from "./publish.ts"
+import { mergeDigests, type PublishInput, planPublish } from "./publish.ts"
 import type { SettleResult } from "./settle.ts"
 import type { State } from "./state.ts"
 
@@ -126,5 +126,54 @@ describe("planPublish incomplete runs", () => {
 		if (action.kind !== "update") throw new Error(action.kind)
 		expect(action.body).toBe("REPORT")
 		expect(action.state.lastRun).toEqual(state.lastRun)
+	})
+})
+
+describe("planPublish when runs keep failing", () => {
+	const incomplete = (state: State, target = "1.5.0") =>
+		planPublish({ ...base, issue: open, state, settle: settle(target, 2), complete: false })
+
+	it("announces a moved target once, not again on the next incomplete run", () => {
+		const first = incomplete({ v: 1, digests: {}, lastRun: lastRun("1.4.0") })
+		if (first.kind !== "update") throw new Error(first.kind)
+		expect(first.comment).toMatch(/^Target moved 1\.4\.0 → 1\.5\.0/)
+
+		const second = incomplete(first.state)
+		if (second.kind !== "update") throw new Error(second.kind)
+		expect(second.comment).toBeUndefined()
+	})
+
+	it("respects a person closing the issue even though the last run was incomplete", () => {
+		const first = incomplete({ v: 1, digests: {}, lastRun: lastRun("1.4.0") })
+		if (first.kind !== "update") throw new Error(first.kind)
+		const action = planPublish({
+			...base,
+			issue: closed,
+			state: first.state,
+			settle: settle("1.5.0", 2),
+			complete: false,
+		})
+		expect(action.kind).toBe("noop")
+	})
+})
+
+describe("mergeDigests", () => {
+	const d = (from: string, to: string) => ({
+		from,
+		to,
+		features: [],
+		breaking: [],
+		behaviorChanges: [],
+		builtins: [],
+		internalsTouched: [],
+		badReleaseNotes: [],
+	})
+
+	it("adds fresh digests and prunes steps older than the baseline", () => {
+		const state: State = { v: 1, digests: { "1.2.0..1.3.0": d("1.2.0", "1.3.0"), "1.3.0..1.4.0": d("1.3.0", "1.4.0") } }
+		expect(Object.keys(mergeDigests(state, [d("1.4.0", "1.5.0")], "1.3.0").digests)).toEqual([
+			"1.3.0..1.4.0",
+			"1.4.0..1.5.0",
+		])
 	})
 })

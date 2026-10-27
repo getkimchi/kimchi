@@ -12,7 +12,10 @@ export interface State {
 	v: 1
 	/** Per-release digests keyed `"<from>..<to>"`. Facts about Pi, reused across runs. */
 	digests: Record<string, unknown>
+	/** Last run that produced a complete report; drives "is the report current?". */
 	lastRun?: { baseline: string; target: string; inputsHash: string; at: string }
+	/** Last target the issue announced, complete or not; drives "target moved" and human-close. */
+	lastReported?: { target: string; at: string }
 	/** The job closed the issue itself because we were up to date. */
 	closedByJob?: boolean
 }

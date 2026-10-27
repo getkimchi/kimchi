@@ -16,15 +16,32 @@ export function gh(args: string[], input?: string): string {
 	return execFileSync("gh", args, { encoding: "utf8", input, stdio: ["pipe", "pipe", "pipe"] })
 }
 
+/**
+ * `gh api --paginate --jq` applies the filter per page, so a single JSON array would be one array per
+ * page; emitting one JSON string per comment and parsing line by line works across pages.
+ */
+export function parseCommentLines(stdout: string): Array<{ id: number; body: string }> {
+	return stdout
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.map((line) => JSON.parse(line))
+}
+
 export function findIssue(): IssueSnapshot | null {
 	const issues = JSON.parse(
 		gh(["issue", "list", "--label", LABEL, "--state", "all", "--limit", "1", "--json", "number,state,title"]),
 	) as Array<{ number: number; state: string; title: string }>
 	const issue = issues[0]
 	if (!issue) return null
-	const comments = JSON.parse(
-		gh(["api", "--paginate", `repos/{owner}/{repo}/issues/${issue.number}/comments`, "--jq", "[.[] | {id, body}]"]),
-	) as Array<{ id: number; body: string }>
+	const comments = parseCommentLines(
+		gh([
+			"api",
+			"--paginate",
+			`repos/{owner}/{repo}/issues/${issue.number}/comments`,
+			"--jq",
+			".[] | {id, body} | @json",
+		]),
+	)
 	const stateComment = comments.find((c) => c.body.includes("<!-- pi-upgrade-state"))
 	return {
 		number: issue.number,

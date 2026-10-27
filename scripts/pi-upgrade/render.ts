@@ -182,6 +182,11 @@ export function renderReport(input: ReportInput, opts: { limit?: number; summary
 		kept = kept.slice(0, -1)
 		report = assemble(kept, true)
 	}
+	if (report.length > limit) {
+		// Even the sections are too long (a verbose analysis): cut hard, keep the pointer to the full copy.
+		const tail = `\n\n…\n\n_Some details were trimmed to fit GitHub's limit. Full report: ${opts.summaryUrl ?? "see the job summary"}_`
+		report = report.slice(0, limit - tail.length) + tail
+	}
 	return report
 }
 
@@ -194,17 +199,19 @@ export function reportSummaryUrl(): string | undefined {
 	return GITHUB_RUN_ID ? `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}` : undefined
 }
 
+/** The job summary accepts ~1 MiB; the untrimmed report goes there. */
+const SUMMARY_LIMIT = 1_000_000
+
 export async function runRender(cfg: RunConfig): Promise<{ path: string; length: number }> {
-	const report = renderReport(
-		{
-			settle: readJson<SettleResult>(cfg, "settle"),
-			dryRun: readIf<PatchResult[]>(cfg, "dry-run"),
-			internals: readIf<InternalsResult>(cfg, "internals"),
-			tests: readIf<TestsResult>(cfg, "tests"),
-			analysis: readIf<AnalysisFile>(cfg, "analysis"),
-		},
-		{ summaryUrl: reportSummaryUrl() },
-	)
+	const input: ReportInput = {
+		settle: readJson<SettleResult>(cfg, "settle"),
+		dryRun: readIf<PatchResult[]>(cfg, "dry-run"),
+		internals: readIf<InternalsResult>(cfg, "internals"),
+		tests: readIf<TestsResult>(cfg, "tests"),
+		analysis: readIf<AnalysisFile>(cfg, "analysis"),
+	}
+	const report = renderReport(input, { summaryUrl: reportSummaryUrl() })
+	writeFileSync(join(cfg.outDir, "report-full.md"), `${renderReport(input, { limit: SUMMARY_LIMIT })}\n`)
 	const path = join(cfg.outDir, "report.md")
 	writeFileSync(path, `${report}\n`)
 	return { path, length: report.length }

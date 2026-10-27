@@ -5,6 +5,7 @@ import { findIssue, gh, type IssueSnapshot, LABEL, loadState } from "./github.ts
 import type { AnalysisFile, Digest } from "./schemas.ts"
 import type { SettleResult } from "./settle.ts"
 import { inputsHash, parseState, type State, serializeState } from "./state.ts"
+import { compareVersions } from "./versions.ts"
 
 /** A full report older than this is regenerated even when nothing else changed. */
 export const REFRESH_MS = 7 * 24 * 60 * 60 * 1000
@@ -31,6 +32,9 @@ export type PublishAction =
 
 export const issueTitle = (baseline: string, target: string) => `Pi upgrade ready: ${baseline} → ${target}`
 
+/** Target the issue last announced; falls back to the last complete run for older state. */
+const reportedTarget = (state: State) => state.lastReported?.target ?? state.lastRun?.target
+
 /** True when a full (expensive) report is due for this target; false means the issue is current. */
 export function needsReport(
 	input: Pick<PublishInput, "issue" | "state" | "settle" | "inputsHash" | "now" | "forced">,
@@ -39,7 +43,7 @@ export function needsReport(
 	if (input.forced) return true
 	if (!settle.target) return false
 	const last = state.lastRun
-	if (issue?.state === "closed" && !state.closedByJob) return last?.target !== settle.target
+	if (issue?.state === "closed" && !state.closedByJob) return reportedTarget(state) !== settle.target
 	if (!issue || issue.state === "closed" || !last) return true
 	return (
 		last.target !== settle.target ||
@@ -67,11 +71,12 @@ export function planPublish(input: PublishInput): PublishAction {
 		}
 	}
 
-	const previous = state.lastRun?.target
+	const previous = reportedTarget(state)
 	const moved = previous !== undefined && previous !== settle.target
 	const nextState: State = {
 		...state,
 		closedByJob: undefined,
+		lastReported: { target: settle.target, at: now.toISOString() },
 		lastRun: input.complete
 			? { baseline: settle.baseline, target: settle.target, inputsHash: input.inputsHash, at: now.toISOString() }
 			: state.lastRun,
@@ -90,6 +95,13 @@ export function planPublish(input: PublishInput): PublishAction {
 	if (!issue || (issue.state === "closed" && state.closedByJob))
 		return { kind: "create", ...fields, comment: undefined }
 	return { kind: issue.state === "closed" ? "reopen" : "update", ...fields }
+}
+
+/** Adds freshly digested release steps and drops steps older than the baseline, so state stays bounded. */
+export function mergeDigests(state: State, fresh: Digest[], baseline: string): State {
+	const entries = [...Object.entries(state.digests), ...fresh.map((d): [string, unknown] => [`${d.from}..${d.to}`, d])]
+	const current = entries.filter(([key]) => compareVersions(key.split("..")[0] ?? "0.0.0", baseline) >= 0)
+	return { ...state, digests: Object.fromEntries(current) }
 }
 
 const STATE_COMMENT_PREFIX =
@@ -123,14 +135,15 @@ export function executePublish(action: PublishAction, issue: IssueSnapshot | nul
 			if (!issue) throw new Error(`${action.kind} without an issue`)
 			if (action.kind === "reopen") gh(["issue", "reopen", String(issue.number)])
 			gh(["issue", "edit", String(issue.number), "--title", action.title, "--body-file", "-"], action.body)
-			if (action.comment) gh(["issue", "comment", String(issue.number), "--body-file", "-"], action.comment)
+			// State first: if it cannot be written, no comment is posted that the next run would repeat.
 			upsertStateComment(issue.number, issue.stateCommentId, action.state)
+			if (action.comment) gh(["issue", "comment", String(issue.number), "--body-file", "-"], action.comment)
 			return `${action.kind === "reopen" ? "reopened" : "updated"} #${issue.number}`
 		}
 		case "close": {
 			if (!issue) throw new Error("close without an issue")
-			gh(["issue", "comment", String(issue.number), "--body-file", "-"], action.comment)
 			upsertStateComment(issue.number, issue.stateCommentId, action.state)
+			gh(["issue", "comment", String(issue.number), "--body-file", "-"], action.comment)
 			gh(["issue", "close", String(issue.number)])
 			return `closed #${issue.number}`
 		}
@@ -155,7 +168,10 @@ export async function runPublish(cfg: RunConfig): Promise<{ action: PublishActio
 	const settle = readJson<SettleResult>(cfg, "settle")
 	const reportPath = join(cfg.outDir, "report.md")
 	const report = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : null
-	if (report && process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`)
+	// The job summary gets the untrimmed report; the issue links to it when its own copy is trimmed.
+	const fullPath = join(cfg.outDir, "report-full.md")
+	const summary = existsSync(fullPath) ? readFileSync(fullPath, "utf8") : report
+	if (summary && process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`)
 
 	const issue = cfg.publish ? findIssue() : tryFindIssue()
 	const baseState = cfg.stateFile
@@ -165,10 +181,7 @@ export async function runPublish(cfg: RunConfig): Promise<{ action: PublishActio
 			: parseState(undefined)
 	const analysis = existsSync(join(cfg.outDir, "analysis.json")) ? readJson<AnalysisFile>(cfg, "analysis") : null
 	const fresh = analysis && !("unavailable" in analysis) ? analysis.newDigests : []
-	const state: State = {
-		...baseState,
-		digests: { ...baseState.digests, ...Object.fromEntries(fresh.map((d) => [`${d.from}..${d.to}`, d])) },
-	}
+	const state = mergeDigests(baseState, fresh, settle.baseline)
 
 	const action = planPublish({
 		issue,

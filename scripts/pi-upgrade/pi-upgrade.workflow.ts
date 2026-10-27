@@ -101,6 +101,8 @@ Deterministic results (read them):
 - the upstream packages under ${out}/pkgs/
 
 Produce:
+Keep it short: the team reads this in one screen. Verdict cells are one line (≤160 chars), each finding one or two sentences (≤280 chars), evidence one reference (≤300 chars).
+
 - verdict: risk, effort S/M/L with a one-line why, apiBreakage (one line), topHazard (the single thing most likely to bite).
 - breaking: API breaks and silent behaviour changes that touch code Kimchi actually uses (grep src/ to confirm usage).
 - keepDisabled: upstream features that overlap something Kimchi already owns (e.g. built-in MCP vs our pi-mcp-adapter, a built-in command shadowing our extension). Give the concrete off-switch for the first upgrade PR in "how"; replacing ours is a follow-up.

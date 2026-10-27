@@ -31,10 +31,20 @@ export interface TestsResult {
 /** Runs a command with stdout+stderr going to `logFile`; returns the exit code. */
 export type Exec = (cmd: string, args: string[], opts: { cwd: string; logFile: string }) => number
 
+const SECRETS = ["GH_TOKEN", "GITHUB_TOKEN", "KIMCHI_API_KEY"]
+
+/**
+ * Drops write-capable tokens from an env before running code we don't control (upstream install
+ * scripts, test suites, the agent reading upstream changelogs). `allow` keeps the ones a step needs.
+ */
+export function scrubEnv(env: NodeJS.ProcessEnv, allow: string[]): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(env).filter(([key]) => !SECRETS.includes(key) || allow.includes(key)))
+}
+
 const nodeExec: Exec = (cmd, args, { cwd, logFile }) => {
 	const fd = openSync(logFile, "w")
 	try {
-		return spawnSync(cmd, args, { cwd, stdio: ["ignore", fd, fd], env: process.env }).status ?? 1
+		return spawnSync(cmd, args, { cwd, stdio: ["ignore", fd, fd], env: scrubEnv(process.env, []) }).status ?? 1
 	} finally {
 		closeSync(fd)
 	}

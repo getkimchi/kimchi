@@ -12,6 +12,7 @@ import {
 	rewritePackageJson,
 	runSuites,
 	type SuiteResult,
+	scrubEnv,
 } from "./tests.ts"
 
 const PKG = {
@@ -187,6 +188,19 @@ describe("runSuites", () => {
 			["binary", "fail", ["binary (exit 1)"]],
 			["typecheck", "pass", []],
 		])
+	})
+})
+
+describe("scrubEnv", () => {
+	it("removes write-capable tokens before running upstream code", () => {
+		expect(scrubEnv({ PATH: "/bin", GH_TOKEN: "t", GITHUB_TOKEN: "t", KIMCHI_API_KEY: "k", KEEP: "1" }, [])).toEqual({
+			PATH: "/bin",
+			KEEP: "1",
+		})
+	})
+
+	it("keeps an allowed key", () => {
+		expect(scrubEnv({ GH_TOKEN: "t", KIMCHI_API_KEY: "k" }, ["KIMCHI_API_KEY"])).toEqual({ KIMCHI_API_KEY: "k" })
 	})
 })
 
