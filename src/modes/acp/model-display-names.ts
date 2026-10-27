@@ -35,63 +35,75 @@ const WORD_CASING: Record<string, string> = {
 	ultra: "Ultra",
 }
 
+/**
+ * Vendor-canonical spellings that the generic word-joining prettifier cannot
+ * reproduce: these vendors hyphenate their marketing names (verified against
+ * z.ai, DeepSeek, BAAI FlagEmbedding), while Anthropic/Google/Moonshot/MiniMax
+ * use spaces. Checked before the generic prettifier.
+ */
+const VENDOR_CANONICAL: Record<string, string> = {
+	"bge-m3": "BGE-M3",
+	"deepseek-v4-flash": "DeepSeek-V4-Flash",
+	"deepseek-v4-flash-0731": "DeepSeek-V4-Flash-0731",
+	"deepseek-v4.1-flash": "DeepSeek-V4.1-Flash",
+	"glm-5.2-fp8": "GLM-5.2 FP8",
+	"glm-5.3": "GLM-5.3",
+	"glm-5.3-flash": "GLM-5.3-Flash",
+}
+
+// Compiled once at module load rather than per token.
+const NUMERIC_TOKEN = /^\d+$/
+const VERSION_TOKEN = /^v\d/
+const DIGIT_LEADING = /^\d/
+const LETTER_NUMBER_CODE = /^[a-z]+\d+$/
+
 function prettifyWord(token: string): string {
 	// Version-ish tokens keep their spelling: v4, 5.3, 4o, 31b.
 	const lower = token.toLowerCase()
 	if (WORD_CASING[lower]) return WORD_CASING[lower]
-	if (/^v\d/.test(lower)) return lower
-	if (/^\d/.test(token)) return token.toUpperCase()
+	if (VERSION_TOKEN.test(lower)) return lower
+	if (DIGIT_LEADING.test(token)) return token.toUpperCase()
 	// Letter+number codes read better uppercased: k3 → K3, fp4 → FP4, m3 → M3.
-	if (/^[a-z]+\d+$/.test(token)) return token.toUpperCase()
+	if (LETTER_NUMBER_CODE.test(token)) return token.toUpperCase()
 	return token.charAt(0).toUpperCase() + token.slice(1)
 }
 
 /**
  * Best-effort pretty name for a model slug: `claude-opus-4-6` → `Claude Opus
- * 4.6`, `glm-5.3-flash` → `GLM 5.3 Flash`, `kimi-k3` → `Kimi K3`. A run of
- * two or more pure-numeric tokens joins with dots (it is a dotted version);
- * a lone numeric token stays its own word (e.g. `gemma-4-31b` →
- * `Gemma 4 31B`).
+ * 4.6`, `kimi-k3` → `Kimi K3`. A run of two or more pure-numeric tokens
+ * joins with dots (it is a dotted version); a lone numeric token stays its
+ * own word (e.g. `gemma-4-31b` → `Gemma 4 31B`). Vendors with hyphenated
+ * marketing names (GLM, DeepSeek, BGE) come from VENDOR_CANONICAL above.
  */
 export function prettifyModelId(id: string): string {
-	const tokens = id.split("-").filter(Boolean)
-	const words: string[] = []
-	for (let i = 0; i < tokens.length; i++) {
-		const token = tokens[i]
-		if (/^\d+$/.test(token)) {
-			if (i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
-				const run = [token]
-				while (i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
-					run.push(tokens[++i])
-				}
-				words.push(run.join("."))
+	const canonical = VENDOR_CANONICAL[id]
+	if (canonical) return canonical
+	return id
+		.split("-")
+		.reduce<string[]>((words, token) => {
+			if (!token) return words
+			const last = words[words.length - 1]
+			if (last !== undefined && NUMERIC_TOKEN.test(last) && NUMERIC_TOKEN.test(token)) {
+				words[words.length - 1] = `${last}.${token}`
 			} else {
-				words.push(token)
+				words.push(NUMERIC_TOKEN.test(token) ? token : prettifyWord(token))
 			}
-			continue
-		}
-		words.push(prettifyWord(token))
-	}
-	return words.join(" ")
+			return words
+		}, [])
+		.join(" ")
 }
 
 /** Model-shaped row with a nullable display name. */
 type NamedModel = Pick<Model<string>, "id"> & { name?: string }
 
-/** Whether the model's registered name carries no display information beyond the slug. */
-function isSlugLikeName(model: NamedModel): boolean {
-	const name = model.name?.trim()
-	return !name || name === model.id
-}
-
 /**
  * The display name for a model row in the ACP model picker: the catalog's
- * display name when it exists, a prettified slug otherwise. Composite routed
- * rows ("Auto — Picks the best model…") still go through
+ * display name when it exists, a prettified slug otherwise. Slug-only names
+ * (missing, blank, or identical to the id) carry no display information.
+ * Composite routed rows ("Auto — Picks the best model…") still go through
  * `splitModelDisplayName` at the call site.
  */
 export function resolveAcpModelDisplayName(model: NamedModel): string {
-	if (isSlugLikeName(model)) return prettifyModelId(model.id)
-	// biome-ignore lint/style/noNonNullAssertion: isSlugLikeName proved name is non-empty
-	return model.name!.trim()
+	const name = model.name?.trim()
+	return !name || name === model.id ? prettifyModelId(model.id) : name
 }
