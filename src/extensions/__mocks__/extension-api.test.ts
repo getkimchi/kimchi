@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import { createExtensionApi } from "./extension-api.js"
 
@@ -23,6 +23,19 @@ describe("createExtensionApi invalidation semantics", () => {
 		expect(seen).toEqual(["hello"])
 		// The raw bus emit stays observable for delivery assertions.
 		expect(mock.emitEvent).toHaveBeenCalledWith("test:channel", "hello")
+	})
+
+	it("keeps events.emit a vi.fn so mock.calls assertions keep working", () => {
+		// Shared-harness consumers (todos' early-nudge tests among them)
+		// assert on vi.mocked(api.events.emit).mock.calls. The stale-guard
+		// wrapper must stay a vi.fn — a plain arrow silently breaks that
+		// contract (regression: CI failures "Cannot read properties of
+		// undefined (reading 'calls')").
+		const mock = createExtensionApi()
+		mock.api.events.emit("steer:fired", { kind: "todo_early_nudge" })
+
+		const calls = vi.mocked(mock.api.events.emit).mock.calls
+		expect(calls).toEqual([["steer:fired", { kind: "todo_early_nudge" }]])
 	})
 
 	it("throws the shared stale-ctx message from every asserting API after invalidate()", () => {

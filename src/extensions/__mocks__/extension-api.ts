@@ -80,12 +80,15 @@ export function createExtensionApi(): {
 	const { events: busEvents, emit: busEmit } = createMiniEventBus()
 	// api.events routes through the stale guard like every other asserting
 	// API method; the raw bus emit stays exposed as `emitEvent` so delivery
-	// assertions still observe every (fresh) emission.
+	// assertions still observe every (fresh) emission. The wrapper must stay
+	// a vi.fn: shared-harness consumers across extensions (todos, agents, …)
+	// assert on events.emit.mock.calls — a plain arrow silently breaks that
+	// mock contract (seen as a CI failure in todos' early-nudge tests).
 	const events = {
-		emit: (channel: string, data: unknown) => {
+		emit: vi.fn((channel: string, data: unknown) => {
 			assertFresh()
 			return busEmit(channel, data)
-		},
+		}),
 		on: busEvents.on,
 	}
 	const shortcuts = new Map<
