@@ -12,7 +12,16 @@ import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary
 import type { Fact } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
-import { type Event, gitID, type IssueKey, stableID, timeNanos, type Usage, validateIngestEvent } from "./protocol.js"
+import {
+	type Event,
+	gitID,
+	type IssueKey,
+	normalizeIngestTimes,
+	stableID,
+	timeNanos,
+	type Usage,
+	validateIngestEvent,
+} from "./protocol.js"
 import {
 	accountKey,
 	allocationFor,
@@ -24,10 +33,25 @@ import {
 
 export interface CommonEvents {
 	accounts: { account: WorkAccount; facts: Fact[]; recordHashes: string[] }[]
+	/**
+	 * What each request or auxiliary record contributes, in a stable order: its facts by entity, including the work,
+	 * PR and link facts it shares, and the records it translates.
+	 */
+	units: EventUnit[]
 	unresolved: { requestId: string; reason: string; recordHashes: string[] }[]
+}
+export interface EventUnit {
+	account: string
+	requestId?: string
+	entities: string[]
+	recordHashes: string[]
 }
 type RequestOwner = { row: WorkRecord; scope: WorkScope }
 
+/**
+ * Builds every fact the records support. Shared work and PR facts always aggregate every request, but with `touched`
+ * only the named requests and auxiliary records become units, so untouched requests skip their claim reads.
+ */
 export function buildEvents(
 	stored: readonly StoredRecord[],
 	report: PullRequestCostReport,
@@ -35,6 +59,7 @@ export function buildEvents(
 	producerId: string,
 	check: () => void,
 	existingClaim: (account: string, entity: string) => Event | undefined,
+	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
 ): CommonEvents {
 	const records = stored.map((row) => {
 		check()
@@ -57,10 +82,12 @@ export function buildEvents(
 	const accounts = new Map<string, { account: WorkAccount; facts: Map<string, Fact>; recordHashes: Set<string> }>()
 	const owners = new Map<string, RequestOwner>()
 	const unresolved: CommonEvents["unresolved"] = []
+	const units: EventUnit[] = []
 	for (const [requestId, evidence] of attribution) {
 		check()
 		const source = requests.get(requestId) ?? []
 		const recordHashes = [...new Set(source.map(({ hash }) => hash))]
+		const included = !touched || touched.requests.has(requestId)
 		try {
 			const row = source.find(({ row }) => row.type === "request")?.row
 			if (
@@ -108,7 +135,8 @@ export function buildEvents(
 			if (!identity) throw new Error("repository_unresolved")
 			const key = accountKey(scope.account)
 			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
-			const previous = existingClaim(key, entityId)
+			const previous = included ? existingClaim(key, entityId) : undefined
+			const entities = [entityId]
 			const repository = previous ? previous.repository : identity === "unsupported" ? undefined : identity
 			const group = accounts.get(key) ?? {
 				account: scope.account,
@@ -217,6 +245,7 @@ export function buildEvents(
 				...(evidence.correction ? { correction: evidence.correction } : {}),
 			})
 			const workEntity = stableID("kimchi", "work", key, producerId, row.workId)
+			entities.push(workEntity)
 			const previousWork = group.facts.get(workEntity)?.work
 			const workKeys = new Set([...(previousWork?.issueKeys ?? []).map(({ key }) => key), ...evidence.workIssueKeys])
 			group.facts.set(workEntity, {
@@ -239,6 +268,7 @@ export function buildEvents(
 				if (!pr?.id || !pr.repositoryId || !validTime(pr.checkedAt)) continue
 				const repo = { provider: pr.provider ?? "github", host: pr.host, id: pr.repositoryId, name: pr.repository }
 				const prEntity = stableID("kimchi", "pull_request", key, producerId, repositoryKey(repo), pr.id)
+				entities.push(prEntity)
 				const previous = group.facts.get(prEntity)?.pullRequest
 				const keys = new Map<string, IssueKey>()
 				for (const issue of [
@@ -269,6 +299,7 @@ export function buildEvents(
 					},
 				})
 				const link = stableID("kimchi", "work_pr", key, producerId, row.workId, repositoryKey(repo), pr.id)
+				entities.push(link)
 				group.facts.set(link, {
 					...common,
 					sourceVersion: "unknown",
@@ -290,19 +321,22 @@ export function buildEvents(
 					},
 				})
 			}
+			if (included) units.push({ account: key, requestId, entities, recordHashes })
 			const problem = nativeProblems.get(requestId)
 			if (problem || incomplete || observed?.iterationsIncomplete) {
-				unresolved.push({ requestId, recordHashes, reason: problem?.reason ?? "incomplete_native_iterations" })
+				if (included)
+					unresolved.push({ requestId, recordHashes, reason: problem?.reason ?? "incomplete_native_iterations" })
 			} else {
 				for (const hash of recordHashes) group.recordHashes.add(hash)
 			}
 		} catch (error) {
 			check()
-			unresolved.push({
-				requestId,
-				recordHashes,
-				reason: error instanceof Error ? error.message : "invalid_request_evidence",
-			})
+			if (included)
+				unresolved.push({
+					requestId,
+					recordHashes,
+					reason: error instanceof Error ? error.message : "invalid_request_evidence",
+				})
 		}
 	}
 	const workOwners = new Map<string, Map<string, RequestOwner>>()
@@ -325,6 +359,7 @@ export function buildEvents(
 		if (!["work", "tool_execution", "file_transition", "file_observation", "plan", "commit"].includes(row.type))
 			continue
 		const hash = stored[index].recordHash
+		if (touched && !touched.records.has(hash)) continue
 		try {
 			if (row.version !== 1) throw new Error("unsupported_auxiliary_version")
 			let owner = typeof row.requestId === "string" ? owners.get(row.requestId) : undefined
@@ -523,6 +558,7 @@ export function buildEvents(
 			for (const fact of facts) group.facts.set(fact.entityId, fact)
 			group.recordHashes.add(hash)
 			accounts.set(key, group)
+			units.push({ account: key, entities: facts.map((fact) => fact.entityId), recordHashes: [hash] })
 		} catch (error) {
 			check()
 			unresolved.push({
@@ -532,8 +568,36 @@ export function buildEvents(
 			})
 		}
 	}
+	// A request's own facts are final only now; one that the service would reject must not stop the rest.
+	const valid = new Map<string, boolean>()
+	for (const unit of units) {
+		if (unit.requestId === undefined) continue
+		check()
+		const facts = accounts.get(unit.account)?.facts
+		const [request] = unit.entities
+		unit.entities = unit.entities.filter((entity) => {
+			const id = `${unit.account}\u0000${entity}`
+			if (!valid.has(id)) {
+				const fact = facts?.get(entity)
+				let accepted = !!fact
+				try {
+					if (fact) validateIngestEvent(normalizeIngestTimes({ ...fact, id: stableID(fact.entityId), revision: "1" }))
+				} catch {
+					accepted = false
+				}
+				valid.set(id, accepted)
+				if (!accepted) facts?.delete(entity)
+			}
+			return valid.get(id)
+		})
+		if (unit.entities[0] !== request) {
+			unit.entities = []
+			unresolved.push({ requestId: unit.requestId, recordHashes: unit.recordHashes, reason: "invalid_request_event" })
+		}
+	}
 	check()
 	return {
+		units: units.filter((unit) => unit.entities.length),
 		accounts: [...accounts.entries()]
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(([, group]) => ({

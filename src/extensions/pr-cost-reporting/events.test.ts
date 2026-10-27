@@ -26,6 +26,8 @@ it("uploads real SDK capture through the worker with account/consent-safe retrie
 			invalidAckRetained: true,
 			optOutRetained: true,
 			accountFenced: true,
+			otherBackoff: true,
+			rejectedBackoff: true,
 			keyFenced: true,
 			redirectsRejected: true,
 			failedPassAborted: true,
@@ -113,7 +115,11 @@ const report = {
 }
 const repositories = [[scope.repository, { provider: "github", host: "github.com", id: "999", name: "fork/repo" }]]
 
-function build(rows: unknown[], inputReport: unknown = report): CommonEvents {
+function build(
+	rows: unknown[],
+	inputReport: unknown = report,
+	touched?: { requests: string[]; records: string[] },
+): CommonEvents & { claims: number } {
 	const stored = rows.map((row, index) => ({
 		body: JSON.stringify(row),
 		recordHash: createHash("sha256").update(`original-${index}`).digest("hex"),
@@ -127,11 +133,14 @@ function build(rows: unknown[], inputReport: unknown = report): CommonEvents {
 				`
 import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
 const input = await Bun.stdin.json();
-console.log(JSON.stringify(buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => undefined)));
+let claims = 0;
+const touched = input.touched && { requests: new Set(input.touched.requests), records: new Set(input.touched.records) };
+const built = buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++ }, touched);
+console.log(JSON.stringify({ ...built, claims }));
 `,
 			],
 			{
-				input: JSON.stringify({ stored, report: inputReport, repositories, producer }),
+				input: JSON.stringify({ stored, report: inputReport, repositories, producer, touched }),
 				encoding: "utf8",
 				timeout: 30_000,
 			},
@@ -435,6 +444,53 @@ it("keeps fork origin separate from parent PR allocation and recorded Jira metad
 		toId: "PR1",
 		quality: "confirmed",
 	})
+})
+
+it("makes units and reads claims only for touched requests while shared facts aggregate every request", () => {
+	const otherId = "44444444-4444-4444-8444-444444444444"
+	const other = records.map((row) => ({
+		...row,
+		requestId: otherId,
+		issue: row.type === "request" ? { key: "LLM-44" } : undefined,
+	}))
+	const both = { ...report, requests: [...report.requests, { ...report.requests[0], requestId: otherId }] }
+	const result = build([...records, ...other], both, { requests: [otherId], records: [] })
+	expect(result.units.map((unit) => unit.requestId)).toEqual([otherId])
+	expect(result.claims).toBe(1)
+	const work = result.accounts[0].facts.find((fact) => fact.work?.reason === "observed_request")
+	expect(work?.work?.issueKeys?.map(({ key }) => key)).toEqual(["LLM-42", "LLM-44"])
+	expect(build([...records, ...other], both).units).toHaveLength(2)
+})
+
+it("sends a PR on a host with a port and drops one the service would reject without holding back its request", () => {
+	const pullRequest = {
+		id: "PR1",
+		repositoryId: "42",
+		provider: "gitlab",
+		host: "gitlab.example.com:8443",
+		repository: "parent/repo",
+		number: 1,
+		url: "https://gitlab.example.com:8443/parent/repo/-/merge_requests/1",
+		state: "open",
+		mergeCommitSha: null,
+		mergedAt: null,
+		closedAt: null,
+		checkedAt: "2026-10-24T08:00:03Z",
+	}
+	const input = (url: string) => ({
+		...report,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
+		pullRequests: [{ key: "parent-pr", account, workIds: [workId], pullRequest: { ...pullRequest, url } }],
+	})
+	const sent = build(records, input(pullRequest.url)).accounts[0].facts.find((fact) => fact.pullRequest)
+	expect(sent).toMatchObject({ repository: { host: "gitlab.example.com:8443" }, pullRequest: { uri: pullRequest.url } })
+	const result = build(records, input("https://gitlab.example.com/parent/repo/-/merge_requests/1"))
+	const facts = result.accounts[0].facts
+	// A link without the repository's port names another host, so the service would refuse this PR state.
+	expect(facts.find((fact) => fact.pullRequest)).toBeUndefined()
+	expect(facts.find((fact) => fact.usage)?.allocation).toMatchObject({ kind: "pull-request", pullRequestIds: ["PR1"] })
+	expect(result.units).toEqual([expect.objectContaining({ requestId })])
+	expect(result.unresolved).toEqual([])
 })
 
 it("does not interpret an unknown iteration type as independently billable usage", () => {

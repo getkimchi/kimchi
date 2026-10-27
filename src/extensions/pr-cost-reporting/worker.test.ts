@@ -22,7 +22,7 @@ import { deliverEvents, LIMIT_RETRY_MS, reconcileReporting, retryDelay } from ".
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
-vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], unresolved: [] })) }))
+vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
 // Node cannot encode real batches (protocol times need Temporal); the Bun ledger driver covers dispatch and ACKs.
 vi.mock("./ledger/outbox.js", async (original) => ({
 	...(await original<typeof outbox>()),
@@ -60,6 +60,8 @@ afterEach(async () => {
 	await rm(directory, { recursive: true, force: true })
 })
 const capturedReport = () => vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[1]
+/** Every request each connected group of works passed to the producer. */
+const capturedRequests = () => vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([, report]) => report.requests)
 /** Counts completed captures from here on: each one prices the history and then builds its events once. */
 const countCaptures = () => vi.mocked(eventBuilder.buildEvents).mockClear()
 const deliver = () => deliverEvents(directory, "/project", new AbortController().signal, () => {})
@@ -181,6 +183,21 @@ describe("account-fenced reporting delivery", () => {
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
 	})
 
+	// Lower bounds below the ±20% jitter: 4xx waits about an hour, a transient failure about 30 seconds.
+	it.each([
+		[401, 40 * 60_000],
+		[503, 20_000],
+	])("backs off an event account after a verification answered HTTP %i instead of verifying every pass", async (code, least) => {
+		const batch = queueBatch()
+		http.mockResolvedValue(new Response("{}", { status: code }))
+		await deliver()
+		await deliver()
+		expect(http).toHaveBeenCalledOnce()
+		const retry = retryNote(batch.accountKey)
+		expect(retry).toMatchObject({ attempts: 1, error: `PR cost event upload returned HTTP ${code}` })
+		expect(retry.retryAt - Date.now()).toBeGreaterThan(least)
+	})
+
 	it("uploads events with the SSO credential when no API key is configured", async () => {
 		config.key = ""
 		const agentDir = join(directory, "agent")
@@ -229,15 +246,18 @@ describe("account-fenced reporting delivery", () => {
 			],
 			recordHashes: ["a".repeat(64)],
 		}
-		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({ accounts: [group], unresolved: [] })
+		const units = [{ account: accountKey(account), entities: ["work"], recordHashes: group.recordHashes }]
+		vi.mocked(eventBuilder.buildEvents).mockReturnValueOnce({ accounts: [group], units, unresolved: [] })
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(outbox.observeEvents).toHaveBeenCalledWith(
 			directory,
 			accountKey(account),
 			group.facts,
-			group.recordHashes,
+			[],
 			expect.any(Function),
 		)
+		// The group's records count as translated once its events commit.
+		expect(backendFor(directory).markedRecords()).toEqual([])
 		expect(
 			vi
 				.mocked(eventBuilder.buildEvents)
@@ -307,15 +327,12 @@ describe("account-fenced reporting delivery", () => {
 			`${await readFile(sourcePath, "utf8")}${JSON.stringify({ version: 1, type: "request", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", requestId: "77777777-7777-4777-8777-777777777777", recordedAt: "2026-10-01T10:00:00Z" })}\n${JSON.stringify({ version: 1, type: "commit", workId: "66666666-6666-4666-8666-666666666666", sessionId: "legacy-session", sha: "c".repeat(40), repository: "/project/.git", worktree: "/project", recordedAt: "2026-10-01T10:00:00Z", pullRequests: [] })}\n`,
 		)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(capturedReport()?.requests.find((row) => row.requestId === requestId)?.account).toEqual(account)
+		expect(capturedRequests().find((row) => row.requestId === requestId)?.account).toEqual(account)
 		expect(
-			capturedReport()?.requests.find((row) => row.requestId === "77777777-7777-4777-8777-777777777777")?.account,
+			capturedRequests().find((row) => row.requestId === "77777777-7777-4777-8777-777777777777")?.account,
 		).toBeNull()
 		expect(
-			vi
-				.mocked(eventBuilder.buildEvents)
-				.mock.calls.at(-1)?.[0]
-				.map((row) => JSON.parse(row.body)),
+			vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([stored]) => stored.map((row) => JSON.parse(row.body))),
 		).toContainEqual(expect.objectContaining({ sessionId: "legacy-session", type: "request" }))
 	})
 	it("keeps broken and healthy source evidence separate for the common producer", async () => {
@@ -335,8 +352,8 @@ describe("account-fenced reporting delivery", () => {
 		}
 		await writeFile(sourcePath, `${healthy}${JSON.stringify(broken)}\n`)
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		expect(capturedReport()?.requests.find((row) => row.requestId === healthyId)?.account).toEqual(account)
-		expect(capturedReport()?.requests.find((row) => row.requestId === requestId)?.account).toBeNull()
+		expect(capturedRequests().find((row) => row.requestId === healthyId)?.account).toEqual(account)
+		expect(capturedRequests().find((row) => row.requestId === requestId)?.account).toBeNull()
 	})
 	it.each([true, false])("passes validated billing evidence to the common producer (priced=%s)", async (priced) => {
 		await seedLinked(priced)
@@ -369,6 +386,8 @@ describe("account-fenced reporting delivery", () => {
 		await setReportingEnabled(directory, false)
 		await expect(running).rejects.toThrow()
 		expect(backendFor(directory).getOutboxBatch(accountKey(account))).toBeDefined()
+		// An opt-out is not a failed verification: nothing waits on a backoff once reporting is back on.
+		expect(retryNote(accountKey(account))).toEqual({})
 	})
 	it("explains a role that cannot upload and retries the batch slowly", async () => {
 		const batch = sendableBatch()
@@ -415,6 +434,7 @@ describe("account-fenced reporting delivery", () => {
 		await expect(deliver()).rejects.toThrow()
 		expect(http).toHaveBeenCalledOnce()
 		expect(backendFor(directory).getOutboxBatch(batch.accountKey)?.id).toBe(batch.id)
+		expect(retryNote(batch.accountKey)).toEqual({})
 	})
 	it("still delivers when the opt-out poller cannot start", async () => {
 		vi.spyOn(fs, "watchFile").mockImplementation(() => {
@@ -543,9 +563,9 @@ describe("repository identity for work without a PR", () => {
 		)
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
-		expect(vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[2].get("/private/repo/.git")).toMatchObject({
-			id: "42",
-		})
+		// Each group of works builds with its own repositories.
+		const identities = new Map(vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([, , known]) => [...known]))
+		expect(identities.get("/private/repo/.git")).toMatchObject({ id: "42" })
 		await run()
 		expect(lookup).toHaveBeenCalledTimes(2)
 		const next = Date.now() + 31_000
@@ -582,6 +602,11 @@ describe("repository identity for work without a PR", () => {
 		clock.mockReturnValue(start + 24 * 60 * 60_000)
 		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/moved", id: "99" })
 		await run()
+		// Unchanged work needs no identity; its next record rebuilds it with a fresh one.
+		expect(lookup).toHaveBeenCalledOnce()
+		const [first] = rows.map((line) => JSON.parse(line))
+		await appendFile(path, `${JSON.stringify({ ...first, type: "work", recordedAt: new Date().toISOString() })}\n`)
+		await run()
 		expect(lookup).toHaveBeenCalledTimes(2)
 	})
 	it("queues pre-PR work from a dozen repositories without re-fetching each repository's identity every pass", async () => {
@@ -615,18 +640,80 @@ describe("repository identity for work without a PR", () => {
 		})
 		for (let pass = 0; pass < 3; pass++)
 			await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
-		const queued = [...(vi.mocked(eventBuilder.buildEvents).mock.calls.at(-1)?.[2].values() ?? [])].filter(
-			(entry) => entry !== "unsupported" && Number(entry.id) >= 1000,
+		const identities = vi
+			.mocked(eventBuilder.buildEvents)
+			.mock.calls.flatMap(([, , repositories]) => [...repositories.values()])
+		const queued = new Set(
+			identities.flatMap((entry) => (entry !== "unsupported" && Number(entry.id) >= 1000 ? [entry.id] : [])),
 		)
-		expect(queued).toHaveLength(12)
+		expect(queued.size).toBe(12)
 		// One lookup per repository, plus at most one abandoned when a pass deadline interrupts it.
 		expect(lookups).toBeLessThanOrEqual(13)
 	}, 30_000)
 })
 
+describe("incremental translation", () => {
+	it("commits events in chunks, so a pass that runs out of time resumes where it stopped", async () => {
+		await seedLinked()
+		const key = accountKey(account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+			accounts: [{ account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account: key, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		// The first chunk leaves the pass without time for another.
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const observed = () =>
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed()).toEqual(entities.slice(0, 100))
+		expect(backendFor(directory).markedRecords()).not.toEqual([])
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		clock.mockRestore()
+		await run()
+		expect(observed()).toEqual(entities)
+		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
+	it("rebuilds only the group of works whose records changed", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const other = { version: 1, workId: "66666666-6666-4666-8666-666666666666", sessionId: "other-session" }
+		await appendFile(
+			path,
+			`${JSON.stringify({ ...other, type: "request", requestId: "77777777-7777-4777-8777-777777777777", startedAt: "2026-10-04T12:00:00.000Z", recordedAt: "2026-10-04T12:00:00.000Z", scope: { account, repository: "/other/.git" } })}\n`,
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		await appendFile(path, `${JSON.stringify({ ...other, type: "work", recordedAt: new Date().toISOString() })}\n`)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
+		const [stored] = vi.mocked(eventBuilder.buildEvents).mock.calls[0]
+		expect(new Set(stored.map((row) => JSON.parse(row.body).workId))).toEqual(new Set([other.workId]))
+	})
+})
+
 describe("idle reporting passes", () => {
 	it("performs no journal body reads on an unchanged idle pass", async () => {
 		await seedLinked()
+		const settled = new Date(Date.now() - 60_000)
+		fs.utimesSync(join(directory, "work-attribution", "source.jsonl"), settled, settled)
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
 		await run()
@@ -682,8 +769,7 @@ describe("idle reporting passes", () => {
 		await run()
 		expect(captures).not.toHaveBeenCalled()
 		expect((await readReportingState(directory)).error).toContain("complete inventory")
-		await appendFile(path, `${valid}\n`)
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60 * 60_000)
+		await appendFile(path, `${JSON.stringify({ ...JSON.parse(valid), recordedAt: new Date().toISOString() })}\n`)
 		await run()
 		expect(captures).toHaveBeenCalledOnce()
 		expect((await readReportingState(directory)).error).toBeUndefined()
@@ -692,26 +778,25 @@ describe("idle reporting passes", () => {
 		expect(problems).toEqual([])
 	})
 
-	it("skips an unchanged pass, reads journals in the background and refreshes mutable metadata", async () => {
+	it("skips unchanged passes, reads journals in the background and translates only new records", async () => {
 		await seedLinked()
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		await run()
-		// Import changes the authority fingerprint, so the second pass captures once more.
 		await run()
 		const captures = countCaptures()
 		const blockingRead = vi.spyOn(summary, "readWorkRecords")
 		await run()
 		expect(captures).not.toHaveBeenCalled()
-		// Without new records, mutable PR metadata still refreshes within the hour.
+		// Translated records stay translated: an hour later, without new records, nothing is rebuilt.
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60 * 60_000)
 		await run()
-		expect(captures).toHaveBeenCalledOnce()
+		expect(captures).not.toHaveBeenCalled()
 		await appendFile(
 			join(directory, "work-attribution", "source.jsonl"),
 			`${JSON.stringify({ version: 1, type: "work", workId: "55555555-5555-4555-8555-555555555555", sessionId: "private-session", recordedAt: new Date().toISOString() })}\n`,
 		)
 		await run()
-		expect(captures).toHaveBeenCalledTimes(2)
+		expect(captures).toHaveBeenCalledOnce()
 		expect(blockingRead).not.toHaveBeenCalled()
 	})
 })

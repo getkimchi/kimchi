@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, open, stat } from "node:fs/promises"
+import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
@@ -81,12 +81,6 @@ export async function reportingProducer(agentDir: string, assertCurrent: () => v
 		assertCurrent()
 		return next.producerId
 	})
-}
-
-/** Changes with every saved update, since each one replaces the file; empty before the first. */
-export async function reportingStateVersion(agentDir: string): Promise<string> {
-	const saved = await stat(reportingStatePath(agentDir)).catch(() => undefined)
-	return saved ? JSON.stringify([saved.ino, saved.size, saved.mtimeMs]) : ""
 }
 
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */

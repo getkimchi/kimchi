@@ -570,6 +570,21 @@ function bounded(value: unknown, maximum: number): boolean {
 		})
 	)
 }
+/** A Git remote host: a name, or a name and a port from 1 to 65535 without a leading zero after one colon. */
+function repositoryHost(host: string): boolean {
+	const [name, port, ...rest] = host.split(":")
+	return (
+		!!name &&
+		!containsAny(name, "/\\@?#| ") &&
+		!rest.length &&
+		(port === undefined ||
+			(port.length >= 1 &&
+				port.length <= 5 &&
+				port[0] !== "0" &&
+				Array.from(port).every(digit) &&
+				Number(port) <= 65535))
+	)
+}
 function opaque(value: unknown): boolean {
 	const text = value ?? ""
 	return typeof text === "string" && bounded(text, 128) && !containsAny(text, "/\\@?#|")
@@ -682,7 +697,7 @@ export function validateEvent(e: Event): void {
 			(!["github", "gitlab"].includes(r.provider) ||
 				!r.host ||
 				!bounded(r.host, 253) ||
-				containsAny(r.host, "/\\@?#| :") ||
+				!repositoryHost(r.host) ||
 				!r.id ||
 				!opaque(r.id) ||
 				!bounded(r.name, 256) ||
@@ -802,7 +817,8 @@ export function validateEvent(e: Event): void {
 			u.search ||
 			u.hash ||
 			!r ||
-			u.hostname.toLowerCase() !== r.host.toLowerCase() ||
+			// The link names the repository's host, port included.
+			u.host.toLowerCase() !== r.host.toLowerCase() ||
 			!p.id ||
 			!opaque(p.id) ||
 			!Number.isInteger(p.number) ||

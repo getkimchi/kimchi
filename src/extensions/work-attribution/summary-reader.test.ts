@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from "vitest"
 import { backendFor, capture } from "../pr-cost-reporting/ledger/records.js"
 import { pinWorkContinuation, readContinuationHistory } from "./links.js"
 import {
+	flushWorkSummaries,
 	readWorkRecords,
 	readWorkRecordsAsync,
 	type WorkRecord,
@@ -93,6 +94,23 @@ it("reports consumed malformed and unknown-type history on every read, not just 
 	}
 })
 
+it("imports legacy history one short slice per read and the rest in the background", async () => {
+	const { agentDir } = journal([work])
+	for (const name of ["second", "third"])
+		writeFileSync(
+			join(agentDir, "work-attribution", `${name}.jsonl`),
+			`${JSON.stringify({ ...work, sessionId: name })}\n`,
+		)
+	// Each journal takes longer than a slice, so a slice imports one journal.
+	const start = Date.now()
+	let calls = 0
+	vi.spyOn(Date, "now").mockImplementation(() => start + 60 * calls++)
+	expect(readWorkRecords(agentDir)).toHaveLength(1)
+	expect(() => readWorkRecords(agentDir, undefined, () => {})).toThrow("Legacy work history is still importing")
+	await flushWorkSummaries()
+	expect(readWorkRecords(agentDir, undefined, () => {})).toHaveLength(3)
+})
+
 it("honors a read budget before import commits and allows a later retry", () => {
 	const { agentDir, path } = journal([work])
 	const budget = () => {
@@ -160,16 +178,20 @@ it("retains absolute line numbers when damage arrives after a consumed prefix", 
 	expect(problems).toEqual([{ kind: "invalid", path, line: 3 }])
 })
 
-it("keeps imported authority and incomplete coverage after a source is rewritten or removed", () => {
+it("keeps imported authority after a source is rewritten or removed, and stops reporting a removed one", () => {
 	const { agentDir, path } = journal([work])
 	expect(readWorkRecords(agentDir)).toEqual([work])
 	writeFileSync(path, "")
-	for (let attempt = 0; attempt < 2; attempt++) {
+	const read = () => {
 		const problems: WorkRecordProblem[] = []
 		expect(readWorkRecords(agentDir, undefined, undefined, (problem) => problems.push(problem))).toEqual([work])
-		expect(problems).toEqual([{ kind: "invalid", path, line: 1 }])
-		if (attempt === 0) unlinkSync(path)
+		return problems
 	}
+	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
+	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
+	unlinkSync(path)
+	expect(read()).toEqual([])
+	expect(read()).toEqual([])
 })
 
 it("propagates budget interruption during stored-row replay instead of treating it as damaged JSON", () => {

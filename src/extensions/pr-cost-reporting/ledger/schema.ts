@@ -12,10 +12,10 @@
  *   shrunk, removed) never delete them; a new import generation adds the new view
  *   alongside. Dedup is by `record_hash` of the exact journal line, so a re-import
  *   after a file mutation is idempotent and byte-identical lines are not duplicated.
- * - `pending_translation` is the transactional intent linking an authority record
- *   to its delta event(s): the capture/import commit inserts the marker and the
- *   delta-generation commit deletes it when the event lands in `outbox_events`,
- *   so a crash between the two never loses the intent.
+ * - `pending_translation` marks an authority record that its work's events do not
+ *   reflect yet: the capture/import commit inserts the marker, and the reporting
+ *   pass deletes it once its work group's events are in `outbox_events`, so a crash
+ *   between the two never loses the intent and an unchanged work is never rebuilt.
  */
 export const SCHEMA_VERSION = 1
 

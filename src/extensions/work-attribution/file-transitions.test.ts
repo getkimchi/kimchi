@@ -26,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
-import { hydrateLegacy } from "../pr-cost-reporting/ledger/import.js"
+import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
 import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
 import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
@@ -484,7 +484,7 @@ describe("manual commit reconciliation", () => {
 		const original = `${legacy.map((row) => JSON.stringify(row)).join("\n")}\n`
 		writeFileSync(path, original)
 		closeBackends()
-		hydrateLegacy(join(root, "agent"))
+		for (;;) if (!importJournalSlice(join(root, "agent"))) break
 		const stored = rows().filter((row) => row.type === "file_transition")
 		expect(stored).toHaveLength(1)
 		expect(stored[0].historyBoundaryId).toBeUndefined()

@@ -187,6 +187,7 @@ function commitKey(row: WorkPullRequestUpdate): string {
 function readCommits(agentDir: string, state: DiscoveryState): void {
 	const started = Date.now()
 	const records = readRecords(agentDir, {
+		type: "commit",
 		modifiedSince: state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
 	})
 	for (const row of records) {

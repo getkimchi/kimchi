@@ -138,6 +138,13 @@ export function completeLines(file: Buffer, from: number, to: number): Line[] {
 	return lines
 }
 
+/** Coarse filesystem clocks can stamp a write a little before the cursor written after it. */
+const MTIME_SLACK_MS = 2000
+/** The prefix hash behind each cursor this process wrote mid-file, so its next window skips rereading the prefix. */
+const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: number }>()
+/** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
+const stopped = new Map<string, string>()
+
 /** Prefix verification and body reads both yield to the synchronous deadline between fixed-size reads. */
 function prepareJournal(
 	path: string,
@@ -147,13 +154,27 @@ function prepareJournal(
 	checkBudget?: () => void,
 ) {
 	checkBudget?.()
+	// A journal last modified well before its cursor was written still holds the prefix that cursor hashed.
+	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number }) =>
+		!replay &&
+		cursor?.dev === stat.dev &&
+		cursor.ino === stat.ino &&
+		stat.size >= cursor.offset &&
+		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS
+	const seen = statSync(path)
+	if (untouched(seen) && seen.size === cursor?.offset) return undefined
 	const fd = openSync(path, "r")
 	try {
-		const { dev, ino, size } = fstatSync(fd)
+		const stat = fstatSync(fd)
+		const { dev, ino, size } = stat
 		const buffer = Buffer.allocUnsafe(READ_BYTES)
 		let prefix: Hash = createHash("sha256")
 		let lineOffset = 0
-		if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
+		const known = cursor && untouched(stat) ? continued.get(path) : undefined
+		if (cursor && known?.boundaryHash === cursor.boundaryHash) {
+			prefix = known.hash.copy()
+			lineOffset = known.lines
+		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
 			let position = 0
 			while (position < cursor.offset) {
 				checkBudget?.()
@@ -193,7 +214,7 @@ function prepareJournal(
 			bytes += count
 		}
 		checkBudget?.()
-		return { dev, ino, size, decision, prefix, lineOffset, data: Buffer.concat(chunks, bytes) }
+		return { dev, ino, size, mtimeMs: stat.mtimeMs, decision, prefix, lineOffset, data: Buffer.concat(chunks, bytes) }
 	} finally {
 		closeSync(fd)
 	}
@@ -215,14 +236,15 @@ function syncWorkJournals(agentDir: string): string[] {
 function importJournalFiles(
 	agentDir: string,
 	journals: string[],
-	maxBytes: number,
-	onProblem?: (problem: WorkRecordProblem) => void,
-	checkBudget?: () => void,
+	{ maxBytes = WINDOW_BYTES, onRecordProblem: onProblem, checkBudget, until }: ImportOptions,
+	/** Report cursors of journals missing from this listing; only a full listing can tell. */
+	sweep: boolean,
 ): ImportResult {
 	checkBudget?.()
 	const result: ImportResult = { files: [], anomalies: [], problems: [], imported: 0, skipped: 0 }
 	const backend = backendFor(agentDir)
-	for (const path of journals) {
+	const start = until === undefined ? 0 : Math.max(0, journals.indexOf(stopped.get(agentDir) ?? ""))
+	for (const path of [...journals.slice(start), ...journals.slice(0, start)]) {
 		checkBudget?.()
 		const cursor = backend.getJournalCursor(path)
 		let prepared: ReturnType<typeof prepareJournal>
@@ -236,14 +258,11 @@ function importJournalFiles(
 			)
 		} catch (error) {
 			if (!object(error) || error.code !== "ENOENT") throw error
-			if (cursor) {
-				result.anomalies.push({ path, code: "journal-removed" })
-				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
-				diagnostic(agentDir, "journal-removed")
-			}
+			if (cursor) forgetJournal(agentDir, backend, path, result)
 			continue
 		}
-		const { dev, ino, size, decision, prefix, lineOffset, data } = prepared
+		if (!prepared) continue
+		const { dev, ino, size, mtimeMs, decision, prefix, lineOffset, data } = prepared
 		if (decision.mode === "mutation") result.anomalies.push({ path, code: "journal-mutation" })
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
@@ -254,6 +273,9 @@ function importJournalFiles(
 			}
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
+			// A verified journal that settled since its cursor skips verification from now on.
+			else if (cursor && decision.mode === "clean-append" && Date.now() - mtimeMs > MTIME_SLACK_MS)
+				backend.putJournalCursor({ ...cursor, updatedAt: Date.now() })
 			continue
 		}
 		const parsed: WorkRecord[] = []
@@ -295,6 +317,9 @@ function importJournalFiles(
 		const consumed = lines[lines.length - 1].end
 		const consumedEnd = decision.offset + consumed
 		checkBudget?.()
+		prefix.update(data.subarray(0, consumed))
+		const hash = prefix.copy()
+		const boundaryHash = prefix.digest("hex")
 		let imported = 0
 		backend.tx(() => {
 			saveCoverage(backend, path, problems)
@@ -308,10 +333,12 @@ function importJournalFiles(
 				ino,
 				generation: decision.generation,
 				offset: consumedEnd,
-				boundaryHash: prefix.update(data.subarray(0, consumed)).digest("hex"),
+				boundaryHash,
 				updatedAt: Date.now(),
 			})
 		})
+		if (consumedEnd < size) continued.set(path, { boundaryHash, hash, lines: lineOffset + lines.length })
+		else continued.delete(path)
 		if (decision.mode === "mutation") diagnostic(agentDir, "journal-mutation")
 		if (decision.offset + data.length < size) result.pending = true
 		result.imported += imported
@@ -323,64 +350,65 @@ function importJournalFiles(
 			imported,
 			skipped: entries.length - imported,
 		})
-	}
-	for (const cursor of backend.listJournalCursors()) {
-		checkBudget?.()
-		if (journals.includes(cursor.path)) continue
-		try {
-			statSync(cursor.path)
-		} catch (error) {
-			if (!object(error) || error.code !== "ENOENT") throw error
-			result.anomalies.push({ path: cursor.path, code: "journal-removed" })
-			backend.tx(() => saveCoverage(backend, cursor.path, [{ kind: "invalid", path: cursor.path, line: 1 }]))
-			diagnostic(agentDir, "journal-removed")
+		// Unchanged journals cost a stat each; only journals that imported spend the slice.
+		if (until !== undefined && Date.now() >= until) {
+			result.pending = true
+			stopped.set(agentDir, path)
+			break
 		}
 	}
+	const listed = new Set(journals)
+	if (sweep)
+		for (const cursor of backend.listJournalCursors()) {
+			checkBudget?.()
+			if (listed.has(cursor.path)) continue
+			try {
+				statSync(cursor.path)
+			} catch (error) {
+				if (!object(error) || error.code !== "ENOENT") throw error
+				forgetJournal(agentDir, backend, cursor.path, result)
+			}
+		}
 	return result
+}
+
+/**
+ * A removed journal's imported records stay; its cursor and coverage go, so it is reported once instead of marking
+ * history incomplete on every later pass, as the journal-era reader also stopped counting a file that was gone.
+ */
+function forgetJournal(agentDir: string, backend: RecordBackend, path: string, result: ImportResult): void {
+	result.anomalies.push({ path, code: "journal-removed" })
+	backend.tx(() => {
+		backend.deleteJournalCursor(path)
+		backend.deleteNote(COVERAGE_NOTES, path)
+		backend.deleteNote(TAIL_NOTES, path)
+	})
+	continued.delete(path)
+	diagnostic(agentDir, "journal-removed")
 }
 
 interface ImportOptions {
 	maxBytes?: number
 	onRecordProblem?: (problem: WorkRecordProblem) => void
 	checkBudget?: () => void
+	/** After a journal that imported something, stop once this time has passed; the result is then pending. */
+	until?: number
 }
+
+/** How long one import slice may hold the event loop before yielding. */
+export const IMPORT_SLICE_MS = 50
 
 export async function importJournals(agentDir: string, options: ImportOptions = {}): Promise<ImportResult> {
-	return importJournalFiles(
-		agentDir,
-		await workJournals(agentDir),
-		options.maxBytes ?? WINDOW_BYTES,
-		options.onRecordProblem,
-		options.checkBudget,
-	)
+	return importJournalFiles(agentDir, await workJournals(agentDir), options, true)
 }
 
-/** Synchronous history hydration drains bounded batches without holding a transaction between them. */
-export function hydrateLegacy(agentDir: string, options: ImportOptions = {}): ImportResult {
-	const journals = syncWorkJournals(agentDir)
-	const result = importJournalFiles(
-		agentDir,
-		journals,
-		options.maxBytes ?? WINDOW_BYTES,
-		options.onRecordProblem,
-		options.checkBudget,
-	)
-	while (result.pending && options.maxBytes === undefined) {
-		const next = importJournalFiles(agentDir, journals, WINDOW_BYTES, options.onRecordProblem, options.checkBudget)
-		result.files.push(...next.files)
-		result.anomalies.push(...next.anomalies)
-		result.problems.push(...next.problems)
-		result.imported += next.imported
-		result.skipped += next.skipped
-		result.pending = next.pending
-	}
-	if (!result.pending) delete result.pending
-	return result
+/** One synchronous slice over every journal; true while more input remains for a later slice. */
+export function importJournalSlice(agentDir: string, checkBudget?: () => void): boolean {
+	const options = { checkBudget, until: Date.now() + IMPORT_SLICE_MS }
+	return importJournalFiles(agentDir, syncWorkJournals(agentDir), options, true).pending === true
 }
 
-const hydratedDirs = new Set<string>()
-export function hydrateLegacyOnce(agentDir: string): void {
-	if (hydratedDirs.has(agentDir)) return
-	hydrateLegacy(agentDir)
-	hydratedDirs.add(agentDir)
+/** One session's journal in full, so a resumed legacy session keeps its work before the background import arrives. */
+export function importSessionJournal(agentDir: string, path: string): void {
+	for (;;) if (!importJournalFiles(agentDir, [path], {}, false).pending) return
 }

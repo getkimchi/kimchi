@@ -3,8 +3,9 @@ import { setImmediate } from "node:timers/promises"
 import {
 	COLLECTIONS,
 	type Collection,
-	LOGS,
+	commitPullRequests,
 	type LogName,
+	observeLatest,
 	ROW_KEYS,
 	type Row,
 	summaryLatest,
@@ -90,6 +91,8 @@ export interface RecordBackend {
 	insertRecord(row: StoredRecord): boolean
 	upsertMarker(recordHash: string, workId: string, type: string): void
 	pendingTranslations(after: number, through: number, limit: number): PositionedRecord[]
+	/** Every record not yet translated into events, by work. */
+	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
@@ -105,8 +108,8 @@ export interface RecordBackend {
 	clearDirty(workId: string): void
 	dirtyWorks(): string[]
 	getRow(workId: string, log: LogName, key: string): Row | undefined
-	/** First-seen key keeps its position; a later write of the same key replaces the body in place. */
-	putRow(workId: string, log: LogName, key: string, body: Row): void
+	/** A new key takes position `pos`; a later write of the same key replaces the body and keeps its position. */
+	putRow(workId: string, log: LogName, key: string, body: Row, pos: number): void
 	readLog(workId: string, log: LogName): Row[]
 	/** Drops the work's projection rows and manifest; its records stay untouched. */
 	clearProjection(workId: string): void
@@ -114,7 +117,7 @@ export interface RecordBackend {
 	putHead(head: WorkHead): void
 	allHeads(): WorkHead[]
 	readRecords(
-		opts: { workId?: string; sessionId?: string; modifiedSince?: number },
+		opts: { workId?: string; sessionId?: string; modifiedSince?: number; type?: string },
 		checkBudget?: () => void,
 	): StoredRecord[]
 	/** Pins an async read to the records committed when it started. */
@@ -130,6 +133,7 @@ export interface RecordBackend {
 	diagnostic(code: string): void
 	getJournalCursor(path: string): JournalCursor | undefined
 	putJournalCursor(cursor: JournalCursor): void
+	deleteJournalCursor(path: string): void
 	/** Every cursor on record, so import can report files removed since the last pass. */
 	listJournalCursors(): JournalCursor[]
 	close(): void
@@ -251,7 +255,7 @@ export function importBatchInTx(backend: RecordBackend, entries: ImportEntry[]):
 /** Replays stored records in capture/import order. */
 export function readRecords(
 	agentDir: string,
-	opts: { workId?: string; modifiedSince?: number } = {},
+	opts: { workId?: string; modifiedSince?: number; type?: WorkRecord["type"] } = {},
 	checkBudget?: () => void,
 ): WorkRecord[] {
 	checkBudget?.()
@@ -373,55 +377,85 @@ function rebuildWorkInTx(backend: RecordBackend, workId: string): void {
 			// Skip damaged bodies; rebuild must not fail because one row is unreadable.
 		}
 	}
-	mergeRecordsInto(projectionRows(backend, workId), records)
-	backend.putHead(headFrom(backend, workId))
+	const head = emptyHead(workId)
+	mergeRecordsInto(projectionRows(backend, head), records)
+	backend.putHead({
+		...head,
+		updatedAt: new Date().toISOString(),
+		...summaryLatest((collection) => backend.readLog(workId, collection)),
+	})
 	backend.clearDirty(workId)
 }
 
+/** Folds records into the saved head like the journal-era summary writer: only the rows they touch are read. */
 function foldWork(backend: RecordBackend, workId: string, records: WorkRecord[]): void {
-	mergeRecordsInto(projectionRows(backend, workId), records)
-	backend.putHead(headFrom(backend, workId))
+	const head = backend.getHead(workId) ?? emptyHead(workId)
+	let commits = false
+	mergeRecordsInto(
+		projectionRows(backend, head, (collection, row) => {
+			observeLatest(head.latest, collection, row)
+			commits ||= collection === "commits"
+		}),
+		records,
+	)
+	if (commits) head.pullRequests = commitPullRequests(backend.readLog(workId, "commits"))
+	backend.putHead({ ...head, updatedAt: new Date().toISOString() })
 }
 
-function headFrom(backend: RecordBackend, workId: string): WorkHead {
-	return {
-		version: 2,
-		workId,
-		updatedAt: new Date().toISOString(),
-		...summaryLatest((collection) => backend.readLog(workId, collection)),
-		logs: logMetadata(backend, workId),
+function emptyHead(workId: string): WorkHead {
+	return { version: 2, workId, updatedAt: "", logs: {}, latest: {}, pullRequests: [] }
+}
+
+/**
+ * Projection writes for one head. Each log's row count and size continue from the head, so writing a row never
+ * rereads the rest of the work; only non-empty logs appear in the manifest, as legacy readers expect.
+ */
+function projectionRows(
+	backend: RecordBackend,
+	head: WorkHead,
+	onSet?: (collection: Collection, row: Row) => void,
+): SummaryRows {
+	const { workId, logs } = head
+	/** Stored size of each row this fold has seen; undefined while the key is new. */
+	const sizes = new Map<string, number | undefined>()
+	const get = (log: LogName, key: string) => {
+		const row = backend.getRow(workId, log, key)
+		sizes.set(`${log}\u0000${key}`, row && Buffer.byteLength(JSON.stringify(row)))
+		return row
 	}
-}
-
-function projectionRows(backend: RecordBackend, workId: string): SummaryRows {
+	const put = (log: LogName, key: string, row: Row) => {
+		const id = `${log}\u0000${key}`
+		if (!sizes.has(id)) get(log, key)
+		const previous = sizes.get(id)
+		const bytes = Buffer.byteLength(JSON.stringify(row))
+		logs[log] ??= { generation: 1, bytes: 0, rows: 0 }
+		const meta = logs[log]
+		if (previous === undefined) {
+			meta.rows++
+			meta.bytes += bytes + 1
+		} else meta.bytes += bytes - previous
+		backend.putRow(workId, log, key, row, meta.rows)
+		sizes.set(id, bytes)
+	}
 	const sessions = {
 		add(sessionId: string) {
 			const key = ROW_KEYS.sessions({ sessionId })
-			if (!backend.getRow(workId, "sessions", key)) backend.putRow(workId, "sessions", key, { sessionId })
+			if (!get("sessions", key)) put("sessions", key, { sessionId })
 		},
 	}
 	const store = (name: Collection) => ({
-		get: (key: string) => backend.getRow(workId, name, key),
-		has: (key: string) => backend.getRow(workId, name, key) !== undefined,
+		get: (key: string) => get(name, key),
+		has: (key: string) => get(name, key) !== undefined,
 		// Merge output always carries sessionId, the one field Row demands beyond its index signature.
-		set: (key: string, row: Record<string, unknown>) => backend.putRow(workId, name, key, row as Row),
+		set: (key: string, row: Record<string, unknown>) => {
+			put(name, key, row as Row)
+			onSet?.(name, row as Row)
+		},
 	})
 	return {
 		sessions,
 		...Object.fromEntries(COLLECTIONS.map((name) => [name, store(name)])),
 	} as SummaryRows
-}
-
-/** Only non-empty logs appear in the manifest; empty collections are absent, as legacy readers expect. */
-function logMetadata(backend: RecordBackend, workId: string): WorkHead["logs"] {
-	const logs: WorkHead["logs"] = {}
-	for (const log of LOGS) {
-		const rows = backend.readLog(workId, log)
-		if (!rows.length) continue
-		const bytes = rows.reduce((sum, row) => sum + JSON.stringify(row).length + 1, 0)
-		logs[log] = { generation: 1, bytes, rows: rows.length }
-	}
-	return logs
 }
 
 /** Tracker bookkeeping (cost caches, issue, intent, scope, progress) as named JSON notes per work. */
@@ -448,11 +482,16 @@ export function diagnostic(agentDir: string, code: string): void {
 export function seedProjectionRows(agentDir: string, view: WorkSummaryView): void {
 	const backend = backendFor(agentDir)
 	backend.tx(() => {
-		for (const sessionId of view.sessions)
-			backend.putRow(view.workId, "sessions", ROW_KEYS.sessions({ sessionId }), { sessionId })
+		const head = backend.getHead(view.workId) ?? emptyHead(view.workId)
+		const rows = projectionRows(backend, head)
+		for (const sessionId of view.sessions) rows.sessions.add(sessionId)
 		for (const collection of COLLECTIONS)
-			for (const row of view[collection] ?? []) backend.putRow(view.workId, collection, ROW_KEYS[collection](row), row)
-		backend.putHead(headFrom(backend, view.workId))
+			for (const row of view[collection] ?? []) rows[collection].set(ROW_KEYS[collection](row), row)
+		backend.putHead({
+			...head,
+			updatedAt: new Date().toISOString(),
+			...summaryLatest((collection) => backend.readLog(view.workId, collection)),
+		})
 	})
 }
 
@@ -489,6 +528,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"SELECT w.rowid AS position, w.record_hash AS recordHash, w.type, w.work_id AS workId, w.session_id AS sessionId, w.body, w.source_path AS sourcePath, w.source_generation AS sourceGeneration, w.source_offset AS sourceOffset, w.imported_at AS importedAt FROM pending_translation p JOIN work_records w ON w.record_hash = p.record_hash WHERE w.rowid > ? AND w.rowid <= ? ORDER BY w.rowid LIMIT ?",
 	)
 	const clearTranslation = db.query("DELETE FROM pending_translation WHERE record_hash = ?")
+	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
+		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
+	)
 	const eventColumns =
 		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
 	const latestEvent = db.query<OutboxEvent, [string, string]>(
@@ -537,7 +579,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
 	const putRow = db.query(
-		"INSERT INTO work_projection_rows (work_id, log, key, pos, body) VALUES (?, ?, ?, COALESCE((SELECT MAX(pos) + 1 FROM work_projection_rows WHERE work_id = ? AND log = ?), 1), ?) ON CONFLICT (work_id, log, key) DO UPDATE SET body = excluded.body",
+		"INSERT INTO work_projection_rows (work_id, log, key, pos, body) VALUES (?, ?, ?, ?, ?) ON CONFLICT (work_id, log, key) DO UPDATE SET body = excluded.body",
 	)
 	const readLog = db.query<{ body: string }, [string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? ORDER BY pos",
@@ -558,6 +600,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const readRecordsSession = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE session_id = ? ORDER BY rowid`,
+	)
+	const readRecordsType = db.query<StoredRecord, [string]>(
+		`SELECT ${recordColumns} FROM work_records WHERE type = ? ORDER BY rowid`,
 	)
 	const watermark = db.query<{ position: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS position FROM work_records")
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
@@ -587,6 +632,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const putCursor = db.query(
 		"INSERT OR REPLACE INTO journal_cursor (path, dev, ino, generation, offset, boundary_hash, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	)
+	const deleteCursor = db.query("DELETE FROM journal_cursor WHERE path = ?")
 	const bumpDiagnostic = db.query(
 		"INSERT INTO diagnostics (code, count, updated_at) VALUES (?, 1, ?) ON CONFLICT (code) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at",
 	)
@@ -608,6 +654,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			).changes > 0,
 		upsertMarker: (recordHash, workId, type) => upsertMarker.run(recordHash, workId, type, Date.now()),
 		pendingTranslations: (after, through, limit) => translations.all(after, through, limit),
+		markedRecords: () => marked.all(),
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
@@ -648,7 +695,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			const found = getRow.get(workId, log, key)
 			return found ? (JSON.parse(found.body) as Row) : undefined
 		},
-		putRow: (workId, log, key, body) => putRow.run(workId, log, key, workId, log, JSON.stringify(body)),
+		putRow: (workId, log, key, body, pos) => putRow.run(workId, log, key, pos, JSON.stringify(body)),
 		readLog: rowsOf,
 		clearProjection: (workId) => {
 			clearRows.run(workId)
@@ -662,24 +709,33 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		allHeads: () => allHeads.all().map((row) => JSON.parse(row.body) as WorkHead),
 		readRecords: (opts, checkBudget) => {
 			checkBudget?.()
+			// An index narrows the read; any other option filters its rows.
 			const source =
 				opts.workId !== undefined
 					? readRecordsWork.iterate(opts.workId)
-					: opts.modifiedSince !== undefined
-						? readRecordsSince.iterate(opts.modifiedSince)
-						: opts.sessionId !== undefined
-							? readRecordsSession.iterate(opts.sessionId)
-							: readRecordsAll.iterate()
+					: opts.type !== undefined
+						? readRecordsType.iterate(opts.type)
+						: opts.modifiedSince !== undefined
+							? readRecordsSince.iterate(opts.modifiedSince)
+							: opts.sessionId !== undefined
+								? readRecordsSession.iterate(opts.sessionId)
+								: readRecordsAll.iterate()
 			const rows: StoredRecord[] = []
 			try {
 				for (const row of source) {
 					checkBudget?.()
-					if (opts.sessionId === undefined || row.sessionId === opts.sessionId) rows.push(row)
+					if (
+						(opts.sessionId === undefined || row.sessionId === opts.sessionId) &&
+						(opts.type === undefined || row.type === opts.type) &&
+						(opts.modifiedSince === undefined || row.importedAt >= opts.modifiedSince)
+					)
+						rows.push(row)
 				}
 			} catch (error) {
 				// Bun 1.4 leaves an interrupted iterator's cursor positioned mid-result.
 				// get() resets before and after one row; it never drains the remaining history.
 				if (opts.workId !== undefined) readRecordsWork.get(opts.workId)
+				else if (opts.type !== undefined) readRecordsType.get(opts.type)
 				else if (opts.modifiedSince !== undefined) readRecordsSince.get(opts.modifiedSince)
 				else if (opts.sessionId !== undefined) readRecordsSession.get(opts.sessionId)
 				else readRecordsAll.get()
@@ -724,6 +780,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 				cursor.boundaryHash,
 				cursor.updatedAt,
 			),
+		deleteJournalCursor: (path) => {
+			deleteCursor.run(path)
+		},
 		listJournalCursors: () => allCursors.all(),
 		close: () => store.close(),
 	}

@@ -14,7 +14,6 @@ export function createMemoryRecords(): RecordBackend {
 	const records = new Map<string, StoredRecord>()
 	const order: StoredRecord[] = []
 	const logs = new Map<string, Map<LogName, Map<string, { pos: number; body: Row }>>>()
-	const positions = new Map<string, number>()
 	const heads = new Map<string, WorkHead>()
 	const markers = new Map<string, { workId: string; type: string }>()
 	const dirty = new Set<string>()
@@ -24,7 +23,6 @@ export function createMemoryRecords(): RecordBackend {
 	const events = new Map<string, OutboxEvent>()
 	const batches = new Map<string, OutboxBatch>()
 	const noteKey = (workId: string, name: string) => `${workId}\u0000${name}`
-	const logKey = (workId: string, log: LogName) => `${workId}\u0000${log}`
 	let inTx = false
 
 	const workLogs = (workId: string): Map<LogName, Map<string, { pos: number; body: Row }>> => {
@@ -40,7 +38,6 @@ export function createMemoryRecords(): RecordBackend {
 		records: [string, StoredRecord][]
 		order: StoredRecord[]
 		logs: [string, Map<LogName, Map<string, { pos: number; body: Row }>>][]
-		positions: [string, number][]
 		heads: [string, WorkHead][]
 		markers: [string, { workId: string; type: string }][]
 		dirty: string[]
@@ -56,8 +53,6 @@ export function createMemoryRecords(): RecordBackend {
 		order.push(...backup.order)
 		logs.clear()
 		for (const [key, value] of backup.logs) logs.set(key, value)
-		positions.clear()
-		for (const [key, value] of backup.positions) positions.set(key, value)
 		heads.clear()
 		for (const [key, value] of backup.heads) heads.set(key, value)
 		markers.clear()
@@ -88,7 +83,6 @@ export function createMemoryRecords(): RecordBackend {
 				records: structuredClone([...records]),
 				order: structuredClone(order),
 				logs: structuredClone([...logs]),
-				positions: [...positions],
 				heads: structuredClone([...heads]),
 				markers: structuredClone([...markers]),
 				dirty: [...dirty],
@@ -122,6 +116,7 @@ export function createMemoryRecords(): RecordBackend {
 				.filter((row) => markers.has(row.recordHash))
 				.slice(0, limit),
 		clearTranslation: (recordHash) => markers.delete(recordHash),
+		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
 				[...events.values()].findLast((event) => event.accountKey === accountKey && event.entityId === entityId),
@@ -206,7 +201,7 @@ export function createMemoryRecords(): RecordBackend {
 		clearDirty: (workId) => dirty.delete(workId),
 		dirtyWorks: () => [...dirty],
 		getRow: (workId, log, key) => workLogs(workId).get(log)?.get(key)?.body,
-		putRow: (workId, log, key, body) => {
+		putRow: (workId, log, key, body, pos) => {
 			const byLog = workLogs(workId)
 			let byKey = byLog.get(log)
 			if (!byKey) {
@@ -215,11 +210,7 @@ export function createMemoryRecords(): RecordBackend {
 			}
 			const existing = byKey.get(key)
 			if (existing) existing.body = body
-			else {
-				const position = (positions.get(logKey(workId, log)) ?? 0) + 1
-				positions.set(logKey(workId, log), position)
-				byKey.set(key, { pos: position, body })
-			}
+			else byKey.set(key, { pos, body })
 		},
 		readLog: (workId, log) =>
 			[...(workLogs(workId).get(log)?.values() ?? [])]
@@ -238,6 +229,7 @@ export function createMemoryRecords(): RecordBackend {
 				return (
 					(opts.workId === undefined || row.workId === opts.workId) &&
 					(opts.sessionId === undefined || row.sessionId === opts.sessionId) &&
+					(opts.type === undefined || row.type === opts.type) &&
 					(opts.modifiedSince === undefined || row.importedAt >= opts.modifiedSince)
 				)
 			}),
@@ -261,6 +253,9 @@ export function createMemoryRecords(): RecordBackend {
 		diagnostic: (code) => diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1),
 		getJournalCursor: (path) => cursors.get(path),
 		putJournalCursor: (cursor) => cursors.set(cursor.path, { ...cursor }),
+		deleteJournalCursor: (path) => {
+			cursors.delete(path)
+		},
 		listJournalCursors: () => [...cursors.values()],
 		close: () => {},
 	}

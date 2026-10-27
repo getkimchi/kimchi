@@ -1,33 +1,36 @@
+import { createHash } from "node:crypto"
+import { setImmediate } from "node:timers/promises"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
+import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl } from "../work-attribution/scope.js"
-import { importWorkRecordsAsync, type WorkRecord, workJournalFingerprint } from "../work-attribution/summary.js"
+import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
-import { reportJournalProblems } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
 	effectiveClaim,
+	type Fact,
 	observeEvents,
 	pendingBatch,
 	readOutboxStatus,
 } from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, readStoredRecordsAsync } from "./ledger/records.js"
+import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
 	readReportingState,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
-	reportingStateVersion,
 	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
@@ -132,12 +135,10 @@ export function deliverEvents(
 		const backend = backendFor(agentDir)
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
-			if (
-				!readOutboxStatus(agentDir).some(
-					(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
-				)
+			const due = readOutboxStatus(agentDir).filter(
+				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
 			)
-				return
+			if (!due.length) return
 			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
 			if (!key || !safeEndpoint(apiUrl)) return
@@ -178,33 +179,53 @@ export function deliverEvents(
 				if (!current.enabled) throw new Error("PR reporting is disabled")
 				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
 			}
-			const account = {
-				apiUrl,
-				...(await verifyApiKey(key, {
+			const resume = backend.getNote("agent", "legacy-snapshot-resume")
+			/** Each waiting account backs off on its own schedule. */
+			const defer = (accounts: typeof due, error: string) =>
+				backend.tx(() => {
+					assertOwnership()
+					for (const { accountKey: id, firstBatchId, retry } of accounts) {
+						const attempts = retry?.attempts ?? 0
+						const retryAt = Date.now() + retryDelay(status, attempts, retryAfterMs)
+						const body = { batchId: firstBatchId, attempts: attempts + 1, retryAt, resume, error }
+						backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
+					}
+				})
+			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
+			try {
+				verified = await verifyApiKey(key, {
 					endpoint: apiUrl,
 					organizationId,
 					fetch: fetchBounded,
 					signal: combined,
 					retry: { maxRetries: 0 },
-				})),
-			}
+				})
+			} catch {}
+			// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
 			assertCurrent()
-			if (!isWorkAccount(account)) throw new Error("PR reporting account verification failed")
-			const accountId = accountKey(account)
-			let batch: OutboxBatch | undefined
-			if (
-				!(await withReportingConsent(
-					agentDir,
-					(fence) => {
-						batch = pendingBatch(agentDir, accountId, fence)
-					},
-					assertCurrent,
-				)) ||
-				!batch
-			)
+			const account = verified && { apiUrl, ...verified }
+			if (!account || !isWorkAccount(account)) {
+				// A rejected or unreachable verification waits like a failed upload instead of repeating every pass.
+				defer(due, errorMessage)
+				await recordReportingError(agentDir, errorMessage)
 				return
+			}
+			const accountId = accountKey(account)
+			// Events captured under another account wait for its credential without verifying on every pass.
+			const others = due.filter((status) => status.accountKey !== accountId)
+			if (others.length) defer(others, "PR reporting is waiting for the original account")
+			const own = due.filter((status) => status.accountKey === accountId)
+			if (!own.length) return
+			let batch: OutboxBatch | undefined
+			const ready = await withReportingConsent(
+				agentDir,
+				(fence) => {
+					batch = pendingBatch(agentDir, accountId, fence)
+				},
+				assertCurrent,
+			)
+			if (!ready || !batch) return
 			const sent = batch
-			const resume = backend.getNote("agent", "legacy-snapshot-resume")
 			const schedule = deliveryRetry(backend, accountId, sent.id)
 			if (schedule && schedule.retryAt > Date.now()) return
 			status = undefined
@@ -296,6 +317,8 @@ export function deliverEvents(
 	})
 }
 
+const CAPTURE_FAILED = "PR reporting could not capture a complete inventory; previous reports were retained"
+
 /** Runs after local pricing, under the existing reconciliation lease, in sessions that may upload. */
 export async function reconcileReporting(
 	agentDir: string,
@@ -310,11 +333,7 @@ export async function reconcileReporting(
 	try {
 		await captureEvents(agentDir, signal, assertLease)
 	} catch {
-		if (!signal.aborted)
-			await recordReportingError(
-				agentDir,
-				"PR reporting could not capture a complete inventory; previous reports were retained",
-			)
+		if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
 	}
 	// Batches already queued go out even when this pass could not capture new evidence.
 	if (signal.aborted) return
@@ -325,12 +344,17 @@ export async function reconcileReporting(
 	}
 }
 
-/** Refresh mutable PR metadata and repository identities even without new request records. */
-const CAPTURE_REFRESH_MS = HOUR_MS
-/** What the last capture that settled every repository identity read and left behind, and when it started. */
-let lastCapture: { inputs: string; at: number } | undefined
+/** At most this many requests or auxiliary records commit their events in one transaction. */
+const CHUNK_UNITS = 100
+/** Time a pass keeps for committing one more chunk and delivering what it captured. */
+const CHUNK_RESERVE_MS = 500
+/** The group translation in progress: units committed while its marked records stay unchanged. */
+const PROGRESS_NOTE = "translation-progress"
 
-/** Translate one imported authority prefix into events. */
+/**
+ * Translates the works whose records changed since their last translation into events, one connected group at a
+ * time. A pass that runs out of time resumes where it stopped.
+ */
 async function captureEvents(agentDir: string, signal: AbortSignal, assertLease: () => void): Promise<void> {
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
@@ -340,39 +364,187 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
 	}
 	check()
-	// Retain known coverage failures without rehashing unchanged legacy bodies on idle passes.
 	let historyComplete = true
-	reportJournalProblems(
-		agentDir,
-		() => {
-			historyComplete = false
-		},
-		check,
-	)
-	// Fingerprint before reading: an append during the read only makes the next pass capture again.
-	const journals = await workJournalFingerprint(agentDir, check)
-	check()
-	const inputs = async () => JSON.stringify([agentDir, journals, await reportingStateVersion(agentDir)])
-	const currentInputs = await inputs()
-	check()
-	if (lastCapture?.inputs === currentInputs && Date.now() - lastCapture.at < CAPTURE_REFRESH_MS) {
-		if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
-		return
-	}
-	// Changed legacy input may repair a torn append. Re-evaluate coverage after the bounded import.
-	historyComplete = true
-	const startedAt = Date.now()
 	await importWorkRecordsAsync(agentDir, check, () => {
 		historyComplete = false
 	})
-	const stored = await readStoredRecordsAsync(agentDir, check)
+	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
+	const backend = backendFor(agentDir)
+	const marked = new Map<string, Map<string, string>>()
+	for (const { recordHash, workId, type } of backend.markedRecords()) {
+		const work = marked.get(workId) ?? new Map<string, string>()
+		work.set(recordHash, type)
+		marked.set(workId, work)
+	}
+	if (!marked.size) {
+		// Nothing changed since the last translation; only a failure an earlier pass recorded is out of date.
+		if ((await readReportingState(agentDir)).error === CAPTURE_FAILED) await recordReportingError(agentDir, undefined)
+		return
+	}
+	const producer = await reportingProducer(agentDir, check)
+	let waiting = false
+	for (const works of changedWorkGroups(backend, new Set(marked.keys()))) {
+		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return
+		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
+		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
+		if (translated === undefined) return
+		waiting ||= translated
+	}
+	await recordReportingError(
+		agentDir,
+		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
+	)
+}
+
+/**
+ * Works that share a PR or a work link change each other's events: a PR's state and issue keys and a link's target
+ * come from all of them. Each group holding a changed work translates together.
+ */
+function changedWorkGroups(backend: RecordBackend, changed: ReadonlySet<string>): string[][] {
+	const parent = new Map<string, string>()
+	const root = (node: string) => {
+		let top = node
+		for (let next = parent.get(top); next !== undefined; next = parent.get(top)) top = next
+		return top
+	}
+	const join = (left: string, right: string) => {
+		const a = root(left)
+		const b = root(right)
+		if (a !== b) parent.set(a, b)
+	}
+	const works = new Set(changed)
+	for (const head of backend.allHeads()) {
+		works.add(head.workId)
+		for (const link of head.pullRequests) {
+			join(head.workId, `pr:${pullRequestKey(link)}`)
+			if (typeof link.url === "string") join(head.workId, `url:${link.url}`)
+		}
+	}
+	for (const row of backend.readRecords({ type: "work_link" })) {
+		const link: unknown = JSON.parse(row.body)
+		if (!object(link)) continue
+		for (const workId of [link.sourceWorkId, link.targetWorkId])
+			if (typeof workId === "string") {
+				works.add(workId)
+				join(row.workId, workId)
+			}
+	}
+	const groups = new Map<string, string[]>()
+	for (const workId of [...works].sort()) {
+		const group = groups.get(root(workId)) ?? []
+		group.push(workId)
+		groups.set(root(workId), group)
+	}
+	return [...groups.values()].filter((group) => group.some((workId) => changed.has(workId)))
+}
+
+/**
+ * Rebuilds one group from all of its records and observes the units its changed records touch, in bounded
+ * transactions. Returns whether any touched request still waits for evidence, or undefined when time ran out.
+ */
+async function translateGroup(
+	agentDir: string,
+	works: string[],
+	changed: ReadonlyMap<string, string>,
+	producer: string,
+	deadline: number,
+	bounded: AbortSignal,
+	check: () => void,
+): Promise<boolean | undefined> {
+	const backend = backendFor(agentDir)
+	const stored = works.flatMap((workId) => backend.readRecords({ workId }, check))
 	const records = stored.map((row) => {
 		check()
 		return JSON.parse(row.body) as WorkRecord
 	})
-	check()
-	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const { report } = readWorkCostReport(agentDir, records)
+	const { repositories, settled } = await repositoryIdentities(agentDir, records, report, deadline, bounded, check)
+	// A commit or work link can move any request of the group; other records touch only their own request.
+	const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
+	const touched = structural
+		? undefined
+		: {
+				requests: new Set(
+					records.flatMap((row, index) =>
+						changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
+					),
+				),
+				records: new Set(changed.keys()),
+			}
+	const built = buildEvents(
+		stored,
+		report,
+		repositories,
+		producer,
+		check,
+		(account, entity) => effectiveClaim(backend, account, entity),
+		touched,
+	)
+	check()
+	const facts = new Map(
+		built.accounts.map((group) => [
+			accountKey(group.account),
+			new Map(group.facts.map((fact) => [fact.entityId, fact])),
+		]),
+	)
+	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
+	const progress = {
+		group: hash(works),
+		markers: changed.size,
+		plan: hash(built.units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+	}
+	const saved: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+	let done =
+		object(saved) &&
+		saved.group === progress.group &&
+		saved.markers === progress.markers &&
+		saved.plan === progress.plan &&
+		Number.isSafeInteger(saved.units)
+			? Number(saved.units)
+			: 0
+	const observed = new Set<string>()
+	while (done < built.units.length) {
+		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return undefined
+		const chunk = built.units.slice(done, done + CHUNK_UNITS)
+		const byAccount = new Map<string, Fact[]>()
+		for (const unit of chunk)
+			for (const entity of unit.entities) {
+				const fact = facts.get(unit.account)?.get(entity)
+				const id = `${unit.account}\0${entity}`
+				if (!fact || observed.has(id)) continue
+				observed.add(id)
+				const list = byAccount.get(unit.account) ?? []
+				list.push(fact)
+				byAccount.set(unit.account, list)
+			}
+		done += chunk.length
+		backend.tx(() => {
+			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], check)
+			backend.putNote("agent", PROGRESS_NOTE, JSON.stringify({ ...progress, units: done }))
+		})
+		await setImmediate()
+	}
+	backend.tx(() => {
+		check()
+		// A repository lookup that failed or ran out of time retries the group with a later pass.
+		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+		backend.deleteNote("agent", PROGRESS_NOTE)
+	})
+	return built.unresolved.length > 0
+}
+
+/**
+ * Provider identities of the repositories the report's requests ran in, from the cache or a bounded lookup; settled
+ * once every one is known.
+ */
+async function repositoryIdentities(
+	agentDir: string,
+	records: WorkRecord[],
+	report: PullRequestCostReport,
+	deadline: number,
+	bounded: AbortSignal,
+	check: () => void,
+): Promise<{ repositories: Map<string, RepositoryIdentity>; settled: boolean }> {
 	const repositories = new Map<string, RepositoryIdentity>()
 	const needed = new Set<string>()
 	const requestRepositories = new Map<string, Set<string>>()
@@ -422,20 +594,5 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 			check()
 		}
 	}
-
-	const producer = await reportingProducer(agentDir, check)
-	const built = buildEvents(stored, report, repositories, producer, check, (account, entity) =>
-		effectiveClaim(backendFor(agentDir), account, entity),
-	)
-	check()
-	for (const group of built.accounts)
-		observeEvents(agentDir, accountKey(group.account), group.facts, group.recordHashes, check)
-	await recordReportingError(
-		agentDir,
-		built.unresolved.length ? "Some PR cost events are waiting for complete original evidence" : undefined,
-	)
-	check()
-	// A repository lookup that failed or ran out of time is retried by the next pass.
-	if ([...needed].every((repository) => repositories.has(repository)))
-		lastCapture = { inputs: await inputs(), at: startedAt }
+	return { repositories, settled: [...needed].every((repository) => repositories.has(repository)) }
 }

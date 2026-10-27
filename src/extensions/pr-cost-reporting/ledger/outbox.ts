@@ -23,7 +23,8 @@ const BATCH_BYTES = 1 << 20
 export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseHash">
 
 export interface DeliveryRetry {
-	batchId: string
+	/** The frozen batch this schedule delays; null while the account's events wait before any batch exists. */
+	batchId: string | null
 	attempts: number
 	retryAt: number
 	resume?: string
@@ -42,7 +43,7 @@ export function deliveryRetry(
 	const retry: DeliveryRetry = JSON.parse(saved)
 	if (
 		!object(retry) ||
-		!isWorkId(retry.batchId) ||
+		(retry.batchId !== null && !isWorkId(retry.batchId)) ||
 		!Number.isSafeInteger(retry.attempts) ||
 		Number(retry.attempts) < 0 ||
 		!Number.isSafeInteger(retry.retryAt) ||
@@ -185,6 +186,8 @@ export function observeEvents(
 			if (previous) {
 				old = unpack(previous)
 				if (eventKind(old) !== eventKind(event)) throw new Error("Outbox entity kind is immutable")
+				// The stored revision already passed every check below.
+				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 			}
 			const raw: Event = JSON.parse(encodeEvent(event))
 			validateClaimUpdate(
@@ -194,7 +197,6 @@ export function observeEvents(
 					: old,
 			)
 			if (previous && old) {
-				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 				event.revision = (BigInt(old.revision) + 1n).toString()
 				event.baseRevision = old.revision
 				event.baseHash = previous.hash

@@ -1,20 +1,33 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import * as fs from "node:fs"
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { readWorkRecords } from "../../work-attribution/summary.js"
 import {
 	boundaryHashOf,
 	completeLines,
-	hydrateLegacy,
-	hydrateLegacyOnce,
+	importJournalSlice,
 	importJournals,
 	journalDecision,
+	reportJournalProblems,
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
 import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
+
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 const DRIVER = join(ROOT, "tests/e2e/tui/support/ledger-driver.ts")
@@ -290,6 +303,11 @@ describe("import loop over the memory backend", () => {
 		expect(result.anomalies).toEqual([{ path: file, code: "journal-removed" }])
 		expect(result.imported).toBe(0)
 		expect(readRecords(dir)).toHaveLength(2)
+		// Reported once: the removal leaves no coverage problem that would hold every later pass.
+		expect((await importJournals(dir)).anomalies).toEqual([])
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toEqual([])
 		// Still replaying identically after the file is gone.
 		expect(
 			readRecords(dir)
@@ -401,6 +419,37 @@ describe("import loop over the memory backend", () => {
 		expect(readRecords(dir).map((record) => record.requestId)).toEqual(["req-1", "req-2"])
 	})
 
+	it("reads a settled journal's prefix once across windows, then skips it while unchanged", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")) + line(request("req-2")))
+		const settled = new Date(Date.now() - 60_000)
+		utimesSync(file, settled, settled)
+		const reads = vi.spyOn(fs, "readSync")
+		for (let window = 0; window < 3; window++) expect((await importJournals(dir, { maxBytes: 1 })).imported).toBe(1)
+		// Each window continues from the last one; none rereads the start of the file.
+		expect(reads.mock.calls.filter((call) => call.at(4) === 0)).toHaveLength(1)
+		reads.mockClear()
+		expect((await importJournals(dir)).files).toEqual([])
+		expect(reads).not.toHaveBeenCalled()
+		reads.mockRestore()
+	})
+
+	it("starts each timed slice at the journal where the last one stopped", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const files = ["a", "b", "c"].map((name) => join(journal(dir), `${name}.jsonl`))
+		for (const [index, file] of files.entries()) writeFileSync(file, line(request(`req-${index}`)))
+		const opens = vi.spyOn(fs, "openSync")
+		for (let slice = 0; slice < 3; slice++) expect((await importJournals(dir, { until: 0 })).imported).toBe(1)
+		// Rewalking from the start would open the first journal in every slice.
+		expect(Math.max(...files.map((file) => opens.mock.calls.filter(([path]) => path === file).length))).toBe(2)
+		opens.mockRestore()
+	})
+
 	it("an LF-terminated malformed final line is reported, not suppressed as an unfinished tail", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
@@ -434,8 +483,7 @@ describe("A2 hydration before history-dependent reads", () => {
 		const file = join(folder, "parent.jsonl")
 		const original = line(work()) + line(request("req-1"))
 		writeFileSync(file, original)
-		hydrateLegacyOnce(dir)
-		const records = readRecords(dir)
+		const records = readWorkRecords(dir, undefined, () => {})
 		expect(records.map((record) => record.type).sort()).toEqual(["request", "work"])
 		// Legacy files are read-only inputs: hydration never deletes, converts, or rewrites them.
 		expect(readFileSync(file, "utf8")).toBe(original)
@@ -447,9 +495,9 @@ describe("A2 hydration before history-dependent reads", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
 		writeFileSync(join(folder, "parent.jsonl"), line(work()) + line(request("req-1")))
-		hydrateLegacy(dir)
+		expect(importJournalSlice(dir)).toBe(false)
 		expect(readRecords(dir)).toHaveLength(2)
-		hydrateLegacy(dir)
+		expect(importJournalSlice(dir)).toBe(false)
 		expect(readRecords(dir)).toHaveLength(2)
 	})
 })

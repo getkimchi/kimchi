@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
-import { hydrateLegacy } from "../pr-cost-reporting/ledger/import.js"
+import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
 import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import * as summaries from "../work-attribution/summary.js"
 import { lookupBranchPullRequest } from "./branch-status.js"
@@ -91,7 +91,7 @@ function seed(overrides: Record<string, unknown> = {}, transitions = false): voi
 		})}\n`,
 	)
 	// An older process may append after the first hydration in this test.
-	hydrateLegacy(agentDir)
+	for (;;) if (!importJournalSlice(agentDir)) break
 }
 function pull(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
@@ -1527,7 +1527,7 @@ describe("durable work pull request discovery", () => {
 		seed()
 		const reads = vi.spyOn(ledger, "readRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, { modifiedSince: undefined }])
+		expect(reads.mock.calls[0]).toEqual([agentDir, { type: "commit", modifiedSince: undefined }])
 		later()
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
@@ -1536,7 +1536,7 @@ describe("durable work pull request discovery", () => {
 		const checkpoint = reads.mock.calls[1][1]?.modifiedSince
 		expect(checkpoint).toEqual(expect.any(Number))
 		await lookup()
-		expect(reads.mock.calls[2]).toEqual([agentDir, { modifiedSince: checkpoint }])
+		expect(reads.mock.calls[2]).toEqual([agentDir, { type: "commit", modifiedSince: checkpoint }])
 		expect(commitCalls()).toHaveLength(2)
 	})
 })

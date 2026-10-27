@@ -25,7 +25,7 @@ import {
 	type WorkContext,
 } from "../work-attribution.js"
 import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { readWorkRecords, SHA256_HEX, type WorkRecord } from "./summary.js"
+import { readWorkRecordsOfType, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -500,8 +500,8 @@ export async function knownTransitionRepositories(checkBudget: () => void = () =
 	const repositories = new Set<string>()
 	// Native captures live in the store; include their repositories alongside legacy journal files.
 	try {
-		for (const row of readWorkRecords(getAgentDir()))
-			if (row.type === "file_transition" && typeof row.repository === "string") repositories.add(row.repository)
+		for (const row of readWorkRecordsOfType(getAgentDir(), "file_transition"))
+			if (typeof row.repository === "string") repositories.add(row.repository)
 	} catch {
 		// No store; the JSONL scan below still works.
 	}
@@ -519,7 +519,7 @@ async function readJournals(repository: string, checkBudget: () => void): Promis
 	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
 	let ledgerTransitions: Transition[] = []
 	try {
-		ledgerTransitions = readWorkRecords(getAgentDir()).filter(
+		ledgerTransitions = readWorkRecordsOfType(getAgentDir(), "file_transition").filter(
 			(row): row is WorkRecord & Transition => isTransition(row) && row.repository === repository,
 		)
 	} catch {
@@ -1085,9 +1085,7 @@ export async function reconcileRepositoryTransitions(
 	if (!journals.length) return
 	const histories: JournalHistory[] = []
 	// Commit contributions live in the ledger now; the old session journal files were imported (A2).
-	const recordedCommits: Record<string, unknown>[] = readWorkRecords(getAgentDir()).filter(
-		(record) => record.type === "commit",
-	)
+	const recordedCommits: Record<string, unknown>[] = readWorkRecordsOfType(getAgentDir(), "commit")
 	for (const journal of journals) {
 		checkBudget()
 		histories.push(await readJournalHistory(journal, signal))
