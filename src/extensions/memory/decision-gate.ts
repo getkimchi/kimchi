@@ -64,6 +64,8 @@ export interface DecisionGateOptions {
 	maxRetries?: number
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
+	/** Billing attribution tag; defaults to MEMORY_DECISION_TAG. */
+	tag?: string
 }
 
 /** A gate call failed in a way the caller must degrade on (never session-fatal). */
@@ -126,7 +128,7 @@ export async function decide(
 				questions,
 				// Same payload field the /tags extension sets on session LLM
 				// requests, so billing attributes this traffic.
-				tags: [MEMORY_DECISION_TAG],
+				tags: [gate.tag ?? MEMORY_DECISION_TAG],
 			}),
 		},
 		{

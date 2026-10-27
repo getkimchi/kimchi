@@ -147,6 +147,7 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import sideLoopExtension from "./extensions/side-loop/index.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -807,6 +808,8 @@ async function cliMain(): Promise<void> {
 				// re-enable only deliberately via registerSkillManageTool.
 				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 				artifactRecorderExtension,
+				// EXPERIMENTAL: in-time side loop (PR/artifact cards). See docs/side-loop.md.
+				...(experimentalFeatures ? [sideLoopExtension] : []),
 				statsExtension,
 				statusExtension,
 				budgetCommandExtension,

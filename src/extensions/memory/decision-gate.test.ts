@@ -60,6 +60,16 @@ describe("decide", () => {
 		expect(Object.keys(body.questions)).toEqual(["q1", "q2"])
 	})
 
+	it("uses the gate's billing tag when one is given", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		await decide({ ...GATE, fetchImpl, tag: "side-loop:decision" }, "s", {
+			q1: { type: "choice", instructions: "i", criteria: { yes: "y", no: "n" } },
+		})
+		const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(String(call?.[1]?.body)) as { tags: string[] }
+		expect(body.tags).toEqual(["side-loop:decision"])
+	})
+
 	it("sends the SSO organization header only when the gate carries one", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
 		const questions = { q1: { type: "choice" as const, instructions: "i", criteria: { yes: "y", no: "n" } } }
