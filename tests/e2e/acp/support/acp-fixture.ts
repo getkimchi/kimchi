@@ -101,6 +101,16 @@ export interface AcpFixtureOptions {
 	/** Org policy served by the fake platform endpoints (api-keys:verify +
 	 *  settings:resolve). Omit to leave them 404 (fail-open, no policy). */
 	policy?: FakeOrgPolicy
+	/** Reuse an existing home instead of a fresh temp dir (restart tests:
+	 *  the second CLI process must see the first one's session store). The
+	 *  fixture never deletes an overridden dir — the test owns its lifecycle. */
+	homeDirOverride?: string
+	/** Reuse an existing work dir (paired with homeDirOverride — the session
+	 *  log's cwd header must match for session/load). */
+	workDirOverride?: string
+	/** Keep self-created homeDir/workDir on stop() (restart tests: the first
+	 *  fixture hands its dirs to a second fixture and the test cleans up). */
+	keepDirsOnStop?: boolean
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -260,8 +270,13 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	const configuredModels = models
 		? resolveModels(models)
 		: [{ ...DEFAULT_MODEL, input: modelInput ?? DEFAULT_MODEL.input, contextWindow: 64_000, maxTokens: 1024 }]
-	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
-	const workDir = mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
+	const homeDir = options.homeDirOverride ?? mkdtempSync(join(tmpdir(), "kimchi-acp-home-"))
+	const workDir = options.workDirOverride ?? mkdtempSync(join(tmpdir(), "kimchi-acp-work-"))
+	// Dirs the fixture did not create (or was told to keep) belong to the
+	// caller: restart tests hand them across fixtures and clean up themselves.
+	// Tracked per dir so a single override can't leak its fresh sibling.
+	const keepHomeDir = options.homeDirOverride !== undefined || options.keepDirsOnStop
+	const keepWorkDir = options.workDirOverride !== undefined || options.keepDirsOnStop
 	const fake = await startFakeOpenAiServer({
 		responses,
 		models: configuredModels,
@@ -502,8 +517,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				}
 				await fake.stop()
 				await mcp?.stop().catch(() => {})
-				rmSync(homeDir, { recursive: true, force: true })
-				rmSync(workDir, { recursive: true, force: true })
+				if (!keepHomeDir) {
+					rmSync(homeDir, { recursive: true, force: true })
+				}
+				if (!keepWorkDir) {
+					rmSync(workDir, { recursive: true, force: true })
+				}
 			},
 		}
 	} catch (error) {
@@ -511,8 +530,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		if (proc && proc.exitCode === null) proc.kill("SIGKILL")
 		await fake.stop().catch(() => {})
 		await mcp?.stop().catch(() => {})
-		rmSync(homeDir, { recursive: true, force: true })
-		rmSync(workDir, { recursive: true, force: true })
+		if (!keepHomeDir) {
+			rmSync(homeDir, { recursive: true, force: true })
+		}
+		if (!keepWorkDir) {
+			rmSync(workDir, { recursive: true, force: true })
+		}
 		throw error
 	}
 }
