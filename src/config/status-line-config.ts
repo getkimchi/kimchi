@@ -17,18 +17,23 @@ export type StatusLineElementId =
 	| "budget"
 	| "lsp"
 	| "dap"
+	| "work-pr"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[]; hidden: StatusLineElementId[] }
 
 const STATUS_LINE_KEY = "statusLine"
 
+// For hardcoded (canPin: false) elements, pinned membership is ordering-only:
+// `context` always renders regardless, but staying here keeps it in the
+// pinned/right display group — preserving the default layout.
 export const DEFAULT_STATUS_LINE_PINNED: StatusLineElementId[] = ["thinking", "agents", "context", "usage"]
 
 export interface StatusLineElement {
 	id: StatusLineElementId
 	label: string
 	description: string
-	/** Always visible, cannot be toggled. */
+	/** Hardcoded core element (permissions/model/context): always renders,
+	 *  not togglable in /customize-status-line. */
 	canPin?: boolean
 	/** Renders whenever its data exists (no pin needed); the /customize-status-line
 	 *  toggle opts out via `hidden` instead of opting in via `pinned`. */
@@ -68,6 +73,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "context",
 		label: "Context",
 		description: "Context usage bar + percentage",
+		canPin: false,
 	},
 	{
 		id: "usage",
@@ -109,6 +115,12 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "dap",
 		label: "DAP",
 		description: "Debug-adapter state (detected / not installed)",
+		defaultVisible: true,
+	},
+	{
+		id: "work-pr",
+		label: "Branch / PR",
+		description: "Checked-out branch and its linked PR/MR",
 		defaultVisible: true,
 	},
 ]

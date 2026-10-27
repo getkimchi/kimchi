@@ -72,7 +72,9 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 		terminal,
 		{
 			artifactName: "mcp-setup-branding",
-			mcp: {},
+			// Eager so the startup banner (MCP: 1 servers connected) appears —
+			// adapter 5.3 defaults servers to lazy, which never prints it.
+			mcp: { lifecycle: "eager" },
 			responses: [],
 		},
 		async (_fixture, trace) => {
@@ -85,6 +87,9 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 
 			expect(fullText(terminal)).not.toContain("Pi-owned")
 			expect(fullText(terminal)).toContain("~/.config/mcp/mcp.json")
+			// kimchi reads the Studio-shared harness/mcp.json as its global config;
+			// the adapter's own mcp-adapter.json must not appear in user guidance.
+			expect(fullText(terminal)).not.toContain("mcp-adapter.json")
 			trace.step("MCP setup rendered Kimchi manual configuration guidance")
 		},
 	)
@@ -96,7 +101,9 @@ test("advertises a truthful Kimchi-branded MCP gateway to the model", async ({ t
 		terminal,
 		{
 			artifactName: "mcp-model-contract-branding",
-			mcp: {},
+			// Eager so the startup banner (MCP: 1 servers connected) appears —
+			// adapter 5.3 defaults servers to lazy, which never prints it.
+			mcp: { lifecycle: "eager" },
 			responses: [
 				{
 					toolCalls: [

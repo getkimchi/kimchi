@@ -184,6 +184,33 @@ export function ensureQuietStartupDefault(settings: Record<string, unknown>): bo
 	return true
 }
 
+const DISABLE_BUILTIN_MCP_OVERRIDE = "-builtin:mcp"
+
+/**
+ * Disable pi ≥1.3's built-in `mcp` extension. It registers its own `/mcp`
+ * command at load time and connects MCP servers itself, while Kimchi's MCP
+ * adapter (src/extensions/mcp/) registers `/mcp` and manages servers on
+ * session_start. Upstream's replaceable-extension dedup only sees load-time
+ * registrations, so both load and the slash palette shows two `/mcp`
+ * commands. Seed `-builtin:mcp` so the built-in stays out of the load set;
+ * any existing `builtin:mcp` entry (bare or `+`,`!`,`-` prefixed) counts as an
+ * explicit user choice and is left alone — per-project `+builtin:mcp` still
+ * re-enables it.
+ */
+export function ensureBuiltinMcpDisabled(settings: Record<string, unknown>): boolean {
+	if (settings.extensions === undefined) {
+		settings.extensions = [DISABLE_BUILTIN_MCP_OVERRIDE]
+		return true
+	}
+	if (!Array.isArray(settings.extensions)) return false
+	const touched = settings.extensions.some(
+		(entry) => typeof entry === "string" && entry.replace(/^[+!-]/, "") === "builtin:mcp",
+	)
+	if (touched) return false
+	settings.extensions.push(DISABLE_BUILTIN_MCP_OVERRIDE)
+	return true
+}
+
 export const THIRD_PARTY_MAX_RETRIES = 4
 
 export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
@@ -196,7 +223,7 @@ export const SEARCH_STRATEGY_DEFAULTS: SearchStrategyConfig = {
 export type MigrationState = "done" | "skip-forever"
 
 export interface TuiConfig {
-	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; floored by the pi-tui clamp. */
+	/** Wheel-scroll step (lines) for fullscreen (alt-screen) mode. Min 1; synced into pi settings.json \`fullscreenWheelScrollLines\` at startup. */
 	wheelScrollLines?: number
 }
 
@@ -708,17 +735,19 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 }
 
 /**
- * Map TUI config onto the `KIMCHI_WHEEL_SCROLL_LINES` env var consumed by the
- * patched pi-tui `TuiAltScreen` constructor. Env var already set wins over
- * config (env > config > default). Must run before the interactive TUI is
- * constructed — the patched constructor reads the env var once, so later
- * changes do not apply without a restart.
+ * Map Kimchi's `tui.wheelScrollLines` onto pi's native settings.json key
+ * `fullscreenWheelScrollLines` (upstream pi-tui 1.2 WheelScrollAccelerator;
+ * "auto" default). Runs as part of the startup settings.json seeding in
+ * cli.ts. Kimchi config wins over pi settings when set — the config key is
+ * the canonical Kimchi surface (`kimchi config set tui.wheelScrollLines`).
+ * Returns true when the settings record changed.
  */
-export function applyTuiEnvOverrides(config: KimchiConfig): void {
+export function syncWheelScrollToPiSettings(settings: Record<string, unknown>, config: KimchiConfig): boolean {
 	const lines = config.tui?.wheelScrollLines
-	if (lines !== undefined && process.env.KIMCHI_WHEEL_SCROLL_LINES === undefined) {
-		process.env.KIMCHI_WHEEL_SCROLL_LINES = String(lines)
-	}
+	if (lines === undefined) return false
+	if (settings.fullscreenWheelScrollLines === lines) return false
+	settings.fullscreenWheelScrollLines = lines
+	return true
 }
 
 export interface ResolvedEndpoints extends RegionEndpoints {
@@ -1119,6 +1148,20 @@ export function writeApiKey(key: string, configPath?: string, options: WriteApiK
 		// Clear legacy snake_case key so we don't keep stale data
 		// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
 		delete raw.api_key
+	})
+	invalidateResolvedEndpoints()
+}
+
+/**
+ * Persist only the selected region (SSO login path): browser SSO stores its
+ * credential in Pi's auth.json, not in config.json, so it must not go through
+ * writeApiKey (which would also set apiKey — the marker every
+ * getApiKeySource()/startup-sync consumer treats as "API-key login").
+ */
+export function writeRegion(region: RegionId, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.region = region
 	})
 	invalidateResolvedEndpoints()
 }

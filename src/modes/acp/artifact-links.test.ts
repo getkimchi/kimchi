@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { buildArtifactLinkChunks, TurnArtifactBuffer } from "./artifact-links.js"
@@ -15,12 +14,26 @@ const chunkOf = (u: SessionUpdate) =>
 // merge, attachment point, drop rule, dedupe). End-to-end coverage of the
 // live/replay paths is in server.test.ts.
 describe("buildArtifactLinkChunks", () => {
-	const artifact = { path: "/a/slides.pptx", name: "slides.pptx", uri: "file:///a/slides.pptx" }
+	const artifact = {
+		path: "/a/slides.pptx",
+		name: "slides.pptx",
+		uri: "file:///a/slides.pptx",
+		origin: "write" as const,
+	}
 
 	it("emits one resource_link chunk per artifact, marked type=artifact", () => {
 		const chunks = buildArtifactLinkChunks({
 			messageId: "km.3",
-			artifacts: [artifact, { path: "/a/b.pdf", name: "b.pdf", uri: "file:///a/b.pdf", mimeType: "application/pdf" }],
+			artifacts: [
+				artifact,
+				{
+					path: "/a/b.pdf",
+					name: "b.pdf",
+					uri: "file:///a/b.pdf",
+					mimeType: "application/pdf",
+					origin: "write" as const,
+				},
+			],
 		})
 		expect(chunks).toHaveLength(2)
 		expect(chunks[0]).toMatchObject({
@@ -41,6 +54,109 @@ describe("buildArtifactLinkChunks", () => {
 		expect(chunks[0]._meta).toMatchObject({
 			"kimchi.dev": { type: "artifact", modelId: "kimi-k3", requestedModelId: "auto" },
 		})
+	})
+})
+
+describe("TurnArtifactBuffer > emitNow", () => {
+	let tmpDir: string
+	let plan: string
+	let note: string
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "kimchi-emitnow-"))
+		plan = join(tmpDir, "emit-plan.md")
+		note = join(tmpDir, "emit-note.pdf")
+		writeFileSync(plan, "# plan")
+		writeFileSync(note, "pdf")
+	})
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+	})
+
+	const links = (us: SessionUpdate[]) =>
+		us.filter((u) => u.sessionUpdate === "agent_message_chunk" && u.content?.type === "resource_link")
+	// NOTE: structural assertions below use toMatchObject; the SessionUpdate
+	// union isn't narrowed by filter alone.
+
+	const collect = (buf: TurnArtifactBuffer) =>
+		buf.collectFromToolCall({
+			toolName: "custom_doc_tool",
+			args: {},
+			result: { content: [{ type: "text", text: "ok" }], details: { artifacts: [{ path: plan }, { path: note }] } },
+			cwd: "/tmp",
+		})
+
+	it("stays buffered when no text block registered yet", () => {
+		const buf = new TurnArtifactBuffer()
+		collect(buf)
+		expect(buf.emitNow([plan])).toEqual([])
+		expect(buf.size).toBe(2)
+		buf.noteTextBlock("km.1")
+		const flushed = links(buf.flush())
+		expect(flushed).toHaveLength(2)
+	})
+
+	it("emits listed paths mid-turn and the flush skips them (no double chip)", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		const mid = links(buf.emitNow([plan]))
+		expect(mid).toHaveLength(1)
+		expect(mid[0]).toMatchObject({ messageId: "km.5", content: { name: "emit-plan.md" } })
+		// flush emits only the remaining artifact.
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "emit-note.pdf" } })
+	})
+
+	it("ignores unbuffered paths", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		expect(buf.emitNow([join(tmpDir, "not-here.md")])).toEqual([])
+		expect(buf.size).toBe(2)
+	})
+
+	it("does not re-chip a path re-declared after emitNow", () => {
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.5")
+		collect(buf)
+		expect(links(buf.emitNow([plan]))).toHaveLength(1)
+		// A later tool echoes the same path (cumulative declarations, review round-trip).
+		collect(buf)
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "emit-note.pdf" } })
+	})
+
+	it("keeps labels unique across mid-turn and turn-end batches (same basename)", () => {
+		mkdirSync(join(tmpDir, "docs"), { recursive: true })
+		mkdirSync(join(tmpDir, "archive"), { recursive: true })
+		const first = join(tmpDir, "docs", "plan.md")
+		const second = join(tmpDir, "archive", "plan.md")
+		writeFileSync(first, "one")
+		writeFileSync(second, "two")
+		const buf = new TurnArtifactBuffer()
+		buf.noteTextBlock("km.7")
+		buf.collectFromToolCall({
+			toolName: "custom_doc_tool",
+			args: {},
+			result: { content: [{ type: "text", text: "ok" }], details: { artifacts: [{ path: first }] } },
+			cwd: tmpDir,
+		})
+		buf.collectFromToolCall({
+			toolName: "write",
+			args: { path: second, content: "two" },
+			result: { content: [{ type: "text", text: "ok" }] },
+			cwd: tmpDir,
+		})
+		// Mid-turn batch takes the bare name...
+		const mid = links(buf.emitNow([first]))
+		expect(mid).toHaveLength(1)
+		expect(mid[0]).toMatchObject({ content: { name: "plan.md" } })
+		// ...so the turn-end batch deepens instead of colliding.
+		const end = links(buf.flush())
+		expect(end).toHaveLength(1)
+		expect(end[0]).toMatchObject({ content: { name: "archive/plan.md" } })
 	})
 })
 
@@ -132,7 +248,7 @@ describe("TurnArtifactBuffer", () => {
 		mkdirSync(yDir, { recursive: true })
 		mkdirSync(join(tmpDir, "bb"))
 		writeFileSync(join(tmpDir, "bb", "report.md"), "md")
-		writeFileSync(yDir + "/report.md", "md")
+		writeFileSync(join(yDir, "report.md"), "md")
 		const buffer = new TurnArtifactBuffer()
 		buffer.collectFromToolCall(writeCall(join(tmpDir, "bb", "report.md")))
 		buffer.collectFromToolCall(writeCall(join(yDir, "report.md")))

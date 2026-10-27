@@ -18,6 +18,7 @@ import {
 	StatusLine,
 	StatusLineScript,
 } from "../components/status-line.js"
+import { readStatusLineConfig } from "../config/status-line-config.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
@@ -439,7 +440,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			// built-in status line: permissions and model lead, the compaction
 			// ladder and priority shedding apply at narrow widths.
 			const getControlsLine = (width: number): string | null => {
-				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
+				// Stat-gated cached read — the controls line rebuilds on render.
+				const segments = buildControlsLineSegments(
+					{ ctx, theme, statusLineData },
+					new Set(readStatusLineConfig().hidden),
+				)
 				if (segments.length === 0) return null
 				return renderFittedLine(segments, width, theme)
 			}

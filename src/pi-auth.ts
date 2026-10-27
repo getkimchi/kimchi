@@ -16,7 +16,7 @@ import {
 import { basename, dirname, join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { lock } from "proper-lockfile"
-import { isKimchiProvider } from "./kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 
 /**
  * chmod only when the mode is wrong. An unconditional chmod bumps auth.json's
@@ -57,6 +57,56 @@ function writeFileAtomicSync(path: string, content: string, mode: number): void 
 /** Remove all Kimchi credentials from auth.json — kimchi-dev, kimchi-dev/*, kimchi-experimental. */
 export async function clearPiAuth(authPath: string): Promise<void> {
 	await syncPiAuth(authPath, "", "")
+}
+
+/**
+ * Fan an OAuth credential out to every Kimchi-managed provider in models.json
+ * (kimchi-dev + kimchi-dev/* sub-providers), mirroring how syncPiAuth fans out
+ * API keys: sub-providers resolve auth per provider id, so each needs an
+ * auth.json entry.
+ *
+ * Rotation safety: every fanned-out entry shares one refresh token. This is
+ * only safe while the CAST AI Auth0 app does NOT rotate refresh tokens —
+ * Auth0 rotation makes a refresh token single-use, and sibling entries
+ * refreshing with the same token would kill each other (and trip reuse
+ * detection). Step-1 registration must keep rotation OFF. When Auth0 rotation
+ * is eventually wanted, replace fan-out with a single-entry credential +
+ * parent-lookup resolution.
+ */
+export async function syncOAuthCredentialToKimchiProviders(
+	authPath: string,
+	modelsPath: string,
+	credential: Record<string, unknown>,
+): Promise<void> {
+	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 })
+	const release = await lock(authPath, { realpath: false, retries: 10 })
+	try {
+		const authExists = existsSync(authPath)
+		const credentials = authExists ? (JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>) : {}
+		const nextCredentials = { ...credentials }
+
+		const models = existsSync(modelsPath)
+			? (JSON.parse(readFileSync(modelsPath, "utf-8")) as { providers?: Record<string, unknown> })
+			: { providers: {} }
+		const kimchiProviderIds = new Set([
+			KIMCHI_PROVIDER_ID,
+			...Object.keys(models.providers ?? {}).filter(isKimchiProvider),
+		])
+
+		for (const providerId of kimchiProviderIds) {
+			nextCredentials[providerId] = credential
+		}
+
+		if (authExists && isDeepStrictEqual(credentials, nextCredentials)) {
+			ensureAuthFileMode(authPath)
+			return
+		}
+
+		writeFileAtomicSync(authPath, `${JSON.stringify(nextCredentials, null, 2)}\n`, 0o600)
+		ensureAuthFileMode(authPath)
+	} finally {
+		await release()
+	}
 }
 
 export async function syncPiAuth(authPath: string, modelsPath: string, apiKey: string): Promise<void> {

@@ -64,11 +64,9 @@ describe("hidden tool guidance", () => {
 		createDeferredReveal(api, visibility, names, { anchorToolName: "Agent" })
 		visibility.disable(names)
 
-		const result = await messageEnd({ type: "message_end", message: makeToolResult("steer_subagent") }, {} as never)
+		await messageEnd({ type: "message_end", message: makeToolResult("steer_subagent") }, {} as never)
 		// The vote is released through the owning deferral, not a bare setActiveTools.
 		expect(visibility.enable).toHaveBeenCalledWith(names)
-		// ...and the in-band load marker covers the whole suite (cache-stable surface).
-		expect(result).toMatchObject({ message: { addedToolNames: names } })
 	})
 
 	it("reveals a deferred suite only once", async () => {
@@ -77,11 +75,11 @@ describe("hidden tool guidance", () => {
 		createDeferredReveal(api, visibility, ["once_a", "once_b"], { anchorToolName: "Agent" })
 
 		await messageEnd({ type: "message_end", message: makeToolResult("once_a") }, {} as never)
-		const second = (await messageEnd({ type: "message_end", message: makeToolResult("once_b") }, {} as never)) as {
-			message: Record<string, unknown>
-		}
+		const second = (await messageEnd({ type: "message_end", message: makeToolResult("once_b") }, {} as never)) as
+			| { message: { content?: Array<{ text?: string }> } }
+			| undefined
 		expect(visibility.enable).toHaveBeenCalledTimes(1)
-		expect(second.message).not.toHaveProperty("addedToolNames")
+		expect(second?.message.content?.[0]?.text).toContain("is not available in the current tool list")
 	})
 
 	it("does not reveal a registered tool that is inactive for a non-deferral reason", async () => {
@@ -90,27 +88,21 @@ describe("hidden tool guidance", () => {
 		api.registerTool({ name: "powershell" } as never)
 		api.setActiveTools(api.getActiveTools().filter((n) => n !== "powershell"))
 
-		const result = (await messageEnd({ type: "message_end", message: makeToolResult("powershell") }, {} as never)) as {
-			message: Record<string, unknown>
-		}
+		const result = (await messageEnd({ type: "message_end", message: makeToolResult("powershell") }, {} as never)) as
+			| { message: { content?: Array<{ text?: string }> } }
+			| undefined
 		expect(getActiveToolNames()).not.toContain("powershell")
-		expect(result.message).not.toHaveProperty("addedToolNames")
+		// The error is rewritten to actionable guidance even when nothing is revealed.
+		expect(result?.message.content?.[0]?.text).toContain("is not available in the current tool list")
 	})
 
-	it("does not stamp addedToolNames for genuinely unknown tool names", async () => {
-		const { messageEnd } = createHarness()
+	it("does not reveal (or claim a reveal) for genuinely unknown tool names", async () => {
+		const { messageEnd, getActiveToolNames } = createHarness()
 		const result = (await messageEnd(
 			{ type: "message_end", message: makeToolResult("not_a_real_tool") },
 			{} as never,
-		)) as {
-			message: Record<string, unknown>
-		}
-		expect(result.message).not.toHaveProperty("addedToolNames")
-	})
-
-	it("does not reveal genuinely unknown tool names", async () => {
-		const { messageEnd, getActiveToolNames } = createHarness()
-		await messageEnd({ type: "message_end", message: makeToolResult("not_a_real_tool") }, {} as never)
+		)) as { message: { content?: Array<{ text?: string }> } } | undefined
 		expect(getActiveToolNames()).not.toContain("not_a_real_tool")
+		expect(result?.message.content?.[0]?.text).toContain("is not available in the current tool list")
 	})
 })

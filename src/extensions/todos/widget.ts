@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui"
+import { hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
 import type { TodoCounts, TodoItem, TodoScope, TodoStatus } from "./types.js"
@@ -229,7 +230,7 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 	const groups = collectWidgetScopes(sessionId)
 
 	if (groups.length === 0) {
-		const scope = resolveTodoScope()
+		const scope = resolveTodoScope(sessionId)
 		return [
 			theme.fg("accent", formatScopeHeader(scope)),
 			"",
@@ -340,7 +341,18 @@ export function setTodosStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const sessionId = ctx.sessionManager.getSessionId()
 	const counts = countAllActiveTodos(sessionId)
-	ctx.ui.setStatus(TODO_STATUS_KEY, hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined)
+	const base = hasActiveTodos(counts) ? `${summarizeTodoCounts(counts)} -> F7` : undefined
+	// A pending check-in surfaces in the status line while enforcement is
+	// active; the gate subscription in index.ts repaints on input,
+	// confirmation, closure, and enforcement changes without todo writes.
+	// A released gate (resource disabled, kill switch, no reconciliation
+	// tools) must not show a false pause while work flows.
+	const status = hasEffectivePendingCheckin(sessionId)
+		? base
+			? `⏸ todo check-in pending · ${base}`
+			: "⏸ todo check-in pending"
+		: base
+	ctx.ui.setStatus(TODO_STATUS_KEY, status)
 }
 
 export function ensureTodoWidget(ctx: ExtensionContext): void {

@@ -1,7 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { getModelDescription } from "../models.js"
+import { getModelDescription, getModelThinkingLevels } from "../models.js"
+import { thinkingColumnValue } from "../thinking-levels.js"
 import { isAutoRoutedModel, splitModelDisplayName } from "./auto-model/constants.js"
 import { resolveEffectiveModel } from "./auto-model/state.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
@@ -64,16 +65,33 @@ export function formatCurrentModelLine(model: Model<Api>, sessionId: string): st
 }
 
 /** Column labels for the listing table; body rows omit them via formatModelListingLine. */
-export const MODEL_LISTING_HEADER = "model | context | vision | reasoning | description"
+export const MODEL_LISTING_HEADER = "model | context | thinking | vision | reasoning | description"
 
 /**
- * One pipe-separated listing row: `model | context | vision | reasoning`,
- * plus a trailing description segment when available.
+ * Resolve the curated thinking levels for a model, or undefined when the
+ * registry has no entry (custom providers, the auto virtual model). The
+ * lookup is injectable so tests stay deterministic without a populated
+ * global registry (mirrors resolveModelDescription).
  */
-export function formatModelListingLine(model: Model<Api>, description?: string): string {
+export function resolveModelThinkingLevels(
+	model: Model<Api>,
+	getLevels: (ref: string) => string[] | undefined = getModelThinkingLevels,
+): string[] | undefined {
+	return getLevels(modelRefFromModel(model))
+}
+
+/**
+ * One pipe-separated listing row:
+ * `model | context | thinking | vision | reasoning`, plus a trailing
+ * description segment when available. The thinking cell renders curated
+ * levels (comma+space, canonical order) or falls back to `on`/`off` from the
+ * reasoning flag when the model has no curated levels.
+ */
+export function formatModelListingLine(model: Model<Api>, description?: string, thinkingLevels?: string[]): string {
 	const parts = [
 		modelRefFromModel(model),
 		String(model.contextWindow),
+		thinkingColumnValue(thinkingLevels, model.reasoning),
 		model.input.includes("image") ? "yes" : "no",
 		model.reasoning ? "yes" : "no",
 	]
@@ -86,7 +104,7 @@ export default function modelListExtension(pi: ExtensionAPI) {
 		name: "list_models",
 		label: "List Models",
 		description:
-			"List available models with their characteristics as a table: model (provider/modelId ref), context window, vision, reasoning, and description when available. Use the ref (provider/modelId) values from this list with the set_model tool to switch models, or as the model parameter of the Agent tool when spawning subagents.",
+			"List available models with their characteristics as a table: model (provider/modelId ref), context window, thinking levels, vision, reasoning, and description when available. The thinking column shows the model's curated thinking levels as a comma-separated list in canonical order: off, minimal, low, medium, high, xhigh, max. 'on' means curated thinking without discrete levels (provider default applies), 'not curated' means the model reasons but its thinking levels have not been curated, and 'off' means it does not think. Use the ref (provider/modelId) values from this list with the set_model tool to switch models, or as the model parameter of the Agent tool when spawning subagents.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx: ExtensionContext) {
 			const lines: string[] = []
@@ -100,7 +118,7 @@ export default function modelListExtension(pi: ExtensionAPI) {
 				const sorted = [...models].sort((a, b) => modelRefFromModel(a).localeCompare(modelRefFromModel(b)))
 				lines.push(MODEL_LISTING_HEADER)
 				for (const model of sorted) {
-					lines.push(formatModelListingLine(model, resolveModelDescription(model)))
+					lines.push(formatModelListingLine(model, resolveModelDescription(model), resolveModelThinkingLevels(model)))
 				}
 			}
 

@@ -9,7 +9,7 @@ import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
 import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
-import { createCommandContext, createContext } from "../__mocks__/context.js"
+import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
@@ -28,6 +28,7 @@ const configState = vi.hoisted(() => ({
 	config: { mcpServers: {} } as McpConfig,
 	userConfig: { mcpServers: {} } as McpConfig,
 	configPath: undefined as string | undefined,
+	sharedConfigPath: "/tmp/kimchi-harness/mcp.json",
 	useProgrammaticConfig: false,
 	warnings: [] as string[],
 	legacyKeys: [] as string[],
@@ -48,7 +49,13 @@ const permissionState = vi.hoisted(() => ({
 	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
-const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
+const oauthBranding = vi.hoisted(() => ({
+	install: vi.fn(),
+	// Mirrors the real factory signature; identity so existing tests keep their
+	// ctx identity assertions, spyable so the event-path tests can verify every
+	// adapter handler ctx is routed through the branding layer.
+	brandedContext: vi.fn(<T>(ctx: T): T => ctx),
+}))
 const projectTrust = vi.hoisted(() => ({ trusted: true }))
 const readOnlyState = vi.hoisted(() => ({ wireNames: new Set<string>() }))
 const gatewayState = vi.hoisted(() => ({
@@ -83,6 +90,7 @@ vi.mock("../../cli-args.js", async (importOriginal) => ({
 }))
 
 vi.mock("./config.js", () => ({
+	getSharedMcpConfigPath: () => configState.sharedConfigPath,
 	loadKimchiMcpConfig: (options: { includeProjectSources?: boolean }) =>
 		options.includeProjectSources === false
 			? { config: configState.userConfig, useProgrammaticConfig: true, warnings: [] }
@@ -133,7 +141,7 @@ vi.mock("./oauth-migration.js", () => ({
 vi.mock("./oauth-callback-branding.js", () => ({
 	brandMcpAdapterOwnedToolResult: (result: unknown) => result,
 	brandMcpAdapterText: (text: string) => text.replaceAll("Pi", "Kimchi"),
-	createBrandedMcpContext: (ctx: unknown) => ctx,
+	createBrandedMcpContext: oauthBranding.brandedContext,
 	installMcpOAuthCallbackBranding: oauthBranding.install,
 }))
 
@@ -171,6 +179,7 @@ describe("upstream MCP adapter facade", () => {
 		configState.config = { mcpServers: {} }
 		configState.userConfig = { mcpServers: {} }
 		configState.configPath = undefined
+		configState.sharedConfigPath = "/tmp/kimchi-harness/mcp.json"
 		configState.useProgrammaticConfig = false
 		configState.warnings = []
 		configState.legacyKeys = []
@@ -275,6 +284,26 @@ describe("upstream MCP adapter facade", () => {
 
 		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 		expect(upstream.api).toBeDefined()
+	})
+
+	it("defaults the adapter config to the Studio-shared mcp.json", async () => {
+		const harness = createExtensionApi()
+
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		expect(upstream.options).toEqual({ configPath: configState.sharedConfigPath })
+	})
+
+	it("lets an explicit selected config win over the Studio-shared default", async () => {
+		cliState.mcpConfig = "/tmp/mcp.json"
+		configState.configPath = "/tmp/mcp.json"
+		const harness = createExtensionApi()
+
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+
+		expect(upstream.options).toEqual({ configPath: "/tmp/mcp.json" })
 	})
 
 	it("uses the resolved config when selected-file precedence requires an overlay", async () => {
@@ -506,7 +535,7 @@ describe("upstream MCP adapter facade", () => {
 		readOnlyState.wireNames.add("docs_get_issue")
 		upstream.api?.registerTool(tool("docs_get_issue", "Read"))
 		upstream.api?.registerTool(tool("docs_write", "Write"))
-		const ctx = createContext()
+		const ctx = createToolContext()
 		for (const registered of harness.getRegisteredTools())
 			await registered.execute(registered.name, {}, undefined, undefined, ctx)
 		expect(observeToolFiles).toHaveBeenCalledExactlyOnceWith(ctx, "docs_write", "mcp", expect.any(Function))
@@ -532,7 +561,7 @@ describe("upstream MCP adapter facade", () => {
 			write: { tool: "docs_write", args: {} },
 			install: { action: "install", url: "https://example.test/mcp" },
 		}
-		const ctx = createContext()
+		const ctx = createToolContext()
 		for (const [id, params] of Object.entries(calls))
 			await harness.getRegisteredTool("mcp").execute(id, params, undefined, undefined, ctx)
 		expect(vi.mocked(observeToolFiles).mock.calls.map((call) => call[1])).toEqual([
@@ -559,7 +588,7 @@ describe("upstream MCP adapter facade", () => {
 		git("config", "user.email", "mcp@example.invalid")
 		git("config", "commit.gpgSign", "false")
 		git("commit", "-q", "--allow-empty", "-m", "base")
-		const ctx = createContext({ cwd, sessionManager: { getSessionId: () => "mcp-write" } })
+		const ctx = createToolContext({ cwd, sessionManager: { getSessionId: () => "mcp-write" } })
 		// Pi reports the assistant response before running its tool calls; that pins each call to its request.
 		const work = createExtensionApi()
 		createWorkAttributionExtension()(work.api)
@@ -625,13 +654,13 @@ describe("upstream MCP adapter facade", () => {
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const directResult = await direct?.execute("direct", {}, undefined, undefined, createContext())
+		const directResult = await direct?.execute("direct", {}, undefined, undefined, createToolContext())
 		const gatewayResult = await gateway?.execute(
 			"gateway",
 			{ tool: "get_issue", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(directExecute).not.toHaveBeenCalled()
@@ -667,13 +696,13 @@ describe("upstream MCP adapter facade", () => {
 
 		const direct = harness.getRegisteredTools().find(({ name }) => name === "docs_get_issue")
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		await direct?.execute("direct", {}, undefined, undefined, createContext())
+		await direct?.execute("direct", {}, undefined, undefined, createToolContext())
 		const gatewayResult = await gateway?.execute(
 			"gateway",
 			{ tool: "get_issue", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(readOnlyExecute).toHaveBeenCalledOnce()
@@ -696,7 +725,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createToolContext())
 
 		expect(gatewayExecute).toHaveBeenCalledOnce()
 		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
@@ -713,7 +742,7 @@ describe("upstream MCP adapter facade", () => {
 		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
 
 		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
-		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createToolContext())
 
 		expect(gatewayExecute).not.toHaveBeenCalled()
 		expect(result).toMatchObject({ isError: true })
@@ -734,7 +763,7 @@ describe("upstream MCP adapter facade", () => {
 			{ tool: "docs_get_issue", server: "docs", args: {} },
 			undefined,
 			undefined,
-			createContext(),
+			createToolContext(),
 		)
 
 		expect(gatewayExecute).toHaveBeenCalledOnce()
@@ -828,13 +857,35 @@ describe("upstream MCP adapter facade", () => {
 		)
 	})
 
-	it("does not expose the upstream /pi-mcp alias", async () => {
+	it.each([
+		"mcp_servers_change",
+		"session_start",
+	])("routes adapter %s handler contexts through the branding layer", async (event) => {
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		const ctx = await start(harness)
+		const handler = vi.fn()
+		oauthBranding.brandedContext.mockClear()
+
+		// ExtensionAPI.on has per-event overloads; emit dispatches by name.
+		const looseApi = upstream.api as unknown as {
+			on(event: string, handler: (value: unknown, ctx: unknown) => unknown): void
+		}
+		looseApi.on(event, handler)
+		await harness.emit(event, {}, ctx)
+
+		expect(handler).toHaveBeenCalledOnce()
+		expect(oauthBranding.brandedContext).toHaveBeenCalledWith(ctx)
+	})
+
+	it("does not expose the upstream /pi-mcp or /mcp-adapter aliases", async () => {
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
 		await start(harness)
 
 		upstream.api?.registerCommand("mcp", { async handler() {} })
 		upstream.api?.registerCommand("pi-mcp", { async handler() {} })
+		upstream.api?.registerCommand("mcp-adapter", { async handler() {} })
 
 		expect(harness.api.registerCommand).toHaveBeenCalledTimes(1)
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
@@ -885,7 +936,14 @@ describe("upstream MCP adapter facade", () => {
 			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
 			// The old code rethrew inside the timer callback: this would reject.
 			await expect(vi.advanceTimersByTimeAsync(250)).resolves.toBeDefined()
-			expect(errorSpy).not.toHaveBeenCalled()
+			// Scope to the log production code emits for this path instead of a
+			// global call count: console.error is shared, and stray error logs
+			// from unrelated async work made the unscoped assertion flake in CI.
+			expect(
+				errorSpy.mock.calls.some(
+					([first]) => typeof first === "string" && first.includes("[tool-surface] mcp status resnapshot failed"),
+				),
+			).toBe(false)
 		} finally {
 			errorSpy.mockRestore()
 			vi.useRealTimers()
@@ -905,8 +963,15 @@ describe("upstream MCP adapter facade", () => {
 			})
 			harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
 			await expect(vi.advanceTimersByTimeAsync(250)).resolves.toBeDefined()
-			expect(errorSpy).toHaveBeenCalledTimes(1)
-			expect(errorSpy.mock.calls[0]?.[0]).toContain("[tool-surface]")
+			// Match the resnapshot-failure log instead of asserting a global call
+			// count: console.error is shared, and stray error logs from unrelated
+			// async work made the exact count flake in CI (spy called 1 times,
+			// but got 2).
+			const resnapshotFailures = errorSpy.mock.calls.filter(
+				([first]) => typeof first === "string" && first.includes("[tool-surface] mcp status resnapshot failed"),
+			)
+			expect(resnapshotFailures.length).toBeGreaterThanOrEqual(1)
+			expect(resnapshotFailures.some(([, detail]) => String(detail).includes("registry exploded"))).toBe(true)
 		} finally {
 			errorSpy.mockRestore()
 			vi.useRealTimers()
@@ -947,7 +1012,7 @@ describe("upstream MCP adapter facade", () => {
 		oauthMigration.warnings = ["legacy OAuth entry conflicts with the upstream layout"]
 		const harness = createExtensionApi()
 		mcpAdapterExtension(harness.api)
-		const ctx = createContext()
+		const ctx = createToolContext()
 
 		await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 

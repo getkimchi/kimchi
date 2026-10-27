@@ -133,7 +133,9 @@ function waitForMockCall(spy: { mock: { calls: unknown[][] } }, timeout = 1000):
 }
 
 async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
-	// Account login leads to the region selector; confirm the default (US).
+	// Account login is one down (SSO is first); account leads to the region
+	// selector, so confirm the default (US).
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	fakeIm.selectorComponent.handleInput("\n")
@@ -141,6 +143,8 @@ async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
 }
 
 async function selectApiKeyLoginOption(fakeIm: FakeIm, regionOffset = 0): Promise<void> {
+	// API-key login is two down (SSO, account, then API key).
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
@@ -152,6 +156,8 @@ async function selectApiKeyLoginOption(fakeIm: FakeIm, regionOffset = 0): Promis
 }
 
 async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
+	// Subscription is three down (SSO, account, API key, then subscription).
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
@@ -318,6 +324,7 @@ it("shows the region selector after account login and runs EU browser auth when 
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
 	// First selector: auth methods. Choose "Use a Kimchi account".
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	// Second selector: regions. Navigate down to Europe and confirm.
@@ -343,6 +350,8 @@ it("returns to the auth-method selector when Esc is pressed on the region select
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	// SSO is the first option; account is one down.
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	// Region selector now showing; Esc back out.
@@ -352,6 +361,7 @@ it("returns to the auth-method selector when Esc is pressed on the region select
 	expect(authSpy).not.toHaveBeenCalled()
 	// Back on the auth-method selector: choosing account again shows the region selector once more.
 	expect(fakeIm.selectorComponent.handleInput).toBeDefined()
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	fakeIm.selectorComponent.handleInput("\n")
@@ -372,6 +382,8 @@ it("skips the region selector and logs in with the configured region when EU is 
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
 	// Auth-method selector: "Use a Kimchi account" — no region selector follows.
+	// SSO is the first option; account is one down.
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await waitForMockCall(authSpy)
 	await flushAsyncLogin()
@@ -595,6 +607,7 @@ it("Esc on the self-hosted base URL prompt returns to the auth-method selector w
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
 	// Account login → region selector → Self-hosted → Esc on the base URL.
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	fakeIm.selectorComponent.handleInput("j")
@@ -621,6 +634,7 @@ it("selecting Self-hosted for account login prompts for the base URL and targets
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
 	// Auth-method selector: "Use a Kimchi account".
+	fakeIm.selectorComponent.handleInput("j")
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()
 	// Region selector: navigate down twice to Self-hosted and confirm.
@@ -648,6 +662,7 @@ it("Esc on the API-key region selector returns to the auth-method selector", asy
 	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
 	const patched = (InteractiveMode.prototype as any).showOAuthSelector
 	await patched.call(fakeIm, "login")
+	fakeIm.selectorComponent.handleInput("j") // SSO first
 	fakeIm.selectorComponent.handleInput("j") // API key option
 	fakeIm.selectorComponent.handleInput("\n")
 	await flushAsyncLogin()

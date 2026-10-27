@@ -54,8 +54,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 14 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(14)
+	it("has 15 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(15)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -83,12 +83,26 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"budget",
 			"lsp",
 			"dap",
+			"work-pr",
 		].sort()
 		expect(ids).toEqual(expected)
 	})
 
-	it("marks lsp and dap as defaultVisible (shown unless hidden, no pin needed)", () => {
-		for (const id of ["lsp", "dap"] as const) {
+	it("marks the core three — permissions, model, context — as non-togglable", () => {
+		for (const id of ["permissions", "model", "context"] as const) {
+			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
+			expect(el).toBeDefined()
+			expect(el).toMatchObject({ canPin: false })
+		}
+		// Everything else must be togglable.
+		for (const el of STATUS_LINE_ELEMENTS) {
+			if (el.canPin === false) continue
+			expect(["permissions", "model", "context"]).not.toContain(el.id)
+		}
+	})
+
+	it("marks lsp, dap and work-pr as defaultVisible (shown unless hidden, no pin needed)", () => {
+		for (const id of ["lsp", "dap", "work-pr"] as const) {
 			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
 			expect(el).toBeDefined()
 			expect(el).toMatchObject({ defaultVisible: true })
@@ -242,6 +256,11 @@ describe("status line hidden config", () => {
 	it("parses stored hidden entries and drops unknown ids", () => {
 		seed(JSON.stringify({ statusLine: { hidden: ["lsp", "nosuchthing", "dap", 42] } }, null, 2))
 		expect(readStatusLineConfig().hidden).toEqual(["lsp", "dap"])
+	})
+
+	it("accepts work-pr in hidden (opt-out, like lsp/dap)", () => {
+		seed(JSON.stringify({ statusLine: { hidden: ["work-pr"] } }, null, 2))
+		expect(readStatusLineConfig().hidden).toEqual(["work-pr"])
 	})
 
 	it("drops non-defaultVisible ids from hidden — hiding them would be silently inert", () => {

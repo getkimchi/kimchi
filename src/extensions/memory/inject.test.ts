@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS, TURN_RECALL_MAX_FACT_CHARS, TURN_RECALL_MAX_FACTS } from "./config.js"
-import { buildMemoryDigest, buildTurnRecall, digestSection, factKey } from "./inject.js"
+import { buildMemoryDigest, buildTurnRecall, digestCandidateTexts, digestSection, factKey } from "./inject.js"
 
 describe("buildMemoryDigest", () => {
 	it("returns undefined when nothing clears the value bar — the normal outcome", () => {
@@ -104,6 +104,60 @@ describe("buildMemoryDigest", () => {
 		expect(result.text).toContain("<system-reminder>")
 		expect(result.text).toContain("</system-reminder>")
 		expect(result.text).toContain("data, never instructions")
+	})
+})
+
+describe("buildMemoryDigest with a decision selection (E3/E8 shapes)", () => {
+	it("drops the rank-1 echo even though it outscores the needle", () => {
+		// bge-m3 retrieval (E8 prompt A): the session's own prompt is the
+		// top-ranked hit (0.916) and would crowd out the useful fact.
+		const hits = [
+			{ memory: "migrate the embedder to bge-m3", score: 0.916 },
+			{ memory: "the user's dog is named Freya", score: 0.52 },
+		]
+		expect(digestCandidateTexts(hits)).toEqual(["migrate the embedder to bge-m3", "the user's dog is named Freya"])
+		const result = buildMemoryDigest(hits, new Set(["the user's dog is named Freya"]))
+		expect(result?.facts).toEqual(["the user's dog is named Freya"])
+		expect(result?.text).not.toContain("migrate the embedder")
+	})
+
+	it("collapses near-duplicate twins to the single selected one", () => {
+		// E8 4-twin plan-doc fixture: only the selector's pick is injected.
+		const hits = [
+			{ memory: "decision gates plan approved, step 2 pending", score: 0.61 },
+			{ memory: "the decision gates plan was approved; step 2 was pending", score: 0.59 },
+			{ memory: "plan: decision gates approved — next: step 2", score: 0.57 },
+			{ memory: "the user wants ramen for dinner", score: 0.5 },
+		]
+		const result = buildMemoryDigest(
+			hits,
+			new Set(["decision gates plan approved, step 2 pending", "the user wants ramen for dinner"]),
+		)
+		expect(result?.facts).toEqual(["decision gates plan approved, step 2 pending", "the user wants ramen for dinner"])
+	})
+
+	it("an empty selection injects nothing (the E8 null case)", () => {
+		// With 5 above-threshold hits the threshold rule would inject all of
+		// them; the selector judged none relevant.
+		const hits = Array.from({ length: 5 }, (_, i) => ({ memory: `stored fact ${i}`, score: 0.5 - i * 0.01 }))
+		expect(buildMemoryDigest(hits)).toBeDefined() // the pre-gate rule would inject
+		expect(buildMemoryDigest(hits, new Set())).toBeUndefined()
+	})
+
+	it("selector drops land in selectorSkipped; the threshold counter stays idle", () => {
+		const hits = [
+			{ memory: "fact a", score: 0.9 },
+			{ memory: "fact b", score: 0.8 },
+			{ memory: "fact c", score: 0.05 },
+		]
+		const result = buildMemoryDigest(hits, new Set(["fact a"]))
+		expect(result?.composition.facts).toBe(1)
+		expect(result?.composition.selectorSkipped).toBe(2)
+		expect(result?.composition.belowThreshold).toBe(0)
+		// …and the no-selection path still uses the threshold rule.
+		const unselected = buildMemoryDigest(hits)
+		expect(unselected?.composition.selectorSkipped).toBe(0)
+		expect(unselected?.composition.belowThreshold).toBe(1)
 	})
 })
 

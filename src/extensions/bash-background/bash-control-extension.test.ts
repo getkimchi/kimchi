@@ -21,6 +21,7 @@ import bashControlExtension, {
 	BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 	BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+	COMPLETION_REMINDER_INTERVAL_MS,
 	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
@@ -28,6 +29,13 @@ import { createProcessRegistry, type ProcessRegistry } from "./process-registry.
 import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
+
+// These tests assert the reminder's one-outstanding/re-arm semantics,
+// which hold for any interval — shrinking the spacing to 0 keeps them
+// about the ordering guarantees instead of wall-clock timing. Interval
+// gating itself is covered by the "rate limit" describe below (which
+// overrides this via vi.stubEnv).
+process.env.KIMCHI_E2E_COMPLETION_REMINDER_MS = "0"
 
 // Control isAgentWorker() per test: workers keep bash_control visible.
 const workerState = vi.hoisted(() => ({ isWorker: false }))
@@ -1309,6 +1317,82 @@ describe("completion continuation", () => {
 		// Cleanup: end the owning call (its backstop delivers the exit).
 		await fireToolExecutionEnd(harness, "call-y", "bash_control", true)
 		await flush()
+	})
+})
+
+describe("completion reminder rate limit", () => {
+	// These tests exercise the production default spacing (30 s): the
+	// module-level seam zeroing above is removed per-test and restored after.
+	beforeEach(() => {
+		delete process.env.KIMCHI_E2E_COMPLETION_REMINDER_MS
+	})
+	afterEach(() => {
+		process.env.KIMCHI_E2E_COMPLETION_REMINDER_MS = "0"
+	})
+
+	it("the first reminder is prompt; a consumed one is not re-queued within the interval", async () => {
+		const harness = makePiWithState()
+		const handle = spawnRunning("slow")
+		await startTrackedSession(harness, handle)
+
+		// First stop with live work: reminder queues immediately.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		let guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+
+		// Consumed, then another no-news stop seconds later: suppressed by
+		// the interval — no back-to-back turns.
+		await consumeFollowUp(harness, guards[0] as SentMessage)
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+	})
+
+	it("after the interval a genuinely unresolved stop queues a fresh reminder", async () => {
+		vi.useFakeTimers()
+		const harness = makePiWithState()
+		const handle = spawnRunning("slow")
+		await startTrackedSession(harness, handle)
+
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+		await consumeFollowUp(harness, guards[0] as SentMessage)
+
+		// Still inside the interval: suppressed.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(1)
+
+		// A full interval later: the process is still running, so a new
+		// reminder queues (the guard never abandons live work — it only
+		// paces it).
+		await vi.advanceTimersByTimeAsync(COMPLETION_REMINDER_INTERVAL_MS + 1)
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(2)
+	})
+
+	it("an outstanding (unconsumed) reminder is not replaced, and exit delivery ignores the interval", async () => {
+		vi.useFakeTimers()
+		const harness = makePiWithState()
+		const handle = spawnRunning("slow")
+		await startTrackedSession(harness, handle)
+
+		// Queued but not consumed: a second stop changes nothing.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(1)
+
+		// The interval must never delay an exit: the terminal result is
+		// delivered through its own prompt trailing-window path. The
+		// exitProcess helper ends with a real-timer flush, so drive the fake
+		// ops directly and advance the coalescing window manually.
+		const command = registry.getEntry(handle)?.commandSummary ?? ""
+		ops.emitMatching(command, "output-from-0\n")
+		await ops.exitMatching(command, 0)
+		await registry.whenExited(handle)
+		await vi.advanceTimersByTimeAsync(EXIT_BATCH_WINDOW_MS + 60)
+		expect(followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)).toHaveLength(1)
+		expect(registry.getEntry(handle)?.state).not.toBe("running")
 	})
 })
 

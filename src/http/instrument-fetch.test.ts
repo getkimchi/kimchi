@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { installGlobalFetchInstrumentation as InstallGlobalFetchInstrumentation } from "./instrument-fetch.js"
 
 vi.mock("../settings-watcher.js", () => ({
+	isDefaultToolEnabled: () => true,
 	getSettingsManager: vi.fn(() => undefined),
 }))
 

@@ -173,7 +173,7 @@ import {
 } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
-import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
+import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
 import { buildToolCall, buildToolCallUpdate, describeToolCall, isHiddenToolCall } from "./tool-calls/utils.js"
 import {
@@ -355,6 +355,14 @@ type SessionRecord = {
 		steering: string[]
 		followUp: string[]
 	}
+	/**
+	 * FIFO of steer texts the steering handler rewrote (e.g. `/skill:<name>`
+	 * expansion) — see takeSteerEchoOriginal. The queue echo and
+	 * cancel-drain hand queued text back to the client, which acknowledges
+	 * pending steers by the exact text it submitted, so rewritten texts must
+	 * be translated back to their originals on those surfaces.
+	 */
+	steerEchoRewrites: SteerEchoRewrite[]
 	/**
 	 * Per-session skill commands advertised to the ACP client. Populated from
 	 * the session cwd during newSession/loadSession so command names can be
@@ -541,6 +549,12 @@ export class KimchiAcpAgent implements Agent {
 		// regardless of config. Terminal Auth ("kimchi-terminal") is resolved
 		// out-of-band: the client launches `kimchi login` as a separate process,
 		// so this method is never called for it.
+		//
+		// NOTE: the experimental CAST AI SSO (OAuth code + PKCE) login is NOT
+		// offered here. ACP clients cannot reliably answer the manual-code prompt
+		// the SSH/headless path needs, so ACP keeps this web-app handoff; SSO
+		// credentials created by the TUI still work in ACP sessions (the
+		// provider's refreshToken renews them non-interactively at request time).
 		const region = authMethodRegion(params.methodId)
 		if (region === undefined) {
 			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
@@ -645,6 +659,7 @@ export class KimchiAcpAgent implements Agent {
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
+				steerEchoRewrites: [],
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -930,6 +945,7 @@ export class KimchiAcpAgent implements Agent {
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
+				steerEchoRewrites: [],
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -1337,7 +1353,13 @@ export class KimchiAcpAgent implements Agent {
 		followUp: string[]
 	} {
 		entry.previousQueue = undefined
-		return entry.session.clearQueue()
+		const dropped = entry.session.clearQueue()
+		// The client restores dropped steers to its composer and matches on
+		// submitted text — hand back originals for rewritten steers.
+		return {
+			steering: dropped.steering.map((text) => takeSteerEchoOriginal(entry.steerEchoRewrites, text)),
+			followUp: dropped.followUp,
+		}
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
@@ -1375,7 +1397,18 @@ export class KimchiAcpAgent implements Agent {
 					steering: steering.previousQueue,
 					followUp: followUp.previousQueue,
 				}
-				for (const update of [...steering.sessionUpdates, ...followUp.sessionUpdates]) {
+				// Echo the client's original text for rewritten steers:
+				// pending-steer acknowledgements match the submitted text exactly.
+				for (const update of steering.sessionUpdates) {
+					if (update.sessionUpdate === "user_message_chunk" && update.content.type === "text") {
+						update.content = {
+							...update.content,
+							text: takeSteerEchoOriginal(entry.steerEchoRewrites, update.content.text),
+						}
+					}
+					this.send({ sessionId, update })
+				}
+				for (const update of followUp.sessionUpdates) {
 					this.send({ sessionId, update })
 				}
 				return
@@ -1761,6 +1794,16 @@ export class KimchiAcpAgent implements Agent {
 						cwd: entry.cwd,
 						windowStart: stashed.startedAt,
 					})
+					// Tool-declared artifacts are deliverables the user may need
+					// MID-turn (a submitted plan chips before its review
+					// questionnaire opens) — emit immediately. emitNow marks them
+					// emitted, so turn-end flush can't double-chip; the buffer
+					// keys come from this one collect (no re-parse).
+					const paths = turn.artifactBuffer.getDeclaredPaths()
+					if (paths.length > 0) {
+						for (const update of turn.artifactBuffer.emitNow(paths, entry.emittedModelMeta))
+							this.send({ sessionId, update })
+					}
 				}
 				const preWrite = turn.preWriteContents.get(event.toolCallId)
 				turn.preWriteContents.delete(event.toolCallId)
@@ -1838,8 +1881,9 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of entries) {
 			if (entry && entry.type === "custom") {
 				// Recorded artifact row (extension): adopt it for this turn — the
-				// row arrives after the turn's tool results and replaces what
-				// re-derivation sniffed (exact: live detection was stat-gated).
+				// row is written once per prompt (at agent_settled), after the
+				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
+				// (exact: live detection was stat-gated).
 				const custom = entry as { customType?: unknown; data?: unknown }
 				const data =
 					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
@@ -1868,7 +1912,6 @@ export class KimchiAcpAgent implements Agent {
 					toolResults,
 					this.sessions.get(sessionId),
 					modelAttributionFrom(msg),
-					artifactBuffer,
 				)
 				if (lastTextBlockId !== undefined) {
 					artifactBuffer.noteTextBlock(lastTextBlockId, modelAttributionFrom(msg))
@@ -1939,7 +1982,6 @@ export class KimchiAcpAgent implements Agent {
 		toolResults: Map<string, ReplayToolResult>,
 		record: SessionRecord | undefined,
 		attribution: ModelAttribution,
-		artifactBuffer: TurnArtifactBuffer,
 	): string | undefined {
 		if (!Array.isArray(content)) return
 		// Allocates a fresh session-unique messageId for every emitted chunk
@@ -1953,9 +1995,8 @@ export class KimchiAcpAgent implements Agent {
 		// the caller can register it as the turn's artifact attachment point
 		// (thinking chunks are excluded).
 		let lastTextMessageId: string | undefined
-		// Artifacts from this message's completed tool calls go into the
-		// caller's turn buffer (flush once per turn, like finalizeTurn).
-		// Replay skips the on-disk existence check (files may be gone).
+		// Artifacts are replayed strictly from recorded rows by the caller
+		// (replayTranscript) — replay never re-runs live detection.
 		// Buffer contiguous text blocks so a single assistant message renders as
 		// one agent_message_chunk per natural text segment — emit the full
 		// message as a single chunk, no per-token chunking. When a thinking or
@@ -2458,7 +2499,12 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return undefined
 		const turnActive = entry.turn !== undefined && !entry.turn.cancelled
-		return { session: entry.session, turnActive }
+		return {
+			session: entry.session,
+			turnActive,
+			skillCommands: entry.skillCommands,
+			onSteerRewritten: (original, rewritten) => entry.steerEchoRewrites.push({ original, rewritten }),
+		}
 	}
 
 	/**

@@ -11,13 +11,16 @@ import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import {
+	branchAssistantUsageTotals,
 	buildContextCompact,
 	buildControlsLineSegments,
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
 	buildStatusLineSegments,
+	entriesAssistantUsageTotals,
 	renderFittedLine,
+	type SegmentId,
 	SHORTCUT_TAIL,
 	StatusLine,
 	StatusLineScript,
@@ -77,7 +80,7 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 	const modelId = opts?.modelId ?? "claude-opus-4-6"
 	const entries = (opts?.assistantMessages ?? []).map((u) => ({
 		type: "message" as const,
-		message: { role: "assistant", usage: { input: u.input, output: u.output } },
+		message: { role: "assistant", usage: { input: u.input, output: u.output, cost: { total: 0 } } },
 	}))
 	return {
 		model: { id: modelId, name: modelId, provider: opts?.modelProvider ?? "kimchi-dev" },
@@ -212,6 +215,23 @@ describe("buildScriptPayload", () => {
 			statusLineData: createMockStatusLineData({ workPr: `${statusBranch} · PR #7 open`, gitBranch: branch }),
 		}
 		expect(buildStatusLineSegments(context, new Set()).some((item) => item.id === "work-pr")).toBe(false)
+	})
+	it("omits work-pr from both segment pools when hidden via the customize opt-out", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({
+				workPr: "feature · PR #7 open",
+				workPrUrl: "https://github.com/example/repo/pull/7",
+				gitBranch: "feature",
+			}),
+		}
+		const hidden = new Set<SegmentId>(["work-pr"])
+		expect(buildStatusLineSegments(context, new Set(), hidden).some((item) => item.id === "work-pr")).toBe(false)
+		expect(buildControlsLineSegments(context, hidden).some((item) => item.id === "work-pr")).toBe(false)
+		// No hidden set (the default before this toggle existed): still shows.
+		expect(buildStatusLineSegments(context, new Set()).some((item) => item.id === "work-pr")).toBe(true)
+		expect(buildControlsLineSegments(context).some((item) => item.id === "work-pr")).toBe(true)
 	})
 	it.each([
 		["PR #7 open", "#7", "https://github.com/example/repo/pull/7"],
@@ -395,6 +415,110 @@ const compactCtx = {
 	semantic: (name: string, s: string) => `[${name}:${s}]`,
 }
 
+describe("usage-totals memoization", () => {
+	/** A mock whose sessionManager carries the O(1) walk-identity fields
+	 *  (fileEntries, leafId) so the memoization path is exercised. */
+	function createCachingMockContext(assistantUsages: Array<{ input: number; output: number }>): ExtensionContext {
+		const entries = assistantUsages.map((u, i) => ({
+			id: `e${i}`,
+			type: "message" as const,
+			message: { role: "assistant", usage: { input: u.input, output: u.output, cost: { total: 0.01 } } },
+		}))
+		// Single source of truth: the branch/entry accessors derive from
+		// fileEntries (minus the header) so appending in a test is visible to
+		// the accessors, like the real append-only journal.
+		const fileEntries: unknown[] = ["header", ...entries]
+		const derive = () => fileEntries.filter((e) => e !== "header") as typeof entries
+		const branch = vi.fn(derive)
+		const allEntries = vi.fn(derive)
+		const sm = {
+			getBranch: branch,
+			getEntries: allEntries,
+			fileEntries,
+			leafId: "e0",
+			getLeafId(): string | null {
+				return this.leafId as string | null
+			},
+			getSessionId: vi.fn(() => "test-session"),
+			getSessionName: vi.fn(() => "test"),
+			getSessionFile: vi.fn(() => "/test/session.md"),
+		}
+		return {
+			model: { id: "m", name: "m" },
+			cwd: "/test",
+			getContextUsage: vi.fn(() => ({ tokens: 0, percent: 0, contextWindow: 100000 })),
+			sessionManager: sm,
+		} as unknown as ExtensionContext
+	}
+
+	it("repeated totals skip the branch walk; growth and branch switches re-walk", () => {
+		const ctx = createCachingMockContext([
+			{ input: 100, output: 50 },
+			{ input: 200, output: 80 },
+		])
+		const first = branchAssistantUsageTotals(ctx)
+		expect(first.totalInput).toBe(300)
+		expect(first.totalOutput).toBe(130)
+		expect(first.lastTurn).toEqual({ input: 200, output: 80 })
+		expect(first.costUsd).toBeCloseTo(0.02)
+
+		// Cache hit: no second branch walk.
+		const getBranch = ctx.sessionManager.getBranch as ReturnType<typeof vi.fn>
+		const callsAfterFirst = getBranch.mock.calls.length
+		expect(branchAssistantUsageTotals(ctx)).toEqual(first)
+		expect(getBranch.mock.calls.length).toBe(callsAfterFirst)
+
+		// Appending an entry (journal growth) invalidates.
+		;(ctx.sessionManager as unknown as { fileEntries: unknown[] }).fileEntries.push({
+			id: "e2",
+			type: "message",
+			message: { role: "assistant", usage: { input: 1, output: 1, cost: { total: 0.01 } } },
+		})
+		const second = branchAssistantUsageTotals(ctx)
+		expect(second.totalInput).toBe(301)
+		expect(second.lastTurn).toEqual({ input: 1, output: 1 })
+		expect(getBranch.mock.calls.length).toBe(callsAfterFirst + 1)
+
+		// Same journal, different leaf (branch switch): re-walk.
+		;(ctx.sessionManager as unknown as { leafId: unknown }).leafId = "e1"
+		branchAssistantUsageTotals(ctx)
+		expect(getBranch.mock.calls.length).toBe(callsAfterFirst + 2)
+	})
+
+	it("a sessionManager without the identity fields still computes correct totals (no cache)", () => {
+		const ctx = createMockContext({ assistantMessages: [{ input: 10, output: 5 }] })
+		// createMockContext's sessionManager has no fileEntries/leafId: the
+		// defensive path walks directly.
+		const totals = branchAssistantUsageTotals(ctx)
+		expect(totals.totalInput).toBe(0) // its getBranch returns []
+	})
+
+	it("the pinned usage segment sums the full journal without re-walking per render", () => {
+		pinnedElements = ["usage"]
+		const ctx = createCachingMockContext([
+			{ input: 1000, output: 500 },
+			{ input: 20_000, output: 9000 },
+		])
+		// Integration: the pinned segment renders the full-journal totals.
+		const build = () =>
+			buildStatusLineSegments(
+				{ ctx, theme: createMockTheme(), statusLineData: createMockStatusLineData() },
+				new Set<SegmentId>(["usage"]),
+			)
+		expect(stripAnsi(build().find((s) => s.id === "usage")?.text ?? "")).toBe("↑21k ↓9.5k")
+
+		// Memoization (other status-line consumers also call getEntries, so
+		// count only the totals accessor's own re-walks): a second read with an
+		// unchanged journal performs no additional walk.
+		const getEntries = ctx.sessionManager.getEntries as ReturnType<typeof vi.fn>
+		const baseline = getEntries.mock.calls.length
+		expect(entriesAssistantUsageTotals(ctx).totalInput).toBe(21_000)
+		expect(entriesAssistantUsageTotals(ctx).totalOutput).toBe(9500)
+		// The segment build above already seeded the cache: no new walks.
+		expect(getEntries.mock.calls.length).toBe(baseline)
+	})
+})
+
 describe("compact-form builders", () => {
 	describe("buildContextCompact", () => {
 		it("returns `N% ctx` with no bar", () => {
@@ -505,6 +629,15 @@ describe("SHORTCUT_TAIL regex", () => {
 		const text = "● default \x1b[38;5;242m→ shift+tab\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
 		expect(text.replace(SHORTCUT_TAIL, "")).toBe("● default")
+	})
+
+	it("matches pi 1.3 dim tokens (compound open \\x1b[<color>m\\x1b[2m, close \\x1b[22;39m) without orphaning the gap", () => {
+		// pi 1.3 theme.fg() for a dim token emits `${color-open}\x1b[2m${text}\x1b[22;39m`.
+		// A single-escape match would start at \x1b[2m and leave `default <color-open>`,
+		// rendering as `default  ·` (double space) after the hint strip.
+		const text = "\x1b[38;2;1;2;3mdefault\x1b[39m \x1b[38;5;245m\x1b[2m→ shift+tab\x1b[22;39m"
+		expect(SHORTCUT_TAIL.test(text)).toBe(true)
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("\x1b[38;2;1;2;3mdefault\x1b[39m")
 	})
 
 	it("matches the model segment trailing shortcut", () => {
@@ -852,7 +985,9 @@ describe("StatusLine segment coverage", () => {
 		withPinned(["budget"], () => {
 			const statusLine = new StatusLine(createMockContext(), theme, createMockStatusLineData())
 			const visible = renderVisible(statusLine, 200)
-			const compact = renderVisible(statusLine, 60)
+			// Width 72 (was 60): context is now hardcoded and always occupies
+			// ~9 columns — the same compaction window needs that extra room.
+			const compact = renderVisible(statusLine, 72)
 			const shed = renderVisible(statusLine, 42)
 
 			expect(visible).not.toContain("Credits:")
@@ -1176,12 +1311,20 @@ describe("status line pinning", () => {
 		})
 	})
 
-	it("unpinned context is always hidden regardless of pct", () => {
+	it("context always renders regardless of pinned membership (hardcoded core element)", () => {
 		withPinned([], () => {
-			// Hidden at 0%
-			expect(stripAnsi(makeStatusLine({ percent: 0 }).render(200)[0])).not.toContain("ctx")
-			// Hidden even at 75%
-			expect(stripAnsi(makeStatusLine({ percent: 75 }).render(200)[0])).not.toContain("ctx")
+			expect(stripAnsi(makeStatusLine({ percent: 0 }).render(200)[0])).toContain("0% ctx")
+			expect(stripAnsi(makeStatusLine({ percent: 75 }).render(200)[0])).toContain("75% ctx")
+		})
+	})
+
+	it("context keeps the right-group placement even when a config unpinned it", () => {
+		withPinned([], () => {
+			const visible = stripAnsi(makeStatusLine({ percent: 50 }).render(200)[0])
+			// Nothing else pinned: the unpinned model leads, and the force-pinned
+			// context still lands after it in the right group.
+			expect(visible.indexOf("ctrl+p")).toBeGreaterThanOrEqual(0)
+			expect(visible.indexOf("50% ctx")).toBeGreaterThan(visible.indexOf("ctrl+p"))
 		})
 	})
 
@@ -1366,6 +1509,22 @@ describe("status line priority shedding", () => {
 			expect(visible).not.toContain("js-debug")
 		})
 	})
+
+	it("hidden work-pr is omitted while other defaultVisible segments remain", () => {
+		const data = createMockStatusLineData({
+			permissionsMode: "● default",
+			lsp: "LSP:typescript-language-server",
+			workPr: "feature · PR #7 open",
+			gitBranch: "feature",
+		})
+		expect(renderVisibleWith(data, 200)).toContain("PR #7")
+
+		withHidden(["work-pr"], () => {
+			const visible = renderVisibleWith(data, 200)
+			expect(visible).not.toContain("PR #7")
+			expect(visible).toContain("typescript-language-server")
+		})
+	})
 })
 
 describe("script controls line (statusLine.command path)", () => {
@@ -1439,6 +1598,20 @@ describe("script controls line (statusLine.command path)", () => {
 		const { visible } = controlsLine(80)
 		expect(visible).toContain("Budget: 13.73%")
 		expect(visible).not.toContain("$274.59/$2k")
+	})
+
+	it("omits work-pr from the controls line when hidden", () => {
+		const data = createMockStatusLineData({ permissionsMode, workPr: "feature · PR #7 open", gitBranch: "feature" })
+		const build = (hidden?: Set<SegmentId>) =>
+			stripAnsi(
+				renderFittedLine(
+					buildControlsLineSegments({ ctx: createMockContext(), theme, statusLineData: data }, hidden),
+					200,
+					theme,
+				),
+			)
+		expect(build()).toContain("PR #7")
+		expect(build(new Set<SegmentId>(["work-pr"]))).not.toContain("PR #7")
 	})
 })
 

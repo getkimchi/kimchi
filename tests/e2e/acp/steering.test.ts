@@ -9,6 +9,8 @@
 // out on the `_kimchi.dev/queue_dropped` extension notification
 // instead of as user messages.
 
+import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import type { ContentChunk } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -100,6 +102,85 @@ describe("ACP integration — injected steer echo", () => {
 		// The steer reached the model: the continuation request(s) after the
 		// tool result include it in the transcript the fake backend saw.
 		expect(fixture.fake.requests.length, "continuation request after injection").toBeGreaterThanOrEqual(2)
+	})
+})
+
+describe("ACP integration — /skill: steer echo", () => {
+	let fixture: AcpFixture
+
+	beforeEach(async () => {
+		fixture = await startAcpFixture({
+			artifactName: "steering-skill-echo",
+			pretrustWorkDir: true,
+			responses: [
+				{
+					stream: ["Working ", "on ", "it. "],
+					delayMs: 150,
+					toolCalls: [{ function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) } }],
+				},
+				{ stream: ["Done."] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it("echoes the client's original text while the model sees the expanded skill", async () => {
+		const projectSkills = join(fixture.workDir, ".kimchi", "skills", "e2e-steer-skill")
+		mkdirSync(projectSkills, { recursive: true })
+		writeFileSync(
+			join(projectSkills, "SKILL.md"),
+			"---\nname: e2e-steer-skill\ndescription: E2E steer skill\n---\nSkill body marker.\n",
+		)
+
+		const sessionId = await newSession(fixture, fixture.workDir)
+		const promptPromise = fixture.conn.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run echo" }],
+		})
+		await waitForSessionUpdate(fixture, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
+
+		const steerResult = (await fixture.conn.extMethod(STEER_METHOD, {
+			sessionId,
+			prompt: "/skill:e2e-steer-skill wrap up now",
+		})) as { status: string }
+		expect(steerResult.status).toBe("injected")
+
+		// Pending-steer acknowledgement matches the submitted text exactly, so
+		// the server must echo the ORIGINAL submission, not the expanded skill
+		// prompt that pi-mono would otherwise queue and echo back.
+		await waitForSessionUpdate(
+			fixture,
+			sessionId,
+			(u) =>
+				u.sessionUpdate === "user_message_chunk" &&
+				u.content.type === "text" &&
+				u.content.text === "/skill:e2e-steer-skill wrap up now",
+		)
+
+		const result = await Promise.race([
+			promptPromise,
+			delay(PROMPT_TIMEOUT_MS).then(() => ({ stopReason: "TIMEOUT" as const })),
+		])
+		expect(result.stopReason, "turn stop reason").toBe("end_turn")
+
+		// The model side of the turn, though, must carry the expanded skill
+		// content — the steer informed the agent, not just the transcript.
+		// Scan every request rather than just the last: pipelined requests
+		// can out-of-order which one is at(-1) at assertion time.
+		const transcripts = fixture.fake.requests.map((r) =>
+			JSON.stringify((r.body as { messages?: Array<{ content?: unknown }> } | undefined)?.messages ?? []),
+		)
+		const sawExpandedSkill = transcripts.some(
+			(t) => t.includes("Skill body marker.") && t.includes("Invoking skill: e2e-steer-skill"),
+		)
+		expect(sawExpandedSkill, "model transcript must contain the expanded skill content").toBe(true)
+
+		// The echoed user message must be the original text only — no expanded
+		// skill block leaking into the client transcript.
+		expect(userMessageTexts(fixture, sessionId).some((t) => t.includes("Skill body marker."))).toBe(false)
 	})
 })
 

@@ -6,6 +6,27 @@ import { ProcessTerminal } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 import { installTuiConsoleLogging } from "./tui-console.js"
 
+const getAgentDirProbe = vi.hoisted(() => ({
+	calls: 0,
+	/** When set, each call writes this diagnostic to the console (cap-bounded). */
+	emits: undefined as string | undefined,
+	cap: 0,
+}))
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const mod = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return {
+		...mod,
+		getAgentDir: vi.fn(() => {
+			getAgentDirProbe.calls += 1
+			if (getAgentDirProbe.emits && getAgentDirProbe.calls <= getAgentDirProbe.cap) {
+				globalThis.console.error(getAgentDirProbe.emits)
+			}
+			return mod.getAgentDir()
+		}),
+	}
+})
+
 describe("TUI console logging", () => {
 	let directory: string
 	let restore: (() => void) | undefined
@@ -22,6 +43,9 @@ describe("TUI console logging", () => {
 		start = vi.spyOn(ProcessTerminal.prototype, "start").mockImplementation(() => {})
 		stop = vi.spyOn(ProcessTerminal.prototype, "stop").mockImplementation(() => {})
 		restore = installTuiConsoleLogging()
+		getAgentDirProbe.calls = 0
+		getAgentDirProbe.emits = undefined
+		getAgentDirProbe.cap = 0
 	})
 
 	afterEach(() => {
@@ -127,6 +151,36 @@ describe("TUI console logging", () => {
 		rmSync(join(directory, "logs"))
 		console.error("storage recovered")
 		expect(readFileSync(join(directory, "logs", "tui.log"), "utf8")).toContain("storage recovered")
+	})
+
+	it("does not feed back when resolving the log location writes to the console", () => {
+		// Regression: the diagnostic logger used to call getAgentDir() per line; a
+		// dependency of that call writing to the console produced the next line,
+		// closing the loop. Cap-bounded so the pre-fix code fails here quickly.
+		getAgentDirProbe.emits = "DBG getAgentDir"
+		getAgentDirProbe.cap = 10_000
+		const terminal = new ProcessTerminal()
+		terminal.start(vi.fn(), vi.fn())
+		console.log("real line")
+		terminal.stop()
+		expect(getAgentDirProbe.calls).toBe(1)
+		const log = readFileSync(join(directory, "logs", "tui.log"), "utf8")
+		expect(log).toContain("real line")
+		expect(log).not.toContain("DBG getAgentDir")
+	})
+
+	it("resolves the log location once per installation", () => {
+		const terminal = new ProcessTerminal()
+		terminal.start(vi.fn(), vi.fn())
+		for (let i = 0; i < 100; i++) console.log("line", i)
+		expect(getAgentDirProbe.calls).toBe(1)
+		terminal.stop()
+		restore?.()
+		restore = installTuiConsoleLogging()
+		terminal.start(vi.fn(), vi.fn())
+		console.log("after reinstall")
+		expect(getAgentDirProbe.calls).toBe(2)
+		terminal.stop()
 	})
 
 	it("replaces a full log and bounds an oversized diagnostic", () => {

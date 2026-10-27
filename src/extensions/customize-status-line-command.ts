@@ -52,7 +52,7 @@ export class CustomizeStatusLineComponent implements Component {
 		if (matchesKey(data, "space") || matchesKey(data, "return") || matchesKey(data, Key.enter)) {
 			const el = STATUS_LINE_ELEMENTS[this.selectedIndex]
 			if (!el) return
-			// Cannot toggle permissions or model — they are always visible.
+			// Cannot toggle the hardcoded core three (permissions/model/context).
 			if (el.canPin === false) return
 			toggleStatusLineElement(el)
 			this.tui.requestRender()

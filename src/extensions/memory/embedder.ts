@@ -8,8 +8,9 @@
  * The seam is mem0's `langchain` embedder provider: the factory accepts any
  * object with embedQuery/embedDocuments as `config.model` and delegates to
  * it (LangchainEmbedder). The underlying OpenAI embedder is still mem0's
- * own (EmbedderFactory "openai"), so the wire request — model, dimensions,
- * the usage-tracking tag — is byte-identical to before.
+ * own (EmbedderFactory "openai"), so the wire request — model and the
+ * usage-tracking tag, carrying no `dimensions` truncation parameter (bge-m3
+ * rejects it) — is byte-identical to the non-shared path.
  *
  * Dedupe is safe because embeddings are deterministic for a fixed
  * (model, input) pair: caching by exact string is semantically transparent.
@@ -114,7 +115,6 @@ export async function createSharedEmbedder(config: KimchiConfig = loadConfig()):
 			model: endpoint.model,
 			apiKey: endpoint.apiKey,
 			baseURL: endpoint.baseURL,
-			embeddingDims: endpoint.dims,
 		}),
 	)
 }

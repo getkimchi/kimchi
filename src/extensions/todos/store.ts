@@ -1,8 +1,18 @@
 import { isAgentWorker } from "../agent-worker-context.js"
 import { isStaleCtxError } from "../stale-ctx.js"
+import { getOrCreateInnerMap } from "./nested-maps.js"
 import { createEmptyTodosSliceState, reduceReplaceList } from "./reducer.js"
 import { getTodoScopeKey, normalizeTodoScope } from "./scope.js"
-import type { TodoCounts, TodoItem, TodoScope, TodosSliceState, WriteTodosDetails, WriteTodosParams } from "./types.js"
+import type {
+	TodoCounts,
+	TodoDraft,
+	TodoItem,
+	TodoScope,
+	TodosSliceState,
+	TodoWriteContext,
+	WriteTodosDetails,
+	WriteTodosParams,
+} from "./types.js"
 
 export const GLOBAL_TODO_SCOPE: TodoScope = { kind: "global" }
 
@@ -11,12 +21,38 @@ export type TodoScopeProvider = () => TodoScope | undefined
 /** Per-session todo state. Keyed by session id so that two concurrent keyed
  * sessions in the same process do not see each other's todos. */
 const stateMap = new Map<string, TodosSliceState>()
-const todoStoreListeners = new Set<(details: WriteTodosDetails, sessionId: string) => void>()
-const activeScopeProviders: TodoScopeProvider[] = []
+const todoStoreListeners = new Set<
+	(details: WriteTodosDetails, sessionId: string, context?: TodoWriteContext) => void
+>()
+/** Registered scope providers, keyed by the owning session id. Each provider
+ *  closes over its own session's running ferment steps, so a scope-less
+ *  resolve must only consult the querying session's providers — a flat
+ *  process-global list let one session's ferment-step scope leak into
+ *  another session's scope resolution (observed: session B's
+ *  plan-submission check-in suppressed by session A's running step). */
+const activeScopeProviders = new Map<string, TodoScopeProvider[]>()
 
-/** Per-session count of non-todo tool calls since the last todo write.
- * Used by renderTodoStateMarkdown to show a passive staleness indicator. */
-const toolCallsSinceTodoWrite = new Map<string, number>()
+/** Monotonic per-session, per-scope write counter. Bumped on every committed
+ *  write so consumers can detect "the list changed since I last looked"
+ *  without comparing content. Volatile bookkeeping — never persisted. */
+const scopeWriteVersions = new Map<string, Map<string, number>>()
+
+/** Current monotonic version of a scope's list (0 when never written). */
+export function getTodoScopeVersion(scope: TodoScope, sessionId: string): number {
+	return scopeWriteVersions.get(sessionId)?.get(getTodoScopeKey(scope)) ?? 0
+}
+
+function bumpTodoScopeVersion(scope: TodoScope, sessionId: string): void {
+	const byScope = getOrCreateInnerMap(scopeWriteVersions, sessionId)
+	const scopeKey = getTodoScopeKey(scope)
+	byScope.set(scopeKey, (byScope.get(scopeKey) ?? 0) + 1)
+}
+
+/** Per-session, per-scope count of non-todo tool calls since the last write
+ *  to that scope's list. Keyed by session id and scope key so a write to one
+ *  list (e.g. a ferment step) does not silence staleness pressure on
+ *  another (e.g. the neglected global list). */
+const toolCallsSinceTodoWrite = new Map<string, Map<string, number>>()
 
 /** Per-session count of all non-todo tool calls, regardless of whether a todo
  * list exists. Used by the one-shot early nudge to detect multi-step work
@@ -35,12 +71,18 @@ const todoNudgeFired = new Set<string>()
  * Reset to false on create, set to true on any subsequent write. */
 const todoListEverUpdated = new Set<string>()
 
-export function getToolCallsSinceTodoWrite(sessionId: string): number {
-	return toolCallsSinceTodoWrite.get(sessionId) ?? 0
+export function getToolCallsSinceTodoWrite(scope: TodoScope, sessionId: string): number {
+	return toolCallsSinceTodoWrite.get(sessionId)?.get(getTodoScopeKey(scope)) ?? 0
 }
 
-export function bumpToolCallsSinceTodoWrite(sessionId: string): void {
-	toolCallsSinceTodoWrite.set(sessionId, (toolCallsSinceTodoWrite.get(sessionId) ?? 0) + 1)
+/** Increment the staleness counter for one scope's list and return the new
+ *  post-increment count. */
+export function bumpToolCallsSinceTodoWrite(scope: TodoScope, sessionId: string): number {
+	const byScope = getOrCreateInnerMap(toolCallsSinceTodoWrite, sessionId)
+	const scopeKey = getTodoScopeKey(scope)
+	const next = (byScope.get(scopeKey) ?? 0) + 1
+	byScope.set(scopeKey, next)
+	return next
 }
 
 /** Increment the cumulative count of non-todo tool calls for a session.
@@ -54,8 +96,16 @@ export function getWorkToolCalls(sessionId: string): number {
 	return workToolCallsSinceStart.get(sessionId) ?? 0
 }
 
-export function resetToolCallsSinceTodoWrite(sessionId: string): void {
-	toolCallsSinceTodoWrite.set(sessionId, 0)
+export function resetToolCallsSinceTodoWrite(scope: TodoScope, sessionId: string): void {
+	const byScope = toolCallsSinceTodoWrite.get(sessionId)
+	if (byScope) byScope.delete(getTodoScopeKey(scope))
+}
+
+/** Session-wide cleanup: clears every scope's staleness counter for the
+ *  session (replay, shutdown). Other sessions on the same host are
+ *  unaffected. */
+export function clearToolCallsSinceTodoWriteForSession(sessionId: string): void {
+	toolCallsSinceTodoWrite.delete(sessionId)
 }
 
 /** Returns true if this session has ever had any todos in its store. */
@@ -116,7 +166,7 @@ function isEmptyScopeInput(scopeInput: unknown): boolean {
 	return false
 }
 
-export function resolveTodoScope(scopeInput?: unknown): TodoScope {
+export function resolveTodoScope(sessionId: string, scopeInput?: unknown): TodoScope {
 	if (!isEmptyScopeInput(scopeInput)) return normalizeTodoScope(scopeInput)
 
 	// In-process subagent workers never inherit the orchestrator's active
@@ -125,7 +175,7 @@ export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	// labels (label only — the store is already keyed by session id).
 	if (isAgentWorker()) return GLOBAL_TODO_SCOPE
 
-	for (const provider of activeScopeProviders) {
+	for (const provider of activeScopeProviders.get(sessionId) ?? []) {
 		const scope = provider()
 		if (scope) return scope
 	}
@@ -133,11 +183,11 @@ export function resolveTodoScope(scopeInput?: unknown): TodoScope {
 	return GLOBAL_TODO_SCOPE
 }
 
-function resolveWriteTodoScope(params: WriteTodosParams): TodoScope {
-	return resolveTodoScope(params.scope)
+function resolveWriteTodoScope(params: WriteTodosParams, sessionId: string): TodoScope {
+	return resolveTodoScope(sessionId, params.scope)
 }
 
-function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string): void {
+function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string, context?: TodoWriteContext): void {
 	// Isolate listener failures: the store is already updated when listeners
 	// run, so an exception escaping here would surface as a bogus "Failed to
 	// write todos" tool result even though the write landed (observed: a
@@ -145,7 +195,7 @@ function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string)
 	// model abandoned todo updates for the rest of that session).
 	for (const listener of [...todoStoreListeners]) {
 		try {
-			listener(details, sessionId)
+			listener(details, sessionId, context)
 		} catch (error) {
 			console.error("Todo store listener failed:", error)
 			// A stale-ctx listener holds a disposed session's runtime and will
@@ -158,11 +208,16 @@ function notifyTodoStoreListeners(details: WriteTodosDetails, sessionId: string)
 	}
 }
 
-export function applyWriteTodos(params: WriteTodosParams, sessionId: string): WriteTodosDetails {
-	const scope = resolveWriteTodoScope(params)
+export function applyWriteTodos(
+	params: WriteTodosParams,
+	sessionId: string,
+	context?: TodoWriteContext,
+): WriteTodosDetails {
+	const scope = resolveWriteTodoScope(params, sessionId)
 	const current = getSessionState(sessionId)
 	const result = reduceReplaceList(current, { ...params, scope })
 	setSessionState(sessionId, result.state)
+	bumpTodoScopeVersion(scope, sessionId)
 
 	// Track session state for nudge gating and create-and-forget detection.
 	const hadTodosBefore = sessionsWithTodos.has(sessionId)
@@ -178,12 +233,54 @@ export function applyWriteTodos(params: WriteTodosParams, sessionId: string): Wr
 		todoListEverUpdated.add(sessionId)
 	}
 
-	notifyTodoStoreListeners(result.details, sessionId)
+	notifyTodoStoreListeners(result.details, sessionId, context)
 	return result.details
 }
 
 export function getTodosForScope(scope: TodoScope, sessionId: string): TodoItem[] {
 	return getSessionState(sessionId).byScope[getTodoScopeKey(scope)]?.todos ?? []
+}
+
+function isThenable(value: unknown): boolean {
+	return (
+		(typeof value === "object" || typeof value === "function") &&
+		value !== null &&
+		typeof (value as { then?: unknown }).then === "function"
+	)
+}
+
+/**
+ * Synchronous read-modify-write on one scope's todo list.
+ *
+ * Reads the latest list for the scope, invokes `mutator` on a detached
+ * snapshot, and commits the returned drafts via `applyWriteTodos` without
+ * yielding to the event loop. Parallel add/mark calls therefore serialize
+ * naturally with each other and with the remaining synchronous write paths
+ * (replacement, clear, commands, ferment bridge) — there is no await between
+ * read and commit anywhere.
+ *
+ * Contract:
+ * - `undefined` commits nothing and notifies no store subscribers.
+ * - The mutator only ever sees a detached snapshot, so a mutator that
+ *   throws (or misbehaves) cannot modify stored items.
+ * - A thenable result is rejected before committing: mutators must be
+ *   synchronous. The `TodoDraft[] | undefined` return type also fails type
+ *   checking for async callbacks; this guard covers callers that cast.
+ * - Mutators must be pure: no reentrant store writes or async side effects.
+ */
+export function applyTodoMutation(
+	scope: TodoScope,
+	sessionId: string,
+	mutator: (todos: readonly Readonly<TodoItem>[]) => TodoDraft[] | undefined,
+	context?: TodoWriteContext,
+): WriteTodosDetails | undefined {
+	const snapshot = getTodosForScope(scope, sessionId).map((todo) => ({ ...todo }))
+	const drafts = mutator(snapshot)
+	if (drafts === undefined) return undefined
+	if (isThenable(drafts)) {
+		throw new Error("applyTodoMutation mutator must be synchronous — returned a thenable, refusing to commit")
+	}
+	return applyWriteTodos({ scope, todos: drafts }, sessionId, context)
 }
 
 export function getTodoCountsForScope(scope: TodoScope, sessionId: string): TodoCounts {
@@ -197,23 +294,34 @@ export function getTodoCountsForScope(scope: TodoScope, sessionId: string): Todo
 	}
 }
 
-export function subscribeTodoStore(listener: (details: WriteTodosDetails, sessionId: string) => void): () => void {
+export function subscribeTodoStore(
+	listener: (details: WriteTodosDetails, sessionId: string, context?: TodoWriteContext) => void,
+): () => void {
 	todoStoreListeners.add(listener)
 	return () => {
 		todoStoreListeners.delete(listener)
 	}
 }
 
-export function registerActiveTodoScopeProvider(provider: TodoScopeProvider): () => void {
-	activeScopeProviders.push(provider)
+export function registerActiveTodoScopeProvider(sessionId: string, provider: TodoScopeProvider): () => void {
+	const bucket = activeScopeProviders.get(sessionId)
+	if (bucket) {
+		bucket.push(provider)
+	} else {
+		activeScopeProviders.set(sessionId, [provider])
+	}
 	return () => {
-		const index = activeScopeProviders.indexOf(provider)
-		if (index >= 0) activeScopeProviders.splice(index, 1)
+		const bucket = activeScopeProviders.get(sessionId)
+		if (!bucket) return
+		const index = bucket.indexOf(provider)
+		if (index >= 0) bucket.splice(index, 1)
+		if (bucket.length === 0) activeScopeProviders.delete(sessionId)
 	}
 }
 
 export function clearTodoStore(sessionId: string): void {
 	stateMap.delete(sessionId)
+	scopeWriteVersions.delete(sessionId)
 }
 
 export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[], sessionId: string): void {
@@ -237,11 +345,12 @@ export function restoreTodoStoreFromDetails(details: readonly WriteTodosDetails[
 
 export function __resetTodoStore(): void {
 	stateMap.clear()
-	activeScopeProviders.length = 0
+	activeScopeProviders.clear()
 	todoStoreListeners.clear()
 	toolCallsSinceTodoWrite.clear()
 	workToolCallsSinceStart.clear()
 	sessionsWithTodos.clear()
 	todoNudgeFired.clear()
 	todoListEverUpdated.clear()
+	scopeWriteVersions.clear()
 }

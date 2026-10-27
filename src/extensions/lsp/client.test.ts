@@ -47,6 +47,7 @@ const CWD = "/tmp/lsp-client-test"
 
 const FAKE_CONFIG: ServerConfig = {
 	name: "typescript-language-server",
+	language: "TypeScript",
 	command: "typescript-language-server",
 	args: ["--stdio"],
 	extensions: ["ts"],

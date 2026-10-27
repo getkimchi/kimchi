@@ -752,7 +752,11 @@ async function navigateMenuTo(
 ): Promise<void> {
 	for (let i = 0; i < 30; i += 1) {
 		const view = viewText(terminal)
-		const cursorLine = view.split("\n").find((line) => line.includes("→"))
+		// Menu cursor rows render as ` → <label>` (`→` at line start).
+		// The surrounding hint chrome (e.g. the /pi config hint box that 1.3.0
+		// renders above the editor) contains mid-line arrows; matching any `→`
+		// on a line would pick those up before the cursor ever moves.
+		const cursorLine = view.split("\n").find((line) => line.startsWith(" →"))
 		if (cursorLine?.includes(target)) {
 			trace.step(`cursor on "${target}"`)
 			terminal.submit("")

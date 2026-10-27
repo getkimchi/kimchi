@@ -88,7 +88,7 @@ import {
 import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { parseCommandSegments } from "./permissions/taxonomy.js"
-import { emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
+import { emitSteerFired, emitSteerOutcome, isSteerDisabled } from "./steer-events.js"
 import { markHarnessSteer } from "./steer-marker.js"
 
 const RESOURCE_ID = "extensions.bash-tool-guard"
@@ -284,11 +284,16 @@ export function classifyBashCommand(command: string): BashClassification | null 
 		const matchedSegment = tokens.join(" ")
 
 		// Category 1: write — `> file` / `>> file` redirect to a non-stream
-		// target, OR `tee <file>`. We treat any non-stream `>` / `>>` op in
-		// any segment as a write signal because the redirect target is the
-		// file the model wants to produce.
+		// target, OR `tee <file>`. We treat any non-stream `>` / `>>` / `&>` /
+		// `&>>` op in any segment as a write signal because the redirect target is
+		// the file the model wants to produce. (`&>` combined redirects arrive as
+		// single operators since shell-quote 1.11.)
 		for (const op of segment.ops) {
-			if ((op.op === ">" || op.op === ">>") && op.target && !isStreamRedirectTarget(op.target)) {
+			if (
+				(op.op === ">" || op.op === ">>" || op.op === "&>" || op.op === "&>>") &&
+				op.target &&
+				!isStreamRedirectTarget(op.target)
+			) {
 				return { category: "write", suggestion: WRITE_SUGGESTION, matchedSegment, tool }
 			}
 		}
@@ -711,7 +716,10 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 
 	function emitOutcome(outcome: "complied" | "repeated"): void {
 		if (!isSteerDisabled("bash_tool_guard")) {
-			emitSteerOutcome(pi, "bash_tool_guard", outcome, { interactive: ctx?.hasUI })
+			emitSteerOutcome(pi, "bash_tool_guard", outcome, {
+				interactive: ctx?.hasUI,
+				sessionId: ctx?.sessionManager.getSessionId(),
+			})
 		}
 	}
 
@@ -820,6 +828,12 @@ export default function bashToolGuardExtension(pi: ExtensionAPI, options?: BashG
 			},
 			{ deliverAs: "steer" },
 		)
+		// Register the fire so the steer:outcome self-attributes back to this
+		// warn (the guard's own domain warn event stays on its channel).
+		emitSteerFired(pi, "bash_tool_guard", "warn", {
+			interactive: ctx?.hasUI,
+			sessionId: ctx?.sessionManager.getSessionId(),
+		})
 		return { block: false }
 	})
 }

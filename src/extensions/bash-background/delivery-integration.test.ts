@@ -42,6 +42,11 @@ import { createReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
+// Scenario timelines here include back-to-back stops with live processes;
+// zero reminder spacing keeps them about delivery exactly-once semantics.
+// Interval gating is covered in bash-control-extension.test.ts.
+process.env.KIMCHI_E2E_COMPLETION_REMINDER_MS = "0"
+
 // pi-agent-core is a transitive dependency: resolve it through the installed
 // SDK's path (pnpm keeps them as siblings in .pnpm) — a direct package import
 // would break under pnpm's strict resolution (see continuation-nudge.ts).

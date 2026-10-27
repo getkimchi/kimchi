@@ -733,3 +733,144 @@ describe("adminOverview", () => {
 		expect(quiet.text).not.toContain("Quarantined poison jobs")
 	})
 })
+
+// --- runAdminCommand — consolidate (E7 Part B) ---------------------------------
+
+describe("runAdminCommand — consolidate", () => {
+	/** d3 stub: every fact whose text contains `twinMarker` classifies exact_twin. */
+	function consolidateGate(twinMarker: string | RegExp, choice: "exact_twin" | "near_twin" = "exact_twin") {
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, { instructions: string }> }
+			const answers = Object.fromEntries(
+				Object.entries(body.questions).map(([key, q]) => {
+					const isTwin =
+						typeof twinMarker === "string" ? q.instructions.includes(twinMarker) : twinMarker.test(q.instructions)
+					return [
+						key,
+						{
+							type: "choice",
+							choice: isTwin ? choice : "unique",
+							probabilities: {
+								unique: isTwin ? 0.02 : 0.9,
+								complementary: 0.03,
+								exact_twin: isTwin ? 0.9 : 0.02,
+								near_twin: 0.05,
+							},
+							confidence: 0.9,
+						},
+					]
+				}),
+			)
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		return { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl }
+	}
+
+	const items = (): AdminMemoryItem[] => [
+		{ id: "m1", memory: "the user's dog is named Fred" },
+		{ id: "m2", memory: "the user's dog is named Fred (yes, really)" },
+		{ id: "m3", memory: "the user gardens every summer" },
+	]
+
+	it("reports twin deletions without applying them (report-first contract)", async () => {
+		const h = trackedHarness({ personal: items() })
+		const gate = consolidateGate(/m2|yes, really/)
+		const result = await runAdminCommand(["consolidate", "--scope", "personal"], {
+			cwd: NO_REPO_CWD,
+			deps: { ...h.deps, decisionGate: gate },
+		})
+		expect(result.code).toBe(0)
+		expect(result.text).toContain("1 exact_twin")
+		expect(result.text).toContain("Re-run with --yes")
+		const backend = h.backends.get(`${h.root}/personal/memory.db`)
+		expect(backend?.deleted).toEqual([])
+	})
+
+	it("--yes applies the classified deletions under the lock", async () => {
+		const h = trackedHarness({ personal: items() })
+		const gate = consolidateGate(/yes, really/)
+		const result = await runAdminCommand(["consolidate", "--scope", "personal", "--yes"], {
+			cwd: NO_REPO_CWD,
+			deps: { ...h.deps, decisionGate: gate },
+		})
+		expect(result.text).toContain("Deleted 1 redundant fact(s)")
+		const backend = h.backends.get(`${h.root}/personal/memory.db`)
+		expect(backend?.deleted).toEqual(["m2"])
+	})
+
+	it("an all-twins verdict keeps the oldest fact (never empties a store)", async () => {
+		const h = trackedHarness({
+			personal: [
+				{ id: "m1", memory: "same fact" },
+				{ id: "m2", memory: "same fact, again" },
+			],
+		})
+		// Every fact classified a twin of everything.
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }
+			const answers = Object.fromEntries(
+				Object.keys(body.questions).map((key) => [
+					key,
+					{
+						type: "choice",
+						choice: "exact_twin",
+						probabilities: { unique: 0.02, complementary: 0.02, exact_twin: 0.93, near_twin: 0.03 },
+						confidence: 0.9,
+					},
+				]),
+			)
+			return new Response(JSON.stringify({ answers, usage: { input_tokens: 100, output_tokens: 0 } }), { status: 200 })
+		}
+		const result = await runAdminCommand(["consolidate", "--scope", "personal", "--yes"], {
+			cwd: NO_REPO_CWD,
+			deps: { ...h.deps, decisionGate: { endpoint: "https://gw.test/typesafe/v1/systemone", apiKey: "k", fetchImpl } },
+		})
+		expect(result.text).toContain("kept the oldest fact")
+		const backend = h.backends.get(`${h.root}/personal/memory.db`)
+		expect(backend?.deleted).toEqual(["m2"]) // the older m1 survived
+	})
+
+	it("a classification failure leaves the store untouched", async () => {
+		const h = trackedHarness({ personal: items() })
+		const down = async () => new Response(JSON.stringify({ error: "quota" }), { status: 401 })
+		const result = await runAdminCommand(["consolidate", "--scope", "personal", "--yes"], {
+			cwd: NO_REPO_CWD,
+			deps: {
+				...h.deps,
+				decisionGate: {
+					endpoint: "https://gw.test/typesafe/v1/systemone",
+					apiKey: "k",
+					fetchImpl: down,
+					maxRetries: 0,
+				},
+			},
+		})
+		expect(result.text).toContain("classification failed")
+		const backend = h.backends.get(`${h.root}/personal/memory.db`)
+		expect(backend?.deleted).toEqual([])
+	})
+
+	it("the keyless config shape refuses early (no 401 spam)", async () => {
+		const h = trackedHarness({ personal: items() })
+		const result = await runAdminCommand(["consolidate", "--scope", "personal", "--yes"], {
+			cwd: NO_REPO_CWD,
+			deps: { ...h.deps, decisionGate: null },
+		})
+		expect(result.code).toBe(1)
+		expect(result.text).toContain("no API key")
+	})
+
+	it("grammar: consolidate parses with scope; positionals are a usage error", () => {
+		expect(parseAdminArgs(["consolidate"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "consolidate",
+			scope: { kind: "local", scopeId: undefined },
+			yes: false,
+		})
+		expect(parseAdminArgs(["consolidate", "--scope", "personal", "--yes"], { cwd: NO_REPO_CWD })).toEqual({
+			op: "consolidate",
+			scope: { kind: "personal" },
+			yes: true,
+		})
+		expect(parseAdminArgs(["consolidate", "x"], { cwd: NO_REPO_CWD })).toMatchObject({ op: "usage-error" })
+	})
+})

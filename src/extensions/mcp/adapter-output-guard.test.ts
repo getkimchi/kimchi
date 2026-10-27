@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url)
 
 /**
  * Kimchi lowers the adapter's MCP output-guard default from the adapter's
- * 50 KB (the read tool's cap) to 12 KB via patches/pi-mcp-adapter@2.34.0.patch:
+ * 50 KB (the read tool's cap) to 12 KB via patches/pi-mcp-adapter@5.3.1.patch:
  * five parallel ~50 KB MCP results ≈ 64k tokens, which overflowed the remaining
  * context headroom on 256k-window sessions (12 KB keeps such bursts within it).
  * The constant lives inside the patched dependency and is not exported, so this
@@ -21,7 +21,7 @@ describe("pi-mcp-adapter output guard patch", () => {
 		const match = source.includes("export const DEFAULT_MCP_OUTPUT_MAX_BYTES = 12 * 1024;")
 		if (!match) {
 			throw new Error(
-				"DEFAULT_MCP_OUTPUT_MAX_BYTES is not 12 * 1024 in the installed pi-mcp-adapter — the adapter version changed without re-porting patches/pi-mcp-adapter@2.34.0.patch",
+				"DEFAULT_MCP_OUTPUT_MAX_BYTES is not 12 * 1024 in the installed pi-mcp-adapter — the adapter version changed without re-porting patches/pi-mcp-adapter@5.3.1.patch",
 			)
 		}
 	})

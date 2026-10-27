@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { runTodoCommandMutation } from "./command-mutation.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
+import { getInputRevision } from "./reconciliation.js"
 import { applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
 import {
@@ -141,7 +142,12 @@ interface ApplyTodoActionOptions {
 }
 
 function writeTodos(params: WriteTodosParams, options: ApplyTodoActionOptions): WriteTodosDetails {
-	const details = applyWriteTodos(params, options.sessionId)
+	// User-initiated command writes reconcile the list against the latest
+	// input, like real assistant writes do.
+	const details = applyWriteTodos(params, options.sessionId, {
+		origin: "command",
+		inputRevision: getInputRevision(options.sessionId),
+	})
 	options.onWrite?.(details)
 	return details
 }

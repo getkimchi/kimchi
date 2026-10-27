@@ -58,6 +58,7 @@ describe("artifactsFromToolCall", () => {
 				name: "slides.pptx",
 				uri: pathToFileURL(abs).href,
 				mimeType: expect.stringContaining("presentationml"),
+				origin: "write",
 			},
 		])
 	})

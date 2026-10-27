@@ -6,7 +6,7 @@ import type { ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
 import { AUTO_MODEL_DESCRIPTION, AUTO_MODEL_PROVIDER } from "./extensions/auto-model/constants.js"
-import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
 import {
 	collectDeprecationMarkers,
 	deriveDeprecationState,
@@ -15,6 +15,7 @@ import {
 	stripDeprecationMarker,
 	writeModelDeprecations,
 } from "./model-deprecation.js"
+import { normalizeThinkingLevels } from "./thinking-levels.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -123,6 +124,9 @@ export interface FetchModelsOptions {
 	allowCachedFallback?: boolean
 	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
 	requireActiveModels?: boolean
+	/** CAST AI SSO: organization id sent as `X-CastAi-Organization-Id` on the metadata
+	 * fetch and stamped into every Kimchi provider's models.json headers. */
+	organizationId?: string
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -152,6 +156,12 @@ export interface ModelMetadata {
 	/** Optional human-facing description from the models endpoint; shown in the
 	 *  /model selector's DESCRIPTION column. Absent until the backend sends it. */
 	description?: string
+	/** Curation state from the models endpoint — tri-state: omitted for
+	 *  uncurated models (clients must not infer levels), the explicit empty
+	 *  array for curated models whose thinking offers no distinct levels
+	 *  (provider default, no level controls), populated with the curated
+	 *  levels otherwise (canonical rank order). */
+	thinking_levels?: string[]
 	deprecated_at?: string
 	sunset_at?: string
 	replacement_model?: string
@@ -195,7 +205,10 @@ async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions 
 		let response: Response
 		try {
 			response = await fetch(metadataUrl, {
-				headers: { Authorization: `Bearer ${apiKey}` },
+				headers: {
+					Authorization: `Bearer ${apiKey}`,
+					...(options.organizationId ? { "X-CastAi-Organization-Id": options.organizationId } : {}),
+				},
 				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 			})
 		} catch (err) {
@@ -270,6 +283,12 @@ export interface PiModelConfig {
 	 *  offline cache round-trip keeps it; pi's loader ignores the extra key
 	 *  (verified: ModelConfig tolerates unknown model fields). */
 	description?: string
+	/** Curation state from the models endpoint — tri-state, persisted for the
+	 *  offline cache round-trip: undefined for uncurated models, the explicit
+	 *  empty array for curated-none ("thinking exists but offers no distinct
+	 *  levels"), populated with the curated levels otherwise. pi's loader
+	 *  ignores the extra key (verified: ModelConfig tolerates unknown fields). */
+	thinkingLevels?: string[]
 }
 
 function metadataToModel(m: ModelMetadata): PiModelConfig {
@@ -318,12 +337,13 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		provider: m.provider,
 		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
+		...(Array.isArray(m.thinking_levels) && { thinkingLevels: normalizeThinkingLevels(m.thinking_levels) }),
 		...(compat && { compat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }
 
-export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
+export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, organizationId?: string) {
 	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
 	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
 
@@ -348,9 +368,13 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 		byProvider.set(m.provider, group)
 	}
 
+	// CAST AI SSO credentials are organization-scoped: the gateway routes by
+	// `X-CastAi-Organization-Id`. Key-based logins pass no org (undefined) so a
+	// provider rebuilt after a key login drops any stale SSO header.
 	const providerHeaders = (upstreamProvider: string) => ({
 		"User-Agent": `kimchi/${getVersion()}`,
 		"X-Provider-Type": upstreamProvider,
+		...(organizationId ? { "X-CastAi-Organization-Id": organizationId } : {}),
 	})
 
 	const providers: Record<string, ProviderConfig> = {
@@ -401,10 +425,11 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 		is_serverless: true,
 		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
 		...(m.description ? { description: m.description } : {}),
+		...(m.thinkingLevels !== undefined ? { thinking_levels: m.thinkingLevels } : {}),
 	}
 }
 
-// ─── Model description registry ─────────────────────────────────────────────
+// ─── Model metadata registries (description + thinking levels) ──────────────
 //
 // The /model selector's DESCRIPTION column reads descriptions from a process
 // global (`__kimchiModelDescriptions`) — the same channel the patched selector
@@ -412,6 +437,14 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 // modules. Keyed by "<provider block>/<model id>" — exactly what the selector
 // row sees. Fresh metadata replaces cached descriptions; Auto fallback text
 // is inserted only when the current catalog has no description.
+//
+// Curated thinking levels use a parallel process-global registry
+// (`__kimchiModelThinkingLevels`), keyed by the same refs and carrying the
+// tri-state: absent entry = not curated, empty array = curated-none
+// ("thinking exists but offers no distinct levels"), populated = curated
+// levels. The registries are populated/cleared independently: a refresh that
+// drops one field must not disturb the other, and description-only writes
+// (the Auto fallback) leave existing levels intact.
 
 type ModelDescriptionRegistry = Map<string, string>
 
@@ -455,18 +488,52 @@ export function __clearModelDescriptionsForTest(): void {
 	syntheticMarkerKeys().clear()
 }
 
-/** Register every model description found in models.json provider blocks.
- * Shared with the environment models path (KIMCHI_API_KEY sessions), which
- * bypasses updateModelsConfig and must still populate the
- * /model selector's description registry. */
-export function registerDescriptionsFromProviders(
-	providers: Record<string, { models?: Array<{ id: string; description?: string }> }>,
+type ModelThinkingLevelsRegistry = Map<string, string[]>
+
+function modelThinkingLevelsRegistry(): ModelThinkingLevelsRegistry {
+	const globals = process as typeof process & { __kimchiModelThinkingLevels?: ModelThinkingLevelsRegistry }
+	if (!(globals.__kimchiModelThinkingLevels instanceof Map)) {
+		globals.__kimchiModelThinkingLevels = new Map()
+	}
+	return globals.__kimchiModelThinkingLevels
+}
+
+/** Register authoritative thinking-level curation, replacing earlier cache
+ * data. Pass the empty array for curated-none; normalization keeps unknown
+ * levels from masquerading as curation. */
+export function registerModelThinkingLevels(key: string, levels: string[]): void {
+	modelThinkingLevelsRegistry().set(key, normalizeThinkingLevels(levels))
+}
+
+/** Thinking-level curation for a model ref — tri-state: undefined when not
+ * curated, the empty array for curated-none, the curated levels otherwise. */
+export function getModelThinkingLevels(key: string): string[] | undefined {
+	return modelThinkingLevelsRegistry().get(key)
+}
+
+/** @internal — test hook clearing the process-global registry. */
+export function __clearModelThinkingLevelsForTest(): void {
+	modelThinkingLevelsRegistry().clear()
+}
+
+/** Register every model's description and thinking levels found in models.json
+ * provider blocks. Shared with the environment models path (KIMCHI_API_KEY
+ * sessions), which bypasses updateModelsConfig and must still populate the
+ * /model selector's registries. Each field is registered or cleared
+ * independently, so a refresh that drops one preserves the other. */
+export function registerModelInfoFromProviders(
+	providers: Record<string, { models?: Array<{ id: string; description?: string; thinkingLevels?: string[] }> }>,
 ): void {
 	for (const [block, provider] of Object.entries(providers)) {
 		for (const model of provider?.models ?? []) {
 			const key = `${block}/${model.id}`
 			if (model.description) registerModelDescription(key, model.description)
 			else modelDescriptionRegistry().delete(key)
+			// Tri-state: an entry is registered whenever curation exists — the
+			// empty array included (curated-none) — and cleared when the field
+			// is absent (uncurated).
+			if (Array.isArray(model.thinkingLevels)) registerModelThinkingLevels(key, model.thinkingLevels)
+			else modelThinkingLevelsRegistry().delete(key)
 		}
 	}
 }
@@ -552,9 +619,10 @@ function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined
 		const raw = readFileSync(modelsJsonPath, "utf-8")
 		const parsed = JSON.parse(raw)
 		const providers = parsed?.providers ?? {}
-		// Restore the description registry from the persisted cache so the
-		// /model selector keeps descriptions across offline restarts.
-		registerDescriptionsFromProviders(providers)
+		// Restore the metadata registries from the persisted cache so the
+		// /model selector keeps descriptions and thinking levels across offline
+		// restarts.
+		registerModelInfoFromProviders(providers)
 		registerAutoDescriptionFallback()
 		registerDeprecationMarkers(modelsJsonPath)
 		const result: ModelMetadata[] = []
@@ -613,6 +681,49 @@ export function syncProviderModels(
 	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
 }
 
+/** The org header every Kimchi-managed provider entry may carry. */
+const ORGANIZATION_HEADER = "X-CastAi-Organization-Id"
+
+/** Merge (or strip) the `X-CastAi-Organization-Id` header on every Kimchi-managed
+ * provider entry in models.json WITHOUT touching anything else (models, base
+ * URL, credentials). Used after an SSO login (set the selected org) and after
+ * an API-key login (clear a stale org from a previous SSO session) — covers
+ * the cached-fallback paths where updateModelsConfig does not rewrite the
+ * file. */
+export function applyOrganizationHeader(modelsJsonPath: string, organizationId: string | undefined): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, { headers?: Record<string, string> }> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		// A models.json that does not parse is surfaced by upstream startup
+		// warnings; do not make the org header the thing that crashes login.
+		return
+	}
+	let changed = false
+	for (const providerId of Object.keys(config.providers ?? {})) {
+		if (!isKimchiProvider(providerId)) continue
+		const entry = config.providers?.[providerId]
+		if (!entry) continue
+		const headers = { ...(entry.headers ?? {}) }
+		const hasHeader = Object.hasOwn(headers, ORGANIZATION_HEADER)
+		if (organizationId) {
+			if (headers[ORGANIZATION_HEADER] !== organizationId) {
+				headers[ORGANIZATION_HEADER] = organizationId
+				entry.headers = headers
+				changed = true
+			}
+		} else if (hasHeader) {
+			// biome-ignore lint/performance/noDelete: explicit removal keeps the
+			// entry shape identical to a never-SSO'd provider
+			delete headers[ORGANIZATION_HEADER]
+			entry.headers = headers
+			changed = true
+		}
+	}
+	if (changed) writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
 export function injectExperimentalProvider(modelsJsonPath: string, apiKey: string): void {
 	if (!existsSync(modelsJsonPath)) return
 	let config: { providers?: Record<string, unknown> }
@@ -664,9 +775,9 @@ export async function updateModelsConfig(
 		mkdirSync(dirname(modelsJsonPath), { recursive: true })
 		const merged = { providers: { ...readExistingProviders(modelsJsonPath), ...result.providers } }
 		writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
-		// Populate the selector's description registry from the freshly written
-		// blocks (the fetch path — endpoint descriptions land here first).
-		registerDescriptionsFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
+		// Populate the selector's metadata registries from the freshly written
+		// blocks (the fetch path — endpoint descriptions and levels land here first).
+		registerModelInfoFromProviders(merged.providers as Record<string, { models?: PiModelConfig[] }>)
 		registerAutoDescriptionFallback()
 		registerDeprecationMarkers(modelsJsonPath)
 	}
@@ -687,7 +798,7 @@ export async function discoverModelsConfig(
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			providers: buildModelsConfig(cached, options.endpoint).providers,
+			providers: buildModelsConfig(cached, options.endpoint, options.organizationId).providers,
 			refreshed: false,
 		}
 	}
@@ -711,7 +822,7 @@ export async function discoverModelsConfig(
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			providers: buildModelsConfig(cached, options.endpoint).providers,
+			providers: buildModelsConfig(cached, options.endpoint, options.organizationId).providers,
 			refreshed: false,
 		}
 	}
@@ -746,7 +857,7 @@ export async function discoverModelsConfig(
 	const models = sortModels(activeModels)
 	return {
 		models: sortModels([...activeModels, ...otherModels]),
-		providers: buildModelsConfig(models, options.endpoint).providers,
+		providers: buildModelsConfig(models, options.endpoint, options.organizationId).providers,
 		refreshed: true,
 	}
 }

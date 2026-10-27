@@ -111,6 +111,7 @@ describe("binary smoke tests", () => {
 	})
 
 	it("auto-names persisted sessions from the first user prompt", () => {
+		// upstream pi startup + dummy-provider retry takes ~7s; keep well above vitest's 5s default.
 		const before = new Set(listSessionFiles())
 		const prompt = "Explore 3 random files"
 		runBinary({
@@ -125,7 +126,7 @@ describe("binary smoke tests", () => {
 			.flatMap(readSessionEntries)
 
 		expect(newEntries).toContainEqual(expect.objectContaining({ type: "session_info", name: prompt }))
-	})
+	}, 20_000)
 
 	describe("runtime config autoloading", () => {
 		let workDir: string
@@ -184,6 +185,20 @@ describe("binary smoke tests", () => {
 			expect(html).toContain("window.__KIMCHI_VERSION")
 			expect(html).toContain('class="info-label">Version:')
 		})
+	})
+
+	it("bundled themes sync even when PI_PACKAGE_DIR is inherited from a source checkout", { timeout: 35_000 }, () => {
+		// A nested kimchi session exports its own PI_PACKAGE_DIR; when that dir is a
+		// source checkout (themes/ instead of the packaged theme/) startup must
+		// recover to the binary-adjacent share dir instead of emitting
+		// "bundled theme <name> not found" warnings and running unthemed.
+		const result = runBinary({
+			args: ["-p", "hello"],
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", PI_PACKAGE_DIR: resolve(".") },
+			throwOnError: false,
+			timeoutMs: 25_000,
+		})
+		expect(result.stderr).not.toContain("bundled theme")
 	})
 
 	it.skipIf(!process.env.KIMCHI_API_KEY)("sends a request to a model via -p flag", { retry: 2 }, () => {

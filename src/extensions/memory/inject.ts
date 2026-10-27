@@ -38,6 +38,8 @@ export interface DigestComposition {
 	considered: number
 	/** Dropped by the relevance threshold. */
 	belowThreshold: number
+	/** Dropped by the decision-model selector (0 under the threshold rule). */
+	selectorSkipped: number
 	/** Dropped by the top-N cap after clearing the threshold. */
 	overCap: number
 	/** Dropped by the token budget. */
@@ -71,10 +73,33 @@ function collectCandidates(hits: MemorySearchHit[]): Candidate[] {
 	return [...byText.entries()].map(([text, score]) => ({ text, score })).sort((a, b) => b.score - a.score)
 }
 
-function gateCandidates(ranked: Candidate[], composition: DigestComposition, maxFacts: number): Candidate[] {
+/**
+ * The ranked candidate texts the digest sees (deduped, score-desc) — the
+ * exact list the decision selector judges in computeDigest. Keeping this
+ * exported (and used both by the selector and the builder) guarantees the
+ * selection indexes line up with the builder's candidate list.
+ */
+export function digestCandidateTexts(hits: MemorySearchHit[]): string[] {
+	return collectCandidates(hits).map((c) => c.text)
+}
+
+function gateCandidates(
+	ranked: Candidate[],
+	composition: DigestComposition,
+	maxFacts: number,
+	selected?: ReadonlySet<string>,
+): Candidate[] {
 	const kept: Candidate[] = []
 	for (const candidate of ranked) {
-		if (candidate.score < DIGEST_SCORE_THRESHOLD) {
+		if (selected) {
+			// The selector replaces the relevance threshold — bge-m3 made the
+			// 0.2 bar vacuous (spike E8: every retrieved fact clears it), so the
+			// inject/skip judgment is the value gate now.
+			if (!selected.has(candidate.text)) {
+				composition.selectorSkipped += 1
+				continue
+			}
+		} else if (candidate.score < DIGEST_SCORE_THRESHOLD) {
 			composition.belowThreshold += 1
 			continue
 		}
@@ -91,12 +116,17 @@ function gateCandidates(ranked: Candidate[], composition: DigestComposition, max
  * Build the digest from search hits. Returns undefined when nothing clears
  * the value bar — the normal outcome for unrelated sessions; the caller
  * must inject nothing in that case.
+ *
+ * `selected` (texts the decision selector approved, from
+ * digestCandidateTexts) swaps the threshold gate for the selector; omitted
+ * it runs the plain relevance-threshold rule (pre-gate behavior).
  */
-export function buildMemoryDigest(hits: MemorySearchHit[]): DigestResult | undefined {
+export function buildMemoryDigest(hits: MemorySearchHit[], selected?: ReadonlySet<string>): DigestResult | undefined {
 	const composition: DigestComposition = {
 		facts: 0,
 		considered: 0,
 		belowThreshold: 0,
+		selectorSkipped: 0,
 		overCap: 0,
 		overBudget: 0,
 		tokensEstimated: 0,
@@ -104,7 +134,7 @@ export function buildMemoryDigest(hits: MemorySearchHit[]): DigestResult | undef
 	const candidates = collectCandidates(hits)
 	composition.considered = candidates.length
 
-	const kept = gateCandidates(candidates, composition, DIGEST_MAX_FACTS)
+	const kept = gateCandidates(candidates, composition, DIGEST_MAX_FACTS, selected)
 
 	if (kept.length === 0) return undefined
 
@@ -271,6 +301,7 @@ export function buildTurnRecall(hits: MemorySearchHit[], deliveredKeys: Readonly
 		facts: 0,
 		considered: 0,
 		belowThreshold: 0,
+		selectorSkipped: 0,
 		overCap: 0,
 		overBudget: 0,
 		tokensEstimated: 0,

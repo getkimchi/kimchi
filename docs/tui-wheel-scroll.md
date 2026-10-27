@@ -1,6 +1,6 @@
 # TUI wheel-scroll speed
 
-In fullscreen mode (`tuiMode: "fullscreen"` in Kimchi's settings), one mouse-wheel notch scrolls **1 line** by default. To make wheel scrolling faster (e.g., in iTerm2), configure the step:
+In fullscreen mode, Kimchi uses pi-tui's velocity-based wheel scrolling (the `WheelScrollAccelerator`): slow wheel ticks scroll 1 line, fast spinning accelerates up to a cap. The default mode is `"auto"` (velocity-adaptive). To pin a fixed step instead (e.g., in iTerm2), configure:
 
 ```bash
 kimchi config set tui.wheelScrollLines 3   # shows effective value: kimchi config get tui.wheelScrollLines
@@ -13,10 +13,4 @@ or edit the config file directly:
 { "tui": { "wheelScrollLines": 3 } }
 ```
 
-Alternatively set the environment variable, which takes precedence over config:
-
-```bash
-export KIMCHI_WHEEL_SCROLL_LINES=3
-```
-
-Precedence: env var > project config > global config > default `1`. Invalid values (non-numeric, zero, negative) are ignored and fall back to the default; fractional values (e.g. `2.7`) are accepted and floored. Alt+wheel multiplies the configured step by 5. Changes apply after a restart — the value is read once when the TUI starts.
+The value is synced into pi's `fullscreenWheelScrollLines` setting at startup (config always wins when set; pi's own `/settings` wheel-scroll option and the legacy `KIMCHI_WHEEL_SCROLL_LINES` env var are no longer consulted — leave `tui.wheelScrollLines` unset to keep pi's `"auto"` behavior or a setting chosen in `/settings`). Precedence: project config > global config > pi settings > `"auto"`. Valid values are integers ≥ 1. Changes apply after a restart — the value is read once when the TUI starts.

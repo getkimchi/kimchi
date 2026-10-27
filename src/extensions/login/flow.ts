@@ -7,32 +7,46 @@ import {
 	LoginDialogComponent,
 	OAuthSelectorComponent,
 	type ModelRegistry as PiModelRegistry,
+	readStoredCredential,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
+import { loginWithCastAiOauth } from "../../cli-auth/oauth.js"
 import {
+	clearApiKey,
 	endpointsForRegion,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	loadConfig,
 	type WriteApiKeyOptions,
 	writeApiKey,
+	writeRegion,
 } from "../../config.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
+	applyOrganizationHeader,
 	isTransientModelsError,
 	ModelsFetchError,
 	type PiModelConfig,
 	syncProviderModels,
 	updateModelsConfig,
 } from "../../models.js"
-import { syncPiAuth } from "../../pi-auth.js"
-import { normalizeSelfHostedBaseUrl, REGIONS, type RegionId, selectableRegions } from "../../regions.js"
+import { resolveOAuthLoginConfig, setPendingOAuthRegion } from "../../oauth-config.js"
+import { syncOAuthCredentialToKimchiProviders, syncPiAuth } from "../../pi-auth.js"
+import {
+	isRegionId,
+	type KimchiRegion,
+	normalizeSelfHostedBaseUrl,
+	REGIONS,
+	type RegionId,
+	selectableRegions,
+} from "../../regions.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
+export const KIMCHI_SSO_LABEL = "Sign in with CAST AI (SSO)"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
 
 let browserLoginLinkSeq = 0
@@ -157,9 +171,11 @@ export function createRegionSelector(options: {
 	currentRegion: RegionId
 	onSelect: (region: RegionId) => void
 	onBack: () => void
+	/** Region list override (e.g. SSO login limits to regions with an OAuth tenant). */
+	regions?: KimchiRegion[]
 }): ExtensionSelectorComponent {
 	const current = REGIONS[options.currentRegion]
-	const regions = [current, ...selectableRegions().filter((region) => region.id !== current.id)]
+	const regions = [current, ...(options.regions ?? selectableRegions()).filter((region) => region.id !== current.id)]
 	const labels = regions.map((region) => (region === current ? `${region.label} \u2014 current` : region.label))
 	return new ExtensionSelectorComponent(
 		REGION_SELECTOR_TITLE,
@@ -181,16 +197,26 @@ export function regionChoiceRequired(currentRegion: RegionId): boolean {
 export function createLoginChoiceSelector(options: {
 	onKimchiAccount: () => void
 	onKimchiApiKey?: () => void
+	/** CAST AI SSO: the recommended browser login. */
+	onKimchiSso?: () => void
 	onSubscription: () => void
 	onCancel: () => void
 }): ExtensionSelectorComponent {
-	const labels = options.onKimchiApiKey
-		? [KIMCHI_ACCOUNT_LABEL, KIMCHI_API_KEY_LABEL, SUBSCRIPTION_LABEL]
-		: [KIMCHI_ACCOUNT_LABEL, SUBSCRIPTION_LABEL]
+	const labels = [
+		// SSO first: it is the recommended login method.
+		...(options.onKimchiSso ? [KIMCHI_SSO_LABEL] : []),
+		KIMCHI_ACCOUNT_LABEL,
+		...(options.onKimchiApiKey ? [KIMCHI_API_KEY_LABEL] : []),
+		SUBSCRIPTION_LABEL,
+	]
 	return new ExtensionSelectorComponent(
 		"Select authentication method:",
 		labels,
 		(option) => {
+			if (option === KIMCHI_SSO_LABEL && options.onKimchiSso) {
+				options.onKimchiSso()
+				return
+			}
 			if (option === SUBSCRIPTION_LABEL) {
 				options.onSubscription()
 				return
@@ -243,7 +269,7 @@ export async function prePopulateSubscriptionModels(providerId: string): Promise
 async function refreshKimchiModels(
 	token: string,
 	endpoint?: string,
-	options: { allowCachedFallback?: boolean; requireActiveModels?: boolean } = {},
+	options: { allowCachedFallback?: boolean; requireActiveModels?: boolean; organizationId?: string } = {},
 ): Promise<void> {
 	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	if (!agentDir) return
@@ -338,7 +364,7 @@ async function configureKimchiToken(
 	host: KimchiBrowserLoginHost,
 	token: string,
 	endpoint?: string,
-	options: { strictFreshDiscovery?: boolean; persistConfig?: () => void } = {},
+	options: { strictFreshDiscovery?: boolean; persistConfig?: () => void; organizationId?: string } = {},
 ): Promise<boolean> {
 	let refreshError: unknown
 	try {
@@ -347,6 +373,14 @@ async function configureKimchiToken(
 		})
 	} catch (error) {
 		refreshError = error
+	}
+
+	// Key-based logins carry no organization: drop a stale X-CastAi-Organization-Id
+	// a previous CAST AI SSO login left in models.json (no-op when absent —
+	// also covers the cached-fallback path that skips the rewrite).
+	{
+		const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		if (agentDir) applyOrganizationHeader(resolve(agentDir, "models.json"), options.organizationId)
 	}
 
 	if (refreshError && options.strictFreshDiscovery) {
@@ -387,6 +421,98 @@ async function configureKimchiToken(
 		host.showError?.(formatKimchiTokenError(refreshError, { saved: true }))
 	} else {
 		host.showError?.("Kimchi login did not configure any available models. Your API key was saved; try again.")
+	}
+	return false
+}
+
+/**
+ * Complete a CAST AI SSO login after the provider OAuth dialog stored the
+ * credential in auth.json:
+ *
+ * 1. Persist the credential's region so endpoint derivation (models metadata
+ *    refresh, gateway base) matches the tenant the user signed in to.
+ * 2. Refresh the models metadata with the fresh bearer (cached fallback
+ *    allowed, like the browser-key flow).
+ * 3. Fan the credential out to every Kimchi-managed provider in models.json
+ *    (sub-providers resolve auth per provider id — see
+ *    syncOAuthCredentialToKimchiProviders).
+ * 4. Refresh the registry, select the default model, and report success.
+ *
+ * Returns false when there is nothing to complete (user cancelled, or a
+ * non-OAuth credential — e.g. the API-key method ran instead); callers treat
+ * false as "no completion needed" unless the user visibly failed.
+ */
+export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Promise<boolean> {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) {
+		host.showError?.("KIMCHI_CODING_AGENT_DIR is missing; Kimchi credentials cannot be synchronized")
+		return false
+	}
+	const authPath = resolve(agentDir, "auth.json")
+	const modelsPath = resolve(agentDir, "models.json")
+
+	const credential = readStoredCredential(KIMCHI_PROVIDER_ID, authPath)
+	if (!credential || credential.type !== "oauth") {
+		return false
+	}
+
+	// The credential now lives in auth.json (type: "oauth"). A stale
+	// config.json apiKey from an earlier key login must go: the startup sync
+	// (cli.ts) mirrors config.apiKey into auth.json and would otherwise
+	// overwrite the OAuth entries with api_key ones at the next launch.
+	clearApiKey()
+
+	let refreshError: unknown
+	const region = (credential as { region?: unknown }).region
+	const organizationId = (credential as { orgId?: string }).orgId
+	try {
+		if (isRegionId(region)) writeRegion(region)
+		host.showStatus?.("Refreshing Kimchi models…")
+		await refreshKimchiModels(credential.access, undefined, {
+			allowCachedFallback: true,
+			organizationId,
+		})
+	} catch (error) {
+		refreshError = error
+	}
+
+	// Stamp the selected organization onto every Kimchi provider entry — the
+	// gateway routes SSO requests by X-CastAi-Organization-Id. Covers the cached-fallback
+	// path where the refresh above did not rewrite models.json.
+	applyOrganizationHeader(modelsPath, organizationId)
+
+	let authSynchronized = false
+	try {
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, { ...credential })
+		authSynchronized = true
+	} catch (error) {
+		refreshError ??= error
+	}
+
+	try {
+		await host.modelRegistry.refresh()
+	} catch (error) {
+		refreshError ??= error
+	}
+
+	let providerModels: ProviderModelLike[] = []
+	try {
+		providerModels = host.modelRegistry.getAvailable().filter((m) => isKimchiProvider(m.provider))
+	} catch (error) {
+		refreshError ??= error
+	}
+	if (authSynchronized && providerModels.length > 0) {
+		void refreshBillingStatusFromConfig({ mode: "forced" })
+		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
+		await host.setModel?.(selectedModel)
+		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		return true
+	}
+
+	if (refreshError) {
+		host.showError?.(formatKimchiTokenError(refreshError, { saved: true }))
+	} else {
+		host.showError?.("CAST AI SSO login did not configure any available models. Your sign-in was saved; try again.")
 	}
 	return false
 }
@@ -545,6 +671,107 @@ export async function performKimchiBrowserLoginWithDialog(
 
 		return dialog
 	})
+}
+
+/**
+ * CAST AI SSO login driven through the extension UI (startup gate), mirroring
+ * `performKimchiBrowserLoginWithDialog`: LoginDialogComponent for chrome and
+ * Esc-to-cancel, with the OAuth callbacks adapted to the dialog. The org
+ * selection renders as a numbered text prompt — the dialog has no list
+ * selector, and numbering keeps any org count on screen.
+ */
+export async function performKimchiSsoLoginWithExtensionUI(
+	ctx: ExtensionContext,
+	setModel: (model: ProviderModelLike) => Promise<unknown> | unknown,
+	options: { region: RegionId },
+): Promise<KimchiBrowserLoginDialogResult> {
+	setPendingOAuthRegion(options.region)
+	const config = resolveOAuthLoginConfig(options.region)
+	if (!config) {
+		ctx.ui.notify("CAST AI SSO login is not available for the current region", "error")
+		return "failed"
+	}
+
+	return ctx.ui.custom<KimchiBrowserLoginDialogResult>((tui, _theme, _keybindings, done) => {
+		let finished = false
+		let cancelled = false
+		const finish = (result: KimchiBrowserLoginDialogResult) => {
+			if (finished) return
+			finished = true
+			done(result)
+		}
+
+		const dialog = new LoginDialogComponent(
+			tui,
+			KIMCHI_PROVIDER_ID,
+			// Esc: aborts the OAuth flow through dialog.signal below.
+			(success) => {
+				if (!success) {
+					cancelled = true
+					finish("cancelled")
+				}
+			},
+			"CAST AI",
+			"Sign in with CAST AI",
+		)
+
+		void (async () => {
+			try {
+				const credential = await loginWithCastAiOauth(config, {
+					onAuth: (info) => dialog.showAuth(info.url, info.instructions),
+					onProgress: (message) => dialog.showProgress(message),
+					onPrompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
+					onManualCodeInput: () => dialog.showManualInput("Paste the final redirect URL:"),
+					onSelect: (prompt) => selectOrganizationViaDialog(dialog, prompt),
+					onDeviceCode: () => {},
+					signal: dialog.signal,
+				})
+
+				const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+				if (!agentDir) throw new Error("KIMCHI_CODING_AGENT_DIR is missing; the credential cannot be saved")
+				await syncOAuthCredentialToKimchiProviders(resolve(agentDir, "auth.json"), resolve(agentDir, "models.json"), {
+					...credential,
+				})
+				const ok = await completeKimchiSsoLogin({
+					modelRegistry: ctx.modelRegistry,
+					setModel,
+					showStatus: (message) => dialog.showProgress(message),
+					showError: (message) => ctx.ui.notify(message, "error"),
+					addFeedback: (message) => dialog.showProgress(message),
+				})
+				if (cancelled || dialog.signal.aborted) finish("cancelled")
+				else finish(ok ? "success" : "failed")
+			} catch (error) {
+				if (dialog.signal.aborted || cancelled) {
+					finish("cancelled")
+					return
+				}
+				ctx.ui.notify(`CAST AI SSO login failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+				finish("failed")
+			}
+		})()
+
+		return dialog
+	})
+}
+
+/** Org selection inside the login dialog: a numbered text prompt. Invalid
+ * input re-prompts; Esc rejects the prompt, which the caller treats as a
+ * cancelled login. */
+async function selectOrganizationViaDialog(
+	dialog: LoginDialogComponent,
+	prompt: { message: string; options: Array<{ id: string; label: string }> },
+): Promise<string> {
+	const lines = prompt.options.map((option, index) => `${index + 1}) ${option.label}`)
+	for (;;) {
+		const input = await dialog.showPrompt(`${prompt.message}\n${lines.join("\n")}`, "Enter a number")
+		const index = Number.parseInt(input.trim(), 10)
+		if (Number.isInteger(index) && index >= 1 && index <= prompt.options.length) {
+			const selected = prompt.options[index - 1]
+			if (selected) return selected.id
+		}
+		dialog.showProgress(`Enter a number between 1 and ${prompt.options.length}.`)
+	}
 }
 
 export async function performKimchiApiKeyLoginViaExtensionUI(

@@ -1,6 +1,7 @@
 import type { PromptResponse } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { TurnArtifactBuffer } from "./artifact-links.js"
+import type { AcpSkillInfo } from "./skill-commands.js"
 
 /**
  * The session targeted by a turn-scoped ext method, plus whether a turn is
@@ -13,6 +14,21 @@ import type { TurnArtifactBuffer } from "./artifact-links.js"
 export type SessionTurnTarget = {
 	session: AgentSession
 	turnActive: boolean
+	/**
+	 * Skill commands advertised for this session (may be empty). The steering
+	 * handler rewrites a leading `/skill:<name>` the same way prompt() does
+	 * rather than letting pi's steer() queue its own expansion
+	 * format, which would never match the client's submitted text on the
+	 * queue echo.
+	 */
+	skillCommands: ReadonlyMap<string, AcpSkillInfo>
+	/**
+	 * Called after a steer whose text was rewritten by a command expansion
+	 * (e.g. `/skill:<name>`) was successfully queued. Registers the
+	 * original→rewritten pair so the queue echo and cancel-drain paths can
+	 * hand the client back the text it actually submitted.
+	 */
+	onSteerRewritten: (original: string, rewritten: string) => void
 }
 
 export type TurnContext = {

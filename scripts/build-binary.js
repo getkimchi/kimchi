@@ -167,7 +167,12 @@ const externalFlags = externals.map((name) => `--external ${name}`).join(" ")
 // extra env vars. Bun ignores the system store by default; --use-system-ca is additive.
 run(
 	"compile",
-	`bun scripts/compile-binary.js src/binary-entry.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
+	// The codemode worker must keep its ./-prefixed entrypoint form: bun keys
+	// compiled-in entrypoints by the path string as given (relative to the
+	// common root), and pi spawns new Worker("./src/extensions/codemode/
+	// worker.ts"). A bare "src/..." arg loses the src/ prefix in $bunfs and the
+	// spawn fails with "Cannot find module" (verified in a minimal repro).
+	`bun scripts/compile-binary.js src/binary-entry.ts ./src/extensions/codemode/worker.ts${targetFlag} --outfile dist/bin/${target.binaryName} ${externalFlags}`.trim(),
 )
 
 // Bun --compile produces binaries with an invalid code signature on macOS: the

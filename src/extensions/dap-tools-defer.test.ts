@@ -301,8 +301,7 @@ describe("DAP session-tool deferral", () => {
 		expect(launchTool).toBeDefined()
 		if (!launchTool) throw new Error("debug_launch not registered")
 		await launchTool.execute("call-1", { program: "app.ts" }, undefined, undefined, createCtx())
-		// The reveal anchors on the debug_launch tool_result so the call id is
-		// known — its result carries the in-band addedToolNames marker.
+		// The reveal anchors on the debug_launch tool_result (post-execution timing).
 		for (const h of mock.handlers.tool_result) {
 			h({ toolName: "debug_launch", toolCallId: "call-1", isError: false }, createCtx())
 		}

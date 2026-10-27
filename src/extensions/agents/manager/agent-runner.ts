@@ -100,8 +100,9 @@ function getActiveSubagentToolNames(
 import { markOrchestratorSteer } from "../../steer-marker.js"
 
 /** Send a steering message that is clearly marked as coming from the orchestrator, not the user. */
-function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
-	return session.steer(markOrchestratorSteer(message))
+async function steerAsOrchestrator(session: AgentSession, message: string): Promise<void> {
+	// upstream pi: steer() resolves to a QueuedInputDisposition we don't need here.
+	await session.steer(markOrchestratorSteer(message))
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -428,8 +429,19 @@ ${skillLines}`
 	const MIN_TOKEN_BUDGET = 1024
 	const rawTokenBudget = options.tokenBudget ?? agentConfig?.tokenBudget
 	const effectiveTokenBudget = rawTokenBudget != null ? Math.max(rawTokenBudget, MIN_TOKEN_BUDGET) : undefined
-	if (effectiveMaxTurns != null || effectiveTokenBudget != null) {
-		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
+	// Wall-clock budget (max_duration), resolved here so both the prompt's
+	// budget block and the bash clamp extension below see the same value.
+	// Computed before extras.budget so the agent is told its time limit up
+	// front — without it, a time-based clamp firing later is unexplainable
+	// to the agent (see subagent-bash-clamp.ts).
+	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+	if (effectiveMaxTurns != null || effectiveTokenBudget != null || effectiveMaxDuration > 0) {
+		extras.budget = {
+			maxTurns: effectiveMaxTurns,
+			tokenBudget: effectiveTokenBudget,
+			// 0 means unlimited — no time limit to communicate.
+			...(effectiveMaxDuration > 0 ? { maxDurationSeconds: effectiveMaxDuration } : {}),
+		}
 	}
 
 	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
@@ -464,10 +476,10 @@ ${skillLines}`
 	const agentDir = getAgentDir()
 
 	// The subagent budget clamp must be wired with the deadline computed
-	// at run time (startTimeMs + maxDuration). Resolve the effective
-	// max_duration here so the bash clamp extension sees it at registration.
-	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
-
+	// at run time (startTimeMs + maxDuration); effectiveMaxDuration was
+	// resolved above (with the budget block) so the bash clamp extension
+	// sees it at registration.
+	//
 	// Repo-native extensions registered directly by the Kimchi CLI are not
 	// discovered by a child session's DefaultResourceLoader. Register this
 	// safety hook explicitly so worker bash calls get a deterministic upper
@@ -475,7 +487,7 @@ ${skillLines}`
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now())
+			? createSubagentBashClampExtension(effectiveMaxDuration, Date.now(), type)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
@@ -569,6 +581,18 @@ ${skillLines}`
 			(name) => session.getToolDefinition(name) !== undefined,
 			disallowedSet,
 		)
+		// upstream pi: only ACTIVE tools are callable (registered-but-inactive now
+		// fails tool lookup at execution time). The report tool registers for a
+		// ferment-linked worker but the extension-prefix filter above drops it
+		// because workerReport makes effectiveExtensions an empty list — keep it
+		// active explicitly so the worker can submit its report.
+		if (
+			options.workerReport &&
+			!activeTools.includes(WORKER_REPORT_TOOL_NAME) &&
+			session.getToolDefinition(WORKER_REPORT_TOOL_NAME)
+		) {
+			activeTools.push(WORKER_REPORT_TOOL_NAME)
+		}
 		systemPrompt = buildSystemPrompt(activeTools)
 		await loader.reload()
 		session.setActiveToolsByName(activeTools)

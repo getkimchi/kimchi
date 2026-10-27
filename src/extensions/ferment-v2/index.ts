@@ -152,6 +152,7 @@ function completesCurrentTodoList(
 	message: CompletionCandidate["message"],
 	todoState: FermentV2TodoState | undefined,
 	currentScopeKey: string,
+	sessionId: string,
 ): boolean {
 	if (!todoState?.total) return false
 	const calls: ToolCall[] = []
@@ -164,7 +165,7 @@ function completesCurrentTodoList(
 	const targetsCurrentScope = (args: Record<string, unknown>): boolean => {
 		const explicit = validateExplicitTodoScope(args.scope)
 		if (explicit.error) return false
-		return getTodoScopeKey(explicit.scope ?? resolveTodoScope()) === currentScopeKey
+		return getTodoScopeKey(explicit.scope ?? resolveTodoScope(sessionId)) === currentScopeKey
 	}
 	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
 		const completedIds = new Set<number>()
@@ -462,7 +463,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			handleTodoCommandMutation,
 		)
 		const branch = ctx.sessionManager.getBranch()
-		const restored = restoreFermentV2Runtime(branch, currentSessionId, getTodoScopeKey(resolveTodoScope()))
+		const restored = restoreFermentV2Runtime(
+			branch,
+			currentSessionId,
+			getTodoScopeKey(resolveTodoScope(currentSessionId)),
+		)
 		currentFermentV2 = restored.fermentV2
 		syncRunStatus(currentFermentV2)
 		resetFermentV2Runtime()
@@ -1697,7 +1702,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			completesCurrentTodoList(
 				{ ...event.message, content: restoredContent },
 				todoState,
-				getTodoScopeKey(resolveTodoScope()),
+				getTodoScopeKey(resolveTodoScope(ctx.sessionManager.getSessionId())),
+				ctx.sessionManager.getSessionId(),
 			)
 		const isCandidate =
 			currentTurn?.status === "active" &&
@@ -1803,7 +1809,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 		}
 		if (event.isError || !isTodoWriteToolName(event.toolName)) return
-		const expectedScopeKey = getTodoScopeKey(resolveTodoScope())
+		const expectedScopeKey = getTodoScopeKey(resolveTodoScope(ctx.sessionManager.getSessionId()))
 		const todoState = todoResultState(event.result, expectedScopeKey)
 		if (currentTurn?.status !== "active" || !todoState) return
 		const previous = matchesFermentV2(todoStateFor, currentTurn, currentSessionId) ? todoStateFor : undefined

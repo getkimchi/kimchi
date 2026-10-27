@@ -57,8 +57,12 @@ for (const scope of ["global", "legacy-project"]) {
 				await waitForText(terminal, "Direct tools updated for this session.", { timeoutMs: STREAM_TIMEOUT_MS })
 				trace.step("echo toggled to direct and saved")
 
+				// kimchi defaults the adapter's global config to the Studio-shared
+				// harness/mcp.json, so direct-tool choices for global servers persist
+				// in place (2.34 behavior). Project-scoped servers keep persisting to
+				// the project adapter overlay (.kimchi/mcp-adapter.json).
 				const configPath =
-					scope === "legacy-project" ? join(fixture.workDir, ".kimchi", "mcp.json") : fixture.mcp.configPath
+					scope === "legacy-project" ? join(fixture.workDir, ".kimchi", "mcp-adapter.json") : fixture.mcp.configPath
 				const saved = JSON.parse(readFileSync(configPath, "utf-8")) as {
 					mcpServers?: Record<string, { directTools?: unknown }>
 				}

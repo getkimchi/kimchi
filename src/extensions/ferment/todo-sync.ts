@@ -418,6 +418,10 @@ export function getTurnsSinceStepTodoWrite(sessionId: string): number {
 export const FERMENT_STEP_STALL_CUSTOM_TYPE = "ferment-step-stall"
 export const FERMENT_STEP_STALL_THRESHOLD = 12
 
+/** Scope key for the stall tracker's bands — session-wide across all
+ *  running steps (the stall counter itself is per-session). */
+const STEP_STALL_SCOPE_KEY = "ferment-step-stall"
+
 const stallSteerTracker = createThresholdSteerTracker()
 
 /** Fire a one-shot hidden steer when the step-todo stall counter has crossed
@@ -431,6 +435,7 @@ export function fireStepStallSteerIfStalled(
 	const count = getTurnsSinceStepTodoWrite(sessionId)
 	stallSteerTracker.fireCrossed({
 		sessionId,
+		scopeKey: STEP_STALL_SCOPE_KEY,
 		count,
 		thresholds: [FERMENT_STEP_STALL_THRESHOLD],
 		send: () =>
@@ -493,7 +498,7 @@ function handleStepStarted(raw: unknown, sessionId: string, appendEntry?: Append
 		stepId: payload.stepId,
 	})
 	turnsSinceStepTodoWrite.set(sessionId, 0)
-	stallSteerTracker.reset(sessionId)
+	stallSteerTracker.reset(sessionId, STEP_STALL_SCOPE_KEY)
 }
 
 function clearStepTodos(phaseId: string, stepId: string, sessionId: string, appendEntry?: AppendEntryFn): void {
@@ -704,8 +709,11 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 	// Auto-scope: when exactly one ferment step is running, scope-less todo
 	// calls target that step's ferment-step scope. When multiple parallel
 	// steps are active, return undefined to force the caller to pass an
-	// explicit scope — avoids silently writing to the wrong step.
-	const unregisterScope = registerActiveTodoScopeProvider(() => {
+	// explicit scope — avoids silently writing to the wrong step. Registered
+	// under this bridge's session id: scope-less resolution only consults the
+	// querying session's providers, so a running step here never leaks its
+	// scope into another session's resolution.
+	const unregisterScope = registerActiveTodoScopeProvider(sessionId, () => {
 		const bucket = runningSteps.get(sessionId)
 		if (bucket?.size !== 1) return undefined
 		const [, step] = [...bucket.entries()][0]
@@ -726,7 +734,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		const scope = details.scope as { phaseId: string; stepId: string }
 		if (bucket.has(stepKey(scope.phaseId, scope.stepId))) {
 			turnsSinceStepTodoWrite.set(sessionId, 0)
-			stallSteerTracker.reset(sessionId)
+			stallSteerTracker.reset(sessionId, STEP_STALL_SCOPE_KEY)
 		}
 	})
 
@@ -770,7 +778,7 @@ export function registerFermentTodoSync(pi: ExtensionAPI, sessionId: string): ()
 		// the process keep their buckets intact.
 		runningSteps.delete(sessionId)
 		turnsSinceStepTodoWrite.delete(sessionId)
-		stallSteerTracker.reset(sessionId)
+		stallSteerTracker.clearSession(sessionId)
 
 		todoIdMaps.get(sessionId)?.clear()
 		todoIdMaps.delete(sessionId)

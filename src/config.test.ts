@@ -3,10 +3,10 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	applyTuiEnvOverrides,
 	buildSkillPathOptions,
 	checkConfigFilePermissions,
 	clearApiKey,
+	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -23,6 +23,7 @@ import {
 	resetInvalidLlmBaseUrlWarningForTests,
 	resetInvalidSelfHostedUrlWarningForTests,
 	resolveEndpoints,
+	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeDeviceId,
@@ -622,38 +623,33 @@ describe("writeTuiWheelScrollLines", () => {
 	})
 })
 
-describe("applyTuiEnvOverrides", () => {
-	const ENV_KEY = "KIMCHI_WHEEL_SCROLL_LINES"
-
-	beforeEach(() => {
-		// stubEnv with a fresh baseline so leaked values from other tests
-		// (or the developer's real shell env) can't skew expectations.
-		vi.stubEnv(ENV_KEY, "")
-		delete process.env[ENV_KEY]
-	})
-
-	afterEach(() => {
-		vi.unstubAllEnvs()
-		delete process.env[ENV_KEY]
-	})
-
-	it("maps tui.wheelScrollLines onto the env var when unset", () => {
+describe("syncWheelScrollToPiSettings", () => {
+	it("maps tui.wheelScrollLines onto fullscreenWheelScrollLines", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
-		expect(process.env[ENV_KEY]).toBe("3")
+		const settings: Record<string, unknown> = {}
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(true)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
 	})
 
-	it("does not overwrite a pre-set env var (env > config)", () => {
-		process.env[ENV_KEY] = "5"
+	it("is idempotent when settings already hold the config value", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: { wheelScrollLines: 3 } })
-		expect(process.env[ENV_KEY]).toBe("5")
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: 3 }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(false)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
+	})
+
+	it("config wins over an existing pi setting", () => {
+		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: "auto" }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: { wheelScrollLines: 3 } })).toBe(true)
+		expect(settings.fullscreenWheelScrollLines).toBe(3)
 	})
 
 	it("does nothing when tui.wheelScrollLines is unconfigured", () => {
 		const config = loadConfig({ configPath: join(tmpdir(), "kimchi-missing-config.json") })
-		applyTuiEnvOverrides({ ...config, tui: undefined })
-		expect(process.env[ENV_KEY]).toBeUndefined()
+		const settings: Record<string, unknown> = { fullscreenWheelScrollLines: "auto" }
+		expect(syncWheelScrollToPiSettings(settings, { ...config, tui: undefined })).toBe(false)
+		expect(settings.fullscreenWheelScrollLines).toBe("auto")
 	})
 })
 
@@ -1591,6 +1587,37 @@ describe("ensureQuietStartupDefault", () => {
 		const verbose = { quietStartup: false }
 		expect(ensureQuietStartupDefault(verbose)).toBe(false)
 		expect(verbose.quietStartup).toBe(false)
+	})
+})
+
+describe("ensureBuiltinMcpDisabled", () => {
+	it("seeds -builtin:mcp when extensions is absent", () => {
+		const settings: Record<string, unknown> = { quietStartup: true }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["-builtin:mcp"])
+	})
+
+	it("appends -builtin:mcp alongside unrelated extension entries", () => {
+		const settings: Record<string, unknown> = { extensions: ["./my-ext.ts"] }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(true)
+		expect(settings.extensions).toEqual(["./my-ext.ts", "-builtin:mcp"])
+	})
+
+	it.each([
+		"-builtin:mcp",
+		"+builtin:mcp",
+		"!builtin:mcp",
+		"builtin:mcp",
+	])("leaves an explicit %s entry alone", (entry) => {
+		const settings: Record<string, unknown> = { extensions: ["./my-ext.ts", entry] }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(false)
+		expect(settings.extensions).toEqual(["./my-ext.ts", entry])
+	})
+
+	it("does not guess at non-array extensions shapes", () => {
+		const settings: Record<string, unknown> = { extensions: { "builtin:mcp": false } }
+		expect(ensureBuiltinMcpDisabled(settings)).toBe(false)
+		expect(settings.extensions).toEqual({ "builtin:mcp": false })
 	})
 })
 

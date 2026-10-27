@@ -15,8 +15,12 @@
  * to the daemon mechanism.
  *
  * Legacy "Command timed out after N seconds" results can still surface
- * from paths outside the background cohort (e.g. subagent bash clamps);
- * those get the generic de-batching guidance too.
+ * from paths outside the background cohort; those get the generic
+ * de-batching guidance too. Subagent bash clamps are NOT covered here —
+ * this extension is main-session-only (registered in cli.ts); subagent
+ * sessions instead get the budget-aware result annotation from
+ * agents/subagent-bash-clamp.ts, which explains the wall-clock budget
+ * directly in the failed result.
  *
  * Implementation: hooks `tool_result`, checks whether the result is a
  * bash/bash_control limit or timeout error, and steers with actionable

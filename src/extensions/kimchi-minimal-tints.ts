@@ -1,6 +1,6 @@
 // Apply per-process dynamic background tints for the `kimchi-minimal` theme.
 //
-// We mutate the loaded Theme's bgColors Map directly instead of writing tints
+// We mutate the loaded Theme's bgAnsi Map directly instead of writing tints
 // into the on-disk theme file. Why: when kimchi runs simultaneously in two
 // terminals (iTerm2 + Terminal.app), each instance would otherwise overwrite
 // the shared file with its own terminal-bg-derived tints. Pi's theme watcher
@@ -8,9 +8,10 @@
 // from a different terminal's bg — visually wrong. Mutating in memory keeps
 // each process's runtime state isolated.
 //
-// We get the live Theme via `ctx.ui.theme` at session_start. `theme.bgColors`
-// and `theme.fgColors` return the underlying Maps; calling `.set(key, ansi)`
-// is observed by every later `theme.bg(token, text)` / `theme.fg(token, text)`
+// We get the live Theme via `ctx.ui.theme` at session_start. Since upstream pi the
+// Theme class stores ANSI values in `bgAnsi`/`fgAnsi` Maps (the old
+// `bgColors`/`fgColors` fields are gone); calling `.set(key, ansi)` is
+// observed by every later `theme.bg(token, text)` / `theme.fg(token, text)`
 // call from the rest of the app.
 //
 // Hex→ANSI conversion mirrors pi's internal bgAnsi/fgAnsi (theme.js): truecolor
@@ -57,20 +58,21 @@ export default function kimchiMinimalTintsExtension(pi: ExtensionAPI) {
 		const baseBg: Rgb = getProbedBackground() ?? estimateTerminalBackground()
 		const mode = detectColorMode()
 
-		// ctx.ui.theme is the live Theme instance. Its `bgColors` and `fgColors`
-		// are the underlying Maps; mutating them is observed by every later
-		// `theme.bg(token, text)` / `theme.fg(token, text)` call. On theme switch
-		// via /settings, pi creates a fresh Theme — we re-apply.
+		// ctx.ui.theme is the live Theme instance. Its `bgAnsi` and `fgAnsi`
+		// Maps (renamed from bgColors/fgColors in 1.3.0) hold the ANSI values;
+		// mutating them is observed by every later `theme.bg(token, text)` /
+		// `theme.fg(token, text)` call. On theme switch via /settings, pi
+		// creates a fresh Theme — we re-apply.
 		const themeWithColors = ctx.ui.theme as unknown as {
-			bgColors?: Map<string, string>
-			fgColors?: Map<string, string>
+			bgAnsi?: Map<string, string>
+			fgAnsi?: Map<string, string>
 		}
-		if (!themeWithColors?.bgColors) return
+		if (!themeWithColors?.bgAnsi) return
 
 		// Apply background tints.
 		for (const [token, delta, redBias] of SURFACE_TINTS) {
 			const hex = tintBackground(baseBg, delta, redBias, mode)
-			themeWithColors.bgColors.set(token, hexToBgAnsi(hex, mode))
+			themeWithColors.bgAnsi.set(token, hexToBgAnsi(hex, mode))
 		}
 
 		// Apply auto-contrast foreground colors based on terminal bg luminance.
@@ -79,9 +81,9 @@ export default function kimchiMinimalTintsExtension(pi: ExtensionAPI) {
 		const textHex = luminance < 128 ? LIGHT_TEXT_HEX : DARK_TEXT_HEX
 		const fgAnsi = hexToFgAnsi(textHex, mode)
 
-		if (themeWithColors.fgColors) {
+		if (themeWithColors.fgAnsi) {
 			for (const token of ESSENTIAL_TEXT_TOKENS) {
-				themeWithColors.fgColors.set(token, fgAnsi)
+				themeWithColors.fgAnsi.set(token, fgAnsi)
 			}
 		}
 	}

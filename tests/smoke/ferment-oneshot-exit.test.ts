@@ -38,7 +38,7 @@ interface JsonlEntry {
 }
 
 describe("--ferment-oneshot process lifecycle", () => {
-	// LLM-2404: the benchmark observed `agent_end` after Ferment completion, but
+	// The benchmark observed `agent_end` after Ferment completion, but
 	// the kimchi process stayed alive until Harbor killed it. This reproduces the
 	// real linked-worker one-shot path and asserts the CLI process exits cleanly.
 	it("exits after ferment completion, final assistant message, and agent_end", async () => {
@@ -60,7 +60,12 @@ async function expectOneshotLifecycleToExit(): Promise<void> {
 		mkdirSync(workDir, { recursive: true })
 		mkdirSync(sessionDir, { recursive: true })
 		mkdirSync(fermentsDir, { recursive: true })
-		writeKimchiConfig(homeDir, fake.baseUrl)
+		writeKimchiConfig(homeDir, fake.baseUrl, [
+			// Large window: upstream pi auto-compaction (which makes extra summary calls
+			// that would consume task-turn script entries) stays out of this
+			// lifecycle scenario.
+			{ ...DEFAULT_MODEL, contextWindow: 512_000 },
+		])
 
 		const sessionPath = join(sessionDir, "main.jsonl")
 		const result = await runOneshot({
@@ -155,6 +160,26 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 							phase_id: "phase-1",
 							step_id: "step-1",
 							budget_tier: "narrow",
+						}),
+					},
+				},
+			],
+		},
+		{
+			// Starting the step seeds its todo list (title anchor); the check-in
+			// gate requires reconciling that list before work tools run, and the
+			// step-start result itself asks for a brief plan — write it into the
+			// step list (auto-scoped while exactly one step runs) before spawning
+			// the linked worker.
+			stream: ["Planning the step before spawning the worker."],
+			toolCalls: [
+				{
+					id: "call_step_plan",
+					function: {
+						name: "add_todo",
+						arguments: JSON.stringify({
+							content: "Run the lifecycle worker through the Agent tool and submit its report",
+							status: "pending",
 						}),
 					},
 				},
@@ -294,7 +319,7 @@ function passingGates(ids: string[]): Array<{ id: string; verdict: "pass"; ratio
 	}))
 }
 
-function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
+function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models = resolveModels(undefined)): void {
 	const configDir = join(homeDir, ".config", "kimchi")
 	const agentDir = join(configDir, "harness")
 	mkdirSync(agentDir, { recursive: true })
@@ -326,7 +351,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string): void {
 						api: "openai-completions",
 						authHeader: true,
 						headers: { "User-Agent": "kimchi/smoke-test" },
-						models: resolveModels(undefined).map((model) => ({
+						models: models.map((model) => ({
 							id: model.slug,
 							name: model.displayName,
 							reasoning: model.reasoning,

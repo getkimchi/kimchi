@@ -51,6 +51,8 @@ test("login via Kimchi account offers a region selector and persists the chosen 
 			await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Use a Kimchi account", { timeoutMs: INPUT_TIMEOUT_MS })
+			// SSO is the first option; the account login is one row down.
+			terminal.keyDown(1)
 			terminal.submit("")
 			trace.step("auth-method selector confirmed")
 
@@ -95,6 +97,8 @@ test("login skips the region selector and logs in to the default region without 
 			await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Use a Kimchi account", { timeoutMs: INPUT_TIMEOUT_MS })
+			// SSO is the first option; the account login is one row down.
+			terminal.keyDown(1)
 			terminal.submit("")
 			trace.step("auth-method selector confirmed")
 

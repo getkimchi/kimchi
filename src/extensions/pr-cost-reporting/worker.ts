@@ -1,6 +1,6 @@
-import { watch } from "node:fs"
 import { verifyApiKey } from "../../api/organizations.js"
 import { loadConfig } from "../../config.js"
+import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
@@ -22,7 +22,7 @@ import {
 	type ReportingState,
 	readReportingState,
 	recordReportingError,
-	reportingDirectory,
+	reportingStatePath,
 	reportingStateVersion,
 	type ServerLimit,
 	type SnapshotAck,
@@ -31,6 +31,8 @@ import { accountKey, buildSnapshots, type ReportingRepository, type RepositoryId
 
 const PASS_MS = 5000
 const RESPONSE_BYTES = 64 * 1024
+/** How often the reporting state file is stat-polled for a mid-pass opt-out. */
+const OPT_OUT_POLL_MS = 250
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
 /** Provider repository IDs are stable, so a found identity, or the lack of a supported remote, is kept a day. */
@@ -99,10 +101,9 @@ export async function deliverSnapshots(
 	timer.unref()
 	const combined = AbortSignal.any([signal, controller.signal])
 	// Seeing an opt-out from another process mid-upload is an optimisation: each upload rereads the state anyway.
-	// Without a watcher, for example when inotify watches run out, delivery still works.
-	// One durable write raises several events on Linux and the state can reach 24 MiB, so one reread runs at a time;
-	// events seen during it cause one more.
-	let watcher: ReturnType<typeof watch> | undefined
+	// Stat polling has no inotify or FSEvents involvement, and a failure to start it still leaves delivery working.
+	// The state can reach 24 MiB, so one reread runs at a time; changes seen during it cause one more.
+	let poller: StatPoller | undefined
 	let rereading = false
 	let changedAgain = false
 	const reread = () => {
@@ -120,13 +121,14 @@ export async function deliverSnapshots(
 			)
 			.finally(() => {
 				rereading = false
-				if (!changedAgain || !watcher) return
+				if (!changedAgain || !poller?.isActive()) return
 				changedAgain = false
 				reread()
 			})
 	}
+	const statePath = reportingStatePath(agentDir)
 	try {
-		watcher = watch(reportingDirectory(agentDir), { persistent: false }, reread)
+		poller = startStatPoller(statePath, OPT_OUT_POLL_MS, reread)
 	} catch {}
 	try {
 		const state = await readReportingState(agentDir)
@@ -251,8 +253,8 @@ export async function deliverSnapshots(
 			}
 		}
 	} finally {
-		watcher?.close()
-		watcher = undefined
+		poller?.stop()
+		poller = undefined
 		clearTimeout(timer)
 	}
 }

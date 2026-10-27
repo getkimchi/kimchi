@@ -7,7 +7,10 @@
  * once-per-turn concurrency steer, and the completion continuation guard.
  * It NEVER hard-blocks other tool calls, and there is NO recurring review
  * clock — while the agent does independent work, nothing wakes the model;
- * only exits (and explicit waits) produce messages.
+ * only exits (and explicit waits) produce messages. Completion reminders
+ * are the one periodic exception, and they are rate-limited
+ * (COMPLETION_REMINDER_INTERVAL_MS): a stop with unresolved work queues a
+ * prompt reminder the first time, then at most one per interval.
  *
  * Delivery contract (exactly-once per terminal state; see
  * ./terminal-delivery.ts for the owning state machine):
@@ -77,6 +80,7 @@
  */
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { readE2eSeam } from "../e2e-seam.js"
 import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
@@ -97,6 +101,26 @@ export const BASH_BACKGROUND_EXIT_MESSAGE_TYPE = "bash-background-exit"
  * leading edge. Exported for tests.
  */
 export const EXIT_BATCH_WINDOW_MS = 50
+/**
+ * Minimum spacing between completion-continuation reminders (see the
+ * turn_end handler). A stop with unresolved background work queues a
+ * prompt reminder the first time; further reminders wait at least this
+ * long, so a model that stops repeatedly cannot spin back-to-back turns.
+ * Exits bypass this entirely (they have their own immediate delivery).
+ * Exported for tests.
+ */
+export const COMPLETION_REMINDER_INTERVAL_MS = 30_000
+
+/**
+ * Effective reminder spacing: the e2e seam
+ * (KIMCHI_E2E_COMPLETION_REMINDER_MS) may shrink it inside test
+ * harnesses only; production always uses the constant.
+ */
+function completionReminderIntervalMs(): number {
+	const seam = readE2eSeam("KIMCHI_E2E_COMPLETION_REMINDER_MS")
+	const parsed = seam === undefined || seam.trim() === "" ? Number.NaN : Number(seam)
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : COMPLETION_REMINDER_INTERVAL_MS
+}
 /** Custom message type for the once-per-session concurrency reinforcement steer. */
 export const BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE = "bash-background-concurrency"
 /** Custom message type for the completion-continuation follow-up. */
@@ -271,6 +295,11 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// consumed by the agent loop are suppressed, and the consumed reminder
 	// is revalidated (and replaced when obsolete) through message_end.
 	let completionReminderOutstanding = false
+	// Timestamp of the last queued completion reminder: a new one is
+	// queued only after COMPLETION_REMINDER_INTERVAL_MS. Reset to 0 on
+	// session_start, so each session's first reminder is always prompt.
+	// E2E rigs shrink it via KIMCHI_E2E_COMPLETION_REMINDER_MS.
+	let lastReminderQueuedAt = 0
 	// Identity of the current session generation: completion reminders
 	// carry it in typed details so a stale message from a replaced session
 	// cannot clear this session's outstanding flag.
@@ -316,6 +345,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		claimedExits = new Map()
 		concurrencyAdvisorySent = false
 		completionReminderOutstanding = false
+		lastReminderQueuedAt = 0
 		sessionGenerationId = randomUUID()
 		pendingExitDeliveries = []
 		if (exitDeliveryTimer) clearTimeout(exitDeliveryTimer)
@@ -788,13 +818,15 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 
 	// Completion continuation: a normal assistant stop with unresolved
 	// managed work queues one consolidated follow-up, with AT MOST ONE
-	// reminder outstanding per session (see the module docstring). The
-	// queued follow-up keeps the agent run unsettled (the agent loop drains
-	// follow-ups before stopping), so settled success requires a
-	// disposition; genuinely unresolved work always receives a new reminder
-	// once the previous one was consumed. Terminal results whose
-	// notification is already queued will resolve the state by themselves,
-	// so they do not queue a redundant reminder.
+	// reminder outstanding per session and at least
+	// COMPLETION_REMINDER_INTERVAL_MS between queued reminders (see the
+	// module docstring). The queued follow-up keeps the agent run unsettled
+	// (the agent loop drains follow-ups before stopping), so settled success
+	// requires a disposition; genuinely unresolved work receives a new
+	// reminder once the previous one was consumed AND the interval has
+	// elapsed. Terminal results whose notification is already queued will
+	// resolve the state by themselves, so they do not queue a redundant
+	// reminder.
 	pi.on("turn_end", (event, _ctx: ExtensionContext) => {
 		if (disposed) return
 		const message = event.message
@@ -842,7 +874,13 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// reminder makes this attempt redundant (the loop will drain it
 		// before the run settles, and its contents are revalidated then).
 		if (completionReminderOutstanding) return
+		// Rate limit: repeated no-news stops wait out the interval before
+		// the next reminder. Exits are unaffected (immediate trailing-window
+		// delivery continues the run on their own), so responsiveness to
+		// real events is preserved.
+		if (Date.now() - lastReminderQueuedAt < completionReminderIntervalMs()) return
 		completionReminderOutstanding = true
+		lastReminderQueuedAt = Date.now()
 		try {
 			pi.sendMessage(
 				{
@@ -864,8 +902,11 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			)
 		} catch {
 			// A synchronous enqueue failure must not silence the guard for
-			// the rest of the session: release the outstanding slot.
+			// the rest of the session: release the outstanding slot AND the
+			// pacing timestamp (nothing was queued — the next unresolved stop
+			// must be able to queue a prompt reminder again).
 			completionReminderOutstanding = false
+			lastReminderQueuedAt = 0
 		}
 	})
 
@@ -922,5 +963,6 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		if (exitDeliveryTimer) clearTimeout(exitDeliveryTimer)
 		exitDeliveryTimer = undefined
 		completionReminderOutstanding = false
+		lastReminderQueuedAt = 0
 	})
 }

@@ -2,11 +2,32 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
-import { loadMcpConfig as loadUpstreamMcpConfig } from "pi-mcp-adapter/config"
+import { loadMcpConfig as loadUpstreamMcpConfig, setPiMcpConfigEnabled } from "pi-mcp-adapter/config"
 import type { ImportKind, McpConfig, McpSettings, ServerEntry } from "pi-mcp-adapter/types"
 import stripJsonComments from "strip-json-comments"
 
+// Kimchi always runs on Pi >= 0.99, whose native MCP config lives in `mcp.json`.
+// The adapter only reads those legacy layers once its own extension init has
+// detected the Pi version; Kimchi's loader can run before that init, so enable
+// the compat layer up front (same decision the adapter would make moments later).
+setPiMcpConfigEnabled(true)
+
 export const LEGACY_PROJECT_MCP_CONFIG = ".kimchi/mcp.json"
+
+/** Filename of the user-global MCP config kimchi shares with kimchi-studio. */
+export const SHARED_MCP_CONFIG_FILENAME = "mcp.json"
+
+/**
+ * The user-global MCP config kimchi shares with kimchi-studio's bundled
+ * harness (`~/.config/kimchi/harness/mcp.json`). Passed to createMcpAdapter()
+ * as the default configPath so every adapter write flow (compat imports, Jev
+ * settings, user-kind write-backs) lands in the file Studio reads — the same
+ * single global file the 2.x adapter used before upstream moved to
+ * `mcp-adapter.json`.
+ */
+export function getSharedMcpConfigPath(): string {
+	return join(getAgentDir(), SHARED_MCP_CONFIG_FILENAME)
+}
 
 export interface KimchiMcpConfigResult {
 	config: McpConfig

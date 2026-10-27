@@ -1,8 +1,8 @@
-import { watch } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
+import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { SkillManager } from "../skills-manager/skill-manager.js"
@@ -59,6 +59,61 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 	// Tracks agent_created skill names known at session start — used as baseline for review notifications.
 	let knownAgentSkills = new Set<string>()
 
+	// Skill-usage notice state: one stat poller on `.usage.json` with a 10-minute
+	// notice window that each review dispatch resets. Stat polling is path-based
+	// and never holds a directory watch — on macOS a directory watch is a
+	// recursive FSEvents subscription to the busy harness tree.
+	const usagePath = join(skillsDir, ".usage.json")
+	let usagePoller: StatPoller | undefined
+	let usageWindowTimer: ReturnType<typeof setTimeout> | undefined
+	let usageDebounce: ReturnType<typeof setTimeout> | undefined
+
+	const onUsageChange = (): void => {
+		clearTimeout(usageDebounce)
+		usageDebounce = setTimeout(async () => {
+			usageDebounce = undefined
+			try {
+				const entries = await tracker.list()
+				const newSkills = entries.filter((e) => e.agent_created && !knownAgentSkills.has(e.name)).map((e) => e.name)
+				if (newSkills.length === 0) return
+				for (const s of newSkills) knownAgentSkills.add(s)
+				pi.sendMessage(
+					{
+						customType: CURATOR_NOTIFICATION_TYPE,
+						content: [{ type: "text", text: "<system-annotation>Skill review created new skills</system-annotation>" }],
+						display: true,
+						details: { names: newSkills } satisfies CuratorNotificationData,
+					},
+					{ triggerTurn: false },
+				)
+			} catch {
+				// best-effort
+			}
+		}, 500)
+	}
+
+	const usageNoticeEnds = (): void => {
+		clearTimeout(usageWindowTimer)
+		usageWindowTimer = undefined
+		usagePoller?.stop()
+		usagePoller = undefined
+		clearTimeout(usageDebounce)
+		usageDebounce = undefined
+	}
+
+	const armUsageWatch = (): void => {
+		if (!usagePoller)
+			try {
+				usagePoller = startStatPoller(usagePath, 1000, onUsageChange)
+			} catch {
+				// skillsDir may not exist yet — the notice window is best-effort
+				return
+			}
+		clearTimeout(usageWindowTimer)
+		usageWindowTimer = setTimeout(usageNoticeEnds, 10 * 60 * 1000)
+		usageWindowTimer.unref()
+	}
+
 	// Capture provider/model from the first real LLM request — works regardless of how kimchi is invoked.
 	// If a request from a torn-down session reaches us after `/new`, ctx.model throws via assertActive.
 	pi.on("before_provider_request", (_event, ctx) => {
@@ -100,53 +155,8 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 			parentSessionId: ctx.sessionManager.getSessionId(),
 		})
 
-		// Watch skillsDir for .usage.json changes and notify when new agent_created skills appear.
-		const baseline = new Set(knownAgentSkills)
-		let debounce: ReturnType<typeof setTimeout> | undefined
-
-		let watcher: ReturnType<typeof watch> | undefined
-		try {
-			watcher = watch(skillsDir, { persistent: false }, (_eventType, filename) => {
-				if (filename !== ".usage.json") return
-				clearTimeout(debounce)
-				debounce = setTimeout(async () => {
-					try {
-						const entries = await tracker.list()
-						const newSkills = entries.filter((e) => e.agent_created && !baseline.has(e.name)).map((e) => e.name)
-						if (newSkills.length === 0) return
-						for (const s of newSkills) {
-							baseline.add(s)
-							knownAgentSkills.add(s)
-						}
-						pi.sendMessage(
-							{
-								customType: CURATOR_NOTIFICATION_TYPE,
-								content: [
-									{ type: "text", text: "<system-annotation>Skill review created new skills</system-annotation>" },
-								],
-								display: true,
-								details: { names: newSkills } satisfies CuratorNotificationData,
-							},
-							{ triggerTurn: false },
-						)
-					} catch {
-						// best-effort
-					}
-				}, 500)
-			})
-		} catch {
-			// skillsDir may not exist yet — watcher is best-effort
-		}
-
-		// Clean up after 10 minutes regardless of outcome.
-		const cleanup = setTimeout(
-			() => {
-				clearTimeout(debounce)
-				watcher?.close()
-			},
-			10 * 60 * 1000,
-		)
-		cleanup.unref()
+		// Notify for 10 minutes after this review when new agent_created skills appear.
+		armUsageWatch()
 	})
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -201,6 +211,7 @@ export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExte
 	})
 
 	pi.on("session_shutdown", async () => {
+		usageNoticeEnds()
 		try {
 			const state = await loadState(statePath)
 			await saveState(statePath, { ...state, last_session_ended_at: new Date().toISOString() })

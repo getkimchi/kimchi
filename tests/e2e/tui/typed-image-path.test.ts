@@ -17,6 +17,14 @@ const VISION_MODEL: FakeModel = {
 	maxTokens: 1024,
 }
 
+// A real 8x8 red RGB PNG (well-formed IHDR/IDAT/IEND with CRCs). 1.3.0
+// validates attached images via processImage (dist/utils/image-process.js),
+// which resizes through Photon/WASM; signature-only stubs no longer pass.
+const VALID_PNG_BYTES = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC",
+	"base64",
+)
+
 // A local image file path typed (or pasted/dropped) into the prompt must behave
 // like pasting the image itself: the input transform attaches the file, the
 // [Image #N] marker appears in the user message, and the model request carries
@@ -32,7 +40,10 @@ test("typed image path attaches the image to the user turn", async ({ terminal }
 			initialModel: "vision",
 			responses: [{ stream: ["I can see your typed image."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				// Real 1x1 grayscale PNG; upstream pi validates attached images via
+				// processImage and silently drops invalid ones (signature-only
+				// stubs no longer pass).
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {

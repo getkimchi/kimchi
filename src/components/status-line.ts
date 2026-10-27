@@ -1,7 +1,6 @@
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import type { AssistantMessage } from "@earendil-works/pi-ai"
-import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionContext, ReadonlyFooterDataProvider, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
@@ -86,6 +85,106 @@ interface CompactionContext {
 
 const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
 
+// ── Assistant-usage totals memoization ─────────────────────────────────────
+// The session journal is append-only and its entries are immutable
+// (session-manager contract), so the assistant usage totals depend only on
+// the entry list's identity (length + last entry id). The status line is
+// rebuilt every frame; walking the whole branch to re-sum identical numbers
+// dominated CPU in long sessions. WeakMap-keyed by the session manager, so
+// entries die with their session.
+
+interface AssistantUsageTotals {
+	costUsd: number
+	totalInput: number
+	totalOutput: number
+	lastTurn: { input: number; output: number } | null
+}
+
+interface UsageTotalsCacheEntry {
+	/** Array identity of the journal: pushes keep the reference (cache miss
+	 *  only on growth), while fork/rewind reassignments replace it — so the
+	 *  reference catches same-length journal replacements that length alone
+	 *  would miss. */
+	fileEntries: unknown[]
+	entryCount: number
+	leafId: unknown
+	totals: AssistantUsageTotals
+}
+
+const branchUsageTotalsCache = new WeakMap<object, UsageTotalsCacheEntry>()
+const entriesUsageTotalsCache = new WeakMap<object, UsageTotalsCacheEntry>()
+
+function sumAssistantUsage(entries: SessionEntry[]): AssistantUsageTotals {
+	let costUsd = 0
+	let totalInput = 0
+	let totalOutput = 0
+	let lastTurn: { input: number; output: number } | null = null
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const message = entry.message
+		if (message.role !== "assistant") continue
+		const u = message.usage
+		costUsd += u.cost.total
+		totalInput += u.input
+		totalOutput += u.output
+		lastTurn = { input: u.input, output: u.output }
+	}
+	return { costUsd, totalInput, totalOutput, lastTurn }
+}
+
+/** The session-manager fields used as the O(1) cache identity. The leaf
+ *  id comes from the public getLeafId() accessor; fileEntries has no public
+ *  length/fingerprint, so this is a deliberate peek at a private field —
+ *  an upstream rename makes it undefined and the accessors below then skip
+ *  caching entirely (correct, just slower), never serve stale totals. */
+function sessionWalkIdentity(sessionManager: unknown): { fileEntries: unknown[]; leafId: unknown } | undefined {
+	const sm = sessionManager as { fileEntries?: unknown; getLeafId?: () => unknown }
+	const leafId = typeof sm.getLeafId === "function" ? sm.getLeafId() : undefined
+	return Array.isArray(sm.fileEntries) ? { fileEntries: sm.fileEntries, leafId } : undefined
+}
+
+/** Memoized assistant usage totals over an entry walk (branch or full
+ *  journal), recomputed only when the journal grows — plus a leaf change
+ *  (branch switch) when `includeLeafId` (the branch walk depends on it,
+ *  the full journal does not). */
+function memoizedUsageTotals(
+	ctx: ExtensionContext,
+	cache: WeakMap<object, UsageTotalsCacheEntry>,
+	walk: () => SessionEntry[],
+	includeLeafId: boolean,
+): AssistantUsageTotals {
+	const identity = sessionWalkIdentity(ctx.sessionManager)
+	if (!identity) return sumAssistantUsage(walk())
+	const cached = cache.get(ctx.sessionManager)
+	if (
+		cached &&
+		cached.fileEntries === identity.fileEntries &&
+		cached.entryCount === identity.fileEntries.length &&
+		(!includeLeafId || cached.leafId === identity.leafId)
+	) {
+		return cached.totals
+	}
+	const totals = sumAssistantUsage(walk())
+	cache.set(ctx.sessionManager, {
+		fileEntries: identity.fileEntries,
+		entryCount: identity.fileEntries.length,
+		leafId: identity.leafId,
+		totals,
+	})
+	return totals
+}
+
+/** Memoized assistant usage totals over the active branch: recomputed only
+ *  when the journal grows or the leaf (branch switch) changes. */
+export function branchAssistantUsageTotals(ctx: ExtensionContext): AssistantUsageTotals {
+	return memoizedUsageTotals(ctx, branchUsageTotalsCache, () => ctx.sessionManager.getBranch(), true)
+}
+
+/** Memoized assistant usage totals over the full journal (branch-agnostic). */
+export function entriesAssistantUsageTotals(ctx: ExtensionContext): AssistantUsageTotals {
+	return memoizedUsageTotals(ctx, entriesUsageTotalsCache, () => ctx.sessionManager.getEntries(), false)
+}
+
 export function readStatusLineCommand(): string | null {
 	try {
 		// Stat-gated read: the footer factory consults this on rebuild, so it
@@ -112,19 +211,7 @@ export function buildScriptPayload(
 	const sessionId = ctx.sessionManager.getSessionId()
 	const usage = ctx.getContextUsage()
 
-	let costUsd = 0
-	let totalInput = 0
-	let totalOutput = 0
-	let lastTurn: { input: number; output: number } | null = null
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			const u = (entry.message as AssistantMessage).usage
-			costUsd += u.cost.total
-			totalInput += u.input
-			totalOutput += u.output
-			lastTurn = { input: u.input, output: u.output }
-		}
-	}
+	const { costUsd, totalInput, totalOutput, lastTurn } = branchAssistantUsageTotals(ctx)
 	const billing = getBillingStatusLine()
 
 	return {
@@ -247,9 +334,11 @@ function dropFermentPrefix(segs: Segment[]): boolean {
 }
 
 /** Regex to strip trailing shortcut hints like "→ shift+tab" or "→ option+tab"
- *  from segments that have them. Matches the dim/text colored shortcut at the end. */
+ *  from segments that have them. Tolerates compound SGR runs on both sides:
+ *  pi 1.3 dim tokens open as `\x1b[<color>m\x1b[2m` and close as `\x1b[22;39m`, so a
+ *  single-escape match would orphan the space + color-open and render `mode  ·`. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are required for matching real terminal output
-export const SHORTCUT_TAIL = /\s*\x1b\[[\d;]*m\s*→\s+[\w+]+\x1b\[[\d;]*m\s*$/
+export const SHORTCUT_TAIL = /\s*(?:\x1b\[[\d;]*m)*→\s+[\w+]+(?:\x1b\[[\d;]*m\s*)*$/
 
 /** Strip shortcut hints from the named segments. Returns true if any were stripped. */
 function stripShortcutHintsAcross(segments: Segment[], ids: SegmentId[]): boolean {
@@ -473,17 +562,7 @@ function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boole
 
 function buildUsageSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
-	let totalInput = 0
-	let totalOutput = 0
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "message") {
-			const msg = entry.message
-			if (msg?.role === "assistant" && msg.usage) {
-				totalInput += msg.usage.input ?? 0
-				totalOutput += msg.usage.output ?? 0
-			}
-		}
-	}
+	const { totalInput, totalOutput } = entriesAssistantUsageTotals(ctx)
 	if (!totalInput && !totalOutput) {
 		const text = dimText(theme, "↑0 ↓0")
 		return { id: "usage", text, width: visibleWidth(text) }
@@ -494,8 +573,9 @@ function buildUsageSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean)
 	return { id: "usage", text: dimText(theme, tokens), width: visibleWidth(tokens) }
 }
 
-function buildContextSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
-	if (!pinned) return null
+// Context is one of the three hardcoded core elements (with permissions and
+// model): it always renders, no pinned gate.
+function buildContextSegment(ctx: ExtensionContext, theme: Theme): Segment {
 	const contextUsage = ctx.getContextUsage()
 	const pct = contextUsage?.percent ?? 0
 
@@ -615,8 +695,12 @@ const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
 /**
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
  * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
+ *
+ * Extension-status-driven like lsp/dap: renders whenever the pull-request-status
+ * extension sets a status, unless the user opted out via `hidden`.
  */
-function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
 	const statuses = statusLineData.getExtensionStatuses()
 	const status = statuses.get("work-pr")
 	if (!status) return null
@@ -724,8 +808,8 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 	// Opt-out set for defaultVisible, extension-status-driven segments
-	// (lsp/dap): they render whenever their extension sets a status, so the
-	// customize UI hides them here instead of through pinning.
+	// (lsp/dap/work-pr): they render whenever their extension sets a status, so
+	// the customize UI hides them here instead of through pinning.
 	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
 	const tags = peekActiveTags(ctx.sessionManager)
@@ -740,14 +824,14 @@ export function buildStatusLineSegments(
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildAgentsSegment(theme, pinned.has("agents")),
-		buildContextSegment(ctx, theme, pinned.has("context")),
+		buildContextSegment(ctx, theme),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
 		buildDapSegment(theme, statusLineData, hidden.has("dap")),
-		buildWorkPrSegment(theme, statusLineData),
+		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
 	].filter((s): s is Segment => s !== null)
 }
 
@@ -766,8 +850,13 @@ const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
 ])
 const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
 
-export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {
-	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED).filter((s) => CONTROLS_LINE_IDS.has(s.id))
+export function buildControlsLineSegments(
+	buildCtx: StatusLineBuildContext,
+	// Same opt-out semantics as the main status line: a hidden work-pr stays
+	// out of the script controls line too.
+	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
+): Segment[] {
+	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED, hidden).filter((s) => CONTROLS_LINE_IDS.has(s.id))
 }
 
 export class StatusLine implements Component {
@@ -802,6 +891,10 @@ export class StatusLine implements Component {
 	render(width: number): string[] {
 		const config = readStatusLineConfig()
 		const pinnedSet = new Set<SegmentId>(config.pinned)
+		// Context is hardcoded: it always renders, and pinned membership only
+		// selects its display group. Force-add so even configs that unpinned it
+		// keep the default right-group placement.
+		pinnedSet.add("context")
 		const hiddenSet = new Set<SegmentId>(config.hidden)
 		const allSegments = buildStatusLineSegments(
 			{ ctx: this.ctx, theme: this.theme, statusLineData: this.statusLineData },

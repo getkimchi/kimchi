@@ -50,7 +50,7 @@ describe("loginExtension", () => {
 	it("registers an in-memory baseUrl override for a custom endpoint, keeping /login", () => {
 		const config = providerConfigFor("https://override.example/") // trailing slash must collapse
 		expect(config.baseUrl).toBe("https://override.example/openai/v1")
-		expect(config.oauth?.name).toBe("Kimchi")
+		expect(config.oauth?.name).toBe("Sign in with CAST AI (SSO)")
 	})
 
 	it("prefixes a scheme-less endpoint with https:// so the override is a valid URL", () => {
@@ -63,7 +63,7 @@ describe("loginExtension", () => {
 	it("registers no baseUrl override when no custom endpoint is set, leaving models.json in charge", () => {
 		const config = providerConfigFor(undefined)
 		expect(config.baseUrl).toBeUndefined()
-		expect(config.oauth?.name).toBe("Kimchi")
+		expect(config.oauth?.name).toBe("Sign in with CAST AI (SSO)")
 	})
 
 	it("restores OpenAI Codex subscription login while builtin API-key providers stay disabled", () => {
@@ -75,9 +75,11 @@ describe("loginExtension", () => {
 			registerProvider,
 		} as unknown as ExtensionAPI)
 
+		// The label comes verbatim from pi-ai's builtin openaiCodexProvider()
+		// catalog (the extension registers it unmodified) — upstream pi renamed it.
 		expect(registerProvider.mock.calls[0]?.[0]).toMatchObject({
 			id: "openai-codex",
-			name: "OpenAI Codex",
+			name: "OpenAI Codex (legacy)",
 			auth: { oauth: { name: "OpenAI (ChatGPT Plus/Pro)" } },
 		})
 	})

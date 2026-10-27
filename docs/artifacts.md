@@ -36,8 +36,12 @@ Source of truth: `src/extensions/artifacts/detect.ts`. Three inputs per tool cal
 ## Replay from recorded rows
 
 The artifact-recorder extension (`src/extensions/artifacts/recorder.ts`, both
-surfaces) runs the same detection at turn end and appends the result as a
-session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
+surfaces) runs the same detection at every turn end, accumulates across the
+agent run, and appends the result once at `agent_settled` (once per prompt —
+`agent_end` may fire multiple times per prompt across auto-retry/compaction
+chains) — so the row lands after the prompt's last assistant message in the
+session log, the same position the live ACP flush emits artifact chunks. The
+row is a session custom entry: `{ customType: "kimchi-artifacts", data: { v: 1,
 artifacts: [{ path, name, mimeType, sniffed }] } }` (`sniffed: true` =
 bash/powershell-sniffed, eviction-eligible at the cap the way live is) —
 already stat-gated, deduped, label-resolved and capped (32). `pi.appendEntry` persists it into the

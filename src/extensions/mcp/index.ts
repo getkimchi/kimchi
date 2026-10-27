@@ -26,7 +26,7 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
-import { loadKimchiMcpConfig } from "./config.js"
+import { getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
@@ -163,12 +163,18 @@ function createUpstreamApi(
 		get(target, property) {
 			if (property === "on") {
 				return (event: string, handler: (event: unknown, ctx: unknown) => unknown): void => {
+					// Brand every adapter event path, not just slash-command handlers:
+					// connect-/change-time notices (built-in MCP disable, sign-in
+					// imports, network hints) notify through this ctx and previously
+					// bypassed brandMcpAdapterText.
+					const branded = (value: unknown, ctx: unknown) =>
+						handler(value, createBrandedMcpContext(ctx as ExtensionContext))
 					if (event === "session_start" || event === "input") {
-						captureHandler(event, handler)
+						captureHandler(event, branded)
 						return
 					}
 					const on = target.on as (event: string, handler: (event: unknown, ctx: unknown) => unknown) => void
-					on(event, handler)
+					on(event, branded)
 				}
 			}
 			if (property === "registerTool") {
@@ -205,7 +211,13 @@ function createUpstreamApi(
 			}
 			if (property === "registerCommand") {
 				return (name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]): void => {
-					if (name === "pi-mcp") return
+					// Kimchi exposes /mcp as its single adapter command: pi-mcp is the
+					// legacy alias; mcp-adapter is the v5 canonical alias — identical
+					// handler, but it would bypass the preset-setup guard below and
+					// relaunch the alias drift this proxy exists to stop. Users who
+					// bound `mcp.panel.open` keys get an unknown-command notice; the
+					// panel still opens via /mcp.
+					if (name === "pi-mcp" || name === "mcp-adapter") return
 					const handler = command.handler
 					const getArgumentCompletions = command.getArgumentCompletions
 					target.registerCommand(name, {
@@ -286,6 +298,10 @@ export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensi
 }
 
 function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterExtensionOptions): void {
+	// Kimchi gates project MCP configuration itself (resolveMcpProjectTrust);
+	// the adapter's own interactive per-server approval would double-prompt.
+	// The dependency patch honors this flag by standing that layer down.
+	process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
 	installKeyringRequireBridge()
 	cleanupStrayMcpOAuthEntriesBestEffort()
 	installMcpOAuthCallbackBranding()
@@ -385,9 +401,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
 					? { config }
-					: selectedResult.configPath
-						? { configPath: selectedResult.configPath }
-						: {}
+					: // Default the adapter's global config to the Studio-shared file so
+						// adapter write flows (compat imports, Jev settings, write-backs)
+						// land where kimchi 1.14 and Studio read them. An explicit
+						// `--mcp-config` keeps winning; the trust flow never sees this default.
+						{ configPath: selectedResult.configPath ?? getSharedMcpConfigPath() }
 			createMcpAdapter(adapterOptions)(
 				createUpstreamApi(
 					pi,

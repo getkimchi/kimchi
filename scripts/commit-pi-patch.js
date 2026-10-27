@@ -5,7 +5,13 @@ import { resolve } from "node:path"
 const editDirectory = process.argv[2]
 if (!editDirectory) throw new Error("Usage: pnpm exec node scripts/commit-pi-patch.js <edit-directory>")
 
-const patchPath = resolve("patches/@earendil-works__pi-coding-agent@0.85.1.patch")
+// Derive the patch filename from package.json's pinned version so the script
+// does not go stale on every upstream bump.
+const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"))
+const version =
+	pkg.dependencies?.["@earendil-works/pi-coding-agent"] ?? pkg.devDependencies?.["@earendil-works/pi-coding-agent"]
+if (!version) throw new Error("Could not find the pi-coding-agent version pin in package.json")
+const patchPath = resolve(`patches/@earendil-works__pi-coding-agent@${version.replace(/^[^\d]*/, "")}.patch`)
 const existing = readFileSync(patchPath, "utf8")
 const splitAt = existing.indexOf("diff --git")
 if (splitAt === -1) throw new Error("Checked-in patch has no diff hunks — there is no header to preserve")

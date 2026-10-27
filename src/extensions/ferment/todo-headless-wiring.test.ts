@@ -197,7 +197,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-1" }, ferment)
 
 			// Scope-less todo call should resolve to the running step's ferment-step scope
-			const resolved = resolveTodoScope(undefined)
+			const resolved = resolveTodoScope(TEST_SESSION_ID)
 			expect(resolved).toEqual({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" })
 
 			// Writing without explicit scope should go to ferment-step
@@ -218,7 +218,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 
 		try {
 			// No step started — should resolve to global
-			const resolved = resolveTodoScope(undefined)
+			const resolved = resolveTodoScope(TEST_SESSION_ID)
 			expect(resolved).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
@@ -274,7 +274,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
 			).toHaveLength(0)
 			// Scope should revert to global
-			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
+			expect(resolveTodoScope(TEST_SESSION_ID)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
 		}
@@ -325,7 +325,7 @@ describe("ferment → todo → headless prompt wiring", () => {
 			expect(
 				getTodosForScope({ kind: "ferment-step", phaseId: "phase-1", stepId: "step-1" }, TEST_SESSION_ID),
 			).toHaveLength(0)
-			expect(resolveTodoScope(undefined)).toEqual({ kind: "global" })
+			expect(resolveTodoScope(TEST_SESSION_ID)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
 		}
@@ -687,7 +687,7 @@ describe("parallel step tracking", () => {
 			emitFermentDomainEvent(pi.events, { type: "start_step", phaseId: "phase-1", stepId: "step-b" }, ferment)
 
 			// With two parallel steps active, auto-scope should refuse to guess.
-			expect(resolveTodoScope()).toEqual({ kind: "global" })
+			expect(resolveTodoScope(TEST_SESSION_ID)).toEqual({ kind: "global" })
 		} finally {
 			unsubscribe()
 		}

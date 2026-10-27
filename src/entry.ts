@@ -8,9 +8,8 @@
 
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { resolve } from "node:path"
-import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
-import { validateAuxiliaryFiles } from "./auxiliary-files/validator.js"
+import { basename, resolve } from "node:path"
+import { pickPackageDirForBinary, resolveValidatedAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { installProxyAgent } from "./http/proxy.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
 import { isProxyMode, runProxy } from "./ssh-proxy.js"
@@ -23,15 +22,23 @@ if (isProxyMode(rawArgv)) {
 	runProxy(rawArgv[rawArgv.indexOf("--ssh-proxy") + 1])
 }
 
-const preSet = !!process.env.PI_PACKAGE_DIR
-const auxiliaryDir = resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath)
-if (!preSet) {
-	try {
-		validateAuxiliaryFiles(auxiliaryDir)
-	} catch (err) {
-		console.error((err as Error).message)
-		process.exit(1)
-	}
+// An inherited PI_PACKAGE_DIR (e.g. kimchi started from inside another
+// pi/kimchi session, which exports its own package dir) can point at a source
+// checkout without the aux layout ('themes/' vs 'theme/'); the validated
+// resolver recovers to the binary-adjacent share dir in that case.
+let auxiliaryDir: string
+const inheritedPackageDir = process.env.PI_PACKAGE_DIR
+try {
+	auxiliaryDir = resolveValidatedAuxiliaryFilesDir(process.env, homedir(), process.execPath)
+} catch (err) {
+	console.error((err as Error).message)
+	process.exit(1)
+}
+// If an inherited PI_PACKAGE_DIR drove the choice and it belongs to a
+// different kimchi version than the running binary, prefer the
+// binary-adjacent share dir so theme/wasm assets match this build.
+if (inheritedPackageDir) {
+	auxiliaryDir = pickPackageDirForBinary(auxiliaryDir, resolve(process.execPath, "..", "..", "share", "kimchi"))
 }
 process.env.PI_PACKAGE_DIR = auxiliaryDir
 
@@ -89,6 +96,17 @@ async function main(): Promise<void> {
 		await maybeAutoUpdateOnLaunch()
 	} catch (err) {
 		console.warn(`[kimchi-auto-update] failed: ${err instanceof Error ? err.message : err}`)
+	}
+
+	// Register the embedded QuickJS wasm path (set by binary-entry.ts from a Bun file
+	// import) with pi-mono's config module — only relevant in the compiled binary.
+	// The binary name gate keeps an externally-set env var from being honored in
+	// dev/source launches (same guard as maybeAutoUpdateOnLaunch).
+	// Dynamic import: pi-mono must not load before PI_PACKAGE_DIR is set above.
+	const compiledBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
+	if (process.env.KIMCHI_QUICKJS_WASM_PATH && basename(process.execPath) === compiledBinName) {
+		const { setEmbeddedQuickJSWasmPath } = await import("@earendil-works/pi-coding-agent")
+		setEmbeddedQuickJSWasmPath(process.env.KIMCHI_QUICKJS_WASM_PATH)
 	}
 
 	// Install before the dynamic cli.js import - the interceptor must wrap process.stdin.emit before any pi-* listener attaches. See src/paste-interceptor.ts for the rationale (LLM-1358).

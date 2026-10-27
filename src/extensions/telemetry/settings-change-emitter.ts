@@ -11,14 +11,15 @@
  * can leak: booleans/numbers pass through; strings are checked for URL /
  * email / token patterns; objects/arrays/null are never emitted verbatim.
  *
- * The watcher reuses the proven file-watch + 30ms debounce pattern from
- * `src/settings-watcher.ts`. It is telemetry-agnostic — the caller (the
- * telemetry extension lifecycle) decides whether to start it based on
- * whether telemetry is enabled.
+ * Change detection is stat polling (`watchFile`); the 30ms debounce pattern
+ * comes from `src/settings-watcher.ts`. The emitter is telemetry-agnostic —
+ * the caller (the telemetry extension lifecycle) decides whether to start
+ * it based on whether telemetry is enabled.
  */
 
-import { type FSWatcher, readFileSync, unwatchFile, watch, watchFile } from "node:fs"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 
 /** Caller-supplied emit function (matches `SessionContext.emit`'s shape). */
 export type EmitFn = (event: string, properties: Record<string, string | number | boolean>) => void
@@ -65,7 +66,13 @@ function readSettings(agentDir: string): Record<string, unknown> | undefined {
  * Start watching `settings.json` for changes. On each debounced change, diff
  * the previous top-level keys against the new ones and emit a
  * `config_changed` event per changed key via `emit`. Returns a stop function
- * that closes the watcher and clears any pending debounce timer.
+ * that stops polling and clears any pending debounce timer.
+ *
+ * Change detection is stat polling at 250ms, so writes land at most that
+ * long plus the debounce after they happen. Polling is path-based, so it
+ * survives atomic replacement, and it never holds a directory watch on the
+ * agent dir — on macOS such a watch is a recursive FSEvents subscription to
+ * the whole harness tree, which every kimchi process writes constantly.
  *
  * If `KIMCHI_CODING_AGENT_DIR` is unset or `settings.json` cannot be watched,
  * returns a no-op stop function.
@@ -76,9 +83,8 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 
 	let previous = readSettings(agentDir)
 	let debounceTimer: NodeJS.Timeout | undefined
-	let watcher: FSWatcher | undefined
 	const settingsPath = resolve(agentDir, "settings.json")
-	let polling = false
+	let poller: StatPoller | undefined
 	let stopped = false
 
 	const fire = (): void => {
@@ -106,39 +112,17 @@ export function startSettingsChangeWatcher(emit: EmitFn): () => void {
 	}
 
 	try {
-		// Native directory watches can miss changes during attachment or
-		// atomic replacement. Stat polling keeps those changes observable;
-		// snapshot comparison prevents duplicate events from the two paths.
-		watchFile(settingsPath, { persistent: false, interval: 250 }, scheduleFire)
-		polling = true
+		// Stat polling observes writes during attachment and atomic
+		// replacement alike; snapshot comparison prevents duplicate events.
+		poller = startStatPoller(settingsPath, 250, scheduleFire)
 	} catch {
 		// Telemetry remains best-effort if polling cannot be started.
-	}
-
-	try {
-		// Watch the parent directory rather than the file itself. Editors that
-		// replace settings.json atomically (write temp + rename) create a new
-		// inode; watching the file directly on Linux would lose the watcher.
-		// Directory-level watching survives inode replacement.
-		watcher = watch(agentDir, { persistent: false }, (_eventType, filename) => {
-			if (filename !== "settings.json") return
-			scheduleFire()
-		})
-		watcher.unref?.()
-		watcher.on("error", () => {
-			watcher?.close()
-			watcher = undefined
-		})
-	} catch {
-		// settings.json (or its parent dir) may not exist yet.
 	}
 
 	return () => {
 		stopped = true
 		if (debounceTimer) clearTimeout(debounceTimer)
-		if (polling) unwatchFile(settingsPath, scheduleFire)
-		polling = false
-		watcher?.close()
-		watcher = undefined
+		poller?.stop()
+		poller = undefined
 	}
 }

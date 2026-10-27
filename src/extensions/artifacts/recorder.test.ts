@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry, artifactRecorderExtension } from "./recorder.js"
 
-// Artifact recorder: one custom session entry per artifact-producing turn,
-// so replay (any client) can re-emit exactly what live detected — stat-gated,
-// capped, no re-derivation from raw output.
+// Artifact recorder: one custom session entry per prompt, so replay
+// (any client) can re-emit exactly what live detected — stat-gated, run-
+// capped, no re-derivation from raw output. The row is written on
+// agent_settled (once per prompt), so tests must emit it for rows to appear.
 
 describe("artifact-recorder", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "artifact-recorder-"))
@@ -51,10 +52,186 @@ describe("artifact-recorder", () => {
 			},
 			ctx,
 		)
+		// No row before the run settles: the row must land after the run's
+		// last agent message in the session log (live ACP parity).
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
+		await emit("agent_end", { type: "agent_end", messages: [] }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
 		expect(rows[0].v).toBe(1)
 		expect(rows[0].artifacts).toEqual([{ path: abs, name: "out.md", mimeType: "text/markdown", sniffed: false }])
+	})
+
+	it("writes one row per run when several turns produced artifacts", async () => {
+		const abs1 = touch("one.md")
+		const abs2 = touch("two.md")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const turn = (id: string, file: string) => ({
+			type: "turn_end",
+			turnIndex: 0,
+			message: {
+				role: "assistant",
+				timestamp: now,
+				content: [{ type: "toolCall", id: `tc-${id}`, name: "write", arguments: { path: file } }],
+			},
+			toolResults: [
+				{
+					toolCallId: `tc-${id}`,
+					toolName: "write",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: now,
+				},
+			],
+		})
+		await emit("turn_end", turn("1", "one.md"), ctx)
+		await emit("turn_end", turn("2", "two.md"), ctx)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts.map((a) => a.path)).toEqual([abs1, abs2])
+		// State cleared: a subsequent empty run must not re-record.
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(1)
+	})
+
+	it("writes exactly one row per prompt across agent_end chains (retry/compaction)", async () => {
+		touch("first.md")
+		touch("second.md")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const turn = (id: string, file: string) => ({
+			type: "turn_end",
+			turnIndex: 0,
+			message: {
+				role: "assistant",
+				timestamp: now,
+				content: [{ type: "toolCall", id: `tc-${id}`, name: "write", arguments: { path: file } }],
+			},
+			toolResults: [
+				{
+					toolCallId: `tc-${id}`,
+					toolName: "write",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: now,
+				},
+			],
+		})
+		// Chained runs within one prompt each emit their own agent_start +
+		// agent_end (auto-retry, compaction): the buffer must survive the
+		// chain and the row must wait for agent_settled, covering all runs.
+		await emit("turn_end", turn("1", "first.md"), ctx)
+		await emit("agent_end", { type: "agent_end", messages: [] }, ctx)
+		await emit("agent_start", { type: "agent_start" }, ctx)
+		await emit("turn_end", turn("2", "second.md"), ctx)
+		await emit("agent_end", { type: "agent_end", messages: [] }, ctx)
+		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts.map((a) => a.name)).toEqual(["first.md", "second.md"])
+	})
+
+	it("sniffed-in-turn-1 promoted to intentional by a write in turn 2", async () => {
+		const abs = touch("promo.md")
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 0,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-b", name: "bash", arguments: { command: "echo > promo.md" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-b",
+						toolName: "bash",
+						content: [{ type: "text", text: "wrote promo.md" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit(
+			"turn_end",
+			{
+				type: "turn_end",
+				turnIndex: 1,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: [{ type: "toolCall", id: "tc-w", name: "write", arguments: { path: "promo.md" } }],
+				},
+				toolResults: [
+					{
+						toolCallId: "tc-w",
+						toolName: "write",
+						content: [{ type: "text", text: "ok" }],
+						isError: false,
+						timestamp: now,
+					},
+				],
+			},
+			ctx,
+		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		expect(rows[0].artifacts).toEqual([{ path: abs, name: "promo.md", mimeType: "text/markdown", sniffed: false }])
+	})
+
+	it("sniffed eviction applies run-wide across turns (40 sniffed over two turns keeps 32)", async () => {
+		const now = Date.now()
+		const { api, emit, getAppendedEntries } = createExtensionApi()
+		artifactRecorderExtension(api)
+		const sniffTurn = (turnIndex: number, start: number) => {
+			const files = Array.from({ length: 20 }, (_, i) => `x${start + i}.md`)
+			for (const f of files) touch(f)
+			return {
+				type: "turn_end",
+				turnIndex,
+				message: {
+					role: "assistant",
+					timestamp: now,
+					content: files.map((f, i) => ({
+						type: "toolCall",
+						id: `tcx-${turnIndex}-${i}`,
+						name: "bash",
+						arguments: { command: `echo > ${f}` },
+					})),
+				},
+				toolResults: files.map((f, i) => ({
+					toolCallId: `tcx-${turnIndex}-${i}`,
+					toolName: "bash",
+					content: [{ type: "text", text: `wrote ${f}` }],
+					isError: false,
+					timestamp: now,
+				})),
+			}
+		}
+		await emit("turn_end", sniffTurn(0, 0), ctx)
+		await emit("turn_end", sniffTurn(1, 20), ctx)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
+		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
+		expect(rows).toHaveLength(1)
+		const names = rows[0].artifacts.map((a) => a.name)
+		expect(names).toHaveLength(32)
+		expect(names).toContain("x39.md")
+		expect(names).toContain("x8.md")
+		expect(names).not.toContain("x7.md")
 	})
 
 	it("records nothing for a turn without tool calls (or user messages)", async () => {
@@ -70,6 +247,7 @@ describe("artifact-recorder", () => {
 			{ type: "turn_end", turnIndex: 0, message: { role: "user", content: [] }, toolResults: [] },
 			ctx,
 		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
 	})
 
@@ -103,6 +281,7 @@ describe("artifact-recorder", () => {
 			},
 			ctx,
 		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		expect(getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)).toHaveLength(1)
 	})
 
@@ -132,6 +311,7 @@ describe("artifact-recorder", () => {
 			},
 			ctx,
 		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		expect(getAppendedEntries(ARTIFACTS_ENTRY_TYPE)).toHaveLength(0)
 	})
 
@@ -159,6 +339,7 @@ describe("artifact-recorder", () => {
 			},
 			ctx,
 		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
 		// Writes are intentional and always land (live parity).
@@ -206,6 +387,7 @@ describe("artifact-recorder", () => {
 			},
 			ctx,
 		)
+		await emit("agent_settled", { type: "agent_settled" }, ctx)
 		const rows = getAppendedEntries<ArtifactsEntry>(ARTIFACTS_ENTRY_TYPE)
 		expect(rows).toHaveLength(1)
 		const names = rows[0].artifacts.map((a) => a.name)

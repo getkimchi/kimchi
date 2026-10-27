@@ -93,7 +93,13 @@ const AUTO_MODEL: FakeModel = {
 const MODELS = [TEXT_MODEL, VISION_MODEL, VISION_SMALL, AUTO_MODEL]
 
 const GATE_TITLE = "Switch to a vision model"
-const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+// A real 8x8 red RGB PNG (well-formed IHDR/IDAT/IEND with CRCs). 1.3.0
+// validates attached images via processImage (dist/utils/image-process.js),
+// which resizes through Photon/WASM; signature-only stubs no longer pass.
+const PNG_BYTES = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC",
+	"base64",
+)
 
 /** Seed the image + (optionally) small keepRecent compaction settings. */
 function seedScenario(options: { image?: boolean; clipboardImage?: boolean; smallKeepRecent?: boolean } = {}) {

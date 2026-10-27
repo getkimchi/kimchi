@@ -275,6 +275,13 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 		// A shared embedder rides in through the langchain provider — mem0's
 		// LangchainEmbedder delegates to any embedQuery/embedDocuments object,
 		// letting several stores share one deduping gateway client.
+		//
+		// The embedder config deliberately carries no embeddingDims: the OpenAI
+		// `dimensions` request parameter is a Matryoshka truncation control,
+		// and bge-m3 rejects it outright ("does not support Matryoshka
+		// embeddings; dimensions must be unset"). The model's native output
+		// already matches the store schema, so the configured dims size the
+		// vector store only — they are never sent to the API.
 		embedder: options.sharedEmbedder
 			? { provider: "langchain", config: { model: options.sharedEmbedder } }
 			: {
@@ -283,7 +290,6 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 						model: embedder.model,
 						baseURL: embedder.baseURL,
 						apiKey: embedder.apiKey,
-						embeddingDims: embedder.dims,
 					},
 				},
 		llm: {

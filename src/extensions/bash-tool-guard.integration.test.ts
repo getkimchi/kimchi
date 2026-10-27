@@ -809,6 +809,32 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		expect(outcomes[0]?.[1]).toMatchObject({ kind: "bash_tool_guard", outcome: "complied" })
 	})
 
+	it("a complied outcome carries the warn's fired steer_id", () => {
+		const pi = createMockPI()
+		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
+		fireSessionStart(pi)
+
+		// Warn on the background category — the steer is sent and fired.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "sleep 60 &" } })
+		const fired = vi.mocked(pi.events.emit).mock.calls.find(([channel]) => channel === "steer:fired")
+		expect(fired).toBeDefined()
+		const firedSteerId = (fired?.[1] as { steer_id?: string }).steer_id
+		expect(typeof firedSteerId).toBe("string")
+
+		// Three allowed calls on other categories/tools close the window.
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "git status" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "ls" } })
+		emit(pi, "tool_call", { toolName: "bash", input: { command: "git diff" } })
+
+		const outcomeCalls = vi.mocked(pi.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+		expect(outcomeCalls).toHaveLength(1)
+		expect(outcomeCalls[0]?.[1]).toMatchObject({
+			kind: "bash_tool_guard",
+			outcome: "complied",
+			steer_id: firedSteerId,
+		})
+	})
+
 	it("same-category recurrence inside the window → steer:outcome repeated", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })

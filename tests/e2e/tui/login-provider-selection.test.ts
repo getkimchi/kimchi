@@ -29,7 +29,9 @@ test("auth menus offer OpenAI Codex and show one Kimchi provider", async ({ term
 			await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await waitForText(terminal, "Use a subscription", { timeoutMs: INPUT_TIMEOUT_MS })
-			terminal.keyDown(2)
+			// SSO is the first option; the subscription login is three rows down
+			// (SSO, account, API key, subscription).
+			terminal.keyDown(3)
 			terminal.submit("")
 			await waitForText(terminal, "OpenAI Codex", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("OpenAI Codex subscription provider visible")
@@ -47,7 +49,7 @@ test("auth menus offer OpenAI Codex and show one Kimchi provider", async ({ term
 
 			const kimchiRows = viewText(terminal)
 				.split("\n")
-				.filter((line) => line.includes("Kimchi") && line.includes("configured"))
+				.filter((line) => line.includes("CAST AI (SSO)") && line.includes("configured"))
 			expect(kimchiRows).toHaveLength(1)
 			trace.step("one Kimchi credential row visible")
 		},

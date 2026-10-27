@@ -27,6 +27,14 @@ export type Artifact = {
 	uri: string
 	/** Best-known MIME type from the extension allowlist; may be undefined. */
 	mimeType?: string
+	/**
+	 * Provenance, assigned once here in detect: "declared" (tool's own
+	 * details.artifacts — mid-turn emission trigger), "write" (write/edit
+	 * args — intentional), "sniffed" (bash/powershell output —
+	 * eviction-eligible at the turn cap). Recorded rows serialize it as
+	 * the sniffed boolean.
+	 */
+	origin: "declared" | "write" | "sniffed"
 }
 
 /** Lowercase extension → MIME type. Fixed allowlist for v1 (not configurable). */
@@ -229,7 +237,7 @@ function parseDeclaredArtifacts(result: unknown, cwd: string): { handled: boolea
 		if (artifacts.length >= MAX_DECLARED_ARTIFACTS) break
 		const { path, name } = entry ?? {}
 		if (!path || typeof path !== "string") continue
-		const artifact = artifactFromPath(path, cwd, {})
+		const artifact = artifactFromPath(path, cwd, {}, "declared")
 		if (!artifact) continue
 		artifacts.push(name && typeof name === "string" ? { ...artifact, name } : artifact)
 	}
@@ -247,7 +255,7 @@ type DetectOpts = {
 
 // Candidates always have to exist on disk — this is live detection; replay
 // reads recorded rows instead of re-running this pipeline.
-function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artifact | null {
+function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts, origin: Artifact["origin"]): Artifact | null {
 	const mimeType = ARTIFACT_EXTENSIONS[extname(rawPath).toLowerCase()]
 	if (mimeType === undefined) return null
 	let path: string
@@ -264,7 +272,7 @@ function artifactFromPath(rawPath: string, cwd: string, opts: DetectOpts): Artif
 	}
 	if (!stats.isFile()) return null
 	if (opts.windowStart !== undefined && stats.mtimeMs < opts.windowStart - MTIME_TOLERANCE_MS) return null
-	return { path, name: basename(path), uri: pathToFileURL(path).href, mimeType }
+	return { path, name: basename(path), uri: pathToFileURL(path).href, mimeType, origin }
 }
 
 // Candidate path tokens in shell output, keyed on the extension allowlist
@@ -314,7 +322,7 @@ function bashArtifacts(result: unknown, cwd: string, opts: DetectOpts): Artifact
 			seenTokens.add(token)
 			if (++candidates > MAX_BASH_CANDIDATES) return out
 			if (token.includes("://")) continue
-			const artifact = artifactFromPath(token, cwd, opts)
+			const artifact = artifactFromPath(token, cwd, opts, "sniffed")
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)
 			out.push(artifact)
@@ -334,7 +342,7 @@ function redirectArtifacts(segments: CommandSegments, cwd: string, opts: DetectO
 		for (const op of segment.ops) {
 			if ((op.op !== ">" && op.op !== ">>") || typeof op.target !== "string") continue
 			if (!(extname(op.target).toLowerCase() in ARTIFACT_EXTENSIONS)) continue
-			const artifact = artifactFromPath(op.target, cwd, opts)
+			const artifact = artifactFromPath(op.target, cwd, opts, "sniffed")
 			if (!artifact || seen.has(artifact.path)) continue
 			seen.add(artifact.path)
 			out.push(artifact)
@@ -363,7 +371,7 @@ export function artifactsFromToolCall(
 			const path = (args as { path?: unknown } | null | undefined)?.path
 			if (typeof path !== "string") return []
 			// No mtime window here: the write/edit tool authored the file itself.
-			const artifact = artifactFromPath(path, cwd, {})
+			const artifact = artifactFromPath(path, cwd, {}, "write")
 			return artifact ? [artifact] : []
 		}
 		if (toolName === "bash" || toolName === "powershell") {

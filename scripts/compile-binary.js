@@ -1,6 +1,9 @@
 // Compile the CLI into a standalone Bun binary, embedding the Photon WASM.
 // Run with Bun (its build API supports asset-import plugins; Node cannot):
-//   bun scripts/compile-binary.js src/entry.ts [--target bun-linux-arm64] --outfile dist/bin/kimchi [--external pkg]...
+//   bun scripts/compile-binary.js src/entry.ts [src/extensions/codemode/worker.ts ...] [--target bun-linux-arm64] --outfile dist/bin/kimchi [--external pkg]...
+//
+// Extra entrypoints (the codemode worker shim) are embedded at their
+// build-relative paths so pi's `new Worker("./src/...")` resolves in $bunfs.
 //
 // photon_rs.js loads its WASM via `require('path').join(__dirname, 'photon_rs_bg.wasm')`
 // — a build-machine path that doesn't exist at runtime. Instead of shipping the WASM
@@ -10,6 +13,15 @@
 
 import { readFile } from "node:fs/promises"
 import { parseArgs } from "node:util"
+
+// Local builds must embed a Bun that satisfies the declared engine: older
+// runtimes have known fs.watch bugs (fd leaks, per-path watch registration
+// costs) that shipped binaries avoid.
+const { engines } = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"))
+if (engines?.bun && !Bun.semver.satisfies(Bun.version, engines.bun)) {
+	console.error(`Bun ${Bun.version} does not satisfy engines.bun "${engines.bun}" — run \`bun upgrade\``)
+	process.exit(1)
+}
 
 const DISK_PATH_LINE = "const path = require('path').join(__dirname, 'photon_rs_bg.wasm');"
 
@@ -42,7 +54,7 @@ const { values, positionals } = parseArgs({
 	},
 })
 
-if (positionals.length !== 1) throw new Error("expected exactly one entrypoint, e.g. src/entry.ts")
+if (positionals.length < 1) throw new Error("expected at least one entrypoint, e.g. src/entry.ts")
 if (!values.outfile) throw new Error("--outfile is required")
 
 const result = await Bun.build({

@@ -102,10 +102,12 @@ test("background bash: slow command + independent read + final outcome via one b
 	)
 })
 
-// Workflow 4: the model attempts to finish twice with unresolved managed
-// work — each attempt gets a continuation; only the resolved attempt
-// settles the run.
-test("background bash: repeated completion attempts with a live process each require a disposition", async ({
+// Workflow 4: the model attempts to finish with a live background process.
+// The FIRST unresolved stop gets a prompt continuation; a second unresolved
+// stop inside the reminder interval does NOT (production rate: 30 s) - the
+// run settles instead of spinning back-to-back turns. Exits stay immediate,
+// which the other bash-background workflows cover.
+test("background bash: the first unresolved stop gets a continuation; a second inside the interval settles the run", async ({
 	terminal,
 }) => {
 	await runKimchiSession(
@@ -126,29 +128,14 @@ test("background bash: repeated completion attempts with a live process each req
 						},
 					],
 				},
-				// Turn 2: the model attempts to finish WITHOUT resolving the process.
+				// Turn 2: the model attempts to finish WITHOUT resolving the
+				// process - the guard queues its prompt (first) continuation.
 				{ stream: ["All done!"] },
-				// Turn 3 (driven by the completion continuation): the model stops
-				// again, still without resolving — the guard fires again.
-				{ stream: ["Still done — nothing else is needed."] },
-				// Turn 4 (second continuation): the model finally stops the process.
-				{
-					stream: ["Fine — stopping the process."],
-					toolCalls: [
-						{
-							id: "call_stop",
-							function: {
-								name: "bash_control",
-								arguments: JSON.stringify({
-									stop_handles: ["__BASH_HANDLE__"],
-									wait: false,
-								}),
-							},
-						},
-					],
-				},
-				// Turn 5: the model finishes for real, with everything resolved.
-				{ stream: ["Now everything is resolved."] },
+				// Turn 3 (driven by the first continuation): the model stops
+				// again, still without resolving. Inside the 30 s interval no
+				// further reminder fires, so the run settles with the process
+				// still running.
+				{ stream: ["Still done - nothing else is needed."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -159,30 +146,38 @@ test("background bash: repeated completion attempts with a live process each req
 			trace.step("first completion attempt with a tracked process")
 
 			// The continuation fires; the model tries to finish AGAIN without
-			// resolving — a second continuation must fire (no lifetime
-			// suppression on a stable handle set).
+			// resolving - and this time the run SETTLES (interval-limited).
 			await waitForText(terminal, "Still done", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("second unresolved completion attempt")
 
-			// The model stops the process and finishes for real.
-			await waitForText(terminal, "stopping the process", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("continuation caused the process to be stopped")
-			await waitForText(terminal, "Now everything is resolved", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("session settled after resolution")
+			await waitForText(terminal, "ask anything or type", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("run settled after the interval-limited stop (no reminder spin)")
 
-			// Both unresolved attempts produced a continuation; the resolved
-			// run settled with the stop applied. The LAST request's history
-			// carries each continuation exactly once (earlier requests also
-			// replay them, so the full history cannot be counted directly).
+			// Exactly one continuation reached the conversation, and the run
+			// settled after the second stop instead of spinning (the
+			// unthrottled guard drove 18+ requests here before).
 			await waitForTurnToSettle(fixture.fake.requests)
-			const lastMessages = (fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? []
+			// The last request may be a title-generation side request (no
+			// conversation history): count in the last AGENT request.
+			const agentRequests = fixture.fake.requests.filter((r) =>
+				JSON.stringify((r.body as { messages?: unknown[] } | undefined)?.messages ?? []).includes(
+					"Run a long command then finish twice",
+				),
+			)
+			const lastMessages = (agentRequests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? []
 			const lastHistory = JSON.stringify(lastMessages)
 			expect(
 				lastHistory.split("Task completion requires a disposition for unresolved background bash processes").length - 1,
-			).toBe(2)
+			).toBe(1)
 			expect(lastHistory).toContain("Still running")
-			// 5 LLM requests: spawn, two unresolved stops, stop, final.
-			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(5)
+			// No reminder spin: only the scripted agent turns (spawn, unresolved
+			// stop, continuation-driven stop) hit the main queue. The unthrottled
+			// guard drove 15+ main requests here; side traffic (title, catalog,
+			// classifiers) is excluded because it is identical on master.
+			const mainRequests = fixture.fake.requests.filter((r) =>
+				Array.isArray(((r as { body?: { tools?: unknown[] } }).body ?? (r as { tools?: unknown[] }))?.tools),
+			)
+			expect(mainRequests.length).toBeLessThanOrEqual(5)
 		},
 	)
 })

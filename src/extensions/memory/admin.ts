@@ -10,8 +10,11 @@
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
+import { loadConfig } from "../../config.js"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
 import { MEMORY_RESOURCE_ID, MEMORY_USER_ID } from "./config.js"
+import { batchChoice, type DecisionGateOptions, systemoneEndpoint } from "./decision-gate.js"
+import { consolidateQuestion, consolidateState } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
 import { resolveProjectScope, sanitizeScopeId } from "./scope.js"
 
@@ -40,11 +43,13 @@ export interface AdminStore {
 	dbPath: string
 }
 
-/** Test seams — every fs/backend/lock boundary is injectable. */
+/** Test seams — every fs/backend/lock/gateway boundary is injectable. */
 export interface AdminDeps {
 	memoryRoot?: string
 	createBackend?: (dbPath: string) => Promise<AdminBackend>
 	acquireLock?: (memoryRoot: string) => Promise<() => Promise<void>>
+	/** Decision-gate context for consolidate; default resolves from config. */
+	decisionGate?: DecisionGateOptions | null
 }
 
 /** What one management invocation produced, ready for either surface. */
@@ -69,10 +74,11 @@ export type AdminCommand =
 	| { op: "search"; query: string; scope: ScopeFilter; json: boolean }
 	| { op: "delete"; ids: string[] }
 	| { op: "reset"; scope: ScopeFilter; yes: boolean }
+	| { op: "consolidate"; scope: ScopeFilter; yes: boolean }
 	| { op: "set-enabled"; enabled: boolean }
 	| { op: "usage-error"; message: string }
 
-export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
+export const USAGE = `usage: memory [list|search|delete|reset|consolidate|enable|disable]
 
   (no arguments)   overview: storage path, per-store stats, pending jobs
   list    [--scope local|personal|project|all] [--project <owner/name>]
@@ -80,6 +86,10 @@ export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
   search  <query> [--scope ...] [--json]
   delete  <id> [<id>...]
   reset   --scope all|personal|project [--project <owner/name>] [--yes]
+  consolidate [--scope local|personal|project|all] [--project <owner/name>] [--yes]
+          One-shot d3-assisted cleanup: classifies every fact as unique /
+          complementary / exact_twin / near_twin and deletes the redundant
+          copies. Reports first; deletes only with --yes (or confirmed).
   enable | disable
           Toggle memory for the current interactive session only. Resets on
           restart; the persistent feature switch is
@@ -91,7 +101,7 @@ export const USAGE = `usage: memory [list|search|delete|reset|enable|disable]
 
 // --- grammar ------------------------------------------------------------------
 
-const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "enable", "disable"])
+const KNOWN_SUBCOMMANDS = new Set(["list", "search", "delete", "reset", "consolidate", "enable", "disable"])
 const DEFAULT_LIST_LIMIT = 50
 
 export { DEFAULT_LIST_LIMIT }
@@ -252,11 +262,12 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 		}
 		return { op: "set-enabled", enabled: sub === "enable" }
 	}
-	// Only list and search consume the parsed scope — overview and delete get
-	// the unresolved local marker instead of paying the git probe.
+	// Only list, search, and consolidate consume the parsed scope — overview
+	// and delete get the unresolved local marker instead of paying the git
+	// probe.
 	const scope = parseScopeFilter(flags, opts, {
 		reset: sub === "reset",
-		usesScope: sub === "list" || sub === "search",
+		usesScope: sub === "list" || sub === "search" || sub === "consolidate",
 	})
 	if ("error" in scope) return { op: "usage-error", message: scope.error }
 
@@ -283,6 +294,12 @@ export function parseAdminArgs(args: string[], opts: { cwd: string }): AdminComm
 				return { op: "usage-error", message: "reset takes no positional arguments" }
 			}
 			return { op: "reset", scope, yes: flags.bools.has("yes") }
+		}
+		case "consolidate": {
+			if (flags.positionals.length > 0) {
+				return { op: "usage-error", message: "consolidate takes no positional arguments" }
+			}
+			return { op: "consolidate", scope, yes: flags.bools.has("yes") }
 		}
 		default: {
 			// Bare `memory` (overview) or `memory list`.
@@ -370,6 +387,22 @@ interface ResolvedDeps {
 	memoryRoot: string
 	createBackend: (dbPath: string) => Promise<AdminBackend>
 	acquireLock: (memoryRoot: string) => Promise<() => Promise<void>>
+}
+
+/** Resolve the decision endpoint for consolidate. Explicitly null only for
+ * tests; a keyless config (the loadConfig default shape) is "unavailable",
+ * never a gate pointed at the gateway with an empty Bearer — same guard as
+ * the worker/turn resolvers (an unconfigured user must not 401-spam). */
+function defaultDecisionGate(deps?: AdminDeps): DecisionGateOptions | null {
+	if (deps?.decisionGate !== undefined) return deps.decisionGate
+	let config: ReturnType<typeof loadConfig>
+	try {
+		config = loadConfig()
+	} catch {
+		return null
+	}
+	if (!config.apiKey) return null
+	return { endpoint: systemoneEndpoint(config.llmEndpoint), apiKey: config.apiKey }
 }
 
 function resolveDeps(deps?: AdminDeps): ResolvedDeps {
@@ -498,6 +531,8 @@ export async function runAdminCommand(args: string[], options: AdminRunOptions):
 				return withMode(await opDelete(parsed, deps), false)
 			case "reset":
 				return withMode(await opReset(parsed, options, deps), false)
+			case "consolidate":
+				return withMode(await opConsolidate(parsed, options, deps, options.deps), false)
 			case "set-enabled":
 				return withMode(opSetEnabled(parsed, options), false)
 		}
@@ -839,4 +874,136 @@ async function opReset(
 		json: JSON.stringify({ error: "confirmation required" }, null, 2),
 		code: 1,
 	}
+}
+
+interface ConsolidateDeletion {
+	id: string
+	scopeId: string
+	memory: string
+	reason: "exact_twin" | "near_twin"
+}
+
+/**
+ * One manual cleanup pass (spike E7 Part B: the decision model recovered
+ * all twin groups in the personal store with zero false positives at
+ * ~57k input tokens). Per store: classify every fact (unique /
+ * complementary / exact_twin / near_twin), report, and — only with --yes
+ * or an interactive confirmation — delete the redundant copies.
+ * Conservative floors: unique + complementary ALWAYS survive, a
+ * classification failure leaves the store untouched, and a store whose
+ * twin verdicts would wipe it keeps its oldest fact instead.
+ */
+async function opConsolidate(
+	parsed: { scope: ScopeFilter; yes: boolean },
+	options: AdminRunOptions,
+	deps: ResolvedDeps,
+	seams?: AdminDeps,
+): Promise<Omit<AdminResult, "useJson">> {
+	const gate = defaultDecisionGate(seams)
+	if (!gate) {
+		return result({
+			text: "error: consolidate needs the decision model — no API key configured (kimchi login)",
+			data: { error: "no API key" },
+			code: 1,
+		})
+	}
+	const stores = selectStores(listStores(deps.memoryRoot), parsed.scope)
+	if (stores.length === 0) {
+		return result({ text: "No memory stores in this scope — nothing to consolidate.", data: { scans: [] } })
+	}
+	const lines: string[] = []
+	const deletions: ConsolidateDeletion[] = []
+	const scans: Array<Record<string, unknown>> = []
+	for (const store of stores) {
+		const backend = await deps.createBackend(store.dbPath)
+		const items = await backend.getAll()
+		if (items.length < 2) {
+			lines.push(`${store.scopeId}: ${items.length} fact(s) — nothing to consolidate`)
+			scans.push({ scopeId: store.scopeId, total: items.length, deletions: 0 })
+			continue
+		}
+		let answers: Awaited<ReturnType<typeof batchChoice>>
+		try {
+			answers = await batchChoice(
+				gate,
+				consolidateState(items.map((item) => item.memory)),
+				items.map((item) => item.memory),
+				consolidateQuestion,
+			)
+		} catch (err) {
+			lines.push(
+				`${store.scopeId}: classification failed (${err instanceof Error ? err.message : String(err)}) — store left untouched`,
+			)
+			scans.push({ scopeId: store.scopeId, total: items.length, error: "classification failed" })
+			continue
+		}
+		const classes = { unique: 0, complementary: 0, exact_twin: 0, near_twin: 0 }
+		const storeDeletions: ConsolidateDeletion[] = []
+		items.forEach((item, i) => {
+			const cls = answers[i]?.choice ?? "unique"
+			if (cls === "exact_twin" || cls === "near_twin") {
+				classes[cls] += 1
+				storeDeletions.push({ id: item.id, scopeId: store.scopeId, memory: item.memory, reason: cls })
+			} else {
+				classes[cls === "complementary" ? "complementary" : "unique"] += 1
+			}
+		})
+		// Paranoia floor: never empty a store through twin verdicts alone —
+		// an all-twins sweep keeps the oldest fact (the list is insertion-
+		// ordered), which also preserves one member of every twin pair.
+		if (storeDeletions.length === items.length) {
+			const spared = storeDeletions.shift() as ConsolidateDeletion
+			classes[spared.reason] -= 1
+			classes.unique += 1
+			lines.push(`${store.scopeId}: kept the oldest fact — the twin sweep would otherwise empty the store`)
+		}
+		lines.push(
+			`${store.scopeId}: ${items.length} fact(s) — ${classes.unique} unique, ${classes.complementary} complementary, ${classes.exact_twin} exact_twin, ${classes.near_twin} near_twin`,
+		)
+		for (const d of storeDeletions) lines.push(`  ${d.id}\t${d.reason}\t${truncateText(d.memory, 90)}`)
+		deletions.push(...storeDeletions)
+		scans.push({
+			scopeId: store.scopeId,
+			total: items.length,
+			...classes,
+			deletions: storeDeletions.map((d) => ({ ...d })),
+		})
+	}
+	if (deletions.length === 0) {
+		lines.push("")
+		lines.push("Store is already clean — no redundant copies.")
+		return result({ text: lines.join("\n"), data: { scans, deletions: [] } })
+	}
+	if (!parsed.yes) {
+		const confirmed = await options.confirm?.(
+			`Delete ${deletions.length} redundant fact(s) across ${scans.length} store(s)?`,
+		)
+		if (options.confirm === undefined || confirmed !== true) {
+			lines.push("")
+			lines.push(
+				options.confirm === undefined
+					? `Nothing deleted. Re-run with --yes to delete these ${deletions.length} fact(s).`
+					: "Cancelled.",
+			)
+			return result({ text: lines.join("\n"), data: { scans, deletions, applied: false } })
+		}
+	}
+	const release = await deps.acquireLock(deps.memoryRoot)
+	try {
+		const backends = new Map<string, AdminBackend>()
+		for (const d of deletions) {
+			const store = stores.find((s) => s.scopeId === d.scopeId) as AdminStore
+			let backend = backends.get(store.dbPath)
+			if (!backend) {
+				backend = await deps.createBackend(store.dbPath)
+				backends.set(store.dbPath, backend)
+			}
+			await backend.delete(d.id)
+		}
+	} finally {
+		await release()
+	}
+	lines.push("")
+	lines.push(`Deleted ${deletions.length} redundant fact(s). Run \`memory list\` to verify.`)
+	return result({ text: lines.join("\n"), data: { scans, deletions, applied: true } })
 }

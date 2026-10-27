@@ -191,6 +191,91 @@ describe("/model selector capability table (installed patch)", () => {
 		)
 	})
 
+	it("orders the THINKING column between CONTEXT and VISION and renders curated levels canonically", () => {
+		withLevels({ "kimchi-dev/kimi-k2.6": ["max", "high", "off", "low"] }, () => {
+			const { renderPlain } = makeSelector({})
+			const lines = renderPlain(120)
+			const header = lines.find((l) => l.includes("MODEL") && l.includes("PROVIDER"))
+			const contextAt = header?.indexOf("CONTEXT") ?? -1
+			const thinkingAt = header?.indexOf("THINKING") ?? -1
+			const visionAt = header?.indexOf("VISION") ?? -1
+			expect(contextAt).toBeGreaterThanOrEqual(0)
+			expect(contextAt).toBeLessThan(thinkingAt)
+			expect(thinkingAt).toBeLessThan(visionAt)
+
+			// Unsorted registry data renders in canonical rank order.
+			const kimiRow = lines.find((l) => l.includes("kimi-k2.6"))
+			expect(kimiRow).toContain("off, low, high, max")
+		})
+	})
+
+	it("renders all five THINKING cell states aligned across rows", () => {
+		const curated = makeModel({ id: "kimi-k2.6", reasoning: true })
+		const curatedOff = makeModel({ id: "glm-5.3", input: ["text"], reasoning: true })
+		const curatedNone = makeModel({ id: "no-levels", reasoning: true })
+		const uncurated = makeModel({
+			provider: "anthropic",
+			id: "claude-sonnet-4-20250514",
+			name: "Claude",
+			contextWindow: 1_000_000,
+			reasoning: true,
+		})
+		const noThinking = makeModel({ id: "sllm", input: ["text"], reasoning: false })
+		withLevels(
+			{
+				// Deliberately unsorted: the renderer must normalize.
+				"kimchi-dev/kimi-k2.6": ["max", "high", "off", "low"],
+				"kimchi-dev/glm-5.3": ["off"],
+				// Curated-none: the explicit empty array — thinking exists, no
+				// distinct levels.
+				"kimchi-dev/no-levels": [],
+			},
+			() => {
+				const { renderPlain } = makeSelector({
+					models: [curated, curatedOff, curatedNone, uncurated, noThinking],
+				})
+				const lines = renderPlain(160)
+				const kimiRow = lines.find((l) => l.includes("kimi-k2.6"))
+				const glmRow = lines.find((l) => l.includes("glm-5.3"))
+				const noneRow = lines.find((l) => l.includes("no-levels"))
+				const claudeRow = lines.find((l) => l.includes("claude-sonnet"))
+				const sllmRow = lines.find((l) => l.includes("sllm"))
+
+				// Curated levels win over the reasoning flag, in canonical order.
+				expect(kimiRow).toMatch(/off, low, high, max {2}✓/)
+				// Curated ["off"] renders off even for a reasoning model.
+				expect(glmRow).toMatch(/off {18}✗/)
+				// Curated [] renders on — the backend-confirmed no-levels state.
+				expect(noneRow).toMatch(/on {19}✓/)
+				// Uncurated: levels must not be inferred — "not curated" when it
+				// reasons...
+				expect(claudeRow).toMatch(/not curated {10}✓/)
+				// ...and a hard "off" when it does not.
+				expect(sllmRow).toMatch(/off {18}✗/)
+
+				// Every cell starts at the same column.
+				const cellStart = (row: string | undefined, pattern: RegExp) => row?.match(pattern)?.index
+				const starts = [
+					kimiRow?.indexOf("off, low, high, max"),
+					cellStart(glmRow, /off {18}✗/),
+					cellStart(noneRow, /on {19}✓/),
+					cellStart(claudeRow, /not curated {10}✓/),
+					cellStart(sllmRow, /off {18}✗/),
+				]
+				expect(new Set(starts).size).toBe(1)
+			},
+		)
+	})
+
+	it("yields description space first when curated level lists run long", () => {
+		withLevels({ "kimchi-dev/kimi-k2.6": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, () => {
+			const { renderPlain } = makeSelector({ cols: 80 })
+			const lines = renderPlain(100)
+			// The full six-level list crowds the description out entirely.
+			expect(lines.find((l) => l.includes("kimi-k2.6"))).toMatch(/max {2}✓\s*$/)
+		})
+	})
+
 	it("colors the ✗ marker in the warn color", () => {
 		const { component } = makeSelector({})
 		const raw = component.render(100)
@@ -219,6 +304,7 @@ describe("/model selector capability table (installed patch)", () => {
 		__kimchiOrchestratorRef?: Map<string, string>
 		__kimchiMultiModelEnabled?: Map<string, boolean>
 		__kimchiModelDescriptions?: Map<string, string>
+		__kimchiModelThinkingLevels?: Map<string, string[]>
 	}
 	const patchedProcess = process as PatchedProcess
 
@@ -232,21 +318,36 @@ describe("/model selector capability table (installed patch)", () => {
 		}
 	}
 
+	/** Sets the curated thinking-levels registry around a test body. */
+	function withLevels(entries: Record<string, string[]>, body: () => void): void {
+		patchedProcess.__kimchiModelThinkingLevels = new Map(Object.entries(entries))
+		try {
+			body()
+		} finally {
+			patchedProcess.__kimchiModelThinkingLevels = undefined
+		}
+	}
+
 	it("the virtual multi-model row inherits its orchestrator's context/vision stats", () => {
 		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
 		patchedProcess.__kimchiMultiModelEnabled = new Map([["mm-session", false]])
 		try {
-			withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
-				const { renderPlain } = makeSelector({ sessionId: "mm-session" })
-				const rows = modelRows(renderPlain(120))
-				const multiRow = rows.find((r) => r.includes("multi-model"))
-				expect(multiRow).toBeDefined()
-				expect(multiRow).toContain("orchestration")
-				// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓. Its
-				// description follows the harness-side deprecation label.
-				expect(multiRow).toMatch(/✓ {7}\[Deprecated\]/)
-				expect(multiRow).toContain("Flagship vision model.")
-				expect(multiRow).toContain("200k")
+			withLevels({ "kimchi-dev/kimi-k2.6": ["off", "low", "high", "max"] }, () => {
+				withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
+					const { renderPlain } = makeSelector({ sessionId: "mm-session" })
+					const rows = modelRows(renderPlain(120))
+					const multiRow = rows.find((r) => r.includes("multi-model"))
+					expect(multiRow).toBeDefined()
+					expect(multiRow).toContain("orchestration")
+					// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓. Its
+					// description follows the harness-side deprecation label.
+					expect(multiRow).toMatch(/✓ {7}\[Deprecated\]/)
+					expect(multiRow).toContain("Flagship vision model.")
+					expect(multiRow).toContain("200k")
+					// Capabilities come from the orchestrator ref even though the
+					// display id is the virtual multi-model label.
+					expect(multiRow).toContain("off, low, high, max")
+				})
 			})
 		} finally {
 			patchedProcess.__kimchiOrchestratorRef = undefined
@@ -291,16 +392,21 @@ describe("/model selector capability table (installed patch)", () => {
 				"kimchi-dev/glm-5.3": "Balanced everyday model.",
 			},
 			() => {
-				const { renderPlain } = makeSelector({ cols: 50 })
+				// 65 columns fits model id + truncated provider + the THINKING
+				// cell under the new fixed budget; the description is the first
+				// casualty (descW < 4 → hidden).
+				const { renderPlain } = makeSelector({ cols: 65 })
 				const rows = modelRows(renderPlain(100))
 				const claudeRow = rows.find((r) => r.includes("claude-sonnet"))
 				expect(claudeRow).toBeDefined()
 				// The description column hides entirely; provider truncates next
-				// (anthropic → anthrop…); the model id is kept whole.
+				// (anthropic → anthro…); the model id and the THINKING fallback
+				// cell (no registry entry → reasoning flag → off) are kept whole.
 				expect(claudeRow).not.toContain("Frontier")
-				expect(claudeRow).toContain("an…")
+				expect(claudeRow).toContain("anthrop…")
 				expect(claudeRow).toContain("claude-sonnet-4-20250514")
 				expect(claudeRow).toContain("1M")
+				expect(claudeRow).toContain("off")
 			},
 		)
 	})

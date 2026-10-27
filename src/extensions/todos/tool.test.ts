@@ -1,7 +1,14 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { __resetReconciliationBookkeeping } from "./reconciliation.js"
 import { __resetTodoStore, GLOBAL_TODO_SCOPE, getTodosForScope, subscribeTodoStore } from "./store.js"
-import { CREATE_TODOS_TOOL_NAME, registerTodosTool, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
+import {
+	CONFIRM_TODOS_TOOL_NAME,
+	CREATE_TODOS_TOOL_NAME,
+	registerTodosTool,
+	TODO_TOOL_NAMES,
+	UPDATE_TODOS_TOOL_NAME,
+} from "./tool.js"
 
 function fakeCtx(sessionId: string): ExtensionContext {
 	return {
@@ -20,22 +27,245 @@ function registeredTools() {
 	return Object.fromEntries(registerTool.mock.calls.map(([tool]) => [tool.name, tool]))
 }
 
-describe("todo tools", () => {
+describe("confirm_todos", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetReconciliationBookkeeping()
+	})
+
+	it("confirms an unchanged plan without writing and records reconciliation", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "in_progress" }, undefined, undefined, ctx)
+		await tools.add_todo.execute("add-2", { content: "bravo", status: "pending" }, undefined, undefined, ctx)
+		const listener = vi.fn()
+		const unsubscribe = subscribeTodoStore(listener)
+
+		const result = await tools.confirm_todos.execute(
+			"confirm-1",
+			{
+				inputRevision: 0,
+				expected: [
+					{ id: 1, status: "in_progress" },
+					{ id: 2, status: "pending" },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.content).toEqual([
+			{ type: "text", text: "Confirmed 2 todos in global match the current plan (input revision 0)." },
+		])
+		expect(result.details).toMatchObject({ scope: { kind: "global" }, inputRevision: 0 })
+		// No synthetic store write: subscribers are not notified.
+		expect(listener).not.toHaveBeenCalled()
+		unsubscribe()
+	})
+
+	it("rejects a stale input revision with the actual state and current revision", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "pending" }, undefined, undefined, ctx)
+
+		const result = await tools.confirm_todos.execute(
+			"confirm-1",
+			{ inputRevision: 3, expected: [{ id: 1, status: "pending" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.details).toBeNull()
+		expect(result.content[0].text).toContain("accepted input revision is now 0")
+		expect(result.content[0].text).toContain("[pending] #1 alpha")
+	})
+
+	it("rejects wrong expected sets: missing, extra, duplicate, and mismatched statuses", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "pending" }, undefined, undefined, ctx)
+		await tools.add_todo.execute("add-2", { content: "bravo", status: "completed" }, undefined, undefined, ctx)
+
+		const wrongStatus = await tools.confirm_todos.execute(
+			"confirm-1",
+			{
+				inputRevision: 0,
+				expected: [
+					{ id: 1, status: "pending" },
+					{ id: 2, status: "in_progress" },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(wrongStatus.details).toBeNull()
+		expect(wrongStatus.content[0].text).toContain("status mismatches")
+		expect(wrongStatus.content[0].text).toContain("[completed] #2 bravo")
+
+		const missingId = await tools.confirm_todos.execute(
+			"confirm-2",
+			{ inputRevision: 0, expected: [{ id: 1, status: "pending" }] },
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(missingId.content[0].text).toContain("missing id 2")
+
+		const extraId = await tools.confirm_todos.execute(
+			"confirm-3",
+			{
+				inputRevision: 0,
+				expected: [
+					{ id: 1, status: "pending" },
+					{ id: 2, status: "completed" },
+					{ id: 3, status: "pending" },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(extraId.content[0].text).toContain("unknown id 3")
+
+		const duplicateId = await tools.confirm_todos.execute(
+			"confirm-4",
+			{
+				inputRevision: 0,
+				expected: [
+					{ id: 1, status: "pending" },
+					{ id: 1, status: "pending" },
+					{ id: 2, status: "completed" },
+				],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(duplicateId.content[0].text).toContain("duplicate id 1")
+	})
+
+	it("confirms an explicit scope outside auto-scope and rejects the ferment phase scope", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.update_todos.execute(
+			"u-1",
+			{
+				scope: { kind: "ferment-step", phaseId: "p", stepId: "s" },
+				todos: [{ content: "step task", status: "in_progress" }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const ok = await tools.confirm_todos.execute(
+			"confirm-1",
+			{
+				scope: { kind: "ferment-step", phaseId: "p", stepId: "s" },
+				inputRevision: 0,
+				expected: [{ id: 1, status: "in_progress" }],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(ok.content[0].text).toContain("Confirmed 1 todos in step p/s")
+
+		const phaseScope = await tools.confirm_todos.execute(
+			"confirm-2",
+			{
+				scope: { kind: "ferment", phaseId: "p" },
+				inputRevision: 0,
+				expected: [],
+			},
+			undefined,
+			undefined,
+			ctx,
+		)
+		expect(phaseScope.content[0].text).toContain("managed by the ferment lifecycle")
+	})
+})
+
+describe("atomic add/mark mutations", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 	})
 
-	it("registers todo tool aliases", () => {
+	it("preserves both changes from concurrent marks on different ids", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha" }, undefined, undefined, ctx)
+		await tools.add_todo.execute("add-2", { content: "bravo" }, undefined, undefined, ctx)
+
+		const [, second] = await Promise.all([
+			tools.mark_todo.execute("m1", { id: 1, status: "completed" }, undefined, undefined, ctx),
+			tools.mark_todo.execute("m2", { id: 2, status: "in_progress" }, undefined, undefined, ctx),
+		])
+
+		expect(second.content).toEqual([{ type: "text", text: "Marked todo #2 in_progress in global." }])
+		const todos = getTodosForScope(GLOBAL_TODO_SCOPE, "session")
+		expect(todos.find((todo) => todo.id === 1)?.status).toBe("completed")
+		expect(todos.find((todo) => todo.id === 2)?.status).toBe("in_progress")
+	})
+
+	it("preserves concurrent adds without dropping items", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+
+		const results = await Promise.all([
+			tools.add_todo.execute("a1", { content: "alpha" }, undefined, undefined, ctx),
+			tools.add_todo.execute("a2", { content: "bravo" }, undefined, undefined, ctx),
+			tools.add_todo.execute("a3", { content: "charlie" }, undefined, undefined, ctx),
+		])
+
+		expect(results.map((result) => result.content[0]?.type === "text" && result.content[0].text)).toEqual([
+			"Added todo #1 in global.",
+			"Added todo #2 in global.",
+			"Added todo #3 in global.",
+		])
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "session").map((todo) => todo.content)).toEqual([
+			"alpha",
+			"bravo",
+			"charlie",
+		])
+	})
+
+	it("unknown-id and no-op marks do not notify store subscribers", async () => {
+		const tools = registeredTools()
+		const ctx = fakeCtx("session")
+		await tools.add_todo.execute("add-1", { content: "alpha", status: "pending" }, undefined, undefined, ctx)
+		const listener = vi.fn()
+		const unsubscribe = subscribeTodoStore(listener)
+
+		await tools.mark_todo.execute("m-unknown", { id: 42, status: "completed" }, undefined, undefined, ctx)
+		await tools.mark_todo.execute("m-noop", { id: 1, status: "pending" }, undefined, undefined, ctx)
+
+		expect(listener).not.toHaveBeenCalled()
+		unsubscribe()
+	})
+})
+
+describe("todo tools", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetReconciliationBookkeeping()
+	})
+
+	it("registers todo tool aliases plus the confirm_todos check-in tool", () => {
 		const registerTool = vi.fn()
 		registerTodosTool({ registerTool } as never)
 
-		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([...TODO_TOOL_NAMES])
+		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([...TODO_TOOL_NAMES, CONFIRM_TODOS_TOOL_NAME])
 		expect(registerTool.mock.calls.map(([tool]) => tool.name)).toEqual([
 			CREATE_TODOS_TOOL_NAME,
 			UPDATE_TODOS_TOOL_NAME,
 			"add_todo",
 			"mark_todo",
 			"clear_todos",
+			CONFIRM_TODOS_TOOL_NAME,
 		])
 	})
 

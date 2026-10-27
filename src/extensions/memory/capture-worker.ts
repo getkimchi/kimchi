@@ -67,8 +67,18 @@ import {
 	POISON_JOB_TTL_MS,
 	SUPERSEDE_SEARCH_TOPK,
 } from "./config.js"
+import { batchChoice, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
+import type { DecisionGateKind } from "./gates.js"
+import {
+	parseDecisionGateFlag,
+	TRIAGE_DURABLE_MIN_P,
+	triageQuestion,
+	VALUATION_DISCARD_MIN_P,
+	VALUATION_STATE,
+	valuationQuestion,
+} from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
-import { findSupersededIds } from "./supersede.js"
+import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
 
 export interface CaptureMessage {
 	role: "user" | "assistant"
@@ -817,6 +827,39 @@ export interface RunCaptureWorkerOptions {
 	createBackend?: (dbPath: string) => Promise<CaptureBackend>
 	/** Injectable for tests — skips the config load and model resolution. */
 	llm?: GatewayLlmOptions
+	/** Injectable for tests — the decision-gate context (`gate: null` disables
+	 * every decision gate; a gate with enabled names turns those gates on).
+	 * Default: resolved from config + KIMCHI_MEMORY_DECISION_GATE. */
+	decision?: { gate: DecisionGateOptions | null; enabled: ReadonlySet<DecisionGateKind> }
+}
+
+/** The d3 gate context for this drain: flagged-on gates get a live endpoint;
+ * a missing config or flag=off leaves them null — every gate treats a null
+ * gate as "degrade to pre-gate behavior" (memory must never break capture). */
+async function resolveDecisionContext(options: RunCaptureWorkerOptions): Promise<{
+	gate: DecisionGateOptions | null
+	enabled: ReadonlySet<DecisionGateKind>
+}> {
+	if (options.decision) return options.decision
+	const parsed = parseDecisionGateFlag(process.env.KIMCHI_MEMORY_DECISION_GATE)
+	if (parsed.unknown.length > 0) {
+		console.error(`[memory-capture] unknown KIMCHI_MEMORY_DECISION_GATE name(s) ignored: ${parsed.unknown.join(", ")}`)
+	}
+	if (parsed.enabled.size === 0) return { gate: null, enabled: parsed.enabled }
+	try {
+		const config = (await import("../../config.js")).loadConfig()
+		// loadConfig never throws for a missing file — apiKey:"" is the
+		// keyless shape, and a gate built on it would 401 every call and spam
+		// the fail-open logs instead of behaving like "gates unavailable".
+		if (!config.apiKey) return { gate: null, enabled: parsed.enabled }
+		return {
+			gate: { endpoint: systemoneEndpoint(config.llmEndpoint), apiKey: config.apiKey },
+			enabled: parsed.enabled,
+		}
+	} catch (err) {
+		console.error("[memory-capture] config unavailable — decision gates degrading to pre-gate behavior:", err)
+		return { gate: null, enabled: parsed.enabled }
+	}
 }
 
 /**
@@ -879,6 +922,9 @@ interface ExtractionTask {
  * inline retry round (transient only) and cross-drain quarantine. */
 type ExtractionOutcome = { ok: true; facts: TaggedFacts } | { ok: false; kind: "poison" | "transient" }
 
+/** Shared empty result — consumers only spread the arrays, so reuse is safe. */
+const EMPTY_TAGGED: TaggedFacts = { personal: [], project: [] }
+
 /**
  * Process every pending capture job, pipelined in three phases (see the
  * module header): A — sequential claim pass; B — parallel extraction; C —
@@ -918,7 +964,30 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 
 	const llm = await resolveWorkerLlm(options)
+	const decision = await resolveDecisionContext(options)
 	const createBackend = options.createBackend ?? defaultCaptureBackend
+
+	// Valuation gate (spike E2/E6/E8): post-extraction keep/discard judged by
+	// the decision model, batched ≤30 facts/call. Built once per drain and
+	// deps-injected into commitPlan; a null gate keeps the pre-gate behavior
+	// bit-identical. Fail-open semantics live in commitPlan (a thrown gate
+	// keeps everything).
+	const valuationGate = (() => {
+		if (!decision.enabled.has("valuation") || !decision.gate) return undefined
+		const gate = decision.gate
+		return async (facts: string[]): Promise<Set<string>> => {
+			const discard = new Set<string>()
+			if (facts.length === 0) return discard
+			const answers = await batchChoice(gate, VALUATION_STATE, facts, valuationQuestion)
+			for (const [i, fact] of facts.entries()) {
+				const answer = answers[i]
+				if (answer && answer.choice === "discard" && (answer.probabilities.discard ?? 0) >= VALUATION_DISCARD_MIN_P) {
+					discard.add(fact)
+				}
+			}
+			return discard
+		}
+	})()
 
 	// Phase B — parallel extraction across the whole drain. Tasks run in
 	// (job, window) order and the results preserve it, so facts distribute
@@ -940,7 +1009,50 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			return { ok: false, kind }
 		}
 	}
-	const results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
+
+	// Triage gate (spike E1/E1b/E5b/E6/E8): one d3 durable-fact judgment per
+	// window, parallel at the drain concurrency. A window below the durable
+	// bar skips extraction; its outcome is ok/empty so the claim phase
+	// hash-marks it like an extracted-empty window — a triaged-out window
+	// must never re-enter a later drain. Per-window gate failure degrades
+	// to extraction (fail-open).
+	let results: ExtractionOutcome[]
+	let triagedOut = 0
+	if (decision.enabled.has("triage") && decision.gate) {
+		const gate = decision.gate
+		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
+			try {
+				const response = await decide(gate, renderWindow(task.window), triageQuestion())
+				const pDurable = response.answers.has_durable_fact?.probabilities.yes
+				return typeof pDurable === "number" && pDurable < TRIAGE_DURABLE_MIN_P
+			} catch (err) {
+				console.error(
+					"[memory-capture] triage gate failed, extracting window (fail-open):",
+					err instanceof Error ? err.message : err,
+				)
+				return false
+			}
+		})
+		const runTasks: ExtractionTask[] = []
+		results = new Array(tasks.length)
+		for (let i = 0; i < tasks.length; i++) {
+			if (skips[i]) {
+				results[i] = { ok: true, facts: EMPTY_TAGGED }
+				triagedOut += 1
+			} else {
+				runTasks.push(tasks[i] as ExtractionTask)
+			}
+		}
+		const runResults = await mapWithConcurrency(runTasks, drainConcurrency, extractTask)
+		for (let i = 0, k = 0; i < tasks.length; i++) {
+			if (!skips[i]) {
+				results[i] = runResults[k] as ExtractionOutcome
+				k += 1
+			}
+		}
+	} else {
+		results = await mapWithConcurrency(tasks, drainConcurrency, extractTask)
+	}
 	// One retry round for transient failures — the pre-pipeline drain relied
 	// on a later superset job re-carrying the messages; the claim pass now
 	// dedupes those, so the retry lives here instead. Poisoned windows sit
@@ -992,16 +1104,18 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const projectAdded = new Map<string, string[]>()
 	let captured = 0
 	let skippedNonDurable = 0
+	let skippedByValuation = 0
 	let redacted = 0
 	for (const plan of plans) {
 		try {
-			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend)
+			const added = await commitPlan(plan, personalBackend, projectBackends, createBackend, valuationGate)
 			personalAdded.push(...added.personal)
 			for (const [projectId, facts] of added.project) {
 				projectAdded.set(projectId, [...(projectAdded.get(projectId) ?? []), ...facts])
 			}
 			captured += added.captured
 			skippedNonDurable += added.skippedNonDurable
+			skippedByValuation += added.skippedByValuation
 			redacted += added.redacted
 		} catch (err) {
 			failed += 1
@@ -1011,8 +1125,13 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			)
 		}
 	}
-	if (skippedNonDurable > 0 || redacted > 0) {
-		console.info(`[memory-capture] ${skippedNonDurable} non-durable fact(s) skipped, ${redacted} fact(s) redacted`)
+	if (triagedOut > 0) {
+		console.info(`[memory-capture] ${triagedOut} window(s) skipped by triage (judged non-durable)`)
+	}
+	if (skippedNonDurable > 0 || skippedByValuation > 0 || redacted > 0) {
+		console.info(
+			`[memory-capture] ${skippedNonDurable} non-durable fact(s) skipped, ${skippedByValuation} fact(s) discarded by valuation, ${redacted} fact(s) redacted`,
+		)
 	}
 
 	// Cross-drain poison bookkeeping: jobs left behind by deterministic
@@ -1036,9 +1155,20 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// (per-job judges never saw two sessions' conflicting facts side by
 	// side). Failures are fail-soft: the adds are already committed, and
 	// supersede is a quality pass, not a correctness invariant.
-	await runBatchedSupersede(personalBackend, personalAdded, llm)
+	//
+	// The d3 judge (spike E7 Part A) replaces the chat judge when enabled;
+	// its criteria text is the spike-validated conservative contract.
+	const chatJudge: SupersedeJudge = async (facts, candidates) => {
+		const prompt = `NEW FACTS:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
+			.map((c) => `${c.id}: ${c.memory}`)
+			.join("\n")}`
+		return chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
+	}
+	const supersedeJudge: SupersedeJudge =
+		decision.enabled.has("supersede") && decision.gate ? createDecisionSupersedeJudge(decision.gate) : chatJudge
+	await runBatchedSupersede(personalBackend, personalAdded, supersedeJudge)
 	for (const [projectId, backend] of projectBackends) {
-		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], llm)
+		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], supersedeJudge)
 	}
 
 	if (failed > 0) throw new Error(`${failed} capture job(s) failed (${captured} facts captured)`)
@@ -1208,15 +1338,18 @@ async function commitPlan(
 	personalBackend: Backend,
 	projectBackends: Map<string, Backend>,
 	createBackend: (dbPath: string) => Promise<CaptureBackend>,
+	valueGate?: (facts: string[]) => Promise<Set<string>>,
 ): Promise<{
 	captured: number
 	personal: string[]
 	project: Map<string, string[]>
 	skippedNonDurable: number
+	skippedByValuation: number
 	redacted: number
 }> {
 	let captured = 0
 	let skippedNonDurable = 0
+	let skippedByValuation = 0
 	let redacted = 0
 	const addAll = async (backend: Backend, facts: string[]): Promise<string[]> => {
 		if (facts.length === 0) return []
@@ -1226,14 +1359,35 @@ async function commitPlan(
 		// twin of a fact the user pass already produced collapses here, before
 		// either reaches the store.
 		const addedTokenSets: Set<string>[] = []
+		// Phase 1: redact (the session-export PII redactor — src/extensions/
+		// pii-redaction — same engine and [REDACTED-TYPE] markers as JSONL/HTML
+		// exports, applied before dedupe so with/without-credential forms
+		// collide) and the regex floor, keeping loop order.
+		const eligible: string[] = []
 		for (const rawFact of facts) {
-			// The session-export PII redactor (src/extensions/pii-redaction) —
-			// same engine, same [REDACTED-TYPE] markers as JSONL/HTML exports.
-			// Applied before dedupe so with/without-credential forms collide.
 			const fact = await redactText(rawFact)
 			if (fact !== rawFact) redacted += 1
 			if (!isDurableFact(fact)) {
 				skippedNonDurable += 1
+				continue
+			}
+			eligible.push(fact)
+		}
+		// The valuation gate runs after redaction (the gate never sees
+		// secrets) and before the store-adjacent dedupe — a discarded fact
+		// must not shadow a later identical keep in the normalized-dup set.
+		let valuationDiscard: Set<string> | undefined
+		if (valueGate) {
+			try {
+				valuationDiscard = await valueGate(eligible)
+			} catch (err) {
+				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
+				valuationDiscard = undefined
+			}
+		}
+		for (const fact of eligible) {
+			if (valuationDiscard?.has(fact)) {
+				skippedByValuation += 1
 				continue
 			}
 			const normalized = normalizeFactText(fact)
@@ -1283,7 +1437,7 @@ async function commitPlan(
 			`[memory-capture] job ${basename(plan.jobFile)} kept for retry: ${plan.windows.length - plan.extractedWindows.length} window(s) failed extraction`,
 		)
 	}
-	return { captured, personal, project, skippedNonDurable, redacted }
+	return { captured, personal, project, skippedNonDurable, skippedByValuation, redacted }
 }
 
 /** One batched supersede judge pass per store: the drain's added facts in
@@ -1291,20 +1445,14 @@ async function commitPlan(
  * chronologically (they arrive in job order). A judge failure logs and
  * leaves the conflicts in place — the adds are already committed and
  * supersede is a quality pass, not a correctness invariant. */
-async function runBatchedSupersede(backend: Backend, newFacts: string[], llm: GatewayLlmOptions): Promise<void> {
+async function runBatchedSupersede(backend: Backend, newFacts: string[], judge: SupersedeJudge): Promise<void> {
 	if (newFacts.length === 0) return
 	const searchAll = async (query: string) =>
 		normalizeMem0SearchResults(
 			await backend.search(query, { filters: { user_id: MEMORY_USER_ID }, topK: SUPERSEDE_SEARCH_TOPK }),
 		)
-	const judge = async (
-		facts: string[],
-		candidates: Array<{ id: string; memory: string; score?: number }>,
-	): Promise<string[]> => {
-		const prompt = `NEW FACTS:\n${facts.map((f) => `- ${f}`).join("\n")}\n\nEXISTING MEMORIES:\n${candidates
-			.map((c) => `${c.id}: ${c.memory}`)
-			.join("\n")}`
-		const deleted = await chatWithRetry(llm, SUPERSEDE_SYSTEM_PROMPT, prompt, parseIdArray)
+	const instrumented: SupersedeJudge = async (facts, candidates) => {
+		const deleted = await judge(facts, candidates)
 		// The diagnostic that separates the supersede failure modes on a
 		// benchmark rerun: no judge line → the search found no candidates;
 		// a line with 0 deleted → the judge declined.
@@ -1316,7 +1464,7 @@ async function runBatchedSupersede(backend: Backend, newFacts: string[], llm: Ga
 	for (let start = 0; start < newFacts.length; start += MEMORY_SUPERSEDE_BATCH_FACTS) {
 		const batch = newFacts.slice(start, start + MEMORY_SUPERSEDE_BATCH_FACTS)
 		try {
-			const superseded = await findSupersededIds(batch, searchAll, judge)
+			const superseded = await findSupersededIds(batch, searchAll, instrumented)
 			for (const id of superseded) {
 				await backend.delete(id)
 			}

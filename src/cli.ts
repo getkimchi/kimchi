@@ -5,8 +5,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import {
+	AgentSession,
+	type ExtensionAPI,
+	parseArgs as parsePiArgs,
+	readStoredCredential,
+} from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
+import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -35,9 +41,9 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import "./session-selector-adapter.js"
 import {
-	applyTuiEnvOverrides,
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
+	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
 	getApiKeyMismatchWarning,
@@ -45,6 +51,7 @@ import {
 	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	resolveEffectiveApiKey,
+	syncWheelScrollToPiSettings,
 	upgradeLegacyRetrySettings,
 	writeApiKey,
 	writeMigrationState,
@@ -70,6 +77,7 @@ import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
+import bugReportDestinationExtension from "./extensions/bug-report.js"
 import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -133,7 +141,6 @@ import pullRequestStatusExtension from "./extensions/pull-request-status/index.j
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
-import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
@@ -448,12 +455,6 @@ async function cliMain(): Promise<void> {
 
 			let config = loadConfig()
 
-			// Map tui.wheelScrollLines onto KIMCHI_WHEEL_SCROLL_LINES before any
-			// interactive bootstrap: the patched pi-tui TuiAltScreen constructor
-			// reads the env var once at construction (later in startup), so this
-			// ordering is load-bearing.
-			applyTuiEnvOverrides(config)
-
 			const envKey = captureApiKeyFromEnvironment()
 
 			// Capture the frozen launch-time metadata (OS + config snapshot incl.
@@ -509,6 +510,14 @@ async function cliMain(): Promise<void> {
 			const modelsJsonPath = resolve(agentDir, "models.json")
 
 			let currentApiKey = apiKey
+			// SSO login keeps its credential in auth.json (type: "oauth"), not in
+			// config.json. Use the stored access token for the startup model
+			// metadata refresh so OAuth users get fresh models like key users;
+			// request-time token refresh is owned by the provider's OAuth config.
+			const authJsonPath = resolve(agentDir, "auth.json")
+			const storedOAuth = readStoredCredential("kimchi-dev", authJsonPath)
+			const oauthAccessToken = storedOAuth?.type === "oauth" ? storedOAuth.access : undefined
+			const oauthOrganizationId = storedOAuth?.type === "oauth" ? (storedOAuth as { orgId?: string }).orgId : undefined
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
@@ -525,8 +534,9 @@ async function cliMain(): Promise<void> {
 					environmentOllamaModels = discovered.ollamaModels
 					installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 				} else {
-					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || oauthAccessToken || "", {
 						endpoint: config.customLlmEndpoint,
+						organizationId: currentApiKey ? undefined : oauthOrganizationId,
 					}))
 					if (experimentalFeatures) {
 						injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
@@ -584,8 +594,10 @@ async function cliMain(): Promise<void> {
 				}
 			}
 			// Keep saved Kimchi credentials aligned with config.json, including after
-			// cached-model fallback. Environment keys remain session-only.
-			if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+			// cached-model fallback. Environment keys remain session-only. SSO
+			// (OAuth) credentials live only in auth.json: never sync config's
+			// (empty) key over them.
+			if (!envKey && (currentApiKey || !oauthAccessToken)) await syncPiAuth(authJsonPath, modelsJsonPath, currentApiKey)
 
 			// Must run before main() so the keybindings file is loaded with the
 			// override in place.
@@ -623,11 +635,13 @@ async function cliMain(): Promise<void> {
 				const existing = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
 				let changed = ensureHideThinkingBlockDefault(existing)
 				if (ensureQuietStartupDefault(existing)) changed = true
+				if (ensureBuiltinMcpDisabled(existing)) changed = true
 				const upgraded = upgradeLegacyRetrySettings(existing.retry)
 				if (upgraded) {
 					existing.retry = upgraded
 					changed = true
 				}
+				if (syncWheelScrollToPiSettings(existing, config)) changed = true
 				if (changed) {
 					writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`)
 				}
@@ -660,8 +674,13 @@ async function cliMain(): Promise<void> {
 				"solarized-dark.json",
 				"solarized-light.json",
 			]
+			// Never fall back to the empty string here: an unset/empty PI_PACKAGE_DIR
+			// would cwd-anchor resolve("", "theme") and emit "bundled theme not found"
+			// warnings pointing at wherever the user happened to launch kimchi.
+			// resolveAuxiliaryFilesDir degrades to the execPath-adjacent share dir,
+			// which is where the packaged binary actually keeps its assets.
 			const bundledThemesSrcDir = isBunBinary
-				? resolve(process.env.PI_PACKAGE_DIR ?? "", "theme")
+				? resolve(resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath), "theme")
 				: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 			mkdirSync(themesDir, { recursive: true })
 
@@ -886,7 +905,7 @@ async function cliMain(): Promise<void> {
 				themeSelectorExtension,
 				customizeStatusLineExtension,
 				inputHistoryExtension,
-				reportBugExtension,
+				bugReportDestinationExtension,
 				tagsExtension,
 				teleportExtension,
 				remoteRunExtension,

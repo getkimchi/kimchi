@@ -90,12 +90,13 @@ function expire(pi: ExtensionAPI, sessionId: string): void {
 	const list = watchesBySession.get(sessionId)
 	if (!list?.length) return
 	watchesBySession.delete(sessionId)
-	for (const watch of list) emit(pi, watch, "expired")
+	for (const watch of list) emit(pi, sessionId, watch, "expired")
 }
 
-function emit(pi: ExtensionAPI, watch: Watch, outcome: SteerOutcomePayload["outcome"]): void {
+function emit(pi: ExtensionAPI, sessionId: string, watch: Watch, outcome: SteerOutcomePayload["outcome"]): void {
 	emitSteerOutcome(pi, watch.kind, outcome, {
 		interactive: watch.interactive,
+		sessionId,
 		steerId: watch.steerId,
 		turnsToOutcome: watch.turnsElapsed,
 	})
@@ -115,7 +116,7 @@ function processEvent(
 		if (countsAsTurn) watch.turnsElapsed += 1
 		const outcome = watch.classify(event)
 		if (outcome) {
-			emit(pi, watch, outcome)
+			emit(pi, sessionId, watch, outcome)
 			continue
 		}
 		if (countsAsToolCall && watch.remainingToolCalls !== undefined) {
@@ -128,7 +129,7 @@ function processEvent(
 			(watch.remainingToolCalls !== undefined && watch.remainingToolCalls <= 0) ||
 			(watch.remainingTurns !== undefined && watch.remainingTurns <= 0)
 		) {
-			emit(pi, watch, "expired")
+			emit(pi, sessionId, watch, "expired")
 			continue
 		}
 		remaining.push(watch)

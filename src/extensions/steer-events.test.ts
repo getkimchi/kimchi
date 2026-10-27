@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import {
 	emitSteerFired,
 	emitSteerOutcome,
@@ -39,6 +41,31 @@ function makePi(): { pi: ExtensionAPI; emitted: { channel: string; payload: unkn
 		},
 	} as unknown as ExtensionAPI
 	return { pi, emitted }
+}
+
+/** Shared-mock pi with the steerAbortTrackerExtension wired, for tests that
+ *  drive pi handlers (turn_end / input / session_shutdown) with a session
+ *  context and assert on emitted steer payloads. */
+function makeTrackingPi(sessionId = "session") {
+	const mock = createExtensionApi()
+	const emitted: { channel: string; payload: unknown }[] = []
+	const busEmit = mock.api.events.emit as unknown as (channel: string, payload: unknown) => void
+	mock.api.events = {
+		...mock.api.events,
+		emit: (channel: string, payload: unknown) => {
+			emitted.push({ channel, payload })
+			busEmit(channel, payload)
+		},
+	}
+	steerAbortTrackerExtension(mock.api)
+	return {
+		pi: mock.api,
+		emitted,
+		fire: async (event: string, payload: unknown, sid = sessionId) => {
+			const ctx = { sessionManager: { getSessionId: () => sid } } as unknown as ExtensionContext
+			await mock.emit(event, payload, ctx)
+		},
+	}
 }
 
 describe("steer-events", () => {
@@ -118,6 +145,145 @@ describe("steer-events", () => {
 		expect(Object.keys(payload).sort()).toEqual(["interactive", "is_subagent", "kind", "outcome"])
 	})
 
+	describe("outcome self-attribution", () => {
+		beforeEach(() => {
+			resetSteerAbortTracker()
+		})
+
+		const outcomes = (emitted: { channel: string; payload: unknown }[]) =>
+			emitted.filter((e) => e.channel === STEER_EVENTS.OUTCOME).map((e) => e.payload as SteerOutcomePayload)
+
+		it("id-less outcome attributes to the most recent same-kind fire in the session", () => {
+			const { pi, emitted } = makeTrackingPi()
+			const id = emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { interactive: false, sessionId: "session" })
+
+			expect(outcomes(emitted)).toHaveLength(1)
+			expect(outcomes(emitted)[0]).toMatchObject({ kind: "bash_tool_guard", steer_id: id })
+		})
+
+		it("turns_to_outcome counts turn_ends since the fire (matching the watcher's turnsElapsed)", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "loop_guard", "warn", { sessionId: "session" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+			emitSteerOutcome(pi, "loop_guard", "repeated", { sessionId: "session" })
+
+			expect(outcomes(emitted)[0]?.turns_to_outcome).toBe(2)
+		})
+
+		it("outcome in the fire's own turn (no turn_end between) reports 0 turns", () => {
+			const { pi, emitted } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { sessionId: "session" })
+
+			expect(outcomes(emitted)[0]?.turns_to_outcome).toBe(0)
+		})
+
+		it("explicit steerId wins over the fallback", () => {
+			const { pi, emitted } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { steerId: "explicit", sessionId: "session" })
+
+			expect(outcomes(emitted)[0]?.steer_id).toBe("explicit")
+		})
+
+		it("explicit turnsToOutcome is preserved while steer_id still falls back", () => {
+			const { pi, emitted } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { turnsToOutcome: 7, sessionId: "session" })
+
+			const payload = outcomes(emitted)[0]
+			expect(payload?.turns_to_outcome).toBe(7)
+			expect(typeof payload?.steer_id).toBe("string")
+		})
+
+		it("explicit steerId matching the registry fire also gets turns_to_outcome stamped", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			const id = emitSteerFired(pi, "todo_checkin", "checkin", { sessionId: "session" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+			emitSteerOutcome(pi, "todo_checkin", "complied", { steerId: id, sessionId: "session" })
+
+			expect(outcomes(emitted)[0]).toMatchObject({ steer_id: id, turns_to_outcome: 1 })
+		})
+
+		it("explicit steerId from an older fire does not get the registry's turns stamped", () => {
+			const { pi, emitted } = makeTrackingPi()
+			const older = emitSteerFired(pi, "todo_checkin", "checkin", { sessionId: "session" })
+			emitSteerFired(pi, "todo_checkin", "checkin", { sessionId: "session" })
+			emitSteerOutcome(pi, "todo_checkin", "complied", { steerId: older, sessionId: "session" })
+
+			const payload = outcomes(emitted)[0]
+			expect(payload?.steer_id).toBe(older)
+			expect(payload?.turns_to_outcome).toBeUndefined()
+		})
+
+		it("cli.ts registers the abort tracker before the outcome watcher (turn-count parity)", async () => {
+			// The fallback's turns_to_outcome assumes the turn counter increments
+			// before the watcher classifies the same turn_end — which holds only
+			// while cli.ts lists steerAbortTrackerExtension first. An upstream
+			// reorder would silently shift every fallback turn count by one.
+			const src = await readFile(new URL("../cli.ts", import.meta.url), "utf8")
+			const tracker = src.lastIndexOf("steerAbortTrackerExtension")
+			const watcher = src.lastIndexOf("steerOutcomeWatcherExtension")
+			expect(tracker).toBeGreaterThan(-1)
+			expect(watcher).toBeGreaterThan(tracker)
+		})
+
+		it("per-kind isolation: an outcome only joins its own kind's fire", () => {
+			const { pi, emitted } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerFired(pi, "loop_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "repeated", { sessionId: "session" })
+
+			const fires = emitted.filter((e) => e.channel === STEER_EVENTS.FIRED)
+			const bashFireId = (fires[0].payload as SteerFiredPayload).steer_id
+			expect(outcomes(emitted)[0]?.steer_id).toBe(bashFireId)
+		})
+
+		it("per-session isolation: sessions do not cross-attribute; the ctx-less key stays empty", () => {
+			const { pi, emitted } = makeTrackingPi()
+			const s1 = emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "s1" })
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "s2" })
+
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { sessionId: "s1" })
+			expect(outcomes(emitted)[0]?.steer_id).toBe(s1)
+
+			// No fire ever recorded for the ctx-less key → unattributed.
+			emitSteerOutcome(pi, "bash_tool_guard", "complied")
+			expect(outcomes(emitted)[1]?.steer_id).toBeUndefined()
+		})
+
+		it("user input does NOT clear the fire registry (unlike the abort tracker)", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			const id = emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			await fire("input", { source: "interactive", text: "carry on" })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { sessionId: "session" })
+
+			expect(outcomes(emitted)[0]?.steer_id).toBe(id)
+		})
+
+		it("a newer fire of the same kind replaces the attributed one", () => {
+			const { pi, emitted } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			const newer = emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			emitSteerOutcome(pi, "bash_tool_guard", "repeated", { sessionId: "session" })
+
+			expect(outcomes(emitted)[0]?.steer_id).toBe(newer)
+		})
+
+		it("session_shutdown clears the session's fires and turn counter", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+			await fire("session_shutdown", {})
+
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { sessionId: "session" })
+			expect(outcomes(emitted)[0]?.steer_id).toBeUndefined()
+			expect(outcomes(emitted)[0]?.turns_to_outcome).toBeUndefined()
+		})
+	})
+
 	it("emission no-ops when pi.events is unavailable (lightweight test mocks / older hosts)", () => {
 		const pi = {} as unknown as ExtensionAPI
 		expect(() => emitSteerFired(pi, "exploration_guard", "turn_end")).not.toThrow()
@@ -131,37 +297,9 @@ describe("steer-events", () => {
 	})
 
 	describe("steer:aborted tracker", () => {
-		type Handler = (...args: unknown[]) => Promise<unknown> | unknown
-
 		beforeEach(() => {
 			resetSteerAbortTracker()
 		})
-
-		function makeTrackingPi() {
-			const handlers = new Map<string, Handler[]>()
-			const emitted: { channel: string; payload: unknown }[] = []
-			const pi = {
-				on: vi.fn((event: string, handler: Handler) => {
-					const list = handlers.get(event) ?? []
-					list.push(handler)
-					handlers.set(event, list)
-				}),
-				events: {
-					emit: (channel: string, payload: unknown) => {
-						emitted.push({ channel, payload })
-					},
-				},
-			} as unknown as ExtensionAPI
-			steerAbortTrackerExtension(pi)
-			return {
-				pi,
-				emitted,
-				fire: async (event: string, payload: unknown) => {
-					const ctx = { sessionManager: { getSessionId: () => "session" } }
-					for (const handler of handlers.get(event) ?? []) await handler(payload, ctx)
-				},
-			}
-		}
 
 		it("user Esc-abort of the turn following a steer → steer:aborted with the steer's kind", async () => {
 			const { pi, emitted, fire } = makeTrackingPi()

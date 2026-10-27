@@ -200,7 +200,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 
 		await getHandler(
 			handlers,
@@ -255,7 +255,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "disconnect" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -280,7 +280,7 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		await getHandler(handlers, "before_agent_start")({ prompt: "hello" }, ctx)
+		await getHandler(handlers, "before_agent_start")({ messageType: "user", prompt: "hello", images: [] }, ctx)
 
 		await trackSubagentSpawned({ id: "a1", type: "explore", description: "find files" }, ctx)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
@@ -2035,6 +2035,167 @@ describe("loop-guard telemetry via pi.events", () => {
 			is_subagent: false,
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("subagent bash-clamp telemetry via pi.events", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function setup() {
+		const { handlers, events, api, ctx } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+		return { handlers, events }
+	}
+
+	/** Like setup(), but the instance is never bound (no session_start fired) —
+	 *  reproduces the orphaned telemetry instance that agent-runner's second
+	 *  loader.reload() creates: its pi.on handlers never dispatch, but its
+	 *  pi.events channel subscription survives on the shared bus. */
+	async function setupUnbound() {
+		const { handlers, events, api } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(api)
+		return { handlers, events }
+	}
+
+	function extractRecords() {
+		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
+		return logCalls.flatMap(([, opts]: unknown[]) => {
+			const body = JSON.parse((opts as { body: string }).body)
+			return body.resourceLogs[0].scopeLogs[0].logRecords as Array<{
+				eventName: string
+				attributes: Array<{ key: string; value: { stringValue: string } }>
+			}>
+		})
+	}
+
+	it("subagent_bash_clamp:clamped → subagent.bash_clamped OTLP record with structured attrs", async () => {
+		const { handlers, events } = await setup()
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+
+		events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-1",
+			agentType: "general-purpose",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const rec = extractRecords().find((r) => r.eventName === "subagent.bash_clamped")
+		expect(rec).toBeDefined()
+		const attrs = Object.fromEntries(
+			(rec as NonNullable<typeof rec>).attributes.map((a) => [a.key, a.value.stringValue]),
+		)
+		expect(attrs.agent_type).toBe("general-purpose")
+		expect(attrs.reason).toBe("budget_tail")
+		expect(attrs.requested_timeout_s).toBe("120")
+		expect(attrs.clamped_to_s).toBe("10")
+		expect(attrs.remaining_ms).toBe("10000")
+		// No command text or tool args leak into OTLP.
+		expect(attrs.command).toBeUndefined()
+		expect(attrs.toolArgs).toBeUndefined()
+	})
+
+	it("a clamp-killed bash timeout produces no error record (reclassified as lifecycle)", async () => {
+		const { handlers, events } = await setup()
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+
+		events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-2",
+			reason: "budget_exhausted",
+			requestedTimeoutS: 120,
+			clampedToS: 1,
+			remainingMs: -250,
+		})
+		await getHandler(
+			handlers,
+			"tool_execution_start",
+		)({
+			toolCallId: "tc-clamp-2",
+			toolName: "bash",
+			args: { command: "sleep 5" },
+		})
+		await getHandler(
+			handlers,
+			"tool_execution_end",
+		)({
+			toolCallId: "tc-clamp-2",
+			isError: true,
+			result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
+		})
+		await getHandler(handlers, "session_shutdown")({ reason: "test" })
+
+		const records = extractRecords()
+		expect(records.find((r) => r.eventName === "subagent.bash_clamped")).toBeDefined()
+		expect(records.find((r) => r.eventName === "command_executed")).toBeDefined()
+		expect(records.find((r) => r.eventName === "error")).toBeUndefined()
+	})
+
+	it("does NOT emit OTLP records when telemetry is disabled", async () => {
+		const { api, events } = createMockApi()
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig({ enabled: false }))(api)
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+		events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-3",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 9_000,
+		})
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("does not double-emit when the telemetry factory is loaded twice (orphaned instance never bound)", async () => {
+		// agent-runner reloads the child loader twice around bindExtensions; each
+		// reload re-invokes the inline extension factories against the loader's
+		// shared event bus. The first instance is bound to the session
+		// (session_start fired); the second is orphaned — its pi.on handlers
+		// never dispatch, but its channel subscription survives. One clamp
+		// emission must produce exactly one record: the bound-instance guard
+		// suppresses the orphan's copy.
+		const bound = await setup()
+		const orphan = await setupUnbound()
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+
+		bound.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-bound",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		orphan.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-orphan",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		await getHandler(bound.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(orphan.handlers, "session_shutdown")({ reason: "test" })
+
+		const clamped = extractRecords().filter((r) => r.eventName === "subagent.bash_clamped")
+		expect(clamped).toHaveLength(1)
 	})
 })
 

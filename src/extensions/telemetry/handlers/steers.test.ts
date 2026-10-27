@@ -138,6 +138,21 @@ describe("handlers/steers", () => {
 		})
 	})
 
+	it("steer:outcome — method passes through for check-in reconciliation outcomes", async () => {
+		const events = await emitted(handleSteerOutcome, {
+			kind: "todo_checkin",
+			outcome: "complied",
+			method: "confirm",
+			is_subagent: false,
+			interactive: true,
+		})
+		expect(attrsOf(events, "steer.outcome")).toMatchObject({
+			kind: "todo_checkin",
+			outcome: "complied",
+			method: "confirm",
+		})
+	})
+
 	it("steer:aborted — steer_id passes through when present", async () => {
 		const events = await emitted(handleSteerAborted, {
 			kind: "exploration_guard",

@@ -28,7 +28,7 @@ import {
 	shouldNudge,
 } from "../../shared/planning/planning-stop-nudge.js"
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
-import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
@@ -162,9 +162,6 @@ const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((too
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-
-/** Tool name of the plan-review submission tool (registered below). */
-const SUBMIT_PLAN_TOOL_NAME = "submit_plan"
 
 const BUILTIN_ALLOW_TOOL_NAMES = [
 	"set_phase",

@@ -464,8 +464,11 @@ it(
 			// The stale reminder never demanded a disposition from the provider…
 			expect(conversation).not.toContain("Task completion requires a disposition")
 			// …it was replaced at consumption with the suppression note, exactly
-			// once, and the stop was delivered.
-			expect(conversation.match(/completion reminder was suppressed/g)?.length).toBe(1)
+			// once in the transcript (wire bodies replay history every request, so
+			// count copies in the final request, which carries the full transcript).
+			const lastBody = fixture.fake.requests.at(-1)?.body as { messages?: unknown[] } | null
+			const lastTranscript = JSON.stringify(lastBody?.messages ?? [])
+			expect(lastTranscript.match(/completion reminder was suppressed/g)?.length).toBe(1)
 			expect(conversation).toContain("stopped on request")
 		} finally {
 			await fixture.stop()

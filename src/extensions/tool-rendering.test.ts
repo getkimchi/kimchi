@@ -1,8 +1,14 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
-import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
+import {
+	AssistantMessageComponent,
+	initTheme,
+	type Theme,
+	ToolExecutionComponent,
+	UserMessageComponent,
+} from "@earendil-works/pi-coding-agent"
+import { Container, ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
@@ -21,6 +27,7 @@ import toolRenderingExtension, {
 	getToolElapsedMs,
 	isMcpToolName,
 	mcpCallLabelAndSummary,
+	patchAssistantMessageRender,
 	patchToolRenderCacheInvalidation,
 	patchUserMessageRender,
 	splitLeadingOsc133Markers,
@@ -92,6 +99,124 @@ describe("user message render patch", () => {
 	it("renders Skill tool with fallback when no name or skill arg", () => {
 		const summary = summarizeOpenAiToolCall("Skill", {}, plainTheme, (path) => path)
 		expect(summary).toBe("run skill")
+	})
+})
+
+describe("settled-message render cache", () => {
+	// The cache exists because the TUI re-renders every component each
+	// frame; settled messages must not re-parse markdown per frame. These
+	// tests spy on Container.prototype.render — the underlying render path
+	// for both message types — to observe whether work was redone.
+	beforeAll(() => {
+		initTheme("default")
+		patchUserMessageRender()
+		patchAssistantMessageRender()
+	})
+
+	const containerRenderCalls = () => {
+		const spy = vi.spyOn(Container.prototype, "render")
+		return {
+			count: () => spy.mock.calls.length,
+			done: () => spy.mockRestore(),
+		}
+	}
+
+	const assistantMessage = (opts?: { streaming?: boolean }) =>
+		({
+			role: "assistant",
+			content: [{ type: "text", text: "**Done.** All checks passed for the settled-message cache." }],
+			...(opts?.streaming ? {} : { stopReason: "stop" }),
+		}) as never
+
+	const settledAssistantMessage = () => assistantMessage()
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("repeated renders of a settled assistant message skip the underlying render", () => {
+		const message = settledAssistantMessage()
+		const component = new AssistantMessageComponent(message)
+		component.updateContent(message, false)
+		const { count, done } = containerRenderCalls()
+		try {
+			const first = component.render(80)
+			expect(count()).toBeGreaterThan(0)
+			const callsAfterFirst = count()
+			const second = component.render(80)
+			expect(count()).toBe(callsAfterFirst) // no new container renders
+			expect(second).toEqual(first)
+		} finally {
+			done()
+		}
+	})
+
+	it("a different width re-renders, and the worked-duration attach re-renders", () => {
+		const message = settledAssistantMessage()
+		const component = new AssistantMessageComponent(message)
+		component.updateContent(message, false)
+		component.render(80)
+		const { count, done } = containerRenderCalls()
+		try {
+			component.render(60)
+			expect(count()).toBeGreaterThan(0)
+		} finally {
+			done()
+		}
+		// Attaching the worked duration after caching invalidates and adds
+		// the widget line.
+		const { count: count2, done: done2 } = containerRenderCalls()
+		try {
+			;(message as unknown as Record<string, unknown>)._piClaudeStyleWorkedDurationMs = 65_000
+			const lines = component.render(80)
+			expect(count2()).toBeGreaterThan(0)
+			expect(lines.some((l) => l.includes("Worked for 1m 5s"))).toBe(true)
+		} finally {
+			done2()
+		}
+	})
+
+	it("a streaming assistant message (no stopReason) is never cached", () => {
+		const message = assistantMessage({ streaming: true })
+		const component = new AssistantMessageComponent(message)
+		component.updateContent(message, true)
+		component.render(80)
+		const { count, done } = containerRenderCalls()
+		try {
+			component.render(80)
+			expect(count()).toBeGreaterThan(0) // still doing full renders
+		} finally {
+			done()
+		}
+	})
+
+	it("updateContent invalidates (the thinking-click toggle path)", () => {
+		const message = settledAssistantMessage()
+		const component = new AssistantMessageComponent(message)
+		component.updateContent(message, false)
+		component.render(80)
+		const { count, done } = containerRenderCalls()
+		try {
+			component.updateContent(message, false)
+			component.render(80)
+			expect(count()).toBeGreaterThan(0)
+		} finally {
+			done()
+		}
+	})
+
+	it("repeated renders of a user message skip the underlying render; width changes re-render", () => {
+		const component = new UserMessageComponent("check the render cache")
+		component.render(80)
+		const { count, done } = containerRenderCalls()
+		try {
+			component.render(80)
+			expect(count()).toBe(0)
+			component.render(100)
+			expect(count()).toBeGreaterThan(0)
+		} finally {
+			done()
+		}
 	})
 })
 

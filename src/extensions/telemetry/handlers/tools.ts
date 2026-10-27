@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { BASH_TIMEOUT_STATUS_PATTERN } from "../../agents/subagent-bash-clamp.js"
 import { accumulateToolUsage, handleBashCumulativeMetrics, handleEditCumulativeMetrics } from "../accumulator.js"
 import {
 	computeLineChanges,
@@ -37,6 +38,9 @@ export function handleToolExecutionEnd(
 	event: { toolCallId: string; isError?: boolean; result?: unknown },
 ): void {
 	const pending = tm.pendingArgs.get(event.toolCallId)
+	// Release the clamp marker for this call regardless of outcome — the id
+	// is only needed for the error-reclassification below.
+	const wasClampedBashCall = tm.clampedBashCalls.delete(event.toolCallId)
 	if (!pending) return
 	tm.pendingArgs.delete(event.toolCallId)
 
@@ -172,29 +176,41 @@ export function handleToolExecutionEnd(
 
 	// --- Error tracking -------------------------------------------------------
 	if (event.isError) {
-		let errorMsg = "unknown tool error"
+		let fullMsg = ""
 		if (
 			event.result &&
 			typeof event.result === "object" &&
 			Array.isArray((event.result as { content?: unknown }).content)
 		) {
 			const result = event.result as { content: Array<{ type: string; text?: string }> }
-			errorMsg = result.content
+			fullMsg = result.content
 				.filter((c: { type: string; text?: string }) => c.type === "text")
 				.map((c: { type: string; text?: string }) => c.text ?? "")
 				.join("\n")
-				.slice(0, 300)
 		}
-		tm.emit(
-			"error",
-			{
-				error_type: "tool_failure",
-				tool_name: toolName,
-				error_message: errorMsg,
-				turn_index: tm.turnIndex,
-				...tm.getTraceAttributes(),
-			},
-			ctx,
-		)
+		// A timeout killed by the subagent budget clamp is expected lifecycle
+		// behavior, not a tool failure: the `subagent.bash_clamped` event
+		// (emitted by the clamp channel handler when the clamp fired) already
+		// reports it, and command_executed records the failed run. Suppress the
+		// generic error record so error funnels stay anomaly-only. The match runs
+		// against the FULL text — upstream appends the timeout status after the
+		// command output, so a 300-char truncation would hide it on verbose
+		// commands and emit a spurious tool_failure. Other bash failures on a
+		// clamped call (e.g. non-zero exit before the timeout) still emit
+		// normally.
+		const clampedTimeout = wasClampedBashCall && BASH_TIMEOUT_STATUS_PATTERN.test(fullMsg)
+		if (!clampedTimeout) {
+			tm.emit(
+				"error",
+				{
+					error_type: "tool_failure",
+					tool_name: toolName,
+					error_message: fullMsg.slice(0, 300) || "unknown tool error",
+					turn_index: tm.turnIndex,
+					...tm.getTraceAttributes(),
+				},
+				ctx,
+			)
+		}
 	}
 }

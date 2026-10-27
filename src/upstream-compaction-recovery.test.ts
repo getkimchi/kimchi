@@ -124,28 +124,47 @@ describe("end-to-end overflow recovery through the real upstream method", () => 
 		agentMessages: Array<Record<string, unknown>>
 	}) {
 		const { compactionCalls, agentMessages } = opts
-		return {
+		// upstream pi grew the internal surface of _checkCompaction (_modelForMessage,
+		// buildSessionProjection, _findPersistedMessageEntryId). Inherit the real
+		// methods from the prototype and stub only the plumbing, so helper
+		// internals resolve naturally instead of stubbing whack-a-mole.
+		const session = Object.create(AgentSession.prototype)
+		Object.assign(session, {
 			settingsManager: {
 				getCompactionSettings: () => ({ enabled: true }),
 			},
-			model: {
-				provider: "kimchi-dev",
-				id: "kimi-k2.7",
-				contextWindow: 262_144,
-				maxTokens: 131_072,
-			},
+			// `model` is a getter on AgentSession reading agent.state.model.
 			sessionManager: {
 				getBranch: () => [],
 				getSessionFile: () => "/tmp/fake.jsonl",
+				// upstream pi rebuilds agent state from the projection after omitting the
+				// failed message (was: agent.state.messages = slice(0, -1) in 0.85).
+				buildSessionProjection: () => ({ entries: [], messages: [agentMessages[0]] }),
 			},
-			agent: { state: { messages: agentMessages } },
+			agent: {
+				state: {
+					messages: agentMessages,
+					model: {
+						provider: "kimchi-dev",
+						id: "kimi-k2.7",
+						contextWindow: 262_144,
+						maxTokens: 131_072,
+					},
+				},
+			},
+			// upstream pi requires _modelForMessage to return the message's model for
+			// same-model overflow detection (undefined marks a foreign model and
+			// skips compaction). Provide the message's own limits.
+			_modelForMessage: () => ({ contextWindow: 262_144, maxTokens: 131_072 }),
 			_overflowRecoveryAttempted: false,
+			_entryIdsByMessage: new Map(),
 			_runAutoCompaction: vi.fn(async (reason: string, willRetry: boolean) => {
 				compactionCalls.push({ reason, willRetry })
 				return true
 			}),
 			_emit: vi.fn(),
-		}
+		})
+		return session
 	}
 
 	function realCheckCompaction(session: unknown, message: Record<string, unknown>): Promise<boolean> {
@@ -208,9 +227,8 @@ describe("end-to-end overflow recovery through the real upstream method", () => 
 
 		expect(compactionCalls).toHaveLength(1)
 		expect(compactionCalls[0]).toEqual({ reason: "overflow", willRetry: true })
-		// The failed message is removed from agent state before the retry.
-		// (Upstream reassigns agent.state.messages = messages.slice(0, -1), so
-		// assert on the session's current array, not the old reference.)
+		// The failed message is removed from agent state before the retry (upstream pi:
+		// context-edit omission + projection rebuild, previously a direct slice).
 		const current = (session as { agent: { state: { messages: unknown[] } } }).agent.state.messages
 		expect(current).toHaveLength(1)
 		expect((current[0] as { role?: string }).role).toBe("user")

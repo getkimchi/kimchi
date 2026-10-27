@@ -1,7 +1,7 @@
 import type { AgentSideConnection, ContentChunk, SessionUpdate } from "@agentclientprotocol/sdk"
 import { describe, expect, it, vi } from "vitest"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
-import { notifyDroppedQueue, reconcileQueue } from "./steering.js"
+import { notifyDroppedQueue, reconcileQueue, takeSteerEchoOriginal } from "./steering.js"
 
 function chunkText(u: SessionUpdate): string {
 	if (u.sessionUpdate !== "user_message_chunk") throw new Error(`not a user chunk: ${u.sessionUpdate}`)
@@ -100,6 +100,31 @@ describe("reconcileQueue", () => {
 		expect(previousQueue).not.toBe(next)
 		next.push("C")
 		expect(previousQueue).toEqual(["A", "B"])
+	})
+})
+
+describe("takeSteerEchoOriginal", () => {
+	it("translates the front pair's rewritten text back to the original and consumes it", () => {
+		const rewrites = [
+			{ rewritten: "Invoking skill: demo\n\nbody\n\nwrap up", original: "/skill:demo wrap up" },
+			{ rewritten: "Invoking skill: demo\n\nbody\n\nagain", original: "/skill:demo again" },
+		]
+		// FIFO: echoing the second steer before the first must NOT translate it.
+		expect(takeSteerEchoOriginal(rewrites, "Invoking skill: demo\n\nbody\n\nagain")).toBe(
+			"Invoking skill: demo\n\nbody\n\nagain",
+		)
+		expect(rewrites).toHaveLength(2)
+		// In order: both translate and the FIFO drains.
+		expect(takeSteerEchoOriginal(rewrites, "Invoking skill: demo\n\nbody\n\nwrap up")).toBe("/skill:demo wrap up")
+		expect(takeSteerEchoOriginal(rewrites, "Invoking skill: demo\n\nbody\n\nagain")).toBe("/skill:demo again")
+		expect(rewrites).toHaveLength(0)
+	})
+
+	it("passes unrewritten text through untouched", () => {
+		const rewrites = [{ rewritten: "Invoking skill: demo", original: "/skill:demo" }]
+		expect(takeSteerEchoOriginal(rewrites, "plain steer text")).toBe("plain steer text")
+		expect(rewrites).toHaveLength(1)
+		expect(takeSteerEchoOriginal([], "plain steer text")).toBe("plain steer text")
 	})
 })
 

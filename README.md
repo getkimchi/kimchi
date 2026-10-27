@@ -444,6 +444,27 @@ The API key is resolved in this order:
 
 Run `kimchi setup` for an interactive first-time configuration.
 
+### CAST AI SSO login
+
+`kimchi login` offers **Sign in with CAST AI (SSO)** as the recommended login option: a standard OAuth 2.0 Authorization Code + PKCE (S256) browser login against the CAST AI Auth0 tenant of the selected region. The resulting credential (with a refresh token) is stored in the harness `auth.json`, and expired access tokens are refreshed automatically — including in remote/ACP sessions — with no re-login.
+
+After sign-in, Kimchi lists the organizations available to your CAST AI account and asks you to pick one (a single-organization account is selected automatically; long lists are paged ten at a time). The selected organization is stored with the credential and sent as the `X-CastAi-Organization-Id` header on every gateway request; organization-scoped credentials are refreshed non-interactively, so long-running sessions keep working without re-login.
+
+On SSH/headless machines, complete the login by pasting the final redirect URL into the prompt shown in the terminal instead of relying on the loopback callback.
+
+The sign-in flow uses a fixed loopback callback at `http://localhost:8765/callback` (the redirect URI registered with the Auth0 application); only one CAST AI sign-in can run at a time per machine.
+
+The SSO flow can be pointed at any authorization server (e.g. a dev tenant) through environment overrides:
+
+| Variable | Purpose |
+| --- | --- |
+| `KIMCHI_OAUTH_CLIENT_ID` / `KIMCHI_OAUTH_CLIENT_ID_<REGION>` | OAuth client id (per-region value wins) |
+| `KIMCHI_OAUTH_AUTHORIZE_URL` | Override the authorize endpoint |
+| `KIMCHI_OAUTH_TOKEN_URL` | Override the token endpoint |
+| `KIMCHI_ORGANIZATIONS_URL` | Override the user-organizations listing |
+| `KIMCHI_OAUTH_AUDIENCE` | Optional `audience` parameter for both endpoints |
+| `KIMCHI_OAUTH_USE_ID_TOKEN` | `1` (default) sends the ID token to the gateway, `0` sends the access token |
+
 ### Agent config
 
 Kimchi stores its configuration (settings, sessions, models) under:
@@ -454,7 +475,7 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 ### TUI wheel-scroll speed
 
-Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` or the `KIMCHI_WHEEL_SCROLL_LINES` env var — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
 
 ### Context files
 

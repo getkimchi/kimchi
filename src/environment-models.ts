@@ -9,7 +9,7 @@ import {
 	type ModelMetadata,
 	registerAutoDescriptionFallback,
 	registerDeprecationMarkers,
-	registerDescriptionsFromProviders,
+	registerModelInfoFromProviders,
 } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
 
@@ -41,12 +41,12 @@ export async function discoverEnvironmentModels(
 	const ollama = await discoverOllamaProvider(resolveOllamaHost())
 	providers.ollama = ollama
 	// This path replaces updateModelsConfig, which normally fills the /model
-	// selector's description registry on the config-account path — without
+	// selector's metadata registries on the config-account path — without
 	// this, KIMCHI_API_KEY sessions render the DESCRIPTION column empty.
-	// Fresh endpoint data replaces older descriptions; the Auto fallback
-	// mirrors the config-account path so a backend-owned auto keeps a
-	// description even when the endpoint sends none.
-	registerDescriptionsFromProviders(providers)
+	// Fresh endpoint data replaces older descriptions and thinking levels; the
+	// Auto fallback mirrors the config-account path so a backend-owned auto
+	// keeps a description even when the endpoint sends none.
+	registerModelInfoFromProviders(providers)
 	registerAutoDescriptionFallback()
 	registerDeprecationMarkers(modelsPath)
 	return {

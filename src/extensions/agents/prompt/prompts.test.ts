@@ -392,6 +392,34 @@ describe("budget block in system prompt", () => {
 		expect(output).toContain("Turn limit: 15 turns")
 		expect(output).toContain("Output token budget: ~100k")
 	})
+
+	it("includes the wall-clock time limit when maxDurationSeconds is provided", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxTurns: 30, maxDurationSeconds: 900 },
+		})
+		expect(output).toContain("Time limit: 900s (wall-clock)")
+	})
+
+	it("includes the budget block with only the time limit set", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxDurationSeconds: 300 },
+		})
+		expect(output).toContain("<budget>")
+		expect(output).toContain("Time limit: 300s (wall-clock)")
+		expect(output).not.toContain("Turn limit")
+		expect(output).not.toContain("Output token budget")
+	})
+
+	it("omits the time limit when maxDurationSeconds is zero (unlimited)", () => {
+		const agent = getRequired(AGENT_GENERAL_PURPOSE)
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {
+			budget: { maxTurns: 30, maxDurationSeconds: 0 },
+		})
+		expect(output).toContain("Turn limit: 30 turns")
+		expect(output).not.toContain("Time limit")
+	})
 })
 
 describe("includeCoreGuidelines", () => {

@@ -120,7 +120,9 @@ export function reportingDirectory(agentDir: string): string {
 	return join(agentDir, "pr-cost-reporting")
 }
 
-const statePath = (agentDir: string) => join(reportingDirectory(agentDir), "state.json")
+export function reportingStatePath(agentDir: string): string {
+	return join(reportingDirectory(agentDir), "state.json")
+}
 const requestHash = (requestId: string) => createHash("sha256").update(requestId).digest("hex")
 const count = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0
 
@@ -190,14 +192,14 @@ export async function readReportingState(agentDir: string): Promise<ReportingSta
 
 /** Changes with every saved update, since each one replaces the file; empty before the first. */
 export async function reportingStateVersion(agentDir: string): Promise<string> {
-	const saved = await stat(statePath(agentDir)).catch(() => undefined)
+	const saved = await stat(reportingStatePath(agentDir)).catch(() => undefined)
 	return saved ? JSON.stringify([saved.ino, saved.size, saved.mtimeMs]) : ""
 }
 
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
 async function loadReportingState(agentDir: string): Promise<{ state: ReportingState; text?: string }> {
 	try {
-		const file = await open(statePath(agentDir), "r")
+		const file = await open(reportingStatePath(agentDir), "r")
 		let value: ReportingState
 		let text: string
 		try {
@@ -299,7 +301,7 @@ async function update(agentDir: string, mutate: (state: ReportingState) => void)
 		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
 		if (body === text) return state
 		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
-		await writeFileDurably(statePath(agentDir), body, () => {
+		await writeFileDurably(reportingStatePath(agentDir), body, () => {
 			if (compromised) throw compromised
 		})
 

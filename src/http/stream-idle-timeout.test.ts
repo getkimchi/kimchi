@@ -11,6 +11,7 @@ import {
 } from "./stream-idle-timeout.js"
 
 vi.mock("../settings-watcher.js", () => ({
+	isDefaultToolEnabled: () => true,
 	getSettingsManager: vi.fn(() => undefined),
 }))
 

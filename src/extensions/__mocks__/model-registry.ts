@@ -10,6 +10,7 @@ export type ModelRegistryMock = ModelRegistry & {
 	getAvailable: Mock<ModelRegistry["getAvailable"]>
 	hasConfiguredAuth: Mock<ModelRegistry["hasConfiguredAuth"]>
 	getApiKeyAndHeaders: Mock<ModelRegistry["getApiKeyAndHeaders"]>
+	getProviderAuthStatus: Mock<ModelRegistry["getProviderAuthStatus"]>
 }
 
 export function createModel(id: string, provider = "kimchi-dev"): Model<Api> {
