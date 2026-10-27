@@ -817,7 +817,8 @@ export function validateEvent(e: Event): void {
 			u.search ||
 			u.hash ||
 			!r ||
-			u.hostname.toLowerCase() !== r.host.toLowerCase() ||
+			// The link names the repository's host, port included.
+			u.host.toLowerCase() !== r.host.toLowerCase() ||
 			!p.id ||
 			!opaque(p.id) ||
 			!Number.isInteger(p.number) ||

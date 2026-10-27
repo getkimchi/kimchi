@@ -466,7 +466,7 @@ it("makes units and reads claims only for touched requests while shared facts ag
 	expect(build([...records, ...other], both).units).toHaveLength(2)
 })
 
-it("drops a PR fact the service would reject without holding back its request", () => {
+it("sends a PR on a host with a port and drops one the service would reject without holding back its request", () => {
 	const pullRequest = {
 		id: "PR1",
 		repositoryId: "42",
@@ -481,14 +481,16 @@ it("drops a PR fact the service would reject without holding back its request", 
 		closedAt: null,
 		checkedAt: "2026-10-24T08:00:03Z",
 	}
-	const input = {
+	const input = (url: string) => ({
 		...report,
 		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
-		pullRequests: [{ key: "parent-pr", account, workIds: [workId], pullRequest }],
-	}
-	const result = build(records, input)
+		pullRequests: [{ key: "parent-pr", account, workIds: [workId], pullRequest: { ...pullRequest, url } }],
+	})
+	const sent = build(records, input(pullRequest.url)).accounts[0].facts.find((fact) => fact.pullRequest)
+	expect(sent).toMatchObject({ repository: { host: "gitlab.example.com:8443" }, pullRequest: { uri: pullRequest.url } })
+	const result = build(records, input("https://gitlab.example.com/parent/repo/-/merge_requests/1"))
 	const facts = result.accounts[0].facts
-	// The service compares the merge request's host name without its port, so it would refuse this PR state.
+	// A link without the repository's port names another host, so the service would refuse this PR state.
 	expect(facts.find((fact) => fact.pullRequest)).toBeUndefined()
 	expect(facts.find((fact) => fact.usage)?.allocation).toMatchObject({ kind: "pull-request", pullRequestIds: ["PR1"] })
 	expect(result.units).toEqual([expect.objectContaining({ requestId })])

@@ -16,6 +16,7 @@ let actual: {
 	displayValidation: boolean[]
 	target: { body: string; hash: string; invalid: boolean[] }
 	hosts: boolean[]
+	links: boolean[]
 }
 
 const hosts = {
@@ -38,6 +39,15 @@ const hosts = {
 	"user@gitlab.example.com": false,
 	"gitlab.example.com:80#": false,
 }
+
+/** A repository host, its PR link, and whether they match. */
+const links: [string, string, boolean][] = [
+	["gitlab.example.com:8443", "https://gitlab.example.com:8443/team/repo/-/merge_requests/3", true],
+	["GitLab.example.com:8443", "https://gitlab.EXAMPLE.com:8443/team/repo/-/merge_requests/3", true],
+	["gitlab.example.com:8443", "https://gitlab.example.com/team/repo/-/merge_requests/3", false],
+	["gitlab.example.com", "https://gitlab.example.com:8443/team/repo/-/merge_requests/3", false],
+	["gitlab.example.com:8443", "https://gitlab.example.com:9443/team/repo/-/merge_requests/3", false],
+]
 
 beforeAll(() => {
 	const moduleUrl = new URL("./protocol.ts", import.meta.url).href
@@ -129,13 +139,14 @@ console.log(JSON.stringify({
   displayValidation: display.map((fields) => !rejects(() => validateEvent({...pr, pullRequest: {...pr.pullRequest, ...fields}}))),
   target: {body: encodeEvent(target), hash: eventHash(target), invalid: ["invalid", {}, {provider: "other", host: "github.com", id: "42"}, {provider: "github", host: "secret@github.com", id: "42"}, {provider: "github", host: "github.com", id: "42", name: "repo?secret"}].map((targetRepository) => rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository}})))},
   hosts: fixture.hosts.map((host) => !rejects(() => validateEvent({...claim, allocation: {...claim.allocation, targetRepository: {provider: "gitlab", host, id: "42"}}}))),
+  links: fixture.links.map(([host, uri]) => !rejects(() => validateEvent({...pr, repository: {...pr.repository, host}, pullRequest: {...pr.pullRequest, uri}}))),
   validation: [...fixture.events.map(({input}) => { validateEvent(input); return true }), ...fixture.batches.map(({input}) => { validateBatch(input); return true })],
   invalidEvidence: [...badEvidence.map((event) => rejects(() => validateEvent(event))),
     rejects(() => validateBatch({...fixture.batches[0].input, events: [claim, claim]})),
     rejects(() => validateBatch({...fixture.batches[0].input, events: Array(501).fill(claim)}))]
 }));`,
 			],
-			{ encoding: "utf8", input: JSON.stringify({ ...golden, hosts: Object.keys(hosts) }), timeout: 30_000 },
+			{ encoding: "utf8", input: JSON.stringify({ ...golden, hosts: Object.keys(hosts), links }), timeout: 30_000 },
 		),
 	)
 })
@@ -154,6 +165,10 @@ it("appends and validates an independent allocation target without changing the 
 
 it("accepts a repository host with a port from 1 to 65535, no leading zero and nothing else after one colon", () => {
 	expect(actual.hosts).toEqual(Object.values(hosts))
+})
+
+it("accepts a PR link only on its repository's host and port, in any case", () => {
+	expect(actual.links).toEqual(links.map(([, , valid]) => valid))
 })
 
 it("uses Go-compatible UTF8 replacement and HTML escaping", () => {
