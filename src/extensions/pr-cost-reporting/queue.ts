@@ -827,7 +827,10 @@ export function freezeSnapshots(agentDir: string, assertCurrent: () => void): Pr
 	return update(agentDir, (state, check) => freezeState(agentDir, state, check), assertCurrent)
 }
 
-/** A page of due uploads cannot prove drainage: held, delayed and old-writer bodies still own legacy claims. */
+/**
+ * A page of due uploads cannot prove drainage: delayed and old-writer bodies still own legacy claims. A held body is
+ * never sent, and only an older writer that sees its evidence again releases it, so it does not hold events back.
+ */
 export async function withDrainedLegacyAccount(
 	agentDir: string,
 	account: WorkAccount,
@@ -841,7 +844,8 @@ export async function withDrainedLegacyAccount(
 			freezeState(agentDir, state, check)
 			if (!state.enabled) return
 			const key = accountKey(account)
-			if (Object.values(state.entries).some((entry) => entry.pending && accountKey(entry.account) === key)) return
+			const owns = (entry: PendingRepository) => !entry.held && accountKey(entry.account) === key
+			if (Object.values(state.entries).some((entry) => entry.pending && owns(entry))) return
 			const backend = backendFor(agentDir)
 			let after = ""
 			for (;;) {
@@ -852,7 +856,7 @@ export async function withDrainedLegacyAccount(
 					check()
 					const frozen = storedFrozen(agentDir, row.name)
 					if (!frozen || frozen.ack) throw new Error("Invalid pending frozen PR snapshot ownership")
-					if (accountKey(frozen.entry.account) === key) return
+					if (owns(state.entries[frozen.key] ?? frozen.entry)) return
 				}
 				after = page[page.length - 1].name
 				await setImmediate()

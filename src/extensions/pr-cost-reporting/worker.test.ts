@@ -234,6 +234,28 @@ describe("account-fenced reporting delivery", () => {
 		}
 	})
 
+	it("sends events beside a held legacy snapshot that only an older version could release", async () => {
+		// The older version held this replacement because earlier evidence went missing; it is never sent.
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const state = JSON.parse(await readFile(path, "utf8"))
+		for (const entry of Object.values<{ held?: boolean }>(state.entries)) entry.held = true
+		await writeFile(path, `${JSON.stringify(state)}\n`)
+		const batch = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountKey(content.account),
+			body: new TextEncoder().encode("{}"),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		backendFor(directory).insertOutboxBatch(batch)
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(batch)
+		await deliver()
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(posts()).toEqual([])
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
 	it("keeps an event batch without an error when the credential changes during its upload", async () => {
 		// Events wait until the legacy snapshot queued for this account drains.
 		await deliver()

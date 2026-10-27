@@ -124,19 +124,22 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
-	it("blocks common delivery for held or delayed legacy bodies and after opt-out", async () => {
+	it("blocks common delivery for delayed legacy bodies and after opt-out, but not for held ones", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const path = join(directory, "pr-cost-reporting/state.json")
 		const state = await readReportingState(directory)
-		for (const entry of Object.values(state.entries)) {
-			entry.held = true
-			entry.retryAt = Date.now() + 60_000
-		}
+		for (const entry of Object.values(state.entries)) entry.retryAt = Date.now() + 60_000
 		await writeFile(path, JSON.stringify(state))
 		const action = vi.fn()
 		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(false)
 		expect(action).not.toHaveBeenCalled()
+		// Only an older writer that sees the missing evidence again would release a held body.
+		for (const entry of Object.values(state.entries)) entry.held = true
+		await writeFile(path, JSON.stringify(state))
+		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(true)
+		expect(action).toHaveBeenCalledOnce()
+		action.mockClear()
 		await setReportingEnabled(directory, false)
 		expect(await withDrainedLegacyAccount(directory, { ...account, userId: otherRequestId }, action, () => {})).toBe(
 			false,
