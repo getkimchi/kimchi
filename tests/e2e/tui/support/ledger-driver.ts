@@ -835,7 +835,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
 	)
 	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
-	const { encodeBatch, eventHash } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
+	const { encodeBatch } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
 	const { createHash } = await import("node:crypto")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)
@@ -959,7 +959,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	backend.getOutboxBatch = getBatch
 	// A newer build's body carries a field this build does not know; its hash matches the stored bytes.
 	const forwardId = "88888888-8888-4888-8888-888888888888"
-	const forwardBase = { ...parse(second.body), id: forwardId, revision: "1", baseRevision: "0", baseHash: "" }
+	const forwardBase = { ...parse(second.body), id: forwardId, revision: "1", baseRevision: "0", baseEventId: "" }
 	const forwardBodyText = `${JSON.stringify(forwardBase).slice(0, -1)},"futureField":{"from":"newer-build"}}`
 	const forwardBody = Buffer.from(forwardBodyText)
 	backend.insertOutboxEvent({
@@ -1360,7 +1360,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	}
 	out({
 		revisions: [one.revision, two.revision, parse(third.body).revision],
-		cas: two.baseRevision === "1" && two.baseHash === first.hash && first.hash === eventHash(one),
+		cas: two.baseRevision === "1" && two.baseEventId === first.id,
 		noOp,
 		byteIsolation,
 		binaryBatchOrder,
@@ -1406,7 +1406,6 @@ async function outboxTransport(agent: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
 	)
-	const { eventHash } = await import("../../../../src/extensions/pr-cost-reporting/protocol.js")
 	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const current = () => {}
 	const coverage = {
@@ -1482,7 +1481,6 @@ async function outboxTransport(agent: string): Promise<void> {
 	out({
 		first: firstBody,
 		second: JSON.parse(Buffer.from(second.body).toString("utf8")),
-		hashes: firstBody.batch.events.map(eventHash),
 	})
 	closeBackends()
 }

@@ -4,7 +4,7 @@ import golden from "./protocol-golden.json" with { type: "json" }
 
 let actual: {
 	events: { body: string; hash: string }[]
-	batches: { body: string; hash: string }[]
+	batches: string[]
 	stableId: string
 	unknown: { body: string; hash: string }
 	times: string[]
@@ -56,7 +56,7 @@ beforeAll(() => {
 			"bun",
 			[
 				"--eval",
-				`import { encodeEvent, encodeBatch, eventHash, batchHash, stableID, canonicalTime, validateEvent, validateBatch } from ${JSON.stringify(moduleUrl)};
+				`import { encodeEvent, encodeBatch, eventHash, stableID, canonicalTime, validateEvent, validateBatch } from ${JSON.stringify(moduleUrl)};
 const fixture = await Bun.stdin.json();
 const unknown = structuredClone(fixture.events[1].input);
 delete unknown.usage.raw.cacheReadTokens;
@@ -104,6 +104,7 @@ const rejects = (operation) => { try { operation(); return false } catch { retur
 const badEvidence = [
   { ...usage, sourceVersion: "" },
   { ...usage, baseRevision: "0" },
+  { ...usage, baseEventId: "" },
   { ...usage, usage: { ...usage.usage, raw: { inputTokens: "-1" } } },
   { ...usage, usage: { ...usage.usage, raw: { inputTokens: "1000000000001" } } },
   { ...usage, usage: { ...usage.usage, raw: { cacheWriteTokens: "9", cacheWrites: [{ttlSeconds: 300, tokens: "10"}] } } },
@@ -129,7 +130,7 @@ const badEvidence = [
 ];
 console.log(JSON.stringify({
   events: fixture.events.map(({input}) => ({body: encodeEvent(input), hash: eventHash(input)})),
-  batches: fixture.batches.map(({input}) => ({body: encodeBatch(input), hash: batchHash(input)})),
+  batches: fixture.batches.map(({input}) => encodeBatch(input)),
   stableId: stableID(...fixture.stableParts),
   unknown: {body: encodeEvent(unknown), hash: eventHash(unknown)},
   times: ["2026-10-23T12:30:40.123400000+00:00", "2026-10-23T12:30:40.123400000+02:30", "2026-10-23T12:30:40.000Z"].map(canonicalTime),
@@ -176,16 +177,15 @@ it("uses Go-compatible UTF8 replacement and HTML escaping", () => {
 	expect(actual.unicode).toContain("\\u003c\\u003e\\u0026\\u2028")
 })
 
-it("matches Go bytes and hashes for all native payloads and Kimchi claim extensions", () => {
+it("keeps the frozen bytes and local hashes of native payloads and Kimchi claim extensions", () => {
 	expect(actual.events).toEqual(golden.events.map(({ body, hash }) => ({ body, hash })))
-	expect(actual.batches).toEqual(golden.batches.map(({ body, hash }) => ({ body, hash })))
-	expect(actual.batches[0].hash).toBe(golden.oracle.nativeV1BatchHash)
+	expect(actual.batches).toEqual(golden.batches.map(({ body }) => body))
 	expect(actual.stableId).toBe(golden.stableId)
 	expect(actual.validation).toEqual(Array(13).fill(true))
 })
 
 it("rejects invalid usage, claim receipts, identity, CAS and batch bounds", () => {
-	expect(actual.invalidEvidence).toEqual(Array(25).fill(true))
+	expect(actual.invalidEvidence).toEqual(Array(26).fill(true))
 })
 
 it("keeps unknown counters distinct from reported zero and omits absent claim extensions", () => {

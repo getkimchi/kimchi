@@ -51,7 +51,7 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 	}
 })
 
-it("freezes UTC protobuf timestamps before computing hashes for the next revision", { timeout: 30_000 }, () => {
+it("freezes UTC protobuf timestamps and builds the next revision on the previous event ID", { timeout: 30_000 }, () => {
 	const dir = mkdtempSync(join(tmpdir(), "kimchi-outbox-transport-"))
 	try {
 		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
@@ -69,7 +69,7 @@ it("freezes UTC protobuf timestamps before computing hashes for the next revisio
 			closeTime: "2026-10-23T23:30:00Z",
 			mergeTime: "2026-10-23T23:31:00Z",
 		})
-		expect(result.second.batch.events[0].baseHash).toBe(result.hashes[0])
+		expect(result.second.batch.events[0].baseEventId).toBe(coverage.id)
 	} finally {
 		rmSync(dir, { recursive: true, force: true })
 	}

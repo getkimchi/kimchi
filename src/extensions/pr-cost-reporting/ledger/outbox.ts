@@ -20,7 +20,7 @@ import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } fr
 
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
-export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseHash">
+export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseEventId">
 
 export interface DeliveryRetry {
 	/** The frozen batch this schedule delays; null while the account's events wait before any batch exists. */
@@ -161,7 +161,7 @@ function unpack(row: OutboxEvent): Event {
 }
 
 function neutral(event: Event): Event {
-	return { ...event, id: "", revision: "0", baseRevision: "0", baseHash: "", observeTime: "0001-01-01T00:00:00Z" }
+	return { ...event, id: "", revision: "0", baseRevision: "0", baseEventId: "", observeTime: "0001-01-01T00:00:00Z" }
 }
 
 /** Event CAS and its fulfilled capture intents commit together; unknown or failed translations do not call this. */
@@ -178,7 +178,7 @@ export function observeEvents(
 	backend.tx(() => {
 		assertCurrent()
 		for (const fact of facts) {
-			const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseHash: "" })
+			const event = normalizeIngestTimes({ ...fact, id: "", revision: "1", baseRevision: "0", baseEventId: "" })
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
 			validateIngestEvent(event)
 			const previous = backend.latestOutboxEvent(accountKey, event.entityId)
@@ -199,7 +199,7 @@ export function observeEvents(
 			if (previous && old) {
 				event.revision = (BigInt(old.revision) + 1n).toString()
 				event.baseRevision = old.revision
-				event.baseHash = previous.hash
+				event.baseEventId = previous.id
 			}
 			event.id = ""
 			event.id = stableID(accountKey, event.entityId, eventHash(event))
