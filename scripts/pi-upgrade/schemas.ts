@@ -1,12 +1,17 @@
 import { type Static, Type } from "typebox"
 
+/** The report must read in one screen: verdict cells are one line, findings one or two sentences. */
+const cell = (description: string) => Type.String({ minLength: 1, maxLength: 160, description })
+const summary = Type.String({ minLength: 1, maxLength: 280, description: "One or two sentences" })
+
 const evidence = Type.String({
 	minLength: 1,
+	maxLength: 300,
 	description:
 		"Upstream changelog heading, PR/issue/commit URL, or path:line — required, findings without it are dropped",
 })
 
-export const Finding = Type.Object({ summary: Type.String({ minLength: 1 }), evidence })
+export const Finding = Type.Object({ summary, evidence })
 export type Finding = Static<typeof Finding>
 
 /** What one upstream release step changed. Facts about Pi; cached across runs in the issue state. */
@@ -26,17 +31,17 @@ export const Impact = Type.Object({
 	verdict: Type.Object({
 		risk: Type.Union([Type.Literal("low"), Type.Literal("moderate"), Type.Literal("high")]),
 		effort: Type.Union([Type.Literal("S"), Type.Literal("M"), Type.Literal("L")]),
-		effortWhy: Type.String(),
-		apiBreakage: Type.String(),
-		topHazard: Type.String(),
+		effortWhy: cell("Why this effort, one line"),
+		apiBreakage: cell("API breakage, one line"),
+		topHazard: cell("The single thing most likely to bite, one line"),
 	}),
 	breaking: Type.Array(Finding),
 	keepDisabled: Type.Array(
-		Type.Object({ summary: Type.String(), evidence, how: Type.String({ description: "The concrete off-switch" }) }),
+		Type.Object({ summary, evidence, how: Type.String({ maxLength: 200, description: "The concrete off-switch" }) }),
 	),
 	patchRework: Type.Array(
 		Type.Object({
-			summary: Type.String(),
+			summary,
 			evidence,
 			patch: Type.String(),
 			status: Type.Union([

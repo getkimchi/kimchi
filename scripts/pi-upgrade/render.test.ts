@@ -143,6 +143,20 @@ describe("renderReport degraded inputs", () => {
 		expect(report).toContain("**Tests:** install failed — ERR_PNPM_PEER_DEP pi-ai@^1")
 	})
 
+	it("hard-truncates when the sections alone exceed the limit", () => {
+		const verbose: ReportInput = {
+			...input,
+			analysis: {
+				...analysis,
+				breaking: Array.from({ length: 200 }, (_, i) => ({ summary: `change ${i} ${"x".repeat(40)}`, evidence: "e" })),
+			},
+		}
+		const report = renderReport(verbose, { limit: 3_000, summaryUrl: "https://example.test/run/1" })
+		expect(report.length).toBeLessThanOrEqual(3_000)
+		expect(report).toContain("| moderate |")
+		expect(report).toContain("Full report: https://example.test/run/1")
+	})
+
 	it("trims collapsed details first when the report exceeds the limit", () => {
 		const big: ReportInput = {
 			...input,

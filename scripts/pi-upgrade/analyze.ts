@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { type RunConfig, writeJson } from "./config.ts"
 import { loadState } from "./github.ts"
 import type { AnalysisFile } from "./schemas.ts"
+import { scrubEnv } from "./tests.ts"
 
 /** Repo holding this script (the kimchi checkout that runs the workflow), not necessarily `--repo`. */
 const KIMCHI_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
@@ -48,7 +49,8 @@ export async function runAnalyze(cfg: RunConfig): Promise<AnalysisFile> {
 		],
 		{
 			cwd: cfg.repoRoot,
-			env: { ...process.env, PI_UPGRADE_OUT_DIR: cfg.outDir },
+			// The agent reads untrusted upstream text: no GitHub write token, only the model key it needs.
+			env: { ...scrubEnv(process.env, ["KIMCHI_API_KEY"]), PI_UPGRADE_OUT_DIR: cfg.outDir },
 			stdio: ["ignore", "inherit", "inherit"],
 			timeout: TIMEOUT_MS,
 		},
