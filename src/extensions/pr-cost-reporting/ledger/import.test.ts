@@ -1,10 +1,20 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import * as fs from "node:fs"
+import {
+	appendFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	boundaryHashOf,
 	completeLines,
@@ -15,6 +25,8 @@ import {
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
 import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
+
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 const DRIVER = join(ROOT, "tests/e2e/tui/support/ledger-driver.ts")
@@ -399,6 +411,24 @@ describe("import loop over the memory backend", () => {
 		const third = await importJournals(dir, { maxBytes: 128 })
 		expect(third.imported).toBe(0)
 		expect(readRecords(dir).map((record) => record.requestId)).toEqual(["req-1", "req-2"])
+	})
+
+	it("reads a settled journal's prefix once across windows, then skips it while unchanged", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")) + line(request("req-2")))
+		const settled = new Date(Date.now() - 60_000)
+		utimesSync(file, settled, settled)
+		const reads = vi.spyOn(fs, "readSync")
+		for (let window = 0; window < 3; window++) expect((await importJournals(dir, { maxBytes: 1 })).imported).toBe(1)
+		// Each window continues from the last one; none rereads the start of the file.
+		expect(reads.mock.calls.filter(([, , , , position]) => position === 0)).toHaveLength(1)
+		reads.mockClear()
+		expect((await importJournals(dir)).files).toEqual([])
+		expect(reads).not.toHaveBeenCalled()
+		reads.mockRestore()
 	})
 
 	it("an LF-terminated malformed final line is reported, not suppressed as an unfinished tail", async () => {

@@ -138,6 +138,11 @@ export function completeLines(file: Buffer, from: number, to: number): Line[] {
 	return lines
 }
 
+/** Coarse filesystem clocks can stamp a write a little before the cursor written after it. */
+const MTIME_SLACK_MS = 2000
+/** The prefix hash behind each cursor this process wrote mid-file, so its next window skips rereading the prefix. */
+const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: number }>()
+
 /** Prefix verification and body reads both yield to the synchronous deadline between fixed-size reads. */
 function prepareJournal(
 	path: string,
@@ -147,13 +152,27 @@ function prepareJournal(
 	checkBudget?: () => void,
 ) {
 	checkBudget?.()
+	// A journal last modified well before its cursor was written still holds the prefix that cursor hashed.
+	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number }) =>
+		!replay &&
+		cursor?.dev === stat.dev &&
+		cursor.ino === stat.ino &&
+		stat.size >= cursor.offset &&
+		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS
+	const seen = statSync(path)
+	if (untouched(seen) && seen.size === cursor?.offset) return undefined
 	const fd = openSync(path, "r")
 	try {
-		const { dev, ino, size } = fstatSync(fd)
+		const stat = fstatSync(fd)
+		const { dev, ino, size } = stat
 		const buffer = Buffer.allocUnsafe(READ_BYTES)
 		let prefix: Hash = createHash("sha256")
 		let lineOffset = 0
-		if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
+		const known = cursor && untouched(stat) ? continued.get(path) : undefined
+		if (cursor && known?.boundaryHash === cursor.boundaryHash) {
+			prefix = known.hash.copy()
+			lineOffset = known.lines
+		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
 			let position = 0
 			while (position < cursor.offset) {
 				checkBudget?.()
@@ -193,7 +212,7 @@ function prepareJournal(
 			bytes += count
 		}
 		checkBudget?.()
-		return { dev, ino, size, decision, prefix, lineOffset, data: Buffer.concat(chunks, bytes) }
+		return { dev, ino, size, mtimeMs: stat.mtimeMs, decision, prefix, lineOffset, data: Buffer.concat(chunks, bytes) }
 	} finally {
 		closeSync(fd)
 	}
@@ -243,7 +262,8 @@ function importJournalFiles(
 			}
 			continue
 		}
-		const { dev, ino, size, decision, prefix, lineOffset, data } = prepared
+		if (!prepared) continue
+		const { dev, ino, size, mtimeMs, decision, prefix, lineOffset, data } = prepared
 		if (decision.mode === "mutation") result.anomalies.push({ path, code: "journal-mutation" })
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
@@ -254,6 +274,9 @@ function importJournalFiles(
 			}
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
+			// A verified journal that settled since its cursor skips verification from now on.
+			else if (cursor && decision.mode === "clean-append" && Date.now() - mtimeMs > MTIME_SLACK_MS)
+				backend.putJournalCursor({ ...cursor, updatedAt: Date.now() })
 			continue
 		}
 		const parsed: WorkRecord[] = []
@@ -295,6 +318,9 @@ function importJournalFiles(
 		const consumed = lines[lines.length - 1].end
 		const consumedEnd = decision.offset + consumed
 		checkBudget?.()
+		prefix.update(data.subarray(0, consumed))
+		const hash = prefix.copy()
+		const boundaryHash = prefix.digest("hex")
 		let imported = 0
 		backend.tx(() => {
 			saveCoverage(backend, path, problems)
@@ -308,10 +334,12 @@ function importJournalFiles(
 				ino,
 				generation: decision.generation,
 				offset: consumedEnd,
-				boundaryHash: prefix.update(data.subarray(0, consumed)).digest("hex"),
+				boundaryHash,
 				updatedAt: Date.now(),
 			})
 		})
+		if (consumedEnd < size) continued.set(path, { boundaryHash, hash, lines: lineOffset + lines.length })
+		else continued.delete(path)
 		if (decision.mode === "mutation") diagnostic(agentDir, "journal-mutation")
 		if (decision.offset + data.length < size) result.pending = true
 		result.imported += imported
