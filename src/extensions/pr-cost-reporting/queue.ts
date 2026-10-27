@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, open, stat } from "node:fs/promises"
+import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { lock } from "proper-lockfile"
@@ -225,12 +225,6 @@ export async function reportingProducer(agentDir: string, assertCurrent: () => v
 		assertCurrent()
 		return next.producerId
 	})
-}
-
-/** Changes with every saved update, since each one replaces the file; empty before the first. */
-export async function reportingStateVersion(agentDir: string): Promise<string> {
-	const saved = await stat(reportingStatePath(agentDir)).catch(() => undefined)
-	return saved ? JSON.stringify([saved.ino, saved.size, saved.mtimeMs]) : ""
 }
 
 function validateEntry(key: string, entry: PendingRepository, producerId: string): void {
