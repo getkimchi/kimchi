@@ -70,7 +70,9 @@ describe("splitHunks", () => {
 			["dist/c.js", 1],
 			["dist/gone.js", 1],
 		])
-		expect(hunks[1].text).toMatch(/^diff --git a\/dist\/a.js b\/dist\/a.js\n--- a\/dist\/a.js\n\+\+\+ b\/dist\/a.js\n@@ -25,3/)
+		expect(hunks[1].text).toMatch(
+			/^diff --git a\/dist\/a.js b\/dist\/a.js\n--- a\/dist\/a.js\n\+\+\+ b\/dist\/a.js\n@@ -25,3/,
+		)
 		expect(hunks[1].text).not.toContain("five")
 	})
 })

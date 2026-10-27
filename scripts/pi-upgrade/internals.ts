@@ -12,7 +12,7 @@ export interface InternalsResult {
 	overwrites: Array<OverwrittenFile & { status: InternalStatus }>
 }
 
-const escape = (s: string) => s.replace(/[$]/g, "\\$")
+const escapeRegExp = (s: string) => s.replace(/[$]/g, "\\$")
 
 /** Index just past the token starting at `i` if it is a string, comment or regex literal; else -1. */
 function skipLiteral(src: string, i: number): number {
@@ -72,7 +72,7 @@ function matchBracket(src: string, open: number): number {
  */
 export function extractMember(src: string, name: string): string | null {
 	const method = new RegExp(
-		`^[ \\t]*((?:static\\s+)?(?:async\\s+)?(?:function\\s*)?\\*?\\s*${escape(name)}\\s*)\\(`,
+		`^[ \\t]*((?:static\\s+)?(?:async\\s+)?(?:function\\s*)?\\*?\\s*${escapeRegExp(name)}\\s*)\\(`,
 		"m",
 	).exec(src)
 	if (method) {
@@ -83,7 +83,7 @@ export function extractMember(src: string, name: string): string | null {
 			return src.slice(start, matchBracket(src, bodyOpen))
 		}
 	}
-	const field = new RegExp(`^[ \\t]*((?:this\\.)?${escape(name)}\\s*=[^=].*)$`, "m").exec(src)
+	const field = new RegExp(`^[ \\t]*((?:this\\.)?${escapeRegExp(name)}\\s*=[^=].*)$`, "m").exec(src)
 	return field ? field[1].trim() : null
 }
 
