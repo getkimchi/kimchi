@@ -10,12 +10,13 @@ import { ALL_SUITES, LOCAL_DEFAULT_SUITES, type RunConfig, readBaseline, type Su
 import { runDryRun } from "./dry-run.ts"
 import { runFetch } from "./fetch.ts"
 import { runInternals } from "./internals.ts"
+import { runRender } from "./render.ts"
 import { runSettle } from "./settle.ts"
 import { runTests } from "./tests.ts"
 
 const USAGE = `usage: pnpm pi-upgrade <step> [options]
 
-steps: settle, fetch, dry-run, internals, tests, analyze
+steps: settle, fetch, dry-run, internals, tests, analyze, render
 
 options:
   --repo <dir>        checkout to analyse (default: current repo)
@@ -35,6 +36,7 @@ const STEPS: Record<string, Step> = {
 	internals: runInternals,
 	tests: (cfg) => runTests(cfg),
 	analyze: runAnalyze,
+	render: runRender,
 }
 
 function parseSuites(value: string | undefined): Suite[] {
