@@ -58,6 +58,7 @@ Each upload replaces one producer's inventory for one account and repository. It
 - The Git provider, host, stable target repository ID, and optional repository name.
 - Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Each PR/MR's `title` and `author` login, as the provider returned them to PR discovery, so the console can name the PR. A title is cut to 1,024 characters. An unknown or empty value, or a login longer than 255 characters, is left out rather than sent empty or cut.
+- Each PR/MR's `issueKeys`, so Kimchi counts its cost for its Jira issues: the issue chosen with `/work issue` for the work whose requests went to it (`work`), then the Jira keys its head branch names (`branch`), at most 20. Only the keys are sent, never the branch name. A PR without keys leaves the field out. The backend reads keys in titles itself.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
 - Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay inferred. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay inferred.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.

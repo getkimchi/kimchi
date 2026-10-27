@@ -9,6 +9,7 @@ import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import type { WorkDetailsRequest } from "../work-attribution.js"
 import { costDetailLines, type knownSpend } from "./cost-details.js"
 import { decimalNanos, roundedUsd, time } from "./costs.js"
+import { MAX_ISSUE_BYTES, parseWorkIssue, type WorkIssue, workIssueLines } from "./issues.js"
 import { readWorkHead, type WorkHead } from "./row-log.js"
 import { object } from "./summary.js"
 
@@ -32,6 +33,8 @@ export interface SavedWork {
 	planTitle?: string
 	/** `work.json` modification time, used when the summary has no timestamps. */
 	modifiedAt?: number
+	/** The Jira issue chosen with `/work issue`. */
+	issue?: WorkIssue
 }
 
 export interface WorkRow {
@@ -91,11 +94,15 @@ export async function readWorkBrowser(
 	const works = await Promise.all(
 		[own, ...recent].map(async (work): Promise<SavedWork> => {
 			const folder = join(directory, work.workId)
-			const [totals, planTitle] = await Promise.all([
+			const issuePath = join(folder, "issue.json")
+			const [totals, planTitle, issueText] = await Promise.all([
 				readJson(join(folder, "cost-totals.json")),
 				work.head && readPlanTitle(folder, work.head),
+				readText(issuePath, MAX_ISSUE_BYTES),
 			])
-			return { ...work, totals, planTitle }
+			// A missing, special or oversized issue.json shows no issue.
+			const issue = issueText === undefined ? undefined : parseWorkIssue(issuePath, work.workId, issueText)
+			return { ...work, totals, planTitle, issue }
 		}),
 	)
 	return buildWorkBrowser(agentDir, current, works)
@@ -175,8 +182,15 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 		latest?.edit?.repository ?? latest?.commit?.repository ?? latest?.request?.repository ?? latest?.request?.cwd
 	const name = path === undefined ? undefined : repositoryName(path)
 	const branch = latest?.branch?.branch
-	const title = plain(work.planTitle ?? [name, branch].filter(Boolean).join(" · "))
-	const pullRequests = current ? current.lines : links.map((pr) => `${pullRequestLabel(pr)}: ${pr.url}`)
+	const title = plain(
+		[work.issue?.selected?.key, work.planTitle ?? [name, branch].filter(Boolean).join(" · ")]
+			.filter(Boolean)
+			.join(" · "),
+	)
+	// The current work's lines are those /work prints, its issue first; other works show their saved issue and links.
+	const lines = current
+		? current.lines
+		: [...(work.issue ? workIssueLines(work.issue) : []), ...links.map((pr) => `${pullRequestLabel(pr)}: ${pr.url}`)]
 	const costLines = costDetailLines(work.totals, join(folder, "costs.json"))
 	const context = head
 		? [
@@ -188,8 +202,8 @@ function workRow(agentDir: string, work: SavedWork, current?: WorkDetailsRequest
 		workId,
 		label: `${current ? "●" : " "} ${workId.slice(0, 8)} ${title || (head ? "untitled work" : "summary unavailable")}`,
 		value: `${spendText(spent)} · ${pullRequestState(links)}`,
-		description: [`Work ID: ${workId}`, ...context, ...pullRequests, ...costLines].join("\n"),
-		details: [`Work ID: ${workId}`, ...pullRequests, ...costLines].join("\n"),
+		description: [`Work ID: ${workId}`, ...context, ...lines, ...costLines].join("\n"),
+		details: [`Work ID: ${workId}`, ...lines, ...costLines].join("\n"),
 	}
 	return {
 		row,

@@ -1,4 +1,5 @@
 import type { McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { getEnvironmentApiKey, readApiKeyFromConfigFile, resolveEndpoints } from "../../config.js"
 import { REGIONS } from "../../regions.js"
 import { isResourceEnabled } from "../../resources/store.js"
@@ -79,24 +80,25 @@ export function getGatewayAddresses(): string[] {
 
 /**
  * The built-in gateway server, or undefined when it must not be registered:
- * resource disabled, no API key (KIMCHI_API_KEY env or the saved config.json
- * key — the same credential the harness uses for LLM auth), or no gateway
- * URL for this deployment (self-hosted without a base URL). Silent skips are
- * deliberate: the gateway is optional, like any user-configured MCP server.
+ * resource disabled, no gateway credential (KIMCHI_API_KEY env, the saved
+ * config.json key, or an SSO login's auth.json credential — the same
+ * resolution the rest of the harness uses), or no gateway URL for this
+ * deployment (self-hosted without a base URL). Silent skips are deliberate:
+ * the gateway is optional, like any user-configured MCP server.
  */
 export function buildBuiltinGatewayServer(): BuiltInGatewayServer | undefined {
 	if (!isResourceEnabled(KIMCHI_MCP_GATEWAY_RESOURCE_ID)) return undefined
 	const url = gatewayUrlForCastApi(resolveEndpoints().castApiUrl)
 	if (url === undefined || !isSecureUrl(url)) return undefined
-	const apiKey = getEnvironmentApiKey() ?? readApiKeyFromConfigFile()
-	if (!apiKey) return undefined
+	const credentials = resolveGatewayCredentials({ apiKey: getEnvironmentApiKey() ?? readApiKeyFromConfigFile() ?? "" })
+	if (!credentials.token) return undefined
 	// Custom headers suppress the adapter's OAuth auto-detection for this URL.
 	// keep-alive connects at extension load instead of on first tool call (the
 	// lazy default serves tools from the disk cache and shows "not listening")
 	// and adds health-check reconnects for the remote endpoint.
 	return {
 		name: GATEWAY_SERVER_NAME,
-		entry: { url, headers: { Authorization: `Bearer ${apiKey}` }, lifecycle: "keep-alive" },
+		entry: { url, headers: gatewayAuthHeaders(credentials), lifecycle: "keep-alive" },
 	}
 }
 

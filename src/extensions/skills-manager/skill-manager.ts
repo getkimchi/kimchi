@@ -579,7 +579,7 @@ export class SkillManager {
 	async view(
 		name: string,
 		filePath?: string,
-	): Promise<SkillManageResult & { content?: string; linked_files?: Record<string, string[]> }> {
+	): Promise<SkillManageResult & { content?: string; linked_files?: Record<string, string[]>; skill_dir?: string }> {
 		const loc = await this._findSkill(name)
 		if (!loc) {
 			return { success: false, error: `Skill '${name}' not found.` }
@@ -629,6 +629,10 @@ export class SkillManager {
 			success: true,
 			message: `Loaded skill '${name}'.`,
 			content,
+			// Folder-based skills expose their resolved directory so agents can run
+			// bundled scripts (e.g. scripts/pdf.mjs) without deriving paths. Skipped
+			// for loose single-file skills: skillDir may be a shared skills root.
+			...(!loc.singleFile ? { skill_dir: loc.skillDir } : {}),
 			...(Object.keys(linked_files).length > 0 ? { linked_files } : {}),
 		}
 	}

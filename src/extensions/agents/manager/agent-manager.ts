@@ -3,6 +3,7 @@ import { basename } from "node:path"
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { resolveGatewayCredentials } from "../../../auth/gateway-credentials.js"
 import { loadConfig } from "../../../config.js"
 import { resolveWorkspaceSpec } from "../../../sandbox/cloud/spec.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
@@ -518,8 +519,8 @@ export class AgentManager {
 		options: SpawnOptions,
 		_ctx: ExtensionContext,
 	): Promise<RemoteRunResult> {
-		const apiKey = loadConfig().apiKey
-		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 		const continuation = options.continuation
 		if (!continuation) throw new Error("_runRemoteContinuation requires options.continuation")
 
@@ -572,8 +573,8 @@ export class AgentManager {
 		const remoteUi = ctx.ui
 		const remoteMode = ctx.mode
 
-		const apiKey = loadConfig().apiKey
-		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 
 		const workspaces = await listWorkspaces(apiKey, {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
@@ -1123,8 +1124,8 @@ export class AgentManager {
 		ctx: ExtensionContext,
 		options?: { callbacks?: AcpSessionCallbacks },
 	): Promise<"resumed" | "already-watched"> {
-		const apiKey = loadConfig().apiKey
-		if (!apiKey) throw new Error("No API key configured. Run `kimchi login`.")
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 
 		// Guard against double-attach: a live WS on the session means another
 		// kimchi process (typically the one that dispatched the run, or an
