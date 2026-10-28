@@ -43,6 +43,19 @@ node scripts/run-tui-e2e.js mcp-oauth
 
 The dedicated `MCP E2E` GitHub Actions workflow runs the aggregate suite for pull requests, or on manual dispatch.
 
+## Live provider checks
+
+`scripts/mcp-live-probe.mjs` (`pnpm run test:e2e:mcp:live`) checks the authorize request the built binary constructs against real OAuth providers: the redirect-URI class the client registers or sends, Google-style offline-access parameters, and that the provider answers with a sign-in or consent page rather than an OAuth error. It runs the same `kimchi mcp probe` path users hit, with an isolated `HOME`, a recording `$BROWSER` driver (no sign-in is ever completed), and a file-backed OAuth credential store, so the run leaves no state behind and never touches the developer's OS keychain.
+
+The provider inventory is deliberately not in this repository. Entries come from the `MCP_LIVE_PROVIDERS` secret (a JSON array; see the script header for the entry shape), keeping internal provider names and client identifiers out of the public repo.
+
+The `MCP live smoke` workflow runs this check on every pull request and nightly. Unlike the external-smoke guidance above, this check *does* gate pull requests, because its assertions are limited to deterministic OAuth error contracts (`error=` on the provider's redirect, well-known error markers on the answer page) rather than page content, every entry retries once on network errors and 5xx responses, and it degrades to a neutral skip exactly where its inputs are unavailable or untrusted:
+
+- fork pull requests see no secrets — the live step is skipped (same-repository branch pulls run it: the standard GitHub CI trust boundary for collaborators);
+- the `skip-live-mcp` label skips the check during a provider outage.
+
+Local development: `node scripts/mcp-live-probe.mjs --self-test` runs the pure URL/provider-answer checks on canned inputs without the binary or network; a full local run needs `MCP_LIVE_PROVIDERS` and `pnpm run build:binary` first. The matrix is written to `mcp-live-probe-matrix.json`.
+
 ## Coverage
 
 | Area | End-to-end behavior |
@@ -51,7 +64,8 @@ The dedicated `MCP E2E` GitHub Actions workflow runs the aggregate suite for pul
 | direct tools and cache | first-session exposure specification and successful direct invocation after a real process restart |
 | failures | invalid arguments, startup failure, disconnect during a call, bounded slow calls, transport loss, malformed HTTP, and cancellation specification |
 | Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication, unavailable server behavior, and legacy SSE fallback |
-| OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart |
+| OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart; Google-style issuance rules (refresh token only for `access_type=offline`) and silent renewal across a restart |
+| live providers | authorize-URL shape and provider acceptance per configured provider class (see Live provider checks) |
 | ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
 | official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
 
@@ -118,4 +132,4 @@ An empty `mcp: {}` deliberately exercises production defaults only when the work
 
 Use a focused co-located unit or integration test for parsing, configuration normalization, or a protocol branch that does not need a user workflow. Use the fixture-backed TUI or ACP suite when the risk crosses process, transport, model, cache, OAuth, or content-forwarding boundaries.
 
-A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking, but it should not gate pull requests. External availability, credentials, and server changes make it unsuitable as the primary regression suite; the local fixture remains the source of deterministic CI evidence.
+A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking. The live authorize-URL check above is the one external tier that gates pull requests, because it asserts deterministic OAuth error contracts only. Credentialed external tests — sign-in, consent, and token renewal against real accounts — remain non-gating; external availability, credentials, and server changes make them unsuitable as the primary regression suite, and the local fixture remains the source of deterministic CI evidence.
