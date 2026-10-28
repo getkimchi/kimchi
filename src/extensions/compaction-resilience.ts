@@ -215,23 +215,32 @@ async function handleBeforeCompact(
 			// default). Auth failures never take this branch — they classify "other".
 			const nextEncoding = failed === "rejection" && encoding !== "off" ? "off" : encoding
 			let changed = nextEncoding !== encoding
-			if (!budgetEscalated) {
-				budgetEscalated = true
-				changed = true
-			} else if (!reduced) {
-				// Fractions always apply to the original range so each retry cuts
-				// strictly deeper regardless of where boundaries landed last time.
-				const reducedRange = reduceSummarizedRange(originalMessages, 0.5)
-				if (reducedRange.length < messagesToSummarize.length) {
-					messagesToSummarize = reducedRange
-					reduced = true
+			// The budget/scope ladder only advances on budget-class failures: a
+			// length stop means the summary did not fit (escalate the budget, then
+			// shrink the range); an overflow means the summarized input itself is
+			// too large (shrink the range). Everything else — including a
+			// summarizer that tried to call a tool — is deterministic or already
+			// covered by upstream's transient retry inside one compact() call, so
+			// extra attempts would only burn provider calls.
+			if (failed === "length" || failed === "overflow") {
+				if (!budgetEscalated && failed === "length") {
+					budgetEscalated = true
 					changed = true
-				}
-			} else {
-				const reducedRange = reduceSummarizedRange(originalMessages, 0.75)
-				if (reducedRange.length < messagesToSummarize.length) {
-					messagesToSummarize = reducedRange
-					changed = true
+				} else if (!reduced) {
+					// Fractions always apply to the original range so each retry cuts
+					// strictly deeper regardless of where boundaries landed last time.
+					const reducedRange = reduceSummarizedRange(originalMessages, 0.5)
+					if (reducedRange.length < messagesToSummarize.length) {
+						messagesToSummarize = reducedRange
+						reduced = true
+						changed = true
+					}
+				} else {
+					const reducedRange = reduceSummarizedRange(originalMessages, 0.75)
+					if (reducedRange.length < messagesToSummarize.length) {
+						messagesToSummarize = reducedRange
+						changed = true
+					}
 				}
 			}
 			// Stop only when no rung can change the next attempt — e.g. an
