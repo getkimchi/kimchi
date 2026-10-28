@@ -1,12 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
-import {
-	isKeyRelease,
-	Key,
-	matchesKey,
-	type TuiMouseEvent,
-	type TuiMouseEventResult,
-	truncateToWidth,
-} from "@earendil-works/pi-tui"
+import { Key, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@earendil-works/pi-tui"
 import { hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
@@ -61,7 +54,7 @@ interface TodoWidgetState {
 	scrollOffset: number
 	/** True once the user scrolls; disables auto-follow of the active todo. */
 	userScrolled: boolean
-	/** Strip hidden by the user (Esc / `/todos collapse`); stays hidden across
+	/** Strip hidden by the user (`/todos collapse`); stays hidden across
 	 *  store syncs until an explicit show. */
 	hidden: boolean
 	registered: boolean
@@ -84,26 +77,30 @@ interface TodoWidgetState {
 
 const todoWidgetStates = new Map<string, TodoWidgetState>()
 
-/** Reasons the above-editor strip should stay collapsed (agents, questionnaire,
- *  etc.). Counted as a set so overlapping UIs don't release early. */
-const todoCrowdingReasons = new Set<string>()
+/** Live claims keeping the above-editor strip collapsed (agents, questionnaire,
+ *  etc.). Each claim is its own token, so overlapping owners — even with the
+ *  same reason — never release each other. */
+const todoCrowdingClaims = new Set<{ reason: string }>()
 
 export function isTodoCrowdingActive(): boolean {
-	return todoCrowdingReasons.size > 0
+	return todoCrowdingClaims.size > 0
 }
 
 /** Force the todo list body closed while competing above-editor UI is visible.
  *  Suspends any explicit expand so the strip shrinks immediately, and restores
- *  it once the last reason clears; the user can still F7/`/todos` expand while
- *  crowded. Call with `active: false` when the competing UI dismisses. */
-export function setTodoCrowding(reason: string, active: boolean): void {
-	if (!reason) return
-	const wasCrowded = todoCrowdingReasons.size > 0
-	if (active) todoCrowdingReasons.add(reason)
-	else todoCrowdingReasons.delete(reason)
-	const isCrowded = todoCrowdingReasons.size > 0
-	if (wasCrowded === isCrowded) return
+ *  it once the last claim is released; the user can still F7/`/todos` expand
+ *  while crowded. Returns this claim's release; calling it again is a no-op. */
+export function claimTodoCrowding(reason: string): () => void {
+	const claim = { reason }
+	todoCrowdingClaims.add(claim)
+	if (todoCrowdingClaims.size === 1) applyTodoCrowding(true)
+	return () => {
+		if (!todoCrowdingClaims.delete(claim)) return
+		if (todoCrowdingClaims.size === 0) applyTodoCrowding(false)
+	}
+}
 
+function applyTodoCrowding(isCrowded: boolean): void {
 	for (const state of todoWidgetStates.values()) {
 		if (isCrowded) {
 			if (state.expanded || state.listExpanded) {
@@ -121,17 +118,26 @@ export function setTodoCrowding(reason: string, active: boolean): void {
 }
 
 export async function withTodoCrowding<T>(reason: string, fn: () => Promise<T>): Promise<T> {
-	setTodoCrowding(reason, true)
+	const release = claimTodoCrowding(reason)
 	try {
 		return await fn()
 	} finally {
-		setTodoCrowding(reason, false)
+		release()
 	}
 }
 
-/** Test-only: clear crowding reasons between cases. */
+/** Drop every crowding claim, e.g. on session shutdown, so an owner whose
+ *  release never runs (a form left open as the session ends) can't keep the
+ *  strip collapsed for the rest of the process. Late releases stay no-ops. */
+export function clearTodoCrowding(): void {
+	if (todoCrowdingClaims.size === 0) return
+	todoCrowdingClaims.clear()
+	applyTodoCrowding(false)
+}
+
+/** Test-only: clear crowding claims between cases. */
 export function __resetTodoCrowding(): void {
-	todoCrowdingReasons.clear()
+	todoCrowdingClaims.clear()
 }
 
 function createTodoWidgetState(): TodoWidgetState {
@@ -690,19 +696,6 @@ function mountTodoWidget(
 			},
 			invalidate: unregister,
 			dispose: unregister,
-			handleInput(data: string): void {
-				if (isKeyRelease(data)) return
-				// Esc hides the strip when the widget has focus. Do not bind `q` —
-				// it fires while the prompt editor has focus and would steal input.
-				if (matchesKey(data, Key.escape)) {
-					hideTodoWidget(ctx)
-					return
-				}
-				// Enter/F7 collapse ↔ expand the list body; Esc hides the strip.
-				if (matchesKey(data, Key.enter) || matchesKey(data, "return") || matchesKey(data, TODO_SHORTCUT)) {
-					toggleTodoWidget(ctx)
-				}
-			},
 			// Mouse only reaches widgets in fullscreen mode (`--tui-mode fullscreen`),
 			// where the alt-screen renderer captures it. Left click mirrors
 			// F7/`/todos` (collapse ↔ expand). Wheel scrolls the list body when
@@ -786,7 +779,7 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	requestTodoRender(ctx)
 }
 
-/** Hide the strip entirely (Esc / `/todos collapse`) — distinct from the
+/** Hide the strip entirely (`/todos collapse`) — distinct from the
  *  collapsed one-line header that F7 toggles to. */
 export function hideTodoWidget(ctx: ExtensionContext): void {
 	getTodoWidgetState(ctx).hidden = true
@@ -794,8 +787,8 @@ export function hideTodoWidget(ctx: ExtensionContext): void {
 	setTodosStatus(ctx)
 }
 
-/** Collapse ↔ expand the list body in place. Used by F7, bare `/todos`, Enter,
- *  and click. Never hides the strip — Esc and `/todos collapse` do that. */
+/** Collapse ↔ expand the list body in place. Used by F7, bare `/todos`, and
+ *  click. Never hides the strip — `/todos collapse` does that. */
 export function toggleTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)

@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
-import { __resetTodoCrowding, isTodoCrowdingActive, setTodoCrowding } from "../todos/widget.js"
+import { __resetTodoCrowding, claimTodoCrowding, isTodoCrowdingActive } from "../todos/widget.js"
 import { createPromptFormComponent, promptEditor, promptForm, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
@@ -146,7 +146,7 @@ describe("promptForm todo crowding", () => {
 	it("does not release the questionnaire tool's crowding when the form closes", async () => {
 		// Regression: the form shared the "questionnaire" crowding reason, so its
 		// release dropped the tool's hold and re-expanded the todo strip under it.
-		setTodoCrowding("questionnaire", true)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
 		const ctx = createContext({ ui: { select: vi.fn(async () => "Option A") } })
 
 		await promptForm(ctx, {
@@ -154,7 +154,7 @@ describe("promptForm todo crowding", () => {
 		})
 
 		expect(isTodoCrowdingActive()).toBe(true)
-		setTodoCrowding("questionnaire", false)
+		releaseQuestionnaire()
 		expect(isTodoCrowdingActive()).toBe(false)
 	})
 })

@@ -9,13 +9,15 @@ import {
 	__test_buildTodoLines,
 	__test_summarizeTodos,
 	buildTodoHeaderLine,
+	claimTodoCrowding,
+	clearTodoCrowding,
 	expandTodoWidget,
+	isTodoCrowdingActive,
 	openTodoWidget,
 	remountTodosWidget,
 	resetTodoWidgetState,
 	SPINNER_INTERVAL_MS,
 	setTodoAgentActive,
-	setTodoCrowding,
 	syncTodoWidget,
 	toggleTodoWidget,
 } from "./widget.js"
@@ -1040,7 +1042,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const instance = component(tui, theme)
 		expect(instance.render(80)).toContain("  ○ task 1")
 
-		setTodoCrowding("agents", true)
+		claimTodoCrowding("agents")
 
 		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 		expect(tui.requestRender).toHaveBeenCalled()
@@ -1051,10 +1053,10 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
-		setTodoCrowding("questionnaire", true)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
-		setTodoCrowding("questionnaire", false)
+		releaseQuestionnaire()
 
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("▼ Todos · Global · 0/1 (F7 to collapse)")
@@ -1066,7 +1068,7 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
-		setTodoCrowding("agents", true)
+		claimTodoCrowding("agents")
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		toggleTodoWidget(ctx)
@@ -1081,13 +1083,48 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		syncTodoWidget(ctx)
-		setTodoCrowding("agents", true)
-		setTodoCrowding("questionnaire", true)
-		setTodoCrowding("agents", false)
+		const releaseAgents = claimTodoCrowding("agents")
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
+		releaseAgents()
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
-		setTodoCrowding("questionnaire", false)
+		releaseQuestionnaire()
 		expect(renderWidget(setWidget)).toContain("  ○ task 1")
+	})
+
+	it("keeps crowding while another claim with the same reason is held", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
+		syncTodoWidget(ctx)
+		const releaseFirst = claimTodoCrowding("agents")
+		const releaseSecond = claimTodoCrowding("agents")
+
+		releaseFirst()
+		releaseFirst()
+		expect(isTodoCrowdingActive()).toBe(true)
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
+
+		releaseSecond()
+		expect(isTodoCrowdingActive()).toBe(false)
+		expect(renderWidget(setWidget)).toContain("  ○ task 1")
+	})
+
+	it("restores the strip when all claims are cleared and ignores late releases", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
+		syncTodoWidget(ctx)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
+
+		clearTodoCrowding()
+		expect(isTodoCrowdingActive()).toBe(false)
+		expect(renderWidget(setWidget)).toContain("  ○ task 1")
+
+		const releaseAgents = claimTodoCrowding("agents")
+		releaseQuestionnaire()
+		expect(isTodoCrowdingActive()).toBe(true)
+		releaseAgents()
 	})
 
 	it("restores an explicit expand-all after crowding clears", () => {
@@ -1102,10 +1139,10 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		expandTodoWidget(ctx)
 		expect(renderWidget(setWidget)).toContain("  ○ task 6")
 
-		setTodoCrowding("questionnaire", true)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 
-		setTodoCrowding("questionnaire", false)
+		releaseQuestionnaire()
 		const lines = renderWidget(setWidget)
 		expect(lines).toContain("  ○ task 6")
 		expect(lines.some((line: string) => line.includes("more"))).toBe(false)
@@ -1119,10 +1156,10 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const xs = setWidget.mock.calls[0][1]({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
 		expect(xs.render(80)).toContain("  ○ task 1")
 
-		setTodoCrowding("agents", true)
+		const releaseAgents = claimTodoCrowding("agents")
 		expect(xs.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
-		setTodoCrowding("agents", false)
+		releaseAgents()
 		expect(xs.render(80)).toContain("  ○ task 1")
 	})
 
@@ -1131,12 +1168,12 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
 		expandTodoWidget(ctx)
-		setTodoCrowding("questionnaire", true)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
 
 		// F7 while crowded expands, the next F7 collapses — the user's latest choice.
 		toggleTodoWidget(ctx)
 		toggleTodoWidget(ctx)
-		setTodoCrowding("questionnaire", false)
+		releaseQuestionnaire()
 
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 	})

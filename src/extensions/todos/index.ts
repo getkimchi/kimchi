@@ -76,6 +76,7 @@ import {
 import { CONFIRM_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
 import { TODO_STATUS, type TodoScope } from "./types.js"
 import {
+	clearTodoCrowding,
 	disposeTodoWidget,
 	ensureTodoWidget,
 	registerTodoShortcut,
@@ -889,6 +890,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeCheckinGate?.()
 		unsubscribeCheckinGate = undefined
 		disposeTodoWidget(ctx)
+		// Crowding claims are process-global; drop any whose owner never released
+		// (e.g. a questionnaire still open when the session ended).
+		clearTodoCrowding()
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		deleteSessionContext(sessionId)

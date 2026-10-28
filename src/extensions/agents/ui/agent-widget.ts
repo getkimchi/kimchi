@@ -4,7 +4,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { remountTipWidget } from "../../tips/index.js"
-import { remountTodosWidget, setTodoCrowding } from "../../todos/widget.js"
+import { claimTodoCrowding, remountTodosWidget } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import { getLifetimeTotal, getSessionContextPercent, type LifetimeUsage, type SessionLike } from "../manager/usage.js"
 import { getConfig } from "../personas/agent-types.js"
@@ -169,6 +169,7 @@ export class AgentWidget {
 	private widgetRegistered = false
 	private tui: unknown = undefined
 	private lastStatusText: string | undefined
+	private todoCrowdingRelease: (() => void) | undefined
 
 	constructor(
 		private manager: AgentManager,
@@ -431,7 +432,7 @@ export class AgentWidget {
 				this.uiCtx.setWidget("agents", undefined)
 				this.widgetRegistered = false
 				this.tui = undefined
-				setTodoCrowding("agents", false)
+				this.releaseTodoCrowding()
 			}
 			if (this.lastStatusText !== undefined) {
 				this.uiCtx.setStatus("subagents", undefined)
@@ -472,14 +473,15 @@ export class AgentWidget {
 						invalidate: () => {
 							this.widgetRegistered = false
 							this.tui = undefined
-							setTodoCrowding("agents", false)
+							this.releaseTodoCrowding()
 						},
 					}
 				},
 				{ placement: "aboveEditor" },
 			)
 			this.widgetRegistered = true
-			setTodoCrowding("agents", true)
+			this.releaseTodoCrowding()
+			this.todoCrowdingRelease = claimTodoCrowding("agents")
 			// Re-insert tip/todos widgets after agents so they render above agents,
 			// directly above the editor (framework renders aboveEditor widgets in
 			// Map insertion order).
@@ -490,6 +492,11 @@ export class AgentWidget {
 		}
 	}
 
+	private releaseTodoCrowding() {
+		this.todoCrowdingRelease?.()
+		this.todoCrowdingRelease = undefined
+	}
+
 	dispose() {
 		if (this.widgetInterval) {
 			clearInterval(this.widgetInterval)
@@ -498,7 +505,7 @@ export class AgentWidget {
 		if (this.uiCtx) {
 			this.uiCtx.setWidget("agents", undefined)
 			this.uiCtx.setStatus("subagents", undefined)
-			setTodoCrowding("agents", false)
+			this.releaseTodoCrowding()
 		}
 		this.widgetRegistered = false
 		this.tui = undefined
