@@ -248,11 +248,7 @@ export function bridgeRefreshLogPath(prefix = defaultBridgePrefix()): string {
  * code receipt, so the next update retries. The child's output is streamed
  * to refresh.log so a failure is never silent (see reportBridgeRefresh).
  */
-export function refreshBridge(
-	shareDir: string,
-	kimchiBin: string,
-	prefix = defaultBridgePrefix(),
-): string[] {
+export function refreshBridge(shareDir: string, kimchiBin: string, prefix = defaultBridgePrefix()): string[] {
 	const read = (path: string) => {
 		try {
 			return readFileSync(path, "utf8").trim()

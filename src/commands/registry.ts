@@ -5,8 +5,8 @@ export interface CommandDefinition {
 	run: (args: string[]) => Promise<number | undefined>
 }
 
-import { runClaude } from "./claude.js"
 import { runBridge } from "./bridge.js"
+import { runClaude } from "./claude.js"
 import { runCodex } from "./codex.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"

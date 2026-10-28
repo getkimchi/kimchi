@@ -5,7 +5,14 @@ import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
 import { extractArchive, verifyChecksum } from "./extract.js"
 import { assetName, GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
-import { atomicInstall, copySupportingFiles, macosCodesignReSign, refreshBridge, reportBridgeRefresh, smokeTestBinary } from "./install.js"
+import {
+	atomicInstall,
+	copySupportingFiles,
+	macosCodesignReSign,
+	refreshBridge,
+	reportBridgeRefresh,
+	smokeTestBinary,
+} from "./install.js"
 import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
 

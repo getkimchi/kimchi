@@ -1,7 +1,7 @@
+import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { spawnSync } from "node:child_process"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 
 /**
@@ -25,9 +25,7 @@ export async function runBridge(args: string[]): Promise<number | undefined> {
 	if (verb === "disable") return bridgeDisable()
 	if (verb === "remove") return bridgeRemove()
 	if (verb === "status") return bridgeStatus()
-	console.error(
-		"Usage: kimchi bridge setup|disable|remove|status",
-	)
+	console.error("Usage: kimchi bridge setup|disable|remove|status")
 	return 1
 }
 
