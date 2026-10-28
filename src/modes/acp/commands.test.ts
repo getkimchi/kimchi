@@ -74,14 +74,14 @@ describe("composeAvailableCommands", () => {
 
 describe("discoverSkillCommandsMap", () => {
 	it("reads the loader's current skills without rescanning", () => {
-		const reloads = { n: 0 }
+		const refreshes = { n: 0 }
 		const session = makeSession({
 			skills: [{ name: "deploy", description: "Ship it", filePath: "/skills/deploy/SKILL.md" }],
-			reloads,
+			refreshes,
 		})
 
 		expect(discoverSkillCommandsMap(session).get("deploy")).toMatchObject({ name: "deploy" })
-		expect(reloads.n).toBe(0)
+		expect(refreshes.n).toBe(0)
 	})
 })
 
