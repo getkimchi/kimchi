@@ -56,14 +56,13 @@ test("subagent request advertises its resolved active tool list", async ({ termi
 			// The subagent's own request: its system prompt is the FINAL
 			// prompt built after binding — the active-tool list section with
 			// the tools the child can actually call, plus the persona block.
-			const subagentRequests = fixture.fake.requests.filter((request) => {
-				if (!request.url.endsWith("/chat/completions")) return false
-				const messages = (request.body as { messages?: Array<{ role: string; content: unknown }> } | null)?.messages
-				if (!Array.isArray(messages)) return false
-				return messages.some(
-					(m) => m.role === "system" && JSON.stringify(m.content).includes("inherited_system_prompt"),
-				)
-			})
+			// Same detection the fake server uses for its subagent queue: the
+			// parent-session header (threaded by the harness on child requests).
+			const subagentRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.endsWith("/chat/completions") &&
+					(request.headers as Record<string, unknown>)["x-parent-session-id"] !== undefined,
+			)
 			expect(subagentRequests.length).toBe(1)
 
 			const first = subagentRequests[0]
