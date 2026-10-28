@@ -496,11 +496,11 @@ describe("work browser rows", () => {
 			[
 				`Work ID: ${missing}`,
 				`Summary unavailable: ${join(agentDir, "work", missing, "work.json")}`,
-				"Cost: unknown; waiting for billing",
+				"Cost: not priced locally; see the console",
 			].join("\n"),
 		)
 		expect(row(wrongCosts)).toMatchObject({ label: "  00000003 kimchi", value: "cost unknown · no PR" })
-		expect(row(wrongCosts)?.description).toContain("Cost: unknown; waiting for billing")
+		expect(row(wrongCosts)?.description).toContain("Cost: not priced locally; see the console")
 		expect(spend).toBe("cost unknown")
 	})
 

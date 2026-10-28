@@ -194,7 +194,7 @@ export function workCostDetails(agentDir: string, workId: string): string[] {
 			costReportSource(workId),
 		)
 	} catch {
-		return ["Cost: unknown; waiting for billing"]
+		return ["Cost: not priced locally; see the console"]
 	}
 }
 
@@ -207,7 +207,7 @@ function price(value: unknown): string {
 /** `/work` cost lines for saved `cost-totals.json` content; `path` names the full report. */
 export function costDetailLines(value: unknown, path: string): string[] {
 	if (!object(value) || !Array.isArray(value.pullRequests) || !object(value.requests))
-		return ["Cost: unknown; waiting for billing"]
+		return ["Cost: not priced locally; see the console"]
 	const lines: string[] = []
 	for (const row of value.pullRequests) {
 		if (!object(row)) continue

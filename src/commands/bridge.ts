@@ -42,28 +42,43 @@ function bridgeCliPath(): string {
 }
 
 /** Run a bundled installer action for both clients, without a shell. */
-function runInstaller(action: string, ...clients: string[]): boolean {
+function runInstaller(action: string, client = "both"): boolean {
 	const installer = join(shareDir(), "bridge", "install.sh")
 	if (!existsSync(installer)) {
 		console.error(`kimchi bridge: bundled installer not found (${installer}) — is kimchi installed by its installer?`)
 		return false
 	}
-	const result = spawnSync(installer, [action, ...clients], {
+	// Through bash, like the updater: some release layouts shipped install.sh
+	// without the executable bit, and a direct spawn fails with EACCES there.
+	const result = spawnSync("bash", [installer, action, client], {
 		encoding: "utf8",
 		env: { ...process.env, KIMCHI_BIN: process.execPath },
 		stdio: "inherit",
 	})
-	if (result.status === null) {
+	// Bun's spawnSync leaves status undefined (not null) when the child never
+	// started — without the error check a failed spawn surfaced as a silent
+	// exit 1.
+	if (result.error || result.status === null || result.status === undefined) {
 		console.error("kimchi bridge: installer failed to start:", result.error?.message ?? "unknown")
 		return false
 	}
 	return result.status === 0
 }
 
+function reportMissingCli(): void {
+	console.error("kimchi bridge: kimchi-bridge CLI not found — run `kimchi bridge setup` first.")
+	console.error(
+		"If gateway routing was enabled before, Claude Code/Codex may still point at the dead local proxy (connection refused).",
+	)
+	console.error(
+		"To restore direct access, remove ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN from ~/.claude/settings.json env, and gateway.base_url from ~/.codex/config.toml.",
+	)
+}
+
 function runBridgeCli(args: string[]): boolean {
 	const cli = bridgeCliPath()
 	if (!existsSync(cli)) {
-		console.error("kimchi bridge: kimchi-bridge CLI not found — run `kimchi bridge setup` first.")
+		reportMissingCli()
 		return false
 	}
 	const result = spawnSync(cli, args, { encoding: "utf8", stdio: "inherit" })
@@ -75,7 +90,11 @@ function runBridgeCli(args: string[]): boolean {
 }
 
 async function bridgeSetup(): Promise<number> {
-	if (!runInstaller("install", "claude", "codex")) return 1
+	// install.sh takes a single client argument (claude|codex|both); the third
+	// argv slot is a version override. "both" is the only way to cover both
+	// clients — separate args would feed "codex" into the version slot and
+	// fail with "Requested version differs from this package.".
+	if (!runInstaller("install")) return 1
 	console.log("")
 	console.log("Work reporting is installed. Routing inference through the Kimchi gateway is a separate step:")
 	// Best-effort: enable routing only when a sign-in exists; the bridge itself
@@ -96,5 +115,14 @@ function bridgeRemove(): number {
 }
 
 function bridgeStatus(): number {
+	if (!existsSync(bridgeCliPath())) {
+		// The CLI shim is the installer's last write, so its absence means the
+		// package never installed (or was wiped). The bundled installer can
+		// still report per-client receipts without it — more useful than a
+		// dead end when diagnosing a half-failed setup.
+		reportMissingCli()
+		runInstaller("status")
+		return 1
+	}
 	return runBridgeCli(["status"]) ? 0 : 1
 }

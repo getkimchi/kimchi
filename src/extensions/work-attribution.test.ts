@@ -348,21 +348,15 @@ describe("local work attribution", () => {
 			}),
 		])
 	})
-	it("starts billing reconciliation once for a main session and never for its child", async () => {
-		const stop = vi.fn(async () => {})
-		vi.mocked(supervisor.subscribeCostReconciliation).mockReturnValue(stop)
+	it("never looks up gateway prices: the service prices PR costs from its own bills", async () => {
 		const parent = createExtensionApi()
 		const child = createExtensionApi()
 		const ctx = createContext({ cwd: dir })
 		createWorkAttributionExtension()(parent.api)
 		createWorkAttributionExtension(getWorkId(ctx))(child.api)
-		for (const api of [parent, parent, child])
+		for (const api of [parent, child])
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
-		expect(supervisor.subscribeCostReconciliation).toHaveBeenCalledOnce()
-		await child.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
-		expect(stop).not.toHaveBeenCalled()
-		await parent.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
-		expect(stop).toHaveBeenCalledOnce()
+		expect(supervisor.subscribeCostReconciliation).not.toHaveBeenCalled()
 	})
 	it("pins billing metadata at dispatch before a later account or work switch", () => {
 		const ctx = createContext({ cwd: dir })
@@ -1488,7 +1482,7 @@ describe("local work attribution", () => {
 		panels[0].handleInput?.("\r")
 		await browsing
 		const printed = vi.mocked(ctx.ui.notify).mock.lastCall
-		expect(printed?.[0]).toMatch(new RegExp(`^Work ID: ${workId}\nPR #7 open: \\S+\nCost: unknown`))
+		expect(printed?.[0]).toMatch(new RegExp(`^Work ID: ${workId}\nPR #7 open: \\S+\nCost: not priced locally`))
 
 		await command.handler("", { ...ctx, mode: "rpc" })
 		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual(printed)
@@ -1661,7 +1655,7 @@ describe("Jira issue selection", () => {
 
 		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
 		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
-			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: unknown; waiting for billing`,
+			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: not priced locally; see the console`,
 			"info",
 		])
 		await input("Implement it")
@@ -1717,7 +1711,7 @@ describe("Jira issue selection", () => {
 				`Work ID: ${workId}`,
 				...issue,
 				"PR #7 open: https://github.com/example/repo/pull/7",
-				"Cost: unknown; waiting for billing",
+				"Cost: not priced locally; see the console",
 			].join("\n")
 
 		await command.handler("issue", ctx)
@@ -1766,7 +1760,7 @@ describe("Jira issue selection", () => {
 		await browsing
 		const notice = String(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).split("\n")
 		expect(notice.slice(0, 2)).toEqual([`Work ID: ${getWorkId(ctx)}`, "Jira issue: ABC-123"])
-		expect(notice[2].startsWith("Cost: unknown")).toBe(true)
+		expect(notice[2].startsWith("Cost: not priced locally")).toBe(true)
 	})
 })
 
