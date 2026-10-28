@@ -5,7 +5,7 @@ import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
 import { extractArchive, verifyChecksum } from "./extract.js"
 import { assetName, GitHubClient, KIMCHI_REPO, type Repo } from "./github.js"
-import { atomicInstall, copySupportingFiles, macosCodesignReSign, refreshBridge, smokeTestBinary } from "./install.js"
+import { atomicInstall, copySupportingFiles, macosCodesignReSign, refreshBridge, reportBridgeRefresh, smokeTestBinary } from "./install.js"
 import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
 
@@ -235,7 +235,8 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// Always clean up the vendored and bundled-plugin directories to fully override them.
 			for (const dir of ["vendor", "bridge"]) rmSync(join(shareDst, dir), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
-			refreshBridge(shareDst, targetPath)
+			const clients = refreshBridge(shareDst, targetPath)
+			await reportBridgeRefresh(shareDst, clients)
 
 			return { from: opts.tag, to: opts.tag, backupPath }
 		} finally {

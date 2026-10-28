@@ -6,6 +6,7 @@ export interface CommandDefinition {
 }
 
 import { runClaude } from "./claude.js"
+import { runBridge } from "./bridge.js"
 import { runCodex } from "./codex.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
@@ -35,6 +36,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "openclaw", summary: "Configure OpenClaw to use Kimchi", run: runOpenClaw },
 	{ name: "gsd2", summary: "Install / configure GSD2 with Kimchi", run: runGsd2 },
 	{ name: "codex", summary: "Configure Codex to use Kimchi (and launch it)", run: runCodex },
+	{ name: "bridge", summary: "Manage the Kimchi work-reporting plugin (setup|disable|remove|status)", run: runBridge },
 	{ name: "update", summary: "Check for and install Kimchi/package updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },

@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
 	atomicInstall: vi.fn(),
 	copySupportingFiles: vi.fn(),
 	macosCodesignReSign: vi.fn(),
-	refreshBridge: vi.fn(),
+	refreshBridge: vi.fn<() => string[]>(() => []),
+	reportBridgeRefresh: vi.fn().mockResolvedValue(undefined),
 	smokeTestBinary: vi.fn(),
 }))
 
@@ -27,6 +28,7 @@ vi.mock("./install.js", () => ({
 	copySupportingFiles: mocks.copySupportingFiles,
 	macosCodesignReSign: mocks.macosCodesignReSign,
 	refreshBridge: mocks.refreshBridge,
+	reportBridgeRefresh: mocks.reportBridgeRefresh,
 	smokeTestBinary: mocks.smokeTestBinary,
 }))
 
@@ -439,7 +441,34 @@ describe("applyUpdate share destination", () => {
 
 		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
 		expect(mocks.refreshBridge).toHaveBeenCalledWith(siblingShare, fakeBinPath)
+		expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(siblingShare, [])
 		expect(existsSync(join(siblingShare, "bridge"))).toBe(false)
+	})
+
+	it("reports which clients the bridge refresh was dispatched for", async () => {
+		mocks.refreshBridge.mockReturnValue(["claude", "codex"])
+		const fakePrefix = mkdtempSync(join(tmpdir(), "kimchi-update-test-"))
+		try {
+			const siblingShare = join(fakePrefix, "share", "kimchi")
+			mkdirSync(join(siblingShare, "bridge"), { recursive: true })
+			writeFileSync(join(siblingShare, "package.json"), "{}")
+
+			const client = {
+				fetchChecksum: mocks.fetchChecksum,
+				downloadArchive: mocks.downloadArchive,
+			} as unknown as GitHubClient
+
+			await applyUpdate({
+				tag: "v0.0.24",
+				executablePath: join(fakePrefix, "bin", "kimchi"),
+				client,
+			})
+
+			expect(mocks.refreshBridge).toHaveBeenCalledTimes(1)
+			expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(expect.any(String), ["claude", "codex"])
+		} finally {
+			rmSync(fakePrefix, { recursive: true, force: true })
+		}
 	})
 
 	it("falls back to ~/.local/share/kimchi when the sibling share does not exist", async () => {
