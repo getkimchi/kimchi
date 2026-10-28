@@ -36,6 +36,8 @@ import {
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
+/** Time a delivery pass keeps for finishing one more batch upload and its acknowledgement. */
+const DELIVERY_RESERVE_MS = 500
 const RESPONSE_BYTES = 64 * 1024
 /** How often the reporting state file is stat-polled for a mid-pass opt-out. */
 const OPT_OUT_POLL_MS = 250
@@ -133,7 +135,11 @@ export function deliverEvents(
 ): Promise<void> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const backend = backendFor(agentDir)
-		for (let attempt = 0; attempt < 3; attempt++) {
+		/** The credential is verified once for the whole pass, not before every batch. */
+		let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
+		let verifiedKey: string | undefined
+		// Keep sending while the pass has time left: one iteration sends one frozen batch.
+		while (Date.now() < deadline - DELIVERY_RESERVE_MS) {
 			check()
 			const due = readOutboxStatus(agentDir).filter(
 				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
@@ -191,16 +197,19 @@ export function deliverEvents(
 						backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
 					}
 				})
-			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
-			try {
-				verified = await verifyApiKey(key, {
-					endpoint: apiUrl,
-					organizationId,
-					fetch: fetchBounded,
-					signal: combined,
-					retry: { maxRetries: 0 },
-				})
-			} catch {}
+			if (verifiedKey !== key) {
+				verifiedKey = key
+				verified = undefined
+				try {
+					verified = await verifyApiKey(key, {
+						endpoint: apiUrl,
+						organizationId,
+						fetch: fetchBounded,
+						signal: combined,
+						retry: { maxRetries: 0 },
+					})
+				} catch {}
+			}
 			// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
 			assertCurrent()
 			const account = verified && { apiUrl, ...verified }

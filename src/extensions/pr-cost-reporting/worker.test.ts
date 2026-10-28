@@ -24,11 +24,15 @@ vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
 vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
 // Node cannot encode real batches (protocol times need Temporal); the Bun ledger driver covers dispatch and ACKs.
-vi.mock("./ledger/outbox.js", async (original) => ({
-	...(await original<typeof outbox>()),
-	observeEvents: vi.fn(),
-	pendingBatch: vi.fn(),
-}))
+vi.mock("./ledger/outbox.js", async (original) => {
+	const real = await original<typeof outbox>()
+	return {
+		...real,
+		observeEvents: vi.fn(),
+		pendingBatch: vi.fn(),
+		acknowledgeBatch: vi.fn(real.acknowledgeBatch),
+	}
+})
 vi.mock("../../config.js", () => ({
 	loadConfig: () => ({ apiKey: config.key }),
 	resolveEndpoints: () => ({ platformApiUrl: config.endpoint }),
@@ -46,6 +50,7 @@ beforeEach(async () => {
 	vi.mocked(eventBuilder.buildEvents).mockClear()
 	vi.mocked(outbox.observeEvents).mockClear()
 	vi.mocked(outbox.pendingBatch).mockReset()
+	vi.mocked(outbox.acknowledgeBatch).mockClear()
 	config.key = "test-key"
 	config.endpoint = "https://api.example"
 	http.mockReset().mockImplementation(async () => Response.json({ organizationId: org, userId: user }))
@@ -241,6 +246,45 @@ describe("account-fenced reporting delivery", () => {
 		// The server holds other content under this ID, so resending the frozen batch could never succeed.
 		expect(backendFor(directory).getOutboxBatch(batch.accountKey)).toBeUndefined()
 		expect(retryNote(batch.accountKey)).toEqual({})
+	})
+
+	it("sends more than three batches in one pass, verifying the key once", async () => {
+		const accountId = accountKey(account)
+		const ids = [
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			"cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+			"dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		]
+		const backend = backendFor(directory)
+		for (const [order, id] of ids.entries())
+			backend.insertOutboxBatch({
+				id,
+				accountKey: accountId,
+				body: new Uint8Array(),
+				eventIds: [],
+				createdAt: Date.now(),
+				orderKey: String(order),
+			})
+		vi.mocked(outbox.pendingBatch).mockImplementation((dir, key) =>
+			dir === directory && key === accountId ? backend.getOutboxBatch(key) : undefined,
+		)
+		// Synthetic batches have no encodable body, so the acknowledgement drops the row instead of replaying it.
+		vi.mocked(outbox.acknowledgeBatch).mockImplementation((_dir, key, sent) => {
+			backend.deleteOutboxBatch(key, sent.id)
+			return true
+		})
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			const ingestCount = http.mock.calls.filter(([url]) => String(url).includes("batchIngest")).length
+			return Response.json({ batchId: ids[ingestCount - 1], receipts: [] })
+		})
+		await deliver()
+		const calls = http.mock.calls.map(([input]) => String(input))
+		expect(calls.filter((url) => url.endsWith("api-keys:verify"))).toHaveLength(1)
+		expect(calls.filter((url) => url.includes("batchIngest"))).toHaveLength(4)
+		expect(backend.getOutboxBatch(accountId)).toBeUndefined()
+		expect(retryNote(accountId)).toEqual({})
 	})
 
 	it("queues the producer's facts and original hashes under their original account", async () => {
