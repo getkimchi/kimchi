@@ -130,6 +130,7 @@ describe("classifySummarizationFailure", () => {
 		)
 		expect(classifySummarizationFailure("API error: 400 unsupported reasoning_effort value")).toBe("rejection")
 		expect(classifySummarizationFailure("API error: 401 invalid api key")).toBe("other")
+		expect(classifySummarizationFailure("API error: 400 invalid api key")).toBe("other")
 		expect(classifySummarizationFailure("Summarization failed: gateway timeout")).toBe("other")
 		expect(classifySummarizationFailure("Compaction cancelled")).toBe("abort")
 	})
@@ -246,7 +247,9 @@ describe("compaction-resilience handler", () => {
 		expect(compaction.tokensBefore).toBe(652447)
 		expect(compaction.summary).toContain("old summary")
 		expect(compaction.summary).toContain("degraded mode")
+		expect(compaction.summary).toContain("after 3 attempts")
 		expect(compaction.summary).toContain("Last failure: other")
+		expect(compaction.summary).toContain("/new")
 		// No provider-derived text may leak into the persisted summary.
 		expect(compaction.summary).not.toContain("sk-abcdefgh")
 		expect(compaction.summary).not.toContain("boom")

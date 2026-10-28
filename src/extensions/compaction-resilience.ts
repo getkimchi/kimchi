@@ -112,10 +112,12 @@ function isAbortError(error: unknown): boolean {
 function buildDegradedCompaction(
 	preparation: CompactionPreparation,
 	lastFailure: string | undefined,
+	attemptsRun: number,
 ): CompactionResult {
+	const attempts = `${attemptsRun} ${attemptsRun === 1 ? "attempt" : "attempts"}`
 	const note =
 		`[Compaction ran in degraded mode: the summarization model could not produce a complete summary ` +
-		`after ${MAX_SUMMARIZATION_ATTEMPTS} attempts (thinking reduced, oldest context dropped). ` +
+		`after ${attempts} (thinking reduced, oldest context dropped). ` +
 		`Last failure: ${lastFailure ?? "unknown"}. ` +
 		`The dropped range has no summary — start a new session (/new) or retry /compact if context is missing.]`
 	const previous = preparation.previousSummary ? `${preparation.previousSummary}\n\n` : ""
@@ -180,9 +182,11 @@ async function handleBeforeCompact(
 	let messagesToSummarize = originalMessages
 	let reduced = false
 	let lastFailure: "length" | "overflow" | "rejection" | "other" | undefined
+	let attemptsRun = 0
 
 	for (let attempt = 1; attempt <= MAX_SUMMARIZATION_ATTEMPTS; attempt++) {
 		if (event.signal.aborted) return undefined
+		attemptsRun = attempt
 		const scoped: CompactionPreparation = reduced ? { ...event.preparation, messagesToSummarize } : event.preparation
 		try {
 			const result = await compactImpl(
@@ -223,7 +227,7 @@ async function handleBeforeCompact(
 	// persisting a degraded compaction: context still shrinks, the degradation is
 	// recorded inside the summary (failure class only — never provider error
 	// text), and auto-compaction stops re-invoking on every subsequent check.
-	return { compaction: buildDegradedCompaction(event.preparation, lastFailure) }
+	return { compaction: buildDegradedCompaction(event.preparation, lastFailure, attemptsRun) }
 }
 
 export interface CompactionResilienceDeps {
