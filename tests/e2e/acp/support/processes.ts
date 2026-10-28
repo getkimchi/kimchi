@@ -1,11 +1,17 @@
-// Helpers to count real gopls processes. Chain-spawn e2e tests need a real
-// language server; gopls is cheap, present on the dev machines/CI when
+// Helpers for real LSP server processes. Chain-spawn e2e tests need a real
+// language server; each is cheap, present on the dev machines/CI when
 // installed, and each chain is a distinct OS process, which makes
 // before/after process counts a crisp assertion.
 
 import { spawnSync } from "node:child_process"
 
 export const goplsOnPath = spawnSync("which", ["gopls"], { stdio: "pipe" }).status === 0
+
+/** True when the classic typescript-language-server binary is on PATH —
+ *  gates the lazy-activation ACP e2e that invokes the live server (needs a
+ *  real binary to spawn; CI runners may not have it). */
+export const typescriptLanguageServerOnPath =
+	spawnSync("which", ["typescript-language-server"], { stdio: "pipe" }).status === 0
 
 export function goplsProcessCount(): number {
 	// pgrep -fl enumerates pid + full argv; ps -axo can be blocked by

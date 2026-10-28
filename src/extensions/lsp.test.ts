@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("./lsp/servers.js", () => ({
 	detectServers: vi.fn(),
 	detectMissingCandidates: vi.fn(),
+	detectServerForPath: vi.fn(),
 	serverForFile: vi.fn(),
 	findRoot: vi.fn(),
 }))
@@ -227,6 +228,9 @@ async function callTool(
 beforeEach(() => {
 	vi.mocked(serversMod.detectServers).mockReturnValue([])
 	vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([])
+	// No lazy mid-session activation by default — individual tests opt in by
+	// returning a { server, root } hit.
+	vi.mocked(serversMod.detectServerForPath).mockReturnValue(null)
 	vi.mocked(serversMod.serverForFile).mockReturnValue(null)
 	vi.mocked(serversMod.findRoot).mockImplementation((_fp: string, _sn: string, sessionCwd: string) => sessionCwd)
 	vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(
