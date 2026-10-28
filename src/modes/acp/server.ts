@@ -51,6 +51,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	estimateTokens,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
@@ -1842,6 +1843,12 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
+			case "compaction_end": {
+				// Successful compaction changed the context — refresh the client's
+				// usage gauge immediately (see emitPostCompactionUsage).
+				this.emitPostCompactionUsage(sessionId, entry.session, event)
+				return
+			}
 			default:
 				return
 		}
@@ -2489,6 +2496,52 @@ export class KimchiAcpAgent implements Agent {
 				sessionUpdate: "usage_update",
 				used: ctx.tokens,
 				size: ctx.contextWindow,
+			},
+		})
+	}
+
+	// Post-compaction context refresh: compaction rebuilds the context, so the
+	// client's usage gauge is stale the moment compaction_end lands — and
+	// getContextUsage().tokens stays null until an LLM responds after the new
+	// compaction boundary, so the turn-boundary path above cannot cover it.
+	// The compaction_end event itself carries pi's own post-compaction
+	// estimate (CompactionResult.estimatedTokensAfter), so emit straight from
+	// the event: no null-skip (the count is precomputed, not read off
+	// getContextUsage) and no _meta (out-of-turn compaction has no turn whose
+	// lifetime usage could ride along). Cancelled and failed compactions leave
+	// the context unchanged and emit nothing — compaction_end carries a
+	// result only on success; aborted events carry none and no errorMessage
+	// either, so result presence (not errorMessage absence) is the success
+	// signal. Emission on success is unconditional: staying silent would leave
+	// the stale pre-compaction number up, reading as "compaction did
+	// nothing". Ordering is structural: the agent_activity compaction_end
+	// notification is forwarded earlier in onSessionEvent, before this runs.
+	private emitPostCompactionUsage(
+		sessionId: string,
+		session: AgentSession,
+		event: Extract<AgentSessionEvent, { type: "compaction_end" }>,
+	): void {
+		const result = event.result
+		if (event.aborted || !result) return
+		// Value ladder: prefer the count pi ships on the event; if a pi shape ever
+		// omits it, recompute the identical fold over the rebuilt post-compaction
+		// message list (session.messages is exactly the list pi measured — it is
+		// assigned before the compaction_end event fires on both the manual and
+		// automatic paths). The fold always yields a number, so success always
+		// emits; 0 can only appear when the context is genuinely empty, where it
+		// is the true value.
+		const used =
+			typeof result.estimatedTokensAfter === "number"
+				? result.estimatedTokensAfter
+				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
+		const contextWindow = session.getContextUsage()?.contextWindow
+		if (!contextWindow) return
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size: contextWindow,
 			},
 		})
 	}

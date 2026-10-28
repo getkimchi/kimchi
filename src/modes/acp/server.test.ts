@@ -28,6 +28,7 @@ import {
 	type AgentSessionEventListener,
 	type ExtensionContext,
 	type ExtensionUIContext,
+	estimateTokens,
 	type ModelRegistry,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
@@ -321,6 +322,11 @@ class FakeAgentSession {
 		contextWindow: 200_000,
 		percent: 25,
 	}
+	// Post-compaction message list, as the real session exposes via its
+	// `messages` getter. The post-compaction usage_update fallback recomputes
+	// the chars/4 estimate over it when the event payload lacks
+	// estimatedTokensAfter.
+	messages: unknown[] = []
 	sessionStats: SessionStats = {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
@@ -478,19 +484,29 @@ function makeRecordingConn(): {
 	conn: AgentSideConnection
 	updates: SessionNotification[]
 	extNotifications: Array<{ method: string; params: unknown }>
+	trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
 } {
 	const updates: SessionNotification[] = []
 	const extNotifications: Array<{ method: string; params: unknown }> = []
+	// Unified send-order trace across both channels: the two arrays above lose
+	// their interleaving, so tests asserting relative ordering between session
+	// updates and ext notifications read this instead.
+	const trace: Array<{ channel: "session-update" | "ext-notification"; label: string }> = []
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
+			// sessionUpdate is the union's required discriminator literal on every
+			// member — no cast needed.
+			trace.push({ channel: "session-update", label: p.update.sessionUpdate })
 		},
 		extNotification: async (method: string, params: unknown) => {
 			extNotifications.push({ method, params })
+			const kind = (params as { kind?: string }).kind
+			trace.push({ channel: "ext-notification", label: kind ? `${method}:${kind}` : method })
 		},
 		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications }
+	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications, trace }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -3238,6 +3254,134 @@ describe("KimchiAcpAgent usage reporting", () => {
 
 		expect(result.stopReason).toBe("cancelled")
 		expect(result.usage).toBeUndefined()
+	})
+})
+
+// Post-compaction context refresh (docs/acp-compaction.md): a successful
+// compaction — manual (_kimchi.dev/compact) or automatic threshold/overflow —
+// rebuilds the context, so the client's usage gauge is stale the moment
+// compaction_end lands, and getContextUsage().tokens stays null until the
+// next LLM response after the compaction boundary. The server therefore
+// emits a bare usage_update carrying the compaction_end event's own
+// post-compaction estimate, positioned after the compaction_end activity
+// notification, and stays silent on cancelled or failed compactions (the
+// context did not change).
+describe("KimchiAcpAgent post-compaction usage_update", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-post-compact-usage")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		trace = rec.trace
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function compactionEndEvent(
+		overrides: Partial<Extract<AgentSessionEvent, { type: "compaction_end" }>> = {},
+	): AgentSessionEvent {
+		return {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				summary: "post-compaction summary",
+				firstKeptEntryId: "entry-1",
+				tokensBefore: 190_000,
+				estimatedTokensAfter: 40_000,
+			},
+			aborted: false,
+			willRetry: false,
+			...overrides,
+		} as AgentSessionEvent
+	}
+
+	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
+
+	it("emits a bare usage_update after the compaction_end activity when compaction succeeds", () => {
+		fake.emit({ type: "compaction_start", reason: "manual" })
+		fake.emit(compactionEndEvent())
+
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].sessionId).toBe(sessionId)
+		// Bare payload — out-of-turn compaction has no lifetime usage for _meta,
+		// and the count comes straight off the event's CompactionResult.
+		expect(usage[0].update).toEqual({ sessionUpdate: "usage_update", used: 40_000, size: 200_000 })
+		// Ordering contract: the value refresh lands after the lifecycle-end
+		// notification so clients process compaction_end before the new count.
+		const endIndex = trace.findIndex((t) => t.label === "_kimchi.dev/agent_activity:compaction_end")
+		const usageIndex = trace.findIndex((t) => t.channel === "session-update" && t.label === "usage_update")
+		expect(endIndex).toBeGreaterThanOrEqual(0)
+		expect(usageIndex).toBeGreaterThan(endIndex)
+	})
+
+	it("emits nothing when compaction is aborted", () => {
+		fake.emit(compactionEndEvent({ result: undefined, aborted: true }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("emits nothing when compaction fails", () => {
+		fake.emit(compactionEndEvent({ result: undefined, errorMessage: "Compaction failed: boom" }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("recomputes the estimate from session.messages when the payload omits the count", () => {
+		// The fallback reproduces exactly what pi's estimateMessagesTokens
+		// computes: a fold of the exported estimateTokens over the rebuilt
+		// post-compaction message list. Deriving the expected value with that
+		// same exported function pins the wiring (right source, right scope,
+		// right function), not the formula.
+		const kept = [
+			{ role: "user", content: [{ type: "text", text: "kept user turn" }] },
+			{ role: "assistant", content: [{ type: "text", text: "kept assistant reply" }] },
+		]
+		fake.messages = kept
+		fake.emit(
+			compactionEndEvent({
+				result: {
+					summary: "post-compaction summary",
+					firstKeptEntryId: "entry-1",
+					tokensBefore: 190_000,
+				},
+			}),
+		)
+
+		const expected = kept.reduce((n, m) => n + estimateTokens(m as Parameters<typeof estimateTokens>[0]), 0)
+		expect(expected).toBeGreaterThan(0)
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", used: expected, size: 200_000 })
+	})
+
+	it("emits the refreshed count even while getContextUsage is in its null window", () => {
+		// In-turn auto-compaction: pi nulls tokens until the next LLM response
+		// after the boundary; the refresh must not be subject to that skip.
+		fake.contextUsage = { tokens: null, contextWindow: 200_000, percent: null }
+		fake.emit(compactionEndEvent({ reason: "threshold" }))
+
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", used: 40_000, size: 200_000 })
+	})
+
+	it("emits the refresh on a successful willRetry compaction", () => {
+		// willRetry flags turn continuation after overflow recovery — the
+		// compaction itself succeeded and the context changed.
+		fake.emit(compactionEndEvent({ reason: "overflow", willRetry: true }))
+
+		expect(usageUpdates()).toHaveLength(1)
 	})
 })
 

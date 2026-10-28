@@ -4,7 +4,9 @@
 // to end against the real harness process:
 //   1. A client-triggered compaction completes with a structured result while
 //      its lifecycle streams through the `_kimchi.dev/agent_activity`
-//      notification (compaction_start / compaction_end).
+//      notification (compaction_start / compaction_end), and a bare
+//      usage_update value refresh lands after the compaction_end activity
+//      (docs/acp-compaction.md).
 //   2. Prompts submitted while a compaction is in flight are rejected with a
 //      structured JSON-RPC error (the prompt gate), not an opaque crash.
 //   3. compact_abort cancels an in-flight manual compaction — the blocking
@@ -16,6 +18,7 @@
 //      would silently abort the running turn).
 
 import { setTimeout as delay } from "node:timers/promises"
+import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { E2E_WAIT_MS, newSession, waitForSessionUpdate } from "./support/scenarios.js"
@@ -62,7 +65,14 @@ describe("ACP integration — user-triggered compaction", () => {
 			responses: [
 				// Chunked + delayed so the active-turn test has a live turn to race
 				// compact against; the other tests just wait the extra seconds.
-				{ stream: ["Hello back ", "from the ", "agent. "], delayMs: 1_500 },
+				// Explicit usage anchors tokensBefore (pi's estimateContextTokens is
+				// usage-anchored), making the post-compaction "gauge dropped"
+				// assertion deterministic.
+				{
+					stream: ["Hello back ", "from the ", "agent. "],
+					delayMs: 1_500,
+					usage: { prompt_tokens: 30_000, completion_tokens: 500 },
+				},
 				{
 					stream: ["Compacted summary: ", "the user greeted ", "the agent. "],
 					delayMs: 1_500,
@@ -79,12 +89,17 @@ describe("ACP integration — user-triggered compaction", () => {
 	it("completes and streams compaction_start/compaction_end via agent_activity", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] })
+		// Turn-boundary usage updates (one per message_end) also ride the wire;
+		// the compaction refresh is asserted as the delta over this baseline.
+		const usageUpdatesBeforeCompact = fixture.client.sessionUpdates.filter(
+			(u) => u.update.sessionUpdate === "usage_update",
+		).length
 
 		// force bypasses the keep-recent threshold on this tiny session.
 		const result = (await withTimeout(
 			fixture.conn.extMethod(COMPACT_METHOD, { sessionId, force: true }),
 			"compact",
-		)) as { status: string; summary?: string; tokensBefore?: number; firstKeptEntryId?: string }
+		)) as { status: string; summary?: string; tokensBefore: number; firstKeptEntryId?: string }
 
 		expect(result.status).toBe("completed")
 		expect(result.summary).toContain("Compacted summary")
@@ -98,6 +113,29 @@ describe("ACP integration — user-triggered compaction", () => {
 			expect.objectContaining({ sessionId, kind: "compaction_start", reason: "manual" }),
 		)
 		expect(activities).toContainEqual(expect.objectContaining({ sessionId, kind: "compaction_end", reason: "manual" }))
+
+		// Post-compaction value refresh (docs/acp-compaction.md): success
+		// always emits exactly one bare usage_update carrying pi's
+		// post-compaction estimate, positioned after the compaction_end
+		// activity notification (turn-boundary updates are excluded via the
+		// pre-compact baseline).
+		const refreshes = fixture.client.sessionUpdates
+			.filter(
+				(u): u is typeof u & { update: Extract<SessionUpdate, { sessionUpdate: "usage_update" }> } =>
+					u.update.sessionUpdate === "usage_update",
+			)
+			.slice(usageUpdatesBeforeCompact)
+		expect(refreshes).toHaveLength(1)
+		expect(refreshes[0].update.used).toBeGreaterThan(0)
+		expect(refreshes[0].update.used).toBeLessThanOrEqual(refreshes[0].update.size)
+		// The gauge actually dropped: pi's post-compaction estimate (a forced
+		// compact keeps only the summary) sits far below the usage-anchored
+		// pre-compaction count the client last saw.
+		expect(refreshes[0].update.used).toBeLessThan(result.tokensBefore)
+		const arrival = fixture.client.arrival
+		const endIndex = arrival.lastIndexOf("ext-notification:_kimchi.dev/agent_activity:compaction_end")
+		expect(endIndex).toBeGreaterThanOrEqual(0)
+		expect(arrival.indexOf("session-update:usage_update", endIndex + 1)).toBeGreaterThan(endIndex)
 
 		// The session is immediately usable afterwards.
 		const followUp = await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "and follow up" }] })
