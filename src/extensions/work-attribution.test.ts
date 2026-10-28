@@ -348,21 +348,15 @@ describe("local work attribution", () => {
 			}),
 		])
 	})
-	it("starts billing reconciliation once for a main session and never for its child", async () => {
-		const stop = vi.fn(async () => {})
-		vi.mocked(supervisor.subscribeCostReconciliation).mockReturnValue(stop)
+	it("never looks up gateway prices: the service prices PR costs from its own bills", async () => {
 		const parent = createExtensionApi()
 		const child = createExtensionApi()
 		const ctx = createContext({ cwd: dir })
 		createWorkAttributionExtension()(parent.api)
 		createWorkAttributionExtension(getWorkId(ctx))(child.api)
-		for (const api of [parent, parent, child])
+		for (const api of [parent, child])
 			await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "startup" }, ctx)
-		expect(supervisor.subscribeCostReconciliation).toHaveBeenCalledOnce()
-		await child.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
-		expect(stop).not.toHaveBeenCalled()
-		await parent.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
-		expect(stop).toHaveBeenCalledOnce()
+		expect(supervisor.subscribeCostReconciliation).not.toHaveBeenCalled()
 	})
 	it("pins billing metadata at dispatch before a later account or work switch", () => {
 		const ctx = createContext({ cwd: dir })

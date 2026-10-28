@@ -38,7 +38,7 @@ import {
 	pinWorkContinuation,
 	readContinuationHistory,
 } from "./work-attribution/links.js"
-import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
+import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 import {
@@ -575,7 +575,6 @@ export function createWorkAttributionExtension(
 			delivering = []
 		}
 		let stopReconciliation: (() => Promise<void>) | undefined
-		let stopCosts: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
 			if (!isChild) pi.events.emit(WORK_CHANGED_EVENT, undefined)
@@ -621,7 +620,6 @@ export function createWorkAttributionExtension(
 				warnWorkAttribution(ctx, error)
 			}
 			if (!isChild && !stopReconciliation) stopReconciliation = subscribeFileReconciliation()
-			if (!isChild && !stopCosts) stopCosts = subscribeCostReconciliation()
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			// Respect the resolved defaultTools filter (-name exclusions) the same
@@ -1105,10 +1103,8 @@ export function createWorkAttributionExtension(
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
-			const costStop = stopCosts
-			stopCosts = undefined
 			continuationEligible.delete(key)
-			await Promise.all([costStop?.(), stop?.()])
+			await stop?.()
 			activeRequests.delete(key)
 			activeSegments.delete(key)
 			toolRequests.delete(key)
