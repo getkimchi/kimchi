@@ -1,5 +1,19 @@
-import { spawnSync } from "node:child_process"
-import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs"
+import { spawn, spawnSync } from "node:child_process"
+import {
+	chmodSync,
+	closeSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { backupDir } from "./paths.js"
 
@@ -202,4 +216,138 @@ function copyDir(src: string, dst: string): void {
  */
 function copyFile(src: string, dst: string): void {
 	copyFileSync(src, dst)
+}
+
+/**
+ * The release carries the work-reporting plugins for official Claude Code
+ * and Codex in share/kimchi/bridge (scripts/bundle-bridge.sh), and
+ * install.sh adds them to the clients it finds. Their code runs on this
+ * binary. After an update that brings new plugin code, rerun the bundled
+ * installer for the added clients: it relinks the code, and registers the
+ * plugins again only when their hooks changed. Detached, like the memory
+ * capture worker: registering takes seconds, and a failure keeps the old
+ * code receipt, so the next update retries.
+ */
+export function defaultBridgePrefix(): string {
+	return process.env.KIMCHI_BRIDGE_PREFIX || join(homedir(), ".local", "share", "kimchi-bridge")
+}
+
+/** Where refreshBridge streams the installer child's output. */
+export function bridgeRefreshLogPath(prefix = defaultBridgePrefix()): string {
+	return join(prefix, "refresh.log")
+}
+
+/**
+ * The release carries the work-reporting plugins for official Claude Code
+ * and Codex in share/kimchi/bridge (scripts/bundle-bridge.sh), and
+ * install.sh adds them to the clients it finds. Their code runs on this
+ * binary. After an update that brings new plugin code, rerun the bundled
+ * installer for the added clients: it relinks the code, and registers the
+ * plugins again only when their hooks changed. Detached, like the memory
+ * capture worker: registering takes seconds, and a failure keeps the old
+ * code receipt, so the next update retries. The child's output is streamed
+ * to refresh.log so a failure is never silent (see reportBridgeRefresh).
+ */
+export function refreshBridge(shareDir: string, kimchiBin: string, prefix = defaultBridgePrefix()): string[] {
+	const read = (path: string) => {
+		try {
+			return readFileSync(path, "utf8").trim()
+		} catch {
+			return undefined
+		}
+	}
+	const bundled = read(join(shareDir, "bridge", "VERSION"))
+	// Clients without a receipt were never added, or were removed with kimchi-bridge uninstall.
+	const clients = ["claude", "codex"].filter((client) => read(join(prefix, "installed", client)) !== undefined)
+	if (!bundled || clients.length === 0 || read(join(prefix, "installed", "code")) === bundled) return []
+	// One client at a time: the installer holds a lock for its whole run. $0 is the installer.
+	mkdirSync(prefix, { recursive: true })
+	const logPath = bridgeRefreshLogPath(prefix)
+	const logFd = openSync(logPath, "a")
+	let logClosed = false
+	const closeLog = () => {
+		if (logClosed) return
+		logClosed = true
+		try {
+			closeSync(logFd)
+		} catch (err) {
+			console.error("kimchi update: failed to close bridge refresh log:", (err as Error).message)
+		}
+	}
+	const child = spawn(
+		"/bin/sh",
+		[
+			"-c",
+			'for client in "$@"; do bash "$0" update "$client"; done',
+			join(shareDir, "bridge", "install.sh"),
+			...clients,
+		],
+		// stdout/stderr go to refresh.log so failures are diagnosable; the fd
+		// is closed by the child's error/exit handler.
+		{ detached: true, stdio: ["ignore", logFd, logFd], env: { ...process.env, KIMCHI_BIN: kimchiBin } },
+	)
+	child.on("error", (err) => {
+		console.error("kimchi update: work-reporting plugin update failed to start:", err.message)
+		closeLog()
+	})
+	child.on("exit", () => closeLog())
+	child.unref()
+	return clients
+}
+
+/**
+ * Set expectations and surface a refresh that did not finish. Reports the
+ * clients being updated, polls briefly for the installed/code marker to
+ * reach the bundled version (the installer writes it last), and warns when
+ * the marker is still stale afterwards — pointing at refresh.log. Never
+ * throws: a slow or failed plugin refresh must not break the update itself
+ * (the next update retries, per refreshBridge's design).
+ */
+export async function reportBridgeRefresh(
+	shareDir: string,
+	clients: string[],
+	prefix = defaultBridgePrefix(),
+	timeoutMs = 10_000,
+): Promise<void> {
+	const read = (path: string) => {
+		try {
+			return readFileSync(path, "utf8").trim()
+		} catch {
+			return undefined
+		}
+	}
+	if (clients.length === 0) {
+		// First contact: the update ships the bridge to a machine that never
+		// opted in. Tell the user once and point at the explicit opt-in; a
+		// one-time marker keeps the notice off later updates.
+		const bundled = read(join(shareDir, "bridge", "VERSION"))
+		if (bundled) {
+			const marker = join(prefix, ".bridge-notice-shown")
+			if (!existsSync(marker)) {
+				console.log(
+					"kimchi: this update includes work reporting for Claude Code and Codex — install it and route " +
+						"inference with `kimchi bridge setup`; undo anytime with `kimchi bridge remove`.",
+				)
+				try {
+					mkdirSync(prefix, { recursive: true })
+					writeFileSync(marker, "1\n", { flag: "wx" })
+				} catch {
+					// Best effort: another run may have written the marker first.
+				}
+			}
+		}
+		return
+	}
+	console.log(`kimchi update: updating work reporting for: ${clients.join(", ")}`)
+	const bundled = read(join(shareDir, "bridge", "VERSION"))
+	if (!bundled) return
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		if (read(join(prefix, "installed", "code")) === bundled) return
+		await new Promise((resolve) => setTimeout(resolve, 300))
+	}
+	const current = read(join(prefix, "installed", "code")) ?? "none"
+	console.error(
+		`kimchi update: work reporting plugin update did not complete (bridge ${bundled}, receipts on ${current}) — rerun "kimchi update"; details: ${bridgeRefreshLogPath(prefix)}`,
+	)
 }

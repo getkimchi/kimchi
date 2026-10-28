@@ -4,9 +4,9 @@ PR cost reporting follows the SaaS telemetry setting by default. When SaaS uploa
 
 The first interactive main session shows one notice that PR costs are reported, with `/pr-reporting off` to disable it. Studio shows it as a notification after the first turn, because notifications sent before a session is registered are dropped. The notice is saved per installation and does not repeat after restart. It is skipped when reporting is off or the user already made an explicit choice.
 
-- `/pr-reporting on` enables uploads for the verified account and requests an immediate update. It also clears upload windows, retry deadlines and account pauses, so the next snapshot of every repository goes out at once.
-- `/pr-reporting status` shows whether reporting is enabled and whether that follows the SaaS default or an explicit choice, whether this session uploads at all, queued and acknowledged repositories (and how many wait for their upload window), server limits, partially reported repositories, delivery problems and incomplete history coverage. Server limits and delivery problems come first and make the message a warning. Incomplete history alone is informational: requests without original account or repository evidence are skipped, and the other requests are still reported. Lines fit a 60-column terminal.
-- `/pr-reporting off` cancels delivery and deletes pending payloads. Local work history and revision counters remain. Reports already accepted by the server remain there.
+- `/pr-reporting on` enables uploads for the verified account and requests an immediate update. It resets retry scheduling for event batches and retained legacy snapshots.
+- `/pr-reporting status` shows the saved choice, whether this session uploads, queued and acknowledged events, frozen batches, retry time and last event acknowledgement. Legacy repository counts and limits remain separate. Delivery problems come first and make the message a warning, including saved event failures after capture resumes successfully. Incomplete history alone is informational. Counts cover the local queues across accounts; sending still requires verification of their original account. Status does not freeze or send batches. Lines fit a 60-column terminal.
+- `/pr-reporting off` cancels delivery and retains pending payloads locally for a later retry. Local work history and revision counters remain. Reports already accepted by the server remain there.
 
 Typing `/pr-reporting ` suggests `on`, `off` and `status`.
 
@@ -34,9 +34,25 @@ History coverage incomplete
 
 Only main sessions with work tracking run this extension. Child sessions contribute their existing request records through the local calculator; they do not start upload workers. Turning Cost per PR off in `/resources` turns off work tracking, PR/MR status and reporting together.
 
-The worker gathers the existing local inventory at startup, refreshes after each agent turn when reporting is on, and checks again every 30 seconds while Kimchi runs. A request can first appear as unlinked or unknown, then gain a PR and a price in later reports. Changed reports receive a higher `revision` and a new `generatedAt`; the server replaces the previous report, so repeated updates do not add the same charge again. A running pass or a saved retry deadline can delay an update.
+The existing reconciliation worker captures local history at startup, after agent turns and every 30 seconds while Kimchi runs. New observations become revisioned events in the same SQLite database as work tracking. There is no separate daemon or model call for delivery. A request can appear as unlinked or unknown, then acquire a PR or price through a later revision without adding the same charge again.
 
-Every change replaces the queued snapshot on disk at once, but each repository uploads at most once every five minutes. These changes skip that window and go out on the next pass: a PR that opens, merges, closes or reopens; a new explicit `/work link` or `/work unlink` correction (it also sends the other changed repositories of the account, because a correction can move requests between them); an empty snapshot that withdraws a repository; and `/pr-reporting on`. Such a change stays urgent through later replacements until the server acknowledges it. Saved-plan and artifact confirmations, new requests, prices and refresh times wait for the window. A change still waiting when Kimchi exits stays queued and is sent by the next session.
+New capture does not create legacy repository snapshots. Before an account can send events, its older pending snapshots must drain through their original endpoint with their original bytes. Backoff, held snapshots and unfinished scans keep that gate closed. A change still queued when Kimchi exits remains durable for the next session.
+
+## Current event uploads
+
+Kimchi sends `POST /ai-optimizer/v1beta/organizations/{organizationId}/pr-cost-events:batchIngest`, using the reporting Kimchi API key. Inference can use a different endpoint and provider. Each frozen body is `{"batch":{...}}`; the acknowledgement is a flat object containing `batchId` and complete per-event receipts. SQLite advances only the acknowledged persisted bytes. Lost, invalid or partial acknowledgements retain the batch for replay. A receipt is `accepted`, `unchanged` or `conflict`. A conflict means the server kept the entity's current revision and stored the rest of the batch: Kimchi sets that event aside, never sends it again and counts it among the blocked events in `/pr-reporting status`. HTTP 409 means the server holds other content under the batch ID, so Kimchi drops that frozen batch and sends its events in a new one.
+
+Uploads include only facts available in the captured records:
+
+- Physical request IDs, observed model/provider usage and reported cache/iteration counters, source version and completeness. Missing attempts, counters, pricing dimensions or catalog rates remain unknown.
+- Work metadata and allocation from the existing calculator, repository/PR metadata and Jira issue references. Work/session/device and plan/file identities use opaque identifiers; an explicit work title and provider PR title/login can be included.
+- Terminal tool category, outcome and duration when observed, plus captured file revision transitions. Filesystem observation windows remain ambiguous about which process changed a file.
+- Observed plan revision identities, Git commit SHAs and explicit coverage gaps. Raw plan hashes, local paths, prompts, plan contents, file contents, tool arguments/results and credentials are not sent.
+- Genuine billing aliases when available. Authentication establishes the contributor; the harness source is retained separately. Shared credentials cannot distinguish people.
+
+Direct-provider costs are server-side rate-card estimates when usage and pricing dimensions suffice. These are distinct from verified Cast billing rows; a matching owned bill can replace an estimate. Missing usage is not zero, and observing a response does not prove that hidden gateway retries or negotiated prices are known. Tool/file links do not establish an exact dollar allocation per file. Server deployment and the supported harness capture surfaces still bound what a report can show.
+
+The outbox freezes at most 100 events and 1 MiB per batch. Each revision names the entity's previous event in `baseEventId`, which the server compares with its current event like a Kubernetes `resourceVersion`; after a conflict, the next revision builds on the last event the server stored. Ambiguous or unsupported records keep their translation intent instead of being discarded. Empty queues and batches whose retry is still in the future make no authentication request. A candidate send freshly verifies the key/account and rechecks consent and lease ownership. Pending state and retries survive restart. No proxy metrics are required.
 
 ### Sessions that never upload
 
@@ -51,13 +67,16 @@ The saved choice and the default-on notice are unaffected; nothing overrides the
 
 Teleport transfers conversation history but does not transfer the local accounting journals or account scope. On a fresh sandbox, normal continuation starts a new work on the first input. An explicitly selected work keeps its ID, but its missing scope remains unknown. Neither case establishes a complete cost across local and remote work. Remote-agent accounting is outside this reporting change.
 
-## What leaves the machine
+## Retained legacy snapshot format
+
+The remainder of this section describes old snapshot bodies that this version preserves and drains. It does not describe new event capture.
 
 Each upload replaces one producer's inventory for one account and repository. It contains:
 
 - The Git provider, host, stable target repository ID, and optional repository name.
 - Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Each PR/MR's `title` and `author` login, as the provider returned them to PR discovery, so the console can name the PR. A title is cut to 1,024 characters. An unknown or empty value, or a login longer than 255 characters, is left out rather than sent empty or cut.
+- Each PR/MR's `issueKeys`, so Kimchi counts its cost for its Jira issues: the issue chosen with `/work issue` for the work whose requests went to it (`work`), then the Jira keys its head branch names (`branch`), at most 20. Only the keys are sent, never the branch name. A PR without keys leaves the field out. The backend reads keys in titles itself.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
 - Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay inferred. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay inferred.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.
@@ -86,7 +105,7 @@ An upload with one request still waiting for billing looks like this:
 }
 ```
 
-## Matching and delivery
+## Legacy snapshot matching and delivery
 
 ```mermaid
 flowchart TD
@@ -109,9 +128,9 @@ flowchart TD
     Outside --> Trim[Trim to the upload limits]
     Trim --> Queue[Save and fsync a replacement snapshot]
     Queue --> Consent{Reporting on, interactive session and account matches?}
-    Consent -- No --> Wait[Keep for an interactive session of the original account, or discard on opt-out]
+    Consent -- No --> Wait[Keep for an interactive session of the original account with reporting enabled]
     Consent -- Yes --> Window{Urgent change or five minutes since the last upload?}
-    Window -- No --> Later[Keep only the newest snapshot queued]
+    Window -- No --> Later[Retain frozen revisions for a later retry]
     Window -- Yes --> Send[Send bounded authenticated request]
     Send --> Ack{Matching acknowledgement?}
     Ack -- Yes --> Done[Remove only the acknowledged revision]
@@ -131,17 +150,18 @@ State lives under `getAgentDir()`:
 
 ```text
 ~/.config/kimchi/harness/pr-cost-reporting/state.json
+~/.config/kimchi/harness/pr-cost-reporting/ledger.db
 ```
 
-An isolated harness home uses its own directory. The state file contains consent, a producer UUID, account/repository revision bookkeeping, pending snapshots, upload times, the PR states and `/work` correction receipts the server last acknowledged, validated server limits, and how many requests the latest capture skipped for missing evidence. It also keeps a salted hash of the operating system's machine ID: a home restored or migrated onto another machine starts a new producer with empty bookkeeping, so two machines never replace each other's claims. The server deduplicates bills across producers, so copied history is not counted twice. Revision bookkeeping includes SHA-256 values of request UUIDs from acknowledged and possibly delivered snapshots, so a later incomplete scan cannot silently remove earlier claims. These hashes shrink to the new membership only when that exact revision is acknowledged. A lost or late acknowledgement leaves the earlier evidence intact. Opt-out retains these membership hashes and revision metadata, but removes pending bodies and raw request/billing IDs. Files are private to the local user. A lock protects concurrent writers; a synced temporary file and rename publish each update before HTTP starts.
+An isolated harness home uses its own directory. The legacy state file contains consent, a producer UUID, account/repository revision bookkeeping, pending snapshots, upload times, the PR states and `/work` correction receipts the server last acknowledged, validated server limits, and how many requests the latest capture skipped for missing evidence. Its producer and salted machine fingerprint remain unchanged after a home is copied, so pending uploads keep their original identity and bytes. New legacy snapshot capture refuses a known machine mismatch while those uploads can still drain. Delta producer registration uses a separate SQLite bookkeeping note: it seeds the legacy identity once, rotates only for a known hardware change, and never rewrites frozen events or batches. The server deduplicates bills across producers, so copied history is not counted twice. Revision bookkeeping includes SHA-256 values of request UUIDs from acknowledged and possibly delivered snapshots, so a later incomplete scan cannot silently remove earlier claims. These hashes shrink to the new membership only when that exact revision is acknowledged. A lost or late acknowledgement leaves the earlier evidence intact. Opt-out pauses delivery and retains pending bodies and membership metadata. Files are private to the local user. A lock protects concurrent legacy writers; a synced temporary file and rename publish each update before HTTP starts.
 
-Only the newest pending snapshot for a repository is retained. Corrections and revocations with preserved request membership replace earlier allocations. When all requests move to another verified repository in the same account, an empty higher-revision snapshot withdraws the old group. The old membership remains protected while that withdrawal is pending, including after opt-out and restart. Missing source evidence alone cannot trigger that withdrawal. An acknowledgement for an older in-flight revision cannot delete a newer payload. Restarting resumes durable state instead of adding the same charges again.
+The legacy JSON queue holds the newest pending snapshot for each repository; SQLite retains every pending body this version observes before capture or sending. Retries send that exact string to its original snapshot route, account and producer, including after an older writer changes the JSON queue. A valid ACK moves the body to retained receipt storage in the same database transaction. Receipt replay can finish interrupted JSON cleanup without sending again; a missing or malformed receipt never counts as an ACK. Corrections and revocations with preserved request membership replace earlier allocations. When all requests move to another verified repository in the same account, an empty higher-revision snapshot withdraws the old group. The old membership remains protected while that withdrawal is pending, including after opt-out and restart. Missing source evidence alone cannot trigger that withdrawal. An older ACK or retry cannot mutate a newer live body. Restarting resumes durable state instead of adding the same charges again.
 
-The existing reconciliation worker runs reporting after local cost lookup. Each pass reads the local history in the background and queues snapshots within five seconds, then delivers within another five seconds, with at most three upload attempts. While the journals and the local queue are unchanged since the last capture, a pass skips reading them; it captures again after an hour so the upload window still moves. Queued reports are delivered even when capture fails. Verification and upload reject redirects and cap response bodies at 64 KiB. Credentials and endpoint are checked again after awaited operations and immediately before dispatch. Opt-out from another harness process cancels an active upload through a local state-file watcher; if the watcher cannot start, each upload still rereads the state first.
+The existing reconciliation worker runs reporting after local cost lookup; a proxy lookup failure does not prevent direct usage reporting. Capture and each transport have bounded five-second passes with at most three sends per transport. The worker translates only the works whose records changed since their last translation, one group of works sharing a PR or link at a time, and commits their events at most 100 requests or records per transaction, so a pass that runs out of time resumes where it stopped. Legacy pending uploads and completed receipts have separate indexed namespaces. Explicit `/pr-reporting on` resets scheduling through one resume marker. A pass without new records reads no history; a work's next record also refreshes its repository identity. Queued uploads can still drain when capture fails. Verification and upload reject redirects and cap response bodies at 64 KiB. Credentials and endpoint are checked after awaited operations and before dispatch. Opt-out from another process cancels an active upload through state-file stat polling; each upload also rereads consent before dispatch.
 
 Repository lookups share the capture budget. A found identity is kept for a day, and so is a repository without a GitHub or GitLab identity. Other failed lookups wait at least 30 seconds before retry. Unchecked repositories go first, and each pass reserves time to queue the repositories it already knows. A slow or unavailable provider does not discard that progress.
 
-Failed attempts retain their payload and retry time. A failed attempt also starts the repository's five-minute window, so an ordinary change is not retried sooner than that. Three kinds of failure wait differently; transient failures and rejections share one attempt counter, and server limits leave it untouched:
+Failed attempts retain their payload and retry time. Event failures retain their local error with the batch until a matching acknowledgement; older retry notes without an error show a generic failure. Legacy snapshots also use their repository's five-minute window. Transient and rejection backoff applies to both transports; structured quota handling below belongs to the legacy snapshot route:
 
 - Transient: timeouts, network errors, HTTP 408, 5xx and HTTP 429 without a limit detail. A `Retry-After` is honored between 30 seconds and six hours. Without one, the wait doubles from 30 seconds to 30 minutes with ±20% jitter.
 - Rejection that retrying cannot fix, such as HTTP 404 from a backend without this endpoint: one hour, doubling to six hours, with ±20% jitter. HTTP 403 means the API key may not upload; `/pr-reporting status` says that an Owner or Member role is needed.
@@ -155,7 +175,7 @@ The reason appears in `/pr-reporting status` until an upload is accepted. An una
 
 Uploads match the server's per-snapshot limits: 32,000 requests, 250 PRs and 8 MiB of JSON, measured with the longest envelope a later revision can have. A request with more than 8 billing IDs, the server's per-request limit, is sent without IDs; the server then finds its bills by the request's exact tag. A larger inventory is trimmed rather than held. Kimchi leaves out the oldest unlinked and candidate-less unknown requests first, then the requests of finished PRs, earliest finish first, and the oldest requests of open PRs only after everything else. The PR limit is met by removing whole PRs, finished ones first. A PR left without requests is removed rather than listed in `windowedPullRequestIds`, because the server would restore its earlier claims into the same snapshot. Correction receipts are never left out. If they alone exceed the limits, the snapshot is held and `/pr-reporting status` says so. A trimmed snapshot sets `historyComplete: false` and `trimmedRequests`, and each repository shows one notice, for example `PR costs for owner/repo are partially reported: limit reached. See /pr-reporting status.` The local queue is bounded to 24 MiB. No request, session, PR or user IDs are added to metric labels.
 
-## Upload window and saved totals
+## Legacy upload window and saved totals
 
 The client sends each request from the last 32 days and each request that may belong to an open PR. A merged or closed PR stays in uploads with all its contributing requests for 32 days plus two days of clock-skew grace after its provider-reported finish time. Older requests of a long-lived work stay out, so snapshots stay small. A correction receipt is sent only while the server can still apply it, until five minutes before the PR's details expire at day 90. Missing finish metadata keeps the work eligible. The local source inventory distinguishes requests deliberately left outside this window from records that went missing; missing evidence still holds an affected upload.
 
@@ -189,8 +209,8 @@ The existing telemetry setting controls these metrics separately from `/pr-repor
 - `kimchi.pr_cost.matching.count` counts one final outcome per input: `explicit`, `inferred`, `session`, `unknown`, `limited` (too much history to compare) or `failed`.
 - `kimchi.pr_cost.delivery.count` counts delivery attempts, including account verification: `success`, `failed` or `canceled`.
 - `kimchi.pr_cost.pricing.unpriced` records the unpriced request count from the latest local cost report.
-- `kimchi.pr_cost.queue.depth` records repository snapshots waiting for acknowledgement, including zero after the queue clears.
-- `kimchi.pr_cost.snapshot.requests` and `kimchi.pr_cost.snapshot.bytes` record the largest request count and the largest serialized size among the snapshots queued in the latest pass that queued one, after trimming. They show how close clients come to the upload limits.
+- `kimchi.pr_cost.queue.depth` records legacy repository snapshots waiting for acknowledgement, including zero after the queue clears. It is not the event outbox depth; use `/pr-reporting status` for that.
+- `kimchi.pr_cost.snapshot.requests` and `kimchi.pr_cost.snapshot.bytes` describe legacy snapshot capture, not current event batches.
 - `kimchi.pr_cost.reconciliation.age` records seconds since the worker last started a scan. It measures liveness, not lookup success.
 
 Only `client=pi` and the fixed outcome appear as labels. The metrics add no session, user, work, request, repository or PR identifiers. Turning telemetry off drops buffered health counts and stops retries; turning it back on starts a new counter stream. An already dispatched request cannot be recalled.

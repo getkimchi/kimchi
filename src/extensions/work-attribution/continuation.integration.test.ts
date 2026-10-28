@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
-	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -20,6 +19,7 @@ import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
+import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import { appendWorkRecord, createWorkAttributionExtension, getWorkId, getWorkSegment } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
@@ -95,9 +95,18 @@ it.each([0, 7])("records a candidate observation for an ADR written by Bash befo
 	await flushWorkSummaries()
 	const saved = savedWorkSummary(agentDir, workId)
 	expect(saved.fileObservations).toContainEqual(expect.objectContaining({ toolCallId, source: "bash" }))
-	rmSync(join(agentDir, "work", workId, "work.json"))
+	const backend = ledger.backendFor(agentDir)
+	const authority = backend.readRecords({ workId })
+	backend.tx(() => {
+		backend.clearProjection(workId)
+		backend.markDirty(workId)
+	})
+	expect(backend.getHead(workId)).toBeUndefined()
 	recoverWorkSummaries()
 	await flushWorkSummaries()
+	expect(backend.getHead(workId)).toBeDefined()
+	expect(backend.dirtyWorks()).not.toContain(workId)
+	expect(backend.readRecords({ workId })).toEqual(authority)
 	expect(savedWorkSummary(agentDir, workId).fileObservations).toEqual(saved.fileObservations)
 	expect(await findWorkContinuation({ cwd }, `Implement ${path}`, captured)).toEqual({ owned: false })
 })
@@ -195,7 +204,7 @@ it("leaves an input naming an ADR owned from another worktree unresolved without
 	await api.getHandler<InputEvent>("input")({ type: "input", source: "interactive", text: `Revise ${path}` }, ctx)
 	expect(getWorkId(ctx)).not.toBe(workId)
 	expect(getWorkSegment(ctx)).toMatchObject({ attribution: "unknown", reason: "unresolved-reference" })
-	expect(journals).not.toHaveBeenCalled()
+	expect(journals.mock.calls.filter((call) => call[3])).toEqual([])
 })
 
 it.each(["interactive", "rpc"] as const)("adopts a pasted plan before the first %s request", async (source) => {
@@ -227,7 +236,7 @@ it("reads work history once to pin and confirm a plan continuation", async () =>
 	const flow = await recordedPlan("path")
 	const reads = vi.spyOn(summary, "readWorkRecords")
 	await flow.input({ type: "input", source: "interactive", text: flow.text }, flow.implementer)
-	expect(reads).toHaveBeenCalledOnce()
+	expect(reads.mock.calls.filter((call) => call[3])).toHaveLength(1)
 	expect(getWorkId(flow.implementer)).toBe(flow.workId)
 	const rows = readWorkRecords(flow.agentDir)
 	expect(rows.filter((row) => row.type === "work_link")).toMatchObject([
@@ -287,11 +296,18 @@ it.each([
 	}
 })
 
-async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", aliasedAgentDir = false) {
+async function recordedPlan(
+	kind: "path" | "snapshot" | "paste" | "artifact",
+	aliasedAgentDir = false,
+	omitProducer = false,
+) {
 	const { cwd, agentDir } = await planningRepository()
 	if (aliasedAgentDir) {
 		const alias = join(cwd, "..", "agent-alias")
 		symlinkSync(agentDir, alias, "dir")
+		// Both aliases open the same physical SQLite file in production.
+		const backend = ledger.backendFor(agentDir)
+		ledger.useBackendFactory(() => backend)
 		vi.stubEnv("PI_CODING_AGENT_DIR", alias)
 	}
 	const planner = createToolContext({ cwd, sessionManager: { getSessionId: () => "producer" } })
@@ -309,7 +325,17 @@ async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", al
 	const unrelated = await dispatch()
 	await input({ type: "input", source: "interactive", text: "Plan docs/adr/new.md" }, planner)
 	const research = await dispatch()
+	let missingProducer: WorkRecord | undefined
+	const capture = ledger.capture
+	const withheld = omitProducer
+		? vi.spyOn(ledger, "capture").mockImplementation((directory, row, sourcePath) => {
+				if (row.type === "request") missingProducer = row
+				else capture(directory, row, sourcePath)
+			})
+		: undefined
 	const producer = await dispatch()
+	withheld?.mockRestore()
+	if (omitProducer) expect(missingProducer).toMatchObject({ type: "request", requestId: producer })
 	const workId = getWorkId(planner)
 	await api.getHandler("message_end")(
 		{
@@ -353,6 +379,7 @@ async function recordedPlan(kind: "path" | "snapshot" | "paste" | "artifact", al
 		research,
 		producer,
 		original,
+		missingProducer,
 	}
 }
 
@@ -612,20 +639,15 @@ it.each([
 	"interactive",
 	"rpc",
 ] as const)("repairs same-work acceptance after missing producer requests return (%s)", async (source) => {
-	const flow = await recordedPlan("path")
-	const ledger = join(flow.agentDir, "work-attribution", "producer.jsonl")
-	const original = readWorkRecords(flow.agentDir).filter((row) => row.sessionId === "producer")
-	const request = original.find((row) => row.type === "request" && row.requestId === flow.producer)
-	writeFileSync(
-		ledger,
-		`${original
-			.filter((row) => row !== request)
-			.map((row) => JSON.stringify(row))
-			.join("\n")}\n`,
+	const flow = await recordedPlan("path", false, true)
+	const request = flow.missingProducer
+	if (!request) throw new Error("Missing withheld producer")
+	expect(readWorkRecords(flow.agentDir).some((row) => row.type === "request" && row.requestId === flow.producer)).toBe(
+		false,
 	)
 	await flow.input({ type: "input", source, text: flow.text }, flow.planner)
 	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toEqual([])
-	appendFileSync(ledger, `${JSON.stringify(request)}\n`)
+	ledger.capture(flow.agentDir, request, join(flow.agentDir, "work-attribution", "producer.jsonl"))
 	await reconcileWorkContinuations(flow.agentDir, new AbortController().signal, () => {})
 	expect(readWorkRecords(flow.agentDir).filter((row) => row.type === "work_link")).toMatchObject([
 		{

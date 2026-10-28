@@ -5,12 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import {
-	AgentSession,
-	type ExtensionAPI,
-	parseArgs as parsePiArgs,
-	readStoredCredential,
-} from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
@@ -42,6 +37,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
+import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
@@ -179,6 +175,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
@@ -297,7 +294,10 @@ async function cliMain(): Promise<void> {
 	// reporting) before telemetry and session setup so both read the same view.
 	// Blocking only on the first run per API key (cache miss, capped at 1.5s);
 	// afterwards the cached policy applies and refreshes in the background.
-	await initOrgPolicy(resolveEffectiveApiKey() ?? "")
+	// SSO users resolve their credential from auth.json — same precedence as
+	// every other gateway/API call (resolver ignores the request-time refresh).
+	const orgPolicyCredentials = resolveGatewayCredentials({ apiKey: resolveEffectiveApiKey() ?? "" })
+	await initOrgPolicy(orgPolicyCredentials.token, { organizationId: orgPolicyCredentials.organizationId })
 
 	// --- Telemetry ---
 	// The org usage-reporting policy clamp applies at this single construction
@@ -515,6 +515,7 @@ async function cliMain(): Promise<void> {
 				throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 			}
 			const modelsJsonPath = resolve(agentDir, "models.json")
+			installNativeUsageCapture()
 
 			let currentApiKey = apiKey
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
@@ -522,9 +523,9 @@ async function cliMain(): Promise<void> {
 			// metadata refresh so OAuth users get fresh models like key users;
 			// request-time token refresh is owned by the provider's OAuth config.
 			const authJsonPath = resolve(agentDir, "auth.json")
-			const storedOAuth = readStoredCredential("kimchi-dev", authJsonPath)
-			const oauthAccessToken = storedOAuth?.type === "oauth" ? storedOAuth.access : undefined
-			const oauthOrganizationId = storedOAuth?.type === "oauth" ? (storedOAuth as { orgId?: string }).orgId : undefined
+			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
+			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
+			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]

@@ -12,6 +12,9 @@ import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
+import { saveWorkSummary } from "../__mocks__/work-summary.js"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import {
 	createWorkAttributionExtension,
 	getWorkId,
@@ -38,6 +41,8 @@ beforeEach(() => {
 	mkdirSync(cwd)
 	execFileSync("git", ["init", "-q", cwd])
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+	useBackendFactory(() => createMemoryRecords())
+	saveWorkSummary(join(root, "agent"), { workId: WORK, sessions: ["seed"] })
 	key = randomUUID()
 	endpoint = "https://account.example/api"
 	identity = { organizationId: ORG, userId: USER }
@@ -50,6 +55,8 @@ beforeEach(() => {
 })
 afterEach(async () => {
 	await flushWorkSummaries()
+	closeBackends()
+	useBackendFactory(null)
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
@@ -92,7 +99,8 @@ it.each([
 
 it("persists authenticated account identity without storing the credential", async () => {
 	await rememberWorkIntent(cwd, WORK, "Plan a CSV export")
-	const raw = readFileSync(workIntentPath(WORK), "utf8")
+	const raw = getNote(join(root, "agent"), WORK, "intent")
+	if (raw === undefined) throw new Error("Expected an authenticated intent note")
 	expect(JSON.parse(raw)).toMatchObject({
 		version: 2,
 		account: { apiUrl: endpoint, organizationId: ORG, userId: USER },
@@ -110,13 +118,15 @@ it("starts separate work after an account switch and preserves the first request
 	await input({ type: "input", source: "rpc", text: "Plan the export" }, ctx)
 	const first = recordProviderRequest(ctx)
 	const scopePath = join(root, "agent", "work", first.workId, "scope.json")
-	const originalScope = readFileSync(scopePath, "utf8")
+	const originalScope = getNote(join(root, "agent"), first.workId, "scope")
+	expect(originalScope).toBeDefined()
 	key = randomUUID()
 	identity = { organizationId: CURRENT, userId: USER }
 	await input({ type: "input", source: "rpc", text: "Implement something for this account" }, ctx)
 	const next = recordProviderRequest(ctx)
 	expect(next.workId).not.toBe(first.workId)
-	expect(readFileSync(scopePath, "utf8")).toBe(originalScope)
+	expect(getNote(join(root, "agent"), first.workId, "scope")).toBe(originalScope)
+	expect(existsSync(scopePath)).toBe(false)
 	const records = readWorkRecords(join(root, "agent"))
 	expect(records.find((row) => row.type === "request" && row.requestId === first.requestId)?.scope).toMatchObject({
 		account: { organizationId: ORG },
@@ -273,7 +283,7 @@ it("keeps a Git failure during optional matching off the screen and counts the i
 	expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("git rev-parse"), "warning")
 })
 
-it("recovers from a missing scope file without relabelling earlier requests", async () => {
+it("keeps damaged scope unknown without relabelling earlier requests", async () => {
 	vi.mocked(settings.readConfigSetting).mockReturnValue(false)
 	const ctx = createContext({ cwd })
 	const api = createExtensionApi()
@@ -282,7 +292,7 @@ it("recovers from a missing scope file without relabelling earlier requests", as
 	await input({ type: "input", source: "rpc", text: "Plan the export" }, ctx)
 	const first = recordProviderRequest(ctx)
 	const scopePath = join(root, "agent", "work", first.workId, "scope.json")
-	rmSync(scopePath)
+	setNote(join(root, "agent"), first.workId, "scope", "damaged")
 	const original = readWorkRecords(join(root, "agent")).find((row) => row.requestId === first.requestId)
 
 	await input({ type: "input", source: "rpc", text: "Implement the export" }, ctx)

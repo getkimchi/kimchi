@@ -4,10 +4,13 @@ import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import {
 	accountKey,
+	allocationFor,
 	buildSnapshots,
 	fitSnapshot,
+	type ReportingRepository,
 	type RepositoryIdentity,
 	repositoryKey,
+	requestAttributions,
 	SNAPSHOT_LIMITS,
 	type SnapshotContent,
 	validateSnapshot,
@@ -83,6 +86,143 @@ function build(rows = records(), priced = true) {
 function wire(): WireSnapshot {
 	return { schemaVersion: 1, producerId: requestId, revision: "1", generatedAt: at, ...build().snapshots[0].content }
 }
+
+describe("unwindowed request attribution", () => {
+	const repo: ReportingRepository = { provider: "github", host: "github.com", id: "42", name: "example/repo" }
+	it("retains old unlinked inventory before the legacy upload window", () => {
+		const rows = records([], { startedAt: "2026-01-01T00:00:00Z", recordedAt: "2026-01-01T00:00:00Z" })
+		const report = calculatePullRequestCosts(rows, [])
+		const repositories = new Map([["/private/repo/.git", repo]])
+		const attribution = requestAttributions(rows, report, repositories).get(requestId)
+		if (!attribution) throw new Error("Missing original request")
+		expect(attribution.destinations).toEqual([repo])
+		expect(allocationFor(attribution, [])).toEqual({ kind: "unlinked", pullRequestIds: [], method: "session" })
+		expect(buildSnapshots(rows, report, repositories).snapshots.flatMap((group) => group.content.requests)).toEqual([])
+	})
+	it("retains settled PR candidates before the legacy detail window", () => {
+		const pr = { ...pull(), mergedAt: "2026-07-01T00:00:00Z" }
+		const rows = records([pr], { startedAt: "2026-06-30T00:00:00Z", recordedAt: "2026-06-30T00:00:00Z" })
+		const report = calculatePullRequestCosts(rows, [])
+		const attribution = requestAttributions(rows, report, new Map()).get(requestId)
+		if (!attribution) throw new Error("Missing original request")
+		expect(attribution.candidates.map((candidate) => candidate.pullRequest?.id)).toEqual([pr.id])
+		expect(allocationFor(attribution, ["101"]).kind).toBe("pull-request")
+		expect(buildSnapshots(rows, report, new Map()).snapshots.flatMap((group) => group.content.requests)).toEqual([])
+	})
+	it("keeps all candidate repositories unknown instead of choosing one", () => {
+		const rows = records([pull(), pull(2, "example/other", "43")])
+		const attribution = requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map()).get(requestId)
+		if (!attribution) throw new Error("Missing original request")
+		expect(attribution.destinations.map((destination) => destination.id)).toEqual(["42", "43"])
+		expect(attribution.candidates).toHaveLength(2)
+		expect(allocationFor(attribution, ["101"]).kind).toBe("unknown")
+		expect(allocationFor(attribution, ["101", "102"]).kind).toBe("unknown")
+	})
+	it("retains requests trimmed from legacy snapshots", () => {
+		const rows = records()
+		const later = "33333333-3333-4333-8333-333333333334"
+		rows.push({ ...rows[0], requestId: later, startedAt: "2026-10-04T12:30:00Z", recordedAt: "2026-10-04T12:30:00Z" })
+		const report = calculatePullRequestCosts(rows, [])
+		const key = `${accountKey(account)}:${repositoryKey(repo)}`
+		expect(requestAttributions(rows, report, new Map()).size).toBe(2)
+		const [snapshot] = buildSnapshots(
+			rows,
+			report,
+			new Map(),
+			new Map(),
+			new Map([[key, { ...SNAPSHOT_LIMITS, requests: 1 }]]),
+		).snapshots
+		expect(snapshot.content.requests.map((request) => request.requestId)).toEqual([later])
+	})
+	it.each(["active", "revoked"])("keeps the validated %s receipt after the legacy correction expiry", (status) => {
+		const rows: WorkRecord[] = records([{ ...pull(), mergedAt: "2026-07-01T00:00:00Z" }], {
+			segment: { id: billingId, attribution: "session", reason: "test" },
+		}).map((row) => ({ ...row, workId: requestId }))
+		rows.push({
+			...rows[0],
+			type: "work_link",
+			linkId: billingId,
+			revision: 2,
+			status,
+			sourceWorkId: requestId,
+			targetWorkId: requestId,
+			requestIds: [requestId],
+			evidence: { source: "work-command", segmentId: billingId },
+		})
+		const report = calculatePullRequestCosts(rows, [])
+		expect(requestAttributions(rows, report, new Map()).get(requestId)?.correction).toEqual({
+			id: billingId,
+			revision: 2,
+			recordedAt: at,
+			source: "work-command",
+		})
+		expect(
+			buildSnapshots(rows, report, new Map())
+				.snapshots.flatMap((group) => group.content.requests)
+				.every((request) => !request.correction),
+		).toBe(true)
+	})
+	it.each(["session", "inferred"])("preserves an inferred %s method", (attribution) => {
+		const rows = records([pull()], { segment: { id: billingId, attribution, reason: "test" } })
+		const report = calculatePullRequestCosts(rows, [])
+		report.requests[0].allocation = "inferred"
+		const projected = requestAttributions(rows, report, new Map()).get(requestId)
+		if (!projected) throw new Error("Missing original request")
+		expect(allocationFor(projected, ["101"])).toEqual({
+			kind: "pull-request",
+			pullRequestIds: ["101"],
+			method: attribution === "inferred" ? "model" : "session",
+		})
+	})
+	it("retains genuine owned bill IDs for historical requests without native counters", () => {
+		const rows = records()
+		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1", account }])
+		const attribution = requestAttributions(rows, report, new Map()).get(requestId)
+		expect(attribution).toMatchObject({ billingAccountVerified: true, billingRecordIds: [billingId] })
+	})
+	it("does not export bills from a different reporting account", () => {
+		const rows = records()
+		const report = calculatePullRequestCosts(rows, [
+			{
+				requestId,
+				billingRecordId: billingId,
+				costUsd: "1",
+				account: { ...account, userId: "66666666-6666-4666-8666-666666666666" },
+			},
+		])
+		expect(requestAttributions(rows, report, new Map()).get(requestId)).toMatchObject({
+			billingAccountVerified: false,
+			billingRecordIds: [],
+		})
+	})
+	it("leaves missing original account and unresolved repository identities missing", () => {
+		const rows = records([], { scope: undefined })
+		const repositories = new Map([["/private/repo/.git", repo]])
+		expect(requestAttributions(rows, calculatePullRequestCosts(rows, []), repositories).get(requestId)).toMatchObject({
+			request: { account: null },
+			destinations: [],
+			missing: true,
+		})
+		const scoped = records([])
+		expect(requestAttributions(scoped, calculatePullRequestCosts(scoped, []), new Map()).get(requestId)).toMatchObject({
+			destinations: [],
+			missing: true,
+		})
+	})
+	it("keeps request-captured Jira keys instead of current work metadata", () => {
+		const rows = records([pull()], { issue: { key: "ORIGINAL-1" } })
+		rows.push({
+			version: 1,
+			type: "work",
+			workId: "private-work",
+			sessionId: "private-session",
+			issue: { key: "CURRENT-2" },
+		})
+		expect(
+			requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map()).get(requestId)?.workIssueKeys,
+		).toEqual(["ORIGINAL-1"])
+	})
+})
 
 describe("allowlisted repository snapshots", () => {
 	it.each([
@@ -178,6 +318,46 @@ describe("allowlisted repository snapshots", () => {
 		])
 			expect(JSON.stringify(content)).not.toContain(privateValue)
 		expect(() => validateSnapshot(wire())).not.toThrow()
+	})
+	it("sends the Jira issue chosen for a work, then the keys of its PR's head branch, with the PR", () => {
+		const pr = { ...pull(), branchIssueKeys: ["ABC-123", "DEF-7"] }
+		const content = build(records([pr], { issue: { key: "ABC-123", revision: 1 } })).snapshots[0].content
+		expect(content.pullRequests[0].issueKeys).toEqual([
+			{ key: "ABC-123", source: "work" },
+			{ key: "ABC-123", source: "branch" },
+			{ key: "DEF-7", source: "branch" },
+		])
+		expect(() => validateSnapshot({ ...wire(), pullRequests: content.pullRequests })).not.toThrow()
+		expect(build().snapshots[0].content.pullRequests[0]).not.toHaveProperty("issueKeys")
+	})
+	it("sends at most 20 Jira keys for a PR, the work's issue first", () => {
+		const branchIssueKeys = Array.from({ length: 20 }, (_, index) => `ABC-${index + 1}`)
+		const content = build(records([{ ...pull(), branchIssueKeys }], { issue: { key: "WORK-9", revision: 2 } }))
+			.snapshots[0].content
+		expect(content.pullRequests[0].issueKeys).toHaveLength(20)
+		expect(content.pullRequests[0].issueKeys?.[0]).toEqual({ key: "WORK-9", source: "work" })
+	})
+	it.each([
+		["a source the server does not take", [{ key: "ABC-1", source: "title" }]],
+		["a token that is not a Jira key", [{ key: "abc-1", source: "branch" }]],
+		[
+			"a key sent twice from the same source",
+			[
+				{ key: "ABC-1", source: "work" },
+				{ key: "ABC-1", source: "work" },
+			],
+		],
+		["a field the server does not declare", [{ key: "ABC-1", source: "work", branch: "ABC-1-fix" }]],
+		["an empty list", []],
+		[
+			"more keys than a PR carries",
+			Array.from({ length: 21 }, (_, index) => ({ key: `ABC-${index + 1}`, source: "branch" })),
+		],
+	])("refuses a PR's issue keys with %s", (_name, issueKeys) => {
+		const snapshot = wire()
+		expect(() =>
+			validateSnapshot({ ...snapshot, pullRequests: [{ ...snapshot.pullRequests[0], issueKeys }] } as WireSnapshot),
+		).toThrow()
 	})
 	it("keeps missing prices in the complete inventory", () => {
 		const content = build(records(), false).snapshots[0].content

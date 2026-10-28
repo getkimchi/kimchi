@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest"
-import { dedupeEmbedder, type UnderlyingEmbedder } from "./embedder.js"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { KimchiConfig } from "../../config.js"
+import { createSharedEmbedder, dedupeEmbedder, type UnderlyingEmbedder } from "./embedder.js"
 
 /** A controllable underlying embedder counting its calls. */
 function makeUnderlying() {
@@ -143,5 +147,59 @@ describe("dedupeEmbedder", () => {
 		await Promise.all([shared.embedQuery("a"), shared.embedDocuments(["a"])])
 		expect(underlying.embed).toHaveBeenCalledTimes(1)
 		expect(underlying.embedBatch).toHaveBeenCalledTimes(1)
+	})
+})
+
+function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
+	return {
+		apiKey: "",
+		agentConfigDir: "/agent-config-dir",
+		region: "us",
+		selfHostedEndpoints: undefined,
+		llmEndpoint: "https://gateway.test/openai/v1",
+		customLlmEndpoint: undefined,
+		maxToolResultChars: 10_000,
+		mcpSearchLimit: 5,
+		mcpSearch: {
+			strategy: "bm25",
+			bm25K1: 1.2,
+			bm25B: 0.75,
+			fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+		},
+		onboarding: {},
+		deviceId: "",
+		...overrides,
+	}
+}
+
+describe("createSharedEmbedder", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "embedder-oauth-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("constructs for an SSO-only login (auth.json OAuth credential)", async () => {
+		// Pre-fix this threw "memory backend embedder requires an API key" for
+		// every SSO login — the regression this suite guards. Construction is
+		// asserted without an embed call on purpose: under vitest/Node the
+		// OpenAI client's request path differs from Bun's (node-fetch), so the
+		// wire-level assertions live in the interceptor tests (backend.test.ts)
+		// and the Bun acceptance check (`pnpm run memory:check`).
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-42" } }),
+		)
+		await expect(createSharedEmbedder(testConfig())).resolves.toBeDefined()
+	})
+
+	it("throws the shared credentials error with neither key nor SSO login", async () => {
+		await expect(createSharedEmbedder(testConfig())).rejects.toThrow(/gateway credentials/)
 	})
 })

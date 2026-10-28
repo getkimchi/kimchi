@@ -1,8 +1,8 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { writeFileDurably } from "../../config/json.js"
-import { object, readWorkRecords } from "../work-attribution/summary.js"
+import { backendFor, getNote, readRecords, setNote } from "../pr-cost-reporting/ledger/records.js"
+import { importWorkRecordsAsync, object, workJournalFingerprint } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -42,6 +42,8 @@ export interface WorkPullRequest {
 	title?: string
 	/** The author's login: GitHub `user.login`, GitLab `author.username`. Like `title`, uploaded only. */
 	author?: string
+	/** The Jira keys the PR's head branch names, at most 20; the branch name itself is not kept. Uploaded only. */
+	branchIssueKeys?: string[]
 	state: "open" | "closed" | "merged"
 	repository: string
 	host: string
@@ -76,6 +78,7 @@ export interface WorkPullRequestUpdate {
 interface DiscoveryState {
 	commits: Map<string, WorkPullRequestUpdate>
 	readThrough?: number
+	journalFingerprint?: string
 	nextCommit?: string
 	running?: Promise<void>
 }
@@ -130,11 +133,11 @@ interface LookupChecks {
 
 /** The lease owner reads the check cache before each pass; another process may have written it. */
 function readLookupChecks(agentDir: string): LookupChecks {
-	const checks: LookupChecks = { checkedAt: new Map() }
+	const checks: LookupChecks = { saved: getNote(agentDir, "agent", "pr-checks"), checkedAt: new Map() }
 	let value: unknown
 	try {
-		checks.saved = readFileSync(join(agentDir, "work-attribution", LOOKUP_CHECKS), "utf8")
-		value = JSON.parse(checks.saved)
+		// The note is authoritative, including an empty cache; legacy files are read only before migration.
+		value = JSON.parse(checks.saved ?? readFileSync(join(agentDir, "work-attribution", LOOKUP_CHECKS), "utf8"))
 	} catch {
 		// A missing or damaged cache only costs one more check per commit.
 		return checks
@@ -152,12 +155,12 @@ function readLookupChecks(agentDir: string): LookupChecks {
 }
 
 /** Durably saves at most once per pass, only after a change, and forgets commits no longer recorded. */
-async function saveLookupChecks(
+function saveLookupChecks(
 	agentDir: string,
 	groups: Map<string, WorkPullRequestUpdate[]>,
 	checks: LookupChecks,
 	assertLease: () => void,
-): Promise<void> {
+): void {
 	const now = Date.now()
 	const value: Record<string, Record<string, string>> = {}
 	for (const key of [...checks.checkedAt.keys()].sort()) {
@@ -170,8 +173,11 @@ async function saveLookupChecks(
 	}
 
 	const contents = `${JSON.stringify(value)}\n`
-	if (contents === (checks.saved ?? "{}\n")) return
-	await writeFileDurably(join(agentDir, "work-attribution", LOOKUP_CHECKS), contents, assertLease)
+	if (contents === checks.saved) return
+	backendFor(agentDir).tx(() => {
+		assertLease()
+		setNote(agentDir, "agent", "pr-checks", contents)
+	})
 }
 
 function commitKey(row: WorkPullRequestUpdate): string {
@@ -180,10 +186,10 @@ function commitKey(row: WorkPullRequestUpdate): string {
 
 function readCommits(agentDir: string, state: DiscoveryState): void {
 	const started = Date.now()
-	const records = readWorkRecords(
-		agentDir,
-		state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
-	)
+	const records = readRecords(agentDir, {
+		type: "commit",
+		modifiedSince: state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
+	})
 	for (const row of records) {
 		if (
 			row.type !== "commit" ||
@@ -239,8 +245,18 @@ async function scan(
 	assertLease: () => void,
 	onUpdate?: (update: WorkPullRequestUpdate) => void,
 ): Promise<void> {
-	signal.throwIfAborted()
+	const deadline = Date.now() + PASS_BUDGET_MS
+	const check = () => {
+		assertLease()
+		signal.throwIfAborted()
+		if (Date.now() >= deadline) throw new Error("PR discovery pass time limit exceeded")
+	}
+	const fingerprint = await workJournalFingerprint(agentDir, check)
+	check()
+	if (state.journalFingerprint !== fingerprint) await importWorkRecordsAsync(agentDir, check)
+	check()
 	readCommits(agentDir, state)
+	state.journalFingerprint = fingerprint
 	const groups = new Map<string, WorkPullRequestUpdate[]>()
 	for (const commit of state.commits.values()) {
 		onUpdate?.(commit)
@@ -257,7 +273,6 @@ async function scan(
 		jobs.findIndex(([key]) => key === state.nextCommit),
 	)
 
-	const deadline = Date.now() + PASS_BUDGET_MS
 	const repositories = new Map<string, Promise<Repository>>()
 	const tokens = new Map<string, Promise<string | undefined>>()
 	const associations = new Map<string, Promise<WorkPullRequest[]>>()
@@ -380,7 +395,7 @@ async function scan(
 		// Keep the next job stable even if source records append during this pass.
 		if (jobs.length === 1) state.nextCommit = key
 	}
-	await saveLookupChecks(agentDir, groups, checks, assertLease)
+	saveLookupChecks(agentDir, groups, checks, assertLease)
 }
 
 /** Every process can display persisted results, including while another process owns discovery. */

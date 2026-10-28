@@ -315,8 +315,11 @@ const FACTUAL_ACCURACY_AUTONOMOUS = `- Never guess, assume, or fabricate. Claims
  * Management` is deliberately omitted: subagents do not manage phase
  * lifecycle — their persona fixes their phase, and they never call
  * `set_phase`.
+ *  Pass `hasUserLoop: false` for headless subagents: the consent section is
+ *  then swapped for the Autonomous Session note, mirroring the headless main
+ *  thread (nobody is reachable to grant consent).
  */
-export function buildCoreGuidelinesSections(activeToolNames?: readonly string[]): string {
+export function buildCoreGuidelinesSections(activeToolNames?: readonly string[], hasUserLoop = true): string {
 	const toolNames = activeToolNames ? new Set(activeToolNames) : undefined
 	return [
 		`## Guidelines\n\n${CORE_GUIDELINES}`,
@@ -324,7 +327,7 @@ export function buildCoreGuidelinesSections(activeToolNames?: readonly string[])
 		`## Documents\n\n${DOCUMENTS_SECTION}`,
 		buildOutputAndTruncationSection(toolNames),
 		buildToolSelectionSection(toolNames),
-		CONSENT_AND_IRREVERSIBLE_ACTIONS,
+		hasUserLoop ? CONSENT_AND_IRREVERSIBLE_ACTIONS : AUTONOMOUS_SESSION_NOTE,
 	]
 		.filter(Boolean)
 		.join("\n\n")
@@ -444,13 +447,9 @@ export function buildPhaseManagementSection(
 
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
 
-Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes. Internal planning artifacts such as todo lists never grant approval.
+Ask before actions that publish externally, mutate remote state, or are irreversible. A request to change code authorizes local edits and verification commands only; internal planning artifacts such as todo lists never grant approval. Approval covers exactly the action requested. A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis: report the findings and wait for the user's go-ahead before writing or modifying code. A blocked action: propose the alternative and wait for the user to choose.
 
-Approval covers exactly the action the user requested — not escalations or workarounds. A request to "push" does not authorize opening a pull request; "commit" does not authorize tagging a release. A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis — report the findings and wait for the user's go-ahead before writing or modifying code. If a requested action is blocked or fails, propose the alternative and wait for the user to choose.
-
-- GitHub CLI: no mutating \`gh\` commands unprompted — pr/issue/review/merge/release write verbs and any \`gh api POST/PATCH/PUT/DELETE\`. Read-only commands are fine.
-- GitLab CLI: same rule — mutating \`glab\` verbs (incl. approve, note resolve, rebase, retry) and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
-- Git remote ops: pushing branches, force-push, deleting branches/tags need explicit approval.`
+Follow-through needing no confirmation: committing, pushing the current non-default branch, and opening a PR for that branch's committed work in the repository being worked on. Pushing the default branch, other branches or remotes, force-push, and deleting branches/tags always need approval. Mutating \`gh\`/\`glab\` commands (incl. \`gh\`/\`glab api\` writes) need approval, except \`gh pr create\` for that work; read-only commands are fine.`
 
 /** Replacement for the user-presence-only sections (Consent, Harness Notes,
  *  Documents) when the session has no human in the loop: one directive instead

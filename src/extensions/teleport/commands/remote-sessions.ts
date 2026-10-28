@@ -21,7 +21,7 @@ import { runTerminal } from "./terminal.js"
 
 export async function runRemoteSessions(_args: string, ctx: TeleportContext): Promise<void> {
 	if (!ctx.apiKey) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	const fallbackName = basename(ctx.cwd) || "kimchi"

@@ -1,22 +1,18 @@
 import type { ExecFileOptions } from "node:child_process"
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs"
+import * as fs from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
+import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
+import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import * as summaries from "../work-attribution/summary.js"
 import { lookupBranchPullRequest } from "./branch-status.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
+
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 const cli = vi.hoisted(() => ({
 	git: vi.fn<(args: string[], options: ExecFileOptions) => Promise<string | undefined>>(),
@@ -94,6 +90,8 @@ function seed(overrides: Record<string, unknown> = {}, transitions = false): voi
 			...overrides,
 		})}\n`,
 	)
+	// An older process may append after the first hydration in this test.
+	for (;;) if (!importJournalSlice(agentDir)) break
 }
 function pull(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
@@ -143,10 +141,13 @@ function lookup(signal = new AbortController().signal, assertLease = () => {}): 
 	return reconcileWorkPullRequests(agentDir, signal, assertLease, (update) => updates.push(update))
 }
 function saved(sessionId = "writer") {
-	return readFileSync(join(agentDir, "work-attribution", `${sessionId}.jsonl`), "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line))
+	const path = join(agentDir, "work-attribution", `${sessionId}.jsonl`)
+	const rows = ledger
+		.backendFor(agentDir)
+		.readRecords({ sessionId })
+		.filter((row) => row.sourcePath === path)
+	if (!rows.length) throw new Error("No saved PR lookup observations")
+	return rows.map((row) => JSON.parse(row.body))
 }
 /** By default, moves the clock past the shortest delay before a commit is checked again. */
 function later(ms = 31_000): void {
@@ -166,7 +167,8 @@ function replies(handler: (url: URL, options: RequestInit) => unknown = () => []
 					id: 42,
 					default_branch: "main",
 					full_name: github[1],
-					html_url: `https://${url.host === "api.github.com" ? "github.com" : url.host}/${github[1]}`,
+					// GitHub.com and GHE.com serve their API from an api. subdomain of the web host.
+					html_url: `https://${url.host.startsWith("api.") ? url.host.slice("api.".length) : url.host}/${github[1]}`,
 				}
 			: gitlab
 				? {
@@ -366,6 +368,50 @@ describe("native provider credentials", () => {
 		for (const [url, options] of http.mock.calls) {
 			expect(url.origin).toBe("https://enterprise.example")
 			expect(new Headers(options.headers).get("authorization")).toBe("Bearer enterprise-token")
+		}
+	})
+	it("finds a GHE.com pull request through the enterprise's API subdomain with that host's CLI login", async () => {
+		seed()
+		remote("git@octocorp.ghe.com:team/repo.git")
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "gh" && args.join(" ") === "auth token --hostname octocorp.ghe.com" ? "tenant-cli-token" : undefined,
+		)
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1)).toMatchObject({
+			prLookup: { status: "linked" },
+			pullRequests: [{ provider: "github", host: "octocorp.ghe.com", number: 7, repository: "team/repo" }],
+		})
+		expect(commitCalls()[0].href).toBe(`https://api.octocorp.ghe.com/repos/team/repo/commits/${sha}/pulls?per_page=100`)
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-cli-token")
+		}
+	})
+	it("sends GH_TOKEN to a GHE.com host as gh does, never the Enterprise Server token", async () => {
+		seed()
+		remote("https://octocorp.ghe.com/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-token")
+		vi.stubEnv("GH_ENTERPRISE_TOKEN", "enterprise-server-secret")
+		// The Enterprise Server token would win if this host were treated as GH_HOST's Server host.
+		vi.stubEnv("GH_HOST", "octocorp.ghe.com")
+		replies(() => [pull(7, { html_url: "https://octocorp.ghe.com/team/repo/pull/7" })])
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "linked" })
+		expect(cli.auth).not.toHaveBeenCalled()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.origin).toBe("https://api.octocorp.ghe.com")
+			expect(new Headers(options.headers).get("authorization")).toBe("Bearer tenant-token")
+		}
+	})
+	it("does not treat a host that merely contains ghe.com as GitHub Enterprise Cloud", async () => {
+		seed()
+		remote("https://octocorp.ghe.com.attacker.example/team/repo.git")
+		vi.stubEnv("GH_TOKEN", "tenant-secret")
+		await lookup()
+		for (const [url, options] of http.mock.calls) {
+			expect(url.host).toBe("octocorp.ghe.com.attacker.example")
+			expect(new Headers(options.headers).has("authorization")).toBe(false)
 		}
 	})
 	it("keeps a cloud GitHub token on github.com even when GH_HOST names another host", async () => {
@@ -1145,6 +1191,31 @@ describe("bounded and safe HTTP lookup", () => {
 })
 
 describe("durable work pull request discovery", () => {
+	it("does not read legacy bodies on an unchanged PR pass", async () => {
+		// Unknown-age commits are deliberately checked every pass; keep this one within its normal backoff.
+		seed({ recordedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() })
+		await lookup()
+		await lookup()
+		const reads = vi.spyOn(fs, "readSync")
+		const requests = http.mock.calls.length
+		await lookup()
+		expect(reads).not.toHaveBeenCalled()
+		expect(http).toHaveBeenCalledTimes(requests)
+	})
+
+	it("keeps passive display DB-backed when a legacy journal cannot be opened", () => {
+		seed({ pullRequests: [stored()] })
+		const before = readWorkPullRequestUpdates(agentDir)
+		expect(before).toHaveLength(1)
+		const opens = vi.spyOn(fs, "openSync").mockImplementation(() => {
+			throw new Error("legacy journal unavailable")
+		})
+		expect(() => readWorkPullRequestUpdates(agentDir)).not.toThrow()
+		expect(readWorkPullRequestUpdates(agentDir)).toEqual(before)
+		expect(opens).not.toHaveBeenCalled()
+		expect(http).not.toHaveBeenCalled()
+	})
+
 	it("reads another process's saved links without network requests or ledger writes", () => {
 		seed()
 		expect(readWorkPullRequestUpdates(agentDir)[0]).toMatchObject({
@@ -1454,16 +1525,18 @@ describe("durable work pull request discovery", () => {
 	})
 	it("reads changed journals and does not advance its checkpoint after a failed source read", async () => {
 		seed()
-		const reads = vi.spyOn(summaries, "readWorkRecords")
+		const reads = vi.spyOn(ledger, "readRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, undefined])
+		expect(reads.mock.calls[0]).toEqual([agentDir, { type: "commit", modifiedSince: undefined }])
+		later()
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
 		})
 		await expect(lookup()).rejects.toThrow("ledger unavailable")
-		const checkpoint = reads.mock.calls[1][1]
+		const checkpoint = reads.mock.calls[1][1]?.modifiedSince
+		expect(checkpoint).toEqual(expect.any(Number))
 		await lookup()
-		expect(reads.mock.calls[2][1]).toBe(checkpoint)
+		expect(reads.mock.calls[2]).toEqual([agentDir, { type: "commit", modifiedSince: checkpoint }])
 		expect(commitCalls()).toHaveLength(2)
 	})
 })
@@ -1508,6 +1581,36 @@ describe("PR titles and author logins", () => {
 		expect(link).toMatchObject({ provider, number: 7, state: "open" })
 		expect(link).not.toHaveProperty("title")
 		expect(link).not.toHaveProperty("author")
+	})
+	it.each(
+		providers,
+	)("keeps the branch keys of a %s PR across a restart, so an unchanged check adds no row", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-add-jira"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const rows = saved().length
+		vi.resetModules()
+		const relaunched = await import("./pull-requests.js")
+		expect(relaunched.readWorkPullRequestUpdates(agentDir)[0].pullRequests).toEqual([
+			expect.objectContaining({ provider, number: 7, branchIssueKeys: ["ABC-12"] }),
+		])
+		const checks = commitCalls().length
+		later()
+		await relaunched.reconcileWorkPullRequests(agentDir, new AbortController().signal, () => {})
+		expect(commitCalls().length).toBeGreaterThan(checks)
+		expect(saved()).toHaveLength(rows)
+	})
+	it.each(providers)("keeps the Jira keys of a %s PR's head branch, not the branch name", async (provider) => {
+		seed()
+		useProvider(provider)
+		const branch = "feature/ABC-12-and-DEF-3"
+		replies(() => [provider === "github" ? pull(7, { head: { sha, ref: branch } }) : mr(7, { source_branch: branch })])
+		await lookup()
+		const [link] = saved().at(-1).pullRequests
+		expect(link.branchIssueKeys).toEqual(["ABC-12", "DEF-3"])
+		expect(JSON.stringify(saved().at(-1))).not.toContain(branch)
 	})
 	it.each(providers)("keeps reading %s links saved without them and adds them on the next check", async (provider) => {
 		const id = String(provider === "github" ? pull().id : mr().id)
@@ -1728,7 +1831,7 @@ describe("unchanged lookup results", () => {
 
 describe("saved check times", () => {
 	const day = 24 * 60 * 60 * 1000
-	const checks = () => JSON.parse(readFileSync(join(agentDir, "work-attribution", "pr-checks.json"), "utf8"))
+	const checks = () => JSON.parse(ledger.getNote(agentDir, "agent", "pr-checks") ?? "null")
 	// An earlier rate-limit case pauses github.com for an hour; use a host no other case touches.
 	beforeEach(() => {
 		remote("https://checks.example/team/repo.git")
@@ -1744,6 +1847,52 @@ describe("saved check times", () => {
 			await (await import("../work-attribution/summary.js")).flushWorkSummaries()
 		}
 	}
+	it("imports an unchanged legacy check without rewriting the legacy file", async () => {
+		seed({
+			recordedAt: new Date(Date.now() - day).toISOString(),
+			prLookup: { status: "pending", checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+		})
+		const path = join(agentDir, "work-attribution", "pr-checks.json")
+		const body = `${JSON.stringify({ [repository]: { [sha]: new Date().toISOString() } })}\n`
+		writeFileSync(path, body)
+		await lookup()
+		expect(commitCalls()).toHaveLength(0)
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBe(body)
+		expect(readFileSync(path, "utf8")).toBe(body)
+	})
+	it("uses an authoritative empty check note instead of a later legacy cache", async () => {
+		seed({
+			recordedAt: new Date(Date.now() - day).toISOString(),
+			prLookup: { status: "pending", checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+		})
+		ledger.setNote(agentDir, "agent", "pr-checks", "{}\n")
+		writeFileSync(
+			join(agentDir, "work-attribution", "pr-checks.json"),
+			JSON.stringify({ [repository]: { [sha]: new Date().toISOString() } }),
+		)
+		await restartedLookup()
+		expect(commitCalls()).toHaveLength(1)
+	})
+	it("persists an empty first pass without creating a JSON cache", async () => {
+		await lookup()
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBe("{}\n")
+		expect(existsSync(join(agentDir, "work-attribution", "pr-checks.json"))).toBe(false)
+	})
+	it("refuses the cache write when its lease expires while entering the transaction", async () => {
+		const backend = ledger.backendFor(agentDir)
+		const transaction = backend.tx
+		let expired = false
+		vi.spyOn(backend, "tx").mockImplementation((action) => {
+			expired = true
+			return transaction(action)
+		})
+		await expect(
+			lookup(undefined, () => {
+				if (expired) throw new Error("lease expired")
+			}),
+		).rejects.toThrow("lease expired")
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBeUndefined()
+	})
 	it("keeps the backoff of an unchanged result across a restart", async () => {
 		seed({ recordedAt: new Date().toISOString() })
 		await lookup()
@@ -1759,23 +1908,25 @@ describe("saved check times", () => {
 		expect(saved().filter((row) => row.type === "commit")).toHaveLength(1)
 		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
 	})
-	it("rewrites saved check times only after a change and forgets commits no longer recorded", async () => {
+	it("keeps unchanged check times and imported commits after a legacy journal disappears", async () => {
 		const other = "b".repeat(40)
 		const recordedAt = new Date(Date.now() - day).toISOString()
 		seed({ recordedAt })
 		seed({ sha: other, sessionId: "second", recordedAt }, true)
 		await lookup()
 		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
-		const { ino } = statSync(join(agentDir, "work-attribution", "pr-checks.json"))
+		const writes = vi.spyOn(ledger.backendFor(agentDir), "putNote")
 		later()
-		// Neither commit is due again, so the cache stays the same file.
+		// Neither commit is due again, so the cache note is not rewritten.
 		await lookup()
-		expect(statSync(join(agentDir, "work-attribution", "pr-checks.json")).ino).toBe(ino)
+		expect(writes).not.toHaveBeenCalled()
 		rmSync(join(agentDir, "work-attribution", "transitions"), { recursive: true })
-		rmSync(join(agentDir, "work-attribution", "second.jsonl"))
+		expect(existsSync(join(agentDir, "work-attribution", "second.jsonl"))).toBe(false)
+		// File removal is not retraction evidence: the accepted commit remains authoritative.
 		await restartedLookup()
 		expect(commitCalls()).toHaveLength(2)
-		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+		expect(summaries.readWorkRecords(agentDir).some((row) => row.type === "commit" && row.sha === other)).toBe(true)
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
 	})
 	it("drops a saved check time once it no longer delays a lookup", async () => {
 		seed({ recordedAt: new Date(Date.now() - day).toISOString() })
@@ -1919,5 +2070,31 @@ describe("lookup failure reasons", () => {
 		expect(saved().at(-1).prLookup).toMatchObject({ status: "error", reason: "unsupported" })
 		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
 		expect(lookupFailureReason(failure)).toBe("unsupported")
+	})
+	it("keeps a Bitbucket repository unsupported when gh returns a token for its host", async () => {
+		seed()
+		remote("https://bitbucket.org/team/repo.git")
+		// gh returns GH_ENTERPRISE_TOKEN for any host that is not github.com.
+		cli.auth.mockImplementation(async (command, args) =>
+			command === "gh" && args.join(" ") === "auth token --hostname bitbucket.org" ? "enterprise-token" : undefined,
+		)
+		http.mockImplementation(async () => new Response("<html>Not Found</html>", { status: 404 }))
+		await lookup()
+		expect(saved().at(-1).prLookup).toMatchObject({ status: "error", reason: "unsupported" })
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect(lookupFailureReason(failure)).toBe("unsupported")
+		expect(http.mock.calls.every(([url]) => !url.pathname.startsWith("/api/v4/"))).toBe(true)
+	})
+	it("keeps a GitHub Enterprise 404 actionable when gh returns a token for an unconfigured host", async () => {
+		remote("https://github.corp.example/team/repo.git")
+		cli.auth.mockImplementation(async (command) => (command === "gh" ? "enterprise-token" : undefined))
+		http.mockImplementation(async () =>
+			Response.json({ message: "Not Found", documentation_url: "https://docs.github.com/rest" }, { status: 404 }),
+		)
+		const failure = await lookupBranchPullRequest(repository, new AbortController().signal).catch((error) => error)
+		expect({ message: failure.message, reason: lookupFailureReason(failure) }).toEqual({
+			message: expect.stringContaining("GitHub could not find this repository"),
+			reason: undefined,
+		})
 	})
 })

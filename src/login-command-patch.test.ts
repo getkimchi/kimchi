@@ -111,6 +111,7 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 		session: {
 			modelRuntime: registry,
 			setModel: vi.fn().mockResolvedValue(undefined),
+			model: undefined,
 		},
 		showSelector: vi.fn((build: (done: () => void) => { component: unknown; focus?: unknown }) => {
 			const result = build(() => {
@@ -289,6 +290,106 @@ it("falls back to the first available model when the default is not present", as
 	expect(getFeedbackMessages(fakeIm)).toContainEqual(
 		expect.stringContaining("Logged in to Kimchi. Selected other-model. Credentials saved to "),
 	)
+})
+
+it("announces the auto-selected model when no prior Kimchi model is active", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-default",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// The login default is the first model in the registry, so the success
+	// message announces which model was auto-selected.
+	registry.getAvailable.mockReturnValue([{ id: "minimax-m3", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "minimax-m3", provider: "kimchi-dev" }, { persist: true })
+	const messages = getFeedbackMessages(fakeIm)
+	expect(messages).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected minimax-m3. Credentials saved to "),
+	)
+})
+
+it("defaults to the Auto router when the catalog serves it", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-auto",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// The catalog serves the routed virtual model alongside concrete models —
+	// login must prefer the router, matching the fresh-session default policy.
+	registry.getAvailable.mockReturnValue([
+		{ id: "glm-5.3", provider: "kimchi-dev" },
+		{ id: "auto", provider: "kimchi-dev" },
+	])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "auto", provider: "kimchi-dev" }, { persist: true })
+	expect(getFeedbackMessages(fakeIm)).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected auto. Credentials saved to "),
+	)
+})
+
+it("preserves a Kimchi provider model that is already active across login", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-preserve",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// Registry returns the default, but the session already runs a different
+	// Kimchi model — login should not clobber the user's choice.
+	registry.getAvailable.mockReturnValue([
+		{ id: "minimax-m3", provider: "kimchi-dev" },
+		{ id: "kimi-k2.6", provider: "kimchi-dev" },
+	])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.session.model = { id: "kimi-k2.6", provider: "kimchi-dev" }
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	// Login refreshes the credential but does not switch the model away from
+	// the user's prior Kimchi pick.
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+	const messages = getFeedbackMessages(fakeIm)
+	expect(messages).toContainEqual(expect.stringContaining("Logged in to Kimchi. Credentials saved to "))
+	expect(messages).not.toContainEqual(expect.stringContaining("Selected "))
+})
+
+it("still switches the model when the prior session model is non-Kimchi", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-switch",
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "minimax-m3", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// The prior model is from a different provider — login must switch to a
+	// Kimchi model so the new credential is actually usable.
+	fakeIm.session.model = { id: "gpt-4o", provider: "openai" }
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "minimax-m3", provider: "kimchi-dev" }, { persist: true })
 })
 
 it("reports failure when no models are available for the provider", async () => {

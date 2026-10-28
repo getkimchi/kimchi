@@ -241,6 +241,22 @@ describe("Claude Code skill discovery", () => {
 
 		expect(getConfiguredSkillResourcePaths(cwd, [claudeSkills, nativeSkill])).toEqual([nativeSkill])
 	})
+
+	it("excludes configured Claude Code skills named in excludeSkillNames (bundled disables-skills shadowing)", () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".claude", "skills", "xlsx", "SKILL.md"), "Office skill instructions.\n")
+		writeSkill(join(cwd, ".claude", "skills", "verify-this", "SKILL.md"), "Verify claims.\n")
+
+		const paths = getConfiguredSkillResourcePaths(cwd, [".claude/skills"], {
+			excludeSkillNames: ["xlsx", "pdf", "docx", "pptx"],
+		})
+
+		expect(paths).toHaveLength(1)
+		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toContain("Verify claims.")
+		// Without the option the same configured channel still advertises xlsx.
+		const unfiltered = getConfiguredSkillResourcePaths(cwd, [".claude/skills"])
+		expect(unfiltered).toHaveLength(2)
+	})
 })
 
 function writeSkill(path: string, content = "---\ndescription: Test skill.\n---\n# Skill\n"): void {

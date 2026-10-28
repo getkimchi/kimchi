@@ -1,6 +1,15 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
@@ -26,11 +35,14 @@ import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { testTheme } from "./__mocks__/theme.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
 import { savedWorkSummary } from "./__mocks__/work-summary.js"
+import * as ledgerRecords from "./pr-cost-reporting/ledger/records.js"
+import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import requestTimingExtension from "./request-timing.js"
 import { copySessionFileAndAddHandoffNote, removeTempDir } from "./teleport/provisioning/handoff-note.js"
 import * as billingSource from "./work-attribution/billing-source.js"
 import { createWorkCommitTrackingOperations } from "./work-attribution/commits.js"
 import * as continuation from "./work-attribution/continuation.js"
+import { changeWorkIssue } from "./work-attribution/issues.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
 import * as scope from "./work-attribution/scope.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries } from "./work-attribution/summary.js"
@@ -41,6 +53,7 @@ import {
 	getToolRequest,
 	getWorkId,
 	getWorkSegment,
+	pinProviderUsage,
 	prepareProviderRequest,
 	recordProviderRequest,
 	recordProviderResponse,
@@ -70,14 +83,14 @@ afterEach(async () => {
 	rmSync(dir, { recursive: true, force: true })
 })
 function records() {
-	return readdirSync(join(dir, "work-attribution"))
-		.filter((file) => file.endsWith(".jsonl"))
-		.flatMap((file) =>
-			readFileSync(join(dir, "work-attribution", file), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line)),
-		)
+	return backendFor(dir)
+		.readRecords({})
+		.map((row) => JSON.parse(row.body))
+}
+function failPersistence() {
+	vi.spyOn(backendFor(dir), "insertRecord").mockImplementation(() => {
+		throw new Error("ledger write unavailable")
+	})
 }
 function wireHeaders(values: BeforeProviderHeadersEvent["headers"]): Headers {
 	const headers = new Headers()
@@ -85,6 +98,115 @@ function wireHeaders(values: BeforeProviderHeadersEvent["headers"]): Headers {
 	return headers
 }
 describe("local work attribution", () => {
+	it("pins native usage to its actual retry after another call and session replace the active work", () => {
+		let sessionId = "native-original"
+		const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => sessionId } })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		sessionId = "native-next"
+		setWorkId(ctx)
+		const side = recordProviderRequest(ctx, ctx.model)
+		prepareProviderRequest(new Headers({ "X-Request-Id": side.requestId }), "", { bodyTags: [] })
+		const retry = new Headers({ "X-Request-Id": original.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		pinned?.current()?.save({ raw: { inputTokens: 12 }, finalized: true })
+		expect(pinned?.current()?.requestId).toBe(retry.get("X-Request-Id"))
+		expect(records().find((row) => row.nativeUsage)).toMatchObject({
+			requestId: retry.get("X-Request-Id"),
+			workId: original.workId,
+			sessionId: "native-original",
+			nativeUsage: { raw: { inputTokens: 12 }, finalized: true },
+		})
+		pinned?.release()
+	})
+	it("keeps native usage sinks independent for concurrent calls and their earlier attempts", () => {
+		const ctx = createContext({ cwd: dir })
+		const first = recordProviderRequest(ctx, ctx.model)
+		const second = recordProviderRequest(ctx, ctx.model)
+		const a = pinProviderUsage(first.requestId)
+		const b = pinProviderUsage(second.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": first.requestId }), "", { bodyTags: [] })
+		const earlier = a?.current()
+		const retry = new Headers({ "X-Request-Id": first.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		prepareProviderRequest(new Headers({ "X-Request-Id": second.requestId }), "", { bodyTags: [] })
+		earlier?.save({ raw: { inputTokens: 1 }, finalized: false })
+		a?.current()?.save({ raw: { inputTokens: 2 }, finalized: true })
+		b?.current()?.save({ raw: { inputTokens: 3 }, finalized: true })
+		expect(
+			records()
+				.filter((row) => row.nativeUsage)
+				.map((row) => [row.requestId, row.nativeUsage.raw.inputTokens]),
+		).toEqual([
+			[first.requestId, 1],
+			[retry.get("X-Request-Id"), 2],
+			[second.requestId, 3],
+		])
+		a?.release()
+		b?.release()
+	})
+	it("invalidates native usage identity when a retry cannot be recorded", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		expect(pinned?.current()).toBeDefined()
+		failPersistence()
+		expect(() =>
+			prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] }),
+		).toThrow("ledger write unavailable")
+		expect(pinned?.current()).toBeUndefined()
+		expect(pinProviderUsage("not-a-request")).toBeUndefined()
+		pinned?.release()
+	})
+	it("keeps logical-only usage distinct from a later recorded dispatch", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		const logicalOnly = pinned?.current()
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		logicalOnly?.save({ raw: { inputTokens: 1 } })
+		pinned?.current()?.save({ raw: { outputTokens: 2 } })
+		expect(
+			records()
+				.filter((row) => row.nativeUsage)
+				.map((row) => row.nativeUsage.dispatchObserved),
+		).toEqual([false, true])
+		pinned?.release()
+	})
+	it("retains a native usage handle and records later retries through unrelated request traffic", () => {
+		const ctx = createContext({ cwd: dir })
+		const original = recordProviderRequest(ctx, ctx.model)
+		const pinned = pinProviderUsage(original.requestId)
+		const otherObserver = pinProviderUsage(original.requestId)
+		otherObserver?.release()
+		otherObserver?.release()
+		prepareProviderRequest(new Headers({ "X-Request-Id": original.requestId }), "", { bodyTags: [] })
+		const unrelatedTraffic = () => {
+			// Only request-map pressure matters here; the tracked call still uses real capture.
+			const capture = vi.spyOn(ledgerRecords, "capture").mockImplementation(() => {})
+			try {
+				for (let index = 0; index < 1001; index++) recordProviderRequest(ctx, ctx.model)
+			} finally {
+				capture.mockRestore()
+			}
+		}
+		unrelatedTraffic()
+		const retry = new Headers({ "X-Request-Id": original.requestId })
+		prepareProviderRequest(retry, "", { bodyTags: [] })
+		expect(retry.get("X-Request-Id")).not.toBe(original.requestId)
+		pinned?.current()?.save({ raw: { outputTokens: 7 }, finalized: true })
+		expect(records().find((row) => row.nativeUsage)).toMatchObject({
+			requestId: retry.get("X-Request-Id"),
+			workId: original.workId,
+			nativeUsage: { raw: { outputTokens: 7 }, finalized: true },
+		})
+		pinned?.release()
+		expect(pinned?.current()).toBeUndefined()
+		unrelatedTraffic()
+		expect(pinProviderUsage(original.requestId)).toBeUndefined()
+	})
 	it.each([
 		"user",
 		"custom",
@@ -207,9 +329,11 @@ describe("local work attribution", () => {
 		expect(getWorkId(planner)).toBe(selected.workId)
 		expect(getWorkId(ctx)).toBe(target.workId)
 		await flushWorkSummaries()
-		const path = join(dir, "work", target.workId, "work.json")
 		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
-		writeFileSync(path, "damaged")
+		backendFor(dir).tx(() => {
+			backendFor(dir).clearProjection(target.workId)
+			backendFor(dir).markDirty(target.workId)
+		})
 		recoverWorkSummaries()
 		await flushWorkSummaries()
 		expect(savedWorkSummary(dir, target.workId).workLinks).toHaveLength(1)
@@ -322,8 +446,7 @@ describe("local work attribution", () => {
 		const headers = new Headers({ "X-Request-Id": requestId, "X-Tags": "team:one" })
 		if (retry) prepareProviderRequest(headers, url, { bodyTags: [] })
 		await flushWorkSummaries()
-		rmSync(join(dir, "work-attribution"), { recursive: true })
-		writeFileSync(join(dir, "work-attribution"), "blocked")
+		failPersistence()
 		const sent = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
 			const outgoing = new Headers(init?.headers)
 			expect(outgoing.get("X-Request-Id")).toBeNull()
@@ -568,8 +691,7 @@ describe("local work attribution", () => {
 		})
 		await fetch("https://model.invalid/v1/chat/completions", { headers: sdkHeaders })
 		await flushWorkSummaries()
-		rmSync(join(dir, "work-attribution"), { recursive: true })
-		writeFileSync(join(dir, "work-attribution"), "blocked")
+		failPersistence()
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		expect(await (await fetch("https://model.invalid/v1/chat/completions", { headers: sdkHeaders })).text()).toBe("ok")
 		expect(sent).toEqual([sdkHeaders.get("X-Request-Id"), null])
@@ -827,7 +949,10 @@ describe("local work attribution", () => {
 			timestamp: Date.now(),
 		})
 		await api.getHandler<SessionShutdownEvent>("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx)
-		rmSync(join(dir, "work", own, "work.json"))
+		backendFor(dir).tx(() => {
+			backendFor(dir).clearProjection(own)
+			backendFor(dir).markDirty(own)
+		})
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "resume" }, ctx)
 		await api.getHandler<InputEvent>("input")({ type: "input", text: "Implement /plan.md", source: "interactive" }, ctx)
 		expect(getWorkId(ctx)).toBe(own)
@@ -868,6 +993,122 @@ describe("local work attribution", () => {
 		})
 		await input
 		expect(getWorkId(ctx)).toBe(chosen)
+	})
+	it.each([false, true])("records terminal tool outcome under its original request (failed=%s)", async (isError) => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		const workId = getWorkId(ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "edit-original", name: "edit" }],
+				},
+			},
+			ctx,
+		)
+		recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		setWorkId(ctx)
+		await api.getHandler("tool_execution_end")(
+			{
+				toolCallId: "edit-original",
+				toolName: "edit",
+				isError,
+				durationMs: 12.75,
+				args: { content: "private-input" },
+				result: { content: "private-output" },
+			},
+			ctx,
+		)
+		const tools = readWorkRecords(dir).filter((row) => row.type === "tool_execution")
+		expect(tools).toHaveLength(1)
+		expect(tools[0]).toMatchObject({
+			workId,
+			requestId: request.headers["X-Request-Id"],
+			toolCallId: "edit-original",
+			toolName: "edit",
+			outcome: isError ? "failed" : "completed",
+			durationMs: 12.75,
+			sourceVersion: expect.any(String),
+		})
+		expect(JSON.stringify(tools)).not.toContain("private-input")
+		expect(JSON.stringify(tools)).not.toContain("private-output")
+		expect(getToolRequest(ctx, "edit-original")).toBeUndefined()
+	})
+	it("inherits a nested tool's explicit parent without exposing private tool payloads", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "parent", name: "codemode" }],
+				},
+			},
+			ctx,
+		)
+		const origin = getToolRequest(ctx, "parent")
+		setWorkId(ctx)
+		await api.getHandler("tool_execution_start")(
+			{ toolCallId: "child", toolName: "read", parentToolCallId: "parent", args: { path: "/private/file" } },
+			ctx,
+		)
+		expect(getToolRequest(ctx, "child")).toEqual(origin)
+		await api.getHandler("tool_execution_end")(
+			{
+				toolCallId: "child",
+				toolName: "read",
+				isError: false,
+				parentToolCallId: "parent",
+				result: { content: "private nested output" },
+			},
+			ctx,
+		)
+		expect(readWorkRecords(dir).filter((row) => row.type === "tool_execution")).toEqual([
+			expect.objectContaining({ ...origin, toolCallId: "child", toolName: "read", outcome: "completed" }),
+		])
+		expect(getToolRequest(ctx, "parent")).toEqual(origin)
+	})
+	it("retains tool receipts after their request leaves the bounded lookup cache", async () => {
+		const api = createExtensionApi()
+		const ctx = createContext({ cwd: dir })
+		createWorkAttributionExtension()(api.api)
+		const request: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+		await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(request, ctx)
+		const workId = getWorkId(ctx)
+		await api.getHandler("message_end")(
+			{
+				message: {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "long-running", name: "bash" }],
+				},
+			},
+			ctx,
+		)
+		// Only cache pressure matters; the original request and final tool receipt still use real capture.
+		const capture = vi.spyOn(ledgerRecords, "capture").mockImplementation(() => {})
+		try {
+			for (let index = 0; index <= 1000; index++) recordProviderRequest(ctx, { provider: "test", id: "auxiliary" })
+		} finally {
+			capture.mockRestore()
+		}
+		const id = request.headers["X-Request-Id"]
+		if (!id) throw new Error("Request identity was not captured")
+		recordProviderResponse(id, { status: 200, headers: new Headers() })
+		expect(readWorkRecords(dir).some((row) => row.type === "request_response" && row.requestId === id)).toBe(false)
+		await api.getHandler("tool_execution_end")({ toolCallId: "long-running", toolName: "bash", isError: false }, ctx)
+		expect(readWorkRecords(dir).filter((row) => row.type === "tool_execution")).toEqual([
+			expect.objectContaining({ workId, requestId: id, toolCallId: "long-running", outcome: "completed" }),
+		])
 	})
 	it("pins tool calls to their successful response across auxiliary requests and work switches", async () => {
 		const api = createExtensionApi()
@@ -936,8 +1177,7 @@ describe("local work attribution", () => {
 		const headers = api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")
 		await headers({ type: "before_provider_headers", headers: {} }, ctx)
 		await flushWorkSummaries()
-		rmSync(join(dir, "work-attribution"), { recursive: true })
-		writeFileSync(join(dir, "work-attribution"), "blocked")
+		failPersistence()
 		await headers({ type: "before_provider_headers", headers: {} }, ctx)
 		await api.getHandler("message_end")(
 			{
@@ -1372,7 +1612,7 @@ describe("local work attribution", () => {
 		])
 	})
 	it("warns visibly when local persistence fails and never exposes a false request ID", async () => {
-		writeFileSync(join(dir, "work-attribution"), "blocked")
+		failPersistence()
 		const ctx = createContext({ cwd: dir })
 		const mock = createExtensionApi()
 		createWorkAttributionExtension()(mock.api)
@@ -1385,10 +1625,148 @@ describe("local work attribution", () => {
 		const ctx = createContext({ cwd: dir })
 		getWorkId(ctx)
 		const path = join(dir, "work-attribution", "test-session.jsonl")
+		mkdirSync(dirname(path), { recursive: true })
 		appendFileSync(path, '{"type":"request"')
 		const next = recordProviderRequest(ctx)
-		const rows = readFileSync(path, "utf8").trim().split("\n")
-		expect(JSON.parse(rows.at(-1) ?? "").requestId).toBe(next.requestId)
+		expect(records().at(-1)?.requestId).toBe(next.requestId)
+		expect(readFileSync(path, "utf8")).toBe('{"type":"request"')
+	})
+})
+
+describe("Jira issue selection", () => {
+	function session() {
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir }) }
+		return {
+			api,
+			ctx,
+			input: (text: string) => api.getHandler<InputEvent>("input")({ type: "input", text, source: "interactive" }, ctx),
+			/** Sends one model request and returns its saved row. */
+			async send() {
+				const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} }
+				await api.getHandler<BeforeProviderHeadersEvent>("before_provider_headers")(event, ctx)
+				return records().find((row) => row.type === "request" && row.requestId === event.headers["X-Request-Id"])
+			},
+		}
+	}
+
+	it("binds requests from the next input to the selected issue and leaves earlier rows as they were", async () => {
+		const { api, ctx, input, send } = session()
+		// A key in the prompt is not a selection.
+		await input("Plan ABC-123, see https://example.atlassian.net/browse/ABC-124")
+		const planning = await send()
+		const history = records()
+		expect(existsSync(join(dir, "work", getWorkId(ctx), "issue.json"))).toBe(false)
+
+		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
+		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
+			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: unknown; waiting for billing`,
+			"info",
+		])
+		await input("Implement it")
+		const implementation = await send()
+
+		expect(planning).not.toHaveProperty("issue")
+		expect(implementation).toMatchObject({ workId: planning.workId, issue: { key: "ABC-123", revision: 1 } })
+		expect(records().slice(0, history.length)).toEqual(history)
+	})
+
+	it("keeps an input's issue when another session changes it, until the next input or run", async () => {
+		const { api, ctx, input, send } = session()
+		await input("Implement the export")
+		const first = await send()
+		await changeWorkIssue(dir, getWorkId(ctx), "other-session", "ABC-1")
+		const sameInput = await send()
+		// A run started without typed input, as /ferment starts one, reads the selection again.
+		await api.getHandler("before_agent_start")({}, ctx)
+		const nextRun = await send()
+		await changeWorkIssue(dir, getWorkId(ctx), "other-session", "ABC-2")
+		const nextRunAgain = await send()
+		await input("Then document it")
+		const nextInput = await send()
+
+		expect([first, sameInput].map((row) => row.issue)).toEqual([undefined, undefined])
+		expect([nextRun, nextRunAgain].map((row) => row.issue)).toEqual([
+			{ key: "ABC-1", revision: 1 },
+			{ key: "ABC-1", revision: 1 },
+		])
+		expect(nextInput.issue).toEqual({ key: "ABC-2", revision: 2 })
+		// A retry keeps the issue of the request it repeats.
+		const wire = new Headers({ "X-Request-Id": nextInput.requestId })
+		prepareProviderRequest(wire, "", { bodyTags: [] })
+		prepareProviderRequest(wire, "", { bodyTags: [] })
+		expect(records().find((row) => row.type === "request" && row.requestId === wire.get("x-request-id"))).toMatchObject(
+			{ parentRequestId: nextInput.requestId, issue: { key: "ABC-2", revision: 2 } },
+		)
+	})
+
+	it("prints the work's issue in the /work details, and shows, clears and rejects with /work issue", async () => {
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, mode: "rpc" }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		mock.api.events.on(WORK_DETAILS_REQUEST_EVENT, (request) => {
+			;(request as WorkDetailsRequest).lines.push("PR #7 open: https://github.com/example/repo/pull/7")
+		})
+		const command = mock.getRegisteredCommand("work")
+		const workId = getWorkId(ctx)
+		const segment = getWorkSegment(ctx)
+		const printed = () => vi.mocked(ctx.ui.notify).mock.lastCall
+		const details = (issue: string[]) =>
+			[
+				`Work ID: ${workId}`,
+				...issue,
+				"PR #7 open: https://github.com/example/repo/pull/7",
+				"Cost: unknown; waiting for billing",
+			].join("\n")
+
+		await command.handler("issue", ctx)
+		expect(printed()).toEqual([`Jira issue: none. Select one with: /work issue <KEY>\n${details([])}`, "info"])
+		await command.handler("issue ABC-123", ctx)
+		await command.handler("", ctx)
+		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		await command.handler("issue", ctx)
+		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		await command.handler("issue clear", ctx)
+		expect(printed()).toEqual([
+			`Jira issue ABC-123 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.\n${details([])}`,
+			"info",
+		])
+		await command.handler("issue ABC 123", ctx)
+		expect(printed()).toEqual([
+			'Not a Jira issue key: "ABC 123". Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.',
+			"warning",
+		])
+		// Choosing an issue is not a work choice: the work and its input segment stay.
+		expect({ workId: getWorkId(ctx), segment: getWorkSegment(ctx) }).toEqual({ workId, segment })
+	})
+
+	it("lists the current work's issue in the terminal's work panel", async () => {
+		const panels: Component[] = []
+		const custom = vi.fn().mockImplementation(
+			(factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+				new Promise((done) => {
+					void Promise.resolve(factory({} as TUI, testTheme, {} as never, done)).then((panel) => panels.push(panel))
+				}),
+		)
+		const ctx = { ...createCommandContext(), ...createContext({ cwd: dir, ui: { custom } }) }
+		const mock = createExtensionApi()
+		createWorkAttributionExtension()(mock.api)
+		const command = mock.getRegisteredCommand("work")
+		await command.handler("issue ABC-123", ctx)
+		await flushWorkSummaries()
+
+		const browsing = command.handler("", ctx)
+		await vi.waitFor(() => expect(panels).toHaveLength(1))
+		const view = panels[0].render(100).map(stripTerminalSequences)
+		expect(view).toContain(`  Work ID: ${getWorkId(ctx)}`)
+		expect(view).toContain("  Jira issue: ABC-123")
+		expect(view.join("\n")).toContain(`● ${getWorkId(ctx).slice(0, 8)} ABC-123`)
+		panels[0].handleInput?.("\r")
+		await browsing
+		const notice = String(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).split("\n")
+		expect(notice.slice(0, 2)).toEqual([`Work ID: ${getWorkId(ctx)}`, "Jira issue: ABC-123"])
+		expect(notice[2].startsWith("Cost: unknown")).toBe(true)
 	})
 })
 

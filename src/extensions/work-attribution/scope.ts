@@ -1,13 +1,15 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fstatSync, openSync, readFileSync } from "node:fs"
 import { realpath } from "node:fs/promises"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { promisify } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { backendFor, getNote, hasNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { object } from "./summary.js"
 
 export interface WorkAccount {
@@ -83,13 +85,11 @@ function scopePath(workId: string): string {
 	return join(getAgentDir(), "work", workId, "scope.json")
 }
 
-export function readWorkScope(workId: string): WorkScope | undefined {
-	let fd: number | undefined
+function parseWorkScope(text: string, workId: string): WorkScope | undefined {
 	try {
-		fd = openSync(scopePath(workId), "r")
-		if (fstatSync(fd).size > 8192) return
-		const value = JSON.parse(readFileSync(fd, "utf8"))
+		const value: unknown = JSON.parse(text)
 		if (
+			object(value) &&
 			value.version === 1 &&
 			value.workId === workId &&
 			isWorkAccount(value.account) &&
@@ -97,6 +97,20 @@ export function readWorkScope(workId: string): WorkScope | undefined {
 			value.repository
 		)
 			return { account: value.account, repository: value.repository }
+	} catch {
+		// Damaged scope stays unknown; never stamp it with today's account.
+	}
+}
+
+export function readWorkScope(workId: string): WorkScope | undefined {
+	// A5: the note is the authority for new works; a legacy scope.json still answers for old installs.
+	const note = getNote(getAgentDir(), workId, "scope")
+	if (note !== undefined) return parseWorkScope(note, workId)
+	let fd: number | undefined
+	try {
+		fd = openSync(scopePath(workId), "r")
+		if (fstatSync(fd).size > 8192) return
+		return parseWorkScope(readFileSync(fd, "utf8"), workId)
 	} catch {
 		// Old, damaged or unavailable scope remains unknown. Never stamp it with today's account.
 	} finally {
@@ -106,18 +120,19 @@ export function readWorkScope(workId: string): WorkScope | undefined {
 
 /** Only call for a work created in this process. Its original account and repository are immutable. */
 export function saveNewWorkScope(workId: string, scope: WorkScope): void {
-	const path = scopePath(workId)
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-	try {
-		writeFileSync(path, `${JSON.stringify({ version: 1, workId, ...scope })}\n`, { mode: 0o600, flag: "wx" })
-	} catch (error) {
-		if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST") throw error
-	}
+	// A5: first write wins, like the old exclusive create — an existing note or legacy file is never replaced.
+	backendFor(getAgentDir()).tx(() => {
+		if (hasNote(getAgentDir(), workId, "scope")) return
+		if (existsSync(scopePath(workId))) return
+		setNote(getAgentDir(), workId, "scope", `${JSON.stringify({ version: 1, workId, ...scope })}\n`)
+	})
 }
 
 interface CachedIdentity {
 	key: string
 	apiUrl: string
+	/** SSO organization routing header for OAuth credentials; absent for API keys. */
+	organizationId?: string
 	expiresAt: number
 	/** The verification in flight, if any. */
 	pending?: Promise<VerifyApiKeyResponse>
@@ -129,6 +144,7 @@ let cached: CachedIdentity | undefined
 function verifyIdentity(entry: CachedIdentity): void {
 	const pending = verifyApiKey(entry.key, {
 		endpoint: entry.apiUrl,
+		organizationId: entry.organizationId,
 		signal: AbortSignal.timeout(1000),
 		retry: { maxRetries: 0 },
 	})
@@ -160,12 +176,14 @@ export function platformApiUrl(cwd: string): string {
 	return resolveEndpoints({ cwd }).platformApiUrl.replace(/\/+$/, "")
 }
 
-/** The configured API key and platform API, from one read of the configuration. */
-function credentialOf(cwd: string): { key: string; apiUrl: string } {
+/** The configured credential (API key or SSO) and platform API, from one read of the configuration. */
+function credentialOf(cwd: string): { key: string; apiUrl: string; organizationId?: string } {
 	const config = loadConfig({ cwd })
+	const credentials = resolveGatewayCredentials(config)
 	return {
-		key: config.apiKey ?? "",
+		key: credentials.token,
 		apiUrl: resolveEndpoints({ cwd, config }).platformApiUrl.replace(/\/+$/, ""),
+		organizationId: credentials.organizationId,
 	}
 }
 
@@ -183,14 +201,15 @@ export function workCredential(cwd: string): string {
  * while one background check refreshes it.
  */
 export async function captureWorkAccount(cwd: string): Promise<WorkAccountSnapshot | undefined> {
-	const { key, apiUrl } = credentialOf(cwd)
+	const { key, apiUrl, organizationId } = credentialOf(cwd)
 	if (!key) return
 	const isCurrent = () => {
 		const current = credentialOf(cwd)
 		return current.key === key && current.apiUrl === apiUrl
 	}
 	try {
-		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl) cached = { key, apiUrl, expiresAt: 0 }
+		if (!cached || cached.key !== key || cached.apiUrl !== apiUrl)
+			cached = { key, apiUrl, organizationId, expiresAt: 0 }
 		const entry = cached
 		if (!entry.pending && entry.expiresAt <= Date.now()) verifyIdentity(entry)
 		const identity = entry.verified ?? (await entry.pending)

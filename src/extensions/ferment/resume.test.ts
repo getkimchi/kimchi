@@ -13,7 +13,7 @@
  * matching how resumeFerment / confirmPendingScope resolve the ferments root.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
@@ -25,6 +25,7 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import { seedOrgPolicy } from "../__mocks__/org-policy.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { getWorkId, recordProviderRequest, setWorkId } from "../work-attribution.js"
@@ -629,7 +630,9 @@ describe("saved Ferment work attribution", () => {
 			{ ...emptyState(), workId: "11111111-1111-4111-8111-111111111111" },
 			{ root: h.fermentsDir },
 		)
-		writeFileSync(join(h.fermentsDir, "agent"), "blocked")
+		vi.spyOn(backendFor(join(h.fermentsDir, "agent")), "insertRecord").mockImplementation(() => {
+			throw new Error("attribution storage unavailable")
+		})
 		const ctx = createContext({ cwd: h.fermentsDir })
 		const warning = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 		try {

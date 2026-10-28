@@ -81,10 +81,12 @@ if (!isCI) {
 
 cleanDist()
 // Opt-in skip (KIMCHI_SKIP_TYPECHECK=1 in CI): memory-constrained CI pods
-// can OOM tsc before the compile step. Benchmark artifact builds use it —
-// product CI still typechecks every src change; the benchmarked ref's own
-// CI covers it. Scoped to CI so the env var cannot leak into local or
-// release builds through an exported shell profile.
+// can OOM tsc before the compile step (macos-15 arm64 runners cap Node's
+// old-space at ~2 GB while tsc needs ~2.7 GB on this codebase). Used by
+// benchmark artifact builds and the release workflow's build jobs — the
+// release `checks` job typechecks the same commit before any build job
+// runs, and the benchmarked ref's own CI covers it. Scoped to CI so the
+// env var cannot leak into local builds through an exported shell profile.
 const skipTypecheck = process.env.KIMCHI_SKIP_TYPECHECK === "1" && process.env.CI === "true"
 if (process.env.KIMCHI_SKIP_TYPECHECK === "1" && !skipTypecheck) {
 	console.warn("[build] KIMCHI_SKIP_TYPECHECK is ignored outside CI — typechecking anyway")
@@ -92,9 +94,7 @@ if (process.env.KIMCHI_SKIP_TYPECHECK === "1" && !skipTypecheck) {
 if (!skipTypecheck) {
 	run("typecheck", "pnpm run typecheck")
 } else {
-	console.warn(
-		"[build] KIMCHI_SKIP_TYPECHECK=1 set in CI — skipping typecheck (memory-constrained benchmark builds only)",
-	)
+	console.warn("[build] KIMCHI_SKIP_TYPECHECK=1 set in CI — skipping typecheck (release build jobs / benchmark builds)")
 }
 
 // Externalize packages that cannot be bundled into a Bun compiled binary (native addons, browser automation harnesses).

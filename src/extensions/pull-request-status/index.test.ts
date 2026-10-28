@@ -742,9 +742,8 @@ describe("PR status with the real reconciliation supervisor", () => {
 			join(directory, "work-attribution", "history.jsonl"),
 			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
 		)
-		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts. A reconciliation that
-		// work tracking requests at startup can add one more pass, so wait for at least these and an idle scan.
-		// A loaded CI runner can take several seconds per pass over the 101-row journal.
+		// The lease-owned collector automatically discovers all 101 legacy commits. Passive ticks read
+		// only the committed ledger; explicitly drive the next existing tick before checking its delivery.
 		const pass = async (deliveries: number) => {
 			await vi.waitFor(() => expect(delivered.length).toBeGreaterThanOrEqual(deliveries), { timeout: 25_000 })
 			await vi.waitFor(async () => expect(await check(join(directory, "work-attribution"))).toBe(false), {
@@ -752,6 +751,8 @@ describe("PR status with the real reconciliation supervisor", () => {
 			})
 		}
 		await start(status)
+		await pass(rows.length)
+		await vi.advanceTimersByTimeAsync(30_000)
 		await pass(2 * rows.length)
 		// Journal replay must not replace the current branch's PR with a historical commit association.
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls

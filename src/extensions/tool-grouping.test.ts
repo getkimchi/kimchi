@@ -161,6 +161,18 @@ describe("patchAddChild / getParent", () => {
 		parent2.addChild(child)
 		expect(getParent(child)).toBe(parent2)
 	})
+
+	it("tolerates non-object components — delegates without throwing", () => {
+		// Regression test: a stale image-source reuse in upstream updateDisplay once
+		// handed addChild(undefined) on --continue replay, and the WeakMap tracker
+		// turned that into a fatal TypeError. Tracking must never throw.
+		patchAddChild()
+		const parent = new Container()
+		// biome-ignore lint/suspicious/noExplicitAny: deliberately breaking the addChild contract
+		expect(() => parent.addChild(undefined as any)).not.toThrow()
+		// biome-ignore lint/suspicious/noExplicitAny: deliberately breaking the addChild contract
+		expect(() => parent.addChild("not-a-component" as any)).not.toThrow()
+	})
 })
 
 function mockTool(id: string, opts: { isPartial?: boolean; isError?: boolean } = {}): object {

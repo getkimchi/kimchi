@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, it, vi } from "vitest"
 import { BILLING_ACCOUNT, seedPendingWorkCost } from "../tui/support/work-costs.js"
+import { readWorkNote } from "../tui/support/work-summary.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor } from "./support/scenarios.js"
 
@@ -120,11 +121,11 @@ it("shows an open MR's pending cost, then its confirmed and inferred total once 
 	})
 	mkdirSync(join(cwd, ".kimchi", "plans"), { recursive: true })
 	writeFileSync(join(cwd, ".kimchi", "plans", "costs.md"), `<!-- kimchi-work-id: ${workId} -->\n# Add a greeting\n`)
-	// `/work` reads these totals; the full `costs.json` is refreshed at most every five minutes.
-	const totalsPath = join(agentDir, "work", workId, "cost-totals.json")
+	// `/work` reads bounded totals from the ledger, independently of full report refreshes.
 	const totals = () => {
 		try {
-			return JSON.parse(readFileSync(totalsPath, "utf8"))
+			const note = readWorkNote(agentDir, workId, "cost-totals")
+			return note === undefined ? undefined : JSON.parse(note)
 		} catch {
 			return undefined
 		}

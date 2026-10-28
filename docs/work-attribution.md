@@ -2,39 +2,27 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-The result is a summary in `~/.config/kimchi/harness/work/<workId>/` in the user's home directory: `work.json` and its row logs. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend; `costs.json` keeps the calculation. Incomplete billing stays unknown. These files are not uploaded.
+Records, derived summaries, cost caches and delivery state live in one SQLite database, `~/.config/kimchi/harness/pr-cost-reporting/ledger.db`. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend. Incomplete billing stays unknown. The database itself is not uploaded; [PR cost reporting](pr-cost-reporting.md) sends normalized facts when enabled.
 
 ## Where the files live
 
-**The summary is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory, with a separate folder for each work ID. `~` means the home directory of the user running Kimchi.
+**The ledger is stored per user, outside the project.** All projects use the same `~/.config/kimchi/harness/` directory. SQLite stores capture records and bookkeeping instead of creating a file for every session, work row or cache update. Retained plans and native edit contents still use files. `~` means the home directory of the user running Kimchi.
 
 ```text
 # Project: editable plan
 ~/src/example/.kimchi/plans/add-search.md
 
-# User: summary, cost reports and retained plan versions
-~/.config/kimchi/harness/work/<workId>/work.json
-~/.config/kimchi/harness/work/<workId>/rows/<collection>.<generation>.jsonl
-~/.config/kimchi/harness/work/<workId>/scope.json
-~/.config/kimchi/harness/work/<workId>/cost-totals.json
-~/.config/kimchi/harness/work/<workId>/costs.json
+# User: capture, summaries, bookkeeping and event outbox
+~/.config/kimchi/harness/pr-cost-reporting/ledger.db
+
+# User: retained plan versions
 ~/.config/kimchi/harness/work/<workId>/plans/add-search-<content-hash>.md
 
-# User: saved task text used for later matching
-~/.config/kimchi/harness/work/<workId>/intent.json
-
-# User: source history used to rebuild summaries and match later commits
-~/.config/kimchi/harness/work-attribution/<session-id>.jsonl
-~/.config/kimchi/harness/work-attribution/transitions/<repo-worktree-hash>.jsonl
-~/.config/kimchi/harness/work-attribution/ref-tips/<snapshot-hash>.json
+# User: retained native edit contents
 ~/.config/kimchi/harness/work-attribution/objects/<repository-hash>/
 ```
 
-For example, work `6f102360-39a9-4d6e-8ac7-984c97c0e313` is saved at:
-
-```text
-~/.config/kimchi/harness/work/6f102360-39a9-4d6e-8ac7-984c97c0e313/work.json
-```
+Existing JSON/JSONL history remains readable and is imported without deletion. Its original byte hashes and journal cursors make repeated imports idempotent. New capture does not rewrite those files.
 
 Deleting a worktree removes its editable plan but leaves the user-level summary and retained native plan copies. To continue elsewhere, name the **absolute retained path** shown when Kimchi saved the plan. Ordinary Markdown files, such as ADRs written through a skill, are not copied into this plan folder.
 
@@ -55,13 +43,29 @@ flowchart LR
 
 ## Browse works with `/work`
 
-In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID. It also shows the work's own priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`. Own spend covers the work's requests and requests a correction linked into it, not other works on the same PR.
+In the terminal, `/work` opens a list of works. The current work comes first, marked `●`, followed by up to 29 works with activity in the last 35 days, newest first. Each row names the work by its saved plan's title, or else by repository and branch, with a short work ID; a Jira issue chosen with `/work issue` comes first, for example `ABC-123 · kimchi · feat/jira`. It also shows the work's own priced spend and PR state, for example `$0.0623 · PR #731 open` or `$0.0123 known so far · 2 PRs`. Own spend covers the work's requests and requests a correction linked into it, not other works on the same PR.
 
 Amounts in the list are rounded; the details keep exact values. `known so far` means some requests still have no price, including requests made since the last cost check. A work whose requests have no price yet shows `cost unknown`, never `$0`. The header adds up the cost reports of the listed works. Connected works share one report, so its requests count once, including those of connected works that are not listed.
 
 The selected row shows what `/work` prints, plus its repository, branch, last activity and request count. Only the current work has live PR lookup lines; other works show their saved PR links. Enter prints the selected work's details into the conversation, and Esc closes the list. The list reads only each work's small `work.json` and `cost-totals.json`, so it opens quickly for long works and never waits for the network. Other works without a readable `work.json` are left out until an update rebuilds their summary.
 
-ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work matching on|off` and `/work link|unlink`.
+ACP, RPC and print mode keep printing the current work's details as text. So do `/work new`, `/work <plan path>`, `/work issue`, `/work matching on|off` and `/work link|unlink`.
+
+## Choose the work's Jira issue with `/work issue`
+
+```text
+/work issue ABC-123   # select it for the current work
+/work issue            # show it, or a key the branch name suggests
+/work issue clear      # remove it
+```
+
+`/work issue <KEY>` selects a Jira issue for the current work, including work outside a Git repository. A key is a project key, a dash and an issue number, such as `ABC-123`. Lowercase letters are saved, and shown, in uppercase; anything else is refused. Selecting and clearing say what changed, and every form prints the work's details as `/work` does, with the selected issue under the work ID.
+
+The selection applies from the next prompt. Each request records the issue its work had when the request's prompt began, as `"issue": {"key": "ABC-123", "revision": 1}` in its request record; requests already sent keep what they recorded. A run started without a typed prompt, such as one `/ferment` starts, reads the selection again too. When matching moves a prompt to another work, its requests record that work's issue. A selection made in another session of the same work applies there from that session's next prompt.
+
+`/work issue` also checks the current branch. A branch name with exactly one Jira-key-shaped token other than the selected issue, such as `feature/ABC-123-add-jira`, is suggested with the command that selects it; a name with several keys lists them. A detached HEAD or a folder outside Git suggests nothing. Kimchi never selects an issue from a branch name or from prompt text. `/work` and the work list show the selected issue under the work ID.
+
+Each selection or clear saves the next revision in `work/<workId>/issue.json`, which holds the current one. It is separate from `scope.json`, which never changes, and from the session journals. Writers lock the file while they read and replace it, as the work summary's writers do, so sessions that select at the same time get consecutive revisions and the later one wins. If the file cannot be read, `/work` says the selection is unknown until the next `/work issue <KEY>` or `/work issue clear`. Kimchi does not check the key with Jira. PR cost reports send the selection with each PR the work's requests went to, as a `work` key, so its cost counts for the issue.
 
 ## How Kimchi matches things
 
@@ -287,11 +291,12 @@ Each commit keeps two extra fields, `prLookup` and `pullRequests[]`. The rows af
 | Field | Meaning |
 | --- | --- |
 | `prLookup.status` | `pending` when no PR or MR was found, `linked` after a successful lookup with links, or `error` when the lookup failed. A new commit has no lookup result yet. |
-| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record; `work-attribution/pr-checks.json` keeps their time. |
+| `prLookup.checkedAt` / `error` | Time and error of the last saved lookup result. Unchanged checks do not append another record; the ledger's `pr-checks` bookkeeping note keeps their time. |
 | `pullRequests[]` | Confirmed GitHub or GitLab links. The existing field name stays the same for compatibility; later errors do not erase links. |
 | `provider` / `number` | `github` uses the PR number; `gitlab` uses the project's MR number (`iid`), not its global ID. Older links without `provider` mean GitHub. |
 | `id` / `repositoryId` | Stable provider IDs for the PR or MR and its target repository, when returned. These survive repository renames; older records can omit them. |
 | `title` / `author` | The provider's title, cut to 1,024 characters, and the author's login (GitHub `user.login`, GitLab `author.username`), read from the responses lookup already receives. Only PR cost reporting uploads them; `/work` and the footer do not show them. Empty or malformed values are left out. Older records omit both and gain them on the link's next check; a merged link with stable IDs is no longer checked, so one saved by an earlier version usually keeps omitting them. |
+| `branchIssueKeys` | The Jira keys the PR's head branch names (GitHub `head.ref`, GitLab `source_branch`), at most 20; the branch name is not kept. Only PR cost reporting uploads them, as `branch` keys. Older records omit them. |
 | `headSha` / `mergeCommitSha` | The head commit and the provider's merge hash. GitHub may return a test-merge hash before merging; use `state` to establish an actual merge. |
 | `mergedAt` / `closedAt` / `checkedAt` | Provider event times, or `null` when unavailable, and when Kimchi checked the link. GitLab's state can be `merged` even when its response omits `mergedAt`. |
 
@@ -314,7 +319,7 @@ Kimchi tries credentials in this order: an environment token for the selected ho
 | No token and no CLI | Tries public repository access. Private repositories require credentials. |
 | No access, network failure or rate limit | Shows the reason and retries later; local request, edit and commit recording continue. |
 
-`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com. GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
+`GH_TOKEN` or `GITHUB_TOKEN` apply to github.com and to GHE.com hosts (`<subdomain>.ghe.com`). GitLab accepts `GITLAB_TOKEN`, `GLAB_TOKEN` or `GITLAB_ACCESS_TOKEN`. Its host comes from `GITLAB_HOST`, then `GL_HOST`, then `GITLAB_URI`; gitlab.com is the default only when none is set. An invalid host disables the environment token. It never falls back to sending that token to gitlab.com. Enterprise GitHub tokens require the matching `GH_HOST`. Saved Kimchi tokens are read by exact host. Credentials never follow a redirect to another host. Anonymous requests have lower rate limits.
 
 ### 5. Build the local summary
 
@@ -353,26 +358,19 @@ All paths below are inside the agent directory.
 
 | File | What it is for |
 | --- | --- |
-| `work/<workId>/work.json` | Manifest: what `/work` lists and the committed length of each row log. Replacing it commits new rows. |
-| `work/<workId>/rows/<collection>.<generation>.jsonl` | Readable summary rows: request attempts, plans, file edits, continuation evidence, commits, PR links and, in `sessions`, the contributing sessions. A later line with the same key replaces an earlier one. |
-| `work/<workId>/cost-totals.json` | What `/work` prints: PR totals, and the work's own requests and priced spend. Rewritten when it changes. |
-| `work/<workId>/costs.json` | Derived PR totals and each request's allocation, price and billing lookup status, for all connected works. Refreshed at most every five minutes after a journal or refresh failure changes, and rebuilt from source records when missing. |
-| `work-attribution/billing-polls.json` | Latest polling times and the last refresh that failed before any billing page, only for requests whose billing window is still open. Replaced after checks, so unchanged results and failed refreshes do not grow the journal. |
-| `work/<workId>/scope.json` | Original API endpoint, organization, user and Git common-directory identity. Credentials are not saved here. |
-| `work/<workId>/intent.json` | Saved task text for model matching, bound to its original account and repository. Not written while matching is off. |
+| `pr-cost-reporting/ledger.db`: capture and translation | Original work/request/tool/edit records and pending translation intents. An event and its fulfilled source hashes commit together; unresolved evidence stays pending. |
+| `pr-cost-reporting/ledger.db`: summary projection | Rebuildable manifests and keyed rows for work, requests, plans, edits, continuation, commits, PR links and sessions. |
+| `pr-cost-reporting/ledger.db`: bookkeeping | Cost totals, full calculations, billing poll schedules, original scope, matching intent, Jira selection, ref-tip snapshots and reconciliation progress. Existing JSON files supply compatibility reads where supported. |
+| `pr-cost-reporting/ledger.db`: outbox | Revisioned normalized events, exact frozen HTTP bodies, acknowledgement history and durable retry notes. Retained legacy snapshots and receipts use their own bookkeeping namespace. |
 | `work/<workId>/plans/<name>-<content-hash>.md` | Saved plan versions that survive worktree deletion. Identical content reuses the same copy. |
-| `work-attribution/<session-id>.jsonl` | Append-only history used to rebuild the summary. |
-| `work-attribution/transitions/*.jsonl` | Edit evidence: request/tool IDs, repository paths, Git blobs and file modes before and after each native edit/write change. |
-| `work-attribution/ref-tips/*.json` | Shared snapshots of the commit references and worktree heads visible when an edit was saved. `historyBoundaryId` identifies the snapshot. |
 | `work-attribution/objects/<repository hash>/` | Kimchi's own Git object store of native edit text kept for `file-hunks` matching. Nothing is deleted by age; it grows by one object per distinct edited content, without copies of the committed version an edit starts from. |
-| `work-attribution/pr-checks.json` | When each recorded repository and commit was last checked for a PR or MR, including checks whose unchanged result was not appended. A restart therefore keeps the lookup schedule. Kimchi replaces the file at most once per pass and only after a change. It drops entries for commits it no longer records and for checks more than a day old. Deleting it costs at most one extra check per commit. |
+| `pr-cost-reporting/ledger.db`: `pr-checks` bookkeeping note | When each recorded repository and commit was last checked for a PR or MR, including unchanged results. A restart keeps the schedule. Kimchi updates the note only when it changes and drops entries for unrecorded commits or checks more than a day old. A retained `work-attribution/pr-checks.json` supplies the initial cache only when the note is absent; Kimchi leaves that file untouched. |
 
 - Each plan record has `path` for the editable file, `snapshotPath` for its retained version and `contentHash` to detect changes. Plans produced by an attributed tool also name its `requestId`. If saving the retained copy fails, Kimchi shows a warning and leaves the local plan usable. Naming or pasting that plan later then does not continue its work or confirm its producing input; `/work <plan path>` still selects it.
-- Kimchi flushes source records before updating the summary. Writers merge under a per-work lock, append only changed rows, sync them, then replace `work.json`, which commits them. Readers stop at each log's committed length, so an interrupted append is ignored and the next writer removes it. Shutdown waits for queued summary writes.
-- When a log's superseded lines outweigh half its current rows and exceed 1 MiB, the writer copies each key's latest row into the next generation, commits it and deletes the old file. A reader that loaded the old manifest rereads it once.
-- Recovery saves the time of its last successful scan plus each manifest's size and modification time. It reads source logs changed since then and skips writing unchanged results.
-- A missing or invalid summary, a log shorter than its committed length, or a damaged row triggers a full replay of the work's source logs, including edit journals, into a new generation. A failed log read or summary write leaves the checkpoint unchanged.
-- A `work.json` that is not a version 2 manifest, such as a `"version": 1` summary saved by v1.7.1 or earlier, is deleted the next time Kimchi lists or updates that work; no other file is touched. The summary is then rebuilt like a missing one, and `/work` leaves the work out until it is. `costs.json`, `cost-totals.json` and PR cost reports come from the source logs, so they do not change. Earlier version 2 manifests that list `sessions` themselves stay readable; the work's next update moves them into the sessions log.
+- Native capture commits the source record, translation intent and summary update in one SQLite transaction. A failed write rolls back rather than leaving a half-recorded event.
+- A missing or version-invalid projection is rebuilt from stored capture records; the authority and pending outbox are preserved. Cost calculations read the authority rather than stale legacy summary files.
+- Import cursors retain file identity, consumed byte offset and boundary hash. Repeated imports preserve original hashes, avoid replaying duplicate old records over newer state, and do not delete the source files. A failed transaction leaves its cursor unchanged.
+- SQLite uses WAL and private local files. Retained content can still grow; moving bookkeeping into the database is not an automatic retention or deletion policy.
 
 </details>
 

@@ -130,6 +130,25 @@ function configureSmokeEndpoint(apiKey: string | undefined): void {
 	writeFileSync(configPath, JSON.stringify(config))
 }
 
+/** Run a bundled skill script (pptx.mjs / pdf.mjs) through the binary's own
+ *  embedded runtime, in a working directory the script can write to. */
+export function runSkillScript(opts: {
+	workDir: string
+	cli: "pptx" | "pdf"
+	args: string[]
+	timeoutMs?: number
+}): SpawnSyncReturns<string> {
+	const script = join(PACKAGE_DIR, "skills", opts.cli, "scripts", `${opts.cli}.mjs`)
+	const result = spawnSync(BINARY_PATH, [script, ...opts.args], {
+		cwd: opts.workDir,
+		encoding: "utf-8",
+		timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+		env: { ...process.env, BUN_BE_BUN: "1" },
+	})
+	if (result.error) throw result.error
+	return result
+}
+
 interface RunBinaryOptions {
 	args?: string[]
 	cwd?: string

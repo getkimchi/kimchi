@@ -18,9 +18,15 @@
  * is Bun-side, same split as backend.ts.
  */
 
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import type { KimchiConfig } from "../../config.js"
 import { loadConfig } from "../../config.js"
-import { disableMem0Telemetry, resolveEmbeddingEndpoint, tagEmbeddingRequests } from "./backend.js"
+import {
+	disableMem0Telemetry,
+	MEMORY_CREDENTIALS_ERROR,
+	resolveEmbeddingEndpoint,
+	tagEmbeddingRequests,
+} from "./backend.js"
 
 /** The langchain-Embeddings shape mem0's LangchainEmbedder delegates to. */
 export interface SharedEmbedder {
@@ -99,16 +105,19 @@ export function dedupeEmbedder(underlying: UnderlyingEmbedder): SharedEmbedder {
  * through this single instance.
  */
 export async function createSharedEmbedder(config: KimchiConfig = loadConfig()): Promise<SharedEmbedder> {
-	const gateway = { baseURL: config.llmEndpoint, apiKey: config.apiKey }
+	// Configured API key, or the SSO credential in auth.json — the same
+	// resolution every other gateway caller shares (gateway-credentials.ts).
+	const credentials = resolveGatewayCredentials(config)
+	const gateway = { baseURL: config.llmEndpoint, apiKey: credentials.token }
 	const endpoint = resolveEmbeddingEndpoint(undefined, gateway, config)
 	if (!endpoint.apiKey) {
-		throw new Error("memory backend embedder requires an API key — set KIMCHI_API_KEY or run `kimchi setup`")
+		throw new Error(MEMORY_CREDENTIALS_ERROR)
 	}
 	// Both must run before the mem0 import / embedder construction: the
 	// telemetry flag is read at module scope, and the OpenAI SDK captures
 	// the fetch reference at client construction (backend.ts contract).
 	disableMem0Telemetry()
-	tagEmbeddingRequests(config.llmEndpoint)
+	tagEmbeddingRequests(config.llmEndpoint, credentials.organizationId)
 	const { EmbedderFactory } = await import("mem0ai/oss")
 	return dedupeEmbedder(
 		EmbedderFactory.create("openai", {
