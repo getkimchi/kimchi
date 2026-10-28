@@ -1,6 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } from "./store.js"
 import type { TodoScope } from "./types.js"
@@ -471,6 +471,35 @@ describe("todo widget helpers", () => {
 		expect(lines).toContain("  ○ task 4")
 	})
 
+	it("lets wheel fall through when expand-all already shows every row", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{ todos: Array.from({ length: 16 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })) },
+			TEST_SESSION_ID,
+		)
+		expandTodoWidget(ctx)
+		const instance = setWidget.mock.calls[0][1]({ requestRender: vi.fn() }, theme)
+
+		const result = instance.handleMouse({
+			type: "wheel",
+			button: "none",
+			x: 2,
+			y: 2,
+			screenX: 2,
+			screenY: 5,
+			width: 80,
+			height: 12,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			wheelDelta: 3,
+		})
+
+		expect(result).toBeUndefined()
+		expect(instance.render(120)).toContain("  ○ task 1")
+	})
+
 	it("re-registers the widget for a new context and ignores stale invalidations", () => {
 		const firstSetWidget = vi.fn()
 		const secondSetWidget = vi.fn()
@@ -716,34 +745,51 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 	it("ticks the running spinner and stops the timer on dispose", () => {
 		vi.useFakeTimers()
-		const previousCi = process.env.CI
-		delete process.env.CI
-		try {
-			const requestRender = vi.fn()
-			const setWidget = vi.fn()
-			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
-			setTodoAgentActive(ctx, true)
-			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
-			syncTodoWidget(ctx)
-
-			const component = setWidget.mock.calls[0][1]
-			const instance = component({ requestRender }, theme)
-			expect(instance.render(80)[0]).toContain("⠋ 1 running")
-
-			requestRender.mockClear()
-			vi.advanceTimersByTime(SPINNER_INTERVAL_MS)
-			expect(requestRender).toHaveBeenCalledWith(true)
-			expect(instance.render(80)[0]).toContain("⠙ 1 running")
-
-			instance.dispose()
-			requestRender.mockClear()
-			vi.advanceTimersByTime(SPINNER_INTERVAL_MS * 2)
-			expect(requestRender).not.toHaveBeenCalled()
-		} finally {
+		onTestFinished(() => {
 			vi.useRealTimers()
-			if (previousCi === undefined) delete process.env.CI
-			else process.env.CI = previousCi
-		}
+		})
+		const requestRender = vi.fn()
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		setTodoAgentActive(ctx, true)
+		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+		syncTodoWidget(ctx)
+
+		const component = setWidget.mock.calls[0][1]
+		const instance = component({ requestRender }, theme)
+		expect(instance.render(80)[0]).toContain("⠋ 1 running")
+
+		requestRender.mockClear()
+		vi.advanceTimersByTime(SPINNER_INTERVAL_MS)
+		expect(requestRender).toHaveBeenCalledWith(true)
+		expect(instance.render(80)[0]).toContain("⠙ 1 running")
+
+		instance.dispose()
+		requestRender.mockClear()
+		vi.advanceTimersByTime(SPINNER_INTERVAL_MS * 2)
+		expect(requestRender).not.toHaveBeenCalled()
+	})
+
+	it("keeps a static running glyph without ticking under the e2e harness", () => {
+		vi.useFakeTimers()
+		vi.stubEnv("KIMCHI_E2E_STATIC_TODO_SPINNER", "1")
+		onTestFinished(() => {
+			vi.useRealTimers()
+			vi.unstubAllEnvs()
+		})
+		const requestRender = vi.fn()
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		setTodoAgentActive(ctx, true)
+		applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
+		syncTodoWidget(ctx)
+
+		const instance = setWidget.mock.calls[0][1]({ requestRender }, theme)
+		requestRender.mockClear()
+		vi.advanceTimersByTime(SPINNER_INTERVAL_MS * 2)
+
+		expect(requestRender).not.toHaveBeenCalled()
+		expect(instance.render(80)[0]).toContain("⠋ 1 running")
 	})
 
 	it("appends the blocked count to the header when present", () => {

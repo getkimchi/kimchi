@@ -116,7 +116,7 @@ function notifyUsage(theme: Theme): string[] {
 		`  /${TODOS_COMMAND}                    Collapse/expand todo list`,
 		`  /${TODOS_COMMAND} expand             Expand todo list`,
 		`  /${TODOS_COMMAND} expand all         Expand todo list without capping`,
-		`  /${TODOS_COMMAND} collapse           Hide todo overlay`,
+		`  /${TODOS_COMMAND} collapse           Hide todo list`,
 		`  /${TODOS_COMMAND} add <text>          Add a todo item`,
 		`  /${TODOS_COMMAND} done <n>            Mark an item completed`,
 		`  /${TODOS_COMMAND} pending <n>         Mark an item pending`,

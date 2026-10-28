@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
 import { Key, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@earendil-works/pi-tui"
+import { readE2eSeam } from "../e2e-seam.js"
+import { BRAILLE_FRAMES } from "../spinner.js"
 import { hasEffectivePendingCheckin } from "./checkin-gate.js"
 import { parseTodoScopeKey } from "./scope.js"
 import { GLOBAL_TODO_SCOPE, getTodoCountsForScope, getTodoState, resolveTodoScope } from "./store.js"
@@ -24,8 +26,6 @@ const TODO_STATUS_KEY = "todos"
 const TODO_XS_TERMINAL_ROWS = 24
 const TODO_TALL_TERMINAL_ROWS = 70
 const MAX_ROLLED_CONTEXT_ROWS = 2
-/** Match Agents strip spinner frames (avoid importing agent-widget — circular). */
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 /** Keep this well above tool/status spinners' cadence — each tick force-renders
  *  the whole TUI, and an 80ms loop pushed tui-e2e past the 25m job budget. */
 export const SPINNER_INTERVAL_MS = 200
@@ -202,7 +202,7 @@ export function buildTodoHeaderLine(
 	let line = parts.join(" · ")
 	if (live) {
 		if (running) {
-			const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
+			const frame = BRAILLE_FRAMES[(options.spinnerFrame ?? 0) % BRAILLE_FRAMES.length]
 			line += theme.fg("accent", ` · ${frame} ${counts.inProgress} running`)
 		} else {
 			line += theme.fg("dim", ` · ${TODO_SYMBOL.in_progress} ${counts.inProgress} in progress`)
@@ -242,16 +242,11 @@ export function summarizeTodos(sessionId: string): string {
  *  keeps each row tight against the header — row numbers were dropped in
  *  favor of `/todos done <n>` references, so there's no per-row prefix
  *  the indent needs to align with. */
-function todoLine(
-	todo: TodoItem,
-	_displayIndex: number,
-	theme: Theme,
-	scope: TodoScope,
-	spinnerFrame: number,
-	spinning = true,
-): string {
+function todoLine(todo: TodoItem, theme: Theme, scope: TodoScope, spinnerFrame: number, spinning = true): string {
 	const symbol =
-		todo.status === "in_progress" && spinning ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
+		todo.status === "in_progress" && spinning
+			? BRAILLE_FRAMES[spinnerFrame % BRAILLE_FRAMES.length]
+			: TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
 	const prefix = " "
 
@@ -296,7 +291,7 @@ function numberedTodoLine(todo: TodoItem, displayIndex: number, theme: Theme, sc
 	// Notify text is static — use the first spinner frame so in_progress rows
 	// stay distinguishable without the tick. Strip the leading indent (one
 	// space in the strip) and re-prefix with the row number.
-	return todoLine(todo, displayIndex, theme, scope, 0).replace(/^ /, ` ${index}. `)
+	return todoLine(todo, theme, scope, 0).replace(/^ /, ` ${index}. `)
 }
 
 /** Short scope name for the one-line widget header (no "Todos · " prefix). */
@@ -333,14 +328,12 @@ function buildFullTodoBodyRows(
 		if (showScopeLabels) {
 			rows.push({ kind: "scope", text: theme.fg("dim", formatGroupLabel(group.scope)) })
 		}
-		let groupIndex = 0
 		for (const todo of group.todos) {
 			rows.push({
 				kind: "todo",
-				text: todoLine(todo, groupIndex, theme, group.scope, spinnerFrame, spinning),
+				text: todoLine(todo, theme, group.scope, spinnerFrame, spinning),
 				status: todo.status,
 			})
-			groupIndex++
 		}
 	}
 	return rows
@@ -454,16 +447,9 @@ export function buildTodoLines(theme: Theme, sessionId: string): string[] {
 
 	const lines: string[] = []
 	for (const group of groups) {
-		const counts = {
-			total: group.todos.length,
-			completed: group.todos.filter((t) => t.status === "completed").length,
-			pending: group.todos.filter((t) => t.status === "pending").length,
-			inProgress: group.todos.filter((t) => t.status === "in_progress").length,
-			blocked: group.todos.filter((t) => t.status === "blocked").length,
-		}
-		lines.push(theme.fg("accent", `Todos · ${formatScopeLabel(group.scope)}`))
+		lines.push(theme.fg("accent", formatGroupLabel(group.scope)))
 		lines.push("")
-		lines.push(theme.fg("dim", summarizeTodoCounts(counts)))
+		lines.push(theme.fg("dim", summarizeTodoCounts(countTodosInGroups([group]))))
 		lines.push("")
 		let groupIndex = 0
 		for (const todo of group.todos) {
@@ -575,15 +561,15 @@ function syncSpinner(state: TodoWidgetState, sessionId: string): void {
 		stopSpinner(state)
 		return
 	}
-	// Keep the running glyph in CI, but skip the interval — each tick
-	// force-renders the whole TUI and blew the 25m tui-e2e budget.
-	if (process.env.CI === "true") {
+	// Keep the running glyph under the TUI e2e harness, but skip the interval —
+	// each tick force-renders the whole TUI and blew the 25m tui-e2e budget.
+	if (readE2eSeam("KIMCHI_E2E_STATIC_TODO_SPINNER") === "1") {
 		stopSpinner(state)
 		return
 	}
 	if (state.spinnerTimer) return
 	state.spinnerTimer = setInterval(() => {
-		state.spinnerFrame = (state.spinnerFrame + 1) % SPINNER.length
+		state.spinnerFrame = (state.spinnerFrame + 1) % BRAILLE_FRAMES.length
 		state.tui?.requestRender?.(true)
 	}, SPINNER_INTERVAL_MS)
 	// Do not keep the process alive solely for the animation.
@@ -704,7 +690,8 @@ function mountTodoWidget(
 				if (event.type === "wheel") {
 					const groups = collectWidgetScopes(sessionId)
 					const terminalRows = state.tui?.terminal?.rows
-					if (isTodoBodyCollapsed(state, terminalRows)) return undefined
+					// Collapsed shows no body; expand-all shows every row.
+					if (isTodoBodyCollapsed(state, terminalRows) || state.expanded) return undefined
 					const rows = buildFullTodoBodyRows(theme, groups)
 					const budget = todoViewportRowBudget(terminalRows)
 					if (rows.length <= budget) return undefined
