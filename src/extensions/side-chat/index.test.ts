@@ -35,7 +35,7 @@ describe("side chat extension", () => {
 	it("registers its shortcuts and a single /btw command", () => {
 		const pi = setup()
 
-		expect(pi.getRegisteredShortcutKeys()).toEqual(["alt+l", "ctrl+alt+left", "ctrl+alt+right"])
+		expect(pi.getRegisteredShortcutKeys()).toEqual(["ctrl+alt+left", "ctrl+alt+right"])
 		expect(pi.registerCommand.mock.calls.map(([name]) => name)).toEqual(["btw"])
 	})
 
@@ -81,9 +81,6 @@ describe("side chat extension errors", () => {
 
 		await pi.getRegisteredCommand("btw").handler("history", ctx)
 
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"No side chats in this session yet. Start one with /btw or alt+l.",
-			"info",
-		)
+		expect(ctx.ui.notify).toHaveBeenCalledWith("No side chats in this session yet. Start one with /btw.", "info")
 	})
 })

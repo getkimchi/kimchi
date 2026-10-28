@@ -5,7 +5,7 @@ import { testTheme } from "../__mocks__/theme.js"
 import type { RawMouseEvent } from "./harness.js"
 import { SelectionPill } from "./selection-pill.js"
 
-const LABEL = " + Add to side chat alt+l "
+const LABEL = " + Add to side chat "
 
 function setup(rect = { x: 0, y: 0, width: 60, height: 10 }) {
 	const { host, setFrame, setSelection } = createSideChatHost()
@@ -13,7 +13,7 @@ function setup(rect = { x: 0, y: 0, width: 60, height: 10 }) {
 	const frame = frameOf(rect.width, rect.height, [frameBox(scrollView, rect)])
 	setFrame(frame)
 	const onAdd = vi.fn()
-	const pill = new SelectionPill({ host: () => host, theme: testTheme, shortcut: "alt+l", onAdd })
+	const pill = new SelectionPill({ host: () => host, theme: testTheme, onAdd })
 	const select = (startRow: number, endRow: number, endCol: number) =>
 		setSelection({
 			text: "selected text",

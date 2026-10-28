@@ -3,10 +3,10 @@
  * Experimental → "Side chat" (`extensions.side-chat`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
- * - select text in either transcript and click "Add to side chat" (or press
- *   alt+l) to quote it into the side editor; alt+l without a selection opens
- *   a blank side chat or switches focus between panes; ctrl+alt+left / ctrl+alt+right focus
- *   the main session / the side chat; clicking an editor focuses it;
+ * - select text in either transcript and click "Add to side chat" to quote
+ *   it into the side editor; ctrl+alt+left / ctrl+alt+right focus the main
+ *   session / the side chat (opening one if none is open); clicking an
+ *   editor focuses it;
  * - the header's ✕ closes the side chat and ≡ lists this session's side
  *   chats in the panel (click or enter reopens one);
  * - the side chat is a real sub-session branched from the main session's
@@ -456,19 +456,6 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		if (options.prompt) handleSubmit(chat, options.prompt)
 	}
 
-	pi.registerShortcut(SIDE_CHAT_SHORTCUTS.toggle, {
-		description: "Side chat: add selection / open / switch focus",
-		handler: async (ctx) => {
-			const quote = takeSelection()
-			if (quote || !active) {
-				await openSideChat(ctx, { quote })
-				return
-			}
-			if (active.panel.isFocused) getSideChatHost()?.focusMainEditor()
-			else active.panel.focus()
-		},
-	})
-
 	pi.registerShortcut(SIDE_CHAT_SHORTCUTS.focusMain, {
 		description: "Side chat: focus the main session",
 		handler: () => {
@@ -488,7 +475,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		if (active) persist(active)
 		const history = readSideChatHistory(ctx.sessionManager.getEntries())
 		if (history.length === 0) {
-			notify(ctx, "No side chats in this session yet. Start one with /btw or alt+l.")
+			notify(ctx, "No side chats in this session yet. Start one with /btw.")
 			return
 		}
 		const labels = history.map((record) => historyLabel(record))
@@ -531,7 +518,6 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const pill = new SelectionPill({
 			host: getSideChatHost,
 			theme: ctx.ui.theme,
-			shortcut: SIDE_CHAT_SHORTCUTS.toggle,
 			onAdd: (quote) => void openSideChat(ctx, { quote }),
 		})
 		const removePaint = addCompositor((screen, frame, width) => pill.paint(screen, frame, width))

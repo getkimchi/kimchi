@@ -7,8 +7,6 @@
  * ctrl+digits are the feedback extension's response ratings.
  */
 export const SIDE_CHAT_SHORTCUTS = {
-	/** Quote the transcript selection, open a side chat, or toggle focus. */
-	toggle: "alt+l",
 	focusMain: "ctrl+alt+left",
 	focusSide: "ctrl+alt+right",
 	/** Compact hint for both focus keys. */

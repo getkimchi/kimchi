@@ -15,8 +15,6 @@ import { compositeKeepingCursor } from "./line-paint.js"
 export interface SelectionPillOptions {
 	host: () => SideChatHost | undefined
 	theme: Theme
-	/** Key hint shown in the pill. */
-	shortcut: string
 	onAdd(text: string): void
 }
 
@@ -69,8 +67,7 @@ export class SelectionPill {
 	}
 
 	private label(): string {
-		const { theme, shortcut } = this.options
-		const pill = (color: "accent" | "dim", text: string) => theme.bg("selectedBg", theme.fg(color, text))
-		return `${pill("accent", theme.bold(" + Add to side chat "))}${pill("dim", `${shortcut} `)}`
+		const { theme } = this.options
+		return theme.bg("selectedBg", theme.fg("accent", theme.bold(" + Add to side chat ")))
 	}
 }
