@@ -32,12 +32,12 @@ function claudeModel(): Model<Api> {
 	return { ...createModel("claude-sonnet-4-6"), api: "anthropic-messages", reasoning: true }
 }
 
-function userMsg(text: string) {
-	return { role: "user", content: [{ type: "text", text }], timestamp: 0 }
+function userMsg(text: string): SummarizeMessage {
+	return { role: "user", content: [{ type: "text", text }], timestamp: 0 } as unknown as SummarizeMessage
 }
 
-function assistantMsg(text: string) {
-	return { role: "assistant", content: [{ type: "text", text }], timestamp: 0 }
+function assistantMsg(text: string): SummarizeMessage {
+	return { role: "assistant", content: [{ type: "text", text }], timestamp: 0 } as unknown as SummarizeMessage
 }
 
 /** u a u a u a u a — user boundaries at 0, 2, 4, 6. */
@@ -51,7 +51,7 @@ function eightMessages(): SummarizeMessage[] {
 		assistantMsg("a2"),
 		userMsg("u3"),
 		assistantMsg("a3"),
-	] as unknown as SummarizeMessage[]
+	]
 }
 
 function makePreparation(
@@ -145,7 +145,7 @@ describe("reduceSummarizedRange", () => {
 	})
 
 	it("returns the input unchanged when no user boundary exists past the cut", () => {
-		const messages = [userMsg("u"), assistantMsg("a")] as unknown as SummarizeMessage[]
+		const messages: SummarizeMessage[] = [userMsg("u"), assistantMsg("a")]
 		expect(reduceSummarizedRange(messages, 0.5)).toBe(messages)
 	})
 })
@@ -180,7 +180,7 @@ describe("compaction-resilience handler", () => {
 			.mockResolvedValueOnce(okResult())
 		const { handler } = captureHandler({ compactImpl })
 		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
-		const turnPrefix = [userMsg("prefix")] as unknown as SummarizeMessage[]
+		const turnPrefix: SummarizeMessage[] = [userMsg("prefix")]
 		const preparation = makePreparation(eightMessages(), { turnPrefixMessages: turnPrefix, isSplitTurn: true })
 		const result = await handler(makeEvent(preparation), ctx)
 
@@ -220,7 +220,7 @@ describe("compaction-resilience handler", () => {
 		const { handler } = captureHandler({ compactImpl })
 		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
 		// Single user boundary at 0: no scope reduction possible.
-		const preparation = makePreparation([userMsg("only"), assistantMsg("a")] as unknown as SummarizeMessage[])
+		const preparation = makePreparation([userMsg("only"), assistantMsg("a")])
 		const result = await handler(makeEvent(preparation), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(2)
@@ -292,7 +292,7 @@ describe("compaction-resilience handler", () => {
 		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
 		const preparation = makePreparation(eightMessages(), {
 			isSplitTurn: true,
-			turnPrefixMessages: [userMsg("prefix")] as unknown as SummarizeMessage[],
+			turnPrefixMessages: [userMsg("prefix")],
 		})
 		await ext.emit("session_before_compact", makeEvent(preparation), ctx)
 
