@@ -166,6 +166,7 @@ import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-
 import themeSelectorExtension from "./extensions/theme-selector.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
 import tipsExtension from "./extensions/tips/index.js"
+import tldrExtension from "./extensions/tldr.js"
 import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
 import toolOutputExternalizerExtension from "./extensions/tool-output-externalizer.js"
@@ -801,6 +802,7 @@ async function cliMain(): Promise<void> {
 				startupUpdateExtension,
 				packageInstallGuardExtension,
 				sessionNameExtension(),
+				tldrExtension(),
 				shutdownMarkerExtension,
 				// skill_view must always be present: the skills catalog in the system
 				// prompt directs the model to load skills through it. skill_manage
