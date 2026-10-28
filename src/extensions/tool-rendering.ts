@@ -726,7 +726,7 @@ function deleteRenderedKittyImages(component: any): void {
 	}
 }
 
-function removeImageChildren(component: any): void {
+export function removeImageChildren(component: any): void {
 	deleteRenderedKittyImages(component)
 	const children = [
 		...(Array.isArray(component.imageComponents) ? component.imageComponents : []),
@@ -741,6 +741,12 @@ function removeImageChildren(component: any): void {
 	}
 	component.imageComponents = []
 	component.imageSpacers = []
+	// Upstream keeps imageSources index-aligned with imageComponents (it is the
+	// "inputs" mirror updateDisplay uses to reuse decoded images). Leaving it
+	// stale makes the next updateDisplay match a source against an empty
+	// imageComponents array and reuse `undefined`, which then reaches
+	// addChild(undefined) and crashes on --continue replay of a read image.
+	component.imageSources = []
 }
 
 function patchReadImageExpansion(): void {
