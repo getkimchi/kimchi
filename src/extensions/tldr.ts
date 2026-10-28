@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { loadConfig } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
 
-export const TLDR_MODEL = "deepseek-v4-flash"
+export const TLDR_MODEL = "deepseek-v4-flash-0731"
 
 const TLDR_TIMEOUT_MS = 8000
 const TLDR_MAX_RETRIES = 0
@@ -96,7 +96,7 @@ export function formatSessionTail(entries: readonly unknown[]): string[] {
 			if (text) {
 				const name = typeof msg.toolName === "string" ? ` (${msg.toolName})` : ""
 				const prefix = msg.isError ? "error" : "tool result"
-				lines.push(`${prefix}${name}: ${truncateText(text, 150)}`)
+				lines.push(`${prefix}${name}: ${truncateText(text, 80)}`)
 			}
 		}
 	}
@@ -147,26 +147,37 @@ export function buildActivitySection(
 	return sections.join("\n\n")
 }
 
+export function lastActionLine(tail: readonly string[]): string | undefined {
+	for (let i = tail.length - 1; i >= 0; i--) {
+		const line = tail[i] ?? ""
+		if (line.startsWith("tool result") || line.startsWith("error (")) continue
+		return line
+	}
+	return undefined
+}
+
+function presentAction(line: string): string {
+	if (line.startsWith("assistant tool call: ")) return line.slice("assistant tool call: ".length)
+	if (line.startsWith("assistant: ")) return line.slice("assistant: ".length)
+	return line
+}
+
 export function deterministicTldr(
 	tail: readonly string[],
 	inFlight: readonly TldrToolStatus[],
 	turnActive: boolean,
 ): string {
-	const lastLine = tail[tail.length - 1]
+	const action = lastActionLine(tail)
+	const suffix = action ? ` Last action: ${truncateText(presentAction(action), 160)}` : ""
 	if (inFlight.length > 0) {
 		const latest = inFlight[inFlight.length - 1]
 		const seconds = Math.max(1, Math.round(latest.elapsedMs / 1000))
 		const args = latest.argsSummary ? `(${latest.argsSummary})` : ""
 		const extra = inFlight.length > 1 ? `, plus ${inFlight.length - 1} more tool${inFlight.length > 2 ? "s" : ""}` : ""
-		const first = `Running ${latest.toolName}${args} for ${seconds}s${extra}.`
-		if (lastLine) return `${first} Before that: ${truncateText(lastLine, 160)}`
-		return first
+		return `Running ${latest.toolName}${args} for ${seconds}s${extra}.${suffix}`
 	}
-	if (turnActive) {
-		if (lastLine) return `Waiting on the model's response. Last activity: ${truncateText(lastLine, 160)}`
-		return "Working on a response."
-	}
-	if (lastLine) return `Idle. Last activity: ${truncateText(lastLine, 200)}`
+	if (turnActive) return `Waiting on the model's response.${suffix}`
+	if (action) return `Idle.${suffix}`
 	return "No activity in this session yet."
 }
 
@@ -175,6 +186,16 @@ export function cleanupAnswer(raw: string): string {
 	text = text.replace(/^["'`]+|["'`]+$/g, "")
 	if (text.length > MAX_ANSWER_CHARS) text = truncateText(text, MAX_ANSWER_CHARS)
 	return text
+}
+
+function parseModelReplacement(errorBody: string): string | undefined {
+	try {
+		const parsed = JSON.parse(errorBody) as { error?: { replacement?: unknown } }
+		const replacement = parsed.error?.replacement
+		return typeof replacement === "string" && replacement.length > 0 ? replacement : undefined
+	} catch {
+		return undefined
+	}
 }
 
 export async function requestTldrAnswer(
@@ -186,32 +207,49 @@ export async function requestTldrAnswer(
 	const apiKey = config.apiKey || process.env.KIMCHI_API_KEY || ""
 	if (!apiKey) return null
 
-	const response = await fetchWithRetry(
-		`${config.llmEndpoint.replace(/\/+$/, "")}/chat/completions`,
-		{
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${apiKey}`,
+	const url = `${config.llmEndpoint.replace(/\/+$/, "")}/chat/completions`
+	const headers = {
+		"Content-Type": "application/json",
+		Authorization: `Bearer ${apiKey}`,
+	}
+	let model = TLDR_MODEL
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const response = await fetchWithRetry(
+			url,
+			{
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					model,
+					messages: [
+						{ role: "system", content: TLDR_SYSTEM_PROMPT },
+						{ role: "user", content: `${question}\n\n${activity}` },
+					],
+					max_tokens: TLDR_MAX_TOKENS,
+					temperature: 0,
+				}),
 			},
-			body: JSON.stringify({
-				model: TLDR_MODEL,
-				messages: [
-					{ role: "system", content: TLDR_SYSTEM_PROMPT },
-					{ role: "user", content: `${question}\n\n${activity}` },
-				],
-				max_tokens: TLDR_MAX_TOKENS,
-				temperature: 0,
-			}),
-		},
-		{ timeoutMs: TLDR_TIMEOUT_MS, retry: { maxRetries: TLDR_MAX_RETRIES } },
-	)
+			{ timeoutMs: TLDR_TIMEOUT_MS, retry: { maxRetries: TLDR_MAX_RETRIES } },
+		)
 
-	if (!response.ok) return null
-	const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
-	const content = data.choices?.[0]?.message?.content
-	if (typeof content !== "string" || content.trim().length === 0) return null
-	return cleanupAnswer(content)
+		if (response.ok) {
+			const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+			const content = data.choices?.[0]?.message?.content
+			if (typeof content !== "string" || content.trim().length === 0) return null
+			return cleanupAnswer(content)
+		}
+
+		if (attempt === 0) {
+			const errorBody = await response.text().catch(() => "")
+			const replacement = parseModelReplacement(errorBody)
+			if (replacement && replacement !== model) {
+				model = replacement
+				continue
+			}
+		}
+		return null
+	}
+	return null
 }
 
 export default function tldrExtension() {

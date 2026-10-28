@@ -8,6 +8,7 @@ import tldrExtension, {
 	describeToolArgs,
 	deterministicTldr,
 	formatSessionTail,
+	lastActionLine,
 	requestTldrAnswer,
 	TLDR_MODEL,
 } from "./tldr.js"
@@ -218,7 +219,7 @@ describe("tldr command handler", () => {
 	it("falls back deterministically when the side call returns a non-ok response", async () => {
 		const { command } = setup()
 		const { ctx, notify } = makeCommandCtx()
-		mockFetchWithRetry.mockResolvedValue({ ok: false })
+		mockFetchWithRetry.mockResolvedValue({ ok: false, text: async () => "" })
 
 		await command.handler("", ctx)
 
@@ -257,7 +258,7 @@ describe("tldr command handler", () => {
 
 		await harness.emit("agent_start", { type: "agent_start" })
 		await command.handler("", ctx)
-		expect(notify.mock.calls[0][0]).toContain("Working on a response.")
+		expect(notify.mock.calls[0][0]).toContain("Waiting on the model's response.")
 
 		await harness.emit("agent_end", { type: "agent_end" })
 		await command.handler("", ctx)
@@ -283,6 +284,40 @@ describe("requestTldrAnswer", () => {
 
 		expect(await requestTldrAnswer(ctx, "question", "activity")).toBeNull()
 		expect(mockFetchWithRetry.mock.calls[0][0]).toBe("https://llm.test/openai/v1/chat/completions")
+	})
+
+	it("retries once with the gateway-named replacement model", async () => {
+		mockLoadConfig.mockReturnValue({ apiKey: "k", llmEndpoint: "https://llm.test/openai/v1" })
+		mockFetchWithRetry
+			.mockResolvedValueOnce({
+				ok: false,
+				text: async () => JSON.stringify({ error: { type: "model_not_found", replacement: "deepseek-v9-flash" } }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ choices: [{ message: { content: "pong" } }] }),
+			})
+		const ctx = createContext()
+
+		expect(await requestTldrAnswer(ctx, "question", "activity")).toBe("pong")
+		expect(mockFetchWithRetry).toHaveBeenCalledTimes(2)
+		const secondBody = JSON.parse((mockFetchWithRetry.mock.calls[1][1] as { body: string }).body) as Record<
+			string,
+			unknown
+		>
+		expect(secondBody.model).toBe("deepseek-v9-flash")
+	})
+
+	it("does not retry when the error names no replacement", async () => {
+		mockLoadConfig.mockReturnValue({ apiKey: "k", llmEndpoint: "https://llm.test/openai/v1" })
+		mockFetchWithRetry.mockResolvedValue({
+			ok: false,
+			text: async () => JSON.stringify({ error: { type: "rate_limited" } }),
+		})
+		const ctx = createContext()
+
+		expect(await requestTldrAnswer(ctx, "question", "activity")).toBeNull()
+		expect(mockFetchWithRetry).toHaveBeenCalledTimes(1)
 	})
 
 	it("returns null without an API key", async () => {
@@ -368,6 +403,24 @@ describe("formatSessionTail", () => {
 		expect(line?.length).toBeLessThanOrEqual(210)
 		expect(line?.endsWith("…")).toBe(true)
 	})
+
+	it("truncates tool result bodies to 80 chars", () => {
+		const entries = [
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "bash",
+					content: "b".repeat(300),
+					isError: false,
+				},
+			},
+		]
+		const [line] = formatSessionTail(entries)
+		expect(line?.length).toBeLessThanOrEqual("tool result (bash): ".length + 81)
+		expect(line?.endsWith("…")).toBe(true)
+	})
 })
 
 describe("describeToolArgs", () => {
@@ -422,16 +475,36 @@ describe("buildActivitySection", () => {
 	})
 })
 
+describe("lastActionLine", () => {
+	it("returns undefined for an empty tail", () => {
+		expect(lastActionLine([])).toBeUndefined()
+	})
+
+	it("skips tool result and error lines", () => {
+		const tail = ["user: fix bug", "tool result (bash): ok", "error (read): nope"]
+		expect(lastActionLine(tail)).toBe("user: fix bug")
+	})
+
+	it("returns the most recent action line", () => {
+		const tail = ["user: fix bug", "assistant: checking the code", 'assistant tool call: bash(command="ls")']
+		expect(lastActionLine(tail)).toBe('assistant tool call: bash(command="ls")')
+	})
+})
+
 describe("deterministicTldr", () => {
-	it("describes the latest in-flight tool with the preceding activity", () => {
+	it("describes the latest in-flight tool with the last action", () => {
 		const text = deterministicTldr(
 			["user: fix bug", "tool result (bash): ok"],
 			[{ toolName: "read", argsSummary: 'path="/a.ts"', elapsedMs: 3000 }],
 			true,
 		)
 
-		expect(text).toMatch(/^Running read\(path="\/a\.ts"\) for 3s\./)
-		expect(text).toContain("Before that: tool result (bash): ok")
+		expect(text).toBe('Running read(path="/a.ts") for 3s. Last action: user: fix bug')
+	})
+
+	it("prefers tool calls over tool results in the last action", () => {
+		const tail = ["user: fix bug", 'assistant tool call: bash(command="npm test")', "tool result (bash): ok"]
+		expect(deterministicTldr(tail, [], false)).toBe('Idle. Last action: bash(command="npm test")')
 	})
 
 	it("counts additional in-flight tools", () => {
@@ -442,12 +515,12 @@ describe("deterministicTldr", () => {
 		expect(deterministicTldr([], tools, true)).toBe('Running read(path="/b.ts") for 1s, plus 1 more tool.')
 	})
 
-	it("says idle with the last activity", () => {
-		expect(deterministicTldr(["user: hi"], [], false)).toBe("Idle. Last activity: user: hi")
+	it("says idle with the last action", () => {
+		expect(deterministicTldr(["user: hi"], [], false)).toBe("Idle. Last action: user: hi")
 	})
 
 	it("reports waiting on the model mid-turn without tools", () => {
-		expect(deterministicTldr(["user: hi"], [], true)).toContain("Waiting on the model's response.")
+		expect(deterministicTldr(["user: hi"], [], true)).toBe("Waiting on the model's response. Last action: user: hi")
 	})
 
 	it("handles the empty session", () => {
