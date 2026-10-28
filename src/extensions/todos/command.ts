@@ -6,8 +6,8 @@ import { applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js
 import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
 import {
 	buildTodoLines,
-	collapseTodoWidget,
 	expandTodoWidget,
+	hideTodoWidget,
 	openTodoWidget,
 	syncTodoWidget,
 	toggleTodoWidget,
@@ -223,7 +223,7 @@ async function handleTodosCommand(args: string, ctx: ExtensionCommandContext, pi
 		return
 	}
 	if (parsed.action === "collapse") {
-		collapseTodoWidget(ctx)
+		hideTodoWidget(ctx)
 		return
 	}
 	if (parsed.action === "list") {

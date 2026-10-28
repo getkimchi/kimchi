@@ -23,36 +23,19 @@ const TODO_STATUS_KEY = "todos"
  *  already handled by truncation.
  *  - xs (< 24 rows): ambient strip collapses to the one-liner; an explicit
  *    expand shows a single todo row at a time.
+ *  Long lists never auto-collapse by item count: the viewport keeps the
+ *  expanded strip at header + budget + two `↑/↓ N more` markers.
  *  - md (24–69): 3-row viewport.
  *  - xl (70+): 5-row viewport.
  *  Undefined row counts (headless/unit contexts) fall back to md. */
 const TODO_XS_TERMINAL_ROWS = 24
 const TODO_TALL_TERMINAL_ROWS = 70
 const MAX_ROLLED_CONTEXT_ROWS = 2
-/** Fraction of terminal rows the expanded strip may occupy before ambient auto-collapse. */
-const TODO_HEIGHT_COLLAPSE_FRACTION = 0.25
 /** Match Agents strip spinner frames (avoid importing agent-widget — circular). */
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 /** Keep this well above tool/status spinners' cadence — each tick force-renders
  *  the whole TUI, and an 80ms loop pushed tui-e2e past the 25m job budget. */
 export const SPINNER_INTERVAL_MS = 200
-
-/** Default auto-collapse threshold: lists with more items than this render
- *  ambiently as a single status line until the user expands them. */
-const DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD = 5
-
-/** Item count past which the ambient todo strip auto-collapses to a single
- *  status line. Configurable via KIMCHI_TODOS_COLLAPSE_THRESHOLD; values < 1
- *  fall back to the default, and a very large value effectively disables
- *  count-based auto-collapse. Height-based collapse (~25% of terminal rows)
- *  still applies. Explicit expansion (F7 / `/todos expand`) always overrides. */
-export function getTodoAutoCollapseThreshold(env: NodeJS.ProcessEnv = process.env): number {
-	const raw = env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
-	if (raw === undefined) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
-	const parsed = Number.parseInt(raw, 10)
-	if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_TODO_AUTO_COLLAPSE_THRESHOLD
-	return parsed
-}
 
 const TODO_SYMBOL: Record<TodoStatus, string> = {
 	pending: "○",
@@ -65,16 +48,22 @@ interface TodoWidgetState {
 	visible: boolean
 	/** Uncapped view: show every row (`/todos expand all`). */
 	expanded: boolean
-	/** User override: show the list body even past the auto-collapse threshold. */
+	/** User override: show the list body even where the ambient strip would collapse (xs terminal, crowding). */
 	listExpanded: boolean
-	/** User override (mouse click): keep only the one-line header, even at or
-	 *  below the auto-collapse threshold. Cleared by any explicit expand. */
+	/** User override (F7 / click): keep only the one-line header even where the
+	 *  ambient strip would expand. Cleared by any explicit expand. */
 	listCollapsed: boolean
+	/** Explicit expand overrides suspended while competing UI crowds the strip;
+	 *  restored when the last crowding reason clears. Dropped as soon as the
+	 *  user expands/collapses during crowding — their newer choice wins. */
+	crowdedOverrides?: Pick<TodoWidgetState, "expanded" | "listExpanded">
 	/** Index into the full body row list for the scrollable viewport. */
 	scrollOffset: number
 	/** True once the user scrolls; disables auto-follow of the active todo. */
 	userScrolled: boolean
-	collapsed: boolean
+	/** Strip hidden by the user (Esc / `/todos collapse`); stays hidden across
+	 *  store syncs until an explicit show. */
+	hidden: boolean
 	registered: boolean
 	registrationId: number
 	/** True while the agent loop is executing (agent_start → agent_end).
@@ -104,9 +93,9 @@ export function isTodoCrowdingActive(): boolean {
 }
 
 /** Force the todo list body closed while competing above-editor UI is visible.
- *  Clears any prior expand override so the strip shrinks immediately; the user
- *  can still F7/`/todos` expand while crowded. Call with `active: false` when
- *  the competing UI dismisses. */
+ *  Suspends any explicit expand so the strip shrinks immediately, and restores
+ *  it once the last reason clears; the user can still F7/`/todos` expand while
+ *  crowded. Call with `active: false` when the competing UI dismisses. */
 export function setTodoCrowding(reason: string, active: boolean): void {
 	if (!reason) return
 	const wasCrowded = todoCrowdingReasons.size > 0
@@ -117,8 +106,15 @@ export function setTodoCrowding(reason: string, active: boolean): void {
 
 	for (const state of todoWidgetStates.values()) {
 		if (isCrowded) {
+			if (state.expanded || state.listExpanded) {
+				state.crowdedOverrides = { expanded: state.expanded, listExpanded: state.listExpanded }
+			}
 			state.listExpanded = false
 			state.expanded = false
+		} else if (state.crowdedOverrides) {
+			state.expanded = state.crowdedOverrides.expanded
+			state.listExpanded = state.crowdedOverrides.listExpanded
+			state.crowdedOverrides = undefined
 		}
 		state.tui?.requestRender?.(true)
 	}
@@ -146,7 +142,7 @@ function createTodoWidgetState(): TodoWidgetState {
 		listCollapsed: false,
 		scrollOffset: 0,
 		userScrolled: false,
-		collapsed: false,
+		hidden: false,
 		registered: false,
 		registrationId: 0,
 		agentActive: false,
@@ -214,33 +210,18 @@ export function buildTodoHeaderLine(
 	return line
 }
 
-interface CollapseInput {
-	expanded: boolean
-	listExpanded: boolean
-	listCollapsed: boolean
-	total: number
-	/** Estimated expanded strip height in rows (header + body). */
-	expandedHeight: number
-	terminalRows?: number
-}
-
 /** True when the strip should render only the collapsed one-line header:
- *  competing UI is crowding the strip, the user clicked it shut, the list
- *  exceeds the item-count threshold, or the expanded height would exceed ~25%
- *  of the terminal. Explicit expand overrides ambient collapse. */
-function isTodoBodyCollapsed(input: CollapseInput): boolean {
-	if (input.expanded || input.listExpanded) return false
-	if (isTodoCrowdingActive() || input.listCollapsed) return true
-	const rows = input.terminalRows
+ *  competing UI is crowding the strip, the user clicked it shut, or the
+ *  terminal is in the xs tier. Explicit expand overrides ambient collapse. */
+function isTodoBodyCollapsed(
+	state: Pick<TodoWidgetState, "expanded" | "listExpanded" | "listCollapsed">,
+	terminalRows: number | undefined,
+): boolean {
+	if (state.expanded || state.listExpanded) return false
+	if (isTodoCrowdingActive() || state.listCollapsed) return true
 	// xs tier: ambient expansion would fight the conversation for space — stay
 	// a one-liner until the user explicitly expands (F7 / click).
-	if (rows && rows > 0 && rows < TODO_XS_TERMINAL_ROWS) return true
-	if (input.total > getTodoAutoCollapseThreshold()) return true
-	if (rows && rows > 0) {
-		const maxHeight = Math.max(1, Math.floor(rows * TODO_HEIGHT_COLLAPSE_FRACTION))
-		if (input.expandedHeight > maxHeight) return true
-	}
-	return false
+	return terminalRows !== undefined && terminalRows > 0 && terminalRows < TODO_XS_TERMINAL_ROWS
 }
 
 function hasActiveTodos(counts: TodoCounts): boolean {
@@ -535,31 +516,6 @@ function buildTodoBodyLines(
 	return lines
 }
 
-/** Cheap body-row count for height-based collapse (no theme / string work). */
-function countTodoBodyRows(groups: WidgetScopeGroup[]): number {
-	if (groups.length === 0) return 0
-	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
-	let rows = 0
-	for (const group of groups) {
-		if (showScopeLabels) rows++
-		rows += group.todos.length
-	}
-	return rows
-}
-
-function estimateExpandedHeight(
-	groups: WidgetScopeGroup[],
-	expanded: boolean,
-	terminalRows: number | undefined,
-): number {
-	const rowCount = countTodoBodyRows(groups)
-	if (expanded || rowCount <= todoViewportRowBudget(terminalRows)) {
-		return 1 + rowCount // header + body
-	}
-	// Worst case: budget rows plus both scroll markers.
-	return 1 + todoViewportRowBudget(terminalRows) + 2
-}
-
 function headerScopeLabel(groups: WidgetScopeGroup[]): string | undefined {
 	// Single-scope lists put the scope name (including Global) in the header;
 	// multi-scope keeps per-group labels in the body only.
@@ -577,18 +533,8 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 	const counts = countTodosInGroups(groups)
 	const scopeLabel = headerScopeLabel(groups)
 	const terminalRows = state.tui?.terminal?.rows
-	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
 
-	if (
-		isTodoBodyCollapsed({
-			expanded: state.expanded,
-			listExpanded: state.listExpanded,
-			listCollapsed: state.listCollapsed,
-			total: counts.total,
-			expandedHeight,
-			terminalRows,
-		})
-	) {
+	if (isTodoBodyCollapsed(state, terminalRows)) {
 		return [
 			buildTodoHeaderLine(theme, counts, true, {
 				scopeLabel,
@@ -749,7 +695,7 @@ function mountTodoWidget(
 				// Esc hides the strip when the widget has focus. Do not bind `q` —
 				// it fires while the prompt editor has focus and would steal input.
 				if (matchesKey(data, Key.escape)) {
-					collapseTodoWidget(ctx)
+					hideTodoWidget(ctx)
 					return
 				}
 				// Enter/F7 collapse ↔ expand the list body; Esc hides the strip.
@@ -763,22 +709,9 @@ function mountTodoWidget(
 			// expanded; right-click falls through for paste.
 			handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 				if (event.type === "wheel") {
-					const counts = countAllActiveTodos(sessionId)
 					const groups = collectWidgetScopes(sessionId)
 					const terminalRows = state.tui?.terminal?.rows
-					const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
-					if (
-						isTodoBodyCollapsed({
-							expanded: state.expanded,
-							listExpanded: state.listExpanded,
-							listCollapsed: state.listCollapsed,
-							total: counts.total,
-							expandedHeight,
-							terminalRows,
-						})
-					) {
-						return undefined
-					}
+					if (isTodoBodyCollapsed(state, terminalRows)) return undefined
 					const rows = buildFullTodoBodyRows(theme, groups)
 					const budget = todoViewportRowBudget(terminalRows)
 					if (rows.length <= budget) return undefined
@@ -808,7 +741,7 @@ function mountTodoWidget(
 function showTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
-	state.collapsed = false
+	state.hidden = false
 	state.visible = true
 	ensureTodoWidget(ctx)
 	requestTodoRender(ctx)
@@ -817,9 +750,10 @@ function showTodoWidget(ctx: ExtensionContext): void {
 
 export function openTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	// Explicit open (`/todos expand`) shows the list body even when the list is
-	// past the auto-collapse threshold.
+	// Explicit open (`/todos expand`) shows the list body even where the ambient
+	// strip would collapse (xs terminal, crowding).
 	const state = getTodoWidgetState(ctx)
+	state.crowdedOverrides = undefined
 	state.listExpanded = true
 	state.listCollapsed = false
 	state.userScrolled = false
@@ -829,6 +763,7 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 export function expandTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
+	state.crowdedOverrides = undefined
 	state.expanded = true
 	state.listExpanded = true
 	state.listCollapsed = false
@@ -844,14 +779,17 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	state.expanded = false
 	state.listExpanded = false
 	state.listCollapsed = false
+	state.crowdedOverrides = undefined
 	state.userScrolled = false
 	state.scrollOffset = 0
 	stopSpinner(state)
 	requestTodoRender(ctx)
 }
 
-export function collapseTodoWidget(ctx: ExtensionContext): void {
-	getTodoWidgetState(ctx).collapsed = true
+/** Hide the strip entirely (Esc / `/todos collapse`) — distinct from the
+ *  collapsed one-line header that F7 toggles to. */
+export function hideTodoWidget(ctx: ExtensionContext): void {
+	getTodoWidgetState(ctx).hidden = true
 	clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }
@@ -860,29 +798,16 @@ export function collapseTodoWidget(ctx: ExtensionContext): void {
  *  and click. Never hides the strip — Esc and `/todos collapse` do that. */
 export function toggleTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
-	const sessionId = ctx.sessionManager.getSessionId()
 	const state = getTodoWidgetState(ctx)
 	if (!state.visible) {
 		showTodoWidget(ctx)
 		return
 	}
-	const groups = collectWidgetScopes(sessionId)
-	const counts = countTodosInGroups(groups)
-	const terminalRows = state.tui?.terminal?.rows
-	const expandedHeight = estimateExpandedHeight(groups, state.expanded, terminalRows)
-	if (
-		isTodoBodyCollapsed({
-			expanded: state.expanded,
-			listExpanded: state.listExpanded,
-			listCollapsed: state.listCollapsed,
-			total: counts.total,
-			expandedHeight,
-			terminalRows,
-		})
-	) {
+	if (isTodoBodyCollapsed(state, state.tui?.terminal?.rows)) {
 		openTodoWidget(ctx)
 		return
 	}
+	state.crowdedOverrides = undefined
 	state.listCollapsed = true
 	state.listExpanded = false
 	state.expanded = false
@@ -894,7 +819,7 @@ export function syncTodoWidget(ctx: ExtensionContext): void {
 	const sessionId = ctx.sessionManager.getSessionId()
 	const counts = countAllActiveTodos(sessionId)
 	const state = getTodoWidgetState(ctx)
-	if (!state.collapsed && hasActiveTodos(counts)) showTodoWidget(ctx)
+	if (!state.hidden && hasActiveTodos(counts)) showTodoWidget(ctx)
 	else clearTodoWidget(ctx)
 	setTodosStatus(ctx)
 }

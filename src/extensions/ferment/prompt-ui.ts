@@ -104,7 +104,7 @@ export async function promptForm(ctx: ExtensionContext, spec: PromptFormSpec): P
 	if (questions.length === 0) return undefined
 
 	if (ctx.mode === "tui") {
-		const customResult = await withTodoCrowding("questionnaire", () =>
+		const customResult = await withTodoCrowding("ferment-prompt", () =>
 			withWorkingHidden(ui, () =>
 				withRawInputCapture(
 					() =>

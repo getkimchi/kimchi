@@ -259,7 +259,7 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 	)
 })
 
-test("todo widget auto-collapses long lists and expands to a scrollable viewport", async ({ terminal }) => {
+test("todo widget shows long lists as a scrollable viewport and collapses on toggle", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -286,42 +286,36 @@ test("todo widget auto-collapses long lists and expands to a scrollable viewport
 		async (_fixture, trace) => {
 			terminal.submit("Create rolling todos")
 
-			// 19 items exceed the auto-collapse threshold: the ambient strip is a
-			// single status line with no todo rows.
-			await waitForText(terminal, "● Todos · Global · 9/19 ·", {
-				timeoutMs: STREAM_TIMEOUT_MS,
-				full: false,
-			})
-			trace.step("auto-collapsed status line visible")
+			// Long lists stay expanded ambiently: a 3-row viewport around the
+			// active work, with scroll markers for the rest.
+			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// in_progress rows render a static ▶ once the run ends — match the text only.
+			await waitForText(terminal, " task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↓ 9 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("ambient scrollable viewport visible")
 
 			let text = viewText(terminal)
-			expect(text).not.toContain("task 10")
+			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
+			expect(text).not.toContain("  ✓ task 1\n")
+			expect(text).not.toContain("  ○ task 19")
 
-			// Explicit expansion reveals the scrollable viewport around active work.
-			// "/todos expand" exactly matches an autocomplete entry, so the first
-			// Enter can be swallowed by the completion popup; submit twice (the
-			// second submit is a no-op on an already-cleared editor).
-			terminal.write("/todos expand")
-			await waitForText(terminal, "/todos expand", { timeoutMs: INPUT_TIMEOUT_MS })
+			// Bare `/todos` toggles like F7: the strip collapses to its one-line
+			// header. It exactly matches an autocomplete entry, so the first Enter
+			// can be swallowed by the completion popup; submit twice (the second
+			// submit is a no-op on an already-cleared editor).
+			terminal.write("/todos")
+			await waitForText(terminal, "/todos", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
 			await new Promise((resolve) => setTimeout(resolve, 300))
 			terminal.submit("")
 
-			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			// in_progress rows render a rotating spinner glyph — match the text only.
-			await waitForText(terminal, " task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "↓ 9 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("scrollable active viewport visible after expand")
-
+			await waitForText(terminal, "● Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			text = viewText(terminal)
-			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
-			expect(text).not.toContain("  ✓ task 1\n")
-			expect(text).not.toContain("  ○ task 19")
-			// No dangling scroll hint below the strip.
-			expect(text.split("\n").some((line) => line.trim() === "scroll")).toBe(false)
+			expect(text).not.toContain("↓ 9 more")
+			trace.step("toggle collapses the strip to its header")
 		},
 	)
 })
@@ -354,11 +348,11 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 			terminal.submit("Create completed todos")
 			await waitForText(terminal, "All completed.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 
-			// Past the auto-collapse threshold, a manual open shows the collapsed
-			// one-liner; `/todos expand` reveals the end-anchored viewport. The
-			// command exactly matches an autocomplete entry, so the first Enter can
-			// be swallowed by the completion popup; submit twice (the second submit
-			// is a no-op on an already-cleared editor).
+			// An all-completed list auto-hides; `/todos expand` brings it back as
+			// the end-anchored viewport. The command exactly matches an
+			// autocomplete entry, so the first Enter can be swallowed by the
+			// completion popup; submit twice (the second submit is a no-op on an
+			// already-cleared editor).
 			terminal.write("/todos expand")
 			await waitForText(terminal, "/todos expand", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")

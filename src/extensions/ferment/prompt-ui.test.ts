@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { __resetTodoCrowding, isTodoCrowdingActive, setTodoCrowding } from "../todos/widget.js"
 import { createPromptFormComponent, promptEditor, promptForm, promptInput, promptSelect } from "./prompt-ui.js"
 
 const tipWidgetLocationMock = vi.hoisted(() => ({
@@ -134,6 +135,27 @@ describe("promptForm fallback customLabel", () => {
 			],
 		})
 		expect(select).toHaveBeenCalledWith("Pick one?", ["Option A", "Type your own answer"])
+	})
+})
+
+describe("promptForm todo crowding", () => {
+	beforeEach(() => {
+		__resetTodoCrowding()
+	})
+
+	it("does not release the questionnaire tool's crowding when the form closes", async () => {
+		// Regression: the form shared the "questionnaire" crowding reason, so its
+		// release dropped the tool's hold and re-expanded the todo strip under it.
+		setTodoCrowding("questionnaire", true)
+		const ctx = createContext({ ui: { select: vi.fn(async () => "Option A") } })
+
+		await promptForm(ctx, {
+			questions: [{ id: "q1", type: "single", prompt: "Pick one?", options: [{ id: "a", label: "Option A" }] }],
+		})
+
+		expect(isTodoCrowdingActive()).toBe(true)
+		setTodoCrowding("questionnaire", false)
+		expect(isTodoCrowdingActive()).toBe(false)
 	})
 })
 

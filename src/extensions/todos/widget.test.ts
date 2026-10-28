@@ -10,7 +10,6 @@ import {
 	__test_summarizeTodos,
 	buildTodoHeaderLine,
 	expandTodoWidget,
-	getTodoAutoCollapseThreshold,
 	openTodoWidget,
 	remountTodosWidget,
 	resetTodoWidgetState,
@@ -755,13 +754,6 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		)
 	})
 
-	it("parses the auto-collapse threshold from the environment", () => {
-		expect(getTodoAutoCollapseThreshold({})).toBe(5)
-		expect(getTodoAutoCollapseThreshold({ KIMCHI_TODOS_COLLAPSE_THRESHOLD: "3" })).toBe(3)
-		expect(getTodoAutoCollapseThreshold({ KIMCHI_TODOS_COLLAPSE_THRESHOLD: "0" })).toBe(5)
-		expect(getTodoAutoCollapseThreshold({ KIMCHI_TODOS_COLLAPSE_THRESHOLD: "nope" })).toBe(5)
-	})
-
 	it("renders the full list when it fits the row budget", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
@@ -800,64 +792,26 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		expect(lines.some((line: string) => line.includes("task 4"))).toBe(false)
 	})
 
-	it("auto-collapses the ambient strip past the configurable item count", () => {
+	it("keeps long lists expanded in the viewport instead of collapsing by item count", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos(
 			{
-				todos: Array.from({ length: 6 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })),
+				todos: Array.from({ length: 20 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })),
 			},
 			TEST_SESSION_ID,
 		)
 
 		syncTodoWidget(ctx)
 
-		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
-	})
-
-	it("auto-collapses when the expanded height would exceed ~25% of terminal rows", () => {
-		const setWidget = vi.fn()
-		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
-		// Raise the item-count threshold so only the height rule applies.
-		process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD = "10"
-		try {
-			applyWriteTodos(
-				{
-					todos: Array.from({ length: 6 }, (_, index) => ({
-						content: `task ${index + 1}`,
-						status: "pending",
-					})),
-				},
-				TEST_SESSION_ID,
-			)
-			syncTodoWidget(ctx)
-			const component = setWidget.mock.calls[0][1]
-			// 20-row terminal → 25% = 5; header+3-row viewport+2 markers = 6 > 5 → collapse
-			const instance = component({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
-			expect(instance.render(80)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
-		} finally {
-			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
-		}
-	})
-
-	it("honours KIMCHI_TODOS_COLLAPSE_THRESHOLD", () => {
-		process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD = "2"
-		try {
-			const setWidget = vi.fn()
-			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
-			applyWriteTodos(
-				{
-					todos: Array.from({ length: 3 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })),
-				},
-				TEST_SESSION_ID,
-			)
-
-			syncTodoWidget(ctx)
-
-			expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/3 (F7 to expand)"])
-		} finally {
-			delete process.env.KIMCHI_TODOS_COLLAPSE_THRESHOLD
-		}
+		const lines = renderWidget(setWidget)
+		expect(lines).toEqual([
+			"▼ Todos · Global · 0/20 (F7 to collapse)",
+			"  ○ task 1",
+			"  ○ task 2",
+			"  ○ task 3",
+			"↓ 17 more",
+		])
 	})
 
 	it("keeps the list expanded after an explicit expand, across store syncs", () => {
@@ -870,7 +824,9 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			TEST_SESSION_ID,
 		)
 		syncTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
+		// xs terminal: the ambient strip is the collapsed one-liner.
+		const xs = setWidget.mock.calls[0][1]({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
+		expect(xs.render(80)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
 
 		openTodoWidget(ctx)
 		// A subsequent store write re-syncs the widget; the explicit expansion
@@ -887,7 +843,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		setTodoAgentActive(ctx, true)
 		syncTodoWidget(ctx)
 
-		const lines = renderWidget(setWidget)
+		const lines = xs.render(80)
 		expect(lines).toContain("▼ Todos · Global · 0/6 · ⠋ 1 running (F7 to collapse)")
 		expect(lines).toContain("  ⠋ task 6")
 	})
@@ -955,7 +911,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		instance.dispose()
 	})
 
-	it("toggle cycles hidden → collapsed one-liner → expanded → collapsed", () => {
+	it("toggle cycles hidden → expanded → collapsed one-liner → expanded", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
 		applyWriteTodos(
@@ -965,21 +921,20 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			TEST_SESSION_ID,
 		)
 
-		// hidden → visible (auto-collapsed one-liner past the threshold)
-		toggleTodoWidget(ctx)
-		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
-
-		// one-liner → expanded list body (capped at the 3-row budget)
+		// hidden → visible (ambient: expanded list body capped at the 3-row budget)
 		toggleTodoWidget(ctx)
 		const expanded = renderWidget(setWidget)
 		expect(expanded).toContain("▼ Todos · Global · 0/6 (F7 to collapse)")
 		expect(expanded).toContain("  ○ task 3")
 		expect(expanded).toContain("↓ 3 more")
-		expect(expanded.some((line: string) => line.includes("F7 or /todos"))).toBe(false)
 
 		// expanded → collapsed one-liner (never hides; Esc does that)
 		toggleTodoWidget(ctx)
 		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
+
+		// one-liner → expanded again
+		toggleTodoWidget(ctx)
+		expect(renderWidget(setWidget)).toContain("↓ 3 more")
 	})
 
 	it("hides the strip entirely once everything is done, even when explicitly expanded", () => {
@@ -1134,6 +1089,57 @@ describe("todo widget — crowding from agents/questionnaire", () => {
 		setTodoCrowding("questionnaire", false)
 		expect(renderWidget(setWidget)).toContain("  ○ task 1")
 	})
+
+	it("restores an explicit expand-all after crowding clears", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: Array.from({ length: 6 }, (_, index) => ({ content: `task ${index + 1}`, status: "pending" })),
+			},
+			TEST_SESSION_ID,
+		)
+		expandTodoWidget(ctx)
+		expect(renderWidget(setWidget)).toContain("  ○ task 6")
+
+		setTodoCrowding("questionnaire", true)
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/6 (F7 to expand)"])
+
+		setTodoCrowding("questionnaire", false)
+		const lines = renderWidget(setWidget)
+		expect(lines).toContain("  ○ task 6")
+		expect(lines.some((line: string) => line.includes("more"))).toBe(false)
+	})
+
+	it("restores an explicit expand on an xs terminal after crowding clears", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
+		openTodoWidget(ctx)
+		const xs = setWidget.mock.calls[0][1]({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
+		expect(xs.render(80)).toContain("  ○ task 1")
+
+		setTodoCrowding("agents", true)
+		expect(xs.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
+
+		setTodoCrowding("agents", false)
+		expect(xs.render(80)).toContain("  ○ task 1")
+	})
+
+	it("keeps the user's collapse made during crowding instead of restoring the old expand", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos({ todos: [{ content: "task 1", status: "pending" }] }, TEST_SESSION_ID)
+		expandTodoWidget(ctx)
+		setTodoCrowding("questionnaire", true)
+
+		// F7 while crowded expands, the next F7 collapses — the user's latest choice.
+		toggleTodoWidget(ctx)
+		toggleTodoWidget(ctx)
+		setTodoCrowding("questionnaire", false)
+
+		expect(renderWidget(setWidget)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
+	})
 })
 
 describe("todo widget — mouse clicks (fullscreen mode)", () => {
@@ -1160,7 +1166,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		}
 	}
 
-	// 6 pending todos → ambient strip auto-collapses to the one-liner.
+	// xs terminal → ambient strip auto-collapses to the one-liner.
 	function setupCollapsedStrip() {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
@@ -1172,7 +1178,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		)
 		syncTodoWidget(ctx)
 		const component = setWidget.mock.calls[0][1]
-		const instance = component({ requestRender: vi.fn() }, theme)
+		const instance = component({ requestRender: vi.fn(), terminal: { rows: 20 } }, theme)
 		return { instance }
 	}
 
@@ -1185,7 +1191,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(result).toEqual({ handled: true })
 		const lines = instance.render(80)
 		expect(lines).toContain("▼ Todos · Global · 0/6 (F7 to collapse)")
-		expect(lines).toContain("↓ 3 more")
+		expect(lines).toContain("↓ 5 more")
 	})
 
 	it("collapses the expanded strip to the one-liner on left click, and expands on the next", () => {
@@ -1241,7 +1247,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 
 		expect(result).toEqual({ handled: true })
 		// Expanded by the first click; the trailing click must not collapse it again.
-		expect(instance.render(80)).toContain("↓ 3 more")
+		expect(instance.render(80)).toContain("↓ 5 more")
 	})
 })
 
