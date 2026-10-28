@@ -4,9 +4,12 @@ import { pipeline } from "node:stream/promises"
 import type { ReadableStream as WebReadable } from "node:stream/web"
 import { THIRD_PARTY_MAX_RETRIES } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
+import { resolveGithubToken } from "./auth.js"
 
 const DEFAULT_API_BASE = "https://api.github.com"
 const DEFAULT_DOWNLOAD_BASE = "https://github.com"
+
+const GITHUB_API_ACCEPT = "application/vnd.github+json"
 
 export interface Repo {
 	owner: string
@@ -84,16 +87,44 @@ export class GitHubClient {
 		this.signal = opts.signal
 	}
 
+	/**
+	 * GET a GitHub API URL with the token from resolveGithubToken() attached
+	 * when one is available. Authenticated requests get GitHub's 5,000/hour
+	 * budget instead of the 60/hour-per-IP unauthenticated one — that
+	 * unauthenticated budget is what turns `kimchi update self` into a 403
+	 * on busy machines.
+	 *
+	 * A 401 means the token itself is bad (expired or revoked); the release
+	 * metadata endpoints are public, so fall back to one unauthenticated
+	 * attempt rather than failing the update check. Release asset downloads
+	 * (fetchChecksum/downloadArchive) intentionally stay unauthenticated:
+	 * they are served from the public CDN and are not subject to the API
+	 * rate limit.
+	 */
+	private async fetchApi(url: string): Promise<Response> {
+		const options = {
+			fetchImpl: this.fetchImpl,
+			signal: this.signal,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		}
+		const token = await resolveGithubToken()
+		if (token) {
+			const res = await fetchWithRetry(
+				url,
+				{ headers: { Accept: GITHUB_API_ACCEPT, Authorization: `Bearer ${token}` } },
+				options,
+			)
+			if (res.status !== 401) return res
+		}
+		return fetchWithRetry(url, { headers: { Accept: GITHUB_API_ACCEPT } }, options)
+	}
+
 	/** GET /repos/{owner}/{name}/releases/latest. Returns tag + URL. */
 	async latestRelease(repo: Repo): Promise<ReleaseInfo> {
 		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/latest`
-		const res = await fetchWithRetry(
-			url,
-			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
-		)
+		const res = await this.fetchApi(url)
 		if (!res.ok) {
-			throw new Error(`github API returned ${res.status}`)
+			throw new Error(apiErrorMessage(res))
 		}
 		const json = (await res.json()) as { tag_name?: unknown; html_url?: unknown }
 		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
@@ -108,16 +139,12 @@ export class GitHubClient {
 	/** GET /repos/{owner}/{name}/releases/tags/{tag}. Returns tag + URL. */
 	async releaseByTag(repo: Repo, tag: string): Promise<ReleaseInfo> {
 		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/${tag}`
-		const res = await fetchWithRetry(
-			url,
-			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
-		)
+		const res = await this.fetchApi(url)
 		if (res.status === 404) {
 			throw new Error(`release ${tag} not found (404)`)
 		}
 		if (!res.ok) {
-			throw new Error(`github API returned ${res.status}`)
+			throw new Error(apiErrorMessage(res))
 		}
 		const json = (await res.json()) as { tag_name?: unknown; html_url?: unknown }
 		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
@@ -132,13 +159,9 @@ export class GitHubClient {
 	/** GET /repos/{owner}/{name}/releases/tags/canary. */
 	async canaryRelease(repo: Repo): Promise<CanaryReleaseInfo> {
 		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/canary`
-		const res = await fetchWithRetry(
-			url,
-			{ headers: { Accept: "application/vnd.github+json" } },
-			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
-		)
+		const res = await this.fetchApi(url)
 		if (!res.ok) {
-			throw new Error(`github API returned ${res.status}`)
+			throw new Error(apiErrorMessage(res))
 		}
 		const json = (await res.json()) as {
 			tag_name?: unknown
@@ -226,6 +249,20 @@ export class GitHubClient {
 			this.signal?.removeEventListener("abort", onAbort)
 		}
 	}
+}
+
+/**
+ * Human-friendly error for a failed release-metadata request. GitHub answers
+ * an exhausted rate limit with 403 — indistinguishable from a real
+ * "forbidden" without the headers — so surface the actionable cause.
+ */
+function apiErrorMessage(res: Response): string {
+	if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
+		const reset = Number(res.headers.get("x-ratelimit-reset"))
+		const when = Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000).toISOString() : "unknown"
+		return `github API rate limit exceeded (resets ${when}; set GITHUB_TOKEN or authenticate gh to raise it)`
+	}
+	return `github API returned ${res.status}`
 }
 
 function hexDecode(hex: string): Uint8Array {
