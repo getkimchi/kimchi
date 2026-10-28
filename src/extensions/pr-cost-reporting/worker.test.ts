@@ -746,6 +746,125 @@ describe("incremental translation", () => {
 		expect(backendFor(directory).markedRecords()).toEqual([])
 	})
 
+	it("advances a later group before retrying a timed-out group without replaying committed chunks", async () => {
+		await seedLinked()
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const smallWork = "66666666-6666-4666-8666-666666666666"
+		await appendFile(
+			path,
+			`${JSON.stringify({ version: 1, workId: smallWork, sessionId: "small", type: "work", recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
+		)
+		const key = accountKey(account)
+		const large = Array.from({ length: 250 }, (_, index) => `large-${index}`)
+		const facts = large.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockImplementation((stored) =>
+			stored[0]?.workId === smallWork
+				? { accounts: [], units: [], unresolved: [] }
+				: {
+						accounts: [{ account, facts, recordHashes: [] }],
+						units: large.map((entity) => ({ account: key, entities: [entity], recordHashes: [] })),
+						unresolved: [],
+					},
+		)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => clock.mockReturnValue(start + 4_800))
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(
+			backendFor(directory)
+				.markedRecords()
+				.some((row) => row.workId === smallWork),
+		).toBe(true)
+		clock.mockRestore()
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		await run()
+		expect(vi.mocked(eventBuilder.buildEvents).mock.calls[0]?.[0][0]?.workId).toBe(smallWork)
+		expect(backendFor(directory).markedRecords()).toEqual([])
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed).toEqual(large)
+	})
+
+	it("starts with an unattempted group after the reserve is reached by an unsettled group", async () => {
+		await seedLinked()
+		const smallWork = "66666666-6666-4666-8666-666666666666"
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${JSON.stringify({ version: 1, workId: smallWork, sessionId: "small", type: "work", recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
+		)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new Error("offline"))
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+			return { accounts: [], units: [], unresolved: [] }
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(
+			backendFor(directory)
+				.markedRecords()
+				.some((row) => row.workId === smallWork),
+		).toBe(true)
+		clock.mockRestore()
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		await run()
+		expect(vi.mocked(eventBuilder.buildEvents).mock.calls[0]?.[0][0]?.workId).toBe(smallWork)
+	})
+
+	it("clears settled markers in the transaction that observes the final event chunk", async () => {
+		await seedLinked()
+		const backend = backendFor(directory)
+		const key = accountKey(account)
+		const fact = {
+			entityId: "final-event",
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}
+		vi.mocked(eventBuilder.buildEvents).mockReturnValue({
+			accounts: [{ account, facts: [fact], recordHashes: [] }],
+			units: [{ account: key, entities: [fact.entityId], recordHashes: [] }],
+			unresolved: [],
+		})
+		const tx = backend.tx
+		let sequence = 0
+		let active = 0
+		const observed: number[] = []
+		const cleared: number[] = []
+		vi.spyOn(backend, "tx").mockImplementation((fn) => {
+			const previous = active
+			active = ++sequence
+			try {
+				return tx(fn)
+			} finally {
+				active = previous
+			}
+		})
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => observed.push(active))
+		const clear = backend.clearTranslation
+		vi.spyOn(backend, "clearTranslation").mockImplementation((hash) => {
+			cleared.push(active)
+			clear(hash)
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(observed).toHaveLength(1)
+		expect(cleared.length).toBeGreaterThan(0)
+		expect(new Set(cleared)).toEqual(new Set(observed))
+		expect(backend.markedRecords()).toEqual([])
+	})
+
 	it("rebuilds only the group of works whose records changed", async () => {
 		await seedLinked()
 		const path = join(directory, "work-attribution", "source.jsonl")

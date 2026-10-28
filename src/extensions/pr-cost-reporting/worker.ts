@@ -360,8 +360,11 @@ export async function reconcileReporting(
 const CHUNK_UNITS = 100
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
-/** The group translation in progress: units committed while its marked records stay unchanged. */
-const PROGRESS_NOTE = "translation-progress"
+/** Each group's committed units survive later groups running before it resumes. */
+const PROGRESS_NOTE = "translation-progress-v2:"
+/** Next group to try after one used the rest of a pass. */
+const NEXT_GROUP_NOTE = "translation-next-group"
+class CaptureTimeLimit extends Error {}
 
 /**
  * Translates the works whose records changed since their last translation into events, one connected group at a
@@ -372,8 +375,8 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
 	const check = () => {
 		assertLease()
-		bounded.throwIfAborted()
-		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
+		signal.throwIfAborted()
+		if (bounded.aborted || Date.now() >= deadline) throw new CaptureTimeLimit("PR reporting pass time limit exceeded")
 	}
 	check()
 	let historyComplete = true
@@ -395,13 +398,34 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	const producer = await reportingProducer(agentDir, check)
 	let waiting = false
-	for (const works of changedWorkGroups(backend, new Set(marked.keys()))) {
-		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return
+	const groups = changedWorkGroups(backend, new Set(marked.keys()))
+	const next = backend.getNote("agent", NEXT_GROUP_NOTE)
+	const start = next
+		? Math.max(
+				0,
+				groups.findIndex((group) => group[0] >= next),
+			)
+		: 0
+	const ordered = [...groups.slice(start), ...groups.slice(0, start)]
+	for (const [index, works] of ordered.entries()) {
+		if (Date.now() >= deadline - CHUNK_RESERVE_MS) {
+			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, works[0])
+			return
+		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
-		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
-		if (translated === undefined) return
+		let translated: boolean | undefined
+		try {
+			translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
+		} catch (error) {
+			if (!(error instanceof CaptureTimeLimit)) throw error
+		}
+		if (translated === undefined) {
+			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, ordered[(index + 1) % ordered.length][0])
+			return
+		}
 		waiting ||= translated
 	}
+	if (next) backend.deleteNote("agent", NEXT_GROUP_NOTE)
 	await recordReportingError(
 		agentDir,
 		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
@@ -505,7 +529,8 @@ async function translateGroup(
 		markers: changed.size,
 		plan: hash(built.units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
-	const saved: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+	const progressNote = `${PROGRESS_NOTE}${progress.group}`
+	const saved: unknown = JSON.parse(backend.getNote("agent", progressNote) ?? "null")
 	let done =
 		object(saved) &&
 		saved.group === progress.group &&
@@ -532,16 +557,20 @@ async function translateGroup(
 		done += chunk.length
 		backend.tx(() => {
 			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], check)
-			backend.putNote("agent", PROGRESS_NOTE, JSON.stringify({ ...progress, units: done }))
+			if (done === built.units.length) {
+				// A repository lookup that failed retries the group with a later pass.
+				if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+				backend.deleteNote("agent", progressNote)
+			} else backend.putNote("agent", progressNote, JSON.stringify({ ...progress, units: done }))
 		})
 		await setImmediate()
 	}
-	backend.tx(() => {
-		check()
-		// A repository lookup that failed or ran out of time retries the group with a later pass.
-		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
-		backend.deleteNote("agent", PROGRESS_NOTE)
-	})
+	if (built.units.length === 0)
+		backend.tx(() => {
+			check()
+			if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+			backend.deleteNote("agent", progressNote)
+		})
 	return built.unresolved.length > 0
 }
 
