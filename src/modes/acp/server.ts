@@ -163,14 +163,8 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import {
-	type AcpSkillInfo,
-	buildSkillCommandPrompt,
-	buildSkillListBlock,
-	cachedSkillListBlock,
-	setCachedSkillListBlock,
-	tryParseSkillCommand,
-} from "./skill-commands.js"
+import { AcpSessionResourceLoader } from "./session-resource-loader.js"
+import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
@@ -3046,36 +3040,24 @@ async function createSessionSettings(
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
 	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
-	// Annotated explicitly: the appendSystemPromptOverride closure references
-	// `resourceLoader` in its own initializer, which TS otherwise flags as
-	// circular (7022).
-	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
+	// The main loader carries the LIVE extension set (inline factories + MCP
+	// adapter) and is only reloaded on intentional full session reloads. The
+	// ACP adapter in front of it serves skills from per-session discovery
+	// snapshots that skill refreshes recompute without extension reloads, and
+	// computes the append prompt per call so a committed skills snapshot is
+	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
-		appendSystemPromptOverride: () => {
-			// Per-loader cached so a mid-session project-trust grant can
-			// invalidate it (see invalidateSkillListBlock); built lazily on
-			// first access, errors fall back to an empty block — it is
-			// non-essential.
-			let block = cachedSkillListBlock(resourceLoader)
-			if (block === undefined) {
-				try {
-					block = buildSkillListBlock(resourceLoader)
-				} catch {
-					// If the loader isn't ready (e.g. during reload before skills
-					// are populated), return empty rather than crashing session
-					// startup.
-					block = ""
-				}
-				setCachedSkillListBlock(resourceLoader, block)
-			}
-			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
-			// then the skill list block (matches upstream override behaviour).
-			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
-			return [...base, ...(block ? [block] : [])]
-		},
+	})
+	const resourceLoader = new AcpSessionResourceLoader({
+		mainLoader,
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }

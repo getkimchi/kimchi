@@ -1,5 +1,5 @@
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
-import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import {
@@ -35,29 +35,40 @@ export function discoverSkillCommandsMap(session: AgentSession): Map<string, Acp
 	return new Map(discoverAcpSkillCommands(session.resourceLoader).map((s) => [s.name, s]))
 }
 
+/** Minimal session surface the refresher's skill refresh needs. */
+interface SkillRefreshLoader extends ResourceLoader {
+	/** Provided by AcpSessionResourceLoader (see session-resource-loader.ts):
+	 *  a resources-only discovery pass that never re-runs extension factories. */
+	refreshSkills: (session: AgentSession) => Promise<void>
+}
+
 /**
- * Rescan the session's skills. The loader's own reload() drops extension-
- * contributed resources (bundled/project/configured/Claude skills), so the
- * private extendResourcesFromExtensions re-derives them afterwards — the
- * same step bindExtensions() runs after session_start (upstream:
- * packages/coding-agent/src/core/agent-session.ts). The check below fails
- * loudly if upstream renames it; drop the cast once a public refresh API
- * exists.
+ * Rescan the session's skills WITHOUT reloading extensions. The session's
+ * loader must be the ACP adapter (AcpSessionResourceLoader) — its
+ * refreshSkills runs a resources-only discovery pass (bundled, configured,
+ * project, and Claude sources via the same cwd/agentDir/trusted settings,
+ * plus the live runner's resources_discover contributions staged through
+ * the public extendResources) and commits the new snapshot only when the
+ * pass succeeds, so a failed rescan keeps the previous palette. The old
+ * flow called session.resourceLoader.reload() — a full reload that
+ * re-ran every inline extension factory (another MCP adapter, watcher,
+ * and lifecycle) just to re-read a directory listing.
  */
 export async function reloadSkillCommandsMap(session: AgentSession): Promise<Map<string, AcpSkillInfo>> {
-	await session.resourceLoader.reload()
-	const refreshable = session as unknown as Record<string, unknown>
-	if (typeof refreshable.extendResourcesFromExtensions !== "function") {
-		throw new TypeError("AgentSession.extendResourcesFromExtensions missing (upstream pi rename?)")
+	const loader = session.resourceLoader as unknown as SkillRefreshLoader
+	if (typeof loader.refreshSkills !== "function") {
+		throw new TypeError("session resourceLoader has no refreshSkills (ACP adapter wiring drift?)")
 	}
-	await (refreshable.extendResourcesFromExtensions as (reason: "reload") => Promise<void>).call(session, "reload")
-	// The loader's skill set is now fresh: drop any cached system-prompt
-	// skill-list block HERE — after the reload, not before requesting it — so
-	// a prompt rebuild that raced the reload cannot permanently re-cache
-	// stale content (nothing later would invalidate it: trust decisions are
-	// not filesystem events the watcher can observe). This also keeps
-	// watcher-driven skill uploads from leaving a stale block behind.
+	await loader.refreshSkills(session)
+	// The snapshot is committed: drop any cached system-prompt skill-list block
+	// and rebuild the prompt options against it — a prompt rebuild that raced
+	// the refresh cannot permanently re-cache stale content (nothing later
+	// would invalidate it: trust decisions are not filesystem events the
+	// watcher can observe). Rebuilding goes through the public
+	// setActiveToolsByName with the SAME active list: prompt options only,
+	// no runner or tool-set change during an active turn.
 	invalidateSkillListBlock(session.resourceLoader)
+	session.setActiveToolsByName(session.getActiveToolNames())
 	return discoverSkillCommandsMap(session)
 }
 
