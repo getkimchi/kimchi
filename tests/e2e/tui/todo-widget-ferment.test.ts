@@ -5,9 +5,10 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 test.use(TUI_TEST_CONFIG)
 
 /**
- * Widget shows "Todos · Global" header, summary line, and todo items when
- * the model writes todos with no explicit scope (default = global). Also
- * verifies the per-item status symbols (○, ▶, ✓).
+ * Widget shows the strip header (`▼ Todos · Global · done/total · ▶ N in progress (F7)`)
+ * and todo items when the model writes todos with no explicit scope (default =
+ * global). Also verifies the pending status symbol (○) and the static
+ * in-progress indicator once the agent run has ended.
  */
 test("todo widget renders global scope with status symbols", async ({ terminal }) => {
 	await runKimchiSession(
@@ -37,22 +38,22 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 			terminal.submit("Add a todo")
 			trace.step("submitted prompt")
 
-			await waitForText(terminal, "Todos · Global", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("scope header visible")
-
-			await waitForText(terminal, "0/2 done", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("summary line visible")
+			await waitForText(terminal, "Todos · Global · 0/2 ·", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("one-line header visible")
 
 			await waitForText(terminal, "implement widget rendering", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "write e2e tests", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible")
 
-			// Status symbols: ▶ for in_progress, ○ for pending.
+			// Status: the scripted run ends after the write, so the in_progress
+			// item renders statically ("▶ N in progress", no spinner); ○ for
+			// pending rows.
+			await waitForText(terminal, "1 in progress", { timeoutMs: INPUT_TIMEOUT_MS })
 			const text = terminal
 				.getViewableBuffer()
 				.map((r) => r.join(""))
 				.join("\n")
-			expect(text).toContain("▶")
+			expect(text).not.toContain("1 running")
 			expect(text).toContain("○")
 		},
 	)
@@ -188,20 +189,24 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			// Stage 7: model calls update_todos — if the tool were not visible during
 			// the ferment, this call would be rejected and the todo widget would
 			// never render. Seeing the widget proves the tool was available.
-			await waitForText(terminal, "Todos · Global", { timeoutMs: STREAM_TIMEOUT_MS })
+			// The aggregate header counts all scopes: 2 ferment phase todos (written
+			// by the bridge on phase activation) + 2 global todos from the model.
+			await waitForText(terminal, "Todos · 0/4", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("todo widget appeared — update_todos succeeded during ferment")
 
-			await waitForText(terminal, "write the code", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "run tests", { timeoutMs: INPUT_TIMEOUT_MS })
+			// The 3-row viewport shows the ferment scope window; the global scope
+			// group (label + 2 model-written todos) rolls out below.
+			await waitForText(terminal, "Todos · Ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Write a todo list via update_todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "↓ 3 more", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible during ferment")
 		},
 	)
 })
 
 /**
- * Widget summary line shows the correct count for mixed-status todos:
- * "1/4 done · 3 active · 1 blocked" when there are 4 todos with
- * pending/in_progress/blocked/completed statuses.
+ * The widget's one-line header shows counts, active, blocked suffix, and F7 for
+ * mixed-status todos.
  */
 test("todo widget summary reflects mixed-status counts", async ({ terminal }) => {
 	await runKimchiSession(
@@ -233,24 +238,28 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 			terminal.submit("Add mixed todos")
 			trace.step("submitted prompt")
 
-			// Summary format: "1/4 done · 3 active · 1 blocked"
-			await waitForText(terminal, "1/4 done", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("summary count visible")
-
+			await waitForText(terminal, "Todos · Global · 1/4 ·", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "1 blocked", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("blocked count visible")
+			trace.step("header count and blocked suffix visible")
 
-			// All 4 items should appear with their status symbols.
+			// The 3-row viewport shows pending/in_progress/blocked; the completed
+			// item rolls out of the window (window stays around the active row).
 			await waitForText(terminal, "pending item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "active item", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "blocked item", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "done item", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("all items visible")
+			await waitForText(terminal, "↓ 1 more", { timeoutMs: INPUT_TIMEOUT_MS })
+			expect(
+				terminal
+					.getViewableBuffer()
+					.map((r) => r.join(""))
+					.join("\n"),
+			).not.toContain("done item")
+			trace.step("active items visible; completed item rolled out")
 		},
 	)
 })
 
-test("todo widget shows rolling markers around active work", async ({ terminal }) => {
+test("todo widget shows long lists as a scrollable viewport and collapses on toggle", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -277,18 +286,36 @@ test("todo widget shows rolling markers around active work", async ({ terminal }
 		async (_fixture, trace) => {
 			terminal.submit("Create rolling todos")
 
-			await waitForText(terminal, "9/19 done · 10 active", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "… 7 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  8.  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "  9.  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 10.  ▶ task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 14.  ○ task 14", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "… 5 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			trace.step("rolling active window visible")
+			// Long lists stay expanded ambiently: a 3-row viewport around the
+			// active work, with scroll markers for the rest.
+			await waitForText(terminal, "▼ Todos · Global · 9/19 ·", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 7 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 8", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 9", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			// in_progress rows render a static ▶ once the run ends — match the text only.
+			await waitForText(terminal, " task 10", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↓ 9 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			trace.step("ambient scrollable viewport visible")
 
-			const text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
-			expect(text).not.toContain(" 19.  ○ task 19")
+			let text = viewText(terminal)
+			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
+			expect(text).not.toContain("  ✓ task 1\n")
+			expect(text).not.toContain("  ○ task 19")
+
+			// Bare `/todos` toggles like F7: the strip collapses to its one-line
+			// header. It exactly matches an autocomplete entry, so the first Enter
+			// can be swallowed by the completion popup; submit twice (the second
+			// submit is a no-op on an already-cleared editor).
+			terminal.write("/todos")
+			await waitForText(terminal, "/todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await new Promise((resolve) => setTimeout(resolve, 300))
+			terminal.submit("")
+
+			await waitForText(terminal, "● Todos · Global · 9/19 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			text = viewText(terminal)
+			expect(text).not.toContain("↓ 9 more")
+			trace.step("toggle collapses the strip to its header")
 		},
 	)
 })
@@ -321,19 +348,27 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 			terminal.submit("Create completed todos")
 			await waitForText(terminal, "All completed.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 
-			terminal.write("/todos")
-			await waitForText(terminal, "/todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			// An all-completed list auto-hides; `/todos expand` brings it back as
+			// the end-anchored viewport. The command exactly matches an
+			// autocomplete entry, so the first Enter can be swallowed by the
+			// completion popup; submit twice (the second submit is a no-op on an
+			// already-cleared editor).
+			terminal.write("/todos expand")
+			await waitForText(terminal, "/todos expand", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.submit("")
+			await new Promise((resolve) => setTimeout(resolve, 300))
 			terminal.submit("")
 
-			await waitForText(terminal, "19/19 done · 0 active", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, "… 10 completed", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 11.  ✓ task 11", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
-			await waitForText(terminal, " 19.  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "▼ Todos · Global · 19/19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "↑ 16 more", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 17", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			await waitForText(terminal, "  ✓ task 19", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("completed end window visible")
 
 			const text = viewText(terminal)
-			expect(text).not.toContain("  1.  ✓ task 1")
-			expect(text).not.toContain("… 9 more")
+			// Anchor with newline: "  ✓ task 1" alone is a prefix of "  ✓ task 11" etc.
+			expect(text).not.toContain("  ✓ task 1\n")
+			expect(text).not.toContain("↓ ")
 		},
 	)
 })
