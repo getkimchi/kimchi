@@ -857,6 +857,88 @@ test("refreshes an expired MCP OAuth token after a real Kimchi process restart",
 	)
 })
 
+test("renews a Google-style token silently after a restart without a second consent", async ({ terminal }) => {
+	// oauth-google-like mirrors Google's issuance rules: the fixture advertises Google's
+	// authorization endpoint, mints a refresh token only for access_type=offline, and
+	// re-issues one to an already-consented client only with prompt=consent. The browser
+	// driver records the URL Kimchi built and replays that exact request against the
+	// fixture so the flow completes. Without offline access no refresh token is stored,
+	// the expired token forces a second browser consent — the regression this guards.
+	const beforeRestart = gatewayMcpCall("echo", { message: "google-like-before" })
+	const afterRestart = gatewayMcpCall("echo", { message: "google-like-after" })
+	await runRestartableMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-google-like-renewal",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-google-like",
+				oauth: { clientId: "kimchi-e2e-client", scope: "mcp:tools" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: google-like-before" }] },
+							{ message: "google-like-before" },
+						),
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: google-like-after" }] },
+							{ message: "google-like-after" },
+						),
+					],
+				},
+			},
+			responses: [
+				beforeRestart.response,
+				modelReply("The first Google-style MCP call succeeded."),
+				afterRestart.response,
+				modelReply("The renewed Google-style MCP call succeeded after restart."),
+			],
+		},
+		async (fixture, session, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "browser opened on Google's authorization endpoint",
+			})
+			expect(new URL(opened.target).hostname).toBe("accounts.google.com")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				where: { accessType: "offline", prompt: "consent" },
+				description: "Google-style consent requested offline access",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			const initialToken = await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", refreshTokenIssued: true },
+				description: "refresh token minted on first consent",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			await session.turn("Call MCP before restarting", "The first Google-style MCP call succeeded.")
+			expect(toolResultText(fixture.fake.requests, beforeRestart)).toContain("fixture echo: google-like-before")
+			await fixture.mcp.waitForOAuthTokenExpiry(initialToken)
+
+			await session.restart()
+			trace.step("expired Google-style credentials persisted across a verified process restart")
+			await session.turn(
+				"Call MCP using the persisted token after restarting",
+				"The renewed Google-style MCP call succeeded after restart.",
+			)
+			const refresh = await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "refresh_token" },
+				description: "silent refresh-token exchange after expiry",
+			})
+			expect(refresh.grantType).toBe("refresh_token")
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "google-like-after" } },
+			})
+			expect(toolResultText(fixture.fake.requests, afterRestart)).toContain("fixture echo: google-like-after")
+			// No second browser consent: without a stored refresh token the client would
+			// have re-opened the authorization page instead of refreshing silently.
+			expect(fixture.mcp.eventsOfType("oauth_browser_opened")).toHaveLength(1)
+			trace.step("renewal used the stored refresh token; no second browser consent")
+		},
+	)
+})
+
 test("replays the success page for a completed OAuth state and serves an error page for unknown states", async ({
 	terminal,
 }) => {
