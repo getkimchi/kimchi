@@ -79,6 +79,7 @@ import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import compactionResilienceExtension from "./extensions/compaction-resilience.js"
 import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
@@ -944,6 +945,13 @@ async function cliMain(): Promise<void> {
 					{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
 					{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
 				] satisfies ManagedExtensionFactory[]),
+				// Compaction summarization with thinking off + scope-reduction fallback
+				// (session_before_compact hook). MUST register after work-attribution:
+				// handlers run sequentially in registration order, and work-attribution's
+				// session_before_compact handler mutates event.preparation in place
+				// (collapses spurious split-turns) — this extension must see the mutated
+				// form or that fix is silently defeated.
+				compactionResilienceExtension(),
 				requestTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,
