@@ -27,15 +27,19 @@ describe("kimchi bridge command", () => {
 		// Regression: runInstaller used to pass separate "claude" and "codex"
 		// args, feeding "codex" into install.sh's [vVERSION] slot — every
 		// `kimchi bridge setup` failed with "Requested version differs from
-		// this package." before installing anything.
+		// this package." before installing anything. The installer is spawned
+		// through bash: some release layouts shipped install.sh without the
+		// executable bit and a direct spawn failed with EACCES.
 		existsSync.mockReturnValue(true)
 		spawnSync.mockReturnValue({ status: 0 })
 
 		await runBridge(["setup"])
 
-		const installerCall = spawnSync.mock.calls.find(([file]) => String(file).endsWith("install.sh"))
-		expect(installerCall).toBeDefined()
-		expect(installerCall?.[1]).toEqual(["install", "both"])
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "install", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
 	})
 
 	it("setup enables gateway routing through the bridge CLI after installing", async () => {
@@ -48,9 +52,12 @@ describe("kimchi bridge command", () => {
 		expect(cliCall?.[1]).toEqual(["gateway", "enable"])
 	})
 
-	it("setup fails without spawning the gateway enable when the installer fails", async () => {
+	it("reports a spawn failure that Bun surfaces as undefined status", async () => {
+		// Regression: on EACCES Bun's spawnSync leaves status undefined, and
+		// the old `status === null` guard skipped the diagnostic — setup
+		// failed with no output at all.
 		existsSync.mockReturnValue(true)
-		spawnSync.mockReturnValue({ status: 1 })
+		spawnSync.mockReturnValue({ status: undefined, error: new Error("EACCES: permission denied") })
 
 		const code = await runBridge(["setup"])
 
@@ -66,8 +73,11 @@ describe("kimchi bridge command", () => {
 		const code = await runBridge(["status"])
 
 		expect(code).toBe(1)
-		const statusCall = spawnSync.mock.calls.find(([, args]) => Array.isArray(args) && args[0] === "status")
-		expect(statusCall?.[1]).toEqual(["status", "both"])
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "status", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
 	})
 
 	it("status delegates to the bridge CLI when the shim exists", async () => {
@@ -87,7 +97,10 @@ describe("kimchi bridge command", () => {
 
 		await runBridge(["remove"])
 
-		const installerCall = spawnSync.mock.calls.find(([file]) => String(file).endsWith("install.sh"))
-		expect(installerCall?.[1]).toEqual(["uninstall", "both"])
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "uninstall", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
 	})
 })

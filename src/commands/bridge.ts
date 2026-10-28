@@ -48,12 +48,17 @@ function runInstaller(action: string, client = "both"): boolean {
 		console.error(`kimchi bridge: bundled installer not found (${installer}) — is kimchi installed by its installer?`)
 		return false
 	}
-	const result = spawnSync(installer, [action, client], {
+	// Through bash, like the updater: some release layouts shipped install.sh
+	// without the executable bit, and a direct spawn fails with EACCES there.
+	const result = spawnSync("bash", [installer, action, client], {
 		encoding: "utf8",
 		env: { ...process.env, KIMCHI_BIN: process.execPath },
 		stdio: "inherit",
 	})
-	if (result.status === null) {
+	// Bun's spawnSync leaves status undefined (not null) when the child never
+	// started — without the error check a failed spawn surfaced as a silent
+	// exit 1.
+	if (result.error || result.status === null || result.status === undefined) {
 		console.error("kimchi bridge: installer failed to start:", result.error?.message ?? "unknown")
 		return false
 	}
