@@ -11,8 +11,8 @@
 set -euo pipefail
 
 # Bump both together. The pinned SHA-256 makes a re-uploaded release asset fail the build.
-VERSION=v0.1.0-rc.11
-SHA256=79008efcc20f46196902eb9ac95f41ef2c5468427636b2c66ae1ed8f525ce43d
+VERSION=v0.1.0-rc.12
+SHA256=07e72431fe8b1785f5edb7c910fdcb60b3c45fb8a7af53cfbfaf5e097f0fc33e
 ASSET=kimchi-bridge.tar.gz
 
 [ -n "$SHA256" ] || { echo "Set the SHA-256 of kimchi-bridge $VERSION in $0." >&2; exit 1; }
