@@ -122,6 +122,11 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    env:
+      # Same as release.yml: tsc needs ~2.7 GB of heap, more than the ~2 GB
+      # Node gets on macos-15 arm64 (this build OOM'd after #1529). The
+      # `checks` job already typechecks this commit (needs: [checks]).
+      KIMCHI_SKIP_TYPECHECK: "1"
 
     steps:
       - uses: actions/checkout@v4
