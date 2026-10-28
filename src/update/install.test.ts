@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { atomicInstall, copySupportingFiles, refreshBridge } from "./install.js"
+import { atomicInstall, copySupportingFiles, refreshBridge, reportBridgeRefresh } from "./install.js"
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -248,5 +248,60 @@ describe.skipIf(process.platform === "win32")("refreshBridge", () => {
 		writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
 		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
 		expect(existsSync(join(root, "calls"))).toBe(false)
+	})
+
+	it("streams the installer child's output to refresh.log", async () => {
+		writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+		writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
+		writeFileSync(join(share, "bridge", "install.sh"), "echo log-marker-from-child\n")
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual(["codex"])
+		await vi.waitFor(() => {
+			expect(readFileSync(join(prefix, "refresh.log"), "utf8")).toContain("log-marker-from-child")
+		})
+	})
+
+	it("notifies first-contact users once (and only once) when a bridge ships without receipts", async () => {
+		const info = vi.spyOn(console, "log").mockImplementation(() => {})
+		try {
+			await reportBridgeRefresh(share, [], prefix)
+			expect(info).toHaveBeenCalledWith(expect.stringContaining("kimchi bridge setup"))
+			expect(existsSync(join(prefix, ".bridge-notice-shown"))).toBe(true)
+			info.mockClear()
+			await reportBridgeRefresh(share, [], prefix)
+			expect(info).not.toHaveBeenCalled()
+		} finally {
+			info.mockRestore()
+		}
+	})
+
+	it("returns as soon as the installed/code marker reaches the bundled version", async () => {
+		const info = vi.spyOn(console, "log").mockImplementation(() => {})
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+			writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
+			const pending = reportBridgeRefresh(share, ["codex"], prefix, 5_000)
+			// The detached installer writes the marker last; simulate it landing.
+			await new Promise((resolve) => setTimeout(resolve, 700))
+			writeFileSync(join(prefix, "installed", "code"), "v0.2.0\n")
+			await pending
+			expect(info).toHaveBeenCalledWith(expect.stringContaining("updating work reporting for: codex"))
+			expect(error).not.toHaveBeenCalled()
+		} finally {
+			info.mockRestore()
+			error.mockRestore()
+		}
+	})
+
+	it("warns (without throwing) when the marker stays stale after a refresh", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+			writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
+			await reportBridgeRefresh(share, ["codex"], prefix, 400)
+			expect(error).toHaveBeenCalledWith(expect.stringContaining("did not complete"))
+		} finally {
+			error.mockRestore()
+		}
 	})
 })
