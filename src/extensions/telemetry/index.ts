@@ -826,10 +826,17 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		let sessionStartEmitted = false
 
 		// Watch the settings file for changes and emit telemetry on modification.
-		// Bound to ctx.emit so changes flow through the same OTLP pipeline. The
-		// returned stop fn is invoked on session_shutdown to close the fs.watch
-		// handle and clear the debounce timer (prevents handle leak / hang).
-		const stopSettingsWatcher = startSettingsChangeWatcher((event, properties) => telemetryCtx.emit(event, properties))
+		// Bound to ctx.emit so changes flow through the same OTLP pipeline.
+		// Started at session_start (not factory evaluation): an unbound instance
+		// — e.g. the orphan an extension double-load creates, or a session that
+		// never binds — must not hold a settings poller. session_start replaces
+		// any previous watcher (repeated starts must not accumulate), and
+		// session_shutdown stops and clears it BEFORE the flush below.
+		let stopSettingsWatcher: (() => void) | undefined
+		const startWatcher = (): void => {
+			stopSettingsWatcher?.()
+			stopSettingsWatcher = startSettingsChangeWatcher((event, properties) => telemetryCtx.emit(event, properties))
+		}
 
 		// Subscribe to ferment domain events published via pi.events.
 		// This keeps telemetry decoupled from ferment internals — ferment
@@ -931,9 +938,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			conversationId = randomUUID()
 			handleSessionStart(telemetryCtx, ctx)
 			registerSessionContext(telemetryCtx.piSessionId, telemetryCtx)
+			// Attribution (piSessionId) is initialized above; attach the settings
+			// watcher only for the bound session.
+			startWatcher()
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
-			stopSettingsWatcher()
+			// Stop and clear the watcher BEFORE flushing: a pending debounce must
+		// not fire into a shutting-down pipeline, and the poll interval must not
+		// outlive the session (handle leak / hang).
+			stopSettingsWatcher?.()
+			stopSettingsWatcher = undefined
 			unregisterSessionContext(telemetryCtx.piSessionId)
 			await handleSessionShutdown(telemetryCtx, ctx, event)
 		})

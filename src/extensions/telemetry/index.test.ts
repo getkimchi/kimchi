@@ -20,6 +20,43 @@ vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
 }))
 
+/** Controllable settings-watcher stand-in: counts starts/stops and tracks
+ *  which emit callbacks are live (a stopped watcher's emit is removed, so
+ *  nothing reaches a shut-down session). */
+const settingsWatcher = vi.hoisted(() => {
+	type EmitFn = (event: string, properties: Record<string, string | number | boolean>) => void
+	const state = { starts: 0, stops: 0, liveEmits: [] as EmitFn[] }
+	return {
+		state,
+		reset: () => {
+			state.starts = 0
+			state.stops = 0
+			state.liveEmits = []
+		},
+		/** Emit as if the (still-live) watchers had observed a settings change. */
+		emit: (event: string, properties: Record<string, string | number | boolean>) => {
+			for (const fn of [...state.liveEmits]) fn(event, properties)
+		},
+	}
+})
+vi.mock("./settings-change-emitter.js", () => ({
+	startSettingsChangeWatcher: (
+		emit: (event: string, properties: Record<string, string | number | boolean>) => void,
+	) => {
+		settingsWatcher.state.starts++
+		settingsWatcher.state.liveEmits.push(emit)
+		return () => {
+			settingsWatcher.state.stops++
+			const idx = settingsWatcher.state.liveEmits.indexOf(emit)
+			if (idx >= 0) settingsWatcher.state.liveEmits.splice(idx, 1)
+		}
+	},
+}))
+
+vi.mock("../../startup-context.js", () => ({
+	getAvailableModels: vi.fn(() => []),
+}))
+
 vi.mock("../../api/me.js", () => ({
 	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
 }))
@@ -2517,5 +2554,91 @@ describe("session isolation (concurrent instances)", () => {
 		const clamped = allRecords().filter((r) => r.eventName === "subagent.bash_clamped")
 		expect(clamped).toHaveLength(1)
 		expect(clamped[0]?.attrs["session.id"]).toBe("bound-session")
+	})
+})
+
+describe("settings watcher lifecycle (bound to the session)", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+		settingsWatcher.reset()
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function createInstance(sessionId: string) {
+		const mock = createMockApi(sessionId)
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(mock.api)
+		return mock
+	}
+
+	it("an unbound instance attaches no settings watcher and emits no config_changed", async () => {
+		await createInstance("unbound-session")
+
+		expect(settingsWatcher.state.starts).toBe(0)
+		// Even a stray emission from outside would have no live listener.
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("a bound instance attaches exactly one watcher at session_start", async () => {
+		const mock = await createInstance("watched-session")
+		// Factory evaluation alone must not attach anything.
+		expect(settingsWatcher.state.starts).toBe(0)
+
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		expect(settingsWatcher.state.starts).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(1)
+	})
+
+	it("repeated session starts replace the watcher instead of accumulating", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+
+		expect(settingsWatcher.state.starts).toBe(2)
+		expect(settingsWatcher.state.stops).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(1)
+	})
+
+	it("session shutdown stops the watcher and clears it before flushing", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		await getHandler(mock.handlers, "session_shutdown")({ reason: "test" })
+
+		expect(settingsWatcher.state.stops).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(0)
+
+		// A late settings change (or a pending debounce firing late) reaches
+		// nobody: the emit callback was detached at shutdown.
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		const changed = logEvents(fetchMock).filter((r) => r.eventName === "config_changed")
+		expect(changed).toHaveLength(0)
+	})
+
+	it("settings changes are attributed to the bound session", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		await getHandler(mock.handlers, "session_shutdown")({ reason: "test" })
+
+		const changed = logEvents(fetchMock).find((r) => r.eventName === "config_changed")
+		expect(changed).toBeDefined()
+		expect(changed?.attrs["session.id"]).toBe("watched-session")
+		expect(changed?.attrs.key).toBe("theme")
+		expect(changed?.attrs.value).toBe("dark")
 	})
 })
