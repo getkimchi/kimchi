@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { claimTodoCrowding } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import { type AgentActivity, AgentWidget, type Theme, type UICtx } from "./agent-widget.js"
@@ -127,5 +128,35 @@ describe("AgentWidget token display", () => {
 		// Percent renders standalone — no "0 token" placeholder.
 		expect(rendered).toContain("42%")
 		expect(rendered).not.toContain("token")
+	})
+})
+
+describe("AgentWidget todo crowding", () => {
+	it("holds one crowding claim while shown and releases it exactly once", () => {
+		const release = vi.fn()
+		vi.mocked(claimTodoCrowding).mockClear().mockReturnValue(release)
+		const agents = [
+			{ id: "run-1", type: "general-purpose", description: "busy", status: "running", toolUses: 0, startedAt: 1_000 },
+		]
+		const manager = { listAgents: () => agents } as unknown as AgentManager
+		let invalidate: (() => void) | undefined
+		const uiCtx: UICtx = {
+			setStatus: () => {},
+			setWidget: (_key, content) => {
+				invalidate = content?.(undefined, theme).invalidate
+			},
+		}
+		const widget = new AgentWidget(manager, new Map())
+		widget.setUICtx(uiCtx)
+
+		widget.update()
+		widget.update()
+		expect(claimTodoCrowding).toHaveBeenCalledTimes(1)
+		expect(claimTodoCrowding).toHaveBeenCalledWith("agents")
+
+		// invalidate and dispose both release; only the first may count.
+		invalidate?.()
+		widget.dispose()
+		expect(release).toHaveBeenCalledTimes(1)
 	})
 })
