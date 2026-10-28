@@ -65,11 +65,11 @@ test("side chat answers next to the session and wraps up into a steer for the ma
 			terminal.submit("The codeword is PAPAYA-42.")
 			await waitForText(terminal, "Noted.", { full: false })
 
-			terminal.submit("/side Which cache?")
+			terminal.submit("/btw Which cache?")
 			await waitForText(terminal, "Use the LRU cache.", { full: false })
 			expect(viewText(terminal)).toContain("Side chat · Which cache?")
 			expect(JSON.stringify(chatRequests().find(isSideRequest)?.body)).toContain("PAPAYA-42")
-			trace.step("/side opens a docked side chat, branched with the main context, that answers the first question")
+			trace.step("/btw opens a docked side chat, branched with the main context, that answers the first question")
 
 			terminal.submit("/wrap")
 			await waitForText(terminal, "Steering prompt for main session", { full: false })
@@ -102,7 +102,7 @@ test("side chat header closes it, lists past chats to reopen, and ctrl+alt+arrow
 			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
 		},
 		async (fixture, trace) => {
-			terminal.submit("/side Which cache?")
+			terminal.submit("/btw Which cache?")
 			await waitForText(terminal, "Use the LRU cache.", { full: false })
 			expect(await poll(() => sideChatFiles(fixture.homeDir).length === 1, 100, 5_000)).toBe(true)
 			expect(readFileSync(sideChatFiles(fixture.homeDir)[0], "utf-8")).toContain("Use the LRU cache.")

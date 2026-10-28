@@ -36,7 +36,7 @@ describe("side chat extension", () => {
 		const pi = setup()
 
 		expect(pi.getRegisteredShortcutKeys()).toEqual(["alt+l", "ctrl+alt+left", "ctrl+alt+right"])
-		for (const name of ["side", "side:new", "side:history", "side:close"]) {
+		for (const name of ["btw", "btw:new", "btw:history", "btw:close"]) {
 			expect(pi.getRegisteredCommand(name)).toBeDefined()
 		}
 	})
@@ -67,11 +67,11 @@ describe("side chat extension", () => {
 })
 
 describe("side chat extension errors", () => {
-	it("explains that /side needs the interactive TUI", async () => {
+	it("explains that /btw needs the interactive TUI", async () => {
 		const pi = setup()
 		const ctx = createCommandContext()
 
-		await pi.getRegisteredCommand("side").handler("why?", ctx)
+		await pi.getRegisteredCommand("btw").handler("why?", ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Side chat needs the interactive TUI.", "warning")
 		expect(pi.appendEntry).not.toHaveBeenCalled()
@@ -81,10 +81,10 @@ describe("side chat extension errors", () => {
 		const pi = setup()
 		const ctx = createCommandContext()
 
-		await pi.getRegisteredCommand("side:history").handler("", ctx)
+		await pi.getRegisteredCommand("btw:history").handler("", ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"No side chats in this session yet. Start one with /side or alt+l.",
+			"No side chats in this session yet. Start one with /btw or alt+l.",
 			"info",
 		)
 	})

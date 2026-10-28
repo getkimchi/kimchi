@@ -10,14 +10,14 @@
  * - the header's ✕ closes the side chat and ≡ lists this session's side
  *   chats in the panel (click or enter reopens one);
  * - the side chat is a real sub-session branched from the main session's
- *   current leaf, with read-only tools; `/side:new` starts a fresh one
+ *   current leaf, with read-only tools; `/btw:new` starts a fresh one
  *   without the main session's messages;
  * - `/wrap` drafts a steering prompt in a separate session that sees only
  *   the side thread (not the inherited main context), streaming it into the
  *   side editor to review/edit; enter sends it to the main session (as a
  *   steer while it runs), esc keeps chatting, `/close` discards;
  * - every side chat keeps its own transcript file next to the main session,
- *   referenced by a hidden main-session entry; `/side:history` reopens one.
+ *   referenced by a hidden main-session entry; `/btw:history` reopens one.
  *
  * ACP has no split view, so this is TUI-only by design.
  *
@@ -85,7 +85,7 @@ interface OpenOptions {
 	quote?: string
 	prompt?: string
 	resume?: SideChatRecord
-	/** Start without main-session context (`/side:new`); replaces an open side chat. */
+	/** Start without main-session context (`/btw:new`); replaces an open side chat. */
 	fresh?: boolean
 }
 
@@ -140,7 +140,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	/**
 	 * Append the unsaved side-thread messages to the side chat's own file
 	 * (after every turn). The first save also records the side chat in the
-	 * main session, so a crash keeps it reachable from `/side:history`.
+	 * main session, so a crash keeps it reachable from `/btw:history`.
 	 */
 	function saveThread(chat: ActiveSideChat): void {
 		if (!chat.side) return
@@ -483,27 +483,27 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	pi.registerCommand("side", {
+	pi.registerCommand("btw", {
 		description: "Open a side chat branched from this session (optionally with a first question)",
 		handler: async (args, ctx) => {
 			await openSideChat(ctx, { prompt: args.trim() || undefined, quote: takeSelection() })
 		},
 	})
 
-	pi.registerCommand("side:new", {
+	pi.registerCommand("btw:new", {
 		description: "Open a fresh side chat without the main session's context (optionally with a first question)",
 		handler: async (args, ctx) => {
 			await openSideChat(ctx, { fresh: true, prompt: args.trim() || undefined, quote: takeSelection() })
 		},
 	})
 
-	pi.registerCommand("side:history", {
+	pi.registerCommand("btw:history", {
 		description: "Browse and reopen side chats started in this session",
 		handler: async (_args, ctx) => {
 			if (active) persist(active)
 			const history = readSideChatHistory(ctx.sessionManager.getEntries())
 			if (history.length === 0) {
-				notify(ctx, "No side chats in this session yet. Start one with /side or alt+l.")
+				notify(ctx, "No side chats in this session yet. Start one with /btw or alt+l.")
 				return
 			}
 			const labels = history.map((record) => historyLabel(record))
@@ -519,7 +519,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		},
 	})
 
-	pi.registerCommand("side:close", {
+	pi.registerCommand("btw:close", {
 		description: "Close the side chat without sending anything to the main session",
 		handler: async () => {
 			await closeSideChat("closed")
