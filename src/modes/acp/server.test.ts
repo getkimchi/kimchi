@@ -3302,7 +3302,7 @@ describe("KimchiAcpAgent post-compaction usage_update", () => {
 			aborted: false,
 			willRetry: false,
 			...overrides,
-		} as AgentSessionEvent
+		}
 	}
 
 	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
