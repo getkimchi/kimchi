@@ -135,18 +135,22 @@ describe("ACP integration — skill change re-advertises palettes", () => {
 			const result = await prompt(fixture, sessionId, "say done")
 			expect(result.stopReason, "turn stop reason").toBe("end_turn")
 
+			// Select the CONVERSATION request (the one carrying the user's
+			// prompt) — a session-title namer request races alongside it.
 			const chatRequests = fixture.fake.requests.filter(
 				(request) =>
 					request.url.endsWith("/chat/completions") &&
 					request.body !== null &&
 					typeof request.body === "object" &&
-					"messages" in request.body,
+					Array.isArray((request.body as { messages?: unknown[] }).messages) &&
+					(request.body as { messages: Array<{ role: string; content: unknown }> }).messages.some(
+						(m) => m.role === "user" && JSON.stringify(m.content).includes("say done"),
+					),
 			)
 			expect(chatRequests.length).toBeGreaterThan(0)
-			const latest = chatRequests[chatRequests.length - 1]
-			const system = (latest.body as { messages: Array<{ role: string; content: unknown }> }).messages.find(
-				(m) => m.role === "system",
-			)
+			const system = (
+				chatRequests[0]?.body as { messages: Array<{ role: string; content: unknown }> }
+			).messages.find((m) => m.role === "system")
 			const systemText = typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "")
 			expect(systemText).toContain("e2e-prompt-skill")
 		},
