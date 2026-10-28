@@ -15,6 +15,7 @@ import {
 	remountTodosWidget,
 	resetTodoWidgetState,
 	SPINNER_INTERVAL_MS,
+	setTodoAgentActive,
 	setTodoCrowding,
 	syncTodoWidget,
 	toggleTodoWidget,
@@ -185,6 +186,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
+		setTodoAgentActive(ctx, true)
 		openTodoWidget(ctx)
 
 		const component = setWidget.mock.calls[0][1]
@@ -217,6 +219,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
+		setTodoAgentActive(ctx, true)
 		openTodoWidget(ctx)
 
 		const component = setWidget.mock.calls[0][1]
@@ -289,6 +292,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
+		setTodoAgentActive(ctx, true)
 		openTodoWidget(ctx)
 
 		const component = setWidget.mock.calls[0][1]
@@ -338,6 +342,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
+		setTodoAgentActive(ctx, true)
 		expandTodoWidget(ctx)
 
 		const component = setWidget.mock.calls[0][1]
@@ -690,11 +695,21 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 	it("shows a live spinner count when work is in progress", () => {
 		const counts = { total: 4, completed: 1, pending: 2, blocked: 0, inProgress: 1 }
-		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global", agentActive: true })).toBe(
 			"● Todos · Global · 1/4 · ⠋ 1 running (F7 to expand)",
 		)
-		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
+		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global", agentActive: true })).toBe(
 			"▼ Todos · Global · 1/4 · ⠋ 1 running (F7 to collapse)",
+		)
+	})
+
+	it("shows a static in-progress segment while the agent is idle", () => {
+		const counts = { total: 4, completed: 1, pending: 2, blocked: 0, inProgress: 1 }
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
+			"● Todos · Global · 1/4 · ▶ 1 in progress (F7 to expand)",
+		)
+		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
+			"▼ Todos · Global · 1/4 · ▶ 1 in progress (F7 to collapse)",
 		)
 	})
 
@@ -706,6 +721,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			const requestRender = vi.fn()
 			const setWidget = vi.fn()
 			const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+			setTodoAgentActive(ctx, true)
 			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, TEST_SESSION_ID)
 			syncTodoWidget(ctx)
 
@@ -731,10 +747,10 @@ describe("todo widget — single-line header and auto-collapse", () => {
 
 	it("appends the blocked count to the header when present", () => {
 		const counts = { total: 4, completed: 1, pending: 1, blocked: 1, inProgress: 1 }
-		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global" })).toBe(
+		expect(buildTodoHeaderLine(theme, counts, false, { scopeLabel: "Global", agentActive: true })).toBe(
 			"▼ Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7 to collapse)",
 		)
-		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global" })).toBe(
+		expect(buildTodoHeaderLine(theme, counts, true, { scopeLabel: "Global", agentActive: true })).toBe(
 			"● Todos · Global · 1/4 · ⠋ 1 running · 1 blocked (F7 to expand)",
 		)
 	})
@@ -868,6 +884,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 			},
 			TEST_SESSION_ID,
 		)
+		setTodoAgentActive(ctx, true)
 		syncTodoWidget(ctx)
 
 		const lines = renderWidget(setWidget)
@@ -875,9 +892,10 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		expect(lines).toContain("  ⠋ task 6")
 	})
 
-	it("uses the rotating spinner glyph for in_progress rows instead of ▶", () => {
+	it("uses the rotating spinner glyph for in_progress rows instead of ▶ while the agent is running", () => {
 		const setWidget = vi.fn()
 		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		setTodoAgentActive(ctx, true)
 		applyWriteTodos(
 			{
 				todos: [
@@ -895,6 +913,46 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		const lines = instance.render(80)
 		expect(lines.some((line: string) => line.includes("⠋ still running"))).toBe(true)
 		expect(lines.some((line: string) => line.includes("▶ still running"))).toBe(false)
+	})
+
+	it("renders open in_progress rows statically while the agent is idle", () => {
+		const setWidget = vi.fn()
+		const ctx = createUiContext(TEST_SESSION_ID, setWidget)
+		applyWriteTodos(
+			{
+				todos: [
+					{ content: "finished", status: "completed" },
+					{ content: "waiting on user", status: "in_progress" },
+					{ content: "queued", status: "pending" },
+				],
+			},
+			TEST_SESSION_ID,
+		)
+
+		openTodoWidget(ctx)
+		const component = setWidget.mock.calls[0][1]
+		const tui = { requestRender: vi.fn() }
+		const instance = component(tui, theme)
+		const idle = instance.render(80)
+		// No spinner frames anywhere; open work is marked statically, and the
+		// header no longer claims something is "running".
+		expect(idle[0]).toBe("▼ Todos · Global · 1/3 · ▶ 1 in progress (F7 to collapse)")
+		expect(idle).toContain("  ▶ waiting on user")
+		for (const frame of ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]) {
+			expect(idle.some((line: string) => line.includes(frame))).toBe(false)
+		}
+
+		// Flipping to agent-active swaps back to live rendering and paints.
+		setTodoAgentActive(ctx, true)
+		tui.requestRender.mockClear()
+		const live = instance.render(80)
+		expect(live[0]).toBe("▼ Todos · Global · 1/3 · ⠋ 1 running (F7 to collapse)")
+		expect(live).toContain("  ⠋ waiting on user")
+
+		// Back to idle: static again.
+		setTodoAgentActive(ctx, false)
+		expect(instance.render(80)[0]).toBe("▼ Todos · Global · 1/3 · ▶ 1 in progress (F7 to collapse)")
+		instance.dispose()
 	})
 
 	it("toggle cycles hidden → collapsed one-liner → expanded → collapsed", () => {
@@ -984,6 +1042,7 @@ describe("todo widget — single-line header and auto-collapse", () => {
 		// On a 3-row-budget terminal the global row rolls out of view; a tall
 		// terminal (5-row budget) still shows both scope groups in full.
 		const component = setWidget.mock.calls[0][1]
+		setTodoAgentActive(ctx, true)
 		const tall = component({ requestRender: vi.fn(), terminal: { rows: 80 } }, theme).render(80)
 		// Aggregate header counts both scopes (no single scope name)
 		expect(tall).toContain("▼ Todos · 0/2 · ⠋ 1 running (F7 to collapse)")
@@ -1159,6 +1218,7 @@ describe("todo widget — mouse clicks (fullscreen mode)", () => {
 		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 (F7 to expand)"])
 
 		applyWriteTodos({ todos: [{ id: 1, content: "task 1", status: "in_progress" }] }, TEST_SESSION_ID)
+		setTodoAgentActive(ctx, true)
 		syncTodoWidget(ctx)
 
 		expect(instance.render(80)).toEqual(["● Todos · Global · 0/1 · ⠋ 1 running (F7 to expand)"])

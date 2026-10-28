@@ -70,8 +70,10 @@ for (const scenario of ["completed", "deferred", "ignored"] as const) {
 					await waitForText(terminal, "Publish after approval", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 					expect(viewText(terminal)).toContain("2/3")
 				} else {
-					// Ignored dangling in_progress row keeps the running segment.
-					await waitForText(terminal, "1 running", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+					// Ignored dangling in_progress row stays visible — the agent loop
+					// is done, so it renders as a static "in progress" segment rather
+					// than a live "running" spinner.
+					await waitForText(terminal, "1 in progress", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 					expect(viewText(terminal)).toContain("0/3")
 				}
 				const chat = fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")

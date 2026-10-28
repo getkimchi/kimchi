@@ -77,6 +77,13 @@ interface TodoWidgetState {
 	collapsed: boolean
 	registered: boolean
 	registrationId: number
+	/** True while the agent loop is executing (agent_start → agent_end).
+	 *  The in-progress spinner and the "N running" header segment are only
+	 *  shown literally while this holds; an idle agent with an in_progress
+	 *  todo (e.g. work handed back to the user) renders the static ▶ marker
+	 *  and an "N in progress" segment instead of a spinner that implies
+	 *  execution is ongoing. */
+	agentActive: boolean
 	spinnerFrame: number
 	spinnerTimer?: ReturnType<typeof setInterval>
 	ctx?: ExtensionContext
@@ -142,6 +149,7 @@ function createTodoWidgetState(): TodoWidgetState {
 		collapsed: false,
 		registered: false,
 		registrationId: 0,
+		agentActive: false,
 		spinnerFrame: 0,
 	}
 }
@@ -163,9 +171,12 @@ export function summarizeTodoCounts(counts: TodoCounts): string {
 }
 
 /** Single-line strip header:
- *  `<marker> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running][ · N blocked] (F7)`
+ *  `<marker> Todos[ · <scope>] · <done>/<total>[ ✓][ · ⠋ N running | · ▶ N in progress][ · N blocked] (F7)`
  *  Marker mirrors the agents widget: `●` collapsed (live or not), `▼` expanded.
- *  In-progress item rows animate with the same braille spinner as the header. */
+ *  While the agent loop is executing (`agentActive`), in-progress rows animate
+ *  with the same braille spinner as the header's "N running" segment; once the
+ *  run ends, open items render statically (`▶`, "N in progress") so the strip
+ *  no longer implies work is executing on an idle session. */
 export function buildTodoHeaderLine(
 	theme: Theme,
 	counts: TodoCounts,
@@ -173,20 +184,27 @@ export function buildTodoHeaderLine(
 	options: {
 		scopeLabel?: string
 		spinnerFrame?: number
+		agentActive?: boolean
 	} = {},
 ): string {
 	const chevron = collapsed ? "●" : "▼"
 	const live = counts.inProgress > 0
+	const agentActive = options.agentActive ?? false
+	const running = live && agentActive
 	const title = `${chevron} Todos`
-	const parts = [theme.fg(live ? "accent" : "dim", title)]
+	const parts = [theme.fg(running ? "accent" : "dim", title)]
 	if (options.scopeLabel) parts.push(theme.fg("dim", options.scopeLabel))
 	const countsText = `${counts.completed}/${counts.total}`
 	const allDone = counts.total > 0 && counts.completed === counts.total
 	parts.push(theme.fg("dim", countsText) + (allDone ? ` ${theme.fg("success", "✓")}` : ""))
 	let line = parts.join(" · ")
 	if (live) {
-		const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
-		line += theme.fg("accent", ` · ${frame} ${counts.inProgress} running`)
+		if (running) {
+			const frame = SPINNER[(options.spinnerFrame ?? 0) % SPINNER.length]
+			line += theme.fg("accent", ` · ${frame} ${counts.inProgress} running`)
+		} else {
+			line += theme.fg("dim", ` · ${TODO_SYMBOL.in_progress} ${counts.inProgress} in progress`)
+		}
 	}
 	if (counts.blocked > 0) {
 		line += theme.fg("warning", ` · ${counts.blocked} blocked`)
@@ -237,8 +255,16 @@ export function summarizeTodos(sessionId: string): string {
  *  keeps each row tight against the header — row numbers were dropped in
  *  favor of `/todos done <n>` references, so there's no per-row prefix
  *  the indent needs to align with. */
-function todoLine(todo: TodoItem, _displayIndex: number, theme: Theme, scope: TodoScope, spinnerFrame: number): string {
-	const symbol = todo.status === "in_progress" ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
+function todoLine(
+	todo: TodoItem,
+	_displayIndex: number,
+	theme: Theme,
+	scope: TodoScope,
+	spinnerFrame: number,
+	spinning = true,
+): string {
+	const symbol =
+		todo.status === "in_progress" && spinning ? SPINNER[spinnerFrame % SPINNER.length] : TODO_SYMBOL[todo.status]
 	const isFerment = scope.kind === "ferment"
 	const prefix = " "
 
@@ -308,7 +334,12 @@ interface TodoBodyRow {
 	status?: TodoStatus
 }
 
-function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[], spinnerFrame = 0): TodoBodyRow[] {
+function buildFullTodoBodyRows(
+	theme: Theme,
+	groups: WidgetScopeGroup[],
+	spinnerFrame = 0,
+	spinning = true,
+): TodoBodyRow[] {
 	const showScopeLabels = groups.length > 1 || groups[0].scope.kind !== "global"
 	const rows: TodoBodyRow[] = []
 	for (const group of groups) {
@@ -319,7 +350,7 @@ function buildFullTodoBodyRows(theme: Theme, groups: WidgetScopeGroup[], spinner
 		for (const todo of group.todos) {
 			rows.push({
 				kind: "todo",
-				text: todoLine(todo, groupIndex, theme, group.scope, spinnerFrame),
+				text: todoLine(todo, groupIndex, theme, group.scope, spinnerFrame, spinning),
 				status: todo.status,
 			})
 			groupIndex++
@@ -478,10 +509,10 @@ export function todoViewportRowBudget(terminalRows: number | undefined): number 
 function buildTodoBodyLines(
 	theme: Theme,
 	groups: WidgetScopeGroup[],
-	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame">,
+	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame" | "agentActive">,
 	terminalRows: number | undefined,
 ): string[] {
-	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame)
+	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame, state.agentActive)
 
 	if (state.expanded) return rows.map((row) => row.text)
 
@@ -562,12 +593,20 @@ function buildTodoWidgetLines(theme: Theme, state: TodoWidgetState, sessionId: s
 			buildTodoHeaderLine(theme, counts, true, {
 				scopeLabel,
 				spinnerFrame: state.spinnerFrame,
+				agentActive: state.agentActive,
 			}),
 		]
 	}
 
 	const body = buildTodoBodyLines(theme, groups, state, terminalRows)
-	return [buildTodoHeaderLine(theme, counts, false, { scopeLabel, spinnerFrame: state.spinnerFrame }), ...body]
+	return [
+		buildTodoHeaderLine(theme, counts, false, {
+			scopeLabel,
+			spinnerFrame: state.spinnerFrame,
+			agentActive: state.agentActive,
+		}),
+		...body,
+	]
 }
 
 function stopSpinner(state: TodoWidgetState): void {
@@ -579,7 +618,7 @@ function stopSpinner(state: TodoWidgetState): void {
 
 function syncSpinner(state: TodoWidgetState, sessionId: string): void {
 	const inProgress = countAllActiveTodos(sessionId).inProgress
-	const shouldSpin = state.visible && inProgress > 0
+	const shouldSpin = state.visible && inProgress > 0 && state.agentActive
 	if (!shouldSpin) {
 		stopSpinner(state)
 		return
@@ -597,6 +636,20 @@ function syncSpinner(state: TodoWidgetState, sessionId: string): void {
 	}, SPINNER_INTERVAL_MS)
 	// Do not keep the process alive solely for the animation.
 	state.spinnerTimer.unref?.()
+}
+
+/** Track whether the agent loop is executing. Driven by the agent_start /
+ *  agent_end pair in the extension entry point; while inactive the strip
+ *  stops the spinner timer and renders open items with the static ▶ marker
+ *  (an idle session must not imply ongoing execution). */
+export function setTodoAgentActive(ctx: ExtensionContext, active: boolean): void {
+	if (!ctx.hasUI) return
+	const sessionId = ctx.sessionManager.getSessionId()
+	const state = getTodoWidgetState(ctx)
+	if (state.agentActive === active) return
+	state.agentActive = active
+	syncSpinner(state, sessionId)
+	state.tui?.requestRender?.(true)
 }
 
 export function resetTodoWidgetState(ctx: ExtensionContext): void {

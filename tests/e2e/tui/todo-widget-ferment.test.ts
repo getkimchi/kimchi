@@ -5,10 +5,10 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 test.use(TUI_TEST_CONFIG)
 
 /**
- * Widget shows the strip header (`▼ Todos · Global · done/total · N active (F7)`) and todo
- * items when the model writes todos with no explicit scope (default =
- * global). Also verifies the pending status symbol (○) and the running
- * indicator in the header.
+ * Widget shows the strip header (`▼ Todos · Global · done/total · ▶ N in progress (F7)`)
+ * and todo items when the model writes todos with no explicit scope (default =
+ * global). Also verifies the pending status symbol (○) and the static
+ * in-progress indicator once the agent run has ended.
  */
 test("todo widget renders global scope with status symbols", async ({ terminal }) => {
 	await runKimchiSession(
@@ -45,12 +45,15 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 			await waitForText(terminal, "write e2e tests", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible")
 
-			// Status: header running count for in_progress, ○ for pending rows.
+			// Status: the scripted run ends after the write, so the in_progress
+			// item renders statically ("▶ N in progress", no spinner); ○ for
+			// pending rows.
+			await waitForText(terminal, "1 in progress", { timeoutMs: INPUT_TIMEOUT_MS })
 			const text = terminal
 				.getViewableBuffer()
 				.map((r) => r.join(""))
 				.join("\n")
-			expect(text).toContain("1 running")
+			expect(text).not.toContain("1 running")
 			expect(text).toContain("○")
 		},
 	)
