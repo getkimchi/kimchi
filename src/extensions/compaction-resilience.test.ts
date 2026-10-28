@@ -1,5 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
-import type { SessionBeforeCompactEvent, SessionBeforeCompactResult } from "@earendil-works/pi-coding-agent"
+import type {
+	CompactionResult,
+	SessionBeforeCompactEvent,
+	SessionBeforeCompactResult,
+} from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -189,7 +193,7 @@ describe("compaction-resilience handler", () => {
 		expect(secondPrep.messagesToSummarize).toHaveLength(8)
 		expect(secondPrep.messagesToSummarize[0]).toBe(preparation.messagesToSummarize[0])
 		expect(secondPrep.settings.reserveTokens).toBe(16384 * BUDGET_ESCALATION_FACTOR)
-		const summary = (result?.compaction as { summary: string }).summary
+		const summary = (result?.compaction as CompactionResult).summary
 		expect(summary).not.toContain(TRUNCATION_MARKER)
 	})
 
@@ -218,7 +222,7 @@ describe("compaction-resilience handler", () => {
 		expect(thirdPrep.firstKeptEntryId).toBe("keep-1")
 		expect(thirdPrep.tokensBefore).toBe(652447)
 		expect(thirdPrep.turnPrefixMessages).toBe(turnPrefix)
-		const summary = (result?.compaction as { summary: string }).summary
+		const summary = (result?.compaction as CompactionResult).summary
 		expect(summary).toContain(TRUNCATION_MARKER)
 	})
 
@@ -253,7 +257,26 @@ describe("compaction-resilience handler", () => {
 
 		expect(compactImpl).toHaveBeenCalledTimes(2)
 		expect(compactImpl.mock.calls[1]?.[6]).toBe("off")
-		expect((result?.compaction as { summary: string }).summary).not.toContain(TRUNCATION_MARKER)
+		expect((result?.compaction as CompactionResult).summary).not.toContain(TRUNCATION_MARKER)
+	})
+
+	it("shrinks the range directly on an overflow, without escalating the budget", async () => {
+		const compactImpl = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("API error: 400 This model's maximum context length is 200000 tokens"))
+			.mockResolvedValueOnce(okResult())
+		const { handler } = captureHandler({ compactImpl })
+		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
+		const result = await handler(makeEvent(makePreparation(eightMessages())), ctx)
+
+		expect(compactImpl).toHaveBeenCalledTimes(2)
+		const secondPrep = compactImpl.mock.calls[1]?.[0] as CompactionPreparation
+		expect(secondPrep.messagesToSummarize).toHaveLength(4)
+		// Overflow means the summarized input is too large, not the output:
+		// the budget stays at its default and only the range shrinks.
+		expect(secondPrep.settings.reserveTokens).toBe(16384)
+		const summary = (result?.compaction as CompactionResult).summary
+		expect(summary).toContain(TRUNCATION_MARKER)
 	})
 
 	it("persists a degraded compaction without any provider error text when every attempt fails", async () => {
@@ -265,7 +288,7 @@ describe("compaction-resilience handler", () => {
 		const result = await handler(makeEvent(preparation), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(MAX_SUMMARIZATION_ATTEMPTS)
-		const compaction = result?.compaction as { summary: string; firstKeptEntryId: string; tokensBefore: number }
+		const compaction = result?.compaction as CompactionResult
 		expect(compaction.firstKeptEntryId).toBe("keep-1")
 		expect(compaction.tokensBefore).toBe(652447)
 		expect(compaction.summary).toContain("old summary")
@@ -288,7 +311,7 @@ describe("compaction-resilience handler", () => {
 		const result = await handler(makeEvent(makePreparation(eightMessages())), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(1)
-		const compaction = result?.compaction as { summary: string }
+		const compaction = result?.compaction as CompactionResult
 		expect(compaction.summary).toContain("degraded mode")
 		expect(compaction.summary).toContain("after 1 attempt")
 	})
