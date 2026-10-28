@@ -1,6 +1,6 @@
 /**
  * Side chat records: every side chat is referenced by a hidden custom entry
- * in the main session (latest entry per id wins), so `/btw:history` can
+ * in the main session (latest entry per id wins), so `/btw history` can
  * list and reopen it after a restart. The record is lightweight metadata;
  * the side thread itself lives in the side chat's own file (store.ts).
  */
@@ -26,7 +26,7 @@ export interface SideChatRecord {
 	sessionId: string
 	/** Main-session leaf the side chat branched from. */
 	branchLeafId: string | null
-	/** Started with `/btw:new`: no main-session messages inherited. */
+	/** Started with `/btw new`: no main-session messages inherited. */
 	fresh?: boolean
 	startedAt: number
 	updatedAt: number
@@ -104,7 +104,7 @@ export function titleFrom(text: string): string {
 	return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1)}…` : line
 }
 
-/** One `/btw:history` picker row. */
+/** One `/btw history` picker row. */
 export function historyLabel(record: SideChatRecord): string {
 	const when = new Date(record.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 	const { questions } = record
