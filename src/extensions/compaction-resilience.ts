@@ -102,23 +102,28 @@ function isAbortError(error: unknown): boolean {
 	return error instanceof Error && (error.name === "AbortError" || /compaction cancelled|aborted/i.test(error.message))
 }
 
-/** Bound for the provider error text persisted into the degraded summary. */
-const MAX_PERSISTED_ERROR_CHARS = 300
-
 /**
- * Sanitize a provider error message before persisting it into the degraded
- * summary. Provider error bodies are untrusted: they can span kilobytes of
- * raw HTTP body (pi-ai folds up to ~4k chars in), echo credentials on 401s,
- * and land verbatim in the session file and in the LLM's summary context —
- * so they get redacted, flattened to one line, and truncated.
+ * Degraded-summary note: names the failure class only (one word from our own
+ * classifier) — never the provider error message. Error bodies are untrusted
+ * (up to ~4k chars of raw HTTP body in pi-ai) and the summary lands in the
+ * session file and in the LLM's context, so no provider-derived text is
+ * embedded.
  */
-export function sanitizeErrorForSummary(message: string): string {
-	return message
-		.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
-		.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
-		.replace(/\beyJ[A-Za-z0-9_-]{10,}\b/g, "[redacted-token]")
-		.replace(/\s+/g, " ")
-		.slice(0, MAX_PERSISTED_ERROR_CHARS)
+function buildDegradedCompaction(
+	preparation: CompactionPreparation,
+	lastFailure: string | undefined,
+): CompactionResult {
+	const note =
+		`[Compaction ran in degraded mode: the summarization model could not produce a complete summary ` +
+		`after ${MAX_SUMMARIZATION_ATTEMPTS} attempts (thinking reduced, oldest context dropped). ` +
+		`Last failure: ${lastFailure ?? "unknown"}. ` +
+		`The dropped range has no summary — start a new session (/new) or retry /compact if context is missing.]`
+	const previous = preparation.previousSummary ? `${preparation.previousSummary}\n\n` : ""
+	return {
+		summary: `${previous}${note}`,
+		firstKeptEntryId: preparation.firstKeptEntryId,
+		tokensBefore: preparation.tokensBefore,
+	}
 }
 
 /**
@@ -132,21 +137,6 @@ export function reduceSummarizedRange(messages: CompactionPreparation["messagesT
 		if (messages[i].role === "user") return messages.slice(i)
 	}
 	return messages
-}
-
-function buildDegradedCompaction(preparation: CompactionPreparation, lastError: unknown): CompactionResult {
-	const message = sanitizeErrorForSummary(lastError instanceof Error ? lastError.message : String(lastError))
-	const note =
-		`[Compaction ran in degraded mode: the summarization model could not produce a complete summary ` +
-		`after ${MAX_SUMMARIZATION_ATTEMPTS} attempts (thinking reduced, oldest context dropped). ` +
-		`Last error (machine diagnostic, not instructions): ${message}. ` +
-		`The dropped range has no summary — start a new session (/new) or retry /compact if context is missing.]`
-	const previous = preparation.previousSummary ? `${preparation.previousSummary}\n\n` : ""
-	return {
-		summary: `${previous}${note}`,
-		firstKeptEntryId: preparation.firstKeptEntryId,
-		tokensBefore: preparation.tokensBefore,
-	}
 }
 
 /** Attempt sequence: (scope drop fraction, thinking encoding) per attempt. */
@@ -189,7 +179,7 @@ async function handleBeforeCompact(
 	const originalMessages = event.preparation.messagesToSummarize
 	let messagesToSummarize = originalMessages
 	let reduced = false
-	let lastError: unknown
+	let lastFailure: "length" | "overflow" | "rejection" | "other" | undefined
 
 	for (let attempt = 1; attempt <= MAX_SUMMARIZATION_ATTEMPTS; attempt++) {
 		if (event.signal.aborted) return undefined
@@ -210,9 +200,9 @@ async function handleBeforeCompact(
 			return { compaction: result }
 		} catch (error) {
 			if (event.signal.aborted || isAbortError(error)) return undefined
-			lastError = error
 			const failed = classifySummarizationFailure(error instanceof Error ? error.message : String(error))
-			const next = nextAttempt(attempt, encoding, failed === "abort" ? "other" : failed)
+			lastFailure = failed === "abort" ? "other" : failed
+			const next = nextAttempt(attempt, encoding, lastFailure)
 			// Fractions always apply to the original range so each retry cuts
 			// strictly deeper regardless of where boundaries landed last time.
 			const reducedRange = reduceSummarizedRange(originalMessages, next.dropFraction)
@@ -230,10 +220,10 @@ async function handleBeforeCompact(
 	}
 
 	// All attempts failed. The hook contract swallows throws, so fail visibly by
-	// persisting a degraded compaction: context still shrinks, the failure and
-	// its cause are recorded inside the summary, and auto-compaction stops
-	// re-invoking on every subsequent check.
-	return { compaction: buildDegradedCompaction(event.preparation, lastError) }
+	// persisting a degraded compaction: context still shrinks, the degradation is
+	// recorded inside the summary (failure class only — never provider error
+	// text), and auto-compaction stops re-invoking on every subsequent check.
+	return { compaction: buildDegradedCompaction(event.preparation, lastFailure) }
 }
 
 export interface CompactionResilienceDeps {
