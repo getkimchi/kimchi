@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as config from "../../config.js"
+import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
@@ -55,6 +56,7 @@ describe("SessionContext", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		resetAcpClientInfo()
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
@@ -866,6 +868,33 @@ describe("SessionContext", () => {
 			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
 			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
 			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
+		}
+	})
+
+	it("flushMetrics stamps source and ACP client identity on metric data points", async () => {
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const attrMap = Object.fromEntries(
+				dataPoint.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+			)
+			// Vitest runs without --mode=acp, so the process-level source is the CLI path.
+			expect(attrMap.source).toBe("cli")
+			expect(attrMap.acp_client_name).toBe("kimchi-vscode")
+			expect(attrMap.acp_client_version).toBe("0.0.1")
 		}
 	})
 
