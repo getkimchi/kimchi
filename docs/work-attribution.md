@@ -2,7 +2,7 @@
 
 Kimchi keeps a local record of the model requests, file edits, plans and commits that belong to the same work. A `workId` connects them, even when planning and implementation happen in different sessions or worktrees of the same repository.
 
-Records, derived summaries, cost caches and delivery state live in one SQLite database, `~/.config/kimchi/harness/pr-cost-reporting/ledger.db`. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits, then looks up their request costs in the background. `/work` shows one total split into confirmed and inferred spend, or an open PR's spend so far, plus the work's own priced spend. Incomplete billing stays unknown. The database itself is not uploaded; [PR cost reporting](pr-cost-reporting.md) sends normalized facts when enabled.
+Records, derived summaries, cost caches and delivery state live in one SQLite database, `~/.config/kimchi/harness/pr-cost-reporting/ledger.db`. Kimchi finds GitHub pull requests and GitLab merge requests for recorded commits. It does not look up request prices at present: `/work` shows totals that earlier versions saved, split into confirmed and inferred spend or an open PR's spend so far, and otherwise `Cost: not priced locally; see the console`. The database itself is not uploaded; [PR cost reporting](pr-cost-reporting.md) sends normalized facts when enabled.
 
 ## Where the files live
 
