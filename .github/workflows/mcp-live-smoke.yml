@@ -53,6 +53,14 @@ jobs:
         with:
           bun: 'true'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
       - name: Pure checks self-test
         run: node scripts/mcp-live-probe.mjs --self-test
 

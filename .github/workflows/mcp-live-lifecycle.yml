@@ -1,0 +1,57 @@
+name: MCP live lifecycle
+
+# Credentialed live check: proves an expired Google-backed MCP access token
+# is renewed silently (tools listed, no browser consent, stored expiry
+# advanced) using a dedicated test account's refresh token.
+#
+# Never PR-gating: it depends on external credentials and Google's
+# availability, and fork pull requests cannot see the secrets. Manual
+# dispatch only; a nightly schedule can be added once the test account and
+# secrets are provisioned (see docs/mcp-live-testing-setup.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Google MCP server to check ("gmail", "drive", or "calendar")'
+        required: false
+        default: 'gmail'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-live-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  google-renewal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: 'true'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Run Google renewal check
+        env:
+          GOOGLE_MCP_TEST_CLIENT_ID: ${{ secrets.GOOGLE_MCP_TEST_CLIENT_ID }}
+          GOOGLE_MCP_TEST_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_TEST_CLIENT_SECRET }}
+          GOOGLE_MCP_TEST_REFRESH_TOKEN: ${{ inputs.server == 'drive' && secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_DRIVE || inputs.server == 'calendar' && secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_CALENDAR || secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL }}
+          GOOGLE_MCP_TEST_SERVER: ${{ inputs.server == 'drive' && 'https://drivemcp.googleapis.com/mcp/v1' || inputs.server == 'calendar' && 'https://calendarmcp.googleapis.com/mcp/v1' || 'https://gmailmcp.googleapis.com/mcp/v1' }}
+        run: node scripts/mcp-live-google-lifecycle.mjs
