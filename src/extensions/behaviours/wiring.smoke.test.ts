@@ -644,6 +644,75 @@ describe("wireBehaviours — session_compact (re-steer)", () => {
 		expect(pi.sent[0].message.details).toEqual({ name: "glab-cli" })
 	})
 
+	it("skips the re-steer when the steer entry survived inside the keep-recent window", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent).toHaveLength(1) // first delivery via tool_result
+
+		// Post-rewrite branch where the steer entry is INSIDE the kept region:
+		// firstKeptEntryId points at the steer itself, so the rewrite retained
+		// it verbatim. Re-steering would duplicate the body in every
+		// subsequent request until the next compaction.
+		const branch = [
+			{ type: "message", id: "m0" },
+			{ type: "custom_message", customType: "behaviour", details: { name: "glab-cli" }, id: "s1" },
+			{ type: "message", id: "m1" },
+		]
+		await pi.fire(
+			"session_compact",
+			{
+				type: "session_compact",
+				reason: "manual",
+				willRetry: false,
+				compactionEntry: { id: "c1", firstKeptEntryId: "s1" },
+			},
+			{ sessionManager: { getBranch: () => branch } },
+		)
+
+		// The kept original is the only carrier — no re-steer.
+		expect(pi.sent).toHaveLength(1)
+	})
+
+	it("re-steers when the compaction entry says the steer fell outside the kept region", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent).toHaveLength(1) // first delivery via tool_result
+
+		// firstKeptEntryId points PAST the steer entry: the rewrite folded it
+		// into the summary — the body is gone from context and must be
+		// re-steered.
+		const branch = [
+			{ type: "message", id: "m0" },
+			{ type: "custom_message", customType: "behaviour", details: { name: "glab-cli" }, id: "s1" },
+			{ type: "message", id: "m1" },
+		]
+		await pi.fire(
+			"session_compact",
+			{
+				type: "session_compact",
+				reason: "manual",
+				willRetry: false,
+				compactionEntry: { id: "c1", firstKeptEntryId: "m1" },
+			},
+			{ sessionManager: { getBranch: () => branch } },
+		)
+
+		expect(pi.sent).toHaveLength(2)
+		expect(pi.sent[1]).toEqual({
+			message: expect.objectContaining({
+				customType: BEHAVIOUR_BODY_TYPE,
+				details: { name: "glab-cli", reason: "compaction" },
+			}),
+			options: { deliverAs: "steer" },
+		})
+	})
+
 	it("re-steers on every compaction event (no once-only gating)", async () => {
 		const pi = setupWired([glabCli])
 		await pi.fire("session_start", {}, { cwd: "/tmp" })

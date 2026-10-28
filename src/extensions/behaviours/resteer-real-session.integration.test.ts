@@ -176,7 +176,6 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 		if (cleanup) await cleanup()
 		cleanup = undefined
 	})
-
 	it("re-steers both bodies into the retried request after a real overflow compaction", {
 		timeout: 60_000,
 	}, async () => {
@@ -312,5 +311,141 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 		const firstSteerIdx = branch.findIndex((e) => isBehaviourEntry(e) && !entryDetails(e).includes("compaction"))
 		expect(firstSteerIdx, "first delivery entry persisted before the compaction").toBeGreaterThan(-1)
 		expect(firstSteerIdx).toBeLessThan(compactionIdx)
+	})
+
+	it("re-steers only when compaction actually dropped the steer (keep-recent window)", {
+		timeout: 60_000,
+	}, async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "resteer-keep-window-"))
+		tmpDirs.push(tmp)
+
+		// History filler big enough that a manual compaction has something to
+		// summarize (~25k tokens) while the tool round and its steer stay at
+		// the very end — inside the ~20k-token keep-recent window pi retains
+		// verbatim across the rewrite.
+		const HISTORY_FILLER = `filler ${"filler ".repeat(12_000)}`
+		const requests: Context[] = []
+		const streamSimple = (_m: Model<Api>, context: Context) => {
+			requests.push(context)
+			const isSummarizer = context.messages.some(
+				(msg) => messageText(msg).startsWith("<conversation>") || messageText(msg).startsWith("# Conversation\n"),
+			)
+			const text = () => context.messages.map(messageText).join("\n")
+			if (isSummarizer) {
+				return textStream(SUMMARY_MARKER)
+			}
+			if (text().includes(SUMMARY_MARKER)) {
+				return textStream("KEEP-WINDOW-FINAL: done.")
+			}
+			const toolResultCount = context.messages.filter((msg) => (msg as { role?: string }).role === "toolResult").length
+			// The last user message — turn 1 ("remember some filler…") vs turn 2
+			// ("dump"). A plain includes() would match turn 1's text inside turn
+			// 2's history too.
+			const lastUser = [...context.messages].reverse().find((msg) => (msg as { role?: string }).role === "user")
+			const lastUserText = messageText(lastUser ?? {})
+			if (toolResultCount === 0) {
+				if (lastUserText.includes("dump")) {
+					// Turn 2 first inference: request the tool call that loads the
+					// behaviour and steers its body.
+					return toolCallStream("call-dump-keep")
+				}
+				// Turn 1: a long plain-text answer (no tools) — the history filler.
+				return textStream(HISTORY_FILLER)
+			}
+			if (text().includes(HABIT_BODY)) {
+				// Turn 2 continuation: the steer already landed — finish the turn.
+				return textStream("Turn two finished.")
+			}
+			return textStream("Fallback: done.")
+		}
+
+		const modelRuntime = await ModelRuntime.create({ authPath: join(tmp, "auth.json"), modelsPath: null })
+		modelRuntime.registerProvider("resteer-stub", {
+			name: "Resteer Stub",
+			baseUrl: model.baseUrl,
+			apiKey: "stub",
+			api: "openai-completions",
+			streamSimple,
+		})
+
+		const loader = new DefaultResourceLoader({
+			cwd: tmp,
+			agentDir: tmp,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPromptOverride: () => "You are a resteer real-session test.",
+			appendSystemPromptOverride: () => [],
+			extensionFactories: [(pi) => wireBehaviours(pi, [habitNudge, standingPolicy])],
+		})
+		await loader.reload()
+
+		const dumpTool = {
+			name: "dump",
+			label: "Dump",
+			description: "Returns small text.",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text" as const, text: "dump-result" }], details: undefined }),
+		}
+
+		const { session } = await createAgentSession({
+			cwd: tmp,
+			agentDir: tmp,
+			sessionManager: SessionManager.inMemory(tmp),
+			settingsManager: SettingsManager.create(tmp, tmp),
+			model,
+			modelRuntime,
+			resourceLoader: loader,
+			customTools: [dumpTool],
+		})
+		await session.bindExtensions({
+			onError: (err) => {
+				throw new Error(`behaviours extension failed to bind: ${err.error ?? err.extensionPath}`)
+			},
+		})
+		cleanup = async () => {
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+			for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+		}
+
+		// Turn 1: history filler. Turn 2: the dump tool call loads both
+		// behaviours and steers both bodies at the end of the context.
+		await session.prompt("remember some filler text, then we will use a tool")
+		await session.prompt("dump")
+
+		// Sanity: the steer really is in the conversation.
+		const before = session.sessionManager.buildSessionProjection().messages.map(messageText).join("\n")
+		expect(before).toContain(HABIT_BODY)
+
+		// Manual compaction. The keep-recent window covers the tool round
+		// and the steers, so they survive the rewrite verbatim.
+		await session.compact()
+
+		const branch = session.sessionManager.getBranch()
+		expect(
+			branch.findLastIndex((e) => e.type === "compaction"),
+			"session was compacted",
+		).toBeGreaterThan(-1)
+
+		// THE no-duplication guarantee: the post-compaction context carries
+		// each body exactly once. The steer entry survived inside the kept
+		// region, so the re-steer must be skipped — a second copy would ride
+		// every request until the next compaction.
+		const after = session.sessionManager.buildSessionProjection().messages.map(messageText).join("\n")
+		const occurrences = after.split(HABIT_BODY).length - 1
+		expect(occurrences, `habit body appears exactly once (got ${occurrences})`).toBe(1)
+		const policyOccurrences = after.split(POLICY_BODY).length - 1
+		expect(policyOccurrences, `policy body appears exactly once (got ${policyOccurrences})`).toBe(1)
+
+		// The branch agrees: exactly one steer entry per body (the original,
+		// kept — no re-steer entry appended).
+		const steerEntries = branch.filter(
+			(e) =>
+				(e as { type?: string; customType?: string }).type === "custom_message" &&
+				(e as { customType?: string }).customType === "behaviour",
+		)
+		expect(steerEntries).toHaveLength(2) // one per behaviour, no duplicates
 	})
 })

@@ -60,6 +60,36 @@ function isTriggered(b: Behaviour): b is TriggeredBehaviour {
 	return b.kind === "triggered"
 }
 
+/** A session-branch entry that carries a steered behaviour body. */
+function isBehaviourSteerEntry(entry: unknown): entry is { details: { name: string } } {
+	if (!entry || typeof entry !== "object") return false
+	const record = entry as { type?: unknown; customType?: unknown; details?: unknown }
+	if (record.type !== "custom_message" || record.customType !== BEHAVIOUR_BODY_TYPE) return false
+	return typeof (record.details as { name?: unknown } | undefined)?.name === "string"
+}
+
+/** Names of behaviours whose steer entry is still in the post-compaction
+ *  context — i.e. inside the keep-recent window the rewrite retained
+ *  verbatim. Undefined when the compaction entry or the session branch
+ *  cannot be read (synthetic events, exotic session managers): callers fall
+ *  back to re-steering, preserving the delivery guarantee over the dedup. */
+function survivingSteerNames(
+	event: { compactionEntry?: { id?: string; firstKeptEntryId?: string } },
+	ctx?: { sessionManager?: { getBranch?: () => unknown[] } },
+): Set<string> | undefined {
+	const compaction = event?.compactionEntry
+	const branch = ctx?.sessionManager?.getBranch?.()
+	if (!compaction || !Array.isArray(branch)) return undefined
+	const cutId = compaction.firstKeptEntryId ?? compaction.id
+	const cutIndex = branch.findIndex((entry) => (entry as { id?: string }).id === cutId)
+	if (cutIndex < 0) return undefined
+	const names = new Set<string>()
+	for (const entry of branch.slice(cutIndex)) {
+		if (isBehaviourSteerEntry(entry)) names.add(entry.details.name)
+	}
+	return names
+}
+
 export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[], options: WireOptions = {}): void {
 	const triggered = behaviours.filter(isTriggered)
 	const sessionSpecs = collectSessionSpecs(triggered)
@@ -149,23 +179,32 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 		}
 	})
 
-	// Re-steer tool-triggered bodies after every successful compaction. The
-	// rewritten context drops the original steer message, and a default
+	// Re-steer tool-triggered bodies after every successful compaction — but
+	// only the ones the rewrite actually dropped. Compaction retains a recent
+	// window verbatim (pi 1.3: ~20k keep-recent tokens): a steer inside it
+	// survives the rewrite, and re-steering it would duplicate the body in
+	// every subsequent request until the next compaction. The event fires
+	// after the compaction entry is committed and carries it
+	// (firstKeptEntryId), so the post-rewrite branch tells us exactly which
+	// steers are still in context; steers outside the kept region were folded
+	// into the summary and must be re-steered to stay actionable. A default
 	// tool-triggered body never renders a system-prompt block (steer-only
 	// delivery), so without this handler the guidance would be lost at the
 	// first compaction boundary. Session-triggered bodies never re-steer —
 	// their block sits in the system prompt from turn 0 and survives
-	// compaction by construction. Standing tool-loaded bodies re-steer too:
-	// their block only enters the prompt at the next user-prompt rebuild, so
-	// until then the steer is the only carrier — an inline overflow compaction
-	// can consume the original steer, and if the session ends before the next
-	// user prompt the block would never render. No pending-queue gating: this
-	// fires on every compaction event, bounded at one body per tool-loaded
-	// behaviour per compaction. The reason detail distinguishes re-steers
-	// from first deliveries without a new entry type.
-	pi.on("session_compact", async () => {
+	// compaction by construction. Standing tool-loaded bodies re-steer under
+	// the same rule: their block only enters the prompt at the next
+	// user-prompt rebuild, so until then the steer is the only carrier — an
+	// inline overflow compaction can consume the original steer, and if the
+	// session ends before the next user prompt the block would never render.
+	// No pending-queue gating: this fires on every compaction event, bounded
+	// at one body per tool-loaded behaviour per compaction. The reason detail
+	// distinguishes re-steers from first deliveries without a new entry type.
+	pi.on("session_compact", async (event, ctx) => {
+		const keptNames = survivingSteerNames(event, ctx)
 		for (const b of triggered) {
 			if (engine.loadRecord(b.name)?.trigger !== "tool") continue
+			if (keptNames?.has(b.name)) continue
 			pi.sendMessage(
 				{
 					customType: BEHAVIOUR_BODY_TYPE,
