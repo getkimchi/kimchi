@@ -7,6 +7,7 @@ import {
 } from "../work-attribution/reconcile-supervisor.js"
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
+import { readOutboxStatus } from "./ledger/outbox.js"
 import {
 	dueLimitNotices,
 	readReportingState,
@@ -19,7 +20,7 @@ import { reconcileReporting } from "./worker.js"
 
 const ARGUMENT_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Report PR costs to your account" },
-	{ value: "off", label: "off", description: "Stop reporting and delete pending uploads" },
+	{ value: "off", label: "off", description: "Pause reporting and retain pending uploads" },
 	{ value: "status", label: "status", description: "Show the setting, queued reports and problems" },
 ]
 
@@ -120,17 +121,22 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					await setReportingEnabled(getAgentDir(), true)
 					if (started && stop) requestWorkReconciliation()
 					ctx.ui.notify(
-						"PR reporting on. Kimchi will send repository/PR metadata, request and billing IDs, timestamps, and matching evidence to your account. Prompts, plans, local work/session IDs, paths, and prices stay local. Delivery runs in the background.",
+						"PR reporting on. Kimchi will send observed usage, work and repository/PR metadata, request and billing IDs, timestamps, and matching evidence to your account. Prompts, plan contents, local paths, and file contents stay local. Delivery runs in the background.",
 						"info",
 					)
 				} else if (command === "off") {
 					await setReportingEnabled(getAgentDir(), false)
 					ctx.ui.notify(
-						"PR reporting off. Pending uploads were deleted; local work history and revision counters were retained. Previously accepted reports remain on the server.",
+						"PR reporting off. Pending uploads are paused and retained locally. Previously accepted reports remain on the server.",
 						"info",
 					)
 				} else {
-					const status = statusText(await readReportingState(getAgentDir()), uploadSkipReason(ctx.mode))
+					const status = statusText(
+						await readReportingState(getAgentDir()),
+						uploadSkipReason(ctx.mode),
+						Date.now(),
+						readOutboxStatus(getAgentDir()),
+					)
 					ctx.ui.notify(status.text, status.warning ? "warning" : "info")
 				}
 			} catch {

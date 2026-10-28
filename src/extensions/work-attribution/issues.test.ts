@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { lockSync } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { closeBackends, getNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import {
 	changeWorkIssue,
 	MAX_ISSUE_BYTES,
@@ -19,17 +20,22 @@ let agentDir: string
 let workId: string
 const folders: string[] = []
 beforeEach(() => {
+	useBackendFactory(() => createMemoryRecords())
 	agentDir = mkdtempSync(join(tmpdir(), "kimchi-work-issue-"))
 	folders.push(agentDir)
 	workId = randomUUID()
 })
 afterEach(() => {
+	closeBackends()
+	useBackendFactory(null)
 	for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true })
 })
 
-/** The work's saved issue file. */
+/** The work's saved ledger selection. */
 function saved() {
-	return JSON.parse(readFileSync(workIssuePath(agentDir, workId), "utf8"))
+	const note = getNote(agentDir, workId, "issue")
+	if (note === undefined) throw new Error("Expected a saved issue note")
+	return JSON.parse(note)
 }
 
 /** Writes the work's issue file as another session or version would. */
@@ -154,24 +160,20 @@ describe("a work's issue relation", () => {
 	})
 
 	it("gives sessions in separate processes consecutive revisions without losing a change", async () => {
-		const path = workIssuePath(agentDir, workId)
-		mkdirSync(dirname(path), { recursive: true })
-		// Every writer starts while another one holds the lock, kept fresh as a writer keeps its own.
-		let release: (() => void) | undefined = lockSync(path, {
-			realpath: false,
-			stale: 5000,
-			update: 1000,
-			onCompromised: () => {},
-		})
+		// Independent Bun processes share the production SQLite transaction, not a memory fixture.
 		const script = join(agentDir, "selector.mts")
 		writeFileSync(
 			script,
-			`import { changeWorkIssue } from ${JSON.stringify(new URL("./issues.ts", import.meta.url).pathname)};
-console.log("ready");
-for (let i = 1; i <= 4; i++) await changeWorkIssue(${JSON.stringify(agentDir)}, ${JSON.stringify(workId)}, process.argv[2], process.argv[2] + "-" + i);`,
+			`import { changeWorkIssue, readWorkIssue } from ${JSON.stringify(new URL("./issues.ts", import.meta.url).pathname)};
+if (process.argv[2] === "read") {
+ console.log(JSON.stringify(readWorkIssue(${JSON.stringify(agentDir)}, ${JSON.stringify(workId)})));
+} else {
+ console.log("ready");
+ for (let i = 1; i <= 4; i++) changeWorkIssue(${JSON.stringify(agentDir)}, ${JSON.stringify(workId)}, process.argv[2], process.argv[2] + "-" + i);
+}`,
 		)
 		const children = ["ALPHA", "BETA", "GAMMA"].map((project) => {
-			const child = spawn(process.execPath, ["--import", "tsx", script, project])
+			const child = spawn("bun", [script, project])
 			let stderr = ""
 			child.stderr.on("data", (chunk) => {
 				stderr += chunk
@@ -188,19 +190,17 @@ for (let i = 1; i <= 4; i++) await changeWorkIssue(${JSON.stringify(agentDir)}, 
 			void done.catch(() => {})
 			return { child, ready, done }
 		})
-		// A timed-out run must not leave the lock held or writers running after the test folder is removed.
+		// A timed-out run must not leave writers running after the test folder is removed.
 		onTestFinished(() => {
-			release?.()
 			for (const { child } of children) child.kill()
 		})
 		await Promise.all(children.map((child) => child.ready))
-		release()
-		release = undefined
 		await Promise.all(children.map((child) => child.done))
 
 		// Each of the 12 selections read the revision before it, so a lost change would leave fewer.
-		const issue = readWorkIssue(agentDir, workId)
+		const issue = JSON.parse(execFileSync("bun", [script, "read"], { encoding: "utf8" }))
 		expect(issue.revision).toBe(12)
+		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
 		// The last change is some writer's last selection.
 		expect(issue.selected?.key.endsWith("-4")).toBe(true)
 	}, 60_000)

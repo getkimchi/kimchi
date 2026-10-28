@@ -2,12 +2,13 @@
  * Unit tests for session-name extension
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import sessionNameExtension, {
 	deterministicFallback,
 	extractFirstUserMessage,
@@ -209,10 +210,9 @@ describe("suggestSessionName", () => {
 		const workId = getWorkId(ctx)
 		const requestIds: string[] = []
 		const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-			const rows = readFileSync(join(attributionDir, "work-attribution", "original.jsonl"), "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line))
+			const rows = backendFor(attributionDir)
+				.readRecords({ sessionId: "original" })
+				.map((row) => JSON.parse(row.body))
 			const requestId = new Headers(init?.headers).get("X-Request-Id")
 			expect(requestId).toBeTruthy()
 			expect(rows.at(-1)).toMatchObject({
@@ -228,7 +228,15 @@ describe("suggestSessionName", () => {
 				setWorkId(ctx)
 				return new Response("retry", { status: 500 })
 			}
-			return new Response(JSON.stringify({ choices: [{ message: { content: "Name retained" } }] }), { status: 200 })
+			return new Response(
+				JSON.stringify({
+					choices: [{ message: { content: "Name retained" } }],
+					id: "chat-title",
+					model: "title-model",
+					usage: { prompt_tokens: 10, completion_tokens: 2 },
+				}),
+				{ status: 200 },
+			)
 		})
 		vi.stubGlobal("fetch", fetchMock)
 		const pending = suggestSessionName(ctx, "Name this task", true)
@@ -236,6 +244,15 @@ describe("suggestSessionName", () => {
 		expect(await pending).toBe("Name retained")
 		expect(fetchMock).toHaveBeenCalledTimes(2)
 		expect(new Set(requestIds).size).toBe(2)
+		const usage = backendFor(attributionDir)
+			.readRecords({})
+			.map((row) => JSON.parse(row.body))
+			.filter((row) => row.nativeUsage)
+		expect(usage.map((row) => [row.requestId, row.workId, row.sessionId, row.nativeUsage.raw])).toEqual([
+			[requestIds[0], workId, "original", {}],
+			[requestIds[1], workId, "original", { inputTokens: 10, outputTokens: 2 }],
+		])
+		expect(usage[1].nativeUsage).toMatchObject({ responseId: "chat-title", actualModel: "title-model" })
 	})
 
 	it.each(["identity", "request"])("keeps naming available when %s persistence fails", async (stage) => {
@@ -245,9 +262,9 @@ describe("suggestSessionName", () => {
 			getWorkId(ctx)
 			await flushWorkSummaries()
 		}
-		const path = join(attributionDir, "work-attribution")
-		rmSync(path, { recursive: true, force: true })
-		writeFileSync(path, "not a directory")
+		vi.spyOn(backendFor(attributionDir), "insertRecord").mockImplementation(() => {
+			throw new Error("attribution storage unavailable")
+		})
 		const fetchMock = vi.fn(
 			async () => new Response(JSON.stringify({ choices: [{ message: { content: "Still named" } }] })),
 		)

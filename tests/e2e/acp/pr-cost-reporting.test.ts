@@ -36,7 +36,7 @@ it.each([
 	if (!telemetry) expect(existsSync(path)).toBe(false)
 	await command("/pr-reporting on", "PR reporting on.")
 	expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)
-	await command("/pr-reporting off", "Pending uploads were deleted")
+	await command("/pr-reporting off", "Pending uploads are paused")
 	expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ enabled: false, entries: {} })
 	expect(active.fake.requests.filter((request) => request.url.includes("/chat/completions"))).toHaveLength(0)
 })

@@ -1,3 +1,4 @@
+import { createNativeUsageCapture } from "../work-attribution/native-usage.js"
 import { getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 /**
  * Judge — surviving LLM-as-judge surface after the gate-registry migration.
@@ -96,18 +97,23 @@ export async function judgeApiCall(systemPrompt: string, userMsg: string, maxTok
 		const auth = await registry.getApiKeyAndHeaders(model)
 		if (!auth.ok || !auth.apiKey) return { ok: false, reason: "no_auth" }
 		const request = workId ? tryWorkAttribution(() => recordProviderRequest(workContext, model, workId)) : undefined
-		const response = await complete(
-			model,
-			{
-				systemPrompt,
-				messages: [{ role: "user", content: [{ type: "text", text: userMsg }], timestamp: Date.now() }],
-			},
-			{
-				apiKey: auth.apiKey,
-				headers: { ...auth.headers, ...(request ? { "X-Request-Id": request.requestId } : {}) },
-				signal: AbortSignal.timeout(45_000),
-				...(maxTokens !== undefined && { maxTokens }),
-			},
+		const usage = createNativeUsageCapture(model)
+		usage.bind(request?.requestId)
+		const response = await usage.complete(() =>
+			complete(
+				model,
+				{
+					systemPrompt,
+					messages: [{ role: "user", content: [{ type: "text", text: userMsg }], timestamp: Date.now() }],
+				},
+				{
+					apiKey: auth.apiKey,
+					onProviderStreamEvent: usage.onProviderStreamEvent,
+					headers: { ...auth.headers, ...(request ? { "X-Request-Id": request.requestId } : {}) },
+					signal: AbortSignal.timeout(45_000),
+					...(maxTokens !== undefined && { maxTokens }),
+				},
+			),
 		)
 
 		const text = response.content

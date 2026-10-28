@@ -1,5 +1,9 @@
 import { readFileSync, realpathSync } from "node:fs"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { isWorkId } from "../../shared/work-id.js"
+import { getNote } from "../pr-cost-reporting/ledger/records.js"
 import { type AttributionAccuracyResult, compareAttributionAccuracy } from "./accuracy.js"
 import { compareIndependentAttribution, isAttributionReference } from "./accuracy-reference.js"
 import { object } from "./summary.js"
@@ -11,7 +15,8 @@ export interface CliOutcome {
 	stderr: string[]
 }
 
-const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <reference.json>"
+const USAGE =
+	"Usage: bun src/extensions/work-attribution/accuracy-cli.ts <report.json|ledger:WORK_UUID> <reference.json>"
 const OVERLAP_NOTE =
 	"Wrong assignment divides wrong spending by assigned spending. Correct coverage divides correct spending by spending expected on a PR."
 const INCOMPLETE_NOTE = "Percentages: full percentages unavailable (comparison incomplete)"
@@ -19,7 +24,12 @@ const INCOMPLETE_NOTE = "Percentages: full percentages unavailable (comparison i
 function readJson(path: string): { ok: true; value: unknown } | { ok: false; message: string } {
 	let raw: string
 	try {
-		raw = readFileSync(path, "utf8")
+		if (path.startsWith("ledger:")) {
+			const workId = path.slice("ledger:".length)
+			if (!isWorkId(workId)) return { ok: false, message: `Invalid work report locator: ${path}` }
+			const agentDir = getAgentDir()
+			raw = getNote(agentDir, workId, "costs") ?? readFileSync(join(agentDir, "work", workId, "costs.json"), "utf8")
+		} else raw = readFileSync(path, "utf8")
 	} catch (error) {
 		return { ok: false, message: `Cannot read ${path}: ${error instanceof Error ? error.message : String(error)}` }
 	}
@@ -48,7 +58,7 @@ function metricLines(result: AttributionAccuracyResult, complete: boolean): stri
 	})
 }
 
-/** Validate the two file arguments, run the comparison and render the summary; never touches process or console. */
+/** Resolve a local report file or ledger locator and reference, then render without console I/O. */
 export function runCli(argv: readonly string[]): CliOutcome {
 	if (argv.length !== 2) return rejected(USAGE)
 	const [reportPath, labelsPath] = argv

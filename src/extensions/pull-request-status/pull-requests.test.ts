@@ -1,22 +1,18 @@
 import type { ExecFileOptions } from "node:child_process"
-import {
-	appendFileSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs"
+import * as fs from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parse as parseYaml } from "yaml"
+import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
+import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import * as summaries from "../work-attribution/summary.js"
 import { lookupBranchPullRequest } from "./branch-status.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { readWorkPullRequestUpdates, reconcileWorkPullRequests, type WorkPullRequestUpdate } from "./pull-requests.js"
+
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 const cli = vi.hoisted(() => ({
 	git: vi.fn<(args: string[], options: ExecFileOptions) => Promise<string | undefined>>(),
@@ -94,6 +90,8 @@ function seed(overrides: Record<string, unknown> = {}, transitions = false): voi
 			...overrides,
 		})}\n`,
 	)
+	// An older process may append after the first hydration in this test.
+	for (;;) if (!importJournalSlice(agentDir)) break
 }
 function pull(number = 7, overrides: Record<string, unknown> = {}) {
 	return {
@@ -143,10 +141,13 @@ function lookup(signal = new AbortController().signal, assertLease = () => {}): 
 	return reconcileWorkPullRequests(agentDir, signal, assertLease, (update) => updates.push(update))
 }
 function saved(sessionId = "writer") {
-	return readFileSync(join(agentDir, "work-attribution", `${sessionId}.jsonl`), "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line))
+	const path = join(agentDir, "work-attribution", `${sessionId}.jsonl`)
+	const rows = ledger
+		.backendFor(agentDir)
+		.readRecords({ sessionId })
+		.filter((row) => row.sourcePath === path)
+	if (!rows.length) throw new Error("No saved PR lookup observations")
+	return rows.map((row) => JSON.parse(row.body))
 }
 /** By default, moves the clock past the shortest delay before a commit is checked again. */
 function later(ms = 31_000): void {
@@ -1190,6 +1191,31 @@ describe("bounded and safe HTTP lookup", () => {
 })
 
 describe("durable work pull request discovery", () => {
+	it("does not read legacy bodies on an unchanged PR pass", async () => {
+		// Unknown-age commits are deliberately checked every pass; keep this one within its normal backoff.
+		seed({ recordedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() })
+		await lookup()
+		await lookup()
+		const reads = vi.spyOn(fs, "readSync")
+		const requests = http.mock.calls.length
+		await lookup()
+		expect(reads).not.toHaveBeenCalled()
+		expect(http).toHaveBeenCalledTimes(requests)
+	})
+
+	it("keeps passive display DB-backed when a legacy journal cannot be opened", () => {
+		seed({ pullRequests: [stored()] })
+		const before = readWorkPullRequestUpdates(agentDir)
+		expect(before).toHaveLength(1)
+		const opens = vi.spyOn(fs, "openSync").mockImplementation(() => {
+			throw new Error("legacy journal unavailable")
+		})
+		expect(() => readWorkPullRequestUpdates(agentDir)).not.toThrow()
+		expect(readWorkPullRequestUpdates(agentDir)).toEqual(before)
+		expect(opens).not.toHaveBeenCalled()
+		expect(http).not.toHaveBeenCalled()
+	})
+
 	it("reads another process's saved links without network requests or ledger writes", () => {
 		seed()
 		expect(readWorkPullRequestUpdates(agentDir)[0]).toMatchObject({
@@ -1499,16 +1525,18 @@ describe("durable work pull request discovery", () => {
 	})
 	it("reads changed journals and does not advance its checkpoint after a failed source read", async () => {
 		seed()
-		const reads = vi.spyOn(summaries, "readWorkRecords")
+		const reads = vi.spyOn(ledger, "readRecords")
 		await lookup()
-		expect(reads.mock.calls[0]).toEqual([agentDir, undefined])
+		expect(reads.mock.calls[0]).toEqual([agentDir, { type: "commit", modifiedSince: undefined }])
+		later()
 		reads.mockImplementationOnce(() => {
 			throw new Error("ledger unavailable")
 		})
 		await expect(lookup()).rejects.toThrow("ledger unavailable")
-		const checkpoint = reads.mock.calls[1][1]
+		const checkpoint = reads.mock.calls[1][1]?.modifiedSince
+		expect(checkpoint).toEqual(expect.any(Number))
 		await lookup()
-		expect(reads.mock.calls[2][1]).toBe(checkpoint)
+		expect(reads.mock.calls[2]).toEqual([agentDir, { type: "commit", modifiedSince: checkpoint }])
 		expect(commitCalls()).toHaveLength(2)
 	})
 })
@@ -1803,7 +1831,7 @@ describe("unchanged lookup results", () => {
 
 describe("saved check times", () => {
 	const day = 24 * 60 * 60 * 1000
-	const checks = () => JSON.parse(readFileSync(join(agentDir, "work-attribution", "pr-checks.json"), "utf8"))
+	const checks = () => JSON.parse(ledger.getNote(agentDir, "agent", "pr-checks") ?? "null")
 	// An earlier rate-limit case pauses github.com for an hour; use a host no other case touches.
 	beforeEach(() => {
 		remote("https://checks.example/team/repo.git")
@@ -1819,6 +1847,52 @@ describe("saved check times", () => {
 			await (await import("../work-attribution/summary.js")).flushWorkSummaries()
 		}
 	}
+	it("imports an unchanged legacy check without rewriting the legacy file", async () => {
+		seed({
+			recordedAt: new Date(Date.now() - day).toISOString(),
+			prLookup: { status: "pending", checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+		})
+		const path = join(agentDir, "work-attribution", "pr-checks.json")
+		const body = `${JSON.stringify({ [repository]: { [sha]: new Date().toISOString() } })}\n`
+		writeFileSync(path, body)
+		await lookup()
+		expect(commitCalls()).toHaveLength(0)
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBe(body)
+		expect(readFileSync(path, "utf8")).toBe(body)
+	})
+	it("uses an authoritative empty check note instead of a later legacy cache", async () => {
+		seed({
+			recordedAt: new Date(Date.now() - day).toISOString(),
+			prLookup: { status: "pending", checkedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() },
+		})
+		ledger.setNote(agentDir, "agent", "pr-checks", "{}\n")
+		writeFileSync(
+			join(agentDir, "work-attribution", "pr-checks.json"),
+			JSON.stringify({ [repository]: { [sha]: new Date().toISOString() } }),
+		)
+		await restartedLookup()
+		expect(commitCalls()).toHaveLength(1)
+	})
+	it("persists an empty first pass without creating a JSON cache", async () => {
+		await lookup()
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBe("{}\n")
+		expect(existsSync(join(agentDir, "work-attribution", "pr-checks.json"))).toBe(false)
+	})
+	it("refuses the cache write when its lease expires while entering the transaction", async () => {
+		const backend = ledger.backendFor(agentDir)
+		const transaction = backend.tx
+		let expired = false
+		vi.spyOn(backend, "tx").mockImplementation((action) => {
+			expired = true
+			return transaction(action)
+		})
+		await expect(
+			lookup(undefined, () => {
+				if (expired) throw new Error("lease expired")
+			}),
+		).rejects.toThrow("lease expired")
+		expect(ledger.getNote(agentDir, "agent", "pr-checks")).toBeUndefined()
+	})
 	it("keeps the backoff of an unchanged result across a restart", async () => {
 		seed({ recordedAt: new Date().toISOString() })
 		await lookup()
@@ -1834,23 +1908,25 @@ describe("saved check times", () => {
 		expect(saved().filter((row) => row.type === "commit")).toHaveLength(1)
 		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
 	})
-	it("rewrites saved check times only after a change and forgets commits no longer recorded", async () => {
+	it("keeps unchanged check times and imported commits after a legacy journal disappears", async () => {
 		const other = "b".repeat(40)
 		const recordedAt = new Date(Date.now() - day).toISOString()
 		seed({ recordedAt })
 		seed({ sha: other, sessionId: "second", recordedAt }, true)
 		await lookup()
 		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
-		const { ino } = statSync(join(agentDir, "work-attribution", "pr-checks.json"))
+		const writes = vi.spyOn(ledger.backendFor(agentDir), "putNote")
 		later()
-		// Neither commit is due again, so the cache stays the same file.
+		// Neither commit is due again, so the cache note is not rewritten.
 		await lookup()
-		expect(statSync(join(agentDir, "work-attribution", "pr-checks.json")).ino).toBe(ino)
+		expect(writes).not.toHaveBeenCalled()
 		rmSync(join(agentDir, "work-attribution", "transitions"), { recursive: true })
-		rmSync(join(agentDir, "work-attribution", "second.jsonl"))
+		expect(existsSync(join(agentDir, "work-attribution", "second.jsonl"))).toBe(false)
+		// File removal is not retraction evidence: the accepted commit remains authoritative.
 		await restartedLookup()
 		expect(commitCalls()).toHaveLength(2)
-		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String) } })
+		expect(summaries.readWorkRecords(agentDir).some((row) => row.type === "commit" && row.sha === other)).toBe(true)
+		expect(checks()).toEqual({ [repository]: { [sha]: expect.any(String), [other]: expect.any(String) } })
 	})
 	it("drops a saved check time once it no longer delays a lookup", async () => {
 		seed({ recordedAt: new Date(Date.now() - day).toISOString() })

@@ -12,7 +12,7 @@ import { getModelRoles } from "../orchestration/model-roles.js"
 import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
-import { flushWorkSummaries } from "../work-attribution/summary.js"
+import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import * as attribution from "../work-attribution.js"
 import {
 	evaluateFermentV2,
@@ -271,6 +271,9 @@ describe("Ferment V2 evaluator", () => {
 			usage,
 		})
 		expect(Date.now() - started).toBeLessThan(1_000)
+		const native = readWorkRecords(attributionDir).filter((row) => row.nativeUsage)
+		expect(native).toHaveLength(1)
+		expect(native[0].nativeUsage).toMatchObject({ finalized: true, raw: {}, sdkUsage: rawUsage })
 		expect(completeMock).toHaveBeenCalledOnce()
 		expect(completeMock.mock.calls[0]?.[1]).not.toHaveProperty("tools")
 		expect(completeMock.mock.calls[0]?.[1]).toMatchObject({

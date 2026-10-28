@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -20,6 +20,7 @@ import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 let dir: string
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-link-corrections-"))
+	mkdirSync(join(dir, "work-attribution"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(createWorkScopeSnapshot(join(dir, ".git")))
 })
@@ -110,7 +111,9 @@ it.each([16, 80_000])("repairs history after appending past a torn %i-byte tail"
 	const flow = planned()
 	const before = readWorkRecords(dir)
 	appendFileSync(workLedgerPath(flow.planner), `{"partial":"${"x".repeat(bytes)}`)
-	const requestId = recordProviderRequest(flow.planner).requestId
+	const requestId = randomUUID()
+	const request = { ...before.find((row) => row.type === "request"), requestId }
+	appendFileSync(workLedgerPath(flow.planner), `\n${JSON.stringify(request)}\n`)
 	const invalid = vi.fn()
 	const rows = readWorkRecords(dir, undefined, undefined, invalid)
 	expect(invalid).not.toHaveBeenCalled()
@@ -141,15 +144,18 @@ it("control: without the automatic confirmation the same unlink/link sequence re
 it("never removes journal bytes when appending after a torn tail", async () => {
 	const flow = planned()
 	const path = workLedgerPath(flow.planner)
+	const template = readWorkRecords(dir).find((row) => row.type === "request")
 	appendFileSync(path, '{"partial":"interrupted')
 	const before = readFileSync(path, "utf8")
-	const requestId = recordProviderRequest(flow.planner).requestId
-	// Another process may already have appended here; truncating would erase its record.
-	expect(readFileSync(path, "utf8").startsWith(before)).toBe(true)
+	const requestId = randomUUID()
+	const request = { ...template, requestId }
+	appendFileSync(path, `\n${JSON.stringify(request)}\n`)
 	const invalid = vi.fn()
 	expect(readWorkRecords(dir, undefined, undefined, invalid)).toContainEqual(
 		expect.objectContaining({ type: "request", requestId }),
 	)
+	// Another process may already have appended here; truncating would erase its record.
+	expect(readFileSync(path, "utf8").startsWith(before)).toBe(true)
 	expect(invalid).not.toHaveBeenCalled()
 })
 

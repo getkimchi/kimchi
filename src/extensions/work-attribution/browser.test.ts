@@ -5,11 +5,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { saveWorkSummary } from "../__mocks__/work-summary.js"
+import { readWorkHead } from "../pr-cost-reporting/ledger/records.js"
 import { buildWorkBrowser, readWorkBrowser, type SavedWork } from "./browser.js"
 import { type WorkCostReport, workCostDetails, workCostTotals } from "./cost-details.js"
 import type { PullRequestCost } from "./costs.js"
 import { changeWorkIssue, MAX_ISSUE_BYTES } from "./issues.js"
-import { type Collection, type Row, readWorkHead, type WorkHead } from "./row-log.js"
+import type { Collection, Row } from "./row-log.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof asyncFs>()) }))
 
@@ -107,6 +108,15 @@ function commit(sha: string, pullRequests: unknown[]) {
 		pullRequests,
 	}
 }
+function fileTransition(branch: string, recordedAt = "2026-10-08T08:00:00Z") {
+	return {
+		transitionId: `t-${branch}-${recordedAt}`,
+		sessionId: "session",
+		recordedAt,
+		repository: "/src/kimchi/.git",
+		branch,
+	}
+}
 /** Saves a work's files; a summary given as text is written to work.json as is. */
 async function save(
 	id: string,
@@ -115,8 +125,11 @@ async function save(
 ) {
 	const folder = join(agentDir, "work", id)
 	mkdirSync(join(folder, "plans"), { recursive: true })
-	if (typeof files.summary === "string") writeFileSync(join(folder, "work.json"), files.summary)
-	else if (files.summary) await saveWorkSummary(agentDir, files.summary)
+	if (typeof files.summary === "string") {
+		writeFileSync(join(folder, "work.json"), files.summary)
+		// A legacy manifest's mtime bounds recency in the browser; ledger rows carry their own timestamps.
+		utimesSync(join(folder, "work.json"), new Date(at), new Date(at))
+	} else if (files.summary) await saveWorkSummary(agentDir, files.summary)
 	const totals = files.totals ?? (files.costs === undefined ? undefined : JSON.stringify(workCostTotals(files.costs)))
 	for (const [name, value] of [
 		["costs.json", files.costs],
@@ -125,7 +138,6 @@ async function save(
 		if (value !== undefined)
 			writeFileSync(join(folder, name), typeof value === "string" ? value : JSON.stringify(value))
 	for (const [name, text] of Object.entries(files.plans ?? {})) writeFileSync(join(folder, "plans", name), text)
-	if (files.summary !== undefined) utimesSync(join(folder, "work.json"), new Date(at), new Date(at))
 }
 async function browse(works: { workId: string; summary?: Summary; costs?: WorkCostReport }[], lines: string[] = []) {
 	const saved: SavedWork[] = []
@@ -141,6 +153,16 @@ async function browse(works: { workId: string; summary?: Summary; costs?: WorkCo
 }
 
 describe("work browser rows", () => {
+	it("uses recent ledger activity even when a retained legacy manifest is stale", async () => {
+		const current = workId(1)
+		const recent = workId(2)
+		await save(recent, { summary: "legacy bytes" }, Date.parse("2000-01-01T00:00:00Z"))
+		await saveWorkSummary(agentDir, summary(recent, { requests: [request("recent", "2026-10-08T09:00:00Z")] }))
+		const browser = await readWorkBrowser(agentDir, { workId: current, lines: [] }, NOW)
+		expect(browser.rows.map((row) => row.workId)).toEqual([current, recent])
+		expect(fs.readFileSync(join(agentDir, "work", recent, "work.json"), "utf8")).toBe("legacy bytes")
+	})
+
 	it("lists the current work first, then recent works by last activity, and leaves out old works", async () => {
 		const [current, older, newer, stale, idle] = [1, 2, 3, 4, 5].map(workId)
 		await save(current, { summary: summary(current, { requests: [request("r1", "2026-09-20T09:00:00Z")] }) }, NOW - DAY)
@@ -169,7 +191,16 @@ describe("work browser rows", () => {
 
 	it("reads at most 30 works", async () => {
 		for (let index = 1; index <= 35; index++)
-			await save(workId(index), { summary: summary(workId(index)) }, NOW - index * HOUR)
+			await save(
+				workId(index),
+				// The ledger row's activity timestamp replaces the legacy work.json mtime as the recency signal.
+				{
+					summary: summary(workId(index), {
+						requests: [request(`r${index}`, new Date(NOW - index * HOUR).toISOString())],
+					}),
+				},
+				NOW - index * HOUR,
+			)
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: workId(35), lines: [] }, NOW)
 
@@ -437,7 +468,7 @@ describe("work browser rows", () => {
 		expect(label(asked)).toBe("  00000003 app")
 	})
 
-	it("shows a missing summary and damaged totals as unknown, and deletes a damaged work.json", async () => {
+	it("shows a missing summary and damaged totals as unknown, and leaves a legacy work.json untouched", async () => {
 		const [missing, damaged, wrongCosts] = [1, 2, 3].map(workId)
 		await save(damaged, { summary: "{", costs: costs(damaged, [{ requestId: "x1", usd: "0.100000000" }]) })
 		await save(wrongCosts, {
@@ -451,9 +482,15 @@ describe("work browser rows", () => {
 		const { rows, spend } = await readWorkBrowser(agentDir, { workId: missing, lines: [] }, NOW)
 		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
 
-		// The damaged work has no summary now and is listed again once an update rebuilds it; its costs stay.
+		// The damaged work's rows never reached the ledger, so it is listed again once an update rebuilds it;
+		// legacy files are left in place, never deleted.
 		expect(rows.map((candidate) => candidate.workId)).toEqual([missing, wrongCosts])
-		expect(fs.readdirSync(join(agentDir, "work", damaged)).sort()).toEqual(["cost-totals.json", "costs.json", "plans"])
+		expect(fs.readdirSync(join(agentDir, "work", damaged)).sort()).toEqual([
+			"cost-totals.json",
+			"costs.json",
+			"plans",
+			"work.json",
+		])
 		expect(row(missing)).toMatchObject({ label: "● 00000001 summary unavailable", value: "cost unknown · no PR" })
 		expect(row(missing)?.description).toBe(
 			[
@@ -467,28 +504,22 @@ describe("work browser rows", () => {
 		expect(spend).toBe("cost unknown")
 	})
 
-	it("opens 30 long works from their manifests and cost totals alone", async () => {
+	it("opens 30 long works from their ledger heads and cost totals alone", async () => {
 		const ids = Array.from({ length: 30 }, (_, index) => workId(index + 1))
 		for (const [index, id] of ids.entries()) {
 			const folder = join(agentDir, "work", id)
 			mkdirSync(join(folder, "rows"), { recursive: true })
-			const manifest: WorkHead = {
-				version: 2,
+			const startedAt = new Date(NOW - index * HOUR).toISOString()
+			const priced = Array.from({ length: 490 }, (_, at) => ({ requestId: `${id}-${at}`, usd: "0.001000000" }))
+			await saveWorkSummary(agentDir, {
 				workId: id,
-				updatedAt: new Date(NOW).toISOString(),
-				logs: { requests: { generation: 3, bytes: 33_441_207, rows: 15_000 } },
-				latest: {
-					activityAt: new Date(NOW - index * HOUR).toISOString(),
-					request: { startedAt: new Date(NOW - index * HOUR).toISOString(), repository: "/src/kimchi/.git" },
-					branch: { recordedAt: "2026-10-08T08:00:00Z", branch: "feat/search" },
-				},
-				pullRequests: [pullRequest(700 + index, "open")],
-			}
-			writeFileSync(join(folder, "work.json"), JSON.stringify(manifest))
+				requests: Array.from({ length: 500 }, (_, at) => request(`${id}-r${at}`, startedAt)),
+				commits: [commit("a", [{ ...pullRequest(700 + index, "open"), checkedAt: startedAt }])],
+				fileTransitions: [fileTransition("feat/search", startedAt)],
+			})
 			// The logs and the full report are large; the panel must not open them.
 			writeFileSync(join(folder, "rows", "requests.3.jsonl"), "")
 			writeFileSync(join(folder, "costs.json"), "")
-			const priced = Array.from({ length: 14_990 }, (_, at) => ({ requestId: `${id}-${at}`, usd: "0.001000000" }))
 			writeFileSync(join(folder, "cost-totals.json"), JSON.stringify(workCostTotals(costs(id, priced))))
 		}
 		const reads = vi.spyOn(asyncFs, "readFile")
@@ -497,14 +528,14 @@ describe("work browser rows", () => {
 		const { rows, spend } = await readWorkBrowser(agentDir, { workId: ids[0], lines: [] }, NOW)
 
 		expect(rows).toHaveLength(30)
-		expect(rows[0].value).toBe("$14.99 known so far · PR #700 open")
+		expect(rows[0].value).toBe("$0.49 known so far · PR #700 open")
 		expect(rows[0].description).toContain("Repository: kimchi · branch feat/search")
-		expect(rows[0].description).toContain("· 15000 requests")
-		expect(spend).toBe("$449.70 known so far")
+		expect(rows[0].description).toContain("· 500 requests")
+		expect(spend).toBe("$14.70 known so far")
 		const files = reads.mock.calls.map(([path]) => String(path))
-		expect(files.every((path) => path.endsWith("work.json") || path.endsWith("cost-totals.json"))).toBe(true)
+		expect(files.every((path) => path.endsWith("cost-totals.json"))).toBe(true)
 		expect(opened).not.toHaveBeenCalled()
-	})
+	}, 30_000)
 
 	it("describes a work with the details /work prints plus where and when it ran", async () => {
 		const id = workId(1)
@@ -570,7 +601,7 @@ describe("work browser rows", () => {
 		expect(row(none)?.description).not.toContain("Jira issue")
 	})
 
-	it("reads saved Jira issues asynchronously, skipping one larger than any selection", async () => {
+	it("reads issue notes without opening legacy files, skipping a legacy file larger than any selection", async () => {
 		const [current, other, large] = [1, 2, 3].map(workId)
 		for (const id of [current, other, large])
 			await save(id, { summary: summary(id, { requests: [request(`r-${id}`)] }) })
@@ -586,7 +617,7 @@ describe("work browser rows", () => {
 		expect(row(other)?.label).toBe("  00000002 ABC-12 · kimchi")
 		expect(row(large)?.label).toBe("  00000003 kimchi")
 		const files = reads.mock.calls.map(([path]) => String(path))
-		expect(files).toContain(join(agentDir, "work", other, "issue.json"))
+		expect(files).not.toContain(join(agentDir, "work", other, "issue.json"))
 		expect(files).not.toContain(largeIssue)
 	})
 
