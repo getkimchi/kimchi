@@ -7,9 +7,11 @@
  *   carries the uncapped per-behaviour totals so cross-session aggregation is
  *   a single jq pass.
  *
- * Bodies persist across turns via the system-prompt block registered for each
- * loaded triggered behaviour, so no per-compaction re-injection entry is
- * needed.
+ * Bodies persist across turns per delivery class: session-triggered and
+ * `standing` bodies via the system-prompt block registered for each loaded
+ * triggered behaviour; default tool-triggered bodies via the steer +
+ * `session_compact` re-steer path in wiring.ts. No per-compaction re-injection
+ * entry type is needed.
  */
 
 import type { EvalVerdict, TriggerSource } from "./types.js"

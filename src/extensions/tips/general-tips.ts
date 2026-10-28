@@ -44,7 +44,7 @@ export const GENERAL_TIPS = [
 	{
 		id: "work-costs",
 		scope: "general",
-		message: "Run `/work` to see your work's cost and PRs.",
+		message: "Run `/work` to see your work and its PRs.",
 	},
 	{
 		id: "continue-session",

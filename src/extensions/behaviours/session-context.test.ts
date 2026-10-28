@@ -9,7 +9,7 @@ import {
 	resolveSessionContext,
 	walkAndMatch,
 } from "./session-context.js"
-import { all, any, cli, gitRemote, path } from "./triggers.js"
+import { all, any, cli, gitRemote, lspServes, not, path } from "./triggers.js"
 
 describe("parseRemoteHost", () => {
 	const cases: Array<{ url: string; expected: string | undefined }> = [
@@ -120,6 +120,19 @@ describe("collectProbes", () => {
 		const probes = collectProbes([cli("gh").__spec])
 		expect(probes.needGitRemote).toBe(false)
 	})
+
+	it("harvests lspServes leaves, including through not()", () => {
+		const gate = not(lspServes("py"))
+		const probes = collectProbes([gate.__spec])
+		expect([...probes.lspExtensions]).toEqual(["py"])
+	})
+
+	it("deduplicates lspServes extensions shared across behaviours", () => {
+		const a = lspServes("py")
+		const b = not(any(lspServes("py"), lspServes("go")))
+		const probes = collectProbes([a.__spec, b.__spec])
+		expect([...probes.lspExtensions].sort()).toEqual(["go", "py"])
+	})
 })
 
 describe("resolveSessionContext", () => {
@@ -128,9 +141,11 @@ describe("resolveSessionContext", () => {
 		gitRemoteHost?: string | undefined
 		inGitRepo?: boolean
 		paths?: ReadonlySet<string>
+		lspExtensions?: ReadonlySet<string>
 	}): ResolverIO {
 		const clis = opts.clis ?? new Set<string>()
 		const paths = opts.paths ?? new Set<string>()
+		const lspExtensions = opts.lspExtensions ?? new Set<string>()
 		return {
 			hasCli: (name) => clis.has(name),
 			readGitRemoteHost: () => opts.gitRemoteHost,
@@ -140,6 +155,7 @@ describe("resolveSessionContext", () => {
 				for (const g of globs) if (paths.has(g)) out.add(g)
 				return out
 			},
+			detectLspExtensions: () => lspExtensions,
 		}
 	}
 
@@ -179,6 +195,7 @@ describe("resolveSessionContext", () => {
 			},
 			isGitRepo: () => false,
 			walkPaths: () => new Set(),
+			detectLspExtensions: () => new Set(),
 		})
 		expect(called).toBe(false)
 		expect(ctx.gitRemoteHost).toBeUndefined()
@@ -188,5 +205,41 @@ describe("resolveSessionContext", () => {
 		const probe = path("**/*.py")
 		const ctx = resolveSessionContext([probe.__spec], "/x", fakeIO({ paths: new Set(["**/*.py"]) }))
 		expect(probe(ctx)).toBe(true)
+	})
+
+	it("resolves lspServes from the injected detectLspExtensions IO", () => {
+		const probe = lspServes("py")
+		const serving = resolveSessionContext([probe.__spec], "/x", fakeIO({ lspExtensions: new Set(["py", "pyw"]) }))
+		expect(serving.lspServes).toEqual(new Set(["py", "pyw"]))
+		expect(probe(serving)).toBe(true)
+
+		const empty = resolveSessionContext([probe.__spec], "/x", fakeIO({}))
+		expect(empty.lspServes.size).toBe(0)
+		expect(probe(empty)).toBe(false)
+	})
+
+	it("not() negates a resolved probe", () => {
+		const gate = not(lspServes("py"))
+		const serving = resolveSessionContext([gate.__spec], "/x", fakeIO({ lspExtensions: new Set(["py"]) }))
+		expect(gate(serving)).toBe(false)
+
+		const lspLess = resolveSessionContext([gate.__spec], "/x", fakeIO({}))
+		expect(gate(lspLess)).toBe(true)
+	})
+
+	it("skips the lsp detection IO entirely when no lspServes probe is declared", () => {
+		let called = false
+		const ctx = resolveSessionContext([cli("gh").__spec], "/x", {
+			hasCli: () => false,
+			readGitRemoteHost: () => undefined,
+			isGitRepo: () => false,
+			walkPaths: () => new Set(),
+			detectLspExtensions: () => {
+				called = true
+				return new Set(["py"])
+			},
+		})
+		expect(called).toBe(false)
+		expect(ctx.lspServes.size).toBe(0)
 	})
 })
