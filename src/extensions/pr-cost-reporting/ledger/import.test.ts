@@ -437,6 +437,45 @@ describe("import loop over the memory backend", () => {
 		reads.mockRestore()
 	})
 
+	it("checks the prefix once per append and not again on an unchanged pass", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		while ((await importJournals(dir)).pending) {}
+		const reads = vi.spyOn(fs, "readSync")
+		for (const id of ["req-1", "req-2"]) {
+			reads.mockClear()
+			appendFileSync(file, line(request(id)))
+			const result = await importJournals(dir)
+			expect(result.imported).toBe(1)
+			expect(reads.mock.calls.filter((call) => call.at(4) === 0)).toHaveLength(1)
+			reads.mockClear()
+			expect((await importJournals(dir)).imported).toBe(0)
+			expect(reads).not.toHaveBeenCalled()
+		}
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual([undefined, "req-1", "req-2"])
+		reads.mockRestore()
+	})
+
+	it("detects a consumed-prefix rewrite even when a new record is appended", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(work()) + line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir)).imported).toBe(2)
+		const rewritten = line(work()) + line(request("req-2"))
+		expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
+		writeFileSync(file, rewritten + line(request("req-3")))
+		const result = await importJournals(dir)
+		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		expect(result.files[0]).toMatchObject({ mode: "mutation", generation: 2, imported: 2 })
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual([undefined, "req-1", "req-2", "req-3"])
+	})
+
 	it("starts each timed slice at the journal where the last one stopped", async () => {
 		const dir = agentDir()
 		dirs.push(dir)

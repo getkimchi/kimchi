@@ -140,8 +140,20 @@ export function completeLines(file: Buffer, from: number, to: number): Line[] {
 
 /** Coarse filesystem clocks can stamp a write a little before the cursor written after it. */
 const MTIME_SLACK_MS = 2000
-/** The prefix hash behind each cursor this process wrote mid-file, so its next window skips rereading the prefix. */
-const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: number }>()
+/** Committed cursor state kept across both window boundaries and completed appends. */
+const continued = new Map<
+	string,
+	{
+		dev: number
+		ino: number
+		size: number
+		offset: number
+		mtimeMs: number
+		boundaryHash: string
+		hash: Hash
+		lines: number
+	}
+>()
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
 
@@ -170,8 +182,16 @@ function prepareJournal(
 		const buffer = Buffer.allocUnsafe(READ_BYTES)
 		let prefix: Hash = createHash("sha256")
 		let lineOffset = 0
-		const known = cursor && untouched(stat) ? continued.get(path) : undefined
-		if (cursor && known?.boundaryHash === cursor.boundaryHash) {
+		const known = cursor && continued.get(path)
+		if (
+			cursor &&
+			known?.boundaryHash === cursor.boundaryHash &&
+			known.dev === dev &&
+			known.ino === ino &&
+			known.offset === cursor.offset &&
+			known.size === size &&
+			stat.mtimeMs === known.mtimeMs
+		) {
 			prefix = known.hash.copy()
 			lineOffset = known.lines
 		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
@@ -183,7 +203,7 @@ function prepareJournal(
 				if (!count) throw new Error("Legacy journal changed during prefix verification")
 				const chunk = buffer.subarray(0, count)
 				prefix.update(chunk)
-				for (const byte of chunk) if (byte === 0x0a) lineOffset++
+				for (let lf = chunk.indexOf(0x0a); lf !== -1; lf = chunk.indexOf(0x0a, lf + 1)) lineOffset++
 				position += count
 			}
 		}
@@ -337,8 +357,16 @@ function importJournalFiles(
 				updatedAt: Date.now(),
 			})
 		})
-		if (consumedEnd < size) continued.set(path, { boundaryHash, hash, lines: lineOffset + lines.length })
-		else continued.delete(path)
+		continued.set(path, {
+			dev,
+			ino,
+			size,
+			offset: consumedEnd,
+			mtimeMs,
+			boundaryHash,
+			hash,
+			lines: lineOffset + lines.length,
+		})
 		if (decision.mode === "mutation") diagnostic(agentDir, "journal-mutation")
 		if (decision.offset + data.length < size) result.pending = true
 		result.imported += imported
