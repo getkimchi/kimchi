@@ -1017,7 +1017,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 			resultConsumed: false,
 			result: "remote result",
 			triggersRemoteCompletion: true,
-			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify: vi.fn() } },
 			remoteOrigin: "plan",
 			acpSessionId: "acp-1",
 			startedAt,
@@ -1057,7 +1057,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 		const record = {
 			...makeCloudRecord(5_000),
 			fermentId: "ferment-1",
-			spawnCtx: { hasUI: true, ui: { notify } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify } },
 		}
 		fireTurnEnd(pi, "aborted")
 		manager.onComplete(record)
@@ -1342,7 +1342,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 			resultConsumed: false,
 			result: "remote result",
 			triggersRemoteCompletion: true,
-			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify: vi.fn() } },
 			remote: true,
 			remoteSession: RUNNING.remoteSession,
 			acpSessionId: "remote-acp-1",
