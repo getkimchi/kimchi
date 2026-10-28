@@ -16,6 +16,7 @@ function sessionTelemetryId(ctx: { sessionManager: { getSessionId(): string | un
 		return undefined
 	}
 }
+
 import { trackModelSwitchFeedback } from "../telemetry/index.js"
 import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, showFeedbackDetailsDialog } from "./dialog.js"

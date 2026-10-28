@@ -944,8 +944,8 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		})
 		pi.on("session_shutdown", async (event, ctx) => {
 			// Stop and clear the watcher BEFORE flushing: a pending debounce must
-		// not fire into a shutting-down pipeline, and the poll interval must not
-		// outlive the session (handle leak / hang).
+			// not fire into a shutting-down pipeline, and the poll interval must not
+			// outlive the session (handle leak / hang).
 			stopSettingsWatcher?.()
 			stopSettingsWatcher = undefined
 			unregisterSessionContext(telemetryCtx.piSessionId)
