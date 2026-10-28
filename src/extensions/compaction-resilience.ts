@@ -87,14 +87,12 @@ export function classifySummarizationFailure(message: string): "abort" | "length
 	if (/context length|maximum context|prompt too long|too many tokens/i.test(message)) return "overflow"
 	// 400/422 or provider wording for an unsupported parameter. Checked after
 	// the length/overflow classes so "too long" 400s reduce scope without
-	// dropping the thinking-off encoding, and auth failures (401 etc.) stay
-	// "other" — dropping the encoding cannot fix those.
-	if (
-		/\b(400|422)\b/.test(message) ||
-		(/invalid|unsupported|unrecognized|does not support/i.test(message) && !/api key|unauthorized|auth/i.test(message))
-	) {
-		return "rejection"
-	}
+	// dropping the thinking-off encoding. Auth failures are excluded entirely —
+	// dropping the encoding cannot fix them (the Decision-log rationale names
+	// 401/403, but a gateway can also put "invalid api key" in a 400 body).
+	const rejected = /\b(400|422)\b/.test(message) || /invalid|unsupported|unrecognized|does not support/i.test(message)
+	const authRelated = /api key|unauthorized|auth/i.test(message)
+	if (rejected && !authRelated) return "rejection"
 	return "other"
 }
 
