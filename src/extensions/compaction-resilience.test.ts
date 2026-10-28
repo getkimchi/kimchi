@@ -5,6 +5,7 @@ import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "./__mocks__/model-registry.js"
 import {
+	BUDGET_ESCALATION_FACTOR,
 	type CompactionPreparation,
 	classifySummarizationFailure,
 	default as createCompactionResilienceExtension,
@@ -171,7 +172,7 @@ describe("compaction-resilience handler", () => {
 		)
 	})
 
-	it("retries with reduced scope on a length cap and marks the summary", async () => {
+	it("escalates the summary budget on a length cap before touching the scope", async () => {
 		const compactImpl = vi
 			.fn()
 			.mockRejectedValueOnce(
@@ -180,22 +181,48 @@ describe("compaction-resilience handler", () => {
 			.mockResolvedValueOnce(okResult())
 		const { handler } = captureHandler({ compactImpl })
 		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
-		const turnPrefix: SummarizeMessage[] = [userMsg("prefix")]
-		const preparation = makePreparation(eightMessages(), { turnPrefixMessages: turnPrefix, isSplitTurn: true })
+		const preparation = makePreparation(eightMessages())
 		const result = await handler(makeEvent(preparation), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(2)
 		const secondPrep = compactImpl.mock.calls[1]?.[0] as CompactionPreparation
-		expect(secondPrep.messagesToSummarize).toHaveLength(4)
-		expect(secondPrep.messagesToSummarize[0]).toBe(preparation.messagesToSummarize[4])
-		expect(secondPrep.firstKeptEntryId).toBe("keep-1")
-		expect(secondPrep.tokensBefore).toBe(652447)
-		expect(secondPrep.turnPrefixMessages).toBe(turnPrefix)
+		expect(secondPrep.messagesToSummarize).toHaveLength(8)
+		expect(secondPrep.messagesToSummarize[0]).toBe(preparation.messagesToSummarize[0])
+		expect(secondPrep.settings.reserveTokens).toBe(16384 * BUDGET_ESCALATION_FACTOR)
+		const summary = (result?.compaction as { summary: string }).summary
+		expect(summary).not.toContain(TRUNCATION_MARKER)
+	})
+
+	it("reduces the scope at the escalated budget when escalation is not enough, and marks the summary", async () => {
+		const lengthCap = () =>
+			new Error("Summarization failed: generation hit the token cap and the summary is incomplete")
+		const compactImpl = vi
+			.fn()
+			.mockRejectedValueOnce(lengthCap())
+			.mockRejectedValueOnce(lengthCap())
+			.mockResolvedValueOnce(okResult())
+		const { handler } = captureHandler({ compactImpl })
+		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
+		const turnPrefix: SummarizeMessage[] = [userMsg("prefix")]
+		const preparation = makePreparation(eightMessages(), { turnPrefixMessages: turnPrefix, isSplitTurn: true })
+		const result = await handler(makeEvent(preparation), ctx)
+
+		expect(compactImpl).toHaveBeenCalledTimes(3)
+		const secondPrep = compactImpl.mock.calls[1]?.[0] as CompactionPreparation
+		expect(secondPrep.messagesToSummarize).toHaveLength(8)
+		expect(secondPrep.settings.reserveTokens).toBe(16384 * BUDGET_ESCALATION_FACTOR)
+		const thirdPrep = compactImpl.mock.calls[2]?.[0] as CompactionPreparation
+		expect(thirdPrep.messagesToSummarize).toHaveLength(4)
+		expect(thirdPrep.messagesToSummarize[0]).toBe(preparation.messagesToSummarize[4])
+		expect(thirdPrep.settings.reserveTokens).toBe(16384 * BUDGET_ESCALATION_FACTOR)
+		expect(thirdPrep.firstKeptEntryId).toBe("keep-1")
+		expect(thirdPrep.tokensBefore).toBe(652447)
+		expect(thirdPrep.turnPrefixMessages).toBe(turnPrefix)
 		const summary = (result?.compaction as { summary: string }).summary
 		expect(summary).toContain(TRUNCATION_MARKER)
 	})
 
-	it("falls back to provider-default encoding on a reasoning-value rejection, with reduced scope", async () => {
+	it("falls back to provider-default encoding on a reasoning-value rejection at full scope", async () => {
 		const compactImpl = vi
 			.fn()
 			.mockRejectedValueOnce(new Error("API error: 400 unsupported reasoning_effort value"))
@@ -206,10 +233,10 @@ describe("compaction-resilience handler", () => {
 
 		expect(compactImpl.mock.calls[0]?.[6]).toBe("none")
 		expect(compactImpl.mock.calls[1]?.[6]).toBe("off")
-		expect(compactImpl.mock.calls[1]?.[0] as CompactionPreparation).toMatchObject({
-			messagesToSummarize: expect.anything(),
-		})
-		expect((compactImpl.mock.calls[1]?.[0] as CompactionPreparation).messagesToSummarize).toHaveLength(4)
+		// The rejection rung escalates the budget but keeps the full scope.
+		const secondPrep = compactImpl.mock.calls[1]?.[0] as CompactionPreparation
+		expect(secondPrep.messagesToSummarize).toHaveLength(8)
+		expect(secondPrep.settings.reserveTokens).toBe(16384 * BUDGET_ESCALATION_FACTOR)
 	})
 
 	it("still retries with the fallback encoding when the scope cannot shrink", async () => {
@@ -247,7 +274,7 @@ describe("compaction-resilience handler", () => {
 		expect(compaction.tokensBefore).toBe(652447)
 		expect(compaction.summary).toContain("old summary")
 		expect(compaction.summary).toContain("degraded mode")
-		expect(compaction.summary).toContain("after 3 attempts")
+		expect(compaction.summary).toContain(`after ${MAX_SUMMARIZATION_ATTEMPTS} attempts`)
 		expect(compaction.summary).toContain("Last failure: other")
 		expect(compaction.summary).toContain("/new")
 		// No provider-derived text may leak into the persisted summary.

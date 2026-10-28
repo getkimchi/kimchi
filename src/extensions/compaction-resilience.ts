@@ -41,8 +41,15 @@ import {
 /** Upstream preparation type, derived from the exported `compact()` signature. */
 export type CompactionPreparation = Parameters<typeof compact>[0]
 
-/** Summarization attempts per compaction: full scope, then two scope reductions. */
-export const MAX_SUMMARIZATION_ATTEMPTS = 3
+/** Summarization attempts per compaction: default, budget escalation, two scope reductions. */
+export const MAX_SUMMARIZATION_ATTEMPTS = 4
+
+/** Escalation multiplier for `reserveTokens` on the second attempt (Claude
+ * Code's pattern: small default, escalate the output budget on insufficiency
+ * before shrinking the summarized range — budget escalation preserves all the
+ * information, scope reduction discards it). Upstream clamps the resulting
+ * summary cap with `Math.min(0.8 x reserveTokens, model.maxTokens)`. */
+export const BUDGET_ESCALATION_FACTOR = 4
 
 /** Appended to the summary when attempts had to drop the oldest range. */
 export const TRUNCATION_MARKER = "[earlier context truncated to fit the summary budget]"
@@ -139,19 +146,6 @@ export function reduceSummarizedRange(messages: CompactionPreparation["messagesT
 	return messages
 }
 
-/** Attempt sequence: (scope drop fraction, thinking encoding) per attempt. */
-function nextAttempt(
-	attempt: number,
-	encoding: ModelThinkingLevel,
-	failed: "length" | "overflow" | "rejection" | "other",
-) {
-	const dropFraction = attempt === 1 ? 0.5 : 0.75
-	// A rejected reasoning value is the one failure scope reduction cannot fix:
-	// fall back to the pre-fix wire behavior (param omitted, provider default).
-	const nextEncoding = failed === "rejection" && encoding !== "off" ? "off" : encoding
-	return { dropFraction, encoding: nextEncoding }
-}
-
 async function handleBeforeCompact(
 	event: SessionBeforeCompactEvent,
 	ctx: ExtensionContext,
@@ -179,13 +173,25 @@ async function handleBeforeCompact(
 	const originalMessages = event.preparation.messagesToSummarize
 	let messagesToSummarize = originalMessages
 	let reduced = false
+	let budgetEscalated = false
 	let lastFailure: "length" | "overflow" | "rejection" | "other" | undefined
 	let attemptsRun = 0
 
 	for (let attempt = 1; attempt <= MAX_SUMMARIZATION_ATTEMPTS; attempt++) {
 		if (event.signal.aborted) return undefined
 		attemptsRun = attempt
-		const scoped: CompactionPreparation = reduced ? { ...event.preparation, messagesToSummarize } : event.preparation
+		// Ladder: attempt 1 runs the preparation as-is; every failure first
+		// escalates the summary budget (full scope kept), then reduces the
+		// summarized range at 1/2 and 3/4 of the original. The thinking-encoding
+		// fallback rides along independently of the rung.
+		const settings = budgetEscalated
+			? {
+					...event.preparation.settings,
+					reserveTokens: event.preparation.settings.reserveTokens * BUDGET_ESCALATION_FACTOR,
+				}
+			: event.preparation.settings
+		const scoped: CompactionPreparation =
+			reduced || budgetEscalated ? { ...event.preparation, messagesToSummarize, settings } : event.preparation
 		try {
 			const result = await compactImpl(
 				scoped,
@@ -204,20 +210,34 @@ async function handleBeforeCompact(
 			if (event.signal.aborted || isAbortError(error)) return undefined
 			const failed = classifySummarizationFailure(error instanceof Error ? error.message : String(error))
 			lastFailure = failed === "abort" ? "other" : failed
-			const next = nextAttempt(attempt, encoding, lastFailure)
-			// Fractions always apply to the original range so each retry cuts
-			// strictly deeper regardless of where boundaries landed last time.
-			const reducedRange = reduceSummarizedRange(originalMessages, next.dropFraction)
-			const scopeChanged = reducedRange.length < messagesToSummarize.length
-			const encodingChanged = next.encoding !== encoding
-			// Stop only when neither remediation can change the next attempt —
-			// e.g. an unreducible range still gets its encoding-fallback retry.
-			if (!scopeChanged && !encodingChanged) break
-			encoding = next.encoding
-			if (scopeChanged) {
-				messagesToSummarize = reducedRange
-				reduced = true
+			// A rejected reasoning value is the one failure the ladder rungs cannot
+			// fix: fall back to the pre-fix wire behavior (param omitted, provider
+			// default). Auth failures never take this branch — they classify "other".
+			const nextEncoding = failed === "rejection" && encoding !== "off" ? "off" : encoding
+			let changed = nextEncoding !== encoding
+			if (!budgetEscalated) {
+				budgetEscalated = true
+				changed = true
+			} else if (!reduced) {
+				// Fractions always apply to the original range so each retry cuts
+				// strictly deeper regardless of where boundaries landed last time.
+				const reducedRange = reduceSummarizedRange(originalMessages, 0.5)
+				if (reducedRange.length < messagesToSummarize.length) {
+					messagesToSummarize = reducedRange
+					reduced = true
+					changed = true
+				}
+			} else {
+				const reducedRange = reduceSummarizedRange(originalMessages, 0.75)
+				if (reducedRange.length < messagesToSummarize.length) {
+					messagesToSummarize = reducedRange
+					changed = true
+				}
 			}
+			// Stop only when no rung can change the next attempt — e.g. an
+			// unreducible range still gets its encoding-fallback retry.
+			if (!changed) break
+			encoding = nextEncoding
 		}
 	}
 
