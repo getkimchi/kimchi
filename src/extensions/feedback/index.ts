@@ -307,7 +307,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				try {
 					const payload: ModelSwitchSummaryDetails = { model: modelName, reason }
 					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
-					trackModelSwitchFeedback({ reason, modelName, modelId })
+					trackModelSwitchFeedback({ reason, modelName, modelId, sessionId: ctx.sessionManager.getSessionId() })
 				} catch (err) {
 					setModelSwitchInvitation({ modelName, modelId })
 					listenForCtrlR(ctx)
@@ -399,6 +399,7 @@ async function handleRating(
 			sentiment,
 			reason: result.reason,
 			window: { autoModelUsed, routedModelId: routedUsedId },
+			sessionId: ctx.sessionManager.getSessionId(),
 		})
 		consumeRatingWindow(ctx.sessionManager.getSessionId())
 	} catch (err) {

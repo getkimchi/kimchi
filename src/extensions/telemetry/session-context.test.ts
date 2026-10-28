@@ -9,7 +9,7 @@ import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
-import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
+import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 import * as telemetry from "./index.js"
 import { trackPRCostMetric } from "./pr-cost.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
@@ -396,9 +396,8 @@ describe("SessionContext", () => {
 	it("prefers active Ferment V2 attribution over legacy Ferment on ambient events", async () => {
 		const { getActiveFerment } = await import("../ferment/index.js")
 		vi.mocked(getActiveFerment).mockReturnValue({ id: "f-v1" } as never)
-		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "paused" })
-
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.fermentV2Context = { id: "fv2-active", revision: 7, status: "paused" } as TelemetryFermentV2Context
 		ctx.emit("test.event", {})
 		ctx.flushLogBuffer()
 		await Promise.allSettled([...ctx.inFlight])
@@ -418,9 +417,8 @@ describe("SessionContext", () => {
 	})
 
 	it("suppresses raw error message fields only on V2-attributed ambient events", async () => {
-		setTelemetryFermentV2Context({ id: "fv2-active", revision: 7, status: "active" })
-
 		const ctx = new TelemetryContext(makeConfig())
+		ctx.fermentV2Context = { id: "fv2-active", revision: 7, status: "active" }
 		ctx.emit("message.error", {
 			error_message: "raw provider error",
 			"error.message": "raw nested provider error",

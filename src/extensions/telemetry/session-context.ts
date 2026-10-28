@@ -10,10 +10,12 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
-import { getTelemetryFermentV2Context, resetTelemetryFermentV2Context } from "./ferment-v2-context.js"
+import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
 import { toAttrs } from "./helpers.js"
 import { getSessionType } from "./session-type.js"
+import type { BashGuardCounts, FermentTrackingState } from "./tracking-state.js"
+import { createFermentTrackingState, resetFermentTrackingState } from "./tracking-state.js"
 import { buildLogRecord, type LogRecord, sendLogBatch, sendMetrics } from "./transport.js"
 
 export type TelemetryAttributes = Record<string, string | number | boolean>
@@ -58,7 +60,6 @@ function getOrCreateAccumulator(telemetryId: string): CumulativeState {
 export function _resetSharedAccumulators(): void {
 	if (telemetryId) sharedAccumulators.delete(telemetryId)
 	telemetryId = undefined
-	resetTelemetryFermentV2Context()
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,19 @@ export class TelemetryContext {
 	messageStartTimes = new Map<string, number>()
 	toolStartTimes = new Map<string, number>()
 	cumulative: CumulativeState
+	/** Ferment v1 lifecycle tracking maps (start times, token snapshots, steering
+	 *  counts) — scoped to this instance so concurrent sessions never share them.
+	 *  Cleared on reset() (session_start). */
+	readonly fermentTracking: FermentTrackingState = createFermentTrackingState()
+	/** Bash-tool-guard counters for this session — scoped to this instance. */
+	readonly bashGuardCounts: BashGuardCounts = { warn: 0, block: 0, allowedByUserRequest: 0 }
+	/**
+	 * Active ferment v2 context for emit enrichment, set by the
+	 * FERMENT_V2_EVENTS.CONTEXT_CHANGED channel handler subscribed on THIS
+	 * instance's event bus (used to be module-global, which leaked one
+	 * session's ferment identity into every other session's records).
+	 */
+	fermentV2Context: TelemetryFermentV2Context | undefined
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
 	flushTimer: NodeJS.Timeout | undefined
@@ -184,6 +198,14 @@ export class TelemetryContext {
 		this.lastRoutedModel = undefined
 		this.steerFiredCount = 0
 		this.lastSteer = undefined
+		// Session-scoped tracking state and enrichment context: a session_start
+		// on this instance means a fresh session — ferment maps, guard counters,
+		// and the ferment v2 identity must not carry over.
+		resetFermentTrackingState(this.fermentTracking)
+		this.bashGuardCounts.warn = 0
+		this.bashGuardCounts.block = 0
+		this.bashGuardCounts.allowedByUserRequest = 0
+		this.fermentV2Context = undefined
 		this.cumulative = getOrCreateAccumulator(this.telemetryId)
 		this.inFlight.clear()
 		this.shuttingDown = false
@@ -278,7 +300,7 @@ export class TelemetryContext {
 		commonOverrides?: TelemetryAttributes,
 	): void {
 		const ferment = getActiveFerment()
-		const fermentV2 = getTelemetryFermentV2Context()
+		const fermentV2 = this.fermentV2Context
 		const eventAttrs: TelemetryAttributes =
 			fermentV2 && attrs
 				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
@@ -342,7 +364,7 @@ export class TelemetryContext {
 	): TelemetryAttributes & { session_type: "ferment" | "coding"; source: "cli" | "acp"; model: string } {
 		return {
 			source: IS_ACP_MODE ? "acp" : "cli",
-			session_type: getSessionType(),
+			session_type: getSessionType(this.fermentV2Context),
 			model: this.currentModel,
 			"telemetry.cli_version": getVersion(),
 			...getAcpAttributes(),
@@ -460,7 +482,7 @@ export class TelemetryContext {
 
 function fermentTelemetryAttributes(
 	fermentId: string | undefined,
-	fermentV2: ReturnType<typeof getTelemetryFermentV2Context>,
+	fermentV2: TelemetryFermentV2Context | undefined,
 ): TelemetryAttributes {
 	if (fermentV2) {
 		return {

@@ -61,7 +61,7 @@ export async function runCloudAgent(
 	opts?: SpawnRemoteAgentOptions,
 ): Promise<{ id: string; result: string; transcriptPath?: string; backgrounded?: boolean }> {
 	const { id, result, backgrounded } = await spawnRemoteAgent(pi, ctx, prompt, description, opts)
-	trackRemoteExecution("started", opts?.origin ?? "plan")
+	trackRemoteExecution("started", opts?.origin ?? "plan", undefined, ctx.sessionManager.getSessionId())
 
 	if (backgrounded) {
 		const transcriptPath = getActiveManager()?.getRecord(id)?.outputFile
@@ -96,6 +96,7 @@ export async function runCloudAgent(
 		record?.status === "error" ? "failed" : "completed",
 		opts?.origin ?? "plan",
 		record ? buildRemoteExecutionStats(record) : undefined,
+		ctx.sessionManager.getSessionId(),
 	)
 	const transcriptPath = record?.outputFile
 	const transcriptNote = transcriptPath ? `\nFull transcript: ${transcriptPath}` : ""
@@ -138,7 +139,7 @@ export async function continueCloudAgent(
 		gitWorkflow: opts.gitWorkflow,
 		continuation: { remoteSession: opts.remoteSession, acpSessionId: opts.acpSessionId },
 	})
-	trackRemoteExecution("started", opts.origin ?? "plan")
+	trackRemoteExecution("started", opts.origin ?? "plan", undefined, ctx.sessionManager.getSessionId())
 	ctx.ui.notify(`Steering the remote agent on ${target} — you'll be notified when the changes land.`, "info")
 	pi.sendMessage(
 		{

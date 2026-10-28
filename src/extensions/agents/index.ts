@@ -1170,6 +1170,7 @@ export default function (pi: ExtensionAPI) {
 					isError ? "failed" : "completed",
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
+					record.spawnCtx?.sessionManager.getSessionId(),
 				)
 				// spawnCtx is captured at spawn time — don't fall back to a stale
 				// global context.

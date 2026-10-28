@@ -89,7 +89,7 @@ function buildIdeUrl(remoteSession: RemoteSessionMeta): string {
 /** Non-terminal inspection action: opens the sandbox's web IDE in the local
  *  browser. The completion menu stays up — review/push/steer/done still apply. */
 async function openIde(ctx: ExtensionContext, remoteSession: RemoteSessionMeta, promptPrefix: string): Promise<void> {
-	trackRemoteExecution("ide.opened", promptPrefix)
+	trackRemoteExecution("ide.opened", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 	try {
 		await open(buildIdeUrl(remoteSession))
 	} catch {
@@ -178,9 +178,14 @@ export async function handleRemoteCompletion(
 
 	switch (choice) {
 		case SYNC: {
-			trackRemoteExecution("sync.started", promptPrefix)
+			trackRemoteExecution("sync.started", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			const synced = await syncRemoteChanges(ctx, opts?.remoteSession)
-			trackRemoteExecution(synced ? "sync.completed" : "sync.failed", promptPrefix)
+			trackRemoteExecution(
+				synced ? "sync.completed" : "sync.failed",
+				promptPrefix,
+				undefined,
+				ctx.sessionManager.getSessionId(),
+			)
 			completeFerment(opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix:
@@ -191,7 +196,7 @@ export async function handleRemoteCompletion(
 		case CUSTOM: {
 			const actionText = await promptForCustomAction(ctx)
 			if (!actionText) return // user cancelled input
-			trackRemoteExecution("custom_action", promptPrefix)
+			trackRemoteExecution("custom_action", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			await confirmResumeFerment(ctx, opts?.fermentId)
 			injectRemoteResult(pi, result, promptPrefix, opts, {
 				actionSuffix: `\n\n---\n\nThe user wants you to: ${actionText}`,
@@ -199,7 +204,7 @@ export async function handleRemoteCompletion(
 			return
 		}
 		case REVIEW: {
-			trackRemoteExecution("viewed", promptPrefix)
+			trackRemoteExecution("viewed", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			injectRemoteResult(pi, result, promptPrefix, opts)
 			await confirmResumeFerment(ctx, opts?.fermentId)
 			return
@@ -745,7 +750,7 @@ async function handlePrCompletion(
 				continue
 			}
 			// Track only a genuinely opened review (a re-click while open is a no-op).
-			trackRemoteExecution("review.started", promptPrefix)
+			trackRemoteExecution("review.started", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			pendingReview = startBrowserReview(pi, ctx, {
 				transcriptPath: opts.transcriptPath,
 				baseSha,
@@ -768,23 +773,38 @@ async function handlePrCompletion(
 				() => ctx.ui.input?.("What should the remote agent change?") ?? Promise.resolve(undefined),
 			)
 			if (!feedback?.trim()) continue
-			trackRemoteExecution("steer.started", promptPrefix)
+			trackRemoteExecution("steer.started", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			const steered = await doRequestChanges(feedback.trim())
-			trackRemoteExecution(steered ? "steer.completed" : "steer.failed", promptPrefix)
+			trackRemoteExecution(
+				steered ? "steer.completed" : "steer.failed",
+				promptPrefix,
+				undefined,
+				ctx.sessionManager.getSessionId(),
+			)
 			if (steered) return true
 			continue
 		}
 		if (choice === PUSH_AND_PULL) {
-			trackRemoteExecution("push.started", promptPrefix)
+			trackRemoteExecution("push.started", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			const pushed = await doPushAndPull()
-			trackRemoteExecution(pushed ? "push.completed" : "push.failed", promptPrefix)
+			trackRemoteExecution(
+				pushed ? "push.completed" : "push.failed",
+				promptPrefix,
+				undefined,
+				ctx.sessionManager.getSessionId(),
+			)
 			if (pushed) return true
 			continue
 		}
 		if (choice === SYNC) {
-			trackRemoteExecution("sync.started", promptPrefix)
+			trackRemoteExecution("sync.started", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 			const synced = await syncRemoteChanges(ctx, opts.remoteSession)
-			trackRemoteExecution(synced ? "sync.completed" : "sync.failed", promptPrefix)
+			trackRemoteExecution(
+				synced ? "sync.completed" : "sync.failed",
+				promptPrefix,
+				undefined,
+				ctx.sessionManager.getSessionId(),
+			)
 			// Terminal action: a SUCCESSFUL pull retires the kept-alive session
 			// (a failed pull keeps it — the user may retry or steer).
 			if (synced) {
@@ -807,7 +827,7 @@ async function handlePrCompletion(
 		// DONE — terminal: the kept-alive session is retired. A deletion
 		// failure only warns (server TTL is the backstop); the sandbox branch
 		// itself dies with the workspace.
-		trackRemoteExecution("done", promptPrefix)
+		trackRemoteExecution("done", promptPrefix, undefined, ctx.sessionManager.getSessionId())
 		await deleteKeptRemoteSession(ctx, opts.remoteSession, apiKey)
 		ctx.ui.notify(
 			`Done — the remote session was deleted. Unpushed work on ${git.branch} is discarded when the workspace expires.`,
