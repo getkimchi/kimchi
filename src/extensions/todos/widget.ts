@@ -37,19 +37,20 @@ const TODO_SYMBOL: Record<TodoStatus, string> = {
 	completed: "✓",
 }
 
+/** The user's last explicit choice for the list body:
+ *  - `auto`: no choice; ambient rules decide (crowding, xs terminal).
+ *  - `collapsed`: one-line header (F7 / click).
+ *  - `open`: scrollable viewport, even where ambient rules would collapse.
+ *  - `open-all`: every row, uncapped (`/todos expand all`). */
+type TodoBodyChoice = "auto" | "collapsed" | "open" | "open-all"
+
 interface TodoWidgetState {
 	visible: boolean
-	/** Uncapped view: show every row (`/todos expand all`). */
-	expanded: boolean
-	/** User override: show the list body even where the ambient strip would collapse (xs terminal, crowding). */
-	listExpanded: boolean
-	/** User override (F7 / click): keep only the one-line header even where the
-	 *  ambient strip would expand. Cleared by any explicit expand. */
-	listCollapsed: boolean
-	/** Explicit expand overrides suspended while competing UI crowds the strip;
-	 *  restored when the last crowding reason clears. Dropped as soon as the
-	 *  user expands/collapses during crowding — their newer choice wins. */
-	crowdedOverrides?: Pick<TodoWidgetState, "expanded" | "listExpanded">
+	bodyChoice: TodoBodyChoice
+	/** Open choice suspended while competing UI crowds the strip; restored when
+	 *  the last claim is released. Dropped as soon as the user picks again during
+	 *  crowding — their newer choice wins. */
+	bodyChoiceBeforeCrowding?: TodoBodyChoice
 	/** Index into the full body row list for the scrollable viewport. */
 	scrollOffset: number
 	/** True once the user scrolls; disables auto-follow of the active todo. */
@@ -102,16 +103,11 @@ export function claimTodoCrowding(reason: string): () => void {
 
 function applyTodoCrowding(isCrowded: boolean): void {
 	for (const state of todoWidgetStates.values()) {
-		if (isCrowded) {
-			if (state.expanded || state.listExpanded) {
-				state.crowdedOverrides = { expanded: state.expanded, listExpanded: state.listExpanded }
-			}
-			state.listExpanded = false
-			state.expanded = false
-		} else if (state.crowdedOverrides) {
-			state.expanded = state.crowdedOverrides.expanded
-			state.listExpanded = state.crowdedOverrides.listExpanded
-			state.crowdedOverrides = undefined
+		if (isCrowded && isOpenChoice(state.bodyChoice)) {
+			state.bodyChoiceBeforeCrowding = state.bodyChoice
+			state.bodyChoice = "auto"
+		} else if (!isCrowded && state.bodyChoiceBeforeCrowding) {
+			chooseTodoBody(state, state.bodyChoiceBeforeCrowding)
 		}
 		state.tui?.requestRender?.(true)
 	}
@@ -143,9 +139,7 @@ export function __resetTodoCrowding(): void {
 function createTodoWidgetState(): TodoWidgetState {
 	return {
 		visible: false,
-		expanded: false,
-		listExpanded: false,
-		listCollapsed: false,
+		bodyChoice: "auto",
 		scrollOffset: 0,
 		userScrolled: false,
 		hidden: false,
@@ -154,6 +148,16 @@ function createTodoWidgetState(): TodoWidgetState {
 		agentActive: false,
 		spinnerFrame: 0,
 	}
+}
+
+function isOpenChoice(choice: TodoBodyChoice): boolean {
+	return choice === "open" || choice === "open-all"
+}
+
+/** Record an explicit body choice; it supersedes any choice crowding suspended. */
+function chooseTodoBody(state: TodoWidgetState, choice: TodoBodyChoice): void {
+	state.bodyChoice = choice
+	state.bodyChoiceBeforeCrowding = undefined
 }
 
 function getTodoWidgetState(ctx: ExtensionContext): TodoWidgetState {
@@ -219,12 +223,9 @@ export function buildTodoHeaderLine(
 /** True when the strip should render only the collapsed one-line header:
  *  competing UI is crowding the strip, the user clicked it shut, or the
  *  terminal is in the xs tier. Explicit expand overrides ambient collapse. */
-function isTodoBodyCollapsed(
-	state: Pick<TodoWidgetState, "expanded" | "listExpanded" | "listCollapsed">,
-	terminalRows: number | undefined,
-): boolean {
-	if (state.expanded || state.listExpanded) return false
-	if (isTodoCrowdingActive() || state.listCollapsed) return true
+function isTodoBodyCollapsed(state: Pick<TodoWidgetState, "bodyChoice">, terminalRows: number | undefined): boolean {
+	if (isOpenChoice(state.bodyChoice)) return false
+	if (isTodoCrowdingActive() || state.bodyChoice === "collapsed") return true
 	// xs tier: ambient expansion would fight the conversation for space — stay
 	// a one-liner until the user explicitly expands (F7 / click).
 	return terminalRows !== undefined && terminalRows > 0 && terminalRows < TODO_XS_TERMINAL_ROWS
@@ -482,12 +483,12 @@ export function todoViewportRowBudget(terminalRows: number | undefined): number 
 function buildTodoBodyLines(
 	theme: Theme,
 	groups: WidgetScopeGroup[],
-	state: Pick<TodoWidgetState, "expanded" | "scrollOffset" | "userScrolled" | "spinnerFrame" | "agentActive">,
+	state: Pick<TodoWidgetState, "bodyChoice" | "scrollOffset" | "userScrolled" | "spinnerFrame" | "agentActive">,
 	terminalRows: number | undefined,
 ): string[] {
 	const rows = buildFullTodoBodyRows(theme, groups, state.spinnerFrame, state.agentActive)
 
-	if (state.expanded) return rows.map((row) => row.text)
+	if (state.bodyChoice === "open-all") return rows.map((row) => row.text)
 
 	// The whole list fits the viewport budget.
 	const budget = todoViewportRowBudget(terminalRows)
@@ -691,7 +692,7 @@ function mountTodoWidget(
 					const groups = collectWidgetScopes(sessionId)
 					const terminalRows = state.tui?.terminal?.rows
 					// Collapsed shows no body; expand-all shows every row.
-					if (isTodoBodyCollapsed(state, terminalRows) || state.expanded) return undefined
+					if (isTodoBodyCollapsed(state, terminalRows) || state.bodyChoice === "open-all") return undefined
 					const rows = buildFullTodoBodyRows(theme, groups)
 					const budget = todoViewportRowBudget(terminalRows)
 					if (rows.length <= budget) return undefined
@@ -733,9 +734,7 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 	// Explicit open (`/todos expand`) shows the list body even where the ambient
 	// strip would collapse (xs terminal, crowding).
 	const state = getTodoWidgetState(ctx)
-	state.crowdedOverrides = undefined
-	state.listExpanded = true
-	state.listCollapsed = false
+	chooseTodoBody(state, state.bodyChoice === "open-all" ? "open-all" : "open")
 	state.userScrolled = false
 	showTodoWidget(ctx)
 }
@@ -743,10 +742,7 @@ export function openTodoWidget(ctx: ExtensionContext): void {
 export function expandTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
-	state.crowdedOverrides = undefined
-	state.expanded = true
-	state.listExpanded = true
-	state.listCollapsed = false
+	chooseTodoBody(state, "open-all")
 	state.userScrolled = false
 	state.scrollOffset = 0
 	showTodoWidget(ctx)
@@ -756,10 +752,7 @@ export function clearTodoWidget(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return
 	const state = getTodoWidgetState(ctx)
 	state.visible = false
-	state.expanded = false
-	state.listExpanded = false
-	state.listCollapsed = false
-	state.crowdedOverrides = undefined
+	chooseTodoBody(state, "auto")
 	state.userScrolled = false
 	state.scrollOffset = 0
 	stopSpinner(state)
@@ -787,10 +780,7 @@ export function toggleTodoWidget(ctx: ExtensionContext): void {
 		openTodoWidget(ctx)
 		return
 	}
-	state.crowdedOverrides = undefined
-	state.listCollapsed = true
-	state.listExpanded = false
-	state.expanded = false
+	chooseTodoBody(state, "collapsed")
 	requestTodoRender(ctx)
 }
 
