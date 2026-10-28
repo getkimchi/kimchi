@@ -1,5 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import { pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
+import { billingRequests } from "../work-attribution/billing-evidence.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import {
 	isWorkScope,
@@ -69,6 +70,7 @@ export function buildEvents(
 	const observations = new Map(native.observations.map((row) => [row.requestId, row]))
 	const nativeProblems = new Map(native.unresolved.map((row) => [row.requestId, row]))
 	const attribution = requestAttributions(records, report, repositories)
+	const billing = billingRequests(records)
 	const requests = new Map<string, { row: WorkRecord; hash: string }[]>()
 	for (let i = 0; i < records.length; i++) {
 		check()
@@ -158,7 +160,9 @@ export function buildEvents(
 				requestId,
 				schema: observed?.schema ?? "unknown",
 				counterScope: "request",
-				observedRoute: "unknown",
+				// A dispatch saves a selector only when it carried the gateway's billing tag, by which the service finds
+				// the request's bill; the service treats any other request as a direct-provider call.
+				observedRoute: billing.get(requestId)?.selector ? "castai" : "unknown",
 				billingBasis: "unknown",
 				correlation: "explicit",
 				raw: observed?.raw ?? {},

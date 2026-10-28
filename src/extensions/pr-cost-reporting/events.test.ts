@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
+import { requestTagSelector } from "../work-attribution/billing-source.js"
 import type { CommonEvents } from "./events.js"
 
 it("uploads real SDK capture through the worker with exact legacy drainage and account/consent-safe retries", {
@@ -550,6 +551,26 @@ it("keeps unreported iteration models unknown and retains oversized input for la
 	})
 	expect(result.accounts[0].facts.find((fact) => fact.usage)?.usage).not.toHaveProperty("iterations")
 	expect(result.accounts[0].recordHashes).toEqual([])
+})
+
+const dispatchedAt = "2026-10-24T08:00:01.000Z"
+const billingSource = {
+	apiUrl: "https://api.cast.ai",
+	gatewayUrl: "https://llm.cast.ai/openai/v1/chat/completions",
+	credentialHash: "a".repeat(64),
+}
+it.each([
+	[
+		"carried the gateway's billing tag",
+		"castai",
+		{ billingSource, billingSelector: requestTagSelector(requestId, dispatchedAt) },
+	],
+	["went straight to its provider", "unknown", { billingTagSkipped: "unsupported-source" }],
+	["reached the gateway without its billing tag", "unknown", { billingSource, billingTagSkipped: "tag-limit" }],
+])("reports a request that %s with the %s route", (_, route, billing) => {
+	const dispatch = { ...records[1], dispatchedAt, ...billing }
+	const usage = build([records[0], dispatch, records[2]]).accounts[0].facts.find((fact) => fact.usage)?.usage
+	expect(usage?.observedRoute).toBe(route)
 })
 
 it("retains an observed dispatch with no returned usage as unknown", () => {
