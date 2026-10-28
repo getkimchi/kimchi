@@ -156,5 +156,25 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 	esac
 fi
 
+# The release carries Kimchi's work-reporting plugins for the official Claude
+# Code and Codex CLIs (getkimchi/kimchi-bridge). Add them to each client
+# found. They run on this Kimchi binary, report with Kimchi's sign-in and
+# leave inference settings alone.
+BRIDGE_INSTALLER="$DATA_DIR/kimchi/bridge/install.sh"
+if [ -f "$BRIDGE_INSTALLER" ] && [ -n "${SUDO_USER:-}" ]; then
+	# Under sudo the plugins would be registered by another user, leaving files in this home that
+	# Claude Code and Codex could no longer write.
+	echo -e "${YELLOW}Skipping Kimchi work reporting under sudo. Rerun this installer without sudo to add it to Claude Code and Codex.${NC}" >&2
+elif [ -f "$BRIDGE_INSTALLER" ]; then
+	for client in claude codex; do
+		command -v "$client" >/dev/null 2>&1 || continue
+		echo ""
+		echo -e "${BLUE}Adding Kimchi work reporting to ${client}…${NC}"
+		# stdin stays with this script when it is piped into bash.
+		KIMCHI_BIN="$INSTALL_PATH" bash "$BRIDGE_INSTALLER" install "$client" </dev/null ||
+			echo -e "${YELLOW}Kimchi is installed, but work reporting for ${client} is not. Rerun this installer to retry.${NC}" >&2
+	done
+fi
+
 echo ""
 echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi${NC} and follow the first-time wizard to configure your API key and migrate your skills and MCPs"

@@ -5,7 +5,12 @@ import { getVersion } from "../../utils.js"
 import { MODEL_CAPABILITIES, ModelRegistry } from "../orchestration/model-registry/index.js"
 import { DEFAULT_MODEL_ROLES } from "../orchestration/model-roles.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
-import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
+import {
+	buildCoreGuidelinesSections,
+	buildSystemPrompt,
+	type EnvironmentInfo,
+	formatEnvironmentSection,
+} from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
 	os: "Linux",
@@ -113,11 +118,26 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		expect(result).toContain(
-			"A user's request to change code authorizes ordinary local workspace edits and verification commands",
-		)
-		expect(result).toContain("Internal planning artifacts such as todo lists never grant approval")
+		expect(result).toContain("A request to change code authorizes local edits and verification commands only")
+		expect(result).toContain("internal planning artifacts such as todo lists never grant approval")
 		expect(result).not.toContain("Ask before anything that publishes, mutates state, or is irreversible.")
+	})
+
+	it("treats current-branch push and PR creation as follow-through, not consent-gated", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+		})
+
+		expect(result).toContain(
+			"Follow-through needing no confirmation: committing, pushing the current non-default branch",
+		)
+		expect(result).toContain("opening a PR for that branch's committed work in the repository being worked on")
+		expect(result).toContain("except `gh pr create` for that work")
+		expect(result).toContain(
+			"Pushing the default branch, other branches or remotes, force-push, and deleting branches/tags always need approval",
+		)
 	})
 
 	it("scopes approval to the requested action, not escalations or substitutes", () => {
@@ -127,8 +147,7 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		expect(result).toContain("Approval covers exactly the action the user requested")
-		expect(result).toContain('A request to "push" does not authorize opening a pull request')
+		expect(result).toContain("Approval covers exactly the action requested")
 		expect(result).toContain("wait for the user to choose")
 	})
 
@@ -1075,6 +1094,16 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("proceed on best evidence")
 		})
 
+		it("swaps consent for the autonomous note in headless replace-mode subagents", () => {
+			const interactive = buildCoreGuidelinesSections()
+			expect(interactive).toContain("## Consent & Irreversible Actions")
+			expect(interactive).not.toContain("## Autonomous Session")
+
+			const headless = buildCoreGuidelinesSections(undefined, false)
+			expect(headless).not.toContain("## Consent & Irreversible Actions")
+			expect(headless).toContain("## Autonomous Session")
+		})
+
 		it("drops the orient-the-user ritual in userless single-model sessions", () => {
 			const result = buildSystemPrompt({
 				tools,
@@ -1130,7 +1159,9 @@ describe("buildSystemPrompt", () => {
 		it("is significantly smaller in userless sessions", () => {
 			const interactive = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: true })
 			const headless = buildSystemPrompt({ tools, env: testEnv, mode: "single", hasUserLoop: false })
-			expect(interactive.length - headless.length).toBeGreaterThan(1500)
+			// Threshold re-lowered after the consent section was compressed; it only
+			// guards that the interactive-only sections dominate the headless swap.
+			expect(interactive.length - headless.length).toBeGreaterThan(1200)
 		})
 	})
 })

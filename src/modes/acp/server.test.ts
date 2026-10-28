@@ -40,6 +40,7 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
 	resetProjectScopeTrustForTests,
@@ -9911,6 +9912,91 @@ function testEncodeCwdDir(cwd: string): string {
 }
 
 describe("KimchiAcpAgent loadSession", () => {
+	/** An isolated agent dir configured like the real harness: a fake provider
+	 * catalog plus its default selection. */
+	function makeRestartAgentDir(prefix: string): { agentDir: string; cwd: string } {
+		const agentDir = mkdtempSync(join(tmpdir(), prefix))
+		const cwd = join(agentDir, "work")
+		mkdirSync(cwd)
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					fake: {
+						api: "openai-completions",
+						apiKey: "fake",
+						baseUrl: "http://127.0.0.1:1/v1",
+						models: [{ id: "fake-model", name: "Fake Model", input: ["text"], contextWindow: 64_000, maxTokens: 1024 }],
+					},
+				},
+			}),
+		)
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ defaultProvider: "fake", defaultModel: "fake-model" }),
+		)
+		return { agentDir, cwd }
+	}
+
+	/** A minimal persisted log a restart-rate test loads: session header, one
+	 * user prompt, one assistant reply carrying its own persisted stop reason
+	 * (the settle fact the derivation reads), optionally pre-rated. Returns
+	 * the session file path. */
+	function writeRestartRateLog(
+		agentDir: string,
+		cwd: string,
+		sessionId: string,
+		opts?: { stopReason?: string; rated?: boolean },
+	): string {
+		const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(cwd))
+		mkdirSync(sessionDir, { recursive: true })
+		const sessionFile = join(sessionDir, `2026-05-09T00-00-00.000Z_${sessionId}.jsonl`)
+		const lines: object[] = [
+			{ type: "session", version: 3, id: sessionId, timestamp: "2026-05-09T00:00:00Z", cwd },
+			{
+				type: "message",
+				id: "m1",
+				parentId: null,
+				timestamp: "2026-05-09T00:00:01Z",
+				message: { role: "user", content: "do work", timestamp: 0 },
+			},
+			{
+				type: "message",
+				id: "m2",
+				parentId: "m1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: "openai-completions",
+					provider: "fake",
+					model: "fake-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: opts?.stopReason ?? "stop",
+					timestamp: 0,
+				},
+			},
+		]
+		if (opts?.rated) {
+			lines.push({
+				type: "custom",
+				id: "m3",
+				parentId: "m2",
+				timestamp: "2026-05-09T00:00:03Z",
+				customType: "feedback-summary",
+				data: { sentiment: "positive", reason: "already recorded" },
+			})
+		}
+		writeFileSync(sessionFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`)
+		return sessionFile
+	}
 	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
 		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
 			extensionFactories: [],
@@ -10243,6 +10329,96 @@ describe("KimchiAcpAgent loadSession", () => {
 				expect(readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"))).toEqual([])
 				await agent.unstable_closeSession({ sessionId })
 			}
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded session's settled-unrated tail arms the rating window — the restart flow rates end-to-end", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rate-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId)
+
+			// A fresh process: the session is not live in it, only its log.
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			const result = await agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+				sessionId,
+				action: "rate_response",
+				sentiment: "positive",
+				reason: "Solved my task",
+			})
+			expect(result).toEqual({ status: "recorded" })
+
+			// The rating landed in the SAME log the session was loaded from.
+			const persisted = readFileSync(sessionFile, "utf-8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { type: string; customType?: string; data?: unknown })
+			const summary = persisted.find((entry) => entry.type === "custom" && entry.customType === "feedback-summary")
+			expect(summary?.data).toEqual({ sentiment: "positive", reason: "Solved my task" })
+
+			// One rating per settled response — byte-identical rejection.
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "negative",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded log with an aborted tail leaves nothing to rate — byte-identical rejection", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-aborted-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			writeRestartRateLog(agentDir, cwd, sessionId, { stopReason: "aborted" })
+
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "positive",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded log whose reply is already rated leaves nothing to rate — byte-identical rejection", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rated-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId, { rated: true })
+
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "negative",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+
+			// Nothing new was recorded: the pre-seeded rating is the only one.
+			const summaries = readFileSync(sessionFile, "utf-8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { customType?: string; data?: { reason?: string } })
+				.filter((entry) => entry.customType === "feedback-summary")
+			expect(summaries).toHaveLength(1)
+			expect(summaries[0]?.data?.reason).toBe("already recorded")
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true })
 		}

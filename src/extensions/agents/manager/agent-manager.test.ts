@@ -59,7 +59,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
-import { createContext } from "../../__mocks__/context.js"
+import { createContext, createLiveContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -1234,6 +1234,83 @@ describe("AgentManager remote git credential resolution", () => {
 			expect.objectContaining({
 				gitDetails: expect.objectContaining({ repo: "https://gitlab.com/team/repo.git" }),
 				gitCredential: undefined,
+			}),
+		)
+	})
+})
+
+describe("AgentManager remote stale-session resilience", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	beforeEach(() => {
+		// Default mocks for the remote path (mirrors the git-credential describe)
+		mockResolveClonePlan.mockResolvedValue({
+			url: "git@gitlab.com:team/repo.git",
+			httpsUrl: "https://gitlab.com/team/repo.git",
+			branch: "main",
+		})
+		mockResolveGitToken.mockResolvedValue(undefined)
+		mockListWorkspaces.mockResolvedValue([])
+		mockLoadWorkspaceFile.mockReturnValue(undefined)
+		mockRunRemoteAgent.mockResolvedValue({
+			responseText: "done",
+			stopReason: "end_turn",
+			remoteSession: {
+				workspaceId: "ws-1",
+				sessionName: "acp-test",
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+				cwd: "/home/sandbox/acp-test",
+			},
+		})
+	})
+
+	it("completes with the captured session facts when the ctx goes stale mid workspace lookup", async () => {
+		// Suspend the workspace lookup so the remote run is in flight when the
+		// session is replaced: every post-lookup ctx read (cwd, session id, ui,
+		// mode) must come from the entry-time captures taken while the runtime
+		// was fresh, or the live run dies on a stale read.
+		let releaseWorkspaces!: (list: Awaited<ReturnType<typeof listWorkspaces>>) => void
+		const workspacesGate = new Promise<Awaited<ReturnType<typeof listWorkspaces>>>((resolve) => {
+			releaseWorkspaces = resolve
+		})
+		mockListWorkspaces.mockReturnValueOnce(workspacesGate)
+
+		const live = createLiveContext({
+			cwd: "/work/myrepo",
+			mode: "tui",
+			sessionManager: { getSessionId: () => "parent-test-session" },
+		})
+		manager = new AgentManager()
+
+		const runPromise = manager.spawnAndWait(fakePi(), live.ctx as unknown as ExtensionContext, "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// Session replaced/forked while the lookup pends — every later ctx
+		// property read throws (Pi's assertActive, simulated by the live mock).
+		live.invalidate()
+		releaseWorkspaces([])
+
+		const record = await runPromise
+		// The run completes instead of erroring on a stale ctx read.
+		expect(record.status).toBe("completed")
+		expect(record.error).toBeUndefined()
+		// runRemoteAgent received the entry-time captures, not a live read.
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				localPath: "/work/myrepo",
+				workspaceName: "myrepo",
+				tags: { [SESSION_TAG_PARENT_SESSION_ID]: "parent-test-session" },
 			}),
 		)
 	})
