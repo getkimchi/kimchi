@@ -3337,12 +3337,40 @@ describe("KimchiAcpAgent post-compaction usage_update", () => {
 		expect(usageUpdates()).toHaveLength(0)
 	})
 
+	it("emits nothing when the event is aborted even with a result payload", () => {
+		// Pins the `event.aborted` disjunct independently of the missing-result
+		// disjunct: a result on an aborted event must not resurrect the emit.
+		fake.emit(compactionEndEvent({ aborted: true }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("logs and stays silent when the context window is unknown", () => {
+		// The window-missing guard is unreachable for a compaction that
+		// succeeded (both pi compaction paths require a model) — the diagnostic
+		// exists so a future pi shape change can't silently strand the client's
+		// gauge with no trace of why the refresh never landed.
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		onTestFinished(() => warnSpy.mockRestore())
+		fake.contextUsage = undefined
+		fake.emit(compactionEndEvent())
+
+		expect(usageUpdates()).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(1)
+		const message = String(warnSpy.mock.calls[0]?.[0])
+		expect(message).toContain(sessionId)
+		expect(message).toContain("context window unknown")
+	})
+
 	it("recomputes the estimate from session.messages when the payload omits the count", () => {
 		// The fallback reproduces exactly what pi's estimateMessagesTokens
 		// computes: a fold of the exported estimateTokens over the rebuilt
 		// post-compaction message list. Deriving the expected value with that
 		// same exported function pins the wiring (right source, right scope,
-		// right function), not the formula.
+		// right function), not the formula — estimateMessagesTokens itself is
+		// not root-exported (pi's exports map allows only "." and
+		// "./rpc-entry"), so re-check the fold's parity with pi when upgrading
+		// pi.
 		const kept = [
 			{ role: "user", content: [{ type: "text", text: "kept user turn" }] },
 			{ role: "assistant", content: [{ type: "text", text: "kept assistant reply" }] },

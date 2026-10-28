@@ -2529,13 +2529,23 @@ export class KimchiAcpAgent implements Agent {
 		// assigned before the compaction_end event fires on both the manual and
 		// automatic paths). The fold always yields a number, so success always
 		// emits; 0 can only appear when the context is genuinely empty, where it
-		// is the true value.
+		// is the true value. The re-fold (instead of a call to pi's
+		// estimateMessagesTokens) is deliberate: pi's exports map allows only
+		// "." and "./rpc-entry", so that function is not importable — re-verify
+		// the fold's parity with pi when upgrading pi.
 		const used =
 			typeof result.estimatedTokensAfter === "number"
 				? result.estimatedTokensAfter
 				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
 		const contextWindow = session.getContextUsage()?.contextWindow
-		if (!contextWindow) return
+		if (!contextWindow) {
+			// Unreachable for a compaction that succeeded (both pi compaction
+			// paths require a model) — but if a pi shape change ever lands us
+			// here, leave a trace instead of silently stranding the client's
+			// stale gauge.
+			console.warn(`[acp-usage] skipping post-compaction usage_update for ${sessionId}: context window unknown`)
+			return
+		}
 		this.send({
 			sessionId,
 			update: {
