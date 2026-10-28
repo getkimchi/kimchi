@@ -33,7 +33,9 @@ Every in-session payload includes:
 | `session.id` | The emitting session's own pi session id — the same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
-| `source` | Where the event originated (e.g. `"cli"`) |
+| `source` | Where the event originated: `"cli"` (interactive TUI) or `"acp"` (JSON-RPC over stdio, driven by an ACP client) |
+| `acp_client_name` | ACP client consuming the harness (e.g. `"kimchi-studio"`, `"kimchi-vscode"`, `"zed"`, `"acp-orchestrator"`), from the ACP `initialize` handshake; present once a client has initialized, regardless of `source` |
+| `acp_client_version` | ACP client version from the same handshake; present whenever `acp_client_name` is |
 | `mode` | `"coding"` or `"ferment"` |
 
 Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
@@ -173,7 +175,10 @@ Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Ste
 Accumulated per process — the accumulator is keyed by the internal process
 telemetryId (see [ID scheme](#id-scheme)), so totals span every session in the
 process — and flushed every 30s to the **metrics endpoint**. Each flush's data
-points carry the flushing session's pi session id as `session.id`.
+points carry the flushing session's pi session id as `session.id`, plus the
+same process-level identity as log records (`source`, `acp_client_name`,
+`acp_client_version`, `user.account_uuid`), so downstream aggregations can
+split metrics by harness path or ACP client the same way they split logs.
 
 | Metric Name | Type | Description | Attributes |
 |-------------|------|-------------|------------|

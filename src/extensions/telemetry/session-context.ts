@@ -338,6 +338,11 @@ export class TelemetryContext {
 							...m,
 							attrs: {
 								...m.attrs,
+								// Process-level client identity, mirroring the log-record
+								// common attributes so metric aggregations can split by
+								// harness path (cli) or ACP client (acp_client_name).
+								source: IS_ACP_MODE ? "acp" : "cli",
+								...getAcpAttributes(),
 								"user.account_uuid": this.userId ?? "",
 							},
 						})),
