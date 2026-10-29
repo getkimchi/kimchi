@@ -1058,14 +1058,33 @@ describe("incremental translation", () => {
 		await run()
 		expect(workRows).toBeLessThanOrEqual(8)
 
-		// A v1.22 ledger has no derived group note; rebuild it once, then use only new evidence again.
+		// A v1.22 ledger has no derived group note; a response-only rebuild can prune unchanged request facts.
+		backend.deleteNote("agent", groupKey([workId]))
+		const lateResponse = {
+			version: 1,
+			type: "request_response",
+			workId,
+			sessionId: "lumbrook-session",
+			requestId: request(200).requestId,
+			recordedAt: "2026-10-04T12:00:01.000Z",
+			response: { status: 200 },
+		}
+		await appendFile(path, `${JSON.stringify(lateResponse)}\n`)
+		vi.mocked(outbox.observeEvents).mockClear()
+		await run()
+		expect(
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId)),
+		).toEqual([request(200).requestId])
+		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
+
+		// A new request in a cold ledger can make older facts relevant, so observe the whole group.
 		backend.deleteNote("agent", groupKey([workId]))
 		await appendFile(path, `${JSON.stringify(request(201))}\n`)
 		vi.mocked(outbox.observeEvents).mockClear()
 		await run()
 		expect(
 			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId)),
-		).toEqual([request(201).requestId])
+		).toContain(request(0).requestId)
 		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
 
 		// A conflicting response can invalidate billed evidence, so a cold rebuild must revisit older request facts.
@@ -1121,6 +1140,100 @@ describe("incremental translation", () => {
 		await run()
 		expect(backend.recordCount(workId)).toBe(beforeObservation + 2)
 		expect(workRows).toBeGreaterThan(8)
+	})
+
+	it("rebuilds fully when a replayed request becomes unresolved", async () => {
+		await seedLargeLumbrookGroup(undefined, 2, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		const late = {
+			version: 1,
+			type: "request_dispatch",
+			workId: largeWork,
+			sessionId: "lumbrook-session",
+			requestId: "lumbrook-request-0",
+			startedAt: "2026-10-04T12:00:01.000Z",
+			dispatchedAt: "2026-10-04T12:00:02.000Z",
+			recordedAt: "2026-10-04T12:00:02.000Z",
+		}
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(
+			(stored, report, _repositories, _producer, _check, _claim, touched) => {
+				const selected = report.requests.filter((request) => !touched || touched.requests.has(request.requestId))
+				return {
+					accounts: [],
+					units: selected.map((request) => ({
+						account: accountKey({ ...account, apiUrl: "https://api.lumbrook.invalid" }),
+						requestId: request.requestId,
+						entities: [request.requestId],
+						recordHashes: [],
+					})),
+					unresolved:
+						touched && stored.some((row) => JSON.parse(row.body).dispatchedAt === late.dispatchedAt)
+							? [{ requestId: late.requestId, reason: "conflicting_dispatch", recordHashes: [] }]
+							: [],
+				}
+			},
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const backend = backendFor(directory)
+		expect(backend.getNote("agent", groupKey([largeWork]))).toBeDefined()
+		await appendFile(join(directory, "work-attribution", "lumbrook.jsonl"), `${JSON.stringify(late)}\n`)
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		await run()
+		const calls = vi.mocked(eventBuilder.buildEvents).mock.calls
+		expect(calls[0]?.[6]?.requests.has(late.requestId)).toBe(true)
+		expect(calls.some(([, , , , , , touched]) => touched === undefined)).toBe(true)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("observes every request in a forced full rebuild without a group note", async () => {
+		await seedLargeLumbrookGroup(undefined, 2, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		const lumbrook = { ...account, apiUrl: "https://api.lumbrook.invalid" }
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(
+			(_stored, report, _repositories, _producer, _check, _claim, touched) => {
+				const selected = report.requests.filter((request) => !touched || touched.requests.has(request.requestId))
+				return {
+					accounts: [
+						{
+							account: lumbrook,
+							facts: selected.map((request) => ({
+								entityId: request.requestId,
+								source: "kimchi" as const,
+								sourceVersion: "test",
+								deviceId: request.requestId,
+								observeTime: "2026-10-04T12:00:00Z",
+								coverage: { code: "fixture", count: "1" },
+							})),
+							recordHashes: [],
+						},
+					],
+					units: selected.map((request) => ({
+						account: accountKey(lumbrook),
+						requestId: request.requestId,
+						entities: [request.requestId],
+						recordHashes: [],
+					})),
+					unresolved: [],
+				}
+			},
+		)
+		const run = (forceFull = false) =>
+			reconcileReporting(directory, "/project", new AbortController().signal, () => {}, forceFull)
+		await run()
+		const backend = backendFor(directory)
+		expect(backend.getNote("agent", groupKey([largeWork]))).toBeDefined()
+		backend.deleteNote("agent", groupKey([largeWork]))
+		await appendFile(
+			join(directory, "work-attribution", "lumbrook.jsonl"),
+			`${JSON.stringify({ version: 1, type: "request_response", workId: largeWork, sessionId: "lumbrook-session", requestId: "lumbrook-request-0", recordedAt: "2026-10-04T12:00:03.000Z", response: { status: 200 } })}\n`,
+		)
+		vi.mocked(outbox.observeEvents).mockClear()
+		await run(true)
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId))
+		expect(new Set(observed)).toEqual(new Set(["lumbrook-request-0", "lumbrook-request-1"]))
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {

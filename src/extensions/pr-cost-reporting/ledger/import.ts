@@ -515,7 +515,7 @@ interface ImportOptions {
 	onRecordProblem?: (problem: WorkRecordProblem) => void
 	checkBudget?: () => void
 	/** Only background capture verifies the old prefix before reusing a process-local running hash. */
-	parallelPrefix?: boolean
+	verifyCapturePrefix?: boolean
 	/** After a journal that imported something, stop once this time has passed; the result is then pending. */
 	until?: number
 }
@@ -525,7 +525,7 @@ export const IMPORT_SLICE_MS = 50
 
 export async function importJournals(agentDir: string, options: ImportOptions = {}): Promise<ImportResult> {
 	const journals = await workJournals(agentDir)
-	if (options.parallelPrefix) {
+	if (options.verifyCapturePrefix) {
 		const backend = backendFor(agentDir)
 		for (const path of journals) {
 			options.checkBudget?.()
@@ -539,7 +539,7 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 		}
 	}
 	const result = importJournalFiles(agentDir, journals, options, true)
-	if (options.parallelPrefix) {
+	if (options.verifyCapturePrefix) {
 		const backend = backendFor(agentDir)
 		for (const file of result.files) {
 			options.checkBudget?.()

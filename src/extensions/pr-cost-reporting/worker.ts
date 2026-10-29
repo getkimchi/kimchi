@@ -354,13 +354,14 @@ export async function reconcileReporting(
 	cwd: string,
 	signal: AbortSignal,
 	assertLease: () => void,
+	forceFull = false,
 ): Promise<void> {
 	const state = await readReportingState(agentDir)
 	assertLease()
 	signal.throwIfAborted()
 	if (!state.enabled) return
 	try {
-		await captureEvents(agentDir, signal, assertLease)
+		await captureEvents(agentDir, signal, assertLease, forceFull)
 	} catch (error) {
 		if (!signal.aborted) await recordReportingError(agentDir, captureFailure(error))
 	}
@@ -423,7 +424,12 @@ function captureFailure(error: unknown): string {
  * Translates the works whose records changed since their last translation into events, one connected group at a
  * time. A pass that runs out of time resumes where it stopped.
  */
-async function captureEvents(agentDir: string, signal: AbortSignal, assertLease: () => void): Promise<void> {
+async function captureEvents(
+	agentDir: string,
+	signal: AbortSignal,
+	assertLease: () => void,
+	forceFull: boolean,
+): Promise<void> {
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
 	const check = () => {
@@ -491,6 +497,7 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 				check,
 				signal,
 				assertLease,
+				forceFull,
 			)
 		} catch (error) {
 			if (error instanceof GroupBuildTimeLimit) {
@@ -649,6 +656,8 @@ async function translateGroup(
 				groupCheck,
 			)
 		: buildEvents(stored, report, repositories, producer, check, claim, touched)
+	if (fast && partial.unresolved.some(({ requestId }) => fast.replayed.has(requestId)))
+		return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
 	const built = fast ? mergeSharedFacts(fast.cache, partial) : partial
 	groupCheck()
 	const cache = settled
@@ -657,7 +666,7 @@ async function translateGroup(
 			: prepareGroupCache(backend, works, producer, through, stored, records, repositories, built)
 		: undefined
 	if (cache && !fast) {
-		const index = requestIndexEntries(stored, records, report)
+		const index = requestIndexEntries(stored, records, report, { kind: "complete" })
 		for (let offset = 0; offset < index.length; offset += 100) {
 			groupCheck()
 			backend.tx(() => {
@@ -672,7 +681,7 @@ async function translateGroup(
 			new Map(group.facts.map((fact) => [fact.entityId, fact])),
 		]),
 	)
-	// Without a cache, build every contributor but observe only changed request facts and the earlier shared carriers.
+	// A cold rebuild can prune response/tool updates, but a new request may give older work or plan rows an owner.
 	// A structural change, invalidated cache or forced fallback can alter old allocations, so those observe all units.
 	// A new billing source can also invalidate one request's bill and reprice another request sharing that bill.
 	const pruneUnchanged =
@@ -683,9 +692,7 @@ async function translateGroup(
 			(row, index) =>
 				row.type === "request_response" && row.billingSource !== undefined && changed.has(stored[index].recordHash),
 		) &&
-		[...changed.values()].every(
-			(type) => type === "request" || type === "request_response" || type === "tool_execution",
-		)
+		[...changed.values()].every((type) => type === "request_response" || type === "tool_execution")
 	const units = fast
 		? observationUnits(fast.cache, built)
 		: pruneUnchanged
@@ -741,7 +748,13 @@ async function translateGroup(
 				if (settled) {
 					if (cache) {
 						if (fast)
-							for (const entry of requestIndexEntries(fast.stored, fast.rows, report, fast.replayed))
+							for (const entry of requestIndexEntries(
+								fast.stored,
+								fast.rows,
+								report,
+								{ kind: "partial", backend },
+								fast.replayed,
+							))
 								backend.putNote(entry.owner, entry.name, entry.body)
 						saveGroupCache(backend, {
 							...cache,
@@ -762,8 +775,18 @@ async function translateGroup(
 		backend.tx(() => {
 			groupCheck()
 			if (settled) {
-				if (cache) saveGroupCache(backend, cache)
-				else backend.deleteNote("agent", groupKey(works))
+				if (cache) {
+					if (fast)
+						for (const entry of requestIndexEntries(
+							fast.stored,
+							fast.rows,
+							report,
+							{ kind: "partial", backend },
+							fast.replayed,
+						))
+							backend.putNote(entry.owner, entry.name, entry.body)
+					saveGroupCache(backend, cache)
+				} else backend.deleteNote("agent", groupKey(works))
 				backend.clearTranslations(new Set(changed.keys()))
 			}
 			backend.deleteNote("agent", progressNote)

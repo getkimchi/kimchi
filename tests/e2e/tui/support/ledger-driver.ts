@@ -2001,9 +2001,16 @@ async function knownSchemaRace(agent: string): Promise<void> {
 
 async function incrementalParity(agent: string, scenario?: string): Promise<void> {
 	const paired = scenario?.startsWith("paired:") === true
+	const ownerless = scenario === "ownerless-new-request"
+	const planFirst = scenario === "plan-then-request-only"
+	const newUnitless = scenario === "new-request-then-dispatch"
+	const sameInput = scenario === "same-input-next-request"
+	const cold = scenario === "cold-request" || scenario === "cold-response" || scenario === "cold-tool"
 	const split =
 		scenario === "response-row" ||
 		scenario === "tool-row" ||
+		scenario === "cold-response" ||
+		scenario === "cold-tool" ||
 		scenario === "response-then-tool" ||
 		scenario === "unitless-response"
 	const linked =
@@ -2026,6 +2033,8 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	const producerId = "33333333-3333-4333-8333-333333333333"
 	const incremental = join(agent, "incremental")
 	const reference = join(agent, "reference")
+	const reconcile = (directory: string) =>
+		reconcileReporting(directory, directory, new AbortController().signal, () => {}, directory === reference)
 	const oldKey = process.env.KIMCHI_API_KEY
 	process.env.KIMCHI_API_KEY = "lumbrook-test-key"
 	globalThis.fetch = async () => new Response("{}", { status: 503 })
@@ -2042,7 +2051,12 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 		const common = {
 			version: 1 as const,
 			workId: owner,
-			sessionId: paired && index !== 2 && index !== 3 ? `lumbrook-session-${index}` : "lumbrook-session",
+			sessionId:
+				ownerless && index === 4
+					? "lumbrook-session-new"
+					: paired && index !== 2 && index !== 3
+						? `lumbrook-session-${index}`
+						: "lumbrook-session",
 			requestId,
 		}
 		capture(
@@ -2053,10 +2067,19 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 				startedAt,
 				recordedAt: startedAt,
 				scope: { account, repository: "/lumbrook/platform/.git" },
+				...(sameInput && (index === 0 || index === 4)
+					? {
+							segment: {
+								id: "99999999-9999-4999-8999-000000000003",
+								attribution: "session",
+								reason: "matching-disabled",
+							},
+						}
+					: {}),
 			},
 			"lumbrook-parity",
 		)
-		if (scenario === "unitless-response") return
+		if (scenario === "unitless-response" || ((planFirst || newUnitless) && index === 4)) return
 		capture(
 			directory,
 			{ ...common, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
@@ -2126,10 +2149,38 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						{ length: split ? 64 : linked === undefined ? 4 : 8 },
 						(_, index) => index + (linked === undefined ? 0 : 10),
 					)
-			for (const index of initial) seed(directory, index)
-			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+			if (!planFirst) for (const index of initial) seed(directory, index)
+			if (ownerless)
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "work",
+						workId,
+						sessionId: "lumbrook-session-new",
+						recordedAt: "2026-10-24T08:00:02.849Z",
+						title: "Lumbrook rollout",
+					},
+					"lumbrook-parity",
+				)
+			if (planFirst)
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "plan",
+						workId,
+						sessionId: "lumbrook-session",
+						recordedAt: "2026-10-24T08:00:02.850Z",
+						path: ".kimchi/plans/lumbrook-rollout.md",
+						contentHash: "b".repeat(64),
+					},
+					"lumbrook-parity",
+				)
+			await reconcile(directory)
 			if (backendFor(directory).markedRecords().length) throw new Error("Initial capture did not settle")
-			if (!backendFor(directory).getNote("agent", groupKey(works))) throw new Error("Initial group cache is absent")
+			if (!planFirst && !backendFor(directory).getNote("agent", groupKey(works)))
+				throw new Error("Initial group cache is absent")
 		}
 		const requestless = scenario === "work-row" || scenario === "plan-row"
 		let appended = requestless || split ? [] : [linked === undefined ? 4 : linked % 2 ? 1 : 20]
@@ -2156,7 +2207,12 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						},
 						"lumbrook-parity",
 					)
-				if (scenario === "response-row" || scenario === "response-then-tool" || scenario === "unitless-response")
+				if (
+					scenario === "response-row" ||
+					scenario === "cold-response" ||
+					scenario === "response-then-tool" ||
+					scenario === "unitless-response"
+				)
 					capture(
 						directory,
 						{
@@ -2221,41 +2277,59 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 					"lumbrook-parity",
 				)
 		}
-		backendFor(reference).deleteNote("agent", groupKey(works))
+		if (cold)
+			for (const directory of [incremental, reference]) backendFor(directory).deleteNote("agent", groupKey(works))
 		let scanned = 0
 		for (const directory of [incremental, reference]) {
 			const backend = backendFor(directory)
 			const readRecords = backend.readRecords
-			if (split && directory === incremental)
+			if ((split || ownerless || sameInput) && directory === incremental)
 				backend.readRecords = (filter, check) => {
 					const rows = readRecords(filter, check)
 					if (filter?.workId === workId) scanned += rows.length
 					return rows
 				}
-			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+			await reconcile(directory)
 			if (backend.markedRecords().length) throw new Error("Appended request did not settle")
-			if (split && directory === incremental) backend.readRecords = readRecords
+			if ((split || ownerless || sameInput) && directory === incremental) backend.readRecords = readRecords
 		}
-		if (scenario === "response-then-tool") {
-			for (const directory of [incremental, reference])
-				capture(
-					directory,
-					{
-						version: 1,
-						type: "tool_execution",
-						workId,
-						sessionId: "lumbrook-session",
-						requestId: "11111111-1111-4111-8111-000000000000",
-						recordedAt: "2026-10-24T08:00:21.000Z",
-						repository: "/lumbrook/platform/.git",
-						toolCallId: "read-two",
-						toolName: "read",
-						outcome: "completed",
-						durationMs: 8,
-					},
-					"lumbrook-parity",
-				)
-			backendFor(reference).deleteNote("agent", groupKey(works))
+		if (scenario === "response-then-tool" || newUnitless) {
+			if (newUnitless) scanned = 0
+			for (const directory of [incremental, reference]) {
+				if (newUnitless)
+					capture(
+						directory,
+						{
+							version: 1,
+							type: "request_dispatch",
+							workId,
+							sessionId: "lumbrook-session",
+							requestId: "11111111-1111-4111-8111-000000000004",
+							startedAt: "2026-10-24T08:00:04.000Z",
+							dispatchedAt: "2026-10-24T08:00:21.000Z",
+							recordedAt: "2026-10-24T08:00:21.000Z",
+						},
+						"lumbrook-parity",
+					)
+				else
+					capture(
+						directory,
+						{
+							version: 1,
+							type: "tool_execution",
+							workId,
+							sessionId: "lumbrook-session",
+							requestId: "11111111-1111-4111-8111-000000000000",
+							recordedAt: "2026-10-24T08:00:21.000Z",
+							repository: "/lumbrook/platform/.git",
+							toolCallId: "read-two",
+							toolName: "read",
+							outcome: "completed",
+							durationMs: 8,
+						},
+						"lumbrook-parity",
+					)
+			}
 			for (const directory of [incremental, reference]) {
 				const backend = backendFor(directory)
 				const readRecords = backend.readRecords
@@ -2265,20 +2339,23 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						if (filter?.workId === workId) scanned += rows.length
 						return rows
 					}
-				await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+				await reconcile(directory)
 				if (backend.markedRecords().length) throw new Error("Second split row did not settle")
 				if (directory === incremental) backend.readRecords = readRecords
 			}
 		}
 		if (linked !== undefined && !paired) {
 			for (const directory of [incremental, reference]) seed(directory, linked % 2 ? 21 : 2)
-			backendFor(reference).deleteNote("agent", groupKey(works))
 			for (const directory of [incremental, reference]) {
-				await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+				await reconcile(directory)
 				if (backendFor(directory).markedRecords().length) throw new Error("Second request did not settle")
 			}
 		}
-		out({ incremental: events(incremental), reference: events(reference), ...(split ? { scanned } : {}) })
+		out({
+			incremental: events(incremental),
+			reference: events(reference),
+			...(split || ownerless || newUnitless || sameInput ? { scanned } : {}),
+		})
 	} finally {
 		closeBackends()
 		if (oldKey === undefined) delete process.env.KIMCHI_API_KEY

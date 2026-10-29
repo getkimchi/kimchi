@@ -8,8 +8,9 @@ import type { RecordBackend, StoredRecord } from "./ledger/records.js"
 import { accountKey, type RepositoryIdentity } from "./snapshot.js"
 
 const PREFIX = "capture-incremental-v1:"
-const MAX_CONTEXT_ROWS = 512
+const MAX_CONTEXT_ROWS = 2048
 const MAX_CONTEXT_BYTES = 256 * 1024
+const MAX_CONTEXT_BODY_BYTES = 4 * 1024 * 1024
 const MAX_CHANGED_ROWS = 128
 
 type ReplayedRequest = { hashes: string[]; result: RequestCostAllocation }
@@ -31,11 +32,16 @@ export interface GroupCache {
 	through: number
 	context: StoredRecord[]
 	scopes: [string, string][]
+	owners: string[]
 	repositories: [string, RepositoryIdentity][]
 	shared: Shared[]
 }
 
+type ContextRef = [recordHash: string, bodyDigest: string]
+type SavedGroupCache = Omit<GroupCache, "context"> & { context: ContextRef[] }
+
 const digest = (body: string) => createHash("sha256").update(body).digest("hex")
+const ownerKey = (row: Pick<WorkRecord, "workId" | "sessionId">) => JSON.stringify([row.workId, row.sessionId])
 export const groupKey = (works: readonly string[]) => `${PREFIX}group:${digest(JSON.stringify(works))}`
 const requestKey = (requestId: string) => `${PREFIX}request:${requestId}`
 const segmentKey = (segmentId: string) => `${PREFIX}segment:${segmentId}`
@@ -44,6 +50,8 @@ const billKey = (billId: string) => `${PREFIX}bill:${billId}`
 function indexes(rows: readonly WorkRecord[]) {
 	const requests = new Map<string, { workId: string; hashes: string[]; result?: RequestCostAllocation }>()
 	const segments = new Map<string, string>()
+	const segmentByRequest = new Map<string, Set<string>>()
+	const nativeSegments = new Set<string>()
 	const bills = new Map<string, string>()
 	for (const row of rows) {
 		if (typeof row.requestId !== "string") continue
@@ -53,15 +61,22 @@ function indexes(rows: readonly WorkRecord[]) {
 			typeof row.segment === "object" &&
 			"id" in row.segment &&
 			typeof row.segment.id === "string"
-		)
+		) {
 			segments.set(row.segment.id, row.workId)
+			const prior = segmentByRequest.get(row.requestId) ?? new Set<string>()
+			prior.add(row.segment.id)
+			segmentByRequest.set(row.requestId, prior)
+		}
 		if (row.type === "request_cost" && Array.isArray(row.billingRows))
 			for (const bill of row.billingRows)
 				if (bill && typeof bill === "object" && "id" in bill && typeof bill.id === "string")
 					bills.set(bill.id, row.workId)
 		requests.set(row.requestId, requests.get(row.requestId) ?? { workId: row.workId, hashes: [] })
 	}
-	return { requests, segments, bills }
+	for (const row of rows)
+		if ((row.type === "file_transition" || row.type === "commit") && typeof row.requestId === "string")
+			for (const id of segmentByRequest.get(row.requestId) ?? []) nativeSegments.add(id)
+	return { requests, segments, nativeSegments, bills }
 }
 
 /** Derived indexes are written before the group note; without that note none of them can authorize a fast path. */
@@ -69,9 +84,10 @@ export function requestIndexEntries(
 	stored: readonly StoredRecord[],
 	rows: readonly WorkRecord[],
 	report: PullRequestCostReport,
+	mode: { kind: "complete" } | { kind: "partial"; backend: RecordBackend },
 	replayed: ReadonlyMap<string, ReplayedRequest> = new Map(),
 ): { owner: string; name: string; body: string }[] {
-	const { requests, segments, bills } = indexes(rows)
+	const { requests, segments, nativeSegments, bills } = indexes(rows)
 	for (let i = 0; i < rows.length; i++) {
 		const requestId = rows[i].requestId
 		if (typeof requestId === "string") requests.get(requestId)?.hashes.push(stored[i].recordHash)
@@ -89,7 +105,11 @@ export function requestIndexEntries(
 			const body = JSON.stringify(entry)
 			return { owner: entry.workId, name: requestKey(requestId), body: JSON.stringify({ digest: digest(body), body }) }
 		}),
-		...[...segments].map(([id, owner]) => ({ owner, name: segmentKey(id), body: "1" })),
+		...[...segments].map(([id, owner]) => {
+			const name = segmentKey(id)
+			const prior = mode.kind === "partial" ? mode.backend.getNote(owner, name) : undefined
+			return { owner, name, body: nativeSegments.has(id) || (prior !== undefined && prior !== "0") ? "1" : "0" }
+		}),
 		...[...bills].map(([id, owner]) => ({ owner, name: billKey(id), body: "1" })),
 	]
 }
@@ -161,15 +181,25 @@ export function prepareGroupCache(
 	const context = stored.filter((row) =>
 		["commit", "work_link", "file_transition", "file_observation"].includes(row.type),
 	)
-	if (context.length > MAX_CONTEXT_ROWS || Buffer.byteLength(JSON.stringify(context)) > MAX_CONTEXT_BYTES)
-		return undefined
+	if (context.length > MAX_CONTEXT_ROWS) return undefined
+	let bodyBytes = 0
+	for (const row of context) {
+		bodyBytes += Buffer.byteLength(row.body)
+		if (bodyBytes > MAX_CONTEXT_BODY_BYTES) return undefined
+	}
+	const compact = context.map((row): ContextRef => [row.recordHash, digest(row.body)])
+	if (Buffer.byteLength(JSON.stringify(compact)) > MAX_CONTEXT_BYTES) return undefined
 	const scopes = new Map<string, string>()
+	const owners = new Set<string>()
 	for (const row of rows) {
 		if (row.type !== "request" || !isWorkScope(row.scope)) continue
 		const scope = JSON.stringify(row.scope)
 		if (scopes.has(row.workId) && scopes.get(row.workId) !== scope) return undefined
 		scopes.set(row.workId, scope)
+		owners.add(ownerKey(row))
 	}
+	const ownerList = [...owners]
+	if (Buffer.byteLength(JSON.stringify(ownerList)) > MAX_CONTEXT_BYTES) return undefined
 	const facts = new Map<string, Fact>()
 	for (const account of built.accounts)
 		for (const fact of account.facts) facts.set(`${accountKey(account.account)}\0${fact.entityId}`, fact)
@@ -211,13 +241,18 @@ export function prepareGroupCache(
 		through,
 		context,
 		scopes: [...scopes],
+		owners: ownerList,
 		repositories: [...repositories],
 		shared,
 	}
 }
 
 export function saveGroupCache(backend: RecordBackend, cache: GroupCache): void {
-	const body = JSON.stringify(cache)
+	const compact: SavedGroupCache = {
+		...cache,
+		context: cache.context.map((row) => [row.recordHash, digest(row.body)]),
+	}
+	const body = JSON.stringify(compact)
 	backend.putNote("agent", cache.group, JSON.stringify({ digest: digest(body), body }))
 }
 
@@ -303,18 +338,27 @@ export function readChangedGroup(
 	| undefined {
 	const raw = backend.getNote("agent", groupKey(works))
 	if (!raw) return undefined
-	let cache: GroupCache
+	let savedCache: SavedGroupCache
 	try {
 		const saved: { digest: string; body: string } = JSON.parse(raw)
 		if (digest(saved.body) !== saved.digest) return undefined
-		cache = JSON.parse(saved.body)
+		savedCache = JSON.parse(saved.body)
 		if (
-			cache.version !== 1 ||
-			cache.group !== groupKey(works) ||
-			cache.producer !== producer ||
-			!Number.isSafeInteger(cache.through) ||
-			!Array.isArray(cache.shared) ||
-			cache.shared.some((entry) => typeof entry.first !== "string" || !Number.isSafeInteger(entry.order))
+			savedCache.version !== 1 ||
+			savedCache.group !== groupKey(works) ||
+			savedCache.producer !== producer ||
+			!Number.isSafeInteger(savedCache.through) ||
+			!Array.isArray(savedCache.owners) ||
+			savedCache.owners.some((owner) => typeof owner !== "string") ||
+			!Array.isArray(savedCache.shared) ||
+			savedCache.shared.some((entry) => typeof entry.first !== "string" || !Number.isSafeInteger(entry.order)) ||
+			!Array.isArray(savedCache.context) ||
+			savedCache.context.length > MAX_CONTEXT_ROWS ||
+			savedCache.context.some(
+				(ref) =>
+					!Array.isArray(ref) || ref.length !== 2 || ref.some((hash) => typeof hash !== "string" || hash.length !== 64),
+			) ||
+			new Set(savedCache.context.map(([hash]) => hash)).size !== savedCache.context.length
 		)
 			return undefined
 	} catch {
@@ -323,7 +367,7 @@ export function readChangedGroup(
 	const stored: StoredRecord[] = []
 	const through = backend.recordWatermark()
 	for (const workId of works) {
-		let after = cache.through
+		let after = savedCache.through
 		while (true) {
 			check()
 			const page = backend.readRecordPage(after, through, MAX_CHANGED_ROWS, check, workId)
@@ -334,23 +378,33 @@ export function readChangedGroup(
 		if (stored.length > MAX_CHANGED_ROWS) return undefined
 	}
 	if (stored.length !== changed.size || stored.some((row) => changed.get(row.recordHash) !== row.type)) return undefined
-	for (const row of cache.context) {
+	const context: StoredRecord[] = []
+	const workIds = new Set(works)
+	let contextBytes = 0
+	for (const [hash, bodyHash] of savedCache.context) {
 		check()
-		const authority = backend.getRecord(row.recordHash)
-		if (!authority || authority.body !== row.body) return undefined
+		const authority = backend.getRecord(hash)
+		if (
+			!authority ||
+			!workIds.has(authority.workId) ||
+			!["commit", "work_link", "file_transition", "file_observation"].includes(authority.type) ||
+			digest(authority.body) !== bodyHash
+		)
+			return undefined
+		contextBytes += Buffer.byteLength(authority.body)
+		if (contextBytes > MAX_CONTEXT_BODY_BYTES) return undefined
+		context.push(authority)
 	}
+	const cache: GroupCache = { ...savedCache, context }
 	check()
 	if (!verifySharedHeads(backend, cache)) return undefined
 	const rows = stored.map((row) => JSON.parse(row.body) as WorkRecord)
 	const scopeByWork = new Map(cache.scopes)
 	const known = indexes(rows)
-	const requestOwners = new Set(
-		rows.filter((row) => row.type === "request").map((row) => JSON.stringify([row.workId, row.sessionId])),
-	)
+	const requestOwners = new Set(rows.filter((row) => row.type === "request").map(ownerKey))
 	for (const row of rows) {
 		if (["commit", "work_link", "file_transition", "file_observation"].includes(row.type)) return undefined
-		if ((row.type === "work" || row.type === "plan") && !requestOwners.has(JSON.stringify([row.workId, row.sessionId])))
-			return undefined
+		if ((row.type === "work" || row.type === "plan") && !requestOwners.has(ownerKey(row))) return undefined
 	}
 	const replayed = new Map<string, ReplayedRequest>()
 	const prior: StoredRecord[] = []
@@ -360,6 +414,7 @@ export function readChangedGroup(
 		const source = rows.filter((row) => row.requestId === requestId)
 		const fresh = source.find((row) => row.type === "request")
 		if (fresh) {
+			if (!cache.owners.includes(ownerKey(fresh))) return undefined
 			if (works.some((workId) => backend.hasNote(workId, requestKey(requestId)))) return undefined
 			if (!isWorkScope(fresh.scope) || scopeByWork.get(entry.workId) !== JSON.stringify(fresh.scope)) return undefined
 			continue
@@ -384,7 +439,13 @@ export function readChangedGroup(
 			}
 	}
 	for (const segment of known.segments.keys())
-		if (works.some((workId) => backend.hasNote(workId, segmentKey(segment)))) return undefined
+		if (
+			works.some((workId) => {
+				const note = backend.getNote(workId, segmentKey(segment))
+				return note !== undefined && note !== "0"
+			})
+		)
+			return undefined
 	for (const bill of known.bills.keys())
 		if (works.some((workId) => backend.hasNote(workId, billKey(bill)))) return undefined
 	for (const link of cache.context)
@@ -439,7 +500,7 @@ export function mergeSharedFacts(cache: GroupCache, built: CommonEvents): Common
 			const index = group?.facts.findIndex((fact) => fact.entityId === entityId) ?? -1
 			if (!prior || !group || index < 0) continue
 			const next = group.facts[index]
-			const later = unit.requestId > prior.writer
+			const later = unit.requestId >= prior.writer
 			const newer = later ? next : prior.fact
 			if (prior.fact.work && next.work) {
 				const chosen = later ? next.work : prior.fact.work

@@ -8,8 +8,10 @@ import { expect, it } from "vitest"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
 import type { CommonEvents } from "./events.js"
+import { type GroupCache, mergeSharedFacts } from "./incremental.js"
+import type { Fact } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
-import type { RepositoryIdentity } from "./snapshot.js"
+import { accountKey, type RepositoryIdentity } from "./snapshot.js"
 
 const account = {
 	apiUrl: "https://api.lumbrook.invalid",
@@ -56,6 +58,62 @@ function storedRecords(rows: readonly WorkRecord[]): StoredRecord[] {
 		}
 	})
 }
+
+it("uses a changed shared fact when its request is the cached last writer", () => {
+	const prior: Fact = {
+		entityId: "lumbrook-shared-work",
+		source: "kimchi",
+		sourceVersion: "unknown",
+		deviceId: "lumbrook-device",
+		observeTime: "2026-10-24T08:00:00.000Z",
+		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "LUM-1", source: "work" }] },
+	}
+	const changed: Fact = {
+		...prior,
+		observeTime: "2026-10-24T08:00:01.000Z",
+		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "LUM-2", source: "work" }] },
+	}
+	const key = accountKey(account)
+	const cache: GroupCache = {
+		version: 1,
+		group: "lumbrook-group",
+		producer,
+		through: 1,
+		context: [],
+		scopes: [],
+		owners: [],
+		repositories: [],
+		shared: [
+			{
+				account: key,
+				entityId: prior.entityId,
+				fact: prior,
+				writer: "lumbrook-request",
+				first: "lumbrook-request",
+				order: 0,
+				headId: null,
+				headHash: null,
+			},
+		],
+	}
+	const built: CommonEvents = {
+		accounts: [{ account, facts: [changed], recordHashes: [] }],
+		units: [
+			{ account: key, requestId: "lumbrook-request", entities: ["lumbrook-request", prior.entityId], recordHashes: [] },
+		],
+		unresolved: [],
+	}
+	expect(mergeSharedFacts(cache, built).accounts[0]?.facts[0]).toEqual({
+		...changed,
+		work: {
+			...changed.work,
+			issueKeys: [
+				{ key: "LUM-1", source: "work" },
+				{ key: "LUM-2", source: "work" },
+			],
+		},
+	})
+})
 
 it("keeps cooperative full and touched event bytes equal to randomized from-scratch histories", () => {
 	const histories = Array.from({ length: 24 }, (_, index) => {
@@ -148,6 +206,22 @@ it("preserves SQLite outbox event bytes and revisions when a new request uses th
 	expect(result.incremental).toEqual(result.reference)
 })
 
+it.each([
+	"cold-request",
+	"cold-response",
+	"cold-tool",
+])("matches a forced full reference without a group note for %s", (scenario) => {
+	const result = sqliteParity(scenario)
+	const evidence =
+		scenario === "cold-response"
+			? '"actualModel":"lumbrook-serving"'
+			: scenario === "cold-tool"
+				? '"name":"read"'
+				: "2026-10-24T08:00:04"
+	expect(result.reference.some(({ body }) => body.includes(evidence))).toBe(true)
+	expect(result.incremental).toEqual(result.reference)
+})
+
 it.each([1, 2, 3, 4, 5, 6])("matches full outbox bytes for linked works and request order, seed %i", (seed) => {
 	const result = sqliteParity(`linked:${seed}`)
 	expect(result.incremental.length).toBeGreaterThanOrEqual(9)
@@ -167,6 +241,18 @@ it.each(["work-row", "plan-row"])("keeps request-less %s facts equal to a full b
 	expect(result.incremental).toEqual(result.reference)
 })
 
+it("rebuilds when an ownerless session receives its first request", () => {
+	const result = sqliteParity("ownerless-new-request")
+	expect(result.scanned).toBeGreaterThan(8)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it("emits an earlier plan when the first request arrives later", () => {
+	const result = sqliteParity("plan-then-request-only")
+	expect(result.reference.some(({ body }) => body.includes('"reason":"saved_plan"'))).toBe(true)
+	expect(result.incremental).toEqual(result.reference)
+})
+
 it.each([
 	"response-row",
 	"tool-row",
@@ -183,6 +269,20 @@ it("preserves earlier response evidence when a tool arrives in a second pass", (
 	const result = sqliteParity("response-then-tool")
 	expect(result.reference.some(({ body }) => body.includes('"actualModel":"lumbrook-serving"'))).toBe(true)
 	expect(result.reference.some(({ body }) => body.includes('"name":"read"'))).toBe(true)
+	expect(result.scanned).toBeLessThanOrEqual(8)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it("indexes a request-only fast pass for its later dispatch", () => {
+	const result = sqliteParity("new-request-then-dispatch")
+	expect(result.reference.some(({ body }) => body.includes("2026-10-24T08:00:04"))).toBe(true)
+	expect(result.scanned).toBeLessThanOrEqual(8)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it("reuses a known input without native PR evidence", () => {
+	const result = sqliteParity("same-input-next-request")
+	expect(result.reference.some(({ body }) => body.includes("2026-10-24T08:00:04"))).toBe(true)
 	expect(result.scanned).toBeLessThanOrEqual(8)
 	expect(result.incremental).toEqual(result.reference)
 })

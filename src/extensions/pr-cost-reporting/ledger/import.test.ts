@@ -482,7 +482,7 @@ describe("import loop over the memory backend", () => {
 		backend.putNote("journal-coverage", file, "[]")
 		const reads = vi.spyOn(fs, "readSync")
 		try {
-			expect((await importJournals(dir, { parallelPrefix: true })).files).toEqual([])
+			expect((await importJournals(dir, { verifyCapturePrefix: true })).files).toEqual([])
 			expect(reads).not.toHaveBeenCalled()
 		} finally {
 			reads.mockRestore()
@@ -519,7 +519,7 @@ describe("import loop over the memory backend", () => {
 		writeFileSync(file, line(work()))
 		let removed = false
 		const result = await importJournals(dir, {
-			parallelPrefix: true,
+			verifyCapturePrefix: true,
 			checkBudget: () => {
 				if (removed || !backend.getJournalCursor(file)?.offset) return
 				unlinkSync(file)
@@ -539,13 +539,13 @@ describe("import loop over the memory backend", () => {
 		const file = join(journal(dir), "parent.jsonl")
 		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
 		while ((await importJournals(dir)).pending) {}
-		await importJournals(dir, { parallelPrefix: true })
+		await importJournals(dir, { verifyCapturePrefix: true })
 		appendFileSync(file, line(request("req-1")))
-		expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
 		const update = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update")
 		try {
 			appendFileSync(file, line(request("req-2")))
-			expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+			expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
 			expect(update.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.length >= 1024 * 1024)).toHaveLength(
 				1,
 			)
@@ -564,17 +564,17 @@ describe("import loop over the memory backend", () => {
 		while ((await importJournals(dir)).pending) {}
 		const digest = vi.spyOn(crypto.subtle, "digest")
 		try {
-			await importJournals(dir, { parallelPrefix: true })
+			await importJournals(dir, { verifyCapturePrefix: true })
 			appendFileSync(file, line(request("req-2")))
-			const appended = await importJournals(dir, { parallelPrefix: true })
+			const appended = await importJournals(dir, { verifyCapturePrefix: true })
 			expect(appended.imported).toBe(1)
 			expect(digest).not.toHaveBeenCalled()
 			writeFileSync(file, original.replace("req-1", "req-X") + line(request("req-3")))
 			const changedTime = new Date(Date.now() + 10_000)
 			utimesSync(file, changedTime, changedTime)
-			let rewritten = await importJournals(dir, { parallelPrefix: true })
+			let rewritten = await importJournals(dir, { verifyCapturePrefix: true })
 			expect(rewritten.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
-			while (rewritten.pending) rewritten = await importJournals(dir, { parallelPrefix: true })
+			while (rewritten.pending) rewritten = await importJournals(dir, { verifyCapturePrefix: true })
 			expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-2", "req-X", "req-3"])
 		} finally {
 			digest.mockRestore()
@@ -591,7 +591,7 @@ describe("import loop over the memory backend", () => {
 		const rewritten = original.replace("req-1", "req-X")
 		expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
 		writeFileSync(file, original)
-		expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
 		const cursor = backend.getJournalCursor(file)
 		if (!cursor) throw new Error("Expected journal cursor")
 		backend.putJournalCursor({ ...cursor, updatedAt: Date.now() - 10_000 })
@@ -599,9 +599,9 @@ describe("import loop over the memory backend", () => {
 		expect(fs.statSync(file).ino).toBe(cursor.ino)
 		const restored = new Date(Date.now() - 60_000)
 		utimesSync(file, restored, restored)
-		let result = await importJournals(dir, { parallelPrefix: true })
+		let result = await importJournals(dir, { verifyCapturePrefix: true })
 		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
-		while (result.pending) result = await importJournals(dir, { parallelPrefix: true })
+		while (result.pending) result = await importJournals(dir, { verifyCapturePrefix: true })
 		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X"])
 	})
 
