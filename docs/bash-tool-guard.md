@@ -1,9 +1,12 @@
 # Bash-tool guard
 
-> **TL;DR** — Prevents the LLM from backgrounding processes (`&`, `nohup`,
-> `disown`) that would escape the bash tool lifecycle and leak memory.
-> On by default; disable via `/resources` or the env kill switch
-> `KIMCHI_DISABLE_GUARD_BASH_TOOL=1`.
+> **TL;DR** — A runtime safety layer that intercepts bash commands
+> containing background operators (`&`, `nohup`, `disown`). These
+> operators detach processes from the bash tool's lifecycle, causing them
+> to outlive the shell and consume memory until the container OOMs. The
+> guard warns on first use and can optionally hard-block repeat
+> offenders. It is on by default; disable it at runtime via `/resources`
+> or with the env variable `KIMCHI_DISABLE_GUARD_BASH_TOOL=1`.
 
 Steers the LLM away from backgrounding processes with `&`, `nohup`, or
 `disown`. Such processes escape the bash tool's process lifecycle: when
