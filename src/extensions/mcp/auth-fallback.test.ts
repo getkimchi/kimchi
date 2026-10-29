@@ -9,6 +9,9 @@ import { describe, expect, it } from "vitest"
 // This file pins that patched behavior — a failure here means the patch
 // stopped applying or an adapter upgrade restored the dead end.
 
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { createContext } from "../__mocks__/context.js"
+
 interface UiCall {
 	kind: "select" | "notify"
 	title?: string
@@ -16,8 +19,8 @@ interface UiCall {
 	message?: string
 }
 
-function rpcContext(calls: UiCall[], selected?: string) {
-	return {
+function rpcContext(calls: UiCall[], selected?: string): ExtensionContext {
+	return createContext({
 		hasUI: true,
 		mode: "rpc",
 		cwd: "/tmp",
@@ -32,7 +35,7 @@ function rpcContext(calls: UiCall[], selected?: string) {
 			input: async () => undefined,
 			setStatus: () => {},
 		},
-	} as unknown as Parameters<typeof openMcpAuthPanel>[2]
+	})
 }
 
 // A URL referencing an unset env var keeps authenticateServer off the

@@ -1625,7 +1625,7 @@ index 247d300..b4ee7e6 100644
        return false;
      }
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 6abc16f..e48e2f1 100644
+index 6abc16f..af02f32 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -1637,7 +1637,7 @@ index 6abc16f..e48e2f1 100644
  import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
  import { callToolViaTaskSession } from "./mcp-tasks.ts";
  import { callToolPausingForElicitation } from "./elicitation-handler.ts";
-@@ -1488,6 +1488,22 @@ export async function executeCall(
+@@ -1488,6 +1488,23 @@ export async function executeCall(
        }
      }
  
@@ -1648,6 +1648,7 @@ index 6abc16f..e48e2f1 100644
 +    const definition = state.config.mcpServers[serverName];
 +    if (connection?.status === "needs-auth"
 +      && definition !== undefined
++      && !isServerDisabled(definition)
 +      && !hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime)) {
 +      try {
 +        connection = await state.manager.reconnect(serverName, definition, connection, ownedSignal);
@@ -1660,7 +1661,7 @@ index 6abc16f..e48e2f1 100644
      if (connection?.status === "needs-auth") {
        const message = getAuthRequiredMessage(state, serverName);
        return {
-@@ -1665,6 +1681,7 @@ export async function executeCall(
+@@ -1665,6 +1682,7 @@ export async function executeCall(
            config: state.config,
            ...(ownedSignal ? { signal: ownedSignal } : {}),
            onNeedsAuth: recoverAuthConnection,
@@ -1668,7 +1669,7 @@ index 6abc16f..e48e2f1 100644
          },
          serverName,
          async (conn) => {
-@@ -1710,6 +1727,7 @@ export async function executeCall(
+@@ -1710,6 +1728,7 @@ export async function executeCall(
          config: state.config,
          ...(ownedSignal ? { signal: ownedSignal } : {}),
          onNeedsAuth: recoverAuthConnection,
