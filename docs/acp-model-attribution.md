@@ -1,8 +1,8 @@
 # ACP per-message model attribution
 
 Every agent response chunk stream carries, in-band, the identity of the model
-that produced that response — so a client can label any message with its model
-without bookkeeping, and the attribution survives reload.
+that produced that response. A client can therefore label any message with its
+model without additional bookkeeping, and the attribution survives reload.
 
 ## The contract
 

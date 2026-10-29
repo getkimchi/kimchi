@@ -1,6 +1,6 @@
 # Artifacts (generated files)
 
-Product behavior: when a turn produces a user-openable file (a report, export, generated document, plan, …), ACP clients render an "Open <file>" artifact link. Detection is conservative — false negatives preferred over false positives.
+When a turn produces a user-openable file (a report, export, generated document, plan, etc.), ACP clients render an "Open <file>" artifact link. Detection is conservative — false negatives are preferred over false positives.
 
 ## Declaring artifacts from a tool
 
@@ -13,9 +13,9 @@ return {
 }
 ```
 
-- Shape follows ACP's `ToolCallLocation`; `name` is optional and defaults to the basename.
+- The shape follows ACP's `ToolCallLocation`; `name` is optional and defaults to the basename.
 - Multiple entries allowed (capped per result at 32 — a buggy tool must not burst chunks); empty/malformed entries are skipped.
-- Declared paths are authoritative (no freshness window), but existence is still verified on live turns. Only declare files the tool actually wrote.
+- Declared paths are authoritative (no freshness window), but existence is still verified on live turns. Only declare files that the tool actually wrote.
 
 Current producers: `submit_plan` and the ferment plan tools (they save `.kimchi/plans/*.md` inside `execute`).
 

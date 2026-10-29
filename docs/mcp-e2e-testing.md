@@ -1,6 +1,6 @@
 # MCP end-to-end testing
 
-Kimchi's MCP end-to-end suite runs the real compiled Kimchi client against a deterministic, repository-owned MCP server. It covers both product entry points: PTY-driven TUI sessions and ACP sessions over NDJSON stdio.
+Kimchi's MCP end-to-end suite runs the real compiled Kimchi binary against a deterministic, repository-owned MCP server. It covers both product entry points: PTY-driven TUI sessions and ACP sessions over NDJSON stdio.
 
 ## Architecture
 
@@ -119,4 +119,4 @@ An empty `mcp: {}` deliberately exercises production defaults only when the work
 
 Use a focused co-located unit or integration test for parsing, configuration normalization, or a protocol branch that does not need a user workflow. Use the fixture-backed TUI or ACP suite when the risk crosses process, transport, model, cache, OAuth, or content-forwarding boundaries.
 
-A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking, but it should not gate pull requests. External availability, credentials, and server changes make it unsuitable as the primary regression suite; the local fixture remains the source of deterministic CI evidence.
+A real external MCP smoke test can be useful for optional manual or scheduled compatibility checking, but it should not gate pull requests. External availability, credential rotation, and server changes make it unsuitable as the primary regression suite; the local fixture remains the source of deterministic CI evidence.

@@ -1,10 +1,10 @@
 # Session memory: disk-backed residency and UI display budget
 
 Large coding sessions can hold most of their conversation content in RAM as
-JSC strings (measured ≈ 90% of the live heap on big sessions). This document
-describes how Kimchi bounds that residency **without ever changing what the
-model sees** — model-visible request context and resumed content stay
-byte-identical to a session that never externalized anything.
+JSC strings (measured at roughly 90% of the live heap on big sessions). This
+document describes how Kimchi bounds that residency **without ever changing
+what the model sees** — model-visible request context and resumed content
+stay byte-identical to a session that never externalized anything.
 
 ## Invariants (non-negotiable)
 
@@ -22,7 +22,7 @@ byte-identical to a session that never externalized anything.
 
 At write time, content above a threshold is **mirrored to disk** and the
 in-memory message carries only a compact marker (`[kimchi-ext:tool]{file,
-offset, length}`). The big string is never a long-lived JSC string — reads
+offset, length}`). The large string is never a long-lived JSC string — reads
 materialize it transiently (bounded LRU cache) and release it.
 
 | Surface | Behavior |

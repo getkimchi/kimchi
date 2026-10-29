@@ -8,15 +8,15 @@ a model is considered routed-virtual when it is a `kimchi-dev` catalog model who
 starts with `auto` (`isAutoRoutedModel`); concrete models never use that
 namespace.
 
-Auto models are useful when you want Kimchi to choose between the models
+Auto models are useful when you want Kimchi to choose among the models
 available to you without switching models manually for every task.
 
 ## Selecting an auto model
 
 Auto models appear in the model picker, on the command line (`--model auto`),
-and in ACP model lists exactly when the backend catalog advertises them to
-your account. There is no client-side gate or flag — what you can see is what
-the backend serves. The harness treats them as ordinary `kimchi-dev` catalog
+and in ACP model lists when the backend catalog advertises them to your
+account. There is no client-side gate or flag — what you can see is what the
+backend serves. The harness treats them as ordinary `kimchi-dev` catalog
 entries: no special authentication, endpoint, or custom provider.
 
 ## How routing works
@@ -74,8 +74,8 @@ entries on reload.
 ## Failures
 
 There is no client-side routing step to fail. If the backend cannot serve a
-request, the provider error surfaces like any model error; submit again or
-select a concrete model with `/model`.
+request, the provider error surfaces like any other model error; submit again
+or select a concrete model with `/model`.
 
 ## Session lifecycle
 

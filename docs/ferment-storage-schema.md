@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-08  
 **Status:** Proposed / In Implementation  
-**Scope:** Replaces the overwrite-heavy `FermentStorage` class with an append-only event log + derived snapshot model.
+**Scope:** Replace the overwrite-heavy `FermentStorage` class with an append-only event log + derived snapshot model.
 
 ## Goals
 
@@ -50,11 +50,11 @@ type FermentEvent =
 - `preStateHash` — hash of ferment state BEFORE this event (chaining)
 - `postStateHash` — hash of ferment state AFTER applying this event (chaining)
 
-The `preStateHash`/`postStateHash` pair makes tampering detectable and allows Merkle-tree-style verification.
+The `preStateHash`/`postStateHash` pair makes tampering detectable and enables Merkle-tree-style verification.
 
 ## Snapshot (Derived)
 
-The canonical `Ferment` object is a **fold** over the event log. Whenever a tool or UI asks for state, we fold latest log entries into the snapshot.
+The canonical `Ferment` object is a **fold** over the event log. Whenever a tool or UI asks for state, the latest log entries are folded into the snapshot.
 
 - **Cold read**: fold entire log from events.
 - **Warm read**: read cached snapshot + apply only new events since snapshot write.
@@ -196,4 +196,4 @@ The event log path is keyed off the same resolved directory, so a single env ove
 
 ## Migration from Legacy Snapshot
 
-A `migrateLegacy(legacySnapshot): FermentEvent[]` function generates the minimal event sequence that would recreate the legacy snapshot. It walks the phases and steps in order and emits the appropriate events. This ensures that every historical ferment has a complete event retroactively.
+A `migrateLegacy(legacySnapshot): FermentEvent[]` function generates the minimal event sequence that would recreate the legacy snapshot. It walks the phases and steps in order and emits the appropriate events. This ensures that every historical ferment has a complete event log retroactively.
