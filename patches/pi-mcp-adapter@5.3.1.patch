@@ -136,6 +136,9 @@
 #     fresh credential; upstream tracking issue pending at
 #     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
 #     retries needs-auth routes against the store without an interactive flow)
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
+#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
+#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -1684,3 +1687,81 @@ index 286242f..1f34143 100644
        throw err;
      }
  
+diff --git a/commands.ts b/commands.ts
+index 40bb5f9..8a336ee 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -878,6 +878,47 @@ export async function openMcpPanel(
+   return { configChanged };
+ }
+ 
++/**
++ * Remote-capable `/mcp-auth` fallback for modes without TUI overlays (rpc, ACP).
++ *
++ * `canRenderPanel()` gates the AltScreen picker on `ctx.mode === "tui"`, so
++ * protocol hosts used to hit a dead end on bare `/mcp-auth`. Those hosts do
++ * implement the dialog primitives (`ui.select`, `ui.input`), so ask for the
++ * server with a plain select and run the same per-server authenticateServer
++ * flow that `/mcp-auth <server>` uses — including the post-auth reconnect.
++ */
++async function openMcpAuthFallback(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++): Promise<PanelFlowResult> {
++  if (state.programmaticConfig) {
++    ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
++    return { configChanged: false };
++  }
++
++  const config = state.config;
++  const oauthServers = Object.entries(config.mcpServers).filter(
++    ([, definition]) => !isServerDisabled(definition) && supportsOAuth(definition),
++  );
++  if (oauthServers.length === 0) {
++    ctx.ui.notify("No OAuth-capable MCP servers are configured.", "warning");
++    return { configChanged: false };
++  }
++
++  const names = oauthServers.map(([name]) => name);
++  let serverName: string | undefined = names[0];
++  if (names.length > 1) {
++    serverName = await ctx.ui.select("Select an OAuth MCP server to authenticate", names);
++  }
++  if (!serverName) return { configChanged: false };
++
++  const result = await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
++  if (result.ok) {
++    await reconnectServer(state, ctx, serverName);
++  }
++  return { configChanged: false };
++}
++
+ export async function openMcpAuthPanel(
+   state: McpExtensionState,
+   pi: ExtensionAPI,
+@@ -886,8 +927,7 @@ export async function openMcpAuthPanel(
+ ): Promise<PanelFlowResult> {
+   if (!ctx.hasUI) return { configChanged: false };
+   if (!canRenderPanel(ctx)) {
+-    ctx.ui.notify(`The interactive MCP auth panel is only available in the terminal UI (current mode: ${ctx.mode}). Use /mcp-auth <server> to authenticate a specific server.`, "info");
+-    return { configChanged: false };
++    return openMcpAuthFallback(state, ctx);
+   }
+   if (state.programmaticConfig) {
+     ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+diff --git a/package.json b/package.json
+index 74e2d87..8b69041 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,11 @@
+       "import": "./oauth.ts",
+       "default": "./oauth.ts"
+     },
++    "./commands": {
++      "types": "./commands.ts",
++      "import": "./commands.ts",
++      "default": "./commands.ts"
++    },
+     "./host-managed": {
+       "types": "./host-managed.ts",
+       "import": "./host-managed.ts",
