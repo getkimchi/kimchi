@@ -307,4 +307,77 @@ describe("runExportOffloaded", () => {
 			registerAgents(new Map())
 		}
 	})
+
+	it("empty persona overrides keep inline/worker parity — the prompt is omitted, not defaulted", {
+		skip: !bunAvailable,
+	}, async () => {
+		// A user persona that BLANKS a default type's prompt. Inline, the
+		// registry returns "" and the tab omits the prompt; the worker must
+		// behave identically — an empty string must be serialized (the nullish
+		// fallback chain treats it as present) instead of falling through to
+		// the built-in default.
+		const blankedExplore: AgentConfig = {
+			name: "Explore",
+			description: "override that blanks the default prompt",
+			extensions: false,
+			skills: false,
+			systemPrompt: "",
+			promptMode: "replace",
+			isDefault: false,
+		}
+		registerAgents(new Map([["Explore", blankedExplore]]))
+		try {
+			const sessionData = {
+				version: 3,
+				id: "s1",
+				entries: [
+					{
+						type: "custom",
+						id: "sub-exp",
+						parentId: null,
+						customType: "subagents:record",
+						data: {
+							id: "agent-exp",
+							type: "Explore",
+							status: "completed",
+							startedAt: 1700000000000,
+							completedAt: 1700000010000,
+							transcript: [
+								{
+									isSidechain: true,
+									agentId: "agent-exp",
+									type: "user",
+									message: { role: "user", content: "explore this" },
+									timestamp: "2026-01-01T00:00:00.000Z",
+									cwd: "/project",
+								},
+							],
+						},
+					},
+				],
+			}
+			const inlinePath = join(tmpDir, "blank-inline.html")
+			const workerPath = join(tmpDir, "blank-worker.html")
+			writeFileSync(inlinePath, buildRawHtml(sessionData), "utf-8")
+			writeFileSync(workerPath, buildRawHtml(sessionData), "utf-8")
+
+			await postProcessHtmlExportOnce(inlinePath)
+			await runExportOffloaded({ mode: "html", filePath: workerPath }, { buildCommand: bunCommand })
+
+			const tabPrompt = (html: string): string | undefined => {
+				const dataMatch = html.match(/id="subagent-data-agent-exp">([\s\S]*?)<\/script>/)
+				if (!dataMatch?.[1]) throw new Error("subagent data not found")
+				const subData = JSON.parse(Buffer.from(dataMatch[1], "base64").toString("utf-8")) as {
+					systemPrompt?: string
+				}
+				return subData.systemPrompt
+			}
+			// Both paths omit the prompt — neither inserts the built-in default.
+			expect(tabPrompt(readFileSync(inlinePath, "utf-8"))).toBeUndefined()
+			expect(tabPrompt(readFileSync(workerPath, "utf-8"))).toBeUndefined()
+			expect(readFileSync(workerPath, "utf-8")).toBe(readFileSync(inlinePath, "utf-8"))
+		} finally {
+			registerAgents(new Map())
+		}
+	})
 })

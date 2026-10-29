@@ -9,7 +9,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -39,6 +39,18 @@ vi.mock("node:fs", async (importOriginal) => {
 			// biome-ignore lint/suspicious/noExplicitAny: delegate with the original signature
 			return (actual.writeFileSync as any)(path, ...rest)
 		}) as typeof actual.writeFileSync,
+	}
+})
+
+// Isolated home directory for the tilde-path tests: they must never touch
+// the real user home. Empty override = the real homedir (other tests don't
+// care); the tilde test points it at its own temp directory.
+const homeOverride = vi.hoisted(() => ({ dir: "" as string }))
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>()
+	return {
+		...actual,
+		homedir: () => (homeOverride.dir !== "" ? homeOverride.dir : actual.homedir()),
 	}
 })
 
@@ -1208,17 +1220,26 @@ describe("runSecureExport — workspace lifecycle", () => {
 	})
 
 	it("resolves `~/` paths against the home directory, not the session cwd", async () => {
-		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
-		const finalPath = await runSecureExport({
-			mode: "html",
-			outputPath: "~/kimchi-export-tilde-test.html",
-			session,
-			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
-			pipeline: () => Promise.resolve(),
-		})
-		expect(finalPath.startsWith(homedir())).toBe(true)
-		expect(finalPath).not.toContain("~")
-		rmSync(finalPath, { force: true })
+		// Point the (mocked) home at an isolated directory — the test must never
+		// create or delete anything under the real user home.
+		const isolatedHome = join(tmpDir, "isolated-home")
+		mkdirSync(isolatedHome, { recursive: true })
+		homeOverride.dir = isolatedHome
+		try {
+			const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+			const finalPath = await runSecureExport({
+				mode: "html",
+				outputPath: "~/kimchi-export-tilde-test.html",
+				session,
+				upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+				pipeline: () => Promise.resolve(),
+			})
+			expect(finalPath).toBe(join(isolatedHome, "kimchi-export-tilde-test.html"))
+			expect(finalPath).not.toContain("~")
+			expect(existsSync(finalPath)).toBe(true)
+		} finally {
+			homeOverride.dir = ""
+		}
 	})
 
 	it("converts file:// URL output paths to plain paths", async () => {

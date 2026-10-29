@@ -45,13 +45,15 @@ type ExportWorkerState = ExportPipelineOptions
  * worker child would otherwise fall back to built-in defaults for
  * sub-records without a persisted system prompt. Keys are lowercased agent
  * types; built-in defaults resolve identically in the child and are not
- * serialized.
+ * serialized. Empty-string prompts ARE serialized: a user persona may
+ * deliberately blank a prompt, and the nullish (??) fallback chain treats
+ * "" as a present value — omitting it would diverge from the inline path.
  */
 function collectAgentSystemPrompts(): Record<string, string> | undefined {
 	const prompts: Record<string, string> = {}
 	for (const name of getUserAgentNames()) {
 		const prompt = getAgentConfig(name)?.systemPrompt
-		if (typeof prompt === "string" && prompt.length > 0) {
+		if (typeof prompt === "string") {
 			prompts[name.toLowerCase()] = prompt
 		}
 	}
