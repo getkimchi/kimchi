@@ -160,6 +160,7 @@ import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
+import { resolveAcpModelDisplayName } from "./model-display-names.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
@@ -2687,8 +2688,9 @@ function getSessionModelRegistry(
  */
 function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
 	// The backend may ship the description inside the display name; ACP has a
-	// dedicated description field, so the pair is split apart here.
-	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
+	// dedicated description field, so the pair is split apart here. Slug-only
+	// catalog names (`auto`) are prettified first so clients never see raw ids.
+	const { name: baseName, description: nameDescription } = splitModelDisplayName(resolveAcpModelDisplayName(model))
 	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
 	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
@@ -2709,7 +2711,7 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 		modelRef: orchRef,
 		modelId: orchId,
 	} = getOrchestratorModel(session.sessionId, modelRegistry)
-	const orchName = orchestrator?.name ?? orchId ?? orchRef
+	const orchName = orchestrator ? resolveAcpModelDisplayName(orchestrator) : (orchId ?? orchRef)
 	// Multi-model's deprecation label is harness-side: the virtual selection has
 	// no platform-catalog entry to carry a backend marker.
 	// Ordering mirrors sortModels() in src/models.ts: active entries sorted by
@@ -2722,10 +2724,11 @@ export function buildModelConfigOption(session: AgentSessionModelConfig): Sessio
 	const options: Array<{ value: string; name: string; description?: string | null; deprecated?: boolean }> = [
 		...modelRegistry.getAvailable().map((m) => {
 			if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
+			// Catalog display names win; slug-only names (`claude-opus-4-6`) are
+			// prettified so ACP clients render `Claude Opus 4.6`.
+			const name = resolveAcpModelDisplayName(m)
 			const marker = deprecationMarkers.get(m.id)
-			return marker
-				? { value: refFromModel(m), name: m.name, description: marker }
-				: { value: refFromModel(m), name: m.name }
+			return marker ? { value: refFromModel(m), name, description: marker } : { value: refFromModel(m), name }
 		}),
 		{
 			value: "multi-model",
