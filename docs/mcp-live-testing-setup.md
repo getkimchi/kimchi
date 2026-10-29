@@ -34,11 +34,11 @@ Store three repository secrets:
 One-time setup, repeated on rotation:
 
 1. Build the branch under test: `pnpm run build:binary`.
-2. Create an isolated home with the server pre-configured (the `/mcp` panel is view-only; servers come from the adapter's config file) and a file-backed credential store (the store switches on `KIMCHI_MCP_E2E_KEYRING_DIR` alone — no OS keychain is touched):
+2. Create an isolated home with the server pre-configured (the `/mcp` panel is view-only; kimchi's user-global MCP config is `~/.config/kimchi/harness/mcp.json` — passed to the adapter as the default configPath, so `mcp-adapter.json` is not read) and a file-backed credential store (the store switches on `KIMCHI_MCP_E2E_KEYRING_DIR` alone — no OS keychain is touched):
 
    ```sh
    mkdir -p /tmp/gmail-seed/.config/kimchi/harness
-   cat > /tmp/gmail-seed/.config/kimchi/harness/mcp-adapter.json <<'EOF'
+   cat > /tmp/gmail-seed/.config/kimchi/harness/mcp.json <<'EOF'
    {
      "mcpServers": {
        "gmail": {
