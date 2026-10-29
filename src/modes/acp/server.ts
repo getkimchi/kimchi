@@ -3566,8 +3566,15 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	}
 	for (const s of signals) process.on(s, onSignal)
 
+	// A clean shutdown ends when the client closes stdin (conn.closed
+	// resolves). If the transport dies on an error instead — a json-stream
+	// failure, the pipe killed mid-turn — conn.closed rejects, and the
+	// launcher must see a failing exit code rather than a flat success.
+	let exitCode = 0
 	try {
 		await conn.closed
+	} catch {
+		exitCode = 1
 	} finally {
 		for (const s of signals) process.off(s, onSignal)
 		await agentInstance?.shutdown()
@@ -3575,6 +3582,6 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		// event-loop holders (extension timers, MCP clients, watchers) would
 		// otherwise keep us alive. A stdio agent must exit after stdin closes
 		// (stdio-protocol compatibility, and Zed's own lifecycle expectations).
-		process.exit(0)
+		process.exit(exitCode)
 	}
 }

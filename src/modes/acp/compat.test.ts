@@ -9,8 +9,8 @@
 //   1. extMethod dispatch — raw `session/set_model` requests reach the same
 //      implementation as session/set_config_option.
 //   2. Wire level — a real AgentSideConnection/ClientSideConnection loopback
-//      proves the `models` extra field survives JSON-RPC serialization
-//      (outgoing responses are not schema-revalidated by the SDK), and that
+//      proves session responses stay on the schema surface (no legacy
+//      `models` key; the spec forbids custom root fields), and that
 //      `session/set_model` succeeds over the wire.
 
 import { PassThrough, Readable, Writable } from "node:stream"
