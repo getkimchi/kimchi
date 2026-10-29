@@ -21,27 +21,27 @@ type Send = (params: SessionNotification) => void
 interface MakeConnOverrides {
 	extMethod?: ExtMethod
 	extNotification?: ExtNotification
-	unstable_createElicitation?: CreateElicitation
+	createElicitation?: CreateElicitation
 	requestPermission?: RequestPermissionFn
 }
 
 function makeConn(overrides: MakeConnOverrides = {}, clientCapabilities?: ClientCapabilities) {
 	const extMethod = vi.fn(overrides.extMethod ?? (async () => ({})))
 	const extNotification = vi.fn(overrides.extNotification ?? (async () => {}))
-	const unstable_createElicitation = vi.fn(overrides.unstable_createElicitation)
+	const createElicitation = vi.fn(overrides.createElicitation)
 	const requestPermission = vi.fn(overrides.requestPermission)
 	const send = vi.fn<Send>(() => {})
 	const conn = {
 		extMethod,
 		extNotification,
-		unstable_createElicitation,
+		createElicitation: createElicitation,
 		requestPermission,
 	} as unknown as AgentSideConnection
 	return {
 		conn,
 		extMethod,
 		extNotification,
-		unstable_createElicitation,
+		createElicitation: createElicitation,
 		requestPermission,
 		send,
 		clientCapabilities,
@@ -76,19 +76,19 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("calls unstable_createElicitation with a boolean form schema when client supports form elicitation", async () => {
+	it("calls createElicitation with a boolean form schema when client supports form elicitation", async () => {
 		elicit.mockResolvedValueOnce({
 			action: "accept",
 			content: { confirmed: true },
 		})
-		const { conn, unstable_createElicitation, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+		const { conn, createElicitation, send } = makeConn({
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("Title", "Body?")).resolves.toBe(true)
 
-		expect(unstable_createElicitation).toHaveBeenCalledTimes(1)
-		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
+		expect(createElicitation).toHaveBeenCalledTimes(1)
+		const params = createElicitation.mock.calls[0][0] as Record<string, unknown>
 		expect(params).toEqual({
 			message: "Title: Body?",
 			mode: "form",
@@ -112,12 +112,12 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 			action: "accept",
 			content: { confirmed: true },
 		})
-		const { conn, unstable_createElicitation, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+		const { conn, createElicitation, send } = makeConn({
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("Title-only", "")).resolves.toBe(true)
-		const params = unstable_createElicitation.mock.calls[0][0] as Record<string, unknown>
+		const params = createElicitation.mock.calls[0][0] as Record<string, unknown>
 		expect(params.message).toBe("Title-only")
 	})
 
@@ -127,7 +127,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 			content: { confirmed: false },
 		})
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
@@ -136,7 +136,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 	it("resolves false on action: decline (user explicitly said no)", async () => {
 		elicit.mockResolvedValueOnce({ action: "decline" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
@@ -145,7 +145,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 	it("resolves false on action: cancel (user dismissed without choosing)", async () => {
 		elicit.mockResolvedValueOnce({ action: "cancel" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
@@ -154,7 +154,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 	it("resolves false when elicitForm rejects (transport error)", async () => {
 		elicit.mockRejectedValueOnce(new Error("Method not found"))
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
@@ -169,7 +169,7 @@ describe("createAcpUIContext — confirm via elicitation", () => {
 				}),
 		)
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		const controller = new AbortController()
@@ -189,13 +189,13 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 		const requestPermission = vi.fn(async (_params: unknown) => ({
 			outcome: { outcome: "selected", optionId: "yes" },
 		}))
-		const { conn, unstable_createElicitation, send } = makeConn({
+		const { conn, createElicitation, send } = makeConn({
 			requestPermission: requestPermission as unknown as RequestPermissionFn,
 		})
 		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
 		await expect(real.confirm("Title", "Body?")).resolves.toBe(true)
 
-		expect(unstable_createElicitation).not.toHaveBeenCalled()
+		expect(createElicitation).not.toHaveBeenCalled()
 		expect(requestPermission).toHaveBeenCalledTimes(1)
 		const params = requestPermission.mock.calls[0][0]
 		expect(params).toEqual({
@@ -261,12 +261,12 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 		const requestPermission = vi.fn(async (_params: unknown) => {
 			throw new Error("client doesn't implement requestPermission")
 		})
-		const { conn, unstable_createElicitation, send } = makeConn({
+		const { conn, createElicitation, send } = makeConn({
 			requestPermission: requestPermission as unknown as RequestPermissionFn,
 		})
 		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
-		expect(unstable_createElicitation).not.toHaveBeenCalled()
+		expect(createElicitation).not.toHaveBeenCalled()
 		expect(requestPermission).toHaveBeenCalledTimes(1)
 	})
 })
@@ -282,14 +282,14 @@ describe("createAcpUIContext — select via elicitation", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("calls unstable_createElicitation with a oneOf enum schema", async () => {
+	it("calls createElicitation with a oneOf enum schema", async () => {
 		elicit.mockResolvedValueOnce({ action: "accept", content: { value: "b" } })
-		const { conn, unstable_createElicitation, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+		const { conn, createElicitation, send } = makeConn({
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b", "c"])).resolves.toBe("b")
-		const params = unstable_createElicitation.mock.calls[0][0]
+		const params = createElicitation.mock.calls[0][0]
 		expect(params).toEqual({
 			message: "Pick",
 			mode: "form",
@@ -324,7 +324,7 @@ describe("createAcpUIContext — select via elicitation", () => {
 	it("resolves undefined when the user declines", async () => {
 		elicit.mockResolvedValueOnce({ action: "decline" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b"])).resolves.toBeUndefined()
@@ -333,7 +333,7 @@ describe("createAcpUIContext — select via elicitation", () => {
 	it("resolves undefined when the user cancels", async () => {
 		elicit.mockResolvedValueOnce({ action: "cancel" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b"])).resolves.toBeUndefined()
@@ -342,19 +342,19 @@ describe("createAcpUIContext — select via elicitation", () => {
 	it("resolves undefined when the value type is unexpected", async () => {
 		elicit.mockResolvedValueOnce({ action: "accept", content: { value: 42 } })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", ["a", "b"])).resolves.toBeUndefined()
 	})
 
 	it("resolves undefined with an empty options array (no call to elicit)", async () => {
-		const { conn, unstable_createElicitation, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+		const { conn, createElicitation, send } = makeConn({
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.select("Pick", [])).resolves.toBeUndefined()
-		expect(unstable_createElicitation).not.toHaveBeenCalled()
+		expect(createElicitation).not.toHaveBeenCalled()
 	})
 })
 
@@ -436,17 +436,17 @@ describe("createAcpUIContext — input via elicitation", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("calls unstable_createElicitation with a string schema", async () => {
+	it("calls createElicitation with a string schema", async () => {
 		elicit.mockResolvedValueOnce({
 			action: "accept",
 			content: { value: "alice" },
 		})
-		const { conn, unstable_createElicitation, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+		const { conn, createElicitation, send } = makeConn({
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.input("Name", "Enter your name")).resolves.toBe("alice")
-		const params = unstable_createElicitation.mock.calls[0][0]
+		const params = createElicitation.mock.calls[0][0]
 		expect(params).toEqual({
 			message: "Name",
 			mode: "form",
@@ -468,7 +468,7 @@ describe("createAcpUIContext — input via elicitation", () => {
 	it("resolves undefined on decline", async () => {
 		elicit.mockResolvedValueOnce({ action: "decline" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.input("Name", "ph")).resolves.toBeUndefined()
@@ -477,7 +477,7 @@ describe("createAcpUIContext — input via elicitation", () => {
 	it("resolves undefined on cancel", async () => {
 		elicit.mockResolvedValueOnce({ action: "cancel" })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.input("Name", "ph")).resolves.toBeUndefined()
@@ -486,19 +486,19 @@ describe("createAcpUIContext — input via elicitation", () => {
 	it("resolves undefined when the value type is unexpected", async () => {
 		elicit.mockResolvedValueOnce({ action: "accept", content: { value: 123 } })
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", elicitationClientCapabilities(), send)
 		await expect(real.input("Name", "ph")).resolves.toBeUndefined()
 	})
 
 	it("falls back to notify + undefined when client lacks form elicitation (no permission equivalent for free text)", async () => {
-		const { conn, extNotification, unstable_createElicitation, send } = makeConn({
+		const { conn, extNotification, createElicitation, send } = makeConn({
 			extNotification: vi.fn(async () => {}),
 		})
 		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
 		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
-		expect(unstable_createElicitation).not.toHaveBeenCalled()
+		expect(createElicitation).not.toHaveBeenCalled()
 		expect(extNotification).toHaveBeenCalledTimes(1)
 		const [method, params] = extNotification.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_notify")
@@ -513,12 +513,12 @@ describe("createAcpUIContext — input via elicitation", () => {
 	})
 
 	it("falls back to notify when the client supports no elicitation and no _kimchi.dev methods", async () => {
-		const { conn, extNotification, unstable_createElicitation, send } = makeConn({
+		const { conn, extNotification, createElicitation, send } = makeConn({
 			extNotification: vi.fn(async () => {}),
 		})
 		const real = createAcpUIContext(conn, "sess-1", undefined, send)
 		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
-		expect(unstable_createElicitation).not.toHaveBeenCalled()
+		expect(createElicitation).not.toHaveBeenCalled()
 		expect(extNotification).toHaveBeenCalledTimes(1)
 		const [method, params] = extNotification.mock.calls[0]
 		expect(method).toBe("_kimchi.dev/pi_notify")
@@ -546,16 +546,16 @@ describe("createAcpUIContext — capability gating", () => {
 		const extMethod = vi.fn(async () => ({ confirmed: true }))
 		const {
 			conn,
-			unstable_createElicitation,
+			createElicitation,
 			extMethod: em,
 			send,
 		} = makeConn({
 			extMethod: extMethod as unknown as ExtMethod,
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const real = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
 		await expect(real.confirm("T", "M")).resolves.toBe(true)
-		expect(unstable_createElicitation).toHaveBeenCalledTimes(1)
+		expect(createElicitation).toHaveBeenCalledTimes(1)
 		expect(em).not.toHaveBeenCalled()
 	})
 
@@ -565,7 +565,7 @@ describe("createAcpUIContext — capability gating", () => {
 			content: { value: "x" },
 		}))
 		const { conn, send } = makeConn({
-			unstable_createElicitation: elicit as unknown as CreateElicitation,
+			createElicitation: elicit as unknown as CreateElicitation,
 		})
 		const caps = { elicitation: { form: {} } } as unknown as ClientCapabilities
 		const real = createAcpUIContext(conn, "sess-1", caps, send)
