@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "./__mocks__/model-registry.js"
+import { resolveEffectiveModel } from "./auto-model/state.js"
 import {
 	BUDGET_ESCALATION_FACTOR,
 	type CompactionPreparation,
@@ -23,6 +24,11 @@ import {
 } from "./compaction-resilience.js"
 
 type SummarizeMessage = CompactionPreparation["messagesToSummarize"][number]
+
+vi.mock("./auto-model/state.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./auto-model/state.js")>()
+	return { ...actual, resolveEffectiveModel: vi.fn(actual.resolveEffectiveModel) }
+})
 
 function captureHandler(deps?: Parameters<typeof createCompactionResilienceExtension>[0]) {
 	const ext = createExtensionApi()
@@ -265,6 +271,26 @@ describe("compaction-resilience handler", () => {
 		expect(compactImpl.mock.calls[0]?.[6]).toBe("high")
 		// The shared settings object is never mutated.
 		expect(event.preparation.settings.reserveTokens).toBe(16_384)
+		// Upstream parity: the retry policy rides in arg 10 so transient stream
+		// drops are retried inside compact() the same way upstream's own path
+		// retries them (without a policy, retryAssistantCall does zero retries).
+		const retry = compactImpl.mock.calls[0]?.[9] as { enabled: boolean; maxRetries: number }
+		expect(retry).toMatchObject({ enabled: expect.any(Boolean), maxRetries: expect.any(Number) })
+		// The Auto-routing pick is resolved before auth, with the session id.
+		expect(resolveEffectiveModel).toHaveBeenCalledWith(ctx.model, ctx.sessionManager.getSessionId())
+	})
+
+	it("summarizes with the auto-routing pick instead of the virtual model", async () => {
+		const compactImpl = vi.fn().mockResolvedValue(okResult())
+		const { handler } = captureHandler({ compactImpl })
+		const virtual = glmModel()
+		const concrete = glmModel()
+		concrete.id = "concrete-glm"
+		vi.mocked(resolveEffectiveModel).mockReturnValueOnce(concrete)
+		const ctx = makeCtx(virtual, { ok: true, apiKey: "k", headers: {} })
+		await handler(makeEvent(makePreparation(eightMessages())), ctx)
+
+		expect(compactImpl.mock.calls[0]?.[1]).toBe(concrete)
 	})
 
 	it("falls back to the floor level with the escalated budget after a cut-off summary", async () => {
@@ -408,7 +434,14 @@ describe("compaction-resilience handler", () => {
 		const { ext, handler } = captureHandler({ compactImpl })
 		ext.getThinkingLevel.mockReturnValue("high")
 		const ctx = makeCtx(glmModel(), { ok: true, apiKey: "k", headers: {} })
-		const preparation = makePreparation(eightMessages(), { previousSummary: "old summary" })
+		const preparation = makePreparation(eightMessages(), {
+			previousSummary: "old summary",
+			fileOps: {
+				read: new Set(["src/read.ts", "src/both.ts"]),
+				edited: new Set(["src/both.ts"]),
+				written: new Set(["src/new.ts"]),
+			},
+		})
 		const result = await handler(makeEvent(preparation), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(MAX_SUMMARIZATION_ATTEMPTS)
@@ -424,6 +457,17 @@ describe("compaction-resilience handler", () => {
 		expect(compaction.summary).toContain(`after ${MAX_SUMMARIZATION_ATTEMPTS} attempts`)
 		expect(compaction.summary).toContain("Last failure: length")
 		expect(compaction.summary).toContain("/new")
+		// /compact right after a compaction throws "Already compacted" upstream:
+		// the note must not advise it.
+		expect(compaction.summary).not.toContain("retry /compact")
+		// File-ops tracking survives the degraded path (details + rendered lists);
+		// read∩modified files count as modified only, matching upstream.
+		expect(compaction.details).toEqual({
+			readFiles: ["src/read.ts"],
+			modifiedFiles: ["src/both.ts", "src/new.ts"],
+		})
+		expect(compaction.summary).toContain("<read-files>\nsrc/read.ts\n</read-files>")
+		expect(compaction.summary).toContain("<modified-files>\nsrc/both.ts\nsrc/new.ts\n</modified-files>")
 		// No provider-derived text may leak into the persisted summary.
 		expect(compaction.summary).not.toContain("sk-abcdefgh")
 		expect(compaction.summary).not.toContain("boom")

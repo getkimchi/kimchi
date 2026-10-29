@@ -436,13 +436,23 @@ async function runPreCompact(
 	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "steer")
 }
 
+/**
+ * PostCompact trigger for the claude-code hook surface. Upstream marks every
+ * hook-supplied compaction `fromExtension: true` regardless of what triggered
+ * it, so the real trigger must come from the event reason — mapping
+ * `fromExtension` alone made every automatic compaction look manual.
+ */
+export function postCompactTrigger(event: Pick<SessionCompactEvent, "reason">): "manual" | "auto" {
+	return event.reason === "manual" ? "manual" : "auto"
+}
+
 async function runPostCompact(
 	definition: CommandHookAdapterDefinition,
 	pi: ExtensionAPI,
 	event: SessionCompactEvent,
 	ctx: ExtensionContext,
 ): Promise<void> {
-	const trigger = event.fromExtension ? "manual" : "auto"
+	const trigger = postCompactTrigger(event)
 	const result = await runMatchingHooks(definition, "PostCompact", ctx, [trigger], { trigger })
 	if (result?.additionalContext) sendAdditionalContext(definition, pi, result.additionalContext, "nextTurn")
 }

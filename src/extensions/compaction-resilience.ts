@@ -27,8 +27,14 @@
  * /compact, ACP compact, auto-compaction (threshold/overflow), and
  * model-guard's inlineCompact — all funnel through the same hook. The actual
  * summarization still runs upstream's exported `compact()` (prompts, split-turn
- * merge, file ops, transient retries), so nothing about the summary format
- * drifts. Registration order matters: this extension must register AFTER
+ * merge, file ops); transient stream drops and 5xx are covered the same way
+ * upstream's own path covers them — the retry policy is read from the user's
+ * settings and passed to compact(). The Auto-model routing pick is resolved
+ * before auth (mirroring upstream's patched _getSummarizationRequestAuth) so
+ * auto sessions summarize with their saved concrete target instead of
+ * re-routing the virtual model per attempt.
+ *
+ * Registration order matters: this extension must register AFTER
  * work-attribution, whose `session_before_compact` handler mutates
  * `event.preparation` in place (collapses spurious split-turns) — handlers run
  * sequentially in registration order.
@@ -41,7 +47,13 @@
  * surfaces the failure inside the compacted summary, and stops auto-compaction
  * from re-invoking on every subsequent check.
  */
-import { type Api, clampThinkingLevel, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai"
+import {
+	type Api,
+	clampThinkingLevel,
+	type Model,
+	type ModelThinkingLevel,
+	type RetryPolicy,
+} from "@earendil-works/pi-ai"
 import { thinkingBudgetForLevel } from "@earendil-works/pi-ai/api/simple-options"
 import type {
 	CompactionResult,
@@ -50,7 +62,8 @@ import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
 } from "@earendil-works/pi-coding-agent"
-import { compact } from "@earendil-works/pi-coding-agent"
+import { compact, SettingsManager } from "@earendil-works/pi-coding-agent"
+import { resolveEffectiveModel } from "./auto-model/state.js"
 
 /** Upstream preparation type, derived from the exported `compact()` signature. */
 export type CompactionPreparation = Parameters<typeof compact>[0]
@@ -145,11 +158,32 @@ function isAbortError(error: unknown): boolean {
 }
 
 /**
+ * File-ops lists and their summary rendering, matching upstream's
+ * compaction/utils.js (not exported from the package root). Pure functions of
+ * `preparation.fileOps` — no LLM needed.
+ */
+function computeFileLists(fileOps: CompactionPreparation["fileOps"]) {
+	const modified = new Set([...fileOps.edited, ...fileOps.written])
+	const readFiles = [...fileOps.read].filter((file) => !modified.has(file)).sort()
+	const modifiedFiles = [...modified].sort()
+	return { readFiles, modifiedFiles }
+}
+
+function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
+	const sections: string[] = []
+	if (readFiles.length > 0) sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`)
+	if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`)
+	return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`
+}
+
+/**
  * Degraded-summary note: names the failure class only (one word from our own
  * classifier) — never the provider error message. Error bodies are untrusted
  * (up to ~4k chars of raw HTTP body in pi-ai) and the summary lands in the
  * session file and in the LLM's context, so no provider-derived text is
- * embedded.
+ * embedded. File-ops tracking is preserved (details + rendered lists), and the
+ * note only recommends /new: /compact right after a compaction throws
+ * "Already compacted" upstream.
  */
 function buildDegradedCompaction(
 	preparation: CompactionPreparation,
@@ -161,12 +195,14 @@ function buildDegradedCompaction(
 		`[Compaction ran in degraded mode: the summarization model could not produce a complete summary ` +
 		`after ${attempts}. ` +
 		`Last failure: ${lastFailure ?? "unknown"}. ` +
-		`The dropped range has no summary — start a new session (/new) or retry /compact if context is missing.]`
+		`The dropped range has no summary — start a new session (/new) if context is missing.]`
 	const previous = preparation.previousSummary ? `${preparation.previousSummary}\n\n` : ""
+	const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps)
 	return {
-		summary: `${previous}${note}`,
+		summary: `${previous}${note}${formatFileOperations(readFiles, modifiedFiles)}`,
 		firstKeptEntryId: preparation.firstKeptEntryId,
 		tokensBefore: preparation.tokensBefore,
+		details: { readFiles, modifiedFiles },
 	}
 }
 
@@ -189,14 +225,24 @@ async function handleBeforeCompact(
 	deps: CompactionResilienceDeps,
 	pi: ExtensionAPI,
 ): Promise<SessionBeforeCompactResult | undefined> {
-	const model = ctx.model
-	if (!model) return undefined
+	const sessionModel = ctx.model
+	if (!sessionModel) return undefined
+
+	// Resolve the Auto-routing pick before auth, mirroring upstream's patched
+	// _getSummarizationRequestAuth: without this, an auto session summarizes
+	// with the virtual model id and re-routes on every attempt.
+	const model = resolveEffectiveModel(sessionModel, ctx.sessionManager.getSessionId()) ?? sessionModel
 
 	const compactImpl = deps.compactImpl ?? compact
 	// Auth problems are upstream's to report: returning undefined lets upstream
 	// run its own path and surface the real error.
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model)
 	if (!auth.ok) return undefined
+
+	// Read once per compaction (upstream does the same): retryAssistantCall
+	// performs zero retries without a policy, so a single transient stream drop
+	// would otherwise degrade the compaction.
+	const retry: RetryPolicy = SettingsManager.create(ctx.cwd).getRetrySettings()
 
 	const requestedModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model
 	// ProviderHeaders may carry null values meaning "suppress the default
@@ -243,6 +289,8 @@ async function handleBeforeCompact(
 				thinkingLevel,
 				undefined,
 				auth.env,
+				retry,
+				undefined,
 			)
 			if (reduced) result.summary = `${result.summary}\n\n${TRUNCATION_MARKER}`
 			return { compaction: result }

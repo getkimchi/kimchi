@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { setResourceOverride } from "../../resources/store.js"
 import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { createCommandHookAdapter, parseCommandHookOutput, runCommandHook } from "./adapter.js"
+import { createCommandHookAdapter, parseCommandHookOutput, postCompactTrigger, runCommandHook } from "./adapter.js"
 
 vi.mock("node:child_process", () => ({
 	spawn: vi.fn(),
@@ -1128,3 +1128,14 @@ function hookPayload(child: ReturnType<typeof fakeChild>): HookPayload {
 function flushDeferredActions(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 0))
 }
+
+describe("postCompactTrigger", () => {
+	it("maps the event reason, not the fromExtension flag", () => {
+		// Upstream sets fromExtension: true for any hook-supplied compaction;
+		// the trigger must come from the reason or every automatic compaction
+		// would fire "manual" PostCompact hooks.
+		expect(postCompactTrigger({ reason: "threshold" })).toBe("auto")
+		expect(postCompactTrigger({ reason: "overflow" })).toBe("auto")
+		expect(postCompactTrigger({ reason: "manual" })).toBe("manual")
+	})
+})
