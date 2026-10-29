@@ -1,134 +1,3 @@
-# Patch: Kimchi host integrations for pi-mcp-adapter 5.3.1
-#
-# Tracking:
-#   - Project config directory: https://github.com/nicobailon/pi-mcp-adapter/issues/491
-#     (remove when upstream supports a project config directory independent of
-#     the user config directory)
-#   - Tool-name sanitization and selector matching: getkimchi/kimchi#1168
-#     (remove when upstream sanitizes both name parts and caps wire names at
-#     the 128-char provider limit)
-#   - MCP UI standard disable: no upstream option; remove when the harness
-#     supports MCP Apps or upstream adds a disable option
-#   - OAuth loopback capture: getkimchi/kimchi#1284; upstream tracking issue
-#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
-#     upstream supports an opportunistic loopback listener for manual
-#     redirect flows)
-#   - OAuth metadata Accept header: strict gateways answer 406 when
-#     text/event-stream is missing; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     sends "Accept: application/json, text/event-stream")
-#   - DCR clientInfo version: still hardcoded "2.11.0" in upstream
-#     mcp-auth-flow; remove when upstream derives it from the package version
-#   - Stored redirect URI reuse: upstream 5.3.1 defaults the loopback host to
-#     127.0.0.1 (PR #712), so re-auth of a pre-registered client (e.g. Google)
-#     whose registration was created with a localhost URI now sends a different
-#     redirect and fails with redirect_uri_mismatch. Fixed-client servers with
-#     no usable stored registration (first auth, or a registration whose
-#     redirectUris were dropped) now default to the localhost callback adapter
-#     2.x sent, since such clients register localhost only; upstream issue
-#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
-#     upstream prefers the stored registration's redirect URIs and defaults
-#     fixed-client servers to the localhost callback)
-#   - Stored redirect URI preservation: mcp-oauth-provider clientInformation()
-#     rewrites the stored clientInfo for config-registered clients (issuer
-#     binding bookkeeping) and drops its redirectUris, destroying the legacy
-#     registration before re-auth can reuse it; same upstream tracking as above
-#   - Authorize-URL hook: upstream has no first-class way for a host to add
-#     offline-access request parameters (OIDC offline_access scope, vendor
-#     params such as Google's access_type=offline) without passing a
-#     programmatic config, which disables the /mcp panel and the config write
-#     flows; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     supports offline-access defaults or an authorize-URL customization hook)
-# Changes:
-#   - agent-dir/config (+dist mirrors): resolve the MCP project config
-#     directory via piConfig.mcpProjectConfigDir so project MCP config can
-#     live outside the user config directory; covers both the adapter config
-#     path (mcp-adapter.json) and the legacy pi-mcp compat read (mcp.json).
-#   - types (+dist mirrors): sanitize MCP tool names to ^[a-zA-Z0-9_-]{1,128}$
-#     (truncating with a warning), normalize selector patterns on both sides,
-#     and keep pre-sanitization spellings matching for include/excludeTools.
-#   - metadata-cache/server-manager/tool-metadata (+dist mirrors): do not
-#     advertise the io.modelcontextprotocol/ui extension capability and do
-#     not persist or reconstruct UI resource metadata. (Tool-annotation
-#     caching is native upstream as of 5.x, so the 2.34.0-era hunk that
-#     persisted annotations in the metadata cache was dropped.)
-#   - mcp-auth-flow: manual (remote https) OAuth redirect flows also start an
-#     opportunistic loopback listener on the default callback port/path and
-#     race it against the manual paste prompt; graceful fallback to
-#     paste-only when the listener cannot bind. startAuth reports whether the
-#     capture is armed, and non-interactive callers (no onAuthorizationInput,
-#     e.g. ACP/Studio) may proceed without a manual paste when it is.
-#   - proxy-modes: auth-start registers the background auth watcher for
-#     remote https redirects when the loopback capture is armed, and the
-#     auth-start instructions reflect automatic completion.
-#   - mcp-callback-server (+mcp-auth-flow): callbacks whose oauth state belongs
-#     to a recently completed flow replay the normal success page (HTTP 200)
-#     via a process-level tombstone (10 min TTL, capped at 100, lazily pruned)
-#     recorded only in completeAuth after a successful token exchange (a
-#     failed exchange no longer leaves a success-page tombstone); unknown,
-#     superseded, or expired states get a neutral "Authorization No Longer
-#     Active" error page (HTTP 400) instead of the CSRF error page, with the
-#     heading string unchanged so host branding keeps mapping it.
-#   - mcp-auth-flow: concurrent token exchanges of the same pending flow
-#     (callback listener racing a pasted redirect URL) are serialized via an
-#     in-flight map; the second caller awaits and shares the first result,
-#     and a paste for an already-completed state returns "authenticated"
-#     instead of throwing "No pending OAuth flow".
-#   - proxy-modes: a background auth watcher that fails with the callback
-#     timeout appends the actionable manual-auth instructions (URL and
-#     auth-complete paste command) to the failure status message.
-#   - mcp-auth-flow: when the server is configured with a fixed oauth.clientId
-#     and no explicit redirectUri, startAuth reuses the stored client
-#     registration's first redirect URI (only when the stored registration's
-#     clientId matches the configured one) instead of the current default
-#     host; unreadable or non-matching stored state falls back to
-#     http://localhost:<configured callback port>/callback. Dynamic-registration
-#     servers (no clientId) keep upstream's 127.0.0.1 default.
-#     See the stored-redirect-URI-reuse tracking entry above.
-#   - mcp-oauth-provider: clientInformation() preserves the stored client
-#     registration's redirectUris when it rewrites the entry for a
-#     config-registered client. See the stored-redirect-URI-preservation
-#     tracking entry above.
-#   - mcp-auth-flow: DCR clientInfo version bumped from stale hardcoded
-#     "2.11.0" to "5.3.1".
-#   - mcp-oauth-provider: configured-discovery metadata fetch sends Accept
-#     "application/json, text/event-stream" instead of "application/json".
-#   - project-server-trust: KIMCHI_MANAGES_MCP_PROJECT_TRUST=1 skips the
-#     interactive per-server project approval (host already gates project trust),
-#     avoiding a double prompt in the TUI; no approval-store writes occur.
-#   - config (+dist mirror): the repointed legacy pi-mcp compat layers stay
-#     authoritative and adapter-format in the host topology — the global
-#     mcp.json behaves as the user-scope layer and the project mcp.json as
-#     the top project layer (each reads/writes itself, outranking shared
-#     imports a la 2.34). Pi-style compat parsing (which drops top-level
-#     settings/imports and per-server adapter keys) is disabled for these
-#     paths, and a project entry MERGES field-wise with the global entry
-#     (via mergeServerMaps' credential stripping) instead of replacing it.
-#   - Always register /mcp (index.ts): pi 0.99+/1.2 ships a built-in native
-#     MCP extension; Kimchi's compat layers own these mcp.json files, so
-#     keeping the built-in double-connects servers and its stricter native
-#     auth schema ({provider} bearer) warns on adapter-format configs.
-#     Registering /mcp at load makes pi's loader omit the replaceable
-#     built-in extension (upstream-designed replacement mechanism).
-#   - pi-builtin-mcp: ADAPTER_VERSION read is bundled-runtime-safe: under
-#     Bun single-executable builds import.meta.url has no real package.json
-#     ($bunfs), and the top-level readFileSync threw at import time, so the
-#     built-in MCP was never disabled in compiled binaries (double MCP
-#     stacks, strict-auth-schema warnings). Falls back to "unknown"; the
-#     onboarding-state gate then simply re-checks each start.
-#   - config: writeProjectServerDisabledOverride writes its override through
-#     the server's provenance path (the file it was loaded from), falling
-#     back to the adapter-native project config for unknown servers.
-#   - mcp-output-guard (+dist mirrors): default output budget 50 KB -> 12 KB
-#     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
-#     the session context on parallel tool results; still overridable via
-#     settings.mcpToolOutputTuning.maxBytes.
-#   - mcp-oauth-provider (+dist mirror), oauth: setAuthorizationUrlTransform()
-#     hook, applied in redirectToAuthorization to the authorize URL (with the
-#     flow's saved discovery state) after the server's own
-#     authorizationParams, so a host only fills in what config left unset; default is identity. The
-#     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -455,6 +324,46 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
+diff --git a/dist/mcp-auth.js b/dist/mcp-auth.js
+index a7a6c824879913d75ee2575563ddf1de3a5cc91c..0bca0cbebd4079588ed50b58ed195f990be618bf 100644
+--- a/dist/mcp-auth.js
++++ b/dist/mcp-auth.js
+@@ -1029,6 +1029,35 @@ export function updateTokens(serverName, tokens, serverUrl, options) {
+     }
+     entry.tokens = tokens;
+     saveAuthEntry(serverName, entry, serverUrl, options);
++    notifyAuthTokensStored(serverName, entry.serverUrl);
++}
++const authTokenStoreListeners = new Set();
++/**
++ * Post-auth session healing: subscribe to durable OAuth token writes (grant
++ * exchange or refresh) across all adapter instances in this process. A grant
++ * written by an interactive auth flow (auth-complete, /mcp-auth) or an
++ * out-of-band actor must reconnect the affected server in every live session,
++ * or a running chat keeps reporting the server as not connected until it is
++ * restarted. Listeners run synchronously inside the credential write, must not
++ * throw, and should defer any expensive reconnect work. Returns unsubscribe.
++ */
++export function onAuthTokensStored(listener) {
++    authTokenStoreListeners.add(listener);
++    return () => {
++        authTokenStoreListeners.delete(listener);
++    };
++}
++function notifyAuthTokensStored(serverName, serverUrl) {
++    if (authTokenStoreListeners.size === 0)
++        return;
++    for (const listener of [...authTokenStoreListeners]) {
++        try {
++            listener(serverName, serverUrl);
++        }
++        catch {
++            // Host listeners must never break credential writes.
++        }
++    }
+ }
+ /**
+  * Update client info for a server.
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
 index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
 --- a/dist/mcp-oauth-provider.js
@@ -695,10 +604,86 @@ index 298d5f63e404d6743be3cc7d0657ee8191d5bc51..9442387b57d62ed46b7bc1a25869b656
          if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
              return true;
 diff --git a/index.ts b/index.ts
-index c07af5aaca2ff5a871b7f1be4652a5c384185264..0fb04f4050308bb1d2caa8f89ec134615d560210 100644
+index c07af5aaca2ff5a871b7f1be4652a5c384185264..7820228eac70764e07f4877bda0a4833b9500bb2 100644
 --- a/index.ts
 +++ b/index.ts
-@@ -1721,8 +1721,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
+ import type { McpExtensionState } from "./state.ts";
+ import { isServerDisabled, type DirectToolSpec, type McpAdapterOptions, type McpConfig, type PromptMetadata, type ServerEntry } from "./types.ts";
+ import type { McpOAuthRuntime } from "./mcp-auth-flow.ts";
++import { onAuthTokensStored } from "./mcp-auth.ts";
+ import { Type } from "typebox";
+ import type { TSchema } from "typebox";
+ import { cloneMcpConfig, discoverConfiguredClaudePluginSkills, getLegacyMcpMigrationNotices, getPiGlobalConfigPath, getPiMcpAuthPath, getProjectConfigPath, loadMcpConfig, resolveConfiguredClaudePluginMcp, setPiMcpConfigEnabled, translatePiMcpServer, writeProjectServerDisabledOverride, writeSharedServerEntry } from "./config.ts";
+@@ -312,11 +313,49 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+     startInitialization(ctx, owner, generation, "stale_gateway_retry_initialization");
+   }
+ 
++  // One pending reconnect per server: rapid successive grant writes (grant then
++  // refresh) must not start overlapping reconnects. Timers self-clear on fire;
++  // the staleness checks inside make post-shutdown fires no-ops.
++  const postAuthReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
++
++  function schedulePostAuthReconnect(healState: McpExtensionState, serverName: string): void {
++    if (postAuthReconnectTimers.has(serverName)) return;
++    // Defer to the next macrotask so a still-running OAuth flow finishes its own
++    // cleanup before this reconnect touches the connection.
++    const timer = setTimeout(() => {
++      postAuthReconnectTimers.delete(serverName);
++      void (async () => {
++        if (state !== healState) return;
++        const definition = healState.config.mcpServers[serverName];
++        if (definition === undefined || isServerDisabled(definition)) return;
++        // A healthy connection keeps working with its in-flight tokens; only an
++        // absent, closed, failed, or needs-auth connection warrants a reconnect.
++        if (healState.manager.getConnection(serverName)?.status === "connected") return;
++        const { reconnectServerAfterAuth } = await loadProxyModes();
++        if (state !== healState) return;
++        try {
++          await reconnectServerAfterAuth(healState, serverName);
++        } catch (error) {
++          // Best effort: executeConnect already records a real connect failure
++          // against the server; anything reaching here is a shutdown race.
++          logger.debug(`MCP: post-auth reconnect for "${serverName}" skipped: ${error instanceof Error ? error.message : String(error)}`);
++        }
++      })();
++    }, 0);
++    postAuthReconnectTimers.set(serverName, timer);
++  }
++
++  function cancelPostAuthReconnects(): void {
++    for (const timer of postAuthReconnectTimers.values()) clearTimeout(timer);
++    postAuthReconnectTimers.clear();
++  }
++
+   async function shutdownState(currentState: McpExtensionState | null, reason: string, publishStatus = true): Promise<void> {
+     if (!currentState) {
+       if (publishStatus) publishMcpStatusShutdown(pi.events);
+       return;
+     }
++    cancelPostAuthReconnects();
+ 
+     if (publishStatus) publishMcpStatusShutdown(currentState.statusEvents);
+ 
+@@ -1146,6 +1185,17 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+       nextState.scriptTool = scriptTool;
+       state = nextState;
+       nextState.migrationNotices = [...sessionMigrationNotices];
++      // Post-auth session healing: when a grant lands for one of this session's
++      // servers — auth-complete, /mcp-auth, an in-process probe, or a quiet
++      // refresh of a disconnected server — reconnect it in place so the running
++      // chat sees its tools without an explicit mcp({ connect }). Cleaned up
++      // with the session's runtime owner.
++      owner.addCleanup(
++        onAuthTokensStored((serverName) => {
++          if (state !== nextState || !owner.isActive()) return;
++          schedulePostAuthReconnect(nextState, serverName);
++        }),
++      );
+       finalizationGuard = guard;
+       finalizationRegistrations = registeredDuringFinalization;
+       try {
+@@ -1721,8 +1771,13 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
      },
    });
    registerMcpCommand("mcp-adapter");
@@ -946,6 +931,52 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccb
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
+diff --git a/mcp-auth.ts b/mcp-auth.ts
+index 751df9603f59c0ecc305bbd41e6655ec2a906e4e..06c51d99d11e8383ca432ed76c8122d7cc47e602 100644
+--- a/mcp-auth.ts
++++ b/mcp-auth.ts
+@@ -1161,6 +1161,41 @@ export function updateTokens(
+   }
+   entry.tokens = tokens;
+   saveAuthEntry(serverName, entry, serverUrl, options);
++  notifyAuthTokensStored(serverName, entry.serverUrl);
++}
++
++type AuthTokensStoredListener = (serverName: string, serverUrl: string | undefined) => void;
++
++const authTokenStoreListeners = new Set<AuthTokensStoredListener>();
++
++/**
++ * Post-auth session healing: subscribe to durable OAuth token writes (grant
++ * exchange or refresh) across all adapter instances in this process. A grant
++ * written by an interactive auth flow (auth-complete, /mcp-auth) or an
++ * out-of-band actor must reconnect the affected server in every live session,
++ * or a running chat keeps reporting the server as not connected until it is
++ * restarted. Listeners run synchronously inside the credential write, must not
++ * throw, and should defer any expensive reconnect work. Returns unsubscribe.
++ *
++ * Tracking: remove when upstream exposes an equivalent grant-written hook or
++ * auto-reconnect behavior.
++ */
++export function onAuthTokensStored(listener: AuthTokensStoredListener): () => void {
++  authTokenStoreListeners.add(listener);
++  return () => {
++    authTokenStoreListeners.delete(listener);
++  };
++}
++
++function notifyAuthTokensStored(serverName: string, serverUrl: string | undefined): void {
++  if (authTokenStoreListeners.size === 0) return;
++  for (const listener of [...authTokenStoreListeners]) {
++    try {
++      listener(serverName, serverUrl);
++    } catch {
++      // Host listeners must never break credential writes.
++    }
++  }
+ }
+ 
+ /**
 diff --git a/mcp-callback-server.ts b/mcp-callback-server.ts
 index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90ae8d4cced 100644
 --- a/mcp-callback-server.ts
@@ -1268,7 +1299,7 @@ index 264573709c2c896fdb88d661fd24cd8f2f4a2327..7620913273acb8cd190bbb992d9e8530
      const approved = approvals.approvals.some(entry =>
        entry.projectRoot === projectRoot && entry.serverName === name && entry.definitionHash === definitionHash);
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d38188cfef1a 100644
+index 453e728eaf6e76771aecb0e4386dbb1273aefe45..c57741d592a179fb9a9ddd5f2b4a944ac0688f01 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -241,6 +241,8 @@ function ensureBackgroundAuthWatcher(
@@ -1280,7 +1311,33 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d381
  ): void {
    let watchers = backgroundAuthWatchers.get(state);
    if (!watchers) {
-@@ -278,11 +280,15 @@ function ensureBackgroundAuthWatcher(
+@@ -257,15 +259,21 @@ function ensureBackgroundAuthWatcher(
+   const watcher = authenticate(serverName, serverUrl, definition, authOptions).then(async (status) => {
+     throwIfAborted(state.owner.signal);
+     if (status !== "authenticated") throw new Error(`OAuth authentication ended with status: ${status}`);
+-    await state.manager.close(serverName);
++    // Reconnect in place through the deduped heal: requiring the actor to
++    // connect manually here is what used to strand running chats.
++    await reconnectServerAfterAuth(state, serverName).catch(() => {
++      // Best effort: a failed reconnect surfaces through executeConnect's
++      // recorded failure; the actor can retry with mcp({ connect }).
++    });
+     throwIfAborted(state.owner.signal);
+-    clearFailure(state, serverName, "auth-background-complete");
+-    updateStatusBar(state);
++    // The onAuthTokensStored broadcast reconnects this server in the running
++    // session automatically (deferred to the next macrotask); the notice just
++    // reports that flow instead of asking the actor to connect manually.
+     emitAuthStatus(
+       state,
+       serverName,
+       "authenticated",
+-      `OAuth authentication completed for MCP server "${serverName}". Connect it now to load and verify its tools.`,
++      `OAuth authentication completed for MCP server "${serverName}". Reconnecting to load and verify its tools.`,
+     );
+   });
+   watchers.set(serverName, watcher);
+@@ -278,11 +286,15 @@ function ensureBackgroundAuthWatcher(
        if (isAbortError(statusError, state.owner.signal)) return;
      }
      if (state.owner.signal.aborted) return;
@@ -1297,7 +1354,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d381
      );
    }).finally(() => {
      if (watchers?.get(serverName) === watcher) watchers.delete(serverName);
-@@ -322,24 +328,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
+@@ -322,24 +334,27 @@ function getRedirectDetails(authorizationUrl: string): { port?: number; remote:
    }
  }
  
@@ -1333,7 +1390,45 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d381
      `mcp({ action: "auth-complete", server: "${serverName}", args: { redirectUrl: "PASTE_REDIRECT_URL_HERE" } })`,
      "",
      redirect.remote
-@@ -626,7 +635,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -605,6 +620,37 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
+   };
+ }
+ 
++// Post-auth healing (remove when upstream exposes equivalent auto-reconnect
++// behavior): every path that lands a grant — auth-complete, the background
++// watcher, and the onAuthTokensStored broadcast — funnels through this
++// reconnect, so a grant written while a reconnect is already in flight joins
++// it instead of starting a competing one.
++const postAuthReconnectInFlight = new WeakMap<McpExtensionState, Map<string, Promise<ProxyToolResult>>>();
++
++export async function reconnectServerAfterAuth(
++  state: McpExtensionState,
++  serverName: string,
++  signal?: AbortSignal,
++): Promise<ProxyToolResult> {
++  let inFlight = postAuthReconnectInFlight.get(state);
++  if (!inFlight) {
++    inFlight = new Map();
++    postAuthReconnectInFlight.set(state, inFlight);
++  }
++  const pending = inFlight.get(serverName);
++  if (pending) return pending;
++  const attempt = (async () => {
++    await state.manager.close(serverName);
++    clearFailure(state, serverName, "auth-reconnect");
++    updateStatusBar(state);
++    return executeConnect(state, serverName, signal);
++  })().finally(() => {
++    if (inFlight.get(serverName) === attempt) inFlight.delete(serverName);
++  });
++  inFlight.set(serverName, attempt);
++  return attempt;
++}
++
+ export async function executeAuthStart(state: McpExtensionState, serverName: string, signal?: AbortSignal): Promise<ProxyToolResult> {
+   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+   throwIfAborted(ownedSignal);
+@@ -626,7 +672,7 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
        };
      }
  
@@ -1342,7 +1437,7 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d381
        ? ownedSignal
          ? await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, signal: ownedSignal, runtime: state.oauthRuntime })
          : await startAuth(serverName, serverUrl, definition, { authStorageOptions: state.authStorageOptions, runtime: state.oauthRuntime })
-@@ -641,17 +650,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
+@@ -641,17 +687,23 @@ export async function executeAuthStart(state: McpExtensionState, serverName: str
      }
  
      if (getRedirectDetails(authorizationUrl).remote) {
@@ -1368,6 +1463,39 @@ index 453e728eaf6e76771aecb0e4386dbb1273aefe45..6abc16f12bacfb563db88e209ea0d381
        details: { mode: "auth-start", server: serverName, authorizationUrl },
      };
    } catch (error) {
+@@ -690,12 +742,27 @@ export async function executeAuthComplete(state: McpExtensionState, serverName:
+       };
+     }
+ 
+-    await state.manager.close(serverName);
+-    clearFailure(state, serverName, "auth-complete");
+-    updateStatusBar(state);
++    // Heal the running session in place: a stored grant is only useful to the
++    // actor once the server reconnects and its tools re-list, which previously
++    // required a separate mcp({ connect }) call (the running chat otherwise kept
++    // reporting the server as not connected). Deduped with every other grant
++    // write landing in this state (the onAuthTokensStored broadcast, the
++    // background watcher) — one reconnect per server at a time.
++    const reconnect = await reconnectServerAfterAuth(state, serverName, signal);
++    const reconnectText = reconnect.content
++      .filter((item): item is { type: "text"; text: string } => item.type === "text")
++      .map((item) => item.text)
++      .join("\n");
++    const reconnectError = (reconnect.details as Record<string, unknown> | undefined)?.error;
++    if (reconnectError === undefined) {
++      return {
++        content: [{ type: "text" as const, text: `OAuth authentication successful for "${serverName}". Connected with the new token.\n${reconnectText}` }],
++        details: { mode: "auth-complete", server: serverName, authenticated: true },
++      };
++    }
+     return {
+-      content: [{ type: "text" as const, text: `OAuth authentication successful for "${serverName}". Run mcp({ connect: "${serverName}" }) to connect with the new token.` }],
+-      details: { mode: "auth-complete", server: serverName, authenticated: true },
++      content: [{ type: "text" as const, text: `OAuth authentication successful for "${serverName}", but reconnecting did not verify: ${reconnectText}\nRun mcp({ connect: "${serverName}" }) to retry connecting with the new token.` }],
++      details: { mode: "auth-complete", server: serverName, authenticated: true, reconnectError },
+     };
+   } catch (error) {
+     const message = error instanceof Error ? error.message : String(error);
 diff --git a/server-manager.ts b/server-manager.ts
 index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..07f84305552a09e43d5a0b004677593734532e91 100644
 --- a/server-manager.ts
