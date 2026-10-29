@@ -428,7 +428,7 @@ Ctrl+D           # exit overlay, then /remote-sessions to reattach later
 | > 500 MB | Warning shown but teleport proceeds. Sync may take a while. |
 | > 5 GB | Teleport refused. Use `--force` to override. |
 
-**Tip:** Use `--exclude` to skip large directories you don't need on the remote (build artifacts, data files, etc.).
+**Tip:** Run `du -sh .` before teleporting to check workspace size. Large `node_modules/` or build artifacts are the most common culprits — use `--exclude` to skip directories you don't need on the remote.
 
 ### Dirty working tree
 

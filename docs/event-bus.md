@@ -2,6 +2,8 @@
 
 Extensions communicate through the pi event bus (`pi.events`), available to every extension including externally loaded ones (`-e`). All channels use `pi.events.emit(channel, payload)` to publish and `pi.events.on(channel, handler)` to subscribe.
 
+Handlers are called synchronously in registration order. Keep handlers fast and non-blocking — a slow handler delays all downstream subscribers on the same channel.
+
 ---
 
 ## 1. Subagent Events

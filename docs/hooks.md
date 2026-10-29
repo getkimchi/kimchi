@@ -241,7 +241,8 @@ kimchi resources enable hooks.bash.project.block-rm-root-sh
 ## Notes
 
 - Hooks run synchronously before command execution.
-- Hook timeout is 5 seconds.
+- Hook timeout is 5 seconds by default. A hook that exceeds the timeout is killed and treated as "allow unchanged."
 - Hook output is interpreted as a command rewrite unless it is recognized JSON.
 - Use `/resources` to see discovered hook IDs.
 - Restart is not required for hook enable/disable changes, but adding or removing hook files is easiest to verify by restarting Kimchi.
+- A hook that writes to both stdout and stderr will use stdout for the decision; stderr is logged but does not affect the outcome.

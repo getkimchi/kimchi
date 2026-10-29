@@ -9,6 +9,11 @@
 > that this opts every project, including cloned ones, into project-local
 > config without asking.
 
+> **Quick reference**: trust decisions are stored in
+> `~/.config/kimchi/harness/agent/trust.json`. Do not hand-edit this file
+> (see [below](#gated-readers) for why). To revoke trust, delete the
+> entry via the trust prompt on next launch or reset the file entirely.
+
 Kimchi reads project-local configuration from the `.kimchi/` folder in the
 working directory (and `.claude/` for Claude Code compatibility resources).
 Those settings can start helper programs (bash hooks), relax the permission
