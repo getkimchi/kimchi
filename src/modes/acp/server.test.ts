@@ -325,7 +325,11 @@ class FakeAgentSession {
 	// Post-compaction message list, as the real session exposes via its
 	// `messages` getter. The post-compaction usage_update fallback recomputes
 	// the chars/4 estimate over it when the event payload lacks
-	// estimatedTokensAfter.
+	// estimatedTokensAfter. Typed unknown[] deliberately: the estimator's
+	// parameter type is pi's full AgentMessage union (its assistant member
+	// requires api/provider/model/usage…), which would force manufacturing
+	// provider metadata this wiring test never reads — hence the single cast
+	// at the expected-value computation.
 	messages: unknown[] = []
 	sessionStats: SessionStats = {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
