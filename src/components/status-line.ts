@@ -17,6 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { getActiveAnchor } from "../shared/active-anchor.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -35,6 +36,7 @@ export type SegmentId =
 	| "lsp"
 	| "dap"
 	| "work-pr"
+	| "work-tree"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -224,7 +226,7 @@ export function buildScriptPayload(
 		},
 		credits: billing?.amount ?? null,
 		budget: billing?.budget ?? null,
-		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
+		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd, anchor_dir: getActiveAnchor() ?? null },
 		status,
 		session: {
 			cost_usd: costUsd,
@@ -443,6 +445,7 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-tree",
 	"work-pr",
 	"team",
 	"tags",
@@ -708,7 +711,7 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	const statusBranch = match?.[1] ?? (!status.includes(" ") ? status : undefined)
 	if (statusBranch) {
 		// Git's watcher updates before the next provider poll; never render a link for the old checkout.
-		const branch = statusLineData.getGitBranch()
+		const branch = statuses.get("work-branch") ?? statusLineData.getGitBranch()
 		if (!branch || branch === "detached") return null
 		if (branch !== statusBranch) {
 			const text = accentText(theme, branch)
@@ -731,6 +734,15 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
 	const text = `${compact} ${dimText(theme, state)}`
 	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
+}
+
+/** The linked worktree the session's commands run in, as the PR status extension sets it. */
+function buildWorkTreeSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("work-tree")
+	if (!status) return null
+	// Directory only: the branch lives in the work-pr segment next to this one.
+	const text = `${dimText(theme, "⎇")} ${dimText(theme, status)}`
+	return { id: "work-tree", text, width: visibleWidth(text) }
 }
 
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
@@ -831,6 +843,7 @@ export function buildStatusLineSegments(
 		buildTeamSegment(theme, tags, pinned.has("team")),
 		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
 		buildDapSegment(theme, statusLineData, hidden.has("dap")),
+		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
 	].filter((s): s is Segment => s !== null)
 }

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { setActiveAnchor } from "../../shared/active-anchor.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribePullRequestReconciliation,
@@ -11,6 +12,7 @@ import {
 	type WorkStateRequest,
 } from "../work-attribution.js"
 import { currentBranch, lookupBranchPullRequest } from "./branch-status.js"
+import { anchorDirectory, directoryLabel, observedCommandDirectory } from "./command-anchor.js"
 import { mergePullRequestLinks, pullRequestLabel } from "./links.js"
 import { lookupFailureReason } from "./provider-records.js"
 import { LOOKUP_WINDOW_MS, type WorkPullRequest, type WorkPullRequestUpdate } from "./pull-requests.js"
@@ -30,8 +32,12 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	let timer: ReturnType<typeof setInterval> | undefined
 	let branchName: string | undefined
 	let branchCheckedAt = 0
+	/** The directory the last observed shell command ran in, such as a linked worktree. */
+	let observed: string | undefined
 	let branchRun: { controller: AbortController; promise: Promise<void> } | undefined
 	let branchRefreshPending = false
+	/** The worktree statuses last written to this context; ACP sends a notification for every write. */
+	let shownTree: string | undefined
 	/** The footer last written to this context; ACP sends a notification for every write. */
 	let shown: string | undefined
 	const updates = new Map<string, Map<string, WorkPullRequestUpdate>>()
@@ -51,6 +57,26 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		// ACP keeps readable text; only the terminal footer adds OSC hyperlinks.
 		context.ui.setStatus("work-pr-url", url)
 		context.ui.setStatus("work-pr", text)
+	}
+
+	/** The linked worktree the session's commands run in, and its branch; absent in the session's own directory. */
+	function workTree(text?: string, branch?: string): void {
+		if (!context?.hasUI) return
+		const value = JSON.stringify([text, branch])
+		if (value === shownTree) return
+		shownTree = value
+		context.ui.setStatus("work-branch", branch)
+		context.ui.setStatus("work-tree", text)
+	}
+
+	/** The worktree directory for the status line and its branch for the PR-link cross-check, while commands run in one. */
+	function workTreeStatus(ctx: ExtensionContext, anchor: string, branch: string | undefined): void {
+		setActiveAnchor(anchor === ctx.cwd ? undefined : anchor)
+		if (anchor === ctx.cwd) {
+			workTree()
+			return
+		}
+		workTree(directoryLabel(ctx.cwd, anchor), branch ?? "detached")
 	}
 
 	function warnOnce(error: unknown): void {
@@ -177,6 +203,17 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		return true
 	}
 
+	/** Follows the directory shell commands actually run in, such as a linked worktree of this repository. */
+	function observeCommand(command: string, baseCwd: string | undefined): void {
+		if (!baseCwd) return
+		const directory = observedCommandDirectory(command, baseCwd)
+		if (directory === undefined || directory === observed) return
+		observed = directory
+		// One branch is checked out in one worktree at most, so a new anchor means a new branch.
+		branchCheckedAt = 0
+		pollBranch()
+	}
+
 	function pollBranch(): void {
 		if (branchRun) {
 			branchRefreshPending = true
@@ -186,19 +223,27 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		let checkoutChanged = false
 		startBranchRun(
 			() => true,
-			(ctx, signal, current) =>
-				currentBranch(ctx.cwd, signal, Date.now() + 2000)
+			(ctx, signal, current) => {
+				let anchor = ctx.cwd
+				const resolved = observed
+					? anchorDirectory(ctx.cwd, observed, signal, Date.now() + 2000).then((directory) => {
+							anchor = directory
+							return currentBranch(directory, signal, Date.now() + 2000)
+						})
+					: currentBranch(ctx.cwd, signal, Date.now() + 2000)
+				return resolved
 					.then(async (branch) => {
 						if (!current()) return
+						workTreeStatus(ctx, anchor, branch)
 						// Clear the previous branch's link before waiting for its replacement.
 						if (branch !== branchName) footer(branch)
 						if (!branchLookupDue(branch)) return
-						const result = branch ? await lookupBranchPullRequest(ctx.cwd, signal) : undefined
+						const result = branch ? await lookupBranchPullRequest(anchor, signal) : undefined
 						if (!current()) return
 						if (branch && result?.branch !== branch) {
 							branchCheckedAt = 0
 							branchName = undefined
-							const latest = await currentBranch(ctx.cwd, signal, Date.now() + 2000)
+							const latest = await currentBranch(anchor, signal, Date.now() + 2000)
 							if (current()) {
 								checkoutChanged = latest !== branch
 								footer(latest)
@@ -215,7 +260,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 						if (reason === "retry") return
 						footer(branchName)
 						if (reason !== "unsupported" && !tracking) warnOnce(error)
-					}),
+					})
+			},
 			// A lookup replaced by a new session hands over to that session's first check.
 			(current) => {
 				if (started && context && (!current() || checkoutChanged || branchRefreshPending)) pollBranch()
@@ -234,6 +280,9 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 		tracking = Boolean(request.tracking)
 		workId = request.current?.workId
 		if (changed) {
+			shownTree = undefined
+			workTree()
+			setActiveAnchor(undefined)
 			shown = undefined
 			footer()
 			branchName = undefined
@@ -278,8 +327,15 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_start", (event) => {
 		const command = event.args?.command
-		if (event.toolName === "bash" && typeof command === "string" && PUBLISH_COMMAND.test(command))
-			publishing.add(event.toolCallId)
+		if (event.toolName !== "bash" || typeof command !== "string") return
+		if (PUBLISH_COMMAND.test(command)) publishing.add(event.toolCallId)
+		// A `cd <worktree>` moves the branch this status reports on, so the anchor follows it.
+		observeCommand(command, context?.cwd)
+	})
+
+	// The user's `!` shell names its directory too.
+	pi.on("user_bash", (event) => {
+		observeCommand(event.command, event.cwd)
 	})
 
 	pi.on("tool_execution_end", (event, ctx) => {
@@ -292,6 +348,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		started = false
+		workTree()
+		setActiveAnchor(undefined)
 		footer()
 		stopBranch()
 		releaseWork()
