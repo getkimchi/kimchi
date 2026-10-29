@@ -1591,6 +1591,7 @@ export class KimchiAcpAgent implements Agent {
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
+							cwd: entry.cwd,
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -1653,7 +1654,7 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments)
+					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
@@ -1801,7 +1802,7 @@ export class KimchiAcpAgent implements Agent {
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, event.args)
+					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
@@ -1891,7 +1892,16 @@ export class KimchiAcpAgent implements Agent {
 				// Diffs are additional content blocks, appended after the existing
 				// text/image content. Failed mutations emit no diff: the client
 				// would otherwise render a change that never landed.
-				const diffs = event.isError ? [] : pending.map((p) => fileChangeToDiffContent(resolveFileChange(p, preWrite)))
+				// Protocol compatibility requires diff content `path` to be
+				// absolute — resolve the tool arg through pi's own normalization
+				// (cwd + @-prefix/nbsp handling) so the wire path matches what the
+				// tool touched.
+				const diffs = event.isError
+					? []
+					: pending.map((p) => {
+						const change = resolveFileChange(p, preWrite)
+						return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
+					})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
@@ -2164,6 +2174,7 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						rawInput: args,
+						cwd: record?.cwd,
 					}),
 				})
 				this.send({
@@ -3563,7 +3574,7 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		// The transport is closed and every session is disposed, but stray
 		// event-loop holders (extension timers, MCP clients, watchers) would
 		// otherwise keep us alive. A stdio agent must exit after stdin closes
-		// (ACP-SHUTDOWN-001 advisory, and Zed's own lifecycle expectations).
+		// (stdio-protocol compatibility, and Zed's own lifecycle expectations).
 		process.exit(0)
 	}
 }

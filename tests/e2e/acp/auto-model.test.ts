@@ -111,7 +111,7 @@ describe("ACP Auto model", () => {
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
+		await fixture.conn.extMethod("session/set_model", { sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
 
 		// Count only what the turn itself pushes: selecting the model above
 		// legitimately emits its own update.
@@ -146,7 +146,7 @@ describe("ACP Auto model", () => {
 		// persists), but the next fresh session rolls back to Auto — and the
 		// client is told via pi_notify, so the re-applied default never reads
 		// as a silent switch.
-		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
+		await fixture.conn.extMethod("session/set_model", { sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
 		const nextSession = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
 		expect(modelConfigOf(nextSession).currentValue).toBe("kimchi-dev/auto")
 		expect(

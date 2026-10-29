@@ -137,7 +137,7 @@ describe("wire compat", () => {
 	}
 
 	it("session/new response stays on the schema surface (no legacy `models` key)", async () => {
-		// Locks ACP-SCHEMA-002: custom root fields on spec types are forbidden,
+		// Protocol compatibility: custom root fields on spec types are forbidden,
 		// `_meta` is the extensibility channel. The legacy top-level `models`
 		// field was dropped; both Studio and the VS Code extension read the
 		// model catalogue from the `model` config option instead.

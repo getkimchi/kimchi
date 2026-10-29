@@ -5594,8 +5594,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		expect(content.some((b) => b.type === "content")).toBe(true)
 	})
 
-	// Relative path exercises the server-side cwd resolution for the pre-write
-	// read; the emitted diff path stays verbatim from args.path.
+	// Relative path exercises the server-side cwd resolution: the pre-write
+	// read and the emitted diff path both resolve against the session cwd —
+	// protocol compatibility requires absolute paths on the wire.
 	it("emits a diff with oldText null for a write tool call creating a new file", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -5620,7 +5621,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 
 		const content = terminalContent("tc-write-new") as Array<{ type: string }>
 		const diffs = content.filter((b) => b.type === "diff")
-		expect(diffs).toEqual([{ type: "diff", path: "brand-new.txt", newText: "fresh content", oldText: null }])
+		expect(diffs).toEqual([
+			{ type: "diff", path: join(tmpDir, "brand-new.txt"), newText: "fresh content", oldText: null },
+		])
 	})
 
 	// Overwrite: tool_execution_start must read the existing file into
@@ -5683,7 +5686,7 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 				toolCallId: "tc-write-nbsp",
 				toolName: "write",
 				// No-break space as typed by an LLM mimicking the on-disk name.
-				args: { path: "my\u00A0file.txt", content: "space after" },
+				args: { path: join(tmpDir, "my file.txt"), content: "space after" },
 			})
 			fake.emit({
 				type: "tool_execution_end",
@@ -5698,13 +5701,13 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
 		expect(res.stopReason).toBe("end_turn")
 
-		// Emitted diff paths stay verbatim from args.path; only the pre-write
-		// READ uses the normalized path.
+		// Emitted diff paths are absolute and normalized (the same
+		// resolution pi's write tool applies — protocol compatibility).
 		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
-		expect(atDiffs).toEqual([{ type: "diff", path: "@notes.txt", oldText: "at before", newText: "at after" }])
+		expect(atDiffs).toEqual([{ type: "diff", path: join(tmpDir, "notes.txt"), oldText: "at before", newText: "at after" }])
 		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
 		expect(nbspDiffs).toEqual([
-			{ type: "diff", path: "my\u00A0file.txt", oldText: "space before", newText: "space after" },
+			{ type: "diff", path: join(tmpDir, "my file.txt"), oldText: "space before", newText: "space after" },
 		])
 	})
 
@@ -10086,7 +10089,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		it("attaches to an already loaded session without replaying history", async () => {
 			// session/resume differs from session/load precisely in the replay:
 			// the client keeps its own transcript, so the agent must NOT
-			// re-emit history before the response (ACP-RESUME-002).
+			// re-emit history before the response (spec: resume carries no replay).
 			const live = new FakeAgentSession("resume-live")
 			live.branch = [userTextEntry("already here", "u1", null)]
 			const factory: AcpSessionFactory = async () => asSession(live)
