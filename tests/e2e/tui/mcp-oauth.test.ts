@@ -123,12 +123,183 @@ test("logs into an HTTP MCP server with OAuth authorization code and PKCE", asyn
 
 			expect(fixture.mcp.hasEvent("oauth_resource_metadata_requested")).toBe(true)
 			expect(fixture.mcp.hasEvent("oauth_server_metadata_requested")).toBe(true)
-			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(true)
+			// Dynamic registration keeps the upstream loopback-IP default; only
+			// fixed-client servers switch to the localhost callback.
+			const dcr = await fixture.mcp.waitForEvent("oauth_client_registered", {
+				description: "dynamic client registration used the default loopback redirect URI",
+			})
+			expect(dcr.redirectUris).toEqual(["http://127.0.0.1:19876/callback"])
+			// Offline access is only requested from Google's authorization endpoint.
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request to a non-Google server",
+			})
+			expect(authorized.accessType).toBeUndefined()
+			expect(authorized.prompt).toBeUndefined()
 			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(true)
 			expect(fixture.mcp.hasEvent("oauth_browser_completed")).toBe(true)
 			expect(fixture.mcp.hasEvent("http_request", { authorized: true })).toBe(true)
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-login")
 			trace.step("authenticated MCP call and every OAuth protocol boundary verified")
+		},
+	)
+})
+
+/** Replace the auto-completing browser driver with a record-only one: it logs the authorize URL and never fetches it. */
+function useRecordOnlyBrowser(homeDir: string): void {
+	const agentDir = join(homeDir, ".config", "kimchi", "harness")
+	const browserPath = join(agentDir, "mcp-oauth-browser", "open")
+	const eventPath = join(agentDir, "mcp-fixture-fixture.jsonl")
+	writeFileSync(browserPath, oauthBrowserDriverScript(eventPath, { autoComplete: false }), "utf8")
+	chmodSync(browserPath, 0o755)
+}
+
+test("requests offline access from Google's authorization endpoint", async ({ terminal }) => {
+	// Google only issues a refresh token for access_type=offline (and re-issues one to
+	// an already-consented user only with prompt=consent). The fixture advertises
+	// Google's endpoint; the browser driver records the URL without fetching it.
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-google-offline",
+			mcp: { transport: "oauth", scenario: "oauth-google-authorization-endpoint" },
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for Google's endpoint",
+			})
+			const target = new URL(opened.target)
+			expect(target.origin + target.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth")
+			expect(target.searchParams.get("access_type")).toBe("offline")
+			expect(target.searchParams.get("prompt")).toBe("consent")
+			trace.step("Google authorize URL carries access_type=offline and prompt=consent")
+		},
+	)
+})
+
+test("user-supplied authorizationParams win over the Google offline-access defaults", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-google-user-params",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-google-authorization-endpoint",
+				oauth: { scope: "mcp:tools", authorizationParams: { access_type: "online" } },
+			},
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for Google's endpoint",
+			})
+			const target = new URL(opened.target)
+			expect(target.searchParams.get("access_type")).toBe("online")
+			expect(target.searchParams.get("prompt")).toBe("consent")
+			trace.step("configured access_type kept; unset prompt still defaults to consent")
+		},
+	)
+})
+
+test("appends the advertised offline_access scope to a configured scope", async ({ terminal }) => {
+	// OIDC providers (Microsoft, Okta, ...) advertise offline_access in scopes_supported;
+	// the client must request that scope, not a vendor parameter.
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-offline-scope",
+			mcp: { transport: "oauth", scenario: "oauth-offline-access-scope", oauth: { scope: "mcp:tools" } },
+			responses: [],
+			seedHome: useRecordOnlyBrowser,
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const opened = await fixture.mcp.waitForEvent("oauth_browser_opened", {
+				description: "recorded authorize URL for the scope-advertising fixture",
+			})
+			const target = new URL(opened.target)
+			expect(target.searchParams.get("scope")).toBe("mcp:tools offline_access")
+			expect(target.searchParams.get("access_type")).toBeNull()
+			trace.step("authorize URL scope carries the advertised offline_access and no vendor parameters")
+		},
+	)
+})
+
+test("passes user-supplied authorizationParams through to the authorization request", async ({ terminal }) => {
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-authorization-params",
+			mcp: {
+				transport: "oauth",
+				oauth: { scope: "mcp:tools", authorizationParams: { access_type: "online", prompt: "login" } },
+			},
+			responses: [modelReply("unused")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the configured params",
+			})
+			expect(authorized.accessType).toBe("online")
+			expect(authorized.prompt).toBe("login")
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("configured authorizationParams reached the authorization endpoint unchanged")
+		},
+	)
+})
+
+test("a transient metadata failure while renewing a token does not fall back to the MCP origin", async ({
+	terminal,
+}) => {
+	// The authorization server (issuer .../as) differs from the MCP origin. If the
+	// protected-resource metadata request fails once, falling back to the MCP origin
+	// would discover the wrong issuer and abort with "issuer changed".
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-flaky-metadata",
+			mcp: { transport: "oauth", scenario: "oauth-split-issuer-flaky-prm" },
+			responses: [modelReply("unused")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const firstToken = await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "first sign-in against the split-issuer authorization server",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForOAuthTokenExpiry(firstToken)
+
+			// Re-authenticating with the expired token: the first metadata request fails.
+			const beforeRenew = fixture.mcp.checkpoint()
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_resource_metadata_failed", {
+				after: beforeRenew,
+				description: "protected-resource metadata failed once while renewing the token",
+			})
+			trace.step("transient metadata failure injected while the client renewed its token")
+
+			// The failed attempt stops there (no fallback to the MCP origin); the
+			// user's next attempt refreshes the stored token without a browser sign-in.
+			terminal.submit("/mcp-auth fixture")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "refresh_token" },
+				after: beforeRenew,
+				description: "retry refreshed the token once the metadata endpoint recovered",
+			})
+			await fixture.mcp.waitForEvent("tools_listed", {
+				after: beforeRenew,
+				description: "client reconnected and listed tools with the refreshed token",
+			})
+			// Falling back to the MCP origin as the authorization server is the
+			// wrong-issuer path (the fixture's origin serves no authorization metadata).
+			expect(fixture.mcp.hasEvent("oauth_origin_fallback_attempted")).toBe(false)
+			trace.step("retry succeeded once the metadata endpoint recovered")
 		},
 	)
 })
@@ -366,6 +537,132 @@ test("re-auth with a pre-registered client secret reuses the stored redirect URI
 			})
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-stored-redirect-secret")
 			trace.step("authenticated MCP call after secret-bearing stored-redirect re-auth verified")
+		},
+	)
+})
+
+test("first auth of a pre-registered client uses the localhost callback", async ({ terminal }) => {
+	// Fixed-client registrations (e.g. Google) list the localhost
+	// callback only. With no stored registration and no redirectUri in config,
+	// the 127.0.0.1 default would be rejected as redirect_uri_mismatch.
+	const echo = gatewayMcpCall("echo", { message: "oauth-first-auth-localhost" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-first-auth-localhost",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-first-auth-localhost" }] },
+							{ message: "oauth-first-auth-localhost" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The first auth used the localhost callback.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed against the localhost redirect URI",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			trace.step("first auth completed against the pre-registered localhost redirect URI")
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The first auth used the localhost callback.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-first-auth-localhost" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-first-auth-localhost")
+		},
+	)
+})
+
+test("re-auth of a pre-registered client whose stored redirect URIs were dropped uses the localhost callback", async ({
+	terminal,
+}) => {
+	// Registrations rewritten by the unpatched 1.3.0 adapter keep the clientId but
+	// lose redirectUris, so there is nothing to reuse and the default must still
+	// be the localhost callback.
+	const echo = gatewayMcpCall("echo", { message: "oauth-dropped-redirect" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-dropped-redirect",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-dropped-redirect" }] },
+							{ message: "oauth-dropped-redirect" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The re-auth fell back to the localhost callback.")],
+			seedHome(homeDir) {
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+				const config = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8")) as {
+					mcpServers?: { fixture?: { url?: unknown } }
+				}
+				const serverUrl = config.mcpServers?.fixture?.url
+				if (typeof serverUrl !== "string") throw new Error("OAuth fixture config is missing its URL")
+				const account = `sha256-${createHash("sha256").update("fixture").digest("hex")}`
+				const keyringPath = join(
+					agentDir,
+					"mcp-keyring",
+					createHash("sha256").update(`dev.kimchi.mcp.oauth\u0000${account}`).digest("hex"),
+				)
+				mkdirSync(dirname(keyringPath), { recursive: true })
+				writeFileSync(
+					keyringPath,
+					JSON.stringify({
+						clientInfo: {
+							clientId: "kimchi-e2e-pre-registered-client",
+							clientIdIssuedAt: Math.floor(Date.now() / 1_000),
+						},
+						serverUrl,
+					}),
+					{ mode: 0o600 },
+				)
+			},
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed against the localhost redirect URI",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			trace.step("re-auth completed after the stored redirect URIs were dropped")
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The re-auth fell back to the localhost callback.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-dropped-redirect" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-dropped-redirect")
 		},
 	)
 })

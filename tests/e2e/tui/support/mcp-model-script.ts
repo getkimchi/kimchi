@@ -162,17 +162,35 @@ export function toolResultText(
 		.join("\n")
 }
 
+export function requestAdvertisesTool(request: RecordedRequest, toolName: string): boolean {
+	if (!request.body || typeof request.body !== "object") return false
+	const tools = (request.body as JsonObject).tools
+	if (!Array.isArray(tools)) return false
+	return tools.some((tool) => {
+		if (!tool || typeof tool !== "object") return false
+		const fn = (tool as JsonObject).function
+		return Boolean(fn && typeof fn === "object" && (fn as JsonObject).name === toolName)
+	})
+}
+
 export function requireRequestAdvertisingTool(requests: readonly RecordedRequest[], toolName: string): RecordedRequest {
 	for (const request of requests) {
-		if (!request.body || typeof request.body !== "object") continue
-		const tools = (request.body as JsonObject).tools
-		if (!Array.isArray(tools)) continue
-		const advertised = tools.some((tool) => {
-			if (!tool || typeof tool !== "object") return false
-			const fn = (tool as JsonObject).function
-			return Boolean(fn && typeof fn === "object" && (fn as JsonObject).name === toolName)
-		})
-		if (advertised) return request
+		if (requestAdvertisesTool(request, toolName)) return request
 	}
 	throw new Error(`No model request advertised tool ${toolName}. Recorded requests: ${JSON.stringify(requests)}`)
+}
+
+export function requestWithToolResult(requests: readonly RecordedRequest[], toolCallId: string): RecordedRequest {
+	for (const request of requests) {
+		if (!request.body || typeof request.body !== "object") continue
+		const messages = (request.body as JsonObject).messages
+		if (!Array.isArray(messages)) continue
+		const hit = messages.some((message) => {
+			if (!message || typeof message !== "object") return false
+			const candidate = message as JsonObject
+			return candidate.role === "tool" && candidate.tool_call_id === toolCallId
+		})
+		if (hit) return request
+	}
+	throw new Error(`No model request carried a tool result for ${toolCallId}`)
 }

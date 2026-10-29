@@ -93,12 +93,12 @@ describe("ACP integration — LSP cross-session chain lifecycle", () => {
 
 		// Closing session 1 must NOT kill anything: pre-fix this dropped the
 		// count by 2 (both chains died in shutdownAll).
-		await fixture.conn.unstable_closeSession({ sessionId: s1 })
+		await fixture.conn.closeSession({ sessionId: s1 })
 		const afterFirstClose = goplsProcessCount()
 		expect(afterFirstClose).toBeGreaterThanOrEqual(before + 2)
 
 		// Closing the last session tears down everything.
-		await fixture.conn.unstable_closeSession({ sessionId: s2 })
+		await fixture.conn.closeSession({ sessionId: s2 })
 		await waitFor(goplsProcessCount, (n) => n <= before)
 	})
 })

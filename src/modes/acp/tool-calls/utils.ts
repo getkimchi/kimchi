@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from "node:path"
+
 import type {
 	SessionUpdate,
 	ToolCall,
@@ -50,6 +52,7 @@ const TITLE_ARGS: Record<keyof typeof TOOL_KINDS, string[]> = {
 export function describeToolCall(
 	toolName: string,
 	args: unknown,
+	cwd?: string,
 ): { title: string; kind: ToolKind; locations: ToolCallLocation[] } {
 	const a = (args ?? {}) as Record<string, unknown>
 	const titleArgNames = TITLE_ARGS[toolName] ?? []
@@ -60,10 +63,15 @@ export function describeToolCall(
 	// clients that want it).
 	const rawTitle = targeted ?? toolName
 	const path = asString(a.file_path) || asString(a.path)
+	// ACP requires locations[].path to be absolute (clients resolve it against
+	// their own view of the filesystem, not our session cwd). Models regularly
+	// hand tools cwd-relative paths ("README.md"), which the tools resolve
+	// against the session cwd — do the same here before putting it on the wire.
+	const resolvedPath = path && cwd && !isAbsolute(path) ? resolve(cwd, path) : path
 	return {
 		title: truncate(rawTitle, 80),
 		kind: TOOL_KINDS[toolName] ?? "other",
-		locations: path ? [{ path }] : [],
+		locations: resolvedPath ? [{ path: resolvedPath }] : [],
 	}
 }
 
@@ -83,6 +91,7 @@ type ToolCallFields = {
 	piToolCallId: string
 	status: ToolCallStatus
 	rawInput: Record<string, unknown>
+	cwd?: string
 	_meta?: Record<string, unknown>
 }
 
@@ -93,8 +102,8 @@ type ToolCallFields = {
  * `sessionUpdate` field — passing a session-notification object there puts an
  * out-of-schema key on the wire.
  */
-export function buildToolCallShape({ toolName, piToolCallId, rawInput, ...params }: ToolCallFields): ToolCall {
-	const { title, kind, locations } = describeToolCall(toolName, rawInput)
+export function buildToolCallShape({ toolName, piToolCallId, rawInput, cwd, ...params }: ToolCallFields): ToolCall {
+	const { title, kind, locations } = describeToolCall(toolName, rawInput, cwd)
 	return {
 		title,
 		kind,

@@ -137,6 +137,10 @@ export class RecordingClient {
 	readonly extNotifications: Array<{ method: string; params: unknown }> = []
 	readonly permissionRequests: acp.RequestPermissionRequest[] = []
 	readonly elicitationRequests: Array<{ method: string; params: unknown }> = []
+	/** Wire arrival order across channels, labeled "session-update:<kind>" and
+	 *  "ext-notification:<method>" — the arrays above lose their interleaving,
+	 *  so tests asserting relative order between the two channels read this. */
+	readonly wireArrivalOrder: string[] = []
 
 	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
@@ -144,6 +148,7 @@ export class RecordingClient {
 
 	async sessionUpdate(params: acp.SessionNotification): Promise<void> {
 		this.sessionUpdates.push({ sessionId: params.sessionId, update: params.update })
+		this.wireArrivalOrder.push(`session-update:${params.update.sessionUpdate}`)
 	}
 
 	async extMethod(method: string, params: unknown): Promise<Record<string, unknown>> {
@@ -153,6 +158,8 @@ export class RecordingClient {
 
 	async extNotification(method: string, params: unknown): Promise<void> {
 		this.extNotifications.push({ method, params })
+		const kind = (params as { kind?: string }).kind
+		this.wireArrivalOrder.push(`ext-notification:${method}${kind ? `:${kind}` : ""}`)
 	}
 
 	async requestPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
@@ -180,10 +187,11 @@ export class RecordingClient {
 	/**
 	 * Elicitation handler — the terminal prompter in `permissionsExtension`
 	 * calls `ctx.ui.confirm`, which routes through the ACP UI context's
-	 * `unstable_createElicitation`. We accept with an empty content object
+	 * `createElicitation` (stabilized from `unstable_createElicitation` in
+	 * SDK 1.4+. We accept with an empty content object
 	 * by default; tests can override via `answerNextElicitationWith`.
 	 */
-	async unstable_createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
+	async createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
 		this.elicitationRequests.push({ method: "elicitation/create", params })
 		if (this.elicitationResolver) {
 			const resolver = this.elicitationResolver
