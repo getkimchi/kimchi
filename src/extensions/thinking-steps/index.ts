@@ -130,7 +130,6 @@ function applyMode(
 function cycleMode(current: ThinkingStepsMode): ThinkingStepsMode {
 	if (current === "none") return "collapsed"
 	if (current === "collapsed") return "expanded"
-	if (current === "summary") return "expanded"
 	return "none"
 }
 

@@ -72,7 +72,7 @@ describe("none thinking view mode", () => {
 	})
 
 	it("control: non-none modes render the collapsed marker", () => {
-		setThinkingStepsMode("summary")
+		setThinkingStepsMode("expanded")
 		expect(childrenCount(THINKING_ONLY, true)).toBeGreaterThan(0)
 	})
 
@@ -83,7 +83,7 @@ describe("none thinking view mode", () => {
 	})
 
 	it("control: non-none modes render the live preview while active", () => {
-		setThinkingStepsMode("summary")
+		setThinkingStepsMode("expanded")
 		setActiveThinkingState({ active: true, messageTimestamp: 1000 })
 		expect(childrenCount(THINKING_ONLY, true)).toBeGreaterThan(0)
 	})
@@ -94,7 +94,7 @@ describe("none thinking view mode", () => {
 	})
 
 	it("control: non-none modes render the thinking steps view", () => {
-		setThinkingStepsMode("summary")
+		setThinkingStepsMode("expanded")
 		expect(childrenCount(THINKING_ONLY, false)).toBeGreaterThan(0)
 	})
 
