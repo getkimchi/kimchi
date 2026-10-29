@@ -1,13 +1,26 @@
 /**
- * Compaction resilience: runs the compaction summarization with thinking
- * disabled (or the model's lowest supported effort) and degrades gracefully
- * instead of failing hard when the summary still cannot complete.
+ * Compaction resilience: keeps the session thinking level for the compaction
+ * summary (with an output budget sized for it), then falls back to the model's
+ * lowest thinking level and a reduced summarized range instead of failing hard
+ * when the summary still cannot complete.
  *
- * Why: upstream's summarizer inherits the session thinking level. A reasoning
- * model at high effort can spend most of the fixed summarization output budget
- * (min(0.8 x reserveTokens, model.maxTokens)) on thinking, hit the cap
- * mid-summary, and fail the whole compaction — deterministically on very large
- * sessions, leaving no way to shrink context.
+ * Why: upstream's summarizer inherits the session thinking level but gets a
+ * fixed output cap of min(0.8 x reserveTokens, model.maxTokens) — 13,107 tokens
+ * by default, sized for a thinking-free summary (pi issue #92). On providers
+ * where thinking shares that cap, a reasoning model at high effort can burn the
+ * budget on thinking, hit the cap mid-summary, and fail the whole compaction —
+ * deterministically on very large sessions.
+ *
+ * pi-ai already adds a thinking allowance on top of the cap for Anthropic
+ * budget-path models (Claude 4.5 family) and non-adaptive Bedrock Claude
+ * (`adjustMaxTokensForThinking`). Everywhere else — adaptive Anthropic models
+ * (4.6+/5.x), openai-completions, openai-responses — thinking shares the cap,
+ * so this extension raises `reserveTokens` by the same rule pi-ai uses
+ * (`thinkingBudgetForLevel`) to give attempt 1 the room the session level
+ * needs. Only when the allowance cannot fit under the model's max output does
+ * attempt 1 start at the lowest supported level: an attempt that cannot afford
+ * its own thinking would most likely repeat the failure at the cost of a full
+ * uncached input pass.
  *
  * Layer: `session_before_compact` hook. Returning `{ compaction }` makes
  * upstream skip its own summarizer entirely, so one handler covers manual
@@ -28,20 +41,21 @@
  * surfaces the failure inside the compacted summary, and stops auto-compaction
  * from re-invoking on every subsequent check.
  */
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
-import {
-	type CompactionResult,
-	compact,
-	type ExtensionAPI,
-	type ExtensionContext,
-	type SessionBeforeCompactEvent,
-	type SessionBeforeCompactResult,
+import { type Api, clampThinkingLevel, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai"
+import { thinkingBudgetForLevel } from "@earendil-works/pi-ai/api/simple-options"
+import type {
+	CompactionResult,
+	ExtensionAPI,
+	ExtensionContext,
+	SessionBeforeCompactEvent,
+	SessionBeforeCompactResult,
 } from "@earendil-works/pi-coding-agent"
+import { compact } from "@earendil-works/pi-coding-agent"
 
 /** Upstream preparation type, derived from the exported `compact()` signature. */
 export type CompactionPreparation = Parameters<typeof compact>[0]
 
-/** Summarization attempts per compaction: default, budget escalation, two scope reductions. */
+/** Summarization attempts per compaction: session-level attempt, budget escalation, two scope reductions. */
 export const MAX_SUMMARIZATION_ATTEMPTS = 4
 
 /** Escalation multiplier for `reserveTokens` on the second attempt (Claude
@@ -54,53 +68,76 @@ export const BUDGET_ESCALATION_FACTOR = 4
 /** Appended to the summary when attempts had to drop the oldest range. */
 export const TRUNCATION_MARKER = "[earlier context truncated to fit the summary budget]"
 
-/**
- * Not a pi thinking level: upstream's summarizer forwards the value verbatim
- * when it is not "off", and openai-completions resolves it through
- * `thinkingLevelMap[level] ?? level` — so this reaches the wire as
- * `reasoning_effort: "none"`, the provider disable token. The cast is the
- * honest encoding of that pass-through; narrowing the declared type would
- * push the lie into compact()'s signature instead.
- */
-const REASONING_DISABLE_SENTINEL = "none" as ModelThinkingLevel
-
-/**
- * Thinking level the summarization call should use for `model`.
- *
- * - anthropic-messages: "off" makes upstream omit the reasoning option, which
- *   Anthropic's streamSimple turns into `thinking: { type: "disabled" }`.
- * - openai-completions with an explicit off mapping of "none" (kimchi gateway /
- *   ai-enabler models): upstream omits the option on "off", which for these
- *   backends means default thinking (still on). Sending the sentinel instead
- *   yields `reasoning_effort: "none"` — the same disable token pi sends for
- *   regular off-level session requests.
- * - everything else: "low", the lowest widely-accepted effort. Models with no
- *   true off (e.g. OpenAI o-series/GPT-5 reasoning family) bottom out here;
- *   non-reasoning models never receive the option at all (upstream guards on
- *   `model.reasoning`).
- */
-export function summarizerThinkingLevel(model: Model<Api>): ModelThinkingLevel {
-	if (model.api === "anthropic-messages") return "off"
-	if (model.api === "openai-completions" && model.thinkingLevelMap?.off === "none") {
-		return REASONING_DISABLE_SENTINEL
-	}
-	return "low"
-}
-
 /** Failure classes for one summarization attempt, from the thrown error text. */
-export function classifySummarizationFailure(message: string): "abort" | "length" | "overflow" | "rejection" | "other" {
+export function classifySummarizationFailure(message: string): "abort" | "length" | "overflow" | "other" {
 	if (/compaction cancelled|aborted/i.test(message)) return "abort"
 	if (/hit the token cap/.test(message)) return "length"
 	if (/context length|maximum context|prompt too long|too many tokens/i.test(message)) return "overflow"
-	// 400/422 or provider wording for an unsupported parameter. Checked after
-	// the length/overflow classes so "too long" 400s reduce scope without
-	// dropping the thinking-off encoding. Auth failures are excluded entirely —
-	// dropping the encoding cannot fix them (the Decision-log rationale names
-	// 401/403, but a gateway can also put "invalid api key" in a 400 body).
-	const rejected = /\b(400|422)\b/.test(message) || /invalid|unsupported|unrecognized|does not support/i.test(message)
-	const authRelated = /api key|unauthorized|auth/i.test(message)
-	if (rejected && !authRelated) return "rejection"
+	// Everything else — provider rejections, auth failures, a summarizer that
+	// tried to call a tool — is deterministic or already retried by upstream
+	// inside one compact() call, so the ladder must not spend attempts on it.
 	return "other"
+}
+
+/**
+ * True where thinking shares the summary output cap and pi-ai does not already
+ * add a thinking allowance on top of it. Those are exactly the models whose
+ * session-level summary needs the extension to raise `reserveTokens`.
+ */
+export function hookAddsThinkingAllowance(model: Model<Api>): boolean {
+	if (!model.reasoning) return false
+	if (model.api === "anthropic-messages") {
+		// Budget-path models get the allowance from pi-ai itself; adaptive
+		// models (Claude 4.6+/5.x, Fable) share the cap.
+		const compat = model.compat
+		return compat !== undefined && "forceAdaptiveThinking" in compat && compat.forceAdaptiveThinking === true
+	}
+	// Bedrock adds the allowance for non-adaptive Claude; adaptive Bedrock
+	// detection needs pi-ai internals, so Bedrock stays at master behavior.
+	if (model.api === "bedrock-converse-stream") return false
+	return true
+}
+
+/** History-summary output cap upstream will request for `reserveTokens` (mirrors its clamp). */
+export function effectiveSummaryCap(model: Model<Api>, reserveTokens: number): number {
+	const maxTokens = model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY
+	return Math.min(Math.floor(0.8 * reserveTokens), maxTokens)
+}
+
+/** Lowest thinking level the model supports (catalog clamp of "off"). */
+function floorThinkingLevel(model: Model<Api>): ModelThinkingLevel {
+	return clampThinkingLevel(model, "off")
+}
+
+export interface SummaryAttempt {
+	thinkingLevel: ModelThinkingLevel
+	reserveTokens: number
+}
+
+/**
+ * Attempt-1 thinking level and budget: keep the session level where the model
+ * can afford its thinking allowance on top of the base summary cap; otherwise
+ * start at the lowest supported level with the default budget.
+ */
+export function planFirstAttempt(
+	model: Model<Api>,
+	sessionLevel: ModelThinkingLevel,
+	reserveTokens: number,
+): SummaryAttempt {
+	if (!hookAddsThinkingAllowance(model) || sessionLevel === "off") {
+		return { thinkingLevel: sessionLevel, reserveTokens }
+	}
+	const maxTokens = model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY
+	const baseCap = Math.floor(0.8 * reserveTokens)
+	const allowance = thinkingBudgetForLevel(sessionLevel)
+	if (baseCap + allowance > maxTokens) {
+		// The thinking request cannot be afforded under the model's max output;
+		// a session-level attempt would most likely repeat the known failure.
+		return { thinkingLevel: floorThinkingLevel(model), reserveTokens }
+	}
+	// Raise reserveTokens so upstream's 0.8 x reserveTokens cap equals
+	// baseCap + allowance exactly.
+	return { thinkingLevel: sessionLevel, reserveTokens: Math.ceil((baseCap + allowance) / 0.8) }
 }
 
 function isAbortError(error: unknown): boolean {
@@ -122,7 +159,7 @@ function buildDegradedCompaction(
 	const attempts = `${attemptsRun} ${attemptsRun === 1 ? "attempt" : "attempts"}`
 	const note =
 		`[Compaction ran in degraded mode: the summarization model could not produce a complete summary ` +
-		`after ${attempts} (thinking reduced, oldest context dropped). ` +
+		`after ${attempts}. ` +
 		`Last failure: ${lastFailure ?? "unknown"}. ` +
 		`The dropped range has no summary — start a new session (/new) or retry /compact if context is missing.]`
 	const previous = preparation.previousSummary ? `${preparation.previousSummary}\n\n` : ""
@@ -150,6 +187,7 @@ async function handleBeforeCompact(
 	event: SessionBeforeCompactEvent,
 	ctx: ExtensionContext,
 	deps: CompactionResilienceDeps,
+	pi: ExtensionAPI,
 ): Promise<SessionBeforeCompactResult | undefined> {
 	const model = ctx.model
 	if (!model) return undefined
@@ -169,29 +207,31 @@ async function handleBeforeCompact(
 				Object.entries(auth.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
 			)
 		: undefined
-	let encoding = summarizerThinkingLevel(requestedModel)
+
 	const originalMessages = event.preparation.messagesToSummarize
+	const baseReserve = event.preparation.settings.reserveTokens
+	const sessionLevel = clampThinkingLevel(requestedModel, pi.getThinkingLevel())
+	const first = planFirstAttempt(requestedModel, sessionLevel, baseReserve)
+	const floor = floorThinkingLevel(requestedModel)
+
+	let thinkingLevel = first.thinkingLevel
+	let reserveTokens = first.reserveTokens
 	let messagesToSummarize = originalMessages
 	let reduced = false
-	let budgetEscalated = false
-	let lastFailure: "length" | "overflow" | "rejection" | "other" | undefined
+	let escalated = false
+	let lastFailure: "length" | "overflow" | "other" | undefined
 	let attemptsRun = 0
 
 	for (let attempt = 1; attempt <= MAX_SUMMARIZATION_ATTEMPTS; attempt++) {
 		if (event.signal.aborted) return undefined
 		attemptsRun = attempt
-		// Ladder: attempt 1 runs the preparation as-is; every failure first
-		// escalates the summary budget (full scope kept), then reduces the
-		// summarized range at 1/2 and 3/4 of the original. The thinking-encoding
-		// fallback rides along independently of the rung.
-		const settings = budgetEscalated
-			? {
-					...event.preparation.settings,
-					reserveTokens: event.preparation.settings.reserveTokens * BUDGET_ESCALATION_FACTOR,
-				}
-			: event.preparation.settings
+		// Never mutate the shared preparation/settings: retries pass shallow
+		// clones so an escalated budget cannot leak into threshold checks or
+		// other compaction invocations.
+		const budgetRaised = reserveTokens !== baseReserve
+		const settings = budgetRaised ? { ...event.preparation.settings, reserveTokens } : event.preparation.settings
 		const scoped: CompactionPreparation =
-			reduced || budgetEscalated ? { ...event.preparation, messagesToSummarize, settings } : event.preparation
+			budgetRaised || reduced ? { ...event.preparation, messagesToSummarize, settings } : event.preparation
 		try {
 			const result = await compactImpl(
 				scoped,
@@ -200,7 +240,7 @@ async function handleBeforeCompact(
 				headers,
 				event.customInstructions,
 				event.signal,
-				encoding,
+				thinkingLevel,
 				undefined,
 				auth.env,
 			)
@@ -210,43 +250,39 @@ async function handleBeforeCompact(
 			if (event.signal.aborted || isAbortError(error)) return undefined
 			const failed = classifySummarizationFailure(error instanceof Error ? error.message : String(error))
 			lastFailure = failed === "abort" ? "other" : failed
-			// A rejected reasoning value is the one failure the ladder rungs cannot
-			// fix: fall back to the pre-fix wire behavior (param omitted, provider
-			// default). Auth failures never take this branch — they classify "other".
-			const nextEncoding = failed === "rejection" && encoding !== "off" ? "off" : encoding
-			let changed = nextEncoding !== encoding
-			// The budget/scope ladder only advances on budget-class failures: a
-			// length stop means the summary did not fit (escalate the budget, then
-			// shrink the range); an overflow means the summarized input itself is
-			// too large (shrink the range). Everything else — including a
-			// summarizer that tried to call a tool — is deterministic or already
-			// covered by upstream's transient retry inside one compact() call, so
-			// extra attempts would only burn provider calls.
-			if (failed === "length" || failed === "overflow") {
-				if (!budgetEscalated && failed === "length") {
-					budgetEscalated = true
+			// The ladder only advances on budget-class failures: a length stop
+			// means the summary did not fit (drop to the floor level, escalate
+			// the budget, then shrink the range); an overflow means the
+			// summarized input itself is too large (shrink the range). A rung
+			// that cannot change the next attempt is skipped so no attempt is
+			// wasted on an identical request.
+			if (failed !== "length" && failed !== "overflow") break
+			let changed = false
+			if (failed === "length" && !escalated) {
+				// Math.max keeps the rung monotonic when the user configured an
+				// unusually small reserveTokens (attempt 1 may already sit above
+				// baseReserve x 4 via the thinking allowance).
+				const escalatedReserve = Math.max(baseReserve * BUDGET_ESCALATION_FACTOR, reserveTokens)
+				const capChanged =
+					effectiveSummaryCap(requestedModel, escalatedReserve) !== effectiveSummaryCap(requestedModel, reserveTokens)
+				if (thinkingLevel !== floor || capChanged) {
+					thinkingLevel = floor
+					reserveTokens = escalatedReserve
+					escalated = true
 					changed = true
-				} else if (!reduced) {
-					// Fractions always apply to the original range so each retry cuts
-					// strictly deeper regardless of where boundaries landed last time.
-					const reducedRange = reduceSummarizedRange(originalMessages, 0.5)
-					if (reducedRange.length < messagesToSummarize.length) {
-						messagesToSummarize = reducedRange
-						reduced = true
-						changed = true
-					}
-				} else {
-					const reducedRange = reduceSummarizedRange(originalMessages, 0.75)
-					if (reducedRange.length < messagesToSummarize.length) {
-						messagesToSummarize = reducedRange
-						changed = true
-					}
 				}
 			}
-			// Stop only when no rung can change the next attempt — e.g. an
-			// unreducible range still gets its encoding-fallback retry.
+			if (!changed) {
+				// Fractions always apply to the original range so each retry cuts
+				// strictly deeper regardless of where boundaries landed last time.
+				const reducedRange = reduceSummarizedRange(originalMessages, reduced ? 0.75 : 0.5)
+				if (reducedRange.length < messagesToSummarize.length) {
+					messagesToSummarize = reducedRange
+					reduced = true
+					changed = true
+				}
+			}
 			if (!changed) break
-			encoding = nextEncoding
 		}
 	}
 
@@ -265,6 +301,6 @@ export interface CompactionResilienceDeps {
 /** Extension factory. `deps` is for tests; production callers pass nothing. */
 export default function createCompactionResilienceExtension(deps: CompactionResilienceDeps = {}) {
 	return (pi: ExtensionAPI) => {
-		pi.on("session_before_compact", (event, ctx) => handleBeforeCompact(event, ctx, deps))
+		pi.on("session_before_compact", (event, ctx) => handleBeforeCompact(event, ctx, deps, pi))
 	}
 }
