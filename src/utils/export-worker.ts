@@ -89,7 +89,22 @@ function writeWorkerStateFile(exportFilePath: string, state: ExportWorkerState):
 		`.${basename(exportFilePath)}.state-${process.pid}-${Math.random().toString(36).slice(2, 10)}.json`,
 	)
 	closeSync(openSync(statePath, "wx", 0o600))
-	writeFileSync(statePath, JSON.stringify(state), "utf-8")
+	try {
+		writeFileSync(statePath, JSON.stringify(state), "utf-8")
+	} catch (err) {
+		// A failed (possibly partial) write must not leave the private dotfile
+		// behind: the state may carry the live system prompt and config data,
+		// and the caller's runSecureExport cleanup only knows the export temp —
+		// this file owns its own failure cleanup, leaving no file this attempt
+		// created.
+		try {
+			unlinkSync(statePath)
+		} catch {
+			// Best-effort: an unremovable residue is an empty dotfile in the
+			// user's own directory.
+		}
+		throw err
+	}
 	return statePath
 }
 

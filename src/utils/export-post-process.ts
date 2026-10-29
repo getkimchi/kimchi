@@ -50,7 +50,7 @@ import {
 	getSessionStartMetadata,
 	type SessionStartMetadata,
 } from "./session-metadata-store.js"
-import { type ExportEntry, injectTraceIdsIntoEntries, injectTraceIdsIntoExport } from "./trace-id-export.js"
+import { type ExportEntry, injectTraceIdsIntoEntries } from "./trace-id-export.js"
 
 /** Append a snippet before `</body>` if present, otherwise append to the end of the document. */
 export function appendBeforeBody(html: string, snippet: string): string {
@@ -134,16 +134,22 @@ function appendConfigChangeEntries(
 export async function postProcessJsonlExportOnce(filePath: string, options?: ExportPipelineOptions): Promise<void> {
 	const raw = readFileSync(filePath, "utf-8")
 	const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0)
-	const traceInjected = injectTraceIdsIntoExport(lines)
 
+	// Parse each line exactly once. Malformed lines are skipped with a warning
+	// so one bad line cannot crash the export — the same outcome the old
+	// string-round-trip produced, minus the intermediate parse+serialize pass
+	// over every entry.
 	const parsedEntries: Array<Record<string, unknown>> = []
-	for (const line of traceInjected) {
+	for (const line of lines) {
 		try {
 			parsedEntries.push(JSON.parse(line) as Record<string, unknown>)
 		} catch (err) {
 			console.warn("[export] skipping malformed JSONL line:", line.slice(0, 200), err)
 		}
 	}
+
+	// Trace-id injection operates on the parsed objects directly.
+	injectTraceIdsIntoEntries(parsedEntries as unknown as ExportEntry[])
 
 	// Enrichment is best-effort: a failure must not skip redaction of what we have.
 	try {

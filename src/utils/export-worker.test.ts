@@ -15,6 +15,24 @@ import { _resetSessionMetadataStore } from "./session-metadata-store.js"
 
 const WORKER_MAIN_PATH = fileURLToPath(new URL("./export-worker-main.ts", import.meta.url))
 
+// Toggleable write-failure injection for the state-file cleanup regression
+// test: when enabled, writeFileSync throws ENOSPC for the worker's private
+// state dotfiles only; every other write delegates to the real implementation.
+const stateWriteFailure = vi.hoisted(() => ({ failStateWrites: false }))
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		writeFileSync: ((path: unknown, ...rest: unknown[]) => {
+			if (stateWriteFailure.failStateWrites && String(path).includes(".state-")) {
+				throw Object.assign(new Error("simulated ENOSPC writing state file"), { code: "ENOSPC" })
+			}
+			// biome-ignore lint/suspicious/noExplicitAny: delegate with the original signature
+			return (actual.writeFileSync as any)(path, ...rest)
+		}) as typeof actual.writeFileSync,
+	}
+})
+
 // The real-child tests spawn `bun <export-worker-main.ts>` (the dev runtime
 // form). Bun ships with the dev environment and CI installs it; the tests
 // skip only in exotic environments without it.
@@ -378,6 +396,34 @@ describe("runExportOffloaded", () => {
 			expect(readFileSync(workerPath, "utf-8")).toBe(readFileSync(inlinePath, "utf-8"))
 		} finally {
 			registerAgents(new Map())
+		}
+	})
+
+	it("a failed state-file write leaves no state file behind", async () => {
+		// ENOSPC-style failure while writing the (already created) state file:
+		// the partially-written private dotfile must be swept, not left behind —
+		// runSecureExport's cleanup only knows the export temp.
+		stateWriteFailure.failStateWrites = true
+		try {
+			const filePath = join(tmpDir, "statefail.jsonl")
+			writeFileSync(filePath, `${JSON.stringify({ type: "session", version: 3, id: "s1" })}\n`, "utf-8")
+
+			await expect(
+				runExportOffloaded(
+					{ mode: "jsonl", filePath },
+					{
+						buildCommand: () => ({
+							command: process.execPath,
+							args: ["-e", ""],
+						}),
+					},
+				),
+			).rejects.toThrow("ENOSPC")
+
+			// The only file left is the export temp itself — no state dotfile.
+			expect(readdirSync(tmpDir)).toEqual(["statefail.jsonl"])
+		} finally {
+			stateWriteFailure.failStateWrites = false
 		}
 	})
 })
