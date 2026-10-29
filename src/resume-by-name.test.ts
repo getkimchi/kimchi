@@ -1,9 +1,3 @@
-// Tests for src/resume-by-name.ts.
-//
-// SessionManager is mocked at the package boundary so the tests exercise the
-// arg-rewriting logic without touching the real session store. The fake
-// SessionInfo records below carry only the fields the resolver reads.
-
 import type { SessionInfo } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 

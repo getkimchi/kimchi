@@ -40,8 +40,9 @@ upstream's resume picker or error handling.
 
 ## Key functions
 
-- `resolveResumeNameArgs(args, agentDir, cwd)` — entry point; returns a
-  new array with matched names rewritten (or the original reference if
-  nothing changed).
+- `resolveResumeNameArgs(args, agentDir, cwd)` — entry point; `cwd` is
+  required (no `process.cwd()` default — callers must pass `ctx.cwd`).
+  Returns a new array with matched names rewritten (or the original
+  reference if nothing changed).
 - `pickSessionByName(sessions, name, cwd)` — pure matching logic,
   exported for direct use and testing.

@@ -3,18 +3,6 @@ import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { type SessionInfo, SessionManager } from "@earendil-works/pi-coding-agent"
 
-/**
- * Resume-by-name support for `-r` / `--resume`.
- *
- * `normalizeResumeIdArgs` (cli-args.ts) only rewrites selector-shaped values
- * (full UUIDs and path-likes) into `--session`, because it runs synchronously
- * before any session metadata is available. Session names live inside the
- * JSONL files, so resolving them requires the async SessionManager scan done
- * here. Values that resolve to a named session are rewritten to
- * `--session <path>`; everything else is left untouched so upstream behavior
- * (resume picker, unknown-flag errors) is unchanged.
- */
-
 /** Full-UUID shape, mirroring the selector gate in cli-args.ts. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -105,7 +93,7 @@ async function listAllSessions(agentDir: string): Promise<SessionInfo[]> {
  * `<agentDir>/sessions`. Returns the args unchanged when there is nothing to
  * resolve or no session matches — fail-open to existing CLI behavior.
  */
-export async function resolveResumeNameArgs(args: string[], agentDir: string, cwd = process.cwd()): Promise<string[]> {
+export async function resolveResumeNameArgs(args: string[], agentDir: string, cwd: string): Promise<string[]> {
 	const candidates = findNameCandidates(args)
 	if (candidates.length === 0) return args
 
