@@ -85,6 +85,7 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 - **Structure TUI tests through the shared fixture.** Use `runKimchiSession`, deterministic fake OpenAI responses, isolated temp `HOME`/workdir, and trace steps for meaningful checkpoints. Avoid brittle ANSI/snapshot assertions unless the rendering itself is the behavior under test.
 - **Known product bugs can use `test.fail`.** Add a short comment naming the bug/repro. When the underlying issue is fixed, the unexpected pass is the signal to remove `test.fail`.
 - **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
+- **Known flaky ACP E2E tests:** `tests/e2e/acp/thinking-level-curation.test.ts` (thinking-level curation, from #1544) intermittently fails in CI on the first run after a push, unrelated to the PR's changes. Re-run the failed ACP E2E job before investigating; it passes on rerun. Escalate to a real diagnosis only if it repeats on the rerun or fails in more than one test file.
 - **Don't hand-write common dependency mocks in tests.** Avoid creating `ExtensionContext` (`ctx`) or `ExtensionAPI` (`pi`) mocks inline inside a test file. Use shared mocks (e.g. under `src/extensions/__mocks__/**` for unit tests) when they exist, and add new ones there if several tests need the same dependency. Don't copy-paste partial mocks across tests.
 
 ## Dual-surface parity (TUI ↔ ACP)
