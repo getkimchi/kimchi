@@ -129,16 +129,6 @@
 #     flow's saved discovery state) after the server's own
 #     authorizationParams, so a host only fills in what config left unset; default is identity. The
 #     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
-#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
-#     the call-path readiness gates never re-read the shared credential store
-#     for a plain OAuth server in needs-auth, so a live session stayed broken
-#     after re-authentication elsewhere (settings probe, another chat) wrote a
-#     fresh credential; upstream tracking issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     retries needs-auth routes against the store without an interactive flow)
-#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
-#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
-#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -1586,6 +1576,13 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..919630995231617af84a175f00724757
      }
      if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
        return true;
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 247d300..b4ee7e6 100644
 --- a/init.ts
@@ -1628,7 +1625,7 @@ index 247d300..b4ee7e6 100644
        return false;
      }
 diff --git a/proxy-modes.ts b/proxy-modes.ts
-index 6abc16f..801e538 100644
+index 6abc16f..e48e2f1 100644
 --- a/proxy-modes.ts
 +++ b/proxy-modes.ts
 @@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
@@ -1663,11 +1660,41 @@ index 6abc16f..801e538 100644
      if (connection?.status === "needs-auth") {
        const message = getAuthRequiredMessage(state, serverName);
        return {
+@@ -1665,6 +1681,7 @@ export async function executeCall(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         serverName,
+         async (conn) => {
+@@ -1710,6 +1727,7 @@ export async function executeCall(
+         config: state.config,
+         ...(ownedSignal ? { signal: ownedSignal } : {}),
+         onNeedsAuth: recoverAuthConnection,
++        hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+       },
+       serverName,
+       async (conn) => {
 diff --git a/session-recovery.ts b/session-recovery.ts
-index 286242f..1f34143 100644
+index 286242f..7878594 100644
 --- a/session-recovery.ts
 +++ b/session-recovery.ts
-@@ -113,8 +113,17 @@ export async function withSessionRecovery<T>(
+@@ -77,6 +77,13 @@ export interface SessionRecoveryDeps {
+   config: McpConfig;
+   signal?: AbortSignal;
+   onNeedsAuth?: (serverName: string) => Promise<ServerConnection | undefined>;
++  /**
++   * Reports that an interactive OAuth flow for this server is in flight.
++   * Set by call-path sites; when true the 401 recovery stays out of the way
++   * (errors surface unchanged) instead of racing the interactive flow with a
++   * reconnect that re-reads a store the flow is still writing to.
++   */
++  hasPendingAuth?: (serverName: string) => boolean;
+ }
+ 
+ /**
+@@ -113,8 +120,20 @@ export async function withSessionRecovery<T>(
      if (definition && supportsOAuth(definition) && unauthorized) {
        invalidateAuthEntryCache(serverName);
      }
@@ -1680,13 +1707,48 @@ index 286242f..1f34143 100644
 +    // the next tool call.
 +    if (
 +      !isTerminatedSession(err, hadSessionId)
++      // Skip the healing reconnect while an interactive flow owns the
++      // episode, mirroring the call-path gates' hasPendingAuth guard.
 +      && !(unauthorized
 +        && definition !== undefined
-+        && (typeof definition.auth === "object" || supportsOAuth(definition)))
++        && (typeof definition.auth === "object" || supportsOAuth(definition))
++        && !deps.hasPendingAuth?.(serverName))
 +    ) {
        throw err;
      }
  
+diff --git a/direct-tools.ts b/direct-tools.ts
+index 8f0c1df..5028ff7 100644
+--- a/direct-tools.ts
++++ b/direct-tools.ts
+@@ -11,7 +11,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { isServerDisabled } from "./types.ts";
+-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, hasPendingAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { formatAuthRequiredMessage, normalizeToolArguments, resolveServerUrl, withToolCallIdMeta } from "./utils.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
+@@ -284,6 +284,7 @@ export function createDirectToolExecutor(
+             config: state.config,
+             ...(ownedSignal ? { signal: ownedSignal } : {}),
+             onNeedsAuth: recoverAuthConnection,
++            hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+           },
+           spec.serverName,
+           async (conn) => {
+@@ -327,6 +328,7 @@ export function createDirectToolExecutor(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         spec.serverName,
+         async (conn) => {
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
+#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
+#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
 index 40bb5f9..8a336ee 100644
 --- a/commands.ts

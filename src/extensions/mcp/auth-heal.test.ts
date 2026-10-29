@@ -24,8 +24,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 const SERVER_NAME = "demooauth"
@@ -160,15 +161,11 @@ function startStubMcpServer(): Promise<{ server: Server; url: string }> {
 	})
 }
 
-function createSessionContext(cwd: string): ExtensionContext {
-	return {
-		cwd,
-		hasUI: false,
-		mode: "tui",
-		signal: undefined,
-		ui: undefined,
-		sessionManager: undefined,
-	} as unknown as ExtensionContext
+function createSessionContext(cwd: string) {
+	// hasUI: false — the headless gateway path; the adapter never reaches for
+	// ui primitives here, and the browser-open attempt degrades to a logged
+	// warning plus manual callback waiting.
+	return createContext({ cwd, hasUI: false, ui: undefined })
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {

@@ -1,12 +1,13 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import type { RecordedRequest } from "./support/fake-openai-server.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpToolResult } from "./support/mcp-fixture.js"
 import {
 	connectMcpServer,
 	gatewayMcpCall,
 	modelReply,
+	requestAdvertisesTool,
+	requestWithToolResult,
 	requireRequestAdvertisingTool,
 	searchMcpTools,
 	toolResultText,
@@ -18,37 +19,6 @@ test.use(TUI_TEST_CONFIG)
 // namespace-tools: one mcp__<server> proxy tool per proxy-only server).
 const NAMESPACE_PROXY_TOOL = "mcp__fixture"
 
-function requestAdvertisesTool(request: RecordedRequest, toolName: string): boolean {
-	if (!request.body || typeof request.body !== "object") return false
-	const tools = (request.body as { tools?: unknown }).tools
-	if (!Array.isArray(tools)) return false
-	return tools.some((tool) => {
-		if (!tool || typeof tool !== "object") return false
-		const fn = (tool as { function?: unknown }).function
-		return Boolean(fn && typeof fn === "object" && (fn as { name?: unknown }).name === toolName)
-	})
-}
-
-function requestWithToolResult(requests: readonly RecordedRequest[], toolCallId: string): RecordedRequest {
-	for (const request of requests) {
-		if (!request.body || typeof request.body !== "object") continue
-		const messages = (request.body as { messages?: unknown }).messages
-		if (!Array.isArray(messages)) continue
-		const hit = messages.some((message) => {
-			if (!message || typeof message !== "object") return false
-			const candidate = message as { role?: unknown; tool_call_id?: unknown }
-			return candidate.role === "tool" && candidate.tool_call_id === toolCallId
-		})
-		if (hit) return request
-	}
-	throw new Error(`No model request carried a tool result for ${toolCallId}`)
-}
-
-// Bug under test: when an OAuth MCP server disconnects (here: the access token
-// expires and the refresh token is revoked), the session loses the server's
-// tools. The reported symptom is that even after re-authenticating, the chat
-// keeps having no MCP access until a new session is started. /mcp-auth ends in
-// a reconnect, which must re-expose the tools in the SAME session.
 test("restores in-session MCP access when /mcp-auth reconnects after a revoked refresh token", async ({ terminal }) => {
 	const beforeRevocation = gatewayMcpCall("echo", { message: "before-revocation" })
 	const whileRevoked = gatewayMcpCall("echo", { message: "while-revoked" })
