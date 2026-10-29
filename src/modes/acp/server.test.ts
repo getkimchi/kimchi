@@ -165,7 +165,6 @@ import {
 	type AcpSessionLister,
 	type AcpSessionLoader,
 	assertSessionHasModel,
-	buildSessionModelState,
 	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
@@ -7516,57 +7515,6 @@ describe("initializeHeadlessTheme", () => {
 	})
 })
 
-function modelConfigOption(
-	currentValue: string,
-	options: { value: string; name: string }[],
-): {
-	id: "model"
-	name: string
-	type: "select"
-	category: string
-	description: string
-	currentValue: string
-	options: { value: string; name: string }[]
-} {
-	return {
-		id: "model",
-		name: "Model",
-		type: "select",
-		category: "model",
-		description: "",
-		currentValue,
-		options,
-	}
-}
-
-describe("buildSessionModelState", () => {
-	it("returns currentModelId and availableModels from the model config option", () => {
-		const configOptions = [
-			modelConfigOption("openai/gpt-4", [
-				{ value: "anthropic/claude-3", name: "Claude 3" },
-				{ value: "openai/gpt-4", name: "GPT-4" },
-			]),
-		]
-		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toEqual({
-			currentModelId: "openai/gpt-4",
-			availableModels: [
-				{ modelId: "anthropic/claude-3", name: "Claude 3" },
-				{ modelId: "openai/gpt-4", name: "GPT-4" },
-			],
-		})
-	})
-
-	it("returns empty availableModels when the model config option has no entries", () => {
-		const configOptions = [modelConfigOption("openai/gpt-4", [])]
-		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toEqual({
-			currentModelId: "openai/gpt-4",
-			availableModels: [],
-		})
-	})
-})
-
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
 		const sessionId = "session-model"
@@ -7588,20 +7536,18 @@ describe("newSession model state", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		expect(res.sessionId).toBe("session-model")
-		expect(res.models).toBeDefined()
-		expect(res.models?.currentModelId).toBe("openai/gpt-4")
-		expect(res.models?.availableModels).toHaveLength(3)
+		const modelOption = res.configOptions?.find((opt) => opt.id === "model")
+		expect(modelOption?.type).toBe("select")
+		expect(modelOption?.currentValue).toBe("openai/gpt-4")
+		const options = (
+			modelOption as unknown as { options: Array<{ value: string; name: string; description?: string }> }
+		).options
+		expect(options).toHaveLength(3)
 		// Concrete models sorted by modelId; the deprecated routing entry sits last.
-		expect(res.models?.availableModels[0]).toEqual({
-			modelId: "anthropic/claude-3",
-			name: "Claude 3",
-		})
-		expect(res.models?.availableModels[1]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
-		})
-		expect(res.models?.availableModels[2]).toEqual({
-			modelId: "multi-model",
+		expect(options[0]).toEqual({ value: "anthropic/claude-3", name: "Claude 3" })
+		expect(options[1]).toEqual({ value: "openai/gpt-4", name: "GPT-4" })
+		expect(options[2]).toEqual({
+			value: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
 			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
@@ -7673,12 +7619,6 @@ describe("newSession model state", () => {
 		const options = modelSelectOptions(res)
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
-			name: "Auto",
-			description: "Picks the best model for your tasks automatically.",
-		})
-		// The description threads through the models surface as well.
-		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
-			modelId: "kimchi-dev/auto",
 			name: "Auto",
 			description: "Picks the best model for your tasks automatically.",
 		})
@@ -9757,7 +9697,12 @@ describe("KimchiAcpAgent listSessions", () => {
 			cwd: "/repo/foo",
 			additionalDirectories: ["/repo/bar", "/repo/baz"],
 		} as never)
-		expect(received?.additionalDirectories).toEqual(["/repo/bar", "/repo/baz"])
+		// SDK 1.9.0 removed additionalDirectories from ListSessionsRequest
+		// — assert through a widening cast for the old clients that
+		// still send it.
+		expect(
+			(received as (ListSessionsRequest & { additionalDirectories?: string[] }) | undefined)?.additionalDirectories,
+		).toEqual(["/repo/bar", "/repo/baz"])
 	})
 
 	it("dedupes sessions returned across multiple roots by id", async () => {
@@ -10041,7 +9986,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
 		})
 
-		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		// History was replayed for the attaching client.
 		const replayUpdates = replayOnly(updates)
 		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
@@ -10079,6 +10024,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		} as never)
 		expect(init.agentCapabilities?.loadSession).toBe(true)
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
+		expect(init.agentCapabilities?.sessionCapabilities?.resume).toEqual({})
 	})
 
 	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
@@ -10124,9 +10070,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			mcpServers: [],
 		})
 
-		expect(res.models).toMatchObject({
-			currentModelId: "test/test-model",
-		})
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		expect(loaderCalls.count).toBe(0)
 
 		const replayUpdates = replayOnly(updates)
@@ -10135,6 +10079,97 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(replayUpdates[0].update).toMatchObject({
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
+		})
+	})
+
+	describe("resumeSession", () => {
+		it("attaches to an already loaded session without replaying history", async () => {
+			// session/resume differs from session/load precisely in the replay:
+			// the client keeps its own transcript, so the agent must NOT
+			// re-emit history before the response (ACP-RESUME-002).
+			const live = new FakeAgentSession("resume-live")
+			live.branch = [userTextEntry("already here", "u1", null)]
+			const factory: AcpSessionFactory = async () => asSession(live)
+			const loaderCalls = { count: 0 }
+			const loader: AcpSessionLoader = async () => {
+				loaderCalls.count++
+				return asSession(new FakeAgentSession("unused"))
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: factory,
+				sessionLoader: loader,
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const before = updates.length
+
+			const res = await agent.resumeSession({
+				sessionId: "resume-live",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+
+			expect(res.configOptions).toBeDefined()
+			expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
+			expect(loaderCalls.count).toBe(0)
+
+			const resumeReplay = replayOnly(updates.slice(before)).filter(
+				(u) => u.update.sessionUpdate === "user_message_chunk" || u.update.sessionUpdate === "agent_message_chunk",
+			)
+			expect(resumeReplay).toHaveLength(0)
+		})
+
+		it("loads a cold session through the loader without replaying history, defaulting mcpServers", async () => {
+			let receivedServers: LoadSessionRequest["mcpServers"] | undefined
+			const cold = new FakeAgentSession("resume-cold")
+			cold.branch = [userTextEntry("old mission", "u1", null)]
+			const loader: AcpSessionLoader = async (params) => {
+				receivedServers = params.mcpServers
+				return asSession(cold)
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionLoader: loader,
+			})
+
+			// mcpServers is optional on ResumeSessionRequest (unlike
+			// LoadSessionRequest) — the handler normalizes it to [].
+			const res = await agent.resumeSession({
+				sessionId: "resume-cold",
+				cwd: "/tmp",
+			})
+
+			expect(receivedServers).toEqual([])
+			expect(res.configOptions).toBeDefined()
+			expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
+
+			const replay = replayOnly(updates).filter((u) => u.update.sessionUpdate === "user_message_chunk")
+			expect(replay).toHaveLength(0)
+		})
+
+		it("shares the mid-turn attach guard with loadSession", async () => {
+			const live = new FakeAgentSession("resume-turn")
+			live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+			const factory: AcpSessionFactory = async () => asSession(live)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: factory,
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			void agent.prompt({
+				sessionId: "resume-turn",
+				prompt: [{ type: "text", text: "go" }],
+			})
+			await new Promise((r) => setTimeout(r, 0))
+
+			await expect(agent.resumeSession({ sessionId: "resume-turn", cwd: "/tmp" })).rejects.toThrow(
+				"has a turn in progress; cancel it first",
+			)
 		})
 	})
 
@@ -10169,7 +10204,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
 		})
 
-		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		// History was replayed for the attaching client.
 		const replayUpdates = replayOnly(updates)
 		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
@@ -10570,16 +10605,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "agent_message_chunk",
 			content: { type: "text", text: "doing well" },
 		})
-		expect(res.models).toMatchObject({
-			currentModelId: "test/test-model",
-			availableModels: [
-				{ modelId: "test/test-model", name: "Test Model" },
-				{
-					modelId: "multi-model",
-					name: expect.stringMatching(/^Multi-model \(/),
-				},
-			],
-		})
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 	})
 
 	// Replay walker: text + thinking + tool calls all surface as their own

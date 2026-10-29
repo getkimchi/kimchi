@@ -149,6 +149,40 @@ describe("buildToolCallUpdate", () => {
 	})
 })
 
+describe("describeToolCall path resolution", () => {
+	it("resolves relative file paths against the session cwd", () => {
+		const { locations } = describeToolCall("read", { file_path: "README.md" }, "/repo/project")
+		expect(locations).toEqual([{ path: "/repo/project/README.md" }])
+	})
+
+	it("resolves relative `path` args against the session cwd", () => {
+		const { locations } = describeToolCall("ls", { path: "src/lib" }, "/repo/project")
+		expect(locations).toEqual([{ path: "/repo/project/src/lib" }])
+	})
+
+	it("leaves absolute paths untouched", () => {
+		const { locations } = describeToolCall("read", { file_path: "/etc/hosts" }, "/repo/project")
+		expect(locations).toEqual([{ path: "/etc/hosts" }])
+	})
+
+	it("passes relative paths through unchanged when no cwd is given", () => {
+		const { locations } = describeToolCall("read", { file_path: "README.md" })
+		expect(locations).toEqual([{ path: "README.md" }])
+	})
+
+	it("resolves cwd-relative paths through buildToolCall as well", () => {
+		const update = buildToolCall({
+			toolCallId: "acp-1",
+			piToolCallId: "pi-1",
+			toolName: "edit",
+			rawInput: { file_path: "src/a.ts" },
+			status: "in_progress",
+			cwd: "/repo/project",
+		})
+		expect(update).toMatchObject({ locations: [{ path: "/repo/project/src/a.ts" }] })
+	})
+})
+
 describe("describeToolCall", () => {
 	const longCommand = "a".repeat(120)
 	const longPath = `/tmp/${"x".repeat(120)}`

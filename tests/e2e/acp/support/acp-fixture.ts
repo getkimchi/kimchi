@@ -180,10 +180,11 @@ export class RecordingClient {
 	/**
 	 * Elicitation handler — the terminal prompter in `permissionsExtension`
 	 * calls `ctx.ui.confirm`, which routes through the ACP UI context's
-	 * `unstable_createElicitation`. We accept with an empty content object
+	 * `createElicitation` (stabilized from `unstable_createElicitation` in
+	 * SDK 1.4+. We accept with an empty content object
 	 * by default; tests can override via `answerNextElicitationWith`.
 	 */
-	async unstable_createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
+	async createElicitation(params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> {
 		this.elicitationRequests.push({ method: "elicitation/create", params })
 		if (this.elicitationResolver) {
 			const resolver = this.elicitationResolver

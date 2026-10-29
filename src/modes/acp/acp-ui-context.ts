@@ -17,6 +17,7 @@ import type {
 	CreateElicitationRequest,
 	CreateElicitationResponse,
 	ElicitationAcceptAction,
+	ElicitationContentValue,
 	ElicitationSchema,
 	PermissionOption,
 	RequestPermissionOutcome,
@@ -130,19 +131,39 @@ export function createAcpUIContext(
 			requestedSchema,
 		}
 		try {
-			const response = await requestWithAbort<CreateElicitationResponse>(
-				conn.unstable_createElicitation(params),
-				signal,
-			)
+			// `unstable_createElicitation` was stabilized to `createElicitation` in
+			// SDK 1.4+ (wire name `elicitation/create` unchanged since 0.19.x), so
+			// both old and new clients reach the same handler.
+			const response = await requestWithAbort<CreateElicitationResponse>(conn.createElicitation(params), signal)
 			if (response === "aborted") {
 				throw Error("aborted")
 			}
 			if (response.action !== "accept") return undefined
-			return response.content ?? undefined
+			return normalizeElicitationContent(response.content)
 		} catch (err) {
 			logError("elicitation/create", err)
 			return "aborted"
 		}
+	}
+
+	// Dual-shape compat: clients on 0.19-era SDKs may return loose
+	// content values; SDK 1.9.0 also admits custom `_`-prefixed action variants
+	// whose content isn't schema-typed. Keep only values matching the stabilized
+	// ElicitationContentValue type; anything else is dropped.
+	function normalizeElicitationContent(content: unknown): NonNullable<ElicitationAcceptAction["content"]> | undefined {
+		if (!content || typeof content !== "object" || Array.isArray(content)) return undefined
+		const out: Record<string, ElicitationContentValue> = {}
+		for (const [key, value] of Object.entries(content)) {
+			if (
+				typeof value === "string" ||
+				typeof value === "number" ||
+				typeof value === "boolean" ||
+				(Array.isArray(value) && value.every((v) => typeof v === "string"))
+			) {
+				out[key] = value as ElicitationContentValue
+			}
+		}
+		return Object.keys(out).length > 0 ? out : undefined
 	}
 
 	// `request_permission` is tool-call-coupled, so we wrap the choice in a

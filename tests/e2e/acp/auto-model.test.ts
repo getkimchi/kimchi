@@ -40,6 +40,18 @@ describe("ACP Auto model", () => {
 		await fixture?.stop()
 	})
 
+	// The top-level `models` response field was dropped with the SDK 1.9 line;
+	// the model catalogue now lives only in the `model` config option type.
+	function modelConfigOf(session: { configOptions?: unknown }): {
+		currentValue?: string
+		options: Array<{ value: string; name: string; description?: string }>
+	} {
+		const options = session.configOptions as Array<{ id: string; type: string; currentValue?: string }>
+		const modelOption = options.find((opt) => opt.id === "model")
+		expect(modelOption?.type).toBe("select")
+		return modelOption as unknown as ReturnType<typeof modelConfigOf>
+	}
+
 	it("keeps a saved Auto model working, described, and resolved-labelled", async () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-auto-saved-default",
@@ -51,12 +63,13 @@ describe("ACP Auto model", () => {
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
-		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
+		const modelConfig = modelConfigOf(session)
+		expect(modelConfig.currentValue).toBe("kimchi-dev/auto")
+		expect(modelConfig.options.map((model) => model.value)).toContain("kimchi-dev/auto")
 		// Auto advertises a short name plus a separate description, so clients
 		// that render a two-line row (name above, description below) do not end
 		// up showing the explanation as the row's title.
-		expect(session.models?.availableModels.find((model) => model.modelId === "kimchi-dev/auto")).toMatchObject({
+		expect(modelConfig.options.find((model) => model.value === "kimchi-dev/auto")).toMatchObject({
 			name: "Auto",
 			description: "Picks the best model for your tasks automatically.",
 		})
@@ -124,8 +137,9 @@ describe("ACP Auto model", () => {
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(session.models?.currentModelId).toBe("kimchi-dev/auto")
-		expect(session.models?.availableModels.map((model) => model.modelId)).toContain("kimchi-dev/auto")
+		const modelConfig = modelConfigOf(session)
+		expect(modelConfig.currentValue).toBe("kimchi-dev/auto")
+		expect(modelConfig.options.map((model) => model.value)).toContain("kimchi-dev/auto")
 
 		// For entitled accounts Auto is the default, not a one-time install: a
 		// model picked mid-session is honoured for that session (setSessionModel
@@ -134,7 +148,7 @@ describe("ACP Auto model", () => {
 		// as a silent switch.
 		await fixture.conn.unstable_setSessionModel({ sessionId: session.sessionId, modelId: "kimchi-dev/routed" })
 		const nextSession = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(nextSession.models?.currentModelId).toBe("kimchi-dev/auto")
+		expect(modelConfigOf(nextSession).currentValue).toBe("kimchi-dev/auto")
 		expect(
 			fixture.client.extNotifications.some(
 				(n) => n.method === "_kimchi.dev/pi_notify" && JSON.stringify(n.params).includes("New sessions start on Auto"),
