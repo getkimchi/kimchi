@@ -16,6 +16,7 @@ export function createExtensionApi(): {
 	getRegisteredTool(name: string): Parameters<ExtensionAPI["registerTool"]>[0]
 	getRegisteredCommand(name: string): Parameters<ExtensionAPI["registerCommand"]>[1]
 	sendMessage: ReturnType<typeof vi.fn<ExtensionAPI["sendMessage"]>>
+	getThinkingLevel: ReturnType<typeof vi.fn<ExtensionAPI["getThinkingLevel"]>>
 	appendEntry: ReturnType<typeof vi.fn<ExtensionAPI["appendEntry"]>>
 	getCommands: ReturnType<typeof vi.fn<ExtensionAPI["getCommands"]>>
 	setModel: ReturnType<typeof vi.fn<ExtensionAPI["setModel"]>>
@@ -101,6 +102,7 @@ export function createExtensionApi(): {
 		},
 	)
 	const registerMessageRenderer = vi.fn()
+	const getThinkingLevel = vi.fn<ExtensionAPI["getThinkingLevel"]>(() => "off")
 
 	return {
 		api: {
@@ -118,6 +120,7 @@ export function createExtensionApi(): {
 			registerShortcut,
 			registerMessageRenderer,
 			getCommands,
+			getThinkingLevel,
 			events,
 		} as unknown as ExtensionAPI,
 		invalidate: () => {
@@ -150,6 +153,7 @@ export function createExtensionApi(): {
 		},
 		sendMessage,
 		setModel,
+		getThinkingLevel,
 		registerEntryRenderer,
 		getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1] {
 			const call = registerEntryRenderer.mock.calls.find(([type]) => type === customType)
