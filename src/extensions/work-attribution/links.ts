@@ -438,17 +438,18 @@ export async function reconcileWorkContinuations(
 	progress: ContinuationProgress = {},
 ): Promise<void> {
 	const startedAt = Date.now()
-	// Fingerprint before reading: an append during the read only makes the next pass read again.
-	const journals = await workJournalFingerprint(agentDir)
-	// Until a journal changes, such a pass would only repeat itself.
-	if (progress.settledJournals === journals) return
-	progress.settledJournals = undefined
-	const deadline = Date.now() + REPAIR_BUDGET_MS
+	const deadline = startedAt + REPAIR_BUDGET_MS
 	const checkBudget = () => {
 		signal.throwIfAborted()
 		assertLease()
 		if (Date.now() > deadline) throw new Error("Work continuation reconciliation time limit exceeded")
 	}
+	// Fingerprint before reading: an append during the read only makes the next pass read again.
+	const journals = await workJournalFingerprint(agentDir, checkBudget)
+	checkBudget()
+	// Until a journal changes, such a pass would only repeat itself.
+	if (progress.settledJournals === journals) return
+	progress.settledJournals = undefined
 	if (progress.quiet) {
 		// Journals only grow, so only those changed since can hold a new receipt; nothing else needs the whole history.
 		const { since, receipts } = progress.quiet

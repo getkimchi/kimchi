@@ -78,6 +78,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-dry-run.{0}', github.sha) }}
+      # tsc needs ~2.7 GB of heap on this codebase, which exceeds the ~2 GB
+      # V8 old-space Node derives on memory-constrained runners (macos-15
+      # arm64 OOM'd the v1.21.3 release). The `checks` job already typechecks
+      # the exact same commit before any build job runs (needs: [checks]),
+      # so re-running it in five build jobs only adds OOM risk.
+      KIMCHI_SKIP_TYPECHECK: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +121,12 @@ jobs:
 
       - name: Build binary
         run: node scripts/build-binary.js --target ${{ matrix.target }}
+
+      - name: Bundle work-reporting plugins
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/bundle-bridge.sh
 
       - name: Install Linux credential-store service
         if: ${{ matrix.os == 'linux' }}

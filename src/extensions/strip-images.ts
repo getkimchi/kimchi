@@ -11,7 +11,7 @@ import {
 	sessionHasImages,
 	storeImageDescription,
 } from "./model-guard.js"
-
+import { createNativeUsageCapture } from "./work-attribution/native-usage.js"
 import { getWorkId, pinWorkContext, recordProviderRequest, warnWorkAttribution } from "./work-attribution.js"
 
 const IMAGE_DESCRIPTION_PROMPT = "Describe this image concisely. Include key visual details, text, layout."
@@ -112,38 +112,45 @@ export default function stripImagesExtension(pi: ExtensionAPI) {
 			const errors: string[] = []
 			for (const [hash, img] of images) {
 				const headers = { ...auth.headers }
+				let requestId: string | undefined
 				if (workId) {
 					try {
-						headers["X-Request-Id"] = recordProviderRequest(workContext, visionModel, workId).requestId
+						requestId = recordProviderRequest(workContext, visionModel, workId).requestId
+						headers["X-Request-Id"] = requestId
 					} catch (error) {
 						warnWorkAttribution(ctx, error)
 					}
 				}
+				const usage = createNativeUsageCapture(visionModel)
+				usage.bind(requestId)
 				try {
-					const response = await complete(
-						visionModel,
-						{
-							systemPrompt: IMAGE_DESCRIPTION_PROMPT,
-							messages: [
-								{
-									role: "user",
-									content: [
-										{
-											type: "image" as const,
-											data: img.data,
-											mimeType: img.mimeType ?? "image/png",
-										} as ImageContent,
-									],
-									timestamp: Date.now(),
-								},
-							],
-						},
-						{
-							apiKey: auth.apiKey,
-							headers,
-							signal: AbortSignal.timeout(45_000),
-							maxTokens: 200,
-						},
+					const response = await usage.complete(() =>
+						complete(
+							visionModel,
+							{
+								systemPrompt: IMAGE_DESCRIPTION_PROMPT,
+								messages: [
+									{
+										role: "user",
+										content: [
+											{
+												type: "image" as const,
+												data: img.data,
+												mimeType: img.mimeType ?? "image/png",
+											} as ImageContent,
+										],
+										timestamp: Date.now(),
+									},
+								],
+							},
+							{
+								apiKey: auth.apiKey,
+								onProviderStreamEvent: usage.onProviderStreamEvent,
+								headers,
+								signal: AbortSignal.timeout(45_000),
+								maxTokens: 200,
+							},
+						),
 					)
 
 					// Extract text from response

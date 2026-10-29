@@ -1,10 +1,9 @@
 import { execFileSync } from "node:child_process"
-import { readdirSync, readFileSync } from "node:fs"
-import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { waitForText } from "./support/assertions.js"
 import { isWorkMatchingRequest, type RecordedRequest } from "./support/fake-openai-server.js"
 import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkRecords } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -56,13 +55,10 @@ test("the branch's Jira issue is only suggested; once selected it binds the next
 				fixture.fake.requests.filter(
 					(request) => request.url.startsWith("/openai/v1/chat/completions") && !isWorkMatchingRequest(request),
 				)
-			const ledger = join(fixture.agentDir, "work-attribution")
 			const row = (request: RecordedRequest | undefined) =>
-				readdirSync(ledger)
-					.filter((file) => file.endsWith(".jsonl"))
-					.flatMap((file) => readFileSync(join(ledger, file), "utf8").split("\n").filter(Boolean))
-					.map((line) => JSON.parse(line))
-					.find((record) => record.type === "request" && record.requestId === request?.headers["x-request-id"])
+				readWorkRecords(fixture.agentDir).find(
+					(record) => record.type === "request" && record.requestId === request?.headers["x-request-id"],
+				)
 
 			terminal.submit("Plan the Jira integration for ABC-123")
 			await waitForText(terminal, "Planned the Jira integration.")

@@ -368,6 +368,9 @@ export function launchKimchi(
 		// one of them pops open the developer's actual browser (the token is
 		// delivered straight to the callback server instead).
 		"KIMCHI_E2E_FAKE_BROWSER_OPEN=1",
+		// Static todo spinner glyph: each animation tick force-renders the
+		// whole TUI, which pushed the suite past its job budget.
+		"KIMCHI_E2E_STATIC_TODO_SPINNER=1",
 		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
 		// fire only under a harness — production binaries must never see them.
 		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness

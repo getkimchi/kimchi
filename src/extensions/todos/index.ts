@@ -45,7 +45,7 @@ import {
 	recordAdmittedInputRevision,
 	recordScopeReconciliation,
 } from "./reconciliation.js"
-import { getTodoScopeKey } from "./scope.js"
+import { getTodoScopeKey, parseTodoScopeKey } from "./scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName } from "./session.js"
 import {
 	createIntervalSteerTracker,
@@ -57,10 +57,12 @@ import {
 } from "./staleness-steers.js"
 import { renderTodoEntries } from "./state-markdown.js"
 import {
+	applyWriteTodos,
 	bumpToolCallsSinceTodoWrite,
 	bumpWorkToolCalls,
 	clearToolCallsSinceTodoWriteForSession,
 	GLOBAL_TODO_SCOPE,
+	getTodoState,
 	getTodosForScope,
 	getWorkToolCalls,
 	hasEverHadTodos,
@@ -74,10 +76,12 @@ import {
 import { CONFIRM_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
 import { TODO_STATUS, type TodoScope } from "./types.js"
 import {
+	clearTodoCrowding,
 	disposeTodoWidget,
 	ensureTodoWidget,
 	registerTodoShortcut,
 	resetTodoWidgetState,
+	setTodoAgentActive,
 	syncTodoWidget,
 } from "./widget.js"
 
@@ -94,6 +98,41 @@ export * from "./store.js"
 export * from "./tool.js"
 export * from "./types.js"
 export * from "./widget.js"
+
+/** An aborted or errored turn has no follow-up model turn to correct todo
+ *  bookkeeping, so any item left in_progress would keep rendering "N running"
+ *  (and the spinner) even though nothing is executing anymore. Demote model-
+ *  writable scopes (global, ferment-step) back to pending and persist the
+ *  correction as a hidden entry (same mechanism the ferment bridge uses), so
+ *  session restore replays the demoted state too. The ferment phase list is
+ *  bridge-owned — its statuses derive from the ferment lifecycle — and is
+ *  deliberately left untouched. */
+function demoteStaleInProgress(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
+	const sessionId = ctx.sessionManager.getSessionId()
+	let changed = false
+	for (const [scopeKey, scopeState] of Object.entries(getTodoState(sessionId).byScope)) {
+		const todos = scopeState.todos
+		if (!todos.some((todo) => todo.status === TODO_STATUS.IN_PROGRESS)) continue
+		let scope: TodoScope
+		try {
+			scope = parseTodoScopeKey(scopeKey)
+		} catch {
+			continue
+		}
+		if (scope.kind === "ferment") continue
+		const demoted = todos.map((todo) =>
+			todo.status === TODO_STATUS.IN_PROGRESS ? { ...todo, status: TODO_STATUS.PENDING } : todo,
+		)
+		const details = applyWriteTodos({ scope, todos: demoted }, sessionId)
+		try {
+			pi.appendEntry(TODO_CUSTOM_ENTRY_TYPE, details)
+		} catch (error) {
+			console.error("[todos] Failed to persist abort demotion:", error)
+		}
+		changed = true
+	}
+	return changed
+}
 
 function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager, "getBranch" | "getSessionId">): void {
 	const sessionId = sessionManager.getSessionId()
@@ -277,6 +316,17 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	registerTodosCommand(pi)
 	registerTodoShortcut(pi)
+
+	// Drive the strip's activity indicator: the in-progress spinner and the
+	// "N running" header segment are only honest while the agent loop is
+	// executing. Once the run ends (agent_end), open items render with the
+	// static ▶ marker and an "in progress" segment instead. This covers the
+	// legitimate hand-off case — the model marks an item in_progress and
+	// ends its turn waiting on the user (edit + approval), where the prior
+	// bail-out paths (abort demotion, terminal-turn closure steer) are
+	// deliberately inactive.
+	pi.on("agent_start", (_event, ctx) => setTodoAgentActive(ctx, true))
+	pi.on("agent_end", (_event, ctx) => setTodoAgentActive(ctx, false))
 
 	const _activeSessionContexts = new Map<string, ExtensionContext>()
 	let unsubscribeTodoStore: (() => void) | undefined
@@ -789,8 +839,12 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// Role check first: isRecord narrows to the only Record-assignable
 		// union member (toolResult) under upstream pi's message types.
 		if (message.role !== "assistant") return
+		if (message.stopReason === "aborted" || message.stopReason === "error") {
+			demoteStaleInProgress(pi, ctx)
+			syncTodoWidget(ctx)
+			return
+		}
 		if ((event.toolResults as readonly unknown[]).length > 0 || ctx.hasPendingMessages?.()) return
-		if (message.stopReason === "aborted" || message.stopReason === "error") return
 		syncTodoWidget(ctx)
 		if (message.stopReason !== "stop" || isAwaitingUserAnswer(message)) return
 		const scope = resolveTodoScope(ctx.sessionManager.getSessionId())
@@ -836,6 +890,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		unsubscribeCheckinGate?.()
 		unsubscribeCheckinGate = undefined
 		disposeTodoWidget(ctx)
+		// Crowding claims are process-global; drop any whose owner never released
+		// (e.g. a questionnaire still open when the session ended).
+		clearTodoCrowding()
 
 		const sessionId = ctx.sessionManager.getSessionId()
 		deleteSessionContext(sessionId)

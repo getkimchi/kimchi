@@ -742,9 +742,8 @@ describe("PR status with the real reconciliation supervisor", () => {
 			join(directory, "work-attribution", "history.jsonl"),
 			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
 		)
-		// Each tick delivers all 101 commits, and so does the lease owner's pass it starts. A reconciliation that
-		// work tracking requests at startup can add one more pass, so wait for at least these and an idle scan.
-		// A loaded CI runner can take several seconds per pass over the 101-row journal.
+		// The lease-owned collector automatically discovers all 101 legacy commits. Passive ticks read
+		// only the committed ledger; explicitly drive the next existing tick before checking its delivery.
 		const pass = async (deliveries: number) => {
 			await vi.waitFor(() => expect(delivered.length).toBeGreaterThanOrEqual(deliveries), { timeout: 25_000 })
 			await vi.waitFor(async () => expect(await check(join(directory, "work-attribution"))).toBe(false), {
@@ -752,6 +751,8 @@ describe("PR status with the real reconciliation supervisor", () => {
 			})
 		}
 		await start(status)
+		await pass(rows.length)
+		await vi.advanceTimersByTimeAsync(30_000)
 		await pass(2 * rows.length)
 		// Journal replay must not replace the current branch's PR with a historical commit association.
 		const calls = vi.mocked(ctx.ui.setStatus).mock.calls
@@ -854,7 +855,7 @@ describe("expected lookup failures", () => {
 		await api.getRegisteredCommand("work").handler("", textCommandContext())
 		const shown = vi.mocked(ctx.ui.notify).mock.calls.at(-1)?.[0]
 		expect(shown).toContain("PR/MR lookup: 2 commits without a PR after 32 days, no longer checked")
-		// Later PRs add other /work lines, such as costs still waiting for billing; only lookup lines matter here.
+		// Later PRs add other /work lines, such as cost lines; only lookup lines matter here.
 		expect(shown).not.toMatch(/PR\/MR lookup: \d+ commits? waiting/)
 		expect(shown).not.toContain("could not find")
 		// A newer commit of the same work still waits.

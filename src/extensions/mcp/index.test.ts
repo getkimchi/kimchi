@@ -523,6 +523,7 @@ describe("upstream MCP adapter facade", () => {
 
 		api.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
 		expect(harness.getActiveToolNames()).toContain("docs_delete_issue")
+		await harness.getHandler("session_shutdown")({ type: "session_shutdown" }, createContext())
 		profiles.resetAll()
 	})
 

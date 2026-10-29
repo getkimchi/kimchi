@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { basename, join, sep } from "node:path"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -22,10 +22,16 @@ function bashState(registry: ReturnType<typeof createProcessRegistry>) {
 	}
 }
 
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import * as attribution from "../work-attribution.js"
 import { createCommitTrackingBashTool, createCommitTrackingOperations, type ObservedCommit } from "./commits.js"
 import * as diagnostics from "./diagnostics.js"
-import { flushWorkSummaries } from "./summary.js"
+import { flushWorkSummaries, readWorkRecords } from "./summary.js"
+
+// Node/vitest cannot load bun:sqlite; suites that read records run on the memory backend,
+// the same contract the shared conformance suite asserts.
+useBackendFactory(() => createMemoryRecords())
 
 vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof fs>()),
@@ -42,6 +48,14 @@ function git(cwd: string, ...args: string[]): string {
 function quote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`
 }
+
+const commitRows = (agentDir: string) =>
+	readWorkRecords(agentDir)
+		.filter((row) => row.type === "commit")
+		.map((row) => ({
+			sha: String(row.sha),
+			rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
+		}))
 
 async function run(command: string, cwd = repository): Promise<number | null> {
 	return (
@@ -417,7 +431,6 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		}
 	})
 
-	// The restart case loads the harness in a fresh Node process as well as running real Git commands.
 	it.each([
 		false,
 		true,
@@ -434,49 +447,82 @@ git -C ${quote(worktree)} reset --hard HEAD~ >/dev/null
 		git(repository, "add", ".")
 		git(repository, "commit", "-qm", "unrelated")
 		git(repository, "checkout", "-q", "main")
-		await bash(
-			"git checkout -qb feat && echo ours > ours.txt && git add ours.txt && git commit -qm ours && echo mine > shared.txt && git commit -qam conflicting",
-		)
-		const [conflicting, ours] = git(repository, "rev-list", "-2", "HEAD").split("\n")
 		const upstream = join(directory, "upstream")
-		git(repository, "worktree", "add", "-q", upstream, "main")
-		writeFileSync(join(upstream, "shared.txt"), "theirs\n")
-		git(upstream, "commit", "-qam", "upstream moved")
-		git(repository, "worktree", "remove", upstream)
-
-		// The agent sees the conflict, resolves it, and continues in a later call.
-		await bash("git rebase main || true")
 		const continueCommand = "echo resolved > shared.txt && git add shared.txt && GIT_EDITOR=true git rebase --continue"
+		let pair: [string, string]
+		let recorded: { sha: string; rewrittenFrom?: string }[]
 		if (restart) {
-			await flushWorkSummaries()
-			const script = `
-import { createWorkCommitTrackingOperations } from ${JSON.stringify(new URL("./commits.ts", import.meta.url).pathname)};
-import { flushWorkSummaries } from ${JSON.stringify(new URL("./summary.ts", import.meta.url).pathname)};
-const ctx = { cwd: ${JSON.stringify(repository)}, sessionManager: { getSessionId: () => "rebasing" } };
-await createWorkCommitTrackingOperations(ctx, "continued").exec(${JSON.stringify(continueCommand)}, ctx.cwd, { onData() {}, env: process.env });
-await flushWorkSummaries();`
-			execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-				env: process.env,
-				timeout: 10000,
-			})
-		} else await bash(continueCommand)
+			// Everything that records rows runs in real Bun processes sharing one temp SQLite
+			// ledger, so the restarted process replays the rows its predecessor committed.
+			const child = join(directory, "restart-child.ts")
+			const spawnBun = (source: string): string => {
+				writeFileSync(child, source)
+				return execFileSync("bun", [child], {
+					env: { ...process.env, PI_CODING_AGENT_DIR: join(directory, "agent") },
+					timeout: 15000,
+				}).toString()
+			}
+			const commitsHref = JSON.stringify(new URL("./commits.ts", import.meta.url).href)
+			const summaryHref = JSON.stringify(new URL("./summary.ts", import.meta.url).href)
+			const ctxSource = `{ cwd: ${JSON.stringify(repository)}, sessionManager: { getSessionId: () => "rebasing" } }`
+			// The first process records ours and conflicting, then prints their shas.
+			pair = JSON.parse(
+				spawnBun(
+					`import { createWorkCommitTrackingOperations } from ${commitsHref}\n` +
+						`import { execFileSync } from "node:child_process"\n` +
+						`const ctx = ${ctxSource}\n` +
+						`await createWorkCommitTrackingOperations(ctx, "commits").exec("git checkout -qb feat && echo ours > ours.txt && git add ours.txt && git commit -qm ours && echo mine > shared.txt && git commit -qam conflicting", ctx.cwd, { onData() {}, env: process.env })\n` +
+						`process.stdout.write(JSON.stringify(execFileSync("git", ["-C", ctx.cwd, "rev-list", "-2", "HEAD"], { encoding: "utf8" }).trim().split("\\n")))`,
+				),
+			) as [string, string]
+			git(repository, "worktree", "add", "-q", upstream, "main")
+			writeFileSync(join(upstream, "shared.txt"), "theirs\n")
+			git(upstream, "commit", "-qam", "upstream moved")
+			git(repository, "worktree", "remove", upstream)
+			// The rebase attempt rewrites ours and records the rewritten commit, then stops at a conflict.
+			void spawnBun(
+				`import { createWorkCommitTrackingOperations } from ${commitsHref}\n` +
+					`const ctx = ${ctxSource}\n` +
+					`await createWorkCommitTrackingOperations(ctx, "rebase").exec("git rebase main || true", ctx.cwd, { onData() {}, env: process.env })`,
+			)
+			// A fresh process continues the rebase and replays every commit row from the ledger.
+			recorded = JSON.parse(
+				spawnBun(
+					`import { createWorkCommitTrackingOperations } from ${commitsHref}\n` +
+						`import { flushWorkSummaries, readWorkRecords } from ${summaryHref}\n` +
+						`const ctx = ${ctxSource}\n` +
+						`await createWorkCommitTrackingOperations(ctx, "continued").exec(${JSON.stringify(continueCommand)}, ctx.cwd, { onData() {}, env: process.env })\n` +
+						`await flushWorkSummaries()\n` +
+						`const rows = readWorkRecords(process.env.PI_CODING_AGENT_DIR).filter((row) => row.type === "commit").map((row) => ({ sha: String(row.sha), rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined }))\n` +
+						`process.stdout.write(JSON.stringify(rows))`,
+				),
+			) as { sha: string; rewrittenFrom?: string }[]
+		} else {
+			await bash(
+				"git checkout -qb feat && echo ours > ours.txt && git add ours.txt && git commit -qm ours && echo mine > shared.txt && git commit -qam conflicting",
+			)
+			pair = git(repository, "rev-list", "-2", "HEAD").split("\n") as [string, string]
+			git(repository, "worktree", "add", "-q", upstream, "main")
+			writeFileSync(join(upstream, "shared.txt"), "theirs\n")
+			git(upstream, "commit", "-qam", "upstream moved")
+			git(repository, "worktree", "remove", upstream)
+			// The agent sees the conflict, resolves it, and continues in a later call.
+			await bash("git rebase main || true")
+			await bash(continueCommand)
+			recorded = commitRows(join(directory, "agent"))
+		}
+		const [conflicting, ours] = pair
 		const [rebasedConflicting, rebasedOurs] = git(repository, "rev-list", "-2", "HEAD").split("\n")
-		await bash("git cherry-pick other")
+		if (restart) git(repository, "cherry-pick", "other")
+		else await bash("git cherry-pick other")
 
-		const recorded = fs
-			.readFileSync(join(directory, "agent", "work-attribution", "rebasing.jsonl"), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line))
-			.filter((row) => row.type === "commit")
-			.map(({ sha, rewrittenFrom }) => ({ sha, rewrittenFrom }))
 		expect(recorded).toEqual([
 			{ sha: ours },
 			{ sha: conflicting },
 			{ sha: rebasedOurs, rewrittenFrom: ours },
 			{ sha: rebasedConflicting, rewrittenFrom: conflicting },
 		])
-	}, 15000)
+	}, 20000)
 
 	it("follows another session's commit of the same work through a rebase, reading only commit rows", async () => {
 		vi.stubEnv("PI_CODING_AGENT_DIR", join(directory, "agent"))
@@ -500,7 +546,6 @@ await flushWorkSummaries();`
 		// A later session of the same work only knows the commit from the work's summary.
 		const second = createToolContext({ cwd: repository, sessionManager: { getSessionId: () => "second" } })
 		attribution.setWorkId(second, workId)
-		const opened = vi.spyOn(fs, "openSync")
 		await createCommitTrackingBashTool(second).execute(
 			"second-tool",
 			{ command: "git rebase -q main" },
@@ -508,18 +553,16 @@ await flushWorkSummaries();`
 			undefined,
 			second,
 		)
-		const logs = opened.mock.calls.map(([path]) => String(path)).filter((path) => path.includes(`${sep}rows${sep}`))
-		expect(logs.length).toBeGreaterThan(0)
-		expect(logs.every((path) => basename(path).startsWith("commits."))).toBe(true)
-		const recorded = fs
-			.readFileSync(attribution.workLedgerPath(second), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line))
+		// The ledger keeps commit rows only; the rebased commit's sha is the new HEAD
+		// and its rewrittenFrom points at the original ours commit recorded by the first session.
+		const recorded = readWorkRecords(join(directory, "agent"))
 			.filter((row) => row.type === "commit")
-		expect(recorded).toEqual([
-			expect.objectContaining({ sha: git(repository, "rev-parse", "HEAD"), rewrittenFrom: ours, workId }),
-		])
+			.map((row) => ({
+				sha: String(row.sha),
+				rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
+				workId: String(row.workId),
+			}))
+		expect(recorded).toContainEqual({ sha: git(repository, "rev-parse", "HEAD"), rewrittenFrom: ours, workId })
 	})
 
 	it("records same-work cherry-picks, reverts and new merge commits", async () => {
@@ -543,13 +586,12 @@ await flushWorkSummaries();`
 		git(repository, "checkout", "-q", "main")
 		await bash("git merge --no-ff --no-edit other")
 		const merged = git(repository, "rev-parse", "HEAD")
-		const recorded = fs
-			.readFileSync(attribution.workLedgerPath(ctx), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line))
+		const recorded = readWorkRecords(join(directory, "agent"))
 			.filter((row) => row.type === "commit")
-			.map(({ sha, rewrittenFrom }) => ({ sha, rewrittenFrom }))
+			.map((row) => ({
+				sha: String(row.sha),
+				rewrittenFrom: typeof row.rewrittenFrom === "string" ? row.rewrittenFrom : undefined,
+			}))
 		expect(recorded).toEqual([
 			{ sha: original },
 			{ sha: picked, rewrittenFrom: original },

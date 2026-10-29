@@ -102,6 +102,45 @@ but are only drained by the next fresh run).
 
 ### `@earendil-works/pi-tui`
 
+- **NEW (2026-10-22) — selection soft-wrap glue tracking.** Fullscreen partial
+  selections pasted the terminal's hard wrap: `getActiveSelectionText` rebuilt
+  text from rendered rows joined with `"\n"`. Rendered rows alone cannot
+  distinguish a soft wrap from a hard newline, so `wrapTextWithAnsi` now
+  records, per continuation line, the whitespace the wrap consumed (`""` for
+  mid-word breaks, clamped to 16 chars); Text/Markdown (and quote/list
+  prefixes) publish every padded line with the carried glue (`null` for hard
+  starts) plus the component's structural left margin — passed verbatim
+  through containers and scroll views — and the alt-screen rejoins marked rows
+  with the recorded glue (dropping only the recorded margin, so genuine code
+  indentation survives) instead of `"\n"`. The tracking Map must be
+  value-keyed (string primitives cannot be WeakMap keys — that variant
+  crashed the TUI at startup), so collisions are handled by construction: any
+  value seen with conflicting marks turns "ambiguous" and falls back to the
+  upstream `"\n"` join, never deleting a real newline. Covered by
+  `tests/e2e/tui/copy-message.test.ts` (120-col and 48-col geometry, byte-exact
+  reconstruction including mid-word breaks and mid-wrap selection starts).
+- **REVIEWFIX (2026-10-23) — soft-wrap glue seams: leading space, no-space
+  scripts, and stale hard-start marks.** Review found three byte-exactness
+  gaps in the glue tracker: (1) a long token following text on the same line
+  consumed the trailing space without recording it — both when the wrap fell
+  mid-word (`wrapped.push(currentLine)` recorded no glue for the first broken
+  piece) and when it followed a whitespace-triggered wrap (`markNext("")` in
+  the broken-piece loop clobbered the whitespace glue) — so `see https://…`
+  pasted as `seehttps://…`; (2) no-space scripts (CJK) wrapped with no
+  trailing whitespace, so the `?? " "` fallback invented a space at every
+  CJK wrap point (`日本語…` pasted with spaces inserted); (3) a hard-start
+  line whose value carried a stale continuation mark (left by an earlier wrap
+  of the same string anywhere in the session) was published with that glue
+  instead of null, silently merging paragraphs in copied selections. Fixes:
+  the long-token branch captures the consumed trailing whitespace (before the
+  underline reset) and marks the first broken piece with it, skipping the
+  write when the whitespace-skip branch already recorded its glue; the
+  no-whitespace fallback is `""`; every wrap segment's first line (including
+  the `visibleLength <= width` early return) registers null glue unless a
+  same-segment piece shares its value (mid-word breaks can emit identical
+  chunks — the continuation mark must win there). Note: value collisions
+  remain a one-way ratchet in the safe direction — a value that turns
+  ambiguous stays degraded (`"\n"` fallback) until the 50k wipe.
 - **REBASED — stroke rendering (applyStrokeToLine), no-truncate width
   hardening.** The new TUI replaced the
   editor's caret with an APC cursor marker (`\x1b_pi:c\x07` /
