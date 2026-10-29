@@ -10,6 +10,7 @@ import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
+import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels } from "../models.js"
 import {
 	branchAssistantUsageTotals,
 	buildContextCompact,
@@ -70,6 +71,7 @@ interface MockContextOpts {
 	percent?: number
 	modelId?: string
 	modelProvider?: string
+	modelReasoning?: boolean
 	thinkingLevel?: ExtensionContext["thinkingLevel"]
 	/** Assistant messages to include in the session, for usage-segment tests. */
 	assistantMessages?: Array<{ input: number; output: number }>
@@ -83,7 +85,12 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 		message: { role: "assistant", usage: { input: u.input, output: u.output, cost: { total: 0 } } },
 	}))
 	return {
-		model: { id: modelId, name: modelId, provider: opts?.modelProvider ?? "kimchi-dev" },
+		model: {
+			id: modelId,
+			name: modelId,
+			provider: opts?.modelProvider ?? "kimchi-dev",
+			reasoning: opts?.modelReasoning ?? true,
+		},
 		thinkingLevel: opts?.thinkingLevel,
 		cwd: "/test",
 		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
@@ -681,6 +688,9 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
 		vi.spyOn(TAGS, "peekActiveTags").mockReturnValue([])
 		vi.spyOn(TAGS, "getCurrentPhase").mockReturnValue("explore")
+		// Curated thinking levels are process-global state shared with the
+		// registry-based selection — start each test from an empty registry.
+		__clearModelThinkingLevelsForTest()
 		// Stub platform-dependent shortcut so tests are stable across CI.
 		restorePlatform = stubPlatform("darwin")
 	})
@@ -688,6 +698,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
 		setBillingStatusForTest(undefined)
+		__clearModelThinkingLevelsForTest()
 		restorePlatform()
 	})
 
@@ -742,6 +753,31 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		withPinned(["thinking"], () => {
 			const { visible } = renderAt(160, { modelId: "auto", modelProvider: "kimchi-dev" })
 			expect(visible).toContain("thinking:auto")
+		})
+	})
+
+	it("shows the session level for a curated model while it is selectable", () => {
+		registerModelThinkingLevels("kimchi-dev/glm-5.3", ["low", "high", "max"])
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { modelId: "glm-5.3", thinkingLevel: "high" })
+			expect(visible).toContain("thinking:high")
+		})
+	})
+
+	it("shows 'on' for a curated-none model even with a stale session level", () => {
+		registerModelThinkingLevels("kimchi-dev/minimax-m3", [])
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { modelId: "minimax-m3", thinkingLevel: "high" })
+			expect(visible).toContain("thinking:on")
+			expect(visible).not.toContain("thinking:high")
+		})
+	})
+
+	it("shows 'off' for a non-reasoning model even with a session level", () => {
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { modelReasoning: false, thinkingLevel: "high" })
+			expect(visible).toContain("thinking:off")
+			expect(visible).not.toContain("thinking:high")
 		})
 	})
 
