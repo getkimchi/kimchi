@@ -757,6 +757,83 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 	}
 }
 
+async function captureReceiptConflictScenario(agent: string): Promise<void> {
+	const { observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const backend = backendFor(agent)
+	const account = "lumbrook-account"
+	const claim = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T00:00:00Z",
+		repository: { provider: "github", host: "github.com", id: "lumbrook-repo" },
+		usage: {
+			channel: "native",
+			counterScope: "request",
+			observedRoute: "unknown",
+			schema: "unknown",
+			billingBasis: "unknown",
+			correlation: "exact",
+			raw: {},
+			attemptsComplete: true,
+			requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		},
+		allocation: { kind: "unlinked", method: "user-correction" },
+		correction: {
+			id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+			revision: 1,
+			recordedAt: "2026-10-23T12:00:00Z",
+			source: "work-command",
+		},
+		claimState: "active",
+	}
+	const sibling = {
+		entityId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: claim.deviceId,
+		observeTime: claim.observeTime,
+		coverage: { code: "observed", count: "1" },
+	}
+	const conflict = {
+		...claim,
+		observeTime: "2026-10-24T01:00:00Z",
+		allocation: { kind: "unmerged", pullRequestIds: ["lumbrook-pr-one"], method: "user-correction" },
+	}
+	observeEvents(agent, account, [claim], [], () => {})
+	const before = backend.latestOutboxEvent(account, claim.entityId)
+	if (!before) throw new Error("Expected an initial Lumbrook claim")
+	let strictRejected = false
+	try {
+		observeEvents(agent, account, [conflict, sibling], [], () => {})
+	} catch (error) {
+		strictRejected = error instanceof Error && error.message === "Conflicting contents for one correction receipt"
+	}
+	const strictRolledBack = backend.latestOutboxEvent(account, sibling.entityId) === undefined
+	observeEvents(agent, account, [conflict, sibling], [], () => {}, "set-aside")
+	const after = backend.latestOutboxEvent(account, claim.entityId)
+	const headUnchanged = Boolean(
+		after &&
+			after.id === before.id &&
+			after.hash === before.hash &&
+			Buffer.from(after.body).equals(Buffer.from(before.body)) &&
+			JSON.parse(Buffer.from(after.body).toString("utf8")).revision === "1",
+	)
+	const siblingRecorded = backend.latestOutboxEvent(account, sibling.entityId) !== undefined
+	const store = openStore(agent)
+	let diagnosticCount: number
+	try {
+		diagnosticCount =
+			store.db
+				.query<{ count: number }, [string]>("SELECT count FROM diagnostics WHERE code = ?")
+				.get("claim-correction-conflict")?.count ?? 0
+	} finally {
+		store.close()
+	}
+	out({ strictRejected, strictRolledBack, headUnchanged, siblingRecorded, diagnosticCount })
+}
+
 async function outboxScenario(agent: string, mode: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch, readOutboxStatus } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
@@ -2561,6 +2638,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
 	"marker-clear": (agent) => markerClearScenario(agent),
 	"marker-cleanup-recovery": (agent) => markerCleanupRecoveryScenario(agent),
+	"capture-receipt-conflict": (agent) => captureReceiptConflictScenario(agent),
 	"outbox-sendable-index": (agent) => outboxSendableIndexScenario(agent),
 	"outbox-sendable-index-lock": (agent) => outboxSendableIndexLockScenario(agent),
 	probe: (agent) => probe(agent),

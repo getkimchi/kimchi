@@ -29,6 +29,27 @@ it.each(["memory", "sqlite"])("reuses a verified claim projection and rebuilds a
 	}
 })
 
+it("sets aside a conflicting correction receipt during capture without changing its head or sibling fact", {
+	timeout: 30_000,
+}, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-capture-receipt-conflict-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "capture-receipt-conflict", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			strictRejected: true,
+			strictRolledBack: true,
+			headUnchanged: true,
+			siblingRecorded: true,
+			diagnosticCount: 1,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it("indexes sendable events in rowid order after reopening a v1 ledger", { timeout: 30_000 }, () => {
 	const dir = mkdtempSync(join(tmpdir(), "kimchi-outbox-sendable-index-"))
 	try {

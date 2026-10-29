@@ -98,6 +98,8 @@ function projectClaim(raw: Event, previous?: Event): Event {
 	return effective
 }
 
+class ConflictingCorrectionReceipt extends Error {}
+
 function validateClaimUpdate(next: Event, previous?: Event): void {
 	if (!isClaim(next) && (!previous || !isClaim(previous))) return
 	if (next.source !== "kimchi" || next.usage?.counterScope !== "request")
@@ -137,7 +139,7 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 						next.claimState !== previous.claimState &&
 						!(previous.claimState === undefined && next.claimState === "active"))
 				)
-					throw new Error("Conflicting contents for one correction receipt")
+					throw new ConflictingCorrectionReceipt("Conflicting contents for one correction receipt")
 			} else {
 				const at = timeNanos(candidate.recordedAt)
 				const before = timeNanos(old.recordedAt)
@@ -252,6 +254,7 @@ export function observeEvents(
 	facts: readonly Fact[],
 	recordHashes: readonly string[],
 	assertCurrent: () => void,
+	conflictPolicy: "reject" | "set-aside" = "reject",
 ): void {
 	if (!accountKey || (recordHashes.length && !facts.length))
 		throw new Error("Missing outbox account or translated events")
@@ -276,7 +279,13 @@ export function observeEvents(
 				old && (old.source === "kimchi" || raw.source === "kimchi")
 					? effectiveClaim(backend, accountKey, event.entityId)
 					: old
-			validateClaimUpdate(raw, prior)
+			try {
+				validateClaimUpdate(raw, prior)
+			} catch (error) {
+				if (conflictPolicy !== "set-aside" || !(error instanceof ConflictingCorrectionReceipt)) throw error
+				backend.diagnostic("claim-correction-conflict")
+				continue
+			}
 			if (previous && old) {
 				event.revision = (BigInt(old.revision) + 1n).toString()
 				event.baseRevision = old.revision

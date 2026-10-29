@@ -384,6 +384,7 @@ const PREFLIGHT_REQUESTS = 1000
 const GROUP_BUILD_MS = 3 * 60_000
 const GROUP_BUILD_BACKOFF_MS = 5 * MINUTE_MS
 const GROUP_BUILD_BACKOFF_NOTE = "translation-build-backoff-v1:"
+const GROUP_FAILURE_NOTE = "translation-group-failure-v1:"
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** Each group's committed units survive later groups running before it resumes. */
@@ -478,7 +479,9 @@ async function captureEvents(
 			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, works[0])
 			return
 		}
-		const backoffName = `${GROUP_BUILD_BACKOFF_NOTE}${groupKey(works)}`
+		const group = groupKey(works)
+		const backoffName = `${GROUP_BUILD_BACKOFF_NOTE}${group}`
+		const failureName = `${GROUP_FAILURE_NOTE}${group}`
 		const backoff = backend.getNote("agent", backoffName)
 		if (backoff && Date.now() < Number(backoff)) {
 			waiting = true
@@ -505,9 +508,23 @@ async function captureEvents(
 				backend.putNote("agent", backoffName, String(Date.now() + GROUP_BUILD_BACKOFF_MS))
 				buildTimedOut = true
 				translated = true
-			} else if (!(error instanceof CaptureTimeLimit)) throw error
+			} else if (!(error instanceof CaptureTimeLimit)) {
+				assertLease()
+				signal.throwIfAborted()
+				backend.tx(() => {
+					assertLease()
+					backend.putNote("agent", backoffName, String(Date.now() + GROUP_BUILD_BACKOFF_MS))
+					backend.putNote("agent", failureName, captureFailure(error))
+					assertLease()
+				})
+				buildTimedOut = true
+				translated = true
+			}
 		}
-		if (backoff && translated !== undefined && !buildTimedOut) backend.deleteNote("agent", backoffName)
+		if (translated !== undefined && !buildTimedOut) {
+			if (backoff) backend.deleteNote("agent", backoffName)
+			backend.deleteNote("agent", failureName)
+		}
 		if (translated === undefined) {
 			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, ordered[(index + 1) % ordered.length][0])
 			return
@@ -515,9 +532,12 @@ async function captureEvents(
 		waiting ||= translated
 	}
 	if (next) backend.deleteNote("agent", NEXT_GROUP_NOTE)
+	const failure = groups
+		.map((works) => backend.getNote("agent", `${GROUP_FAILURE_NOTE}${groupKey(works)}`))
+		.find((reason) => reason !== undefined)
 	await recordReportingError(
 		agentDir,
-		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
+		failure ?? (waiting ? "Some PR cost events are waiting for complete original evidence" : undefined),
 	)
 }
 
@@ -743,7 +763,7 @@ async function translateGroup(
 		backend.tx(() => {
 			if (fast && done === chunk.length && !verifySharedHeads(backend, fast.cache))
 				throw new Error("PR reporting shared facts changed during incremental capture")
-			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], groupCheck)
+			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], groupCheck, "set-aside")
 			if (done === units.length) {
 				// A repository lookup that failed retries the group with a later pass.
 				if (settled) {

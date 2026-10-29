@@ -368,6 +368,7 @@ describe("account-fenced reporting delivery", () => {
 			group.facts,
 			[],
 			expect.any(Function),
+			"set-aside",
 		)
 		// The group's records count as translated once its events commit.
 		expect(backendFor(directory).markedRecords()).toEqual([])
@@ -952,6 +953,43 @@ describe("incremental translation", () => {
 		clock.mockReturnValue(retryStart + 3 * 60_000 + 60_000)
 		await run()
 		expect(eventBuilder.buildEvents).not.toHaveBeenCalled()
+	})
+
+	it("backs off a failing group while later groups translate and reports a safe reason", async () => {
+		const smallWork = "66666666-6666-4666-8666-666666666666"
+		await seedLargeLumbrookGroup(smallWork, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			throw new Error("private detail")
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const backend = backendFor(directory)
+		expect(vi.mocked(eventBuilder.buildEvents).mock.calls.map(([stored]) => stored[0]?.workId)).toEqual([
+			largeWork,
+			smallWork,
+		])
+		const remaining = backend.markedRecords().map(({ workId }) => workId)
+		expect(remaining).toContain(largeWork)
+		expect(remaining).not.toContain(smallWork)
+		const failureName = `translation-group-failure-v1:${groupKey([largeWork])}`
+		expect(backend.getNote("agent", failureName)).toContain("unexpected capture error")
+		const status = (await readReportingState(directory)).error
+		expect(status).toContain("unexpected capture error")
+		expect(status).not.toContain("private detail")
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		clock.mockReturnValue(start + 60_000)
+		await run()
+		expect(eventBuilder.buildEvents).not.toHaveBeenCalled()
+		expect((await readReportingState(directory)).error).toBe(status)
+		clock.mockReturnValue(start + 6 * 60_000)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
+		expect(backend.markedRecords()).toEqual([])
+		expect(backend.getNote("agent", failureName)).toBeUndefined()
+		expect((await readReportingState(directory)).error).toBeUndefined()
 	})
 
 	it("commits final facts before clearing only translated markers", async () => {
