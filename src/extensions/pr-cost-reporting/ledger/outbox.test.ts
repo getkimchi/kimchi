@@ -19,6 +19,8 @@ it.each(["memory", "sqlite"])("reuses a verified claim projection and rebuilds a
 			cachedParses: 2,
 			foreignReads: 1,
 			blockedReads: 1,
+			readFailurePreservesClaim: true,
+			nonHeadFoldMatches: true,
 			currentMatches: true,
 			restoredMatches: true,
 		})

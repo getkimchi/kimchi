@@ -275,6 +275,9 @@ it.each([
 		noLegacyJournal: true,
 		snapshotComplete: true,
 		nextReadSeesCapture: true,
+		workPagePinned: true,
+		workPageNextRead: true,
+		workPageFiltered: true,
 	})
 	expect(result.rowsAtAbort).toBeGreaterThan(0)
 	expect(result.rowsAtAbort).toBeLessThan(result.nativeRows)

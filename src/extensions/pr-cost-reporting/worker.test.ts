@@ -170,6 +170,51 @@ async function seedLinked(priced = true) {
 	)
 }
 
+const largeWork = "11111111-1111-4111-8111-111111111111"
+async function seedLargeLumbrookGroup(smallWork?: string, requestCount = 1001, dispatchesPerRequest = 0) {
+	const at = "2026-10-04T12:00:00.000Z"
+	const rows: Record<string, unknown>[] = Array.from({ length: requestCount }, (_, index) => ({
+		version: 1,
+		type: "request",
+		workId: largeWork,
+		sessionId: "lumbrook-session",
+		requestId: `lumbrook-request-${index}`,
+		startedAt: at,
+		recordedAt: at,
+		scope: {
+			account: { apiUrl: "https://api.lumbrook.invalid", organizationId: org, userId: user },
+			repository: "/lumbrook/platform/.git",
+		},
+	}))
+	for (const request of rows.slice())
+		for (let copy = 0; copy < dispatchesPerRequest; copy++)
+			rows.push({
+				...request,
+				type: "request_dispatch",
+				dispatchedAt: new Date(Date.parse(at) + copy + 1).toISOString(),
+				recordedAt: new Date(Date.parse(at) + copy + 1).toISOString(),
+			})
+	if (smallWork)
+		rows.push({
+			version: 1,
+			type: "request",
+			workId: smallWork,
+			sessionId: "lumbrook-session",
+			requestId: "lumbrook-small",
+			startedAt: at,
+			recordedAt: at,
+			scope: {
+				account: { apiUrl: "https://api.lumbrook.invalid", organizationId: org, userId: user },
+				repository: "/lumbrook/other/.git",
+			},
+		})
+	await mkdir(join(directory, "work-attribution"), { recursive: true })
+	await writeFile(
+		join(directory, "work-attribution", "lumbrook.jsonl"),
+		`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+	)
+}
+
 describe("account-fenced reporting delivery", () => {
 	it("makes no authentication request when the event outbox is empty", async () => {
 		await deliver()
@@ -832,6 +877,68 @@ describe("incremental translation", () => {
 		expect(vi.mocked(eventBuilder.buildEvents).mock.calls[0]?.[0][0]?.workId).toBe(smallWork)
 	})
 
+	it("does not build an offline large group before giving the next group a turn", async () => {
+		const smallWork = "66666666-6666-4666-8666-666666666666"
+		await seedLargeLumbrookGroup(smallWork)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation(async (path) => {
+			if (path === "/lumbrook/platform/.git") throw new Error("offline")
+			return { ...repository, name: "lumbrook/platform" }
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const calledWorks = vi.mocked(eventBuilder.buildEvents).mock.calls.map(([stored]) => stored[0]?.workId)
+		expect(calledWorks).toEqual([smallWork])
+		const pending = backendFor(directory).markedRecords()
+		expect(pending.some((row) => row.workId === largeWork)).toBe(true)
+		expect(pending.some((row) => row.workId === smallWork)).toBe(false)
+	})
+
+	it("skips repository preflight for a B-shaped group with few requests", async () => {
+		await seedLargeLumbrookGroup(undefined, 320, 3)
+		const backend = backendFor(directory)
+		const pages = vi.spyOn(backend, "readRecordPage")
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
+			...repository,
+			name: "lumbrook/platform",
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(backend.recordCount(largeWork)).toBe(1280)
+		expect(eventBuilder.buildEvents).toHaveBeenCalled()
+		expect(pages.mock.calls.filter(([, , , , , type]) => type === "request")).toHaveLength(0)
+	})
+
+	it("backs off a large group after its build deadline without losing its markers", async () => {
+		await seedLargeLumbrookGroup()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 3 * 60_000 + 1)
+			return { accounts: [], units: [], unresolved: [] }
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		const backend = backendFor(directory)
+		expect(backend.markedRecords().some((row) => row.workId === largeWork)).toBe(true)
+		expect(backend.outboxStatus()).toEqual([])
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		clock.mockReturnValue(start + 3 * 60_000 + 60_000)
+		await run()
+		expect(eventBuilder.buildEvents).not.toHaveBeenCalled()
+		expect(backend.markedRecords().some((row) => row.workId === largeWork)).toBe(true)
+		const retryStart = start + 3 * 60_000 + 6 * 60_000
+		clock.mockReturnValue(retryStart)
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(retryStart + 3 * 60_000 + 1)
+			return { accounts: [], units: [], unresolved: [] }
+		})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
+		vi.mocked(eventBuilder.buildEvents).mockClear()
+		clock.mockReturnValue(retryStart + 3 * 60_000 + 60_000)
+		await run()
+		expect(eventBuilder.buildEvents).not.toHaveBeenCalled()
+	})
+
 	it("clears settled markers in the transaction that observes the final event chunk", async () => {
 		await seedLinked()
 		const backend = backendFor(directory)
@@ -1031,6 +1138,31 @@ describe("incremental translation", () => {
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
 		expect(backend.markedRecords()).toEqual([])
+	})
+	it("keeps pending markers and the outbox unchanged when a large build is aborted mid-yield", async () => {
+		await seedLargeLumbrookGroup()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
+			provider: "github",
+			host: "github.com",
+			id: "42",
+			name: "lumbrook/platform",
+		})
+		const controller = new AbortController()
+		const backend = backendFor(directory)
+		let started = false
+		vi.mocked(eventBuilder.buildEventsSteps).mockImplementationOnce(function* () {
+			started = true
+			setImmediate(() => controller.abort(new Error("test cancellation")))
+			for (let index = 0; index < 500_000; index++) yield
+			throw new Error("aborted generator completed")
+		})
+		await reconcileReporting(directory, "/project", controller.signal, () => {})
+		expect(started).toBe(true)
+		expect(controller.signal.aborted).toBe(true)
+		expect(backend.markedRecords()).toHaveLength(1001)
+		expect(backend.outboxStatus()).toEqual([])
+		expect(outbox.observeEvents).not.toHaveBeenCalled()
+		expect((await readReportingState(directory)).error).toBeUndefined()
 	})
 })
 

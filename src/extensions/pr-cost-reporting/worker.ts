@@ -37,7 +37,13 @@ import {
 	pendingBatch,
 	readOutboxStatus,
 } from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend, readGroupStoredRecordsAsync } from "./ledger/records.js"
+import {
+	backendFor,
+	type OutboxBatch,
+	type RecordBackend,
+	readGroupRequestRecordsAsync,
+	readGroupStoredRecordsAsync,
+} from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
 	readReportingState,
@@ -373,7 +379,11 @@ export async function reconcileReporting(
 const CHUNK_UNITS = 100
 /** Large groups use a longer local build, but yield and keep the original lease and cancellation. */
 const COOPERATIVE_RECORDS = 1000
+/** Auxiliary evidence alone should not trigger request-only repository preflight. */
+const PREFLIGHT_REQUESTS = 1000
 const GROUP_BUILD_MS = 3 * 60_000
+const GROUP_BUILD_BACKOFF_MS = 5 * MINUTE_MS
+const GROUP_BUILD_BACKOFF_NOTE = "translation-build-backoff-v1:"
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** Each group's committed units survive later groups running before it resumes. */
@@ -381,6 +391,7 @@ const PROGRESS_NOTE = "translation-progress-v2:"
 /** Next group to try after one used the rest of a pass. */
 const NEXT_GROUP_NOTE = "translation-next-group"
 class CaptureTimeLimit extends Error {}
+class GroupBuildTimeLimit extends CaptureTimeLimit {}
 
 /**
  * Translates the works whose records changed since their last translation into events, one connected group at a
@@ -433,8 +444,15 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, works[0])
 			return
 		}
+		const backoffName = `${GROUP_BUILD_BACKOFF_NOTE}${groupKey(works)}`
+		const backoff = backend.getNote("agent", backoffName)
+		if (backoff && Date.now() < Number(backoff)) {
+			waiting = true
+			continue
+		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
 		let translated: boolean | undefined
+		let buildTimedOut = false
 		try {
 			translated = await translateGroup(
 				agentDir,
@@ -448,8 +466,13 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 				assertLease,
 			)
 		} catch (error) {
-			if (!(error instanceof CaptureTimeLimit)) throw error
+			if (error instanceof GroupBuildTimeLimit) {
+				backend.putNote("agent", backoffName, String(Date.now() + GROUP_BUILD_BACKOFF_MS))
+				buildTimedOut = true
+				translated = true
+			} else if (!(error instanceof CaptureTimeLimit)) throw error
 		}
+		if (backoff && translated !== undefined && !buildTimedOut) backend.deleteNote("agent", backoffName)
 		if (translated === undefined) {
 			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, ordered[(index + 1) % ordered.length][0])
 			return
@@ -530,9 +553,25 @@ async function translateGroup(
 		if (!cooperative) return check()
 		assertLease()
 		signal.throwIfAborted()
-		if (Date.now() >= groupDeadline) throw new CaptureTimeLimit("PR reporting group build time limit exceeded")
+		if (Date.now() >= groupDeadline) throw new GroupBuildTimeLimit("PR reporting group build time limit exceeded")
 	}
 	const through = fast?.through ?? backend.recordWatermark()
+	if (
+		cooperative &&
+		!fast &&
+		works.reduce((count, workId) => count + backend.requestCount(workId), 0) > PREFLIGHT_REQUESTS
+	) {
+		const requests = await readGroupRequestRecordsAsync(agentDir, works, groupCheck)
+		const lookup = await repositoryIdentities(
+			agentDir,
+			requests,
+			undefined,
+			Date.now() + PASS_MS,
+			AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)]),
+			groupCheck,
+		)
+		if (!lookup.settled) return true
+	}
 	const stored = fast
 		? works.flatMap((workId) => [
 				...fast.cache.context.filter((row) => row.workId === workId),
@@ -625,7 +664,10 @@ async function translateGroup(
 			: 0
 	const observed = new Set<string>()
 	while (done < units.length) {
-		if (Date.now() >= groupDeadline - CHUNK_RESERVE_MS) return undefined
+		if (Date.now() >= groupDeadline - CHUNK_RESERVE_MS) {
+			if (cooperative && done === 0) throw new GroupBuildTimeLimit("PR reporting group build time limit exceeded")
+			return undefined
+		}
 		const chunk = units.slice(done, done + CHUNK_UNITS)
 		const byAccount = new Map<string, Fact[]>()
 		for (const unit of chunk)
@@ -685,7 +727,7 @@ async function translateGroup(
 async function repositoryIdentities(
 	agentDir: string,
 	records: WorkRecord[],
-	report: PullRequestCostReport,
+	report: PullRequestCostReport | undefined,
 	deadline: number,
 	bounded: AbortSignal,
 	check: () => void,
@@ -694,15 +736,21 @@ async function repositoryIdentities(
 	const needed = new Set<string>()
 	const requestRepositories = new Map<string, Set<string>>()
 	for (const row of records)
-		if (row.type === "request" && typeof row.requestId === "string" && isWorkScope(row.scope)) {
+		if (row.type === "request" && typeof row.requestId === "string" && row.requestId && isWorkScope(row.scope)) {
 			const values = requestRepositories.get(row.requestId) ?? new Set<string>()
 			values.add(row.scope.repository)
 			requestRepositories.set(row.requestId, values)
 		}
-	for (const request of report.requests) {
-		check()
-		for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
-	}
+	if (report)
+		for (const request of report.requests) {
+			check()
+			for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
+		}
+	else
+		for (const values of requestRepositories.values()) {
+			check()
+			for (const repository of values) needed.add(repository)
+		}
 	for (const [key, cached] of repositoryCache)
 		if (Date.now() - cached.checkedAt >= REPOSITORY_CACHE_MS) repositoryCache.delete(key)
 	const cacheKey = (repository: string) => JSON.stringify([agentDir, repository])

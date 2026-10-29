@@ -673,6 +673,21 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 		reads = 0
 		const foreign = effectiveClaim(backend, account, fact.entityId)
 		const foreignReads = reads
+		const projectionName = JSON.stringify([account, fact.entityId])
+		backend.deleteNote("pr-cost-effective-claims-v1", projectionName)
+		const originalPutNote = backend.putNote.bind(backend)
+		backend.putNote = (owner, name, body) => {
+			if (owner === "pr-cost-effective-claims-v1") throw new Error("derived note unavailable")
+			originalPutNote(owner, name, body)
+		}
+		let readFailurePreservesClaim: boolean
+		try {
+			readFailurePreservesClaim =
+				JSON.stringify(effectiveClaim(backend, account, fact.entityId)) === JSON.stringify(foreign) &&
+				backend.getNote("pr-cost-effective-claims-v1", projectionName) === undefined
+		} finally {
+			backend.putNote = originalPutNote
+		}
 		const latest = backend.latestOutboxEvent(account, fact.entityId)
 		if (!latest) throw new Error("Missing foreign-write fixture")
 		const pending = pendingBatch(agent, account, fence)
@@ -694,11 +709,38 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 		)
 		reads = 0
 		const restored = effectiveClaim(backend, account, fact.entityId)
+		const blockedReads = reads
+		const nonHeadAccount = "lumbrook-non-head"
+		observeEvents(agent, nonHeadAccount, [fact], [], fence)
+		observeEvents(
+			agent,
+			nonHeadAccount,
+			[{ ...fact, claimState: "active", usage: { ...fact.usage, actualModel: "middle" } }],
+			[],
+			fence,
+		)
+		const middle = backend.latestOutboxEvent(nonHeadAccount, fact.entityId)
+		if (!middle) throw new Error("Missing middle claim fixture")
+		observeEvents(agent, nonHeadAccount, [{ ...fact, usage: { ...fact.usage, actualModel: "last" } }], [], fence)
+		const head = backend.latestOutboxEvent(nonHeadAccount, fact.entityId)
+		const beforeBlock = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		const blocked = backend.blockOutboxEvent(nonHeadAccount, middle.id, middle.hash, "test conflict")
+		const afterBlock = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		backend.deleteNote("pr-cost-effective-claims-v1", JSON.stringify([nonHeadAccount, fact.entityId]))
+		const freshFold = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		const nonHeadFoldMatches =
+			blocked &&
+			beforeBlock?.claimState === "active" &&
+			afterBlock?.claimState === undefined &&
+			head?.id === afterBlock?.id &&
+			JSON.stringify(afterBlock) === JSON.stringify(freshFold)
 		out({
 			unchangedReads,
 			cachedParses,
 			foreignReads,
-			blockedReads: reads,
+			blockedReads,
+			readFailurePreservesClaim,
+			nonHeadFoldMatches,
 			currentMatches:
 				warm?.usage?.actualModel === "second" &&
 				repeated.every((event) => JSON.stringify(event) === JSON.stringify(warm)) &&
@@ -1399,9 +1441,15 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 async function knownAsyncReadRegressions(agent: string, recordJson: string, stored = false): Promise<void> {
-	const { backendFor, closeBackends, recordHashOf, readStoredRecordsAsync, rebuildWork } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-	)
+	const {
+		backendFor,
+		closeBackends,
+		recordHashOf,
+		readGroupRequestRecordsAsync,
+		readGroupStoredRecordsAsync,
+		readStoredRecordsAsync,
+		rebuildWork,
+	} = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const readAsync = stored
 		? async (signal: AbortSignal): Promise<WorkRecord[]> =>
 				(await readStoredRecordsAsync(agent, () => signal.throwIfAborted())).map((row) => JSON.parse(row.body))
@@ -1485,10 +1533,59 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string, stor
 	const snapshot = await readAsync(new AbortController().signal)
 	backend.readRecordPage = page
 	const next = await readAsync(new AbortController().signal)
-	const afterCapture = read({})
+	const other: WorkRecord = {
+		...base,
+		type: "request",
+		workId: `${base.workId}-other`,
+		requestId: "native-other-work",
+		scope: null,
+	}
+	capture(agent, other, sourcePath)
+	const groupedBefore = [...read({ workId: other.workId }), ...read({ workId: base.workId })]
+	const late: WorkRecord = { ...base, type: "request", requestId: "native-after-work-page", scope: null }
+	let workPages = 0
+	let typePages = 0
+	let insertedBetweenPages = false
+	backend.readRecordPage = (after, through, limit, checkBudget, workId, type) => {
+		const rows = page(after, through, limit, checkBudget, workId, type)
+		if (workId === base.workId && type === undefined) {
+			workPages++
+			if (!insertedBetweenPages) {
+				insertedBetweenPages = true
+				setImmediate(() => capture(agent, late, sourcePath))
+			}
+		}
+		if (workId === base.workId && type === "request") typePages++
+		return rows
+	}
+	let grouped: Awaited<ReturnType<typeof readGroupStoredRecordsAsync>>
+	let requestRows: Awaited<ReturnType<typeof readGroupRequestRecordsAsync>>
+	let nextGrouped: Awaited<ReturnType<typeof readGroupStoredRecordsAsync>>
+	try {
+		grouped = await readGroupStoredRecordsAsync(agent, [other.workId, base.workId], () => {})
+		requestRows = await readGroupRequestRecordsAsync(agent, [other.workId, base.workId], () => {})
+		nextGrouped = await readGroupStoredRecordsAsync(agent, [other.workId, base.workId], () => {})
+	} finally {
+		backend.readRecordPage = page
+	}
+	const groupedRequests = grouped.map((row) => JSON.parse(row.body) as WorkRecord)
+	const expectedRequests = nextGrouped
+		.map((row) => JSON.parse(row.body) as WorkRecord)
+		.filter((row) => row.type === "request")
+	const finalRows = read({})
 	closeBackends()
 	const reopened = backendFor(agent).readRecords({})
 	out({
+		workPagePinned:
+			JSON.stringify(grouped.map((row) => row.recordHash)) ===
+				JSON.stringify(groupedBefore.map((row) => row.recordHash)) && insertedBetweenPages,
+		workPageNextRead: nextGrouped.length === grouped.length + 1 && nextGrouped.at(-1)?.body === JSON.stringify(late),
+		workPageFiltered:
+			workPages > 1 &&
+			typePages > 1 &&
+			groupedRequests[0]?.workId === other.workId &&
+			groupedRequests.slice(1).every((row) => row.workId === base.workId) &&
+			JSON.stringify(requestRows) === JSON.stringify(expectedRequests),
 		observerEntered: visited > 0,
 		callbackRan,
 		cancelled,
@@ -1498,7 +1595,7 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string, stor
 		captureCommitted: committed.length === before.length + 1,
 		snapshotComplete: JSON.stringify(snapshot) === JSON.stringify(committed.map((row) => JSON.parse(row.body))),
 		nextReadSeesCapture: next.length === snapshot.length + 1 && next.at(-1)?.requestId === "native-during-page",
-		reopenedComplete: JSON.stringify(reopened) === JSON.stringify(afterCapture),
+		reopenedComplete: JSON.stringify(reopened) === JSON.stringify(finalRows),
 		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
 	})
 	closeBackends()

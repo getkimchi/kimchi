@@ -248,16 +248,18 @@ export function createMemoryRecords(): RecordBackend {
 				)
 			}),
 		recordWatermark: () => order.length,
-		readRecordPage: (after, through, limit, checkBudget, workId) => {
+		readRecordPage: (after, through, limit, checkBudget, workId, type) => {
 			const page: ReturnType<RecordBackend["readRecordPage"]> = []
 			for (let index = after; index < Math.min(through, order.length) && page.length < limit; index++) {
 				checkBudget?.()
 				const row = order[index]
-				if (workId === undefined || row.workId === workId) page.push({ ...row, position: index + 1 })
+				if ((workId === undefined || row.workId === workId) && (type === undefined || row.type === type))
+					page.push({ ...row, position: index + 1 })
 			}
 			return page
 		},
 		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
+		requestCount: (workId) => order.filter((row) => row.workId === workId && row.type === "request").length,
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)
 			return (byLog?.get("plans")?.size ?? 0) > 0 || (byLog?.get("commits")?.size ?? 0) > 0

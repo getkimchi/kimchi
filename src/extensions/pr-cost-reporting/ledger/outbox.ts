@@ -209,7 +209,12 @@ export function effectiveClaim(backend: RecordBackend, accountKey: string, entit
 	let effective: Event | undefined
 	for (const row of backend.outboxEntityEvents(accountKey, entityId))
 		if (!row.blocked) effective = projectClaim(unpack(row), effective)
-	if (effective) saveClaimProjection(backend, accountKey, entityId, head, effective)
+	if (effective)
+		try {
+			saveClaimProjection(backend, accountKey, entityId, head, effective)
+		} catch {
+			// A derived note must not prevent a validated outbox claim from being read.
+		}
 	return effective
 }
 

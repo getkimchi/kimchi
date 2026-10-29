@@ -134,8 +134,11 @@ export interface RecordBackend {
 		limit: number,
 		checkBudget?: () => void,
 		workId?: string,
+		type?: string,
 	): PositionedRecord[]
 	recordCount(workId?: string): number
+	/** Counts request evidence without materializing the work's records. */
+	requestCount(workId: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
 	hasNote(workId: string, name: string): boolean
@@ -289,6 +292,7 @@ async function readRecordPrefixAsync<T>(
 	checkBudget: () => void,
 	project: (row: StoredRecord) => T | undefined,
 	workIds?: readonly string[],
+	type?: string,
 ): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
@@ -299,7 +303,7 @@ async function readRecordPrefixAsync<T>(
 		while (after < through) {
 			await setImmediate()
 			checkBudget()
-			const page = backend.readRecordPage(after, through, 128, checkBudget, workId)
+			const page = backend.readRecordPage(after, through, 128, checkBudget, workId, type)
 			if (!page.length) break
 			for (const row of page) {
 				checkBudget()
@@ -325,6 +329,26 @@ export function readGroupStoredRecordsAsync(
 	checkBudget: () => void,
 ): Promise<StoredRecord[]> {
 	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, workIds)
+}
+
+export function readGroupRequestRecordsAsync(
+	agentDir: string,
+	workIds: readonly string[],
+	checkBudget: () => void,
+): Promise<WorkRecord[]> {
+	return readRecordPrefixAsync(
+		agentDir,
+		checkBudget,
+		(row) => {
+			try {
+				return JSON.parse(row.body) as WorkRecord
+			} catch {
+				return undefined
+			}
+		},
+		workIds,
+		"request",
+	)
 }
 
 export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
@@ -642,9 +666,18 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const recordPageWork = db.query<PositionedRecord, [string, number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
+	const recordPageType = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE type = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
+	const recordPageWorkType = db.query<PositionedRecord, [string, string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records WHERE work_id = ?",
+	)
+	const requestCountWork = db.query<{ count: number }, [string]>(
+		"SELECT COUNT(*) AS count FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = 'request'",
 	)
 	const dirty = db.query<{ work_id: string }, []>("SELECT work_id FROM work_dirty")
 	const markDirty = db.query("INSERT OR IGNORE INTO work_dirty (work_id) VALUES (?)")
@@ -781,22 +814,29 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			return rows
 		},
 		recordWatermark: () => watermark.get()?.position ?? 0,
-		readRecordPage: (after, through, limit, checkBudget, workId) => {
+		readRecordPage: (after, through, limit, checkBudget, workId, type) => {
 			checkBudget?.()
 			const rows: PositionedRecord[] = []
 			try {
 				const source =
 					workId === undefined
-						? recordPage.iterate(after, through, limit)
-						: recordPageWork.iterate(workId, after, through, limit)
+						? type === undefined
+							? recordPage.iterate(after, through, limit)
+							: recordPageType.iterate(type, after, through, limit)
+						: type === undefined
+							? recordPageWork.iterate(workId, after, through, limit)
+							: recordPageWorkType.iterate(workId, type, after, through, limit)
 				for (const row of source) {
 					checkBudget?.()
 					rows.push(row)
 				}
 			} catch (error) {
 				// The same Bun cursor-reset rule as the synchronous replay above.
-				if (workId === undefined) recordPage.get(after, through, limit)
-				else recordPageWork.get(workId, after, through, limit)
+				if (workId === undefined) {
+					if (type === undefined) recordPage.get(after, through, limit)
+					else recordPageType.get(type, after, through, limit)
+				} else if (type === undefined) recordPageWork.get(workId, after, through, limit)
+				else recordPageWorkType.get(workId, type, after, through, limit)
 				throw error
 			}
 			return rows
@@ -804,6 +844,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
 		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),
+		requestCount: (workId) => requestCountWork.get(workId)?.count ?? 0,
 		hasNote: (workId, name) => hasNote.get(workId, name) != null,
 		getNote: (workId, name) => getNote.get(workId, name)?.body,
 		putNote: (workId, name, body) => putNote.run(workId, name, body, Date.now()),
