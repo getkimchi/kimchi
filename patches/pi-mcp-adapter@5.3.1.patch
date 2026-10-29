@@ -1576,3 +1576,255 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..919630995231617af84a175f00724757
      }
      if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
        return true;
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
+diff --git a/init.ts b/init.ts
+index 247d300..b4ee7e6 100644
+--- a/init.ts
++++ b/init.ts
+@@ -725,9 +725,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+   throwIfAborted(ownedSignal);
+   const connection = state.manager.getConnection(serverName);
+-  if (connection?.status === "needs-auth") {
++  if (connection?.status === "needs-auth"
++    && hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++    // A user-initiated interactive flow owns this needs-auth episode right
++    // now; racing it from a tool call would create competing OAuth owners.
+     return false;
+   }
++  // Otherwise a needs-auth route may be satisfiable again after an
++  // out-of-band re-auth (settings probe, another chat): fall through to the
++  // normal connect path, which re-reads the shared credential store.
+   if (connection?.status === "connected") {
+     await state.manager.ensureListen?.(serverName, connection);
+     updateServerMetadata(state, serverName);
+@@ -736,7 +742,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   }
+ 
+   const failedAgo = getFailureAgeSeconds(state, serverName);
+-  if (failedAgo !== null) return false;
++  if (failedAgo !== null && connection?.status !== "needs-auth") return false;
+ 
+   const definition = state.config.mcpServers[serverName];
+   if (!definition || isServerDisabled(definition)) return false;
+@@ -746,7 +752,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+       const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
+       state.ui.setStatus("mcp", status);
+     }
+-    const newConnection = await state.manager.connect(serverName, definition, ownedSignal);
++    const newConnection = connection?.status === "needs-auth"
++      ? await state.manager.reconnect(serverName, definition, connection, ownedSignal)
++      : await state.manager.connect(serverName, definition, ownedSignal);
+     if (newConnection.status === "needs-auth") {
+       return false;
+     }
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 6abc16f..af02f32 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { formatAuthRequiredMessage, formatMcpStatus, normalizeToolArguments, resolveServerUrl, truncateAtWord, withToolCallIdMeta } from "./utils.ts";
+-import { authenticate, completeAuthFromInput, getAuthStatus, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, completeAuthFromInput, getAuthStatus, hasPendingAuth, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { callToolViaTaskSession } from "./mcp-tasks.ts";
+ import { callToolPausingForElicitation } from "./elicitation-handler.ts";
+@@ -1488,6 +1488,23 @@ export async function executeCall(
+       }
+     }
+ 
++    // An out-of-band re-auth (settings probe, another chat) may have written
++    // a fresh credential since this episode started; reconnect re-reads the
++    // shared store. Skipped while an interactive flow owns the episode so
++    // they don't race as competing OAuth owners.
++    const definition = state.config.mcpServers[serverName];
++    if (connection?.status === "needs-auth"
++      && definition !== undefined
++      && !isServerDisabled(definition)
++      && !hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime)) {
++      try {
++        connection = await state.manager.reconnect(serverName, definition, connection, ownedSignal);
++      } catch (error) {
++        if (isAbortError(error, ownedSignal)) throw error;
++        // Fall through to the auth-required guidance below.
++      }
++    }
++
+     if (connection?.status === "needs-auth") {
+       const message = getAuthRequiredMessage(state, serverName);
+       return {
+@@ -1665,6 +1682,7 @@ export async function executeCall(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         serverName,
+         async (conn) => {
+@@ -1710,6 +1728,7 @@ export async function executeCall(
+         config: state.config,
+         ...(ownedSignal ? { signal: ownedSignal } : {}),
+         onNeedsAuth: recoverAuthConnection,
++        hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+       },
+       serverName,
+       async (conn) => {
+diff --git a/session-recovery.ts b/session-recovery.ts
+index 286242f..7878594 100644
+--- a/session-recovery.ts
++++ b/session-recovery.ts
+@@ -77,6 +77,13 @@ export interface SessionRecoveryDeps {
+   config: McpConfig;
+   signal?: AbortSignal;
+   onNeedsAuth?: (serverName: string) => Promise<ServerConnection | undefined>;
++  /**
++   * Reports that an interactive OAuth flow for this server is in flight.
++   * Set by call-path sites; when true the 401 recovery stays out of the way
++   * (errors surface unchanged) instead of racing the interactive flow with a
++   * reconnect that re-reads a store the flow is still writing to.
++   */
++  hasPendingAuth?: (serverName: string) => boolean;
+ }
+ 
+ /**
+@@ -113,8 +120,20 @@ export async function withSessionRecovery<T>(
+     if (definition && supportsOAuth(definition) && unauthorized) {
+       invalidateAuthEntryCache(serverName);
+     }
+-    // A provider token rejected or gone reconnects, which ends in needs-auth when Pi has no token.
+-    if (!isTerminatedSession(err, hadSessionId) && !(unauthorized && typeof definition?.auth === "object")) {
++    // A provider or OAuth token rejected or gone reconnects, which ends in
++    // needs-auth when Pi has no token. supportsOAuth covers plain OAuth
++    // definitions (auth: "oauth" or auto-detected), so an out-of-band
++    // re-auth (settings probe, another session) heals the live session on
++    // the next tool call.
++    if (
++      !isTerminatedSession(err, hadSessionId)
++      // Skip the healing reconnect while an interactive flow owns the
++      // episode, mirroring the call-path gates' hasPendingAuth guard.
++      && !(unauthorized
++        && definition !== undefined
++        && (typeof definition.auth === "object" || supportsOAuth(definition))
++        && !deps.hasPendingAuth?.(serverName))
++    ) {
+       throw err;
+     }
+ 
+diff --git a/direct-tools.ts b/direct-tools.ts
+index 8f0c1df..5028ff7 100644
+--- a/direct-tools.ts
++++ b/direct-tools.ts
+@@ -11,7 +11,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { isServerDisabled } from "./types.ts";
+-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, hasPendingAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { formatAuthRequiredMessage, normalizeToolArguments, resolveServerUrl, withToolCallIdMeta } from "./utils.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
+@@ -284,6 +284,7 @@ export function createDirectToolExecutor(
+             config: state.config,
+             ...(ownedSignal ? { signal: ownedSignal } : {}),
+             onNeedsAuth: recoverAuthConnection,
++            hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+           },
+           spec.serverName,
+           async (conn) => {
+@@ -327,6 +328,7 @@ export function createDirectToolExecutor(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         spec.serverName,
+         async (conn) => {
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
+#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
+#     drive ui.select/ui.input but not AltScreen overlays)
+diff --git a/commands.ts b/commands.ts
+index 40bb5f9..8a336ee 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -878,6 +878,47 @@ export async function openMcpPanel(
+   return { configChanged };
+ }
+ 
++/**
++ * Remote-capable `/mcp-auth` fallback for modes without TUI overlays (rpc, ACP).
++ *
++ * `canRenderPanel()` gates the AltScreen picker on `ctx.mode === "tui"`, so
++ * protocol hosts used to hit a dead end on bare `/mcp-auth`. Those hosts do
++ * implement the dialog primitives (`ui.select`, `ui.input`), so ask for the
++ * server with a plain select and run the same per-server authenticateServer
++ * flow that `/mcp-auth <server>` uses — including the post-auth reconnect.
++ */
++async function openMcpAuthFallback(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++): Promise<PanelFlowResult> {
++  if (state.programmaticConfig) {
++    ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
++    return { configChanged: false };
++  }
++
++  const config = state.config;
++  const oauthServers = Object.entries(config.mcpServers).filter(
++    ([, definition]) => !isServerDisabled(definition) && supportsOAuth(definition),
++  );
++  if (oauthServers.length === 0) {
++    ctx.ui.notify("No OAuth-capable MCP servers are configured.", "warning");
++    return { configChanged: false };
++  }
++
++  const names = oauthServers.map(([name]) => name);
++  let serverName: string | undefined = names[0];
++  if (names.length > 1) {
++    serverName = await ctx.ui.select("Select an OAuth MCP server to authenticate", names);
++  }
++  if (!serverName) return { configChanged: false };
++
++  const result = await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
++  if (result.ok) {
++    await reconnectServer(state, ctx, serverName);
++  }
++  return { configChanged: false };
++}
++
+ export async function openMcpAuthPanel(
+   state: McpExtensionState,
+   pi: ExtensionAPI,
+@@ -886,8 +927,7 @@ export async function openMcpAuthPanel(
+ ): Promise<PanelFlowResult> {
+   if (!ctx.hasUI) return { configChanged: false };
+   if (!canRenderPanel(ctx)) {
+-    ctx.ui.notify(`The interactive MCP auth panel is only available in the terminal UI (current mode: ${ctx.mode}). Use /mcp-auth <server> to authenticate a specific server.`, "info");
+-    return { configChanged: false };
++    return openMcpAuthFallback(state, ctx);
+   }
+   if (state.programmaticConfig) {
+     ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+diff --git a/package.json b/package.json
+index 74e2d87..8b69041 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,11 @@
+       "import": "./oauth.ts",
+       "default": "./oauth.ts"
+     },
++    "./commands": {
++      "types": "./commands.ts",
++      "import": "./commands.ts",
++      "default": "./commands.ts"
++    },
+     "./host-managed": {
+       "types": "./host-managed.ts",
+       "import": "./host-managed.ts",
