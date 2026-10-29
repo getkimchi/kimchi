@@ -412,6 +412,10 @@ describe("compaction-resilience handler", () => {
 		const result = await handler(makeEvent(preparation), ctx)
 
 		expect(compactImpl).toHaveBeenCalledTimes(MAX_SUMMARIZATION_ATTEMPTS)
+		// The final attempt ran on the newest-half range.
+		const lastPrep = compactImpl.mock.calls[MAX_SUMMARIZATION_ATTEMPTS - 1]?.[0] as CompactionPreparation
+		expect(lastPrep.messagesToSummarize).toHaveLength(4)
+		expect(lastPrep.messagesToSummarize[0]).toBe(preparation.messagesToSummarize[4])
 		const compaction = result?.compaction as CompactionResult
 		expect(compaction.firstKeptEntryId).toBe("keep-1")
 		expect(compaction.tokensBefore).toBe(652447)

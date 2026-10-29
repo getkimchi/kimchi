@@ -55,8 +55,8 @@ import { compact } from "@earendil-works/pi-coding-agent"
 /** Upstream preparation type, derived from the exported `compact()` signature. */
 export type CompactionPreparation = Parameters<typeof compact>[0]
 
-/** Summarization attempts per compaction: session-level attempt, budget escalation, two scope reductions. */
-export const MAX_SUMMARIZATION_ATTEMPTS = 4
+/** Summarization attempts per compaction: session-level attempt, budget escalation, one scope reduction. */
+export const MAX_SUMMARIZATION_ATTEMPTS = 3
 
 /** Escalation multiplier for `reserveTokens` on the second attempt (Claude
  * Code's pattern: small default, escalate the output budget on insufficiency
@@ -273,9 +273,11 @@ async function handleBeforeCompact(
 				}
 			}
 			if (!changed) {
-				// Fractions always apply to the original range so each retry cuts
-				// strictly deeper regardless of where boundaries landed last time.
-				const reducedRange = reduceSummarizedRange(originalMessages, reduced ? 0.75 : 0.5)
+				// One scope-reduction rung: drop the oldest half of the original
+				// range, realigned to a turn boundary. Fractions apply to the
+				// original range so the cut is strictly deeper than attempt 1's
+				// full scope regardless of where boundaries landed.
+				const reducedRange = reduceSummarizedRange(originalMessages, 0.5)
 				if (reducedRange.length < messagesToSummarize.length) {
 					messagesToSummarize = reducedRange
 					reduced = true
