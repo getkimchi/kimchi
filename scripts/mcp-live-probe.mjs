@@ -17,7 +17,9 @@
  *      "redirectUriPrefix": "http://127.0.0.1:" }]
  *
  * `clientId` present → fixed-client flow (stored-redirect/localhost default);
- * absent → dynamic client registration (loopback IP literal). `google: true`
+ * absent → dynamic client registration (loopback IP literal). Optional
+ * `redirectUri` (a configured redirect, e.g. a hosted callback) and `scope`
+ * pass straight through to the probe's OAuth config. `google: true`
  * additionally expects access_type=offline and prompt=consent on the URL.
  *
  * Entry names appear in this script's output; if the inventory itself is
@@ -94,7 +96,7 @@ function redactUrl(rawUrl) {
  * Check the provider's direct answer to the authorize URL (no sign-in).
  * `transient` marks network errors and 5xx responses — the entry retries once.
  */
-export function checkProviderAnswer(answer) {
+export function checkProviderAnswer(answer, baseUrl) {
 	const { status, location, body } = answer
 	if (answer.networkError !== undefined) return { failures: [`network error: ${answer.networkError}`], transient: true }
 	if (status >= 500) return { failures: [`provider answered HTTP ${status}`], transient: true }
@@ -104,7 +106,7 @@ export function checkProviderAnswer(answer) {
 	}
 	if (status >= 300) {
 		if (!location) return { failures: ["provider redirect has no Location header"], transient: false }
-		const redirectUrl = new URL(location)
+		const redirectUrl = new URL(location, baseUrl)
 		const error = redirectUrl.searchParams.get("error")
 		if (error) return { failures: [`provider redirect carries error=${error}`], transient: false }
 		return { failures: [], transient: false }
@@ -142,10 +144,13 @@ export async function captureAuthorizeUrl(entry, options = {}) {
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-live-probe-"))
 	const binDir = join(homeDir, "browser-bin")
 	const { urlLog } = writeRecordingBrowserDriver(binDir)
+	const oauth = entry.clientId ? { clientId: entry.clientId } : {}
+	if (entry.redirectUri !== undefined) oauth.redirectUri = entry.redirectUri
+	if (entry.scope !== undefined) oauth.scope = entry.scope
 	const server = {
 		url: entry.url,
 		auth: "oauth",
-		oauth: entry.clientId ? { clientId: entry.clientId } : { scope: "mcp:tools" },
+		oauth,
 	}
 	const child = spawn(BINARY, ["mcp", "probe", "--json"], {
 		env: probeChildEnv({ homeDir, binDir }),
@@ -201,7 +206,7 @@ export async function runProviderEntry(entry) {
 		if (urlFailures.length > 0) return result
 		const answer = await fetchProviderAnswer(url)
 		result.status = answer.networkError === undefined ? answer.status : "network-error"
-		const { failures, transient } = checkProviderAnswer(answer)
+		const { failures, transient } = checkProviderAnswer(answer, url)
 		result.checks.providerAnswer = failures.length === 0 ? "pass" : failures
 		result.ok = failures.length === 0
 		if (transient) result.transient = true
@@ -225,11 +230,20 @@ export function parseProviders(raw) {
 			throw new Error(`${at} (${entry.name}): url must be an https:// string (http is only allowed for loopback hosts)`)
 		if (typeof entry?.redirectUriPrefix !== "string" || entry.redirectUriPrefix.length === 0)
 			throw new Error(`${at} (${entry.name}): redirectUriPrefix must be a non-empty string`)
+		if (
+			entry?.redirectUri !== undefined &&
+			!(typeof entry?.redirectUri === "string" && /^https?:\/\//.test(entry.redirectUri))
+		)
+			throw new Error(`${at} (${entry.name}): redirectUri must be an http(s) string when present`)
+		if (entry?.scope !== undefined && typeof entry?.scope !== "string")
+			throw new Error(`${at} (${entry.name}): scope must be a string when present`)
 		return {
 			name: entry.name,
 			url: entry.url,
 			clientId: typeof entry?.clientId === "string" ? entry.clientId : undefined,
 			redirectUriPrefix: entry.redirectUriPrefix,
+			...(entry?.redirectUri !== undefined ? { redirectUri: entry.redirectUri } : {}),
+			...(entry?.scope !== undefined ? { scope: entry.scope } : {}),
 			google: entry?.google === true,
 		}
 	})
@@ -292,10 +306,24 @@ function selfTest() {
 		["authorize URL has no PKCE code_challenge"],
 	)
 
-	expect("sign-in redirect passes", checkProviderAnswer({ status: 302, location: "https://provider/signin?next=x" }), {
-		failures: [],
-		transient: false,
-	})
+	expect(
+		"sign-in redirect passes",
+		checkProviderAnswer({ status: 302, location: "https://provider/signin?next=x" }, "https://as.example/authorize"),
+		{
+			failures: [],
+			transient: false,
+		},
+	)
+	expect(
+		"relative redirect resolves against the request URL",
+		checkProviderAnswer({ status: 302, location: "/login?next=x" }, "https://as.example/authorize"),
+		{ failures: [], transient: false },
+	)
+	expect(
+		"relative redirect error fails",
+		checkProviderAnswer({ status: 302, location: "/err?error=invalid_client" }, "https://as.example/authorize"),
+		{ failures: ["provider redirect carries error=invalid_client"], transient: false },
+	)
 	expect(
 		"redirect error fails",
 		checkProviderAnswer({ status: 302, location: "https://provider/error?error=redirect_uri_mismatch" }),
