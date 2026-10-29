@@ -13,7 +13,7 @@ in `src/resume-by-name.ts`.
 ### Accepted forms
 
 | Form               | Example                   |
-| ------------------- | ------------------------- |
+| ------------------ | ------------------------- |
 | `-r <name>`         | `-r "parser spike"`       |
 | `--resume <name>`   | `--resume "parser spike"` |
 | `--resume=<name>`   | `--resume=parser-spike`   |
