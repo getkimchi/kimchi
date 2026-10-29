@@ -38,6 +38,8 @@ interface McpFixtureEventDetails {
 	oauth_server_metadata_requested: { accept?: string }
 	oauth_client_registered: { redirectUris?: string[]; accept?: string }
 	oauth_strict_accept_rejected: { path: string; accept?: string }
+	oauth_resource_metadata_failed: { path: string; status: number }
+	oauth_origin_fallback_attempted: { path: string }
 	oauth_authorization_denied: { redirectUri: string }
 	oauth_authorized: {
 		redirectUri: string
@@ -104,6 +106,7 @@ export type McpFixtureScenario =
 	| "oauth-expiring"
 	| "oauth-google-authorization-endpoint"
 	| "oauth-offline-access-scope"
+	| "oauth-split-issuer-flaky-prm"
 	| "ui-app"
 
 export type McpFixtureToolResponse =
