@@ -499,8 +499,6 @@ function makeRecordingConn(): {
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
-			// sessionUpdate is the union's required discriminator literal on every
-			// member — no cast needed.
 			trace.push({ channel: "session-update", label: p.update.sessionUpdate })
 		},
 		extNotification: async (method: string, params: unknown) => {

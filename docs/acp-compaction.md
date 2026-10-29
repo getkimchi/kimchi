@@ -11,8 +11,11 @@ compaction progress.
 ## Driving compaction: `_kimchi.dev/compact`
 
 ACP has no native client→agent compaction request (the upstream Session
-Compaction RFD only covers agent→client status), so the control affordance is
-a vendor-namespaced ext method — the shape Zed asks external agents to expose.
+Compaction RFD only covers agent→client status), so the affordance lives in
+kimchi's own `_kimchi.dev` ext namespace — a vendor method of our own design,
+shaped after what Zed asks external agents to expose (free-text instructions,
+a force flag, a compaction-abort counterpart); Zed itself does not know this
+method.
 
 Request: `{ sessionId, instructions?, force? }`. `instructions` is free-text
 guidance for the summary; `force` bypasses the token threshold (matching Zed's

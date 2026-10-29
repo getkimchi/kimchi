@@ -2500,22 +2500,13 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	// Post-compaction context refresh: compaction rebuilds the context, so the
-	// client's usage gauge is stale the moment compaction_end lands — and
-	// getContextUsage().tokens stays null until an LLM responds after the new
-	// compaction boundary, so the turn-boundary path above cannot cover it.
-	// The compaction_end event itself carries pi's own post-compaction
-	// estimate (CompactionResult.estimatedTokensAfter), so emit straight from
-	// the event: no null-skip (the count is precomputed, not read off
-	// getContextUsage) and no _meta (out-of-turn compaction has no turn whose
-	// lifetime usage could ride along). Cancelled and failed compactions leave
-	// the context unchanged and emit nothing — compaction_end carries a
-	// result only on success; aborted events carry none and no errorMessage
-	// either, so result presence (not errorMessage absence) is the success
-	// signal. Emission on success is unconditional: staying silent would leave
-	// the stale pre-compaction number up, reading as "compaction did
-	// nothing". Ordering is structural: the agent_activity compaction_end
-	// notification is forwarded earlier in onSessionEvent, before this runs.
+	// Post-compaction context refresh: on a successful compaction the client's
+	// gauge is stale (getContextUsage().tokens stays null until the next LLM
+	// response after the boundary) and the turn-boundary path above cannot
+	// cover out-of-turn compaction. The compaction_end event carries pi's own
+	// post-compaction estimate, so emit straight from it — bare, no _meta.
+	// Success ⇔ result present (aborts/failures carry none); cancelled and
+	// failed compactions emit nothing. Full contract: docs/acp-compaction.md.
 	private emitPostCompactionUsage(
 		sessionId: string,
 		session: AgentSession,
@@ -2523,26 +2514,18 @@ export class KimchiAcpAgent implements Agent {
 	): void {
 		const result = event.result
 		if (event.aborted || !result) return
-		// Value ladder: prefer the count pi ships on the event; if a pi shape ever
-		// omits it, recompute the identical fold over the rebuilt post-compaction
-		// message list (session.messages is exactly the list pi measured — it is
-		// assigned before the compaction_end event fires on both the manual and
-		// automatic paths). The fold always yields a number, so success always
-		// emits; 0 can only appear when the context is genuinely empty, where it
-		// is the true value. The re-fold (instead of a call to pi's
-		// estimateMessagesTokens) is deliberate: pi's exports map allows only
-		// "." and "./rpc-entry", so that function is not importable — re-verify
-		// the fold's parity with pi when upgrading pi.
+		// Prefer the event's estimate; if absent, recompute the same fold over
+		// session.messages (the exact list pi measured). The fold always yields
+		// a number, so success always emits; estimateMessagesTokens itself is
+		// not importable (pi's exports map) — re-verify parity on pi upgrades.
 		const used =
 			typeof result.estimatedTokensAfter === "number"
 				? result.estimatedTokensAfter
 				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
 		const contextWindow = session.getContextUsage()?.contextWindow
 		if (!contextWindow) {
-			// Unreachable for a compaction that succeeded (both pi compaction
-			// paths require a model) — but if a pi shape change ever lands us
-			// here, leave a trace instead of silently stranding the client's
-			// stale gauge.
+			// Unreachable for a succeeded compaction (pi requires a model) — log
+			// anyway so a future pi change can't strand the gauge silently.
 			console.warn(`[acp-usage] skipping post-compaction usage_update for ${sessionId}: context window unknown`)
 			return
 		}

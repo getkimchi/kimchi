@@ -137,11 +137,10 @@ export class RecordingClient {
 	readonly extNotifications: Array<{ method: string; params: unknown }> = []
 	readonly permissionRequests: acp.RequestPermissionRequest[] = []
 	readonly elicitationRequests: Array<{ method: string; params: unknown }> = []
-	// Unified wire-arrival log across channels — "session-update:<kind>" /
-	// "ext-notification:<method>" — because the arrays above lose their
-	// interleaving; tests asserting relative order between the two channels
-	// (e.g. compaction_end activity before the usage refresh) read this.
-	readonly arrival: string[] = []
+	/** Wire arrival order across channels, labeled "session-update:<kind>" and
+	 *  "ext-notification:<method>" — the arrays above lose their interleaving,
+	 *  so tests asserting relative order between the two channels read this. */
+	readonly wireArrivalOrder: string[] = []
 
 	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
@@ -149,7 +148,7 @@ export class RecordingClient {
 
 	async sessionUpdate(params: acp.SessionNotification): Promise<void> {
 		this.sessionUpdates.push({ sessionId: params.sessionId, update: params.update })
-		this.arrival.push(`session-update:${params.update.sessionUpdate}`)
+		this.wireArrivalOrder.push(`session-update:${params.update.sessionUpdate}`)
 	}
 
 	async extMethod(method: string, params: unknown): Promise<Record<string, unknown>> {
@@ -160,7 +159,7 @@ export class RecordingClient {
 	async extNotification(method: string, params: unknown): Promise<void> {
 		this.extNotifications.push({ method, params })
 		const kind = (params as { kind?: string }).kind
-		this.arrival.push(`ext-notification:${method}${kind ? `:${kind}` : ""}`)
+		this.wireArrivalOrder.push(`ext-notification:${method}${kind ? `:${kind}` : ""}`)
 	}
 
 	async requestPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {

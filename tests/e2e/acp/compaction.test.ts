@@ -132,7 +132,7 @@ describe("ACP integration — user-triggered compaction", () => {
 		// compact keeps only the summary) sits far below the usage-anchored
 		// pre-compaction count the client last saw.
 		expect(refreshes[0].update.used).toBeLessThan(result.tokensBefore)
-		const arrival = fixture.client.arrival
+		const arrival = fixture.client.wireArrivalOrder
 		const endIndex = arrival.lastIndexOf("ext-notification:_kimchi.dev/agent_activity:compaction_end")
 		expect(endIndex).toBeGreaterThanOrEqual(0)
 		expect(arrival.indexOf("session-update:usage_update", endIndex + 1)).toBeGreaterThan(endIndex)
