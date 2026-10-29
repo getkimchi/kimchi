@@ -5704,7 +5704,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		// Emitted diff paths are absolute and normalized (the same
 		// resolution pi's write tool applies — protocol compatibility).
 		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
-		expect(atDiffs).toEqual([{ type: "diff", path: join(tmpDir, "notes.txt"), oldText: "at before", newText: "at after" }])
+		expect(atDiffs).toEqual([
+			{ type: "diff", path: join(tmpDir, "notes.txt"), oldText: "at before", newText: "at after" },
+		])
 		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
 		expect(nbspDiffs).toEqual([
 			{ type: "diff", path: join(tmpDir, "my file.txt"), oldText: "space before", newText: "space after" },

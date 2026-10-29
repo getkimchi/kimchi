@@ -1899,9 +1899,9 @@ export class KimchiAcpAgent implements Agent {
 				const diffs = event.isError
 					? []
 					: pending.map((p) => {
-						const change = resolveFileChange(p, preWrite)
-						return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
-					})
+							const change = resolveFileChange(p, preWrite)
+							return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
+						})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
