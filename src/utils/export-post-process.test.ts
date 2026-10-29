@@ -1,11 +1,46 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { appendBeforeBody, postProcessHtmlExport, postProcessJsonlExport } from "./export-post-process.js"
+import {
+	appendBeforeBody,
+	computeDefaultExportPath,
+	type ExportSessionInfo,
+	postProcessHtmlExportOnce,
+	postProcessJsonlExportOnce,
+	runSecureExport,
+} from "./export-post-process.js"
 import type { ConfigChangeRecord, SessionStartMetadata } from "./session-metadata-store.js"
 import * as sessionMetadataStore from "./session-metadata-store.js"
 import { _resetSessionMetadataStore } from "./session-metadata-store.js"
+
+// Counting wrapper over node:fs.writeFileSync — the single-write assertions
+// need to observe writes made by the pipeline under test, and ESM module
+// namespaces cannot be spied on directly. The wrapper delegates to the real
+// implementation, so all other tests are unaffected.
+const writeCalls = vi.hoisted(() => ({ count: 0, paths: [] as string[] }))
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		writeFileSync: ((path: unknown, ...rest: unknown[]) => {
+			writeCalls.count += 1
+			writeCalls.paths.push(String(path))
+			// biome-ignore lint/suspicious/noExplicitAny: delegate with the original signature
+			return (actual.writeFileSync as any)(path, ...rest)
+		}) as typeof actual.writeFileSync,
+	}
+})
 
 function mockMetadata(): SessionStartMetadata {
 	return {
@@ -36,25 +71,37 @@ function mockMetadata(): SessionStartMetadata {
 	}
 }
 
-describe("postProcessJsonlExport", () => {
+function makeTmpDir(prefix: string): string {
+	return mkdtempSync(join(tmpdir(), prefix))
+}
+
+/** Build a minimal raw HTML export around a session-data payload. */
+function buildRawHtml(sessionData: unknown): string {
+	const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
+	return `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
+}
+
+/** Read the decoded session-data payload back out of a processed HTML export. */
+function readHtmlPayload(html: string): Record<string, unknown> {
+	const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+	if (!match?.[1]) throw new Error("session-data script not found")
+	return JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as Record<string, unknown>
+}
+
+describe("postProcessJsonlExportOnce", () => {
 	let tmpDir: string
 
 	beforeEach(() => {
-		tmpDir = join(tmpdir(), `kimchi-jsonl-export-test-${Date.now()}`)
-		mkdirSync(tmpDir, { recursive: true })
+		tmpDir = makeTmpDir("kimchi-jsonl-export-test-")
 		_resetSessionMetadataStore()
 	})
 
 	afterEach(() => {
-		try {
-			rmSync(tmpDir, { recursive: true, force: true })
-		} catch {
-			// ignore cleanup errors
-		}
+		rmSync(tmpDir, { recursive: true, force: true })
 		vi.restoreAllMocks()
 	})
 
-	it("injects appVersion into the session header line", () => {
+	it("injects appVersion into the session header line", async () => {
 		const lines = [
 			JSON.stringify({ type: "session", version: 3, id: "s1" }),
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
@@ -62,7 +109,7 @@ describe("postProcessJsonlExport", () => {
 		const filePath = join(tmpDir, "export.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -72,12 +119,12 @@ describe("postProcessJsonlExport", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
-	it("injects systemPrompt into the session header when provided", () => {
+	it("injects systemPrompt into the session header when provided", async () => {
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-system-prompt.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath, { systemPrompt: "You are a helpful assistant." })
+		await postProcessJsonlExportOnce(filePath, { systemPrompt: "You are a helpful assistant." })
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -86,12 +133,12 @@ describe("postProcessJsonlExport", () => {
 		expect(header.systemPrompt).toBe("You are a helpful assistant.")
 	})
 
-	it("does not inject systemPrompt when it is empty or whitespace", () => {
+	it("does not inject systemPrompt when it is empty or whitespace", async () => {
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-no-system-prompt.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath, { systemPrompt: "   \n  " })
+		await postProcessJsonlExportOnce(filePath, { systemPrompt: "   \n  " })
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -100,7 +147,7 @@ describe("postProcessJsonlExport", () => {
 		expect(header.systemPrompt).toBeUndefined()
 	})
 
-	it("preserves trace ID injection", () => {
+	it("preserves trace ID injection", async () => {
 		const lines = [
 			JSON.stringify({ type: "session", version: 3, id: "s1" }),
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
@@ -116,7 +163,7 @@ describe("postProcessJsonlExport", () => {
 		const filePath = join(tmpDir, "export-trace.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -125,13 +172,13 @@ describe("postProcessJsonlExport", () => {
 		expect(assistant.traceIds).toEqual(["trace-abc"])
 	})
 
-	it("is idempotent when run twice", () => {
+	it("is idempotent when run twice", async () => {
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-idempotent.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -141,14 +188,14 @@ describe("postProcessJsonlExport", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
-	it("does not inject appVersion when the first line is not a session header", () => {
+	it("does not inject appVersion when the first line is not a session header", async () => {
 		const lines = [
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
 		]
 		const filePath = join(tmpDir, "export-no-header.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -157,7 +204,7 @@ describe("postProcessJsonlExport", () => {
 		expect(entry.appVersion).toBeUndefined()
 	})
 
-	it("skips malformed JSONL lines instead of crashing", () => {
+	it("skips malformed JSONL lines instead of crashing", async () => {
 		const filePath = join(tmpDir, "export-bad.jsonl")
 		writeFileSync(
 			filePath,
@@ -168,7 +215,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 			"utf-8",
 		)
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -178,13 +225,13 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(JSON.parse(result[1]).type).toBe("message")
 	})
 
-	it("injects OS metadata into the session header line", () => {
+	it("injects OS metadata into the session header line", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-os.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -196,13 +243,13 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["telemetry.is_wsl"]).toBe(false)
 	})
 
-	it("injects config snapshot incl. multimodel into the session header line", () => {
+	it("injects config snapshot incl. multimodel into the session header line", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
 		const filePath = join(tmpDir, "export-config.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -220,7 +267,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(configKeys.length).toBe(15)
 	})
 
-	it("appends config-change entries as custom entries", () => {
+	it("appends config-change entries as custom entries", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
 			{ key: "theme", value: "dark", timestamp: 1234567890 },
@@ -230,7 +277,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		const filePath = join(tmpDir, "export-changes.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -252,30 +299,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(second.data.value).toBe(5)
 	})
 
-	it("config-change values pass through unchanged", () => {
-		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
-		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
-			{ key: "endpoint", value: "https://secret.example.com", timestamp: 1000 },
-			{ key: "apiKey", value: "sk-leaked-secret", timestamp: 1001 },
-			{ key: "email", value: "user@example.com", timestamp: 1002 },
-		] as ConfigChangeRecord[])
-		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
-		const filePath = join(tmpDir, "export-passthrough.jsonl")
-		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
-
-		postProcessJsonlExport(filePath)
-
-		const result = readFileSync(filePath, "utf-8")
-			.split("\n")
-			.filter((l) => l.trim().length > 0)
-		// header + 3 change entries
-		expect(result.length).toBe(4)
-		const values = result.slice(1).map((l) => JSON.parse(l).data.value)
-		// Redaction runs in a separate pass (redactJsonlExport); post-processing passes values through verbatim.
-		expect(values).toEqual(["https://secret.example.com", "sk-leaked-secret", "user@example.com"])
-	})
-
-	it("includes sub-agent transcript in JSONL export", () => {
+	it("includes sub-agent transcript in JSONL export", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const outputFile = join(tmpDir, "agent-001.output")
@@ -320,7 +344,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		const filePath = join(tmpDir, "export-subagent.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -334,7 +358,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(subEntry.data.sessionFile).toBeUndefined()
 	})
 
-	it("works with telemetry disabled — change capture decoupled from telemetry", () => {
+	it("works with telemetry disabled — change capture decoupled from telemetry", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
 			{ key: "theme", value: "dark", timestamp: 9999 },
@@ -343,7 +367,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		const filePath = join(tmpDir, "export-telemetry-off.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -357,7 +381,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(change.customType).toBe("config_changed")
 	})
 
-	it("is idempotent — running twice yields identical output with no duplicate change entries", () => {
+	it("is idempotent — running twice yields identical output with no duplicate change entries", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
 			{ key: "theme", value: "dark", timestamp: 1234567890 },
@@ -367,10 +391,10 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		const filePath = join(tmpDir, "export-idempotent-changes.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 		const firstRun = readFileSync(filePath, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 		const secondRun = readFileSync(filePath, "utf-8")
 
 		expect(secondRun).toBe(firstRun)
@@ -378,7 +402,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(result.length).toBe(3)
 	})
 
-	it("no-ops when store is empty (legacy session re-import)", () => {
+	it("no-ops when store is empty (legacy session re-import)", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const lines = [
@@ -388,7 +412,7 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		const filePath = join(tmpDir, "export-empty-store.jsonl")
 		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
 
-		postProcessJsonlExport(filePath)
+		await postProcessJsonlExportOnce(filePath)
 
 		const result = readFileSync(filePath, "utf-8")
 			.split("\n")
@@ -398,27 +422,58 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header.appVersion).toBeDefined()
 		expect(header["telemetry.os"]).toBeUndefined()
 	})
+
+	it("performs exactly one write to the temp file", async () => {
+		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
+		const filePath = join(tmpDir, "export-single-write.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		writeCalls.count = 0
+		writeCalls.paths = []
+		await postProcessJsonlExportOnce(filePath)
+		expect(writeCalls.count).toBe(1)
+		expect(writeCalls.paths[0]).toBe(filePath)
+	})
+
+	it("still produces redacted output when enrichment throws", async () => {
+		const subagents = await import("./export-subagents.js")
+		vi.spyOn(subagents, "enrichSubAgentEntries").mockImplementation(() => {
+			throw new Error("enrichment exploded")
+		})
+		const lines = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "e1",
+				parentId: null,
+				message: { role: "user", content: "my key is sk-abcdef1234567890" },
+			}),
+		]
+		const filePath = join(tmpDir, "export-enrich-fail.jsonl")
+		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
+
+		await postProcessJsonlExportOnce(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		expect(result).not.toContain("sk-abcdef1234567890")
+		expect(result).toContain("[REDACTED-OPENAI_API_KEY]")
+	})
 })
 
-describe("postProcessHtmlExport", () => {
+describe("postProcessHtmlExportOnce", () => {
 	let tmpDir: string
 
 	beforeEach(() => {
-		tmpDir = join(tmpdir(), `kimchi-html-export-test-${Date.now()}`)
-		mkdirSync(tmpDir, { recursive: true })
+		tmpDir = makeTmpDir("kimchi-html-export-test-")
 		_resetSessionMetadataStore()
 	})
 
 	afterEach(() => {
-		try {
-			rmSync(tmpDir, { recursive: true, force: true })
-		} catch {
-			// ignore cleanup errors
-		}
+		rmSync(tmpDir, { recursive: true, force: true })
 		vi.restoreAllMocks()
 	})
 
-	it("injects trace-id renderer script before </body>", () => {
+	it("injects trace-id renderer script before </body>", async () => {
 		const sessionData = {
 			version: 3,
 			id: "test-session",
@@ -427,46 +482,29 @@ describe("postProcessHtmlExport", () => {
 				{ id: "m2", parentId: "m1", type: "message", message: { role: "assistant", content: "hi" } },
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${encoded}</script>
-</body>
-</html>`
-
 		const outputPath = join(tmpDir, "export.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="trace-id-renderer"')
 		expect(result).toContain("</body>")
 	})
 
-	it("is idempotent when run twice", () => {
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${Buffer.from(JSON.stringify({ version: 3, id: "s", entries: [] })).toString("base64")}</script>
-</body>
-</html>`
-
+	it("is idempotent when run twice", async () => {
 		const outputPath = join(tmpDir, "idempotent.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml({ version: 3, id: "s", entries: [] }), "utf-8")
 
-		postProcessHtmlExport(outputPath)
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		const traceIdCount = result.split('id="trace-id-renderer"').length - 1
 		expect(traceIdCount).toBe(1)
 	})
 
-	it("appends footer and script to end when </body> is missing", () => {
+	it("appends renderer scripts to the end when </body> is missing", async () => {
 		const sessionData = {
 			version: 3,
 			id: "test-session",
@@ -476,55 +514,45 @@ describe("postProcessHtmlExport", () => {
 			],
 		}
 		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${encoded}</script>`
-
 		const outputPath = join(tmpDir, "no-body.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(
+			outputPath,
+			`<html><body><script id="session-data" type="application/json">${encoded}</script>`,
+			"utf-8",
+		)
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="trace-id-renderer"')
 		expect(result.endsWith("</script>\n")).toBe(true)
 	})
 
-	it("throws on corrupted base64 session data", () => {
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<body>
-<script id="session-data" type="application/json">!!!invalid!!!</script>
-</body>
-</html>`
-
+	it("throws on corrupted base64 session data", async () => {
 		const outputPath = join(tmpDir, "bad-base64.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(
+			outputPath,
+			`<!DOCTYPE html><html><body><script id="session-data" type="application/json">!!!invalid!!!</script></body></html>`,
+			"utf-8",
+		)
 
-		expect(() => postProcessHtmlExport(outputPath)).toThrow()
+		await expect(postProcessHtmlExportOnce(outputPath)).rejects.toThrow()
 	})
 
-	it("injects host metadata into session-data block", () => {
+	it("injects host metadata into session-data block", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const sessionData = {
 			version: 3,
 			id: "s1",
 			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
 		const outputPath = join(tmpDir, "host-metadata.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		expect(match).not.toBeNull()
-		if (!match) throw new Error("session-data script not found")
-		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as Record<string, unknown>
+		const data = readHtmlPayload(result)
 		expect(data.hostMetadata).toBeDefined()
 		const hostMetadata = data.hostMetadata as Record<string, unknown>
 		const os = hostMetadata.os as Record<string, unknown>
@@ -534,7 +562,7 @@ describe("postProcessHtmlExport", () => {
 		expect(cfg["config.model_roles.orchestrator"]).toBe("test/orch")
 	})
 
-	it("injects config-change entries into session-data entries", () => {
+	it("injects config-change entries into session-data entries", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
 			{ key: "theme", value: "dark", timestamp: 1234567890 },
@@ -544,20 +572,13 @@ describe("postProcessHtmlExport", () => {
 			id: "s1",
 			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
 		const outputPath = join(tmpDir, "config-changes.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		expect(match).not.toBeNull()
-		if (!match) throw new Error("session-data script not found")
-		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
-			entries: Array<Record<string, unknown>>
-		}
+		const data = readHtmlPayload(result) as { entries: Array<Record<string, unknown>> }
 		expect(data.entries.length).toBe(2)
 		const change = data.entries.find((e) => e.customType === "config_changed")
 		expect(change).toBeDefined()
@@ -567,64 +588,39 @@ describe("postProcessHtmlExport", () => {
 		expect((change?.data as Record<string, unknown>).value).toBe("dark")
 	})
 
-	it("injects session-metadata renderer script before </body>", () => {
+	it("injects session-metadata renderer script before </body>", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
-		const sessionData = { version: 3, id: "s1", entries: [] }
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${encoded}</script>
-</body>
-</html>`
 		const outputPath = join(tmpDir, "metadata-renderer.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml({ version: 3, id: "s1", entries: [] }), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result.includes('id="session-metadata-renderer"')).toBe(true)
 		const rendererIdx = result.indexOf('id="session-metadata-renderer"')
 		const bodyIdx = result.indexOf("</body>")
 		expect(bodyIdx).toBeGreaterThan(rendererIdx)
-		expect(
-			result.includes(
-				"if (os['telemetry.os']) parts.push('OS: ' + os['telemetry.os'] + '/' + (os['telemetry.arch'] || ''))",
-			),
-		).toBe(true)
-		expect(result.includes("parts.push(models.length > 0 ? 'Models: ' + models.join(', ') : 'Models: —')")).toBe(true)
-		expect(result.includes("if (e.type === 'model_change' && e.provider && e.modelId)")).toBe(true)
-		expect(result.includes("e.type === 'message' && e.message && e.message.role === 'assistant'")).toBe(true)
 		expect(result.includes("Multimodel:")).toBe(false)
 		expect(result.includes("Orchestrator:")).toBe(false)
 	})
 
-	it("renders Models: — when no models are resolved from session entries", () => {
+	it("renders Models: — when no models are resolved from session entries", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const sessionData = {
 			version: 3,
 			id: "s1",
 			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${encoded}</script>
-</body>
-</html>`
 		const outputPath = join(tmpDir, "metadata-renderer-no-models.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result.includes("'Models: —'")).toBe(true)
 	})
 
-	it("renders unique models resolved from session entries", () => {
+	it("renders unique models resolved from session entries", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		const sessionData = {
 			version: 3,
@@ -636,34 +632,21 @@ describe("postProcessHtmlExport", () => {
 				{ id: "m4", parentId: "m3", type: "message", message: { role: "assistant", provider: "p2", model: "m2" } },
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<!DOCTYPE html>
-<html>
-<head><title>Export</title></head>
-<body>
-<script id="session-data" type="application/json">${encoded}</script>
-</body>
-</html>`
 		const outputPath = join(tmpDir, "metadata-renderer-models.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result.includes("'Models: ' + models.join(', ')")).toBe(true)
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		expect(match).not.toBeNull()
-		if (!match) throw new Error("session-data script not found")
-		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
-			entries: Array<Record<string, unknown>>
-		}
+		const data = readHtmlPayload(result) as { entries: Array<Record<string, unknown>> }
 		const modelChanges = data.entries.filter((e) => e.type === "model_change")
 		expect(modelChanges.length).toBe(2)
 		expect(modelChanges[0]).toMatchObject({ provider: "p1", modelId: "m1" })
 		expect(modelChanges[1]).toMatchObject({ provider: "p2", modelId: "m2" })
 	})
 
-	it("is idempotent when run twice (metadata + changes)", () => {
+	it("is idempotent when run twice (metadata + changes)", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(mockMetadata())
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([
 			{ key: "theme", value: "dark", timestamp: 1234567890 },
@@ -673,29 +656,21 @@ describe("postProcessHtmlExport", () => {
 			id: "s1",
 			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
 		const outputPath = join(tmpDir, "idempotent-metadata.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result.split('id="session-metadata-renderer"').length - 1).toBe(1)
 		expect(result.split('id="trace-id-renderer"').length - 1).toBe(1)
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		expect(match).not.toBeNull()
-		if (!match) throw new Error("session-data script not found")
-		const data = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
-			entries: Array<Record<string, unknown>>
-			hostMetadata?: unknown
-		}
+		const data = readHtmlPayload(result) as { entries: Array<Record<string, unknown>>; hostMetadata?: unknown }
 		expect(data.entries.length).toBe(2)
 		expect(data.hostMetadata).toBeDefined()
 	})
 
-	it("injects sub-agent tab bar and iframe data", () => {
+	it("injects sub-agent tab bar and iframe data", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const sessionData = {
@@ -735,32 +710,23 @@ describe("postProcessHtmlExport", () => {
 				},
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
 		const outputPath = join(tmpDir, "subagent.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
-		// Tab bar should be injected with a button for the sub-agent.
 		expect(result).toContain('id="subagent-tabs"')
 		expect(result).toContain("switchToSubAgent")
 		expect(result).toContain("Main Session")
-		// Hidden data script for the iframe.
 		expect(result).toContain('id="subagent-data-agent-001"')
-		// The original subagents:record should NOT be expanded into the main entries.
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		const base64Data = match?.[1] ?? ""
-		const data = JSON.parse(Buffer.from(base64Data, "base64").toString("utf-8")) as {
-			entries: Array<Record<string, unknown>>
-		}
+		const data = readHtmlPayload(result) as { entries: Array<Record<string, unknown>> }
 		expect(data.entries).toHaveLength(1)
 		expect(data.entries[0].type).toBe("custom")
 		expect(data.entries[0].customType).toBe("subagents:record")
 	})
 
-	it("sub-agent iframe CSS preserves system prompt while hiding header chrome", () => {
+	it("sub-agent iframe CSS preserves system prompt while hiding header chrome", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const sessionData = {
@@ -793,12 +759,10 @@ describe("postProcessHtmlExport", () => {
 				},
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
 		const outputPath = join(tmpDir, "subagent-system-prompt.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		const dataMatch = result.match(/id="subagent-data-agent-001">([\s\S]*?)<\/script>/)
@@ -808,25 +772,14 @@ describe("postProcessHtmlExport", () => {
 			systemPrompt?: string
 		}
 		expect(subData.systemPrompt).toBe("You are an explorer.")
-
-		// The iframe CSS should hide header chrome but leave room for the system prompt.
 		expect(result).toContain("#header-container .header h1")
-		expect(result).toContain("#header-container .header .help-bar")
-		expect(result).toContain("#header-container .header .header-info")
 		expect(result).not.toContain("#header-container{display:none")
 	})
 
-	it("enriches sub-agent transcript from .output file outside the export directory", () => {
-		// Regression: .output files live under the session directory
-		// (~/.config/kimchi/harness/sessions/...), which is unrelated to
-		// the export file's location. Passing dirname(exportPath) as
-		// baseDir incorrectly rejected these legitimate paths, leaving the
-		// exported subagent record without a transcript.
+	it("enriches sub-agent transcript from .output file outside the export directory", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 
-		// Create the .output file in a directory completely separate from
-		// the export output directory.
 		const transcriptDir = join(tmpDir, "session-store", "agent-outputs", "sess-1", "tasks")
 		mkdirSync(transcriptDir, { recursive: true })
 		const outputFile = join(transcriptDir, "agent-999.output")
@@ -869,31 +822,21 @@ describe("postProcessHtmlExport", () => {
 				},
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<html><body><script id="session-data" type="application/json">${encoded}</script></body></html>`
 		const outputPath = join(tmpDir, "export.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
-		const match = result.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
-		expect(match).not.toBeNull()
-		const base64Data = match?.[1] ?? ""
-		const data = JSON.parse(Buffer.from(base64Data, "base64").toString("utf-8")) as {
-			entries: Array<Record<string, unknown>>
-		}
-		// The original subagents:record should remain unexpanded.
+		const data = readHtmlPayload(result) as { entries: Array<Record<string, unknown>> }
 		expect(data.entries[0].type).toBe("custom")
 		expect(data.entries[0].customType).toBe("subagents:record")
-		// Tab bar should be present.
 		expect(result).toContain('id="subagent-tabs"')
 		expect(result).toContain('id="subagent-data-agent-999"')
-		// No old renderer script.
 		expect(result).not.toContain('id="subagent-renderer"')
 	})
 
-	it("injects request diagnostics renderer script", () => {
+	it("injects request diagnostics renderer script", async () => {
 		vi.spyOn(sessionMetadataStore, "getSessionStartMetadata").mockReturnValue(undefined)
 		vi.spyOn(sessionMetadataStore, "getConfigChanges").mockReturnValue([])
 		const sessionData = {
@@ -909,15 +852,382 @@ describe("postProcessHtmlExport", () => {
 				},
 			],
 		}
-		const encoded = Buffer.from(JSON.stringify(sessionData)).toString("base64")
-		const mockHtml = `<script id="session-data" type="application/json">${encoded}</script>`
 		const outputPath = join(tmpDir, "diagnostics.html")
-		writeFileSync(outputPath, mockHtml, "utf-8")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
 
-		postProcessHtmlExport(outputPath)
+		await postProcessHtmlExportOnce(outputPath)
 
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="diagnostics-renderer"')
+	})
+
+	it("performs exactly one write to the temp file", async () => {
+		const sessionData = { version: 3, id: "s1", entries: [] }
+		const outputPath = join(tmpDir, "single-write.html")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
+
+		writeCalls.count = 0
+		writeCalls.paths = []
+		await postProcessHtmlExportOnce(outputPath)
+		expect(writeCalls.count).toBe(1)
+		expect(writeCalls.paths[0]).toBe(outputPath)
+	})
+
+	it("still produces redacted output when enrichment throws", async () => {
+		const subagents = await import("./export-subagents.js")
+		vi.spyOn(subagents, "enrichSubAgentEntries").mockImplementation(() => {
+			throw new Error("enrichment exploded")
+		})
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [
+				{
+					id: "m1",
+					parentId: null,
+					type: "message",
+					message: { role: "user", content: "my key is sk-abcdef1234567890" },
+				},
+			],
+		}
+		const outputPath = join(tmpDir, "enrich-fail.html")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
+
+		await postProcessHtmlExportOnce(outputPath)
+
+		const result = readFileSync(outputPath, "utf-8")
+		const data = readHtmlPayload(result) as { entries: Array<{ message: { content: string } }> }
+		expect(data.entries[0].message.content).not.toContain("sk-abcdef1234567890")
+		expect(data.entries[0].message.content).toContain("[REDACTED-OPENAI_API_KEY]")
+	})
+})
+
+describe("computeDefaultExportPath — upstream filename parity (pinned)", () => {
+	it("HTML default matches upstream's `${APP_NAME}-session-<basename>.html` format, based at the session cwd", () => {
+		const session: ExportSessionInfo = { sessionFile: "/store/sessions/abc-123.jsonl", cwd: "/work/project" }
+		expect(computeDefaultExportPath("html", session)).toBe("/work/project/kimchi-session-abc-123.html")
+	})
+
+	it("JSONL default matches upstream's `session-<timestamp>.jsonl` format, based at the session cwd", () => {
+		const before = new Date().toISOString().replace(/[:.]/g, "-")
+		const path = computeDefaultExportPath("jsonl", { cwd: "/work/project" })
+		const after = new Date().toISOString().replace(/[:.]/g, "-")
+		expect(path === `/work/project/session-${before}.jsonl` || path === `/work/project/session-${after}.jsonl`).toBe(
+			true,
+		)
+	})
+
+	it("HTML default throws for in-memory sessions (parity with upstream's exporter)", () => {
+		expect(() => computeDefaultExportPath("html", { cwd: "/work/project" })).toThrow("Cannot export in-memory session")
+	})
+})
+
+describe("runSecureExport — workspace lifecycle", () => {
+	let tmpDir: string
+
+	beforeEach(() => {
+		tmpDir = makeTmpDir("kimchi-secure-export-test-")
+		_resetSessionMetadataStore()
+	})
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	/** A stub upstream exporter that writes a minimal raw HTML export. */
+	const stubHtmlUpstream = (sessionData: unknown) => (tempPath: string) => {
+		writeFileSync(tempPath, buildRawHtml(sessionData), "utf-8")
+		return tempPath
+	}
+
+	it("publishes on success and leaves no temp behind", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: "out.html",
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: (tempPath) => postProcessHtmlExportOnce(tempPath),
+		})
+
+		expect(finalPath).toBe(join(tmpDir, "out.html"))
+		expect(existsSync(finalPath)).toBe(true)
+		const files = readdirSync(tmpDir).filter((f) => f.startsWith("."))
+		expect(files).toEqual([])
+	})
+
+	it("replaces a pre-existing destination atomically and preserves its mode", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = join(tmpDir, "out.html")
+		writeFileSync(finalPath, "old export content", "utf-8")
+		chmodSync(finalPath, 0o640)
+
+		const result = await runSecureExport({
+			mode: "html",
+			outputPath: "out.html",
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: (tempPath) => postProcessHtmlExportOnce(tempPath),
+		})
+
+		expect(result).toBe(finalPath)
+		expect(readFileSync(finalPath, "utf-8")).not.toContain("old export content")
+		expect(readFileSync(finalPath, "utf-8")).toContain('id="trace-id-renderer"')
+		expect(statSync(finalPath).mode & 0o777).toBe(0o640)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("on pipeline failure: sweeps the temp, leaves the pre-existing destination byte-intact, and rethrows", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = join(tmpDir, "out.html")
+		writeFileSync(finalPath, "precious old export", "utf-8")
+		const before = readFileSync(finalPath, "utf-8")
+
+		await expect(
+			runSecureExport({
+				mode: "html",
+				outputPath: "out.html",
+				session,
+				upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+				pipeline: () => {
+					throw new Error("pipeline exploded")
+				},
+			}),
+		).rejects.toThrow("pipeline exploded")
+
+		expect(readFileSync(finalPath, "utf-8")).toBe(before)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("on upstream failure: sweeps the temp and rethrows without touching the destination", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+
+		await expect(
+			runSecureExport({
+				mode: "html",
+				outputPath: "out.html",
+				session,
+				upstreamExport: () => {
+					throw new Error("upstream exploded")
+				},
+				pipeline: () => Promise.resolve(),
+			}),
+		).rejects.toThrow("upstream exploded")
+
+		expect(existsSync(join(tmpDir, "out.html"))).toBe(false)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("default outputPath: upstream receives the pre-created private temp (never undefined, never the public name) and the result publishes at the default path", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "my-session.jsonl"), cwd: tmpDir }
+		const upstream = vi.fn(stubHtmlUpstream({ version: 3, id: "s1", entries: [] }))
+		let tempModeDuringPipeline = -1
+		let receivedTemp = ""
+
+		const finalPath = await runSecureExport({
+			mode: "html",
+			session,
+			upstreamExport: upstream,
+			pipeline: async (tempPath) => {
+				receivedTemp = tempPath
+				tempModeDuringPipeline = statSync(tempPath).mode & 0o777
+				await postProcessHtmlExportOnce(tempPath)
+			},
+		})
+
+		expect(finalPath).toBe(computeDefaultExportPath("html", session))
+		expect(finalPath).toBe(join(tmpDir, "kimchi-session-my-session.html"))
+		expect(upstream).toHaveBeenCalledTimes(1)
+		receivedTemp = upstream.mock.calls[0]?.[0] ?? receivedTemp
+		expect(typeof receivedTemp).toBe("string")
+		expect(receivedTemp).not.toBe(finalPath)
+		// The temp is a private dotfile at mode 0600 while the pipeline runs.
+		expect(receivedTemp.startsWith(join(tmpDir, ".kimchi-session-my-session.html.tmp-"))).toBe(true)
+		expect(tempModeDuringPipeline).toBe(0o600)
+		// Published file exists, no temp left.
+		expect(existsSync(finalPath)).toBe(true)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("explicit outputPath: same temp-privacy assertions, destination at the explicit path", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "my-session.jsonl"), cwd: tmpDir }
+		const upstream = vi.fn(stubHtmlUpstream({ version: 3, id: "s1", entries: [] }))
+		let tempModeDuringPipeline = -1
+
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: "explicit.html",
+			session,
+			upstreamExport: upstream,
+			pipeline: async (tempPath) => {
+				tempModeDuringPipeline = statSync(tempPath).mode & 0o777
+				await postProcessHtmlExportOnce(tempPath)
+			},
+		})
+
+		expect(finalPath).toBe(join(tmpDir, "explicit.html"))
+		const receivedTemp = upstream.mock.calls[0]?.[0]
+		expect(typeof receivedTemp).toBe("string")
+		expect(receivedTemp).not.toBe(finalPath)
+		expect(tempModeDuringPipeline).toBe(0o600)
+		expect(existsSync(finalPath)).toBe(true)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("upstream writing into the pre-created temp keeps the 0600 mode (mode-preservation mechanism)", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		let tempModeAfterUpstream = -1
+
+		await runSecureExport({
+			mode: "html",
+			outputPath: "out.html",
+			session,
+			upstreamExport: (tempPath) => {
+				// Simulate upstream's writeFileSync into the pre-created temp.
+				writeFileSync(tempPath, buildRawHtml({ version: 3, id: "s1", entries: [] }), "utf-8")
+				tempModeAfterUpstream = statSync(tempPath).mode & 0o777
+				return tempPath
+			},
+			pipeline: () => Promise.resolve(),
+		})
+
+		expect(tempModeAfterUpstream).toBe(0o600)
+	})
+
+	it("resolves explicit relative and default paths against the session cwd, not process.cwd()", async () => {
+		// tmpDir plays the session cwd; the process cwd is the repo and differs.
+		const sessionCwd = mkdtempSync(join(tmpDir, "session-cwd-"))
+		const session: ExportSessionInfo = { sessionFile: join(sessionCwd, "s.jsonl"), cwd: sessionCwd }
+		const upstream = vi.fn(stubHtmlUpstream({ version: 3, id: "s1", entries: [] }))
+
+		// Explicit relative path → lands under the session cwd.
+		const explicitPath = await runSecureExport({
+			mode: "html",
+			outputPath: "nested/deep/out.html",
+			session,
+			upstreamExport: upstream,
+			pipeline: () => Promise.resolve(),
+		})
+		expect(explicitPath).toBe(join(sessionCwd, "nested", "deep", "out.html"))
+
+		// Default path → lands under the session cwd too.
+		const defaultPath = await runSecureExport({
+			mode: "html",
+			session,
+			upstreamExport: upstream,
+			pipeline: () => Promise.resolve(),
+		})
+		expect(defaultPath.startsWith(sessionCwd)).toBe(true)
+		expect(defaultPath.endsWith(".html")).toBe(true)
+
+		// Upstream always received an absolute path.
+		for (const call of upstream.mock.calls) {
+			expect(typeof call[0]).toBe("string")
+		}
+	})
+
+	it("absolute explicit outputPath passes through unchanged", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const elsewhere = mkdtempSync(join(tmpDir, "elsewhere-"))
+		const absolute = join(elsewhere, "abs.html")
+
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: absolute,
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: () => Promise.resolve(),
+		})
+
+		expect(finalPath).toBe(absolute)
+		expect(existsSync(absolute)).toBe(true)
+	})
+
+	it("returns its own finalPath, not upstream's return value", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: "out.html",
+			session,
+			upstreamExport: (tempPath) => {
+				writeFileSync(tempPath, buildRawHtml({ version: 3, id: "s1", entries: [] }), "utf-8")
+				return "/this/is/not/the/final/path.html"
+			},
+			pipeline: () => Promise.resolve(),
+		})
+		expect(finalPath).toBe(join(tmpDir, "out.html"))
+	})
+
+	it("publishes new destinations at 0600 (POSIX)", { skip: process.platform === "win32" }, async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: "fresh.html",
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: () => Promise.resolve(),
+		})
+		expect(statSync(finalPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("new destination stays 0600 under a restrictive umask (no umask bypass)", {
+		skip: process.platform === "win32",
+	}, async () => {
+		const oldUmask = process.umask(0o077)
+		try {
+			const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+			const finalPath = await runSecureExport({
+				mode: "html",
+				outputPath: "umask-test.html",
+				session,
+				upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+				pipeline: () => Promise.resolve(),
+			})
+			expect(statSync(finalPath).mode & 0o777).toBe(0o600)
+		} finally {
+			process.umask(oldUmask)
+		}
+	})
+
+	it("an existing 0600 destination is never widened", { skip: process.platform === "win32" }, async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = join(tmpDir, "tight.html")
+		writeFileSync(finalPath, "old", "utf-8")
+		chmodSync(finalPath, 0o600)
+
+		await runSecureExport({
+			mode: "html",
+			outputPath: "tight.html",
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: () => Promise.resolve(),
+		})
+
+		expect(statSync(finalPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("JSONL exports publish through the same workspace", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = await runSecureExport({
+			mode: "jsonl",
+			outputPath: "out.jsonl",
+			session,
+			upstreamExport: (tempPath) => {
+				writeFileSync(tempPath, `${JSON.stringify({ type: "session", version: 3, id: "s1" })}\n`, "utf-8")
+				return tempPath
+			},
+			pipeline: (tempPath) => postProcessJsonlExportOnce(tempPath, { systemPrompt: "be brief" }),
+		})
+
+		expect(finalPath).toBe(join(tmpDir, "out.jsonl"))
+		const result = readFileSync(finalPath, "utf-8")
+			.split("\n")
+			.filter((l) => l.trim().length > 0)
+		const header = JSON.parse(result[0])
+		expect(header.appVersion).toBeDefined()
+		expect(header.systemPrompt).toBe("be brief")
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
 	})
 })
 
