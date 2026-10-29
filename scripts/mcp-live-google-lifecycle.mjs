@@ -86,7 +86,7 @@ function redactChildOutput(text) {
 }
 
 /** Run `kimchi mcp probe` against the server and return its parsed result. */
-async function runProbe({ homeDir, binDir, serverUrl, clientId, timeoutMs = 90_000 }) {
+async function runProbe({ homeDir, binDir, serverUrl, clientId, clientSecret, timeoutMs = 90_000 }) {
 	const { urlLog } = writeRecordingBrowserDriver(binDir)
 	const child = spawn(BINARY, ["mcp", "probe", "--json"], {
 		env: probeChildEnv({ homeDir, binDir }),
@@ -97,7 +97,7 @@ async function runProbe({ homeDir, binDir, serverUrl, clientId, timeoutMs = 90_0
 	child.stdout.on("data", (chunk) => stdout.push(String(chunk)))
 	child.stderr.on("data", (chunk) => stderr.push(String(chunk)))
 	child.stdin.end(
-		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId } } })}\n`,
+		`${JSON.stringify({ name: SERVER_NAME, server: { url: serverUrl, auth: "oauth", oauth: { clientId, clientSecret } } })}\n`,
 	)
 	const exited = new Promise((resolveExit) => child.once("exit", (code, signal) => resolveExit({ code, signal })))
 	let timedOut = false
@@ -150,7 +150,13 @@ async function main() {
 		const seeded = readStoredCredential(keyringDir)
 		console.log(`seeded credential: server=${serverUrl} expiresAt=${seeded.tokens.expiresAt} (in the past)`)
 
-		const { result, exit, childOutput, browserOpens } = await runProbe({ homeDir, binDir, serverUrl, clientId })
+		const { result, exit, childOutput, browserOpens } = await runProbe({
+			homeDir,
+			binDir,
+			serverUrl,
+			clientId,
+			clientSecret,
+		})
 		const toolCount = Array.isArray(result?.tools) ? result.tools.length : 0
 		const failures = []
 		if (exit.timedOut) failures.push(`probe timed out after its budget`)
