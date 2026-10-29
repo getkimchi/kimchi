@@ -2541,6 +2541,50 @@ function outboxSendableIndexLockScenario(agent: string): void {
 	out({ openedWhileLocked, indexDeferred, elapsedMs, openError, installedAfterRelease, version })
 }
 
+function countLimitsScenario(agent: string): void {
+	const backend = backendFor(agent)
+	const workId = "11111111-1111-4111-8111-111111111111"
+	const rows = [
+		{ workId, type: "request", requestId: "lumbrook-request-1" },
+		{ workId, type: "request_response", requestId: "lumbrook-request-1" },
+		{ workId, type: "request", requestId: "lumbrook-request-2" },
+		{ workId: "22222222-2222-4222-8222-222222222222", type: "request", requestId: "lumbrook-other" },
+	]
+	backend.tx(() => {
+		for (const row of rows) {
+			const body = JSON.stringify({ version: 1, ...row, sessionId: "lumbrook-session" })
+			backend.insertRecord({
+				recordHash: createHash("sha256").update(body).digest("hex"),
+				type: row.type,
+				workId: row.workId,
+				sessionId: "lumbrook-session",
+				body,
+				sourcePath: join(agent, "work-attribution", "lumbrook-count-limits.jsonl"),
+				sourceGeneration: 0,
+				sourceOffset: null,
+				importedAt: 1,
+			})
+		}
+	})
+	out({
+		recordCapNegative: backend.recordCount(workId, -1),
+		recordCap0: backend.recordCount(workId, 0),
+		recordCap1: backend.recordCount(workId, 1),
+		recordCap2: backend.recordCount(workId, 2),
+		recordCap4: backend.recordCount(workId, 4),
+		requestCapNegative: backend.requestCount(workId, -1),
+		requestCap0: backend.requestCount(workId, 0),
+		requestCap1: backend.requestCount(workId, 1),
+		requestCap2: backend.requestCount(workId, 2),
+		requestCap4: backend.requestCount(workId, 4),
+		exactRecords: backend.recordCount(workId),
+		exactRequests: backend.requestCount(workId),
+		globalCapNegative: backend.recordCount(undefined, -1),
+		globalCap2: backend.recordCount(undefined, 2),
+		globalExact: backend.recordCount(),
+	})
+}
+
 function markerClearScenario(agent: string): void {
 	const backend = backendFor(agent)
 	const hashes = Array.from({ length: 10_001 }, (_, index) => index.toString(16).padStart(64, "0"))
@@ -2637,6 +2681,7 @@ async function markerCleanupRecoveryScenario(agent: string): Promise<void> {
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
 	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
 	"marker-clear": (agent) => markerClearScenario(agent),
+	"count-limits": (agent) => countLimitsScenario(agent),
 	"marker-cleanup-recovery": (agent) => markerCleanupRecoveryScenario(agent),
 	"capture-receipt-conflict": (agent) => captureReceiptConflictScenario(agent),
 	"outbox-sendable-index": (agent) => outboxSendableIndexScenario(agent),

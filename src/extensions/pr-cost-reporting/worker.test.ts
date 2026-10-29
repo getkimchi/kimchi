@@ -922,6 +922,17 @@ describe("incremental translation", () => {
 		expect(pages.mock.calls.filter(([, , , , , type]) => type === "request")).toHaveLength(0)
 	})
 
+	it("caps both large-group counts before preflight and translation", async () => {
+		await seedLargeLumbrookGroup()
+		const backend = backendFor(directory)
+		const records = vi.spyOn(backend, "recordCount")
+		const requests = vi.spyOn(backend, "requestCount")
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(records).toHaveBeenCalledWith(largeWork, 1001)
+		expect(requests).toHaveBeenCalledWith(largeWork, 1001)
+	})
+
 	it("backs off a large group after its build deadline without losing its markers", async () => {
 		await seedLargeLumbrookGroup()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })

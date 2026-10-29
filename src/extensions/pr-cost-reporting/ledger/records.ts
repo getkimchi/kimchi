@@ -140,9 +140,10 @@ export interface RecordBackend {
 		workId?: string,
 		type?: string,
 	): PositionedRecord[]
-	recordCount(workId?: string): number
-	/** Counts request evidence without materializing the work's records. */
-	requestCount(workId: string): number
+	/** Exact by default; a limit stops a threshold check without scanning the whole work. */
+	recordCount(workId?: string, limit?: number): number
+	/** Counts request evidence without materializing records; an optional limit bounds the scan. */
+	requestCount(workId: string, limit?: number): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
 	hasNote(workId: string, name: string): boolean
@@ -708,6 +709,15 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const requestCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = 'request'",
 	)
+	const recordCountAllUpTo = db.query<{ count: number }, [number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records LIMIT ?)",
+	)
+	const recordCountWorkUpTo = db.query<{ count: number }, [string, number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records WHERE work_id = ? LIMIT ?)",
+	)
+	const requestCountWorkUpTo = db.query<{ count: number }, [string, number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = 'request' LIMIT ?)",
+	)
 	const dirty = db.query<{ work_id: string }, []>("SELECT work_id FROM work_dirty")
 	const markDirty = db.query("INSERT OR IGNORE INTO work_dirty (work_id) VALUES (?)")
 	const clearDirty = db.query("DELETE FROM work_dirty WHERE work_id = ?")
@@ -884,8 +894,21 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		},
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
-		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),
-		requestCount: (workId) => requestCountWork.get(workId)?.count ?? 0,
+		recordCount: (workId, limit) => {
+			if (limit !== undefined) {
+				if (limit <= 0) return 0
+				return workId
+					? (recordCountWorkUpTo.get(workId, limit)?.count ?? 0)
+					: (recordCountAllUpTo.get(limit)?.count ?? 0)
+			}
+			return workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)
+		},
+		requestCount: (workId, limit) => {
+			if (limit !== undefined && limit <= 0) return 0
+			return limit === undefined
+				? (requestCountWork.get(workId)?.count ?? 0)
+				: (requestCountWorkUpTo.get(workId, limit)?.count ?? 0)
+		},
 		hasNote: (workId, name) => hasNote.get(workId, name) != null,
 		getNote: (workId, name) => getNote.get(workId, name)?.body,
 		putNote: (workId, name, body) => putNote.run(workId, name, body, Date.now()),

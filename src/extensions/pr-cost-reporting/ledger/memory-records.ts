@@ -71,6 +71,17 @@ export function createMemoryRecords(): RecordBackend {
 		for (const [key, value] of backup.batches) batches.set(key, value)
 	}
 
+	const countMatching = (workId: string, type: string | undefined, limit?: number): number => {
+		if (limit !== undefined && limit <= 0) return 0
+		let count = 0
+		for (const row of order) {
+			if (row.workId !== workId || (type !== undefined && row.type !== type)) continue
+			count++
+			if (limit !== undefined && count >= limit) break
+		}
+		return count
+	}
+
 	return {
 		/**
 		 * In-memory transaction: attach a deep snapshot at entry and restore it on throw so mixed
@@ -286,8 +297,13 @@ export function createMemoryRecords(): RecordBackend {
 			}
 			return page
 		},
-		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
-		requestCount: (workId) => order.filter((row) => row.workId === workId && row.type === "request").length,
+		recordCount: (workId, limit) =>
+			workId === undefined
+				? limit === undefined
+					? order.length
+					: Math.min(order.length, Math.max(0, limit))
+				: countMatching(workId, undefined, limit),
+		requestCount: (workId, limit) => countMatching(workId, "request", limit),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)
 			return (byLog?.get("plans")?.size ?? 0) > 0 || (byLog?.get("commits")?.size ?? 0) > 0

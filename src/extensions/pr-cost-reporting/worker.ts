@@ -583,6 +583,19 @@ function changedWorkGroups(backend: RecordBackend, changed: ReadonlySet<string>)
 	return [...groups.values()].filter((group) => group.some((workId) => changed.has(workId)))
 }
 
+function groupExceedsCount(
+	works: readonly string[],
+	threshold: number,
+	count: (workId: string, limit: number) => number,
+): boolean {
+	let remaining = threshold
+	for (const workId of works) {
+		remaining -= count(workId, remaining + 1)
+		if (remaining < 0) return true
+	}
+	return false
+}
+
 /**
  * Rebuilds one group from all of its records and observes the units its changed records touch, in bounded
  * transactions. Returns whether any touched request still waits for evidence, or undefined when time ran out.
@@ -602,7 +615,8 @@ async function translateGroup(
 	const backend = backendFor(agentDir)
 	const fast = forceFull ? undefined : readChangedGroup(backend, works, producer, changed, check)
 	const cooperative =
-		fast !== undefined || works.reduce((count, workId) => count + backend.recordCount(workId), 0) > COOPERATIVE_RECORDS
+		fast !== undefined ||
+		groupExceedsCount(works, COOPERATIVE_RECORDS, (workId, limit) => backend.recordCount(workId, limit))
 	const groupDeadline = cooperative ? Date.now() + GROUP_BUILD_MS : deadline
 	const groupCheck = () => {
 		if (!cooperative) return check()
@@ -614,7 +628,7 @@ async function translateGroup(
 	if (
 		cooperative &&
 		!fast &&
-		works.reduce((count, workId) => count + backend.requestCount(workId), 0) > PREFLIGHT_REQUESTS
+		groupExceedsCount(works, PREFLIGHT_REQUESTS, (workId, limit) => backend.requestCount(workId, limit))
 	) {
 		const requests = await readGroupRequestRecordsAsync(agentDir, works, groupCheck)
 		const lookup = await repositoryIdentities(

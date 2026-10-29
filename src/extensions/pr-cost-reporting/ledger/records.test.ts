@@ -239,6 +239,36 @@ describe("records conformance (memory backend)", () => {
 		expect(backend.getRecord("b".repeat(64))).toBeUndefined()
 	})
 
+	it("caps per-work counts without changing exact counts", () => {
+		const backend = createMemoryRecords()
+		const first = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		backend.insertRecord(first)
+		backend.insertRecord({ ...first, recordHash: "b".repeat(64), type: "request_response" })
+		backend.insertRecord({ ...first, recordHash: "c".repeat(64) })
+		backend.insertRecord({ ...first, recordHash: "d".repeat(64), workId: "other" })
+		expect(backend.recordCount(WORK, -1)).toBe(0)
+		expect(backend.requestCount(WORK, -1)).toBe(0)
+		expect(backend.recordCount(undefined, -1)).toBe(0)
+		expect(backend.recordCount(WORK, 1)).toBe(1)
+		expect(backend.recordCount(WORK, 2)).toBe(2)
+		expect(backend.recordCount(WORK, 4)).toBe(3)
+		expect(backend.requestCount(WORK, 1)).toBe(1)
+		expect(backend.requestCount(WORK, 2)).toBe(2)
+		expect(backend.recordCount(WORK)).toBe(3)
+		expect(backend.requestCount(WORK)).toBe(2)
+		expect(backend.recordCount()).toBe(4)
+	})
+
 	it("bulk marker clearing preserves a replacement and rolls back atomically in memory", () => {
 		const backend = createMemoryRecords()
 		const first = "a".repeat(64)
@@ -381,6 +411,31 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 			const head = driver("head", dir, WORK) as ReturnType<typeof readWorkHead> | null
 			expect(head?.workId).toBe(WORK)
 			expect(again.records).toBe("1")
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("caps SQLite counts without changing exact totals", () => {
+		const dir = agentDir()
+		try {
+			expect(driver("count-limits", dir)).toEqual({
+				recordCapNegative: 0,
+				recordCap0: 0,
+				recordCap1: 1,
+				recordCap2: 2,
+				recordCap4: 3,
+				requestCapNegative: 0,
+				requestCap0: 0,
+				requestCap1: 1,
+				requestCap2: 2,
+				requestCap4: 2,
+				exactRecords: 3,
+				exactRequests: 2,
+				globalCapNegative: 0,
+				globalCap2: 2,
+				globalExact: 4,
+			})
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
