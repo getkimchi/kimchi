@@ -18,6 +18,7 @@
  */
 
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
@@ -2363,6 +2364,106 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	}
 }
 
+function outboxSendableIndexScenario(agent: string): void {
+	const account = "lumbrook-account"
+	const body = Buffer.from('{"source":"lumbrook"}')
+	const hash = createHash("sha256").update(body).digest("hex")
+	const original = openStore(agent)
+	try {
+		// Reopen a schema-v1 ledger created without the compatible optional index.
+		original.db.exec("DROP INDEX IF EXISTS outbox_sendable")
+		const insert = original.db.query(
+			"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		)
+		original.tx(() => {
+			for (let index = 0; index < 300; index++) {
+				const id = `lumbrook-event-${index.toString().padStart(3, "0")}`
+				insert.run(
+					id,
+					account,
+					id,
+					"coverage",
+					body,
+					hash,
+					10_000 - index,
+					index < 20 ? 1 : null,
+					index === 21 ? "fixture" : "",
+				)
+			}
+		})
+	} finally {
+		original.close()
+	}
+	const reopened = openStore(agent)
+	try {
+		const db = reopened.db
+		const sql =
+			"SELECT * FROM outbox_events WHERE account_key = ? AND acked_at IS NULL AND blocked = '' ORDER BY rowid LIMIT ?"
+		const plan = db.query<{ detail: string }, [string, number]>(`EXPLAIN QUERY PLAN ${sql}`).all(account, 100)
+		out({
+			version: db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+			indexPresent: Boolean(
+				db.query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'outbox_sendable'").get(),
+			),
+			indexUsed: plan.some((row) => row.detail.includes("USING INDEX outbox_sendable")),
+			tempSort: plan.some((row) => row.detail.includes("USE TEMP B-TREE")),
+			ids: db
+				.query<{ id: string }, [string, number]>(sql)
+				.all(account, 3)
+				.map((row) => row.id),
+		})
+	} finally {
+		reopened.close()
+	}
+}
+
+function outboxSendableIndexLockScenario(agent: string): void {
+	openStore(agent).close()
+	const writer = new Database(ledgerDbPath(agent), { strict: true })
+	let writing = false
+	let openedWhileLocked = false
+	let indexDeferred = false
+	let elapsedMs = 0
+	let openError: string | null = null
+	let installedAfterRelease = false
+	let version = 0
+	try {
+		writer.exec("DROP INDEX IF EXISTS outbox_sendable")
+		writer.exec("BEGIN IMMEDIATE")
+		writing = true
+		const started = performance.now()
+		try {
+			const reader = openStore(agent)
+			try {
+				openedWhileLocked = true
+				indexDeferred = !reader.db
+					.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'")
+					.get()
+			} finally {
+				reader.close()
+			}
+		} catch (error) {
+			openError = error instanceof Error ? error.message : String(error)
+		}
+		elapsedMs = Math.round(performance.now() - started)
+		writer.exec("COMMIT")
+		writing = false
+		const reopened = openStore(agent)
+		try {
+			installedAfterRelease = Boolean(
+				reopened.db.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'").get(),
+			)
+			version = reopened.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
+		} finally {
+			reopened.close()
+		}
+	} finally {
+		if (writing) writer.exec("ROLLBACK")
+		writer.close()
+	}
+	out({ openedWhileLocked, indexDeferred, elapsedMs, openError, installedAfterRelease, version })
+}
+
 function markerClearScenario(agent: string): void {
 	const backend = backendFor(agent)
 	const hashes = Array.from({ length: 10_001 }, (_, index) => index.toString(16).padStart(64, "0"))
@@ -2392,9 +2493,76 @@ function markerClearScenario(agent: string): void {
 	out({ rolledBack, afterRollback, afterClear, remaining: backend.markedRecords().map((row) => row.recordHash) })
 }
 
+async function markerCleanupRecoveryScenario(agent: string): Promise<void> {
+	const { clearTranslatedMarkers } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/marker-cleanup.js"
+	)
+	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const backend = backendFor(agent)
+	const hashes = Array.from({ length: 1_025 }, (_, index) => index.toString(16).padStart(64, "0"))
+	const lateHash = "f".repeat(64)
+	const fact = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T00:00:00Z",
+		coverage: { code: "observed", count: "1" },
+	}
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+	})
+	observeEvents(agent, "lumbrook-account", [fact], [], () => {})
+	const before = backend.latestOutboxEvent("lumbrook-account", fact.entityId)
+	if (!before) throw new Error("Expected a committed Lumbrook fact before marker cleanup")
+	const transaction = backend.tx
+	let completedBatches = 0
+	backend.tx = (fn) => {
+		const result = transaction(fn)
+		if (++completedBatches === 1) backend.upsertMarker(lateHash, "lumbrook-work", "request")
+		return result
+	}
+	let interrupted = false
+	try {
+		await clearTranslatedMarkers(backend, hashes, () => {
+			if (completedBatches === 1) throw new Error("simulated interruption between marker batches")
+		})
+	} catch (error) {
+		interrupted = error instanceof Error && error.message === "simulated interruption between marker batches"
+	}
+	const midway = backend.markedRecords().map(({ recordHash }) => recordHash)
+	const beforeRestart = backend.latestOutboxEvent("lumbrook-account", fact.entityId)
+	closeBackends()
+	const reopened = backendFor(agent)
+	const afterRestart = reopened.latestOutboxEvent("lumbrook-account", fact.entityId)
+	observeEvents(agent, "lumbrook-account", [fact], [], () => {})
+	const replayed = reopened.outboxEntityEvents("lumbrook-account", fact.entityId)
+	await clearTranslatedMarkers(reopened, hashes, () => {})
+	out({
+		interrupted,
+		completedBatches,
+		firstBatchCleared: midway.length === 2 && midway.includes(hashes[1_024]) && midway.includes(lateHash),
+		committedBeforeRestart: beforeRestart?.id === before.id,
+		eventRetained:
+			afterRestart?.id === before.id &&
+			afterRestart.hash === before.hash &&
+			Buffer.from(afterRestart.body).equals(Buffer.from(before.body)),
+		unchangedReplay:
+			replayed.length === 1 &&
+			replayed[0]?.id === before.id &&
+			Buffer.from(replayed[0].body).equals(Buffer.from(before.body)),
+		lateMarkerRetained:
+			JSON.stringify(reopened.markedRecords().map(({ recordHash }) => recordHash)) === JSON.stringify([lateHash]),
+	})
+}
+
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
 	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
 	"marker-clear": (agent) => markerClearScenario(agent),
+	"marker-cleanup-recovery": (agent) => markerCleanupRecoveryScenario(agent),
+	"outbox-sendable-index": (agent) => outboxSendableIndexScenario(agent),
+	"outbox-sendable-index-lock": (agent) => outboxSendableIndexLockScenario(agent),
 	probe: (agent) => probe(agent),
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),

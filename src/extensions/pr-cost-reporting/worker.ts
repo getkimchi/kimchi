@@ -28,6 +28,7 @@ import {
 	saveGroupCache,
 	verifySharedHeads,
 } from "./incremental.js"
+import { clearTranslatedMarkers } from "./ledger/marker-cleanup.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
@@ -764,7 +765,6 @@ async function translateGroup(
 							}),
 						})
 					} else backend.deleteNote("agent", groupKey(works))
-					backend.clearTranslations(new Set(changed.keys()))
 				}
 				backend.deleteNote("agent", progressNote)
 			} else backend.putNote("agent", progressNote, JSON.stringify({ ...progress, units: done }))
@@ -787,9 +787,13 @@ async function translateGroup(
 							backend.putNote(entry.owner, entry.name, entry.body)
 					saveGroupCache(backend, cache)
 				} else backend.deleteNote("agent", groupKey(works))
-				backend.clearTranslations(new Set(changed.keys()))
 			}
 			backend.deleteNote("agent", progressNote)
+		})
+	if (settled)
+		await clearTranslatedMarkers(backend, changed.keys(), () => {
+			assertLease()
+			signal.throwIfAborted()
 		})
 	return built.unresolved.length > 0
 }

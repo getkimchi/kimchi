@@ -29,6 +29,48 @@ it.each(["memory", "sqlite"])("reuses a verified claim projection and rebuilds a
 	}
 })
 
+it("indexes sendable events in rowid order after reopening a v1 ledger", { timeout: 30_000 }, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-outbox-sendable-index-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "outbox-sendable-index", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			version: 1,
+			indexPresent: true,
+			indexUsed: true,
+			tempSort: false,
+			ids: ["lumbrook-event-020", "lumbrook-event-022", "lumbrook-event-023"],
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
+it("replays committed events after interrupted marker cleanup without clearing later markers", {
+	timeout: 30_000,
+}, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-marker-cleanup-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "marker-cleanup-recovery", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			interrupted: true,
+			completedBatches: 1,
+			firstBatchCleared: true,
+			committedBeforeRestart: true,
+			eventRetained: true,
+			unchangedReplay: true,
+			lateMarkerRetained: true,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and atomic rollback (%s)", {
 	timeout: 30_000,
 }, (mode) => {

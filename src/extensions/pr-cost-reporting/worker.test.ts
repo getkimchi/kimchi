@@ -954,7 +954,7 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).not.toHaveBeenCalled()
 	})
 
-	it("clears settled markers in the transaction that observes the final event chunk", async () => {
+	it("commits final facts before clearing only translated markers", async () => {
 		await seedLinked()
 		const backend = backendFor(directory)
 		const key = accountKey(account)
@@ -974,13 +974,17 @@ describe("incremental translation", () => {
 		const tx = backend.tx
 		let sequence = 0
 		let active = 0
+		let committed = false
 		const observed: number[] = []
 		const cleared: number[] = []
+		const importedHash = "f".repeat(64)
 		vi.spyOn(backend, "tx").mockImplementation((fn) => {
 			const previous = active
 			active = ++sequence
 			try {
-				return tx(fn)
+				const result = tx(fn)
+				if (observed.includes(active)) committed = true
+				return result
 			} finally {
 				active = previous
 			}
@@ -988,15 +992,17 @@ describe("incremental translation", () => {
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => observed.push(active))
 		const clear = backend.clearTranslations
 		vi.spyOn(backend, "clearTranslations").mockImplementation((hashes) => {
+			expect(committed).toBe(true)
 			expect(hashes.size).toBeGreaterThan(0)
+			if (!cleared.length) backend.upsertMarker(importedHash, "55555555-5555-4555-8555-555555555555", "request")
 			cleared.push(active)
 			clear(hashes)
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(observed).toHaveLength(1)
 		expect(cleared.length).toBeGreaterThan(0)
-		expect(new Set(cleared)).toEqual(new Set(observed))
-		expect(backend.markedRecords()).toEqual([])
+		expect(Math.min(...cleared)).toBeGreaterThan(observed[0])
+		expect(backend.markedRecords().map(({ recordHash }) => recordHash)).toEqual([importedHash])
 	})
 
 	it("reads only new request evidence after a group has caught up", async () => {

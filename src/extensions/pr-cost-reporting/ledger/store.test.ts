@@ -128,6 +128,20 @@ describe("open via Bun driver", () => {
 		expect(result.tables).toBe(0)
 	})
 
+	test("opening an older v1 ledger defers the optional index while another writer holds the lock", {
+		timeout: 15_000,
+	}, () => {
+		const result = driver("outbox-sendable-index-lock", agentDir())
+		expect(result).toMatchObject({
+			openedWhileLocked: true,
+			indexDeferred: true,
+			openError: null,
+			installedAfterRelease: true,
+			version: 1,
+		})
+		expect(Number(result.elapsedMs)).toBeLessThan(200)
+	})
+
 	test("WAL: concurrent reader works while a writer holds; a second writer surfaces the busy timeout", {
 		timeout: 90_000,
 	}, async () => {

@@ -572,13 +572,57 @@ describe("import loop over the memory backend", () => {
 			writeFileSync(file, original.replace("req-1", "req-X") + line(request("req-3")))
 			const changedTime = new Date(Date.now() + 10_000)
 			utimesSync(file, changedTime, changedTime)
-			let rewritten = await importJournals(dir, { verifyCapturePrefix: true })
+			const hashUpdate = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update")
+			let rewritten: Awaited<ReturnType<typeof importJournals>>
+			try {
+				rewritten = await importJournals(dir, { verifyCapturePrefix: true })
+				expect(
+					hashUpdate.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.byteLength === 64 * 1024),
+				).toHaveLength(0)
+			} finally {
+				hashUpdate.mockRestore()
+			}
 			expect(rewritten.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
 			while (rewritten.pending) rewritten = await importJournals(dir, { verifyCapturePrefix: true })
 			expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-2", "req-X", "req-3"])
 		} finally {
 			digest.mockRestore()
 		}
+	})
+
+	it("defers a rewrite between capture prefix verification and import", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
+		const getCursor = backend.getJournalCursor.bind(backend)
+		let reads = 0
+		backend.getJournalCursor = (path) => {
+			const cursor = getCursor(path)
+			if (++reads === 2) {
+				writeFileSync(file, original.replace("req-1", "req-X"))
+				const changedTime = new Date(Date.now() + 10_000)
+				utimesSync(file, changedTime, changedTime)
+			}
+			return cursor
+		}
+		let pending: Awaited<ReturnType<typeof importJournals>>
+		try {
+			pending = await importJournals(dir, { verifyCapturePrefix: true })
+		} finally {
+			backend.getJournalCursor = getCursor
+		}
+		expect(pending.pending).toBe(true)
+		expect(pending.imported).toBe(0)
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1"])
+		let replayed = await importJournals(dir, { verifyCapturePrefix: true })
+		while (replayed.pending) replayed = await importJournals(dir, { verifyCapturePrefix: true })
+		expect(replayed.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X"])
 	})
 
 	it("detects a same-size capture rewrite even when its old mtime is restored", async () => {

@@ -17,7 +17,13 @@ import { closeSync, mkdirSync, openSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { reportingDirectory } from "../queue.js"
-import { LEDGER_SCHEMA, META_PROJECTION_VERSION, PROJECTION_VERSION, SCHEMA_VERSION } from "./schema.js"
+import {
+	LEDGER_SCHEMA,
+	META_PROJECTION_VERSION,
+	OUTBOX_SENDABLE_INDEX,
+	PROJECTION_VERSION,
+	SCHEMA_VERSION,
+} from "./schema.js"
 
 /** Thrown when the database cannot be opened in this runtime (no bun:sqlite). */
 export class LedgerUnavailableError extends Error {
@@ -99,6 +105,18 @@ export function openStore(agentDir: string): LedgerStore {
 				db.exec(LEDGER_SCHEMA)
 				db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
 			}).immediate()
+		}
+		// The optional index upgrades v1 ledgers without changing the version older builds read. Defer its
+		// installation if another process holds the writer lock rather than blocking startup for five seconds.
+		if (!db.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'").get()) {
+			db.exec("PRAGMA busy_timeout=50")
+			try {
+				db.exec(OUTBOX_SENDABLE_INDEX)
+			} catch (error) {
+				if (!(error instanceof Error && "code" in error && error.code === "SQLITE_BUSY")) throw error
+			} finally {
+				db.exec("PRAGMA busy_timeout=5000")
+			}
 		}
 	} catch (error) {
 		db.close()

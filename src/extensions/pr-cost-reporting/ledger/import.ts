@@ -160,7 +160,12 @@ const continued = new Map<
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
 /** Capture-only preflight: verify every old byte before the synchronous importer can reuse its running hash. */
-async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBudget?: () => void): Promise<void> {
+async function verifyCapturePrefix(
+	path: string,
+	cursor: JournalCursor,
+	replay: boolean,
+	checkBudget?: () => void,
+): Promise<void> {
 	if (!cursor.offset) return
 	checkBudget?.()
 	const fd = openSync(path, "r")
@@ -177,7 +182,8 @@ async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBud
 			samePrefix && known.size === before.size && known.mtimeMs === before.mtimeMs && known.ctimeMs === before.ctimeMs
 		if (
 			sameStat ||
-			(before.size === cursor.offset &&
+			(!replay &&
+				before.size === cursor.offset &&
 				before.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS &&
 				before.ctimeMs < cursor.updatedAt - MTIME_SLACK_MS)
 		)
@@ -208,8 +214,7 @@ async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBud
 			after.ino !== before.ino ||
 			after.size !== before.size ||
 			after.mtimeMs !== before.mtimeMs ||
-			after.ctimeMs !== before.ctimeMs ||
-			prefix.copy().digest("hex") !== cursor.boundaryHash
+			after.ctimeMs !== before.ctimeMs
 		) {
 			continued.delete(path)
 			return
@@ -236,6 +241,7 @@ function prepareJournal(
 	cursor: JournalCursor | undefined,
 	replay: boolean,
 	maxBytes: number,
+	verifiedPrefix: boolean,
 	checkBudget?: () => void,
 ) {
 	checkBudget?.()
@@ -266,6 +272,7 @@ function prepareJournal(
 		if (samePrefix && known.size === size && stat.mtimeMs === known.mtimeMs && stat.ctimeMs === known.ctimeMs) {
 			prefix = known.hash.copy()
 		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
+			if (verifiedPrefix && cursor.offset > 0) return "pending" as const
 			let position = 0
 			while (position < cursor.offset) {
 				checkBudget?.()
@@ -338,7 +345,13 @@ function syncWorkJournals(agentDir: string): string[] {
 function importJournalFiles(
 	agentDir: string,
 	journals: string[],
-	{ maxBytes = WINDOW_BYTES, onRecordProblem: onProblem, checkBudget, until }: ImportOptions,
+	{
+		maxBytes = WINDOW_BYTES,
+		onRecordProblem: onProblem,
+		checkBudget,
+		until,
+		verifyCapturePrefix = false,
+	}: ImportOptions,
 	/** Report cursors of journals missing from this listing; only a full listing can tell. */
 	sweep: boolean,
 ): ImportResult {
@@ -356,12 +369,18 @@ function importJournalFiles(
 				cursor,
 				!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined,
 				maxBytes,
+				verifyCapturePrefix,
 				checkBudget,
 			)
 		} catch (error) {
 			if (!object(error) || error.code !== "ENOENT") throw error
 			if (cursor) forgetJournal(agentDir, backend, path, result)
 			continue
+		}
+		if (prepared === "pending") {
+			result.pending = true
+			stopped.set(agentDir, path)
+			break
 		}
 		if (!prepared) continue
 		const { dev, ino, size, mtimeMs, ctimeMs, decision, prefix, lineOffset, data } = prepared
@@ -530,9 +549,10 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 		for (const path of journals) {
 			options.checkBudget?.()
 			const cursor = backend.getJournalCursor(path)
-			if (!cursor || backend.getNote(COVERAGE_NOTES, path) === undefined) continue
+			if (!cursor) continue
+			const replay = backend.getNote(COVERAGE_NOTES, path) === undefined
 			try {
-				await verifyCapturePrefix(path, cursor, options.checkBudget)
+				await verifyCapturePrefix(path, cursor, replay, options.checkBudget)
 			} catch (error) {
 				if (!object(error) || error.code !== "ENOENT") throw error
 			}
@@ -546,7 +566,7 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 			const cursor = backend.getJournalCursor(file.path)
 			if (cursor && file.mode !== "mutation")
 				try {
-					await verifyCapturePrefix(file.path, cursor, options.checkBudget)
+					await verifyCapturePrefix(file.path, cursor, false, options.checkBudget)
 				} catch (error) {
 					if (!object(error) || error.code !== "ENOENT") throw error
 				}
