@@ -20,6 +20,7 @@ import { backendFor, type OutboxBatch, type OutboxEvent, type RecordBackend } fr
 
 const BATCH_EVENTS = 100
 const BATCH_BYTES = 1 << 20
+const CLAIM_PROJECTION_OWNER = "pr-cost-effective-claims-v1"
 export type Fact = Omit<Event, "id" | "revision" | "baseRevision" | "baseEventId">
 
 export interface DeliveryRetry {
@@ -141,14 +142,74 @@ function validateClaimUpdate(next: Event, previous?: Event): void {
 		throw new Error("Correction receipt is in the future")
 }
 
+function claimProjectionName(accountKey: string, entityId: string): string {
+	return JSON.stringify([accountKey, entityId])
+}
+
+function projectionDigest(event: Event): string {
+	return createHash("sha256").update(JSON.stringify(event)).digest("hex")
+}
+
+function saveClaimProjection(
+	backend: RecordBackend,
+	accountKey: string,
+	entityId: string,
+	head: OutboxEvent,
+	effective: Event,
+): void {
+	backend.putNote(
+		CLAIM_PROJECTION_OWNER,
+		claimProjectionName(accountKey, entityId),
+		JSON.stringify({
+			version: 1,
+			headId: head.id,
+			headHash: head.hash,
+			count: backend.unblockedOutboxEventCount(accountKey, entityId),
+			digest: projectionDigest(effective),
+			effective,
+		}),
+	)
+}
+
 /**
- * Rebuild only this entity's effective claim facts; raw bytes remain the CAS and upload authority. An event the server
- * refused as a conflict never became part of the claim.
+ * Derived claim projection: compare both the authoritative head and the unblocked row count, so an older build's
+ * insertion or historical conflict invalidates it. Raw outbox bodies remain the upload and CAS authority.
  */
 export function effectiveClaim(backend: RecordBackend, accountKey: string, entityId: string): Event | undefined {
+	const head = backend.latestOutboxEvent(accountKey, entityId)
+	if (!head) return undefined
+	const count = backend.unblockedOutboxEventCount(accountKey, entityId)
+	const note = backend.getNote(CLAIM_PROJECTION_OWNER, claimProjectionName(accountKey, entityId))
+	if (note) {
+		try {
+			const cached: {
+				version: number
+				headId: string
+				headHash: string
+				count: number
+				digest: string
+				effective: Event
+			} = JSON.parse(note)
+			if (
+				cached.version === 1 &&
+				cached.headId === head.id &&
+				cached.headHash === head.hash &&
+				cached.count === count &&
+				cached.effective?.id === head.id &&
+				cached.digest === projectionDigest(cached.effective)
+			) {
+				if (createHash("sha256").update(head.body).digest("hex") !== head.hash)
+					throw new Error("Outbox event hash mismatch")
+				return cached.effective
+			}
+		} catch {
+			// Corrupt derived notes are disposable. Rebuild from the authoritative event chain.
+		}
+	}
 	let effective: Event | undefined
 	for (const row of backend.outboxEntityEvents(accountKey, entityId))
 		if (!row.blocked) effective = projectClaim(unpack(row), effective)
+	if (effective) saveClaimProjection(backend, accountKey, entityId, head, effective)
 	return effective
 }
 
@@ -195,12 +256,11 @@ export function observeEvents(
 				if (eventHash(neutral(old)) === eventHash(neutral(event))) continue
 			}
 			const raw: Event = JSON.parse(encodeEvent(event))
-			validateClaimUpdate(
-				raw,
+			const prior =
 				old && (old.source === "kimchi" || raw.source === "kimchi")
 					? effectiveClaim(backend, accountKey, event.entityId)
-					: old,
-			)
+					: old
+			validateClaimUpdate(raw, prior)
 			if (previous && old) {
 				event.revision = (BigInt(old.revision) + 1n).toString()
 				event.baseRevision = old.revision
@@ -212,7 +272,7 @@ export function observeEvents(
 			if (backend.getOutboxEvent(accountKey, event.id)) continue
 			validateIngestEvent(event)
 			const body = Buffer.from(encodeEvent(event))
-			backend.insertOutboxEvent({
+			const inserted: OutboxEvent = {
 				id: event.id,
 				accountKey,
 				entityId: event.entityId,
@@ -222,7 +282,9 @@ export function observeEvents(
 				createdAt: Date.now(),
 				ackedAt: null,
 				blocked: "",
-			})
+			}
+			backend.insertOutboxEvent(inserted)
+			saveClaimProjection(backend, accountKey, event.entityId, inserted, projectClaim(event, prior))
 		}
 		for (const hash of recordHashes) backend.clearTranslation(hash)
 		assertCurrent()
@@ -341,6 +403,8 @@ export function acknowledgeBatch(
 				? backend.blockOutboxEvent(accountKey, stored.id, stored.hash, "conflict")
 				: backend.ackOutboxEvent(accountKey, stored.id, stored.hash, at)
 			if (!settled) throw new Error("Outbox event changed")
+			if (conflicts.has(stored.id))
+				backend.deleteNote(CLAIM_PROJECTION_OWNER, claimProjectionName(accountKey, stored.entityId))
 		}
 		if (!backend.deleteOutboxBatch(accountKey, batch.id)) throw new Error("Outbox batch changed")
 		assertCurrent()

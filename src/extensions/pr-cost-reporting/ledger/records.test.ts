@@ -12,6 +12,7 @@ import {
 	closeBackends,
 	ledgerHasWorkOutput,
 	ledgerSessionInfo,
+	readGroupStoredRecordsAsync,
 	readRecordsAsync,
 	readStoredRecordsAsync,
 	readWorkHead,
@@ -139,6 +140,36 @@ describe("records conformance (memory backend)", () => {
 		expect(rows).toMatchObject([stored, damaged])
 		expect(rows[0].recordHash).not.toBe(createHash("sha256").update(rows[0].body).digest("hex"))
 		expect(await readRecordsAsync(dir, () => {})).toEqual([records[0]])
+	})
+
+	it("pages a group in work order from one watermark without including later appends", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const first = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		const other = { ...first, recordHash: "b".repeat(64), workId: "other" }
+		const second = { ...first, recordHash: "c".repeat(64) }
+		backend.insertRecord(first)
+		backend.insertRecord(other)
+		backend.insertRecord(second)
+		const reading = readGroupStoredRecordsAsync(dir, [WORK, "other"], () => {})
+		backend.insertRecord({ ...first, recordHash: "d".repeat(64) })
+		expect((await reading).map((row) => row.recordHash)).toEqual([
+			first.recordHash,
+			second.recordHash,
+			other.recordHash,
+		])
 	})
 
 	it("capture folds records into the projection exactly like the legacy summary did", () => {

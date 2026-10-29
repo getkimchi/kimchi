@@ -14,16 +14,17 @@ import {
 	type BillingDisplay,
 	type BillingLookup,
 	billingDisplay,
-	billingRequests,
+	billingRequestsSteps,
 	isSettled,
 	type OpenBilling,
 	openBilling,
 } from "./billing-evidence.js"
 import { type BillingSource, captureBillingSource, LOOKUP_WINDOW_MS, sameBillingSource } from "./billing-source.js"
+import { runSynchronously } from "./cooperative.js"
 import { type SavedRequestCost, workCostTotals } from "./cost-details.js"
 import {
 	type CostTotal,
-	calculatePullRequestCosts,
+	calculatePullRequestCostsSteps,
 	type PullRequestCost,
 	type PullRequestCostReport,
 	type RequestCostAllocation,
@@ -99,10 +100,11 @@ function costFingerprint(rows: unknown[], lookup: BillingLookup): string {
 }
 
 /** Read durable evidence rather than combining per-work caches. */
-export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
-	const requests = billingRequests(records)
+export function* readWorkCostReportSteps(agentDir: string, records = readWorkRecords(agentDir)) {
+	const requests = yield* billingRequestsSteps(records)
 	const noCharge = new Map<string, WorkAccount>()
 	for (const item of requests.values()) {
+		yield
 		const lookup = item.substantiveLookup
 		if (
 			!item.invalid &&
@@ -125,7 +127,7 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 			.map((item) => item.requestId),
 	)
 
-	const report = calculatePullRequestCosts(
+	const report = yield* calculatePullRequestCostsSteps(
 		records,
 		[...requests.values()].flatMap((item) => (item.invalid ? [] : item.observations)),
 		incomplete,
@@ -139,6 +141,10 @@ export function readWorkCostReport(agentDir: string, records = readWorkRecords(a
 		),
 	)
 	return { records, report, requests, costRefreshes }
+}
+
+export function readWorkCostReport(agentDir: string, records = readWorkRecords(agentDir)) {
+	return runSynchronously(readWorkCostReportSteps(agentDir, records))
 }
 
 interface CostState {

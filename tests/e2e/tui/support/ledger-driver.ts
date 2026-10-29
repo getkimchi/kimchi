@@ -606,6 +606,111 @@ async function producerScenario(agent: string): Promise<void> {
 	closeBackends()
 }
 
+async function claimProjectionScenario(agent: string, mode: string): Promise<void> {
+	const { acknowledgeBatch, effectiveClaim, observeEvents, pendingBatch } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+	)
+	const { backendFor, closeBackends, useBackendFactory } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+	)
+	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
+	const backend = backendFor(agent)
+	const account = "lumbrook-account"
+	const fact = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-23T10:00:00Z",
+		repository: { provider: "github", host: "github.com", id: "lumbrook-repo" },
+		usage: {
+			channel: "native",
+			counterScope: "request",
+			observedRoute: "unknown",
+			schema: "unknown",
+			billingBasis: "unknown",
+			correlation: "exact",
+			raw: {},
+			attemptsComplete: true,
+			requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		},
+		allocation: { kind: "unlinked", method: "native" },
+	}
+	const fence = () => {}
+	try {
+		observeEvents(agent, account, [fact], [], fence)
+		observeEvents(agent, account, [{ ...fact, usage: { ...fact.usage, actualModel: "second" } }], [], fence)
+		let reads = 0
+		const history = backend.outboxEntityEvents.bind(backend)
+		backend.outboxEntityEvents = (key, entity) => {
+			reads++
+			return history(key, entity)
+		}
+		const warm = effectiveClaim(backend, account, fact.entityId)
+		reads = 0
+		let cachedParses = 0
+		const repeated = (() => {
+			const parse = JSON.parse
+			JSON.parse = (...args) => {
+				cachedParses++
+				return parse(...args)
+			}
+			try {
+				return [effectiveClaim(backend, account, fact.entityId), effectiveClaim(backend, account, fact.entityId)]
+			} finally {
+				JSON.parse = parse
+			}
+		})()
+		const unchangedReads = reads
+		const putNote = backend.putNote.bind(backend)
+		backend.putNote = () => {}
+		try {
+			observeEvents(agent, account, [{ ...fact, usage: { ...fact.usage, actualModel: "third" } }], [], fence)
+		} finally {
+			backend.putNote = putNote
+		}
+		reads = 0
+		const foreign = effectiveClaim(backend, account, fact.entityId)
+		const foreignReads = reads
+		const latest = backend.latestOutboxEvent(account, fact.entityId)
+		if (!latest) throw new Error("Missing foreign-write fixture")
+		const pending = pendingBatch(agent, account, fence)
+		if (!pending) throw new Error("Missing conflict fixture")
+		const batch = JSON.parse(Buffer.from(pending.body).toString("utf8")).batch
+		acknowledgeBatch(
+			agent,
+			account,
+			pending,
+			{
+				batchId: pending.id,
+				receipts: batch.events.map((event: { id: string; revision: string }) => ({
+					id: event.id,
+					revision: event.revision,
+					status: event.id === latest.id ? "conflict" : "accepted",
+				})),
+			},
+			fence,
+		)
+		reads = 0
+		const restored = effectiveClaim(backend, account, fact.entityId)
+		out({
+			unchangedReads,
+			cachedParses,
+			foreignReads,
+			blockedReads: reads,
+			currentMatches:
+				warm?.usage?.actualModel === "second" &&
+				repeated.every((event) => JSON.stringify(event) === JSON.stringify(warm)) &&
+				foreign?.usage?.actualModel === "third",
+			restoredMatches: restored?.usage?.actualModel === "second",
+		})
+	} finally {
+		closeBackends()
+		useBackendFactory(null)
+	}
+}
+
 async function outboxScenario(agent: string, mode: string): Promise<void> {
 	const { observeEvents, pendingBatch, acknowledgeBatch, readOutboxStatus } = await import(
 		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
@@ -1820,6 +1925,7 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"native-common-delivery": (agent) => nativeUsage(agent, true, true, true),
 	producer: (agent) => producerScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
+	"claim-projection": (agent, mode) => claimProjectionScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
 	"read-history": async (agent) => {

@@ -98,6 +98,7 @@ export interface RecordBackend {
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
+	unblockedOutboxEventCount(accountKey: string, entityId: string): number
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
@@ -125,7 +126,13 @@ export interface RecordBackend {
 	): StoredRecord[]
 	/** Pins an async read to the records committed when it started. */
 	recordWatermark(): number
-	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
+	readRecordPage(
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+		workId?: string,
+	): PositionedRecord[]
 	recordCount(workId?: string): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
@@ -279,23 +286,26 @@ async function readRecordPrefixAsync<T>(
 	agentDir: string,
 	checkBudget: () => void,
 	project: (row: StoredRecord) => T | undefined,
+	workIds?: readonly string[],
 ): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
 	const through = backend.recordWatermark()
 	const records: T[] = []
-	let after = 0
-	while (after < through) {
-		await setImmediate()
-		checkBudget()
-		const page = backend.readRecordPage(after, through, 128, checkBudget)
-		if (!page.length) break
-		for (const row of page) {
+	for (const workId of workIds ?? [undefined]) {
+		let after = 0
+		while (after < through) {
+			await setImmediate()
 			checkBudget()
-			const value = project(row)
-			if (value !== undefined) records.push(value)
+			const page = backend.readRecordPage(after, through, 128, checkBudget, workId)
+			if (!page.length) break
+			for (const row of page) {
+				checkBudget()
+				const value = project(row)
+				if (value !== undefined) records.push(value)
+			}
+			after = page[page.length - 1].position
 		}
-		after = page[page.length - 1].position
 	}
 	checkBudget()
 	return records
@@ -304,6 +314,15 @@ async function readRecordPrefixAsync<T>(
 /** Retain original capture/import hashes for atomic translation; never hash the reserialized body instead. */
 export function readStoredRecordsAsync(agentDir: string, checkBudget: () => void): Promise<StoredRecord[]> {
 	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row)
+}
+
+/** Preserve work-group order while reading each work from the same pinned authority prefix. */
+export function readGroupStoredRecordsAsync(
+	agentDir: string,
+	workIds: readonly string[],
+	checkBudget: () => void,
+): Promise<StoredRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, workIds)
 }
 
 export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
@@ -545,6 +564,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const entityEvents = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid`,
 	)
+	const unblockedEventCount = db.query<{ count: number }, [string, string]>(
+		"SELECT COUNT(*) AS count FROM outbox_events WHERE account_key = ? AND entity_id = ? AND blocked = ''",
+	)
 	const insertEvent = db.query(
 		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	)
@@ -614,6 +636,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
+	const recordPageWork = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records WHERE work_id = ?",
@@ -665,6 +690,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
+		unblockedOutboxEventCount: (accountKey, entityId) => unblockedEventCount.get(accountKey, entityId)?.count ?? 0,
 		insertOutboxEvent: (event) =>
 			insertEvent.run(
 				event.id,
@@ -751,17 +777,22 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			return rows
 		},
 		recordWatermark: () => watermark.get()?.position ?? 0,
-		readRecordPage: (after, through, limit, checkBudget) => {
+		readRecordPage: (after, through, limit, checkBudget, workId) => {
 			checkBudget?.()
 			const rows: PositionedRecord[] = []
 			try {
-				for (const row of recordPage.iterate(after, through, limit)) {
+				const source =
+					workId === undefined
+						? recordPage.iterate(after, through, limit)
+						: recordPageWork.iterate(workId, after, through, limit)
+				for (const row of source) {
 					checkBudget?.()
 					rows.push(row)
 				}
 			} catch (error) {
 				// The same Bun cursor-reset rule as the synchronous replay above.
-				recordPage.get(after, through, limit)
+				if (workId === undefined) recordPage.get(after, through, limit)
+				else recordPageWork.get(workId, after, through, limit)
 				throw error
 			}
 			return rows

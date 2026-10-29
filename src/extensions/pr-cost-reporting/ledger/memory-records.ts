@@ -131,6 +131,10 @@ export function createMemoryRecords(): RecordBackend {
 			structuredClone(
 				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
 			),
+		unblockedOutboxEventCount: (accountKey, entityId) =>
+			[...events.values()].filter(
+				(event) => event.accountKey === accountKey && event.entityId === entityId && event.blocked === "",
+			).length,
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
 			events.set(event.id, structuredClone(event))
@@ -243,11 +247,15 @@ export function createMemoryRecords(): RecordBackend {
 				)
 			}),
 		recordWatermark: () => order.length,
-		readRecordPage: (after, through, limit, checkBudget) =>
-			order.slice(after, Math.min(through, after + limit)).map((row, index) => {
+		readRecordPage: (after, through, limit, checkBudget, workId) => {
+			const page: ReturnType<RecordBackend["readRecordPage"]> = []
+			for (let index = after; index < Math.min(through, order.length) && page.length < limit; index++) {
 				checkBudget?.()
-				return { ...row, position: after + index + 1 }
-			}),
+				const row = order[index]
+				if (workId === undefined || row.workId === workId) page.push({ ...row, position: index + 1 })
+			}
+			return page
+		},
 		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)

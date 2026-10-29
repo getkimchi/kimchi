@@ -22,7 +22,17 @@ import { deliverEvents, LIMIT_RETRY_MS, reconcileReporting, retryDelay } from ".
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 vi.mock("../work-attribution/summary.js", async (original) => ({ ...(await original<typeof summary>()) }))
-vi.mock("./events.js", () => ({ buildEvents: vi.fn(() => ({ accounts: [], units: [], unresolved: [] })) }))
+vi.mock("./events.js", () => {
+	const buildEvents = vi.fn<typeof eventBuilder.buildEvents>(() => ({ accounts: [], units: [], unresolved: [] }))
+	return {
+		buildEvents,
+		buildEventsSteps: vi.fn(function* (...args: Parameters<typeof eventBuilder.buildEventsSteps>) {
+			yield
+			const [stored, report, repositories, producer, check, claim, touched] = args
+			return buildEvents(stored, report, repositories, producer, check, claim, touched)
+		}),
+	}
+})
 // Node cannot encode real batches (protocol times need Temporal); the Bun ledger driver covers dispatch and ACKs.
 vi.mock("./ledger/outbox.js", async (original) => {
 	const real = await original<typeof outbox>()
@@ -882,6 +892,40 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
 		const [stored] = vi.mocked(eventBuilder.buildEvents).mock.calls[0]
 		expect(new Set(stored.map((row) => JSON.parse(row.body).workId))).toEqual(new Set([other.workId]))
+	})
+	it("yields during a large group build without clearing markers before it completes", async () => {
+		await seedLinked()
+		const workId = "55555555-5555-4555-8555-555555555555"
+		const at = "2026-10-04T12:00:00.000Z"
+		const rows = Array.from({ length: 1001 }, (_, index) => ({
+			version: 1,
+			type: "request",
+			workId,
+			sessionId: "private-session",
+			requestId: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+			startedAt: at,
+			recordedAt: at,
+			scope: { account, repository: "/private/repo/.git" },
+		}))
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+		)
+		const backend = backendFor(directory)
+		let eventLoopTurn = false
+		vi.mocked(eventBuilder.buildEventsSteps).mockImplementationOnce(function* (...args) {
+			setImmediate(() => {
+				eventLoopTurn = true
+			})
+			for (let index = 0; index < 500_000; index++) yield
+			expect(eventLoopTurn).toBe(true)
+			expect(backend.markedRecords().length).toBeGreaterThan(0)
+			const [stored, report, repositories, producer, check, claim, touched] = args
+			return eventBuilder.buildEvents(stored, report, repositories, producer, check, claim, touched)
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(eventBuilder.buildEvents).toHaveBeenCalledOnce()
+		expect(backend.markedRecords()).toEqual([])
 	})
 })
 

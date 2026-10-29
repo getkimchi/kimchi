@@ -10,11 +10,12 @@ import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { mapInChunks, runCooperatively } from "../work-attribution/cooperative.js"
+import { readWorkCostReport, readWorkCostReportSteps } from "../work-attribution/cost-sync.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
-import { buildEvents } from "./events.js"
+import { buildEvents, buildEventsSteps } from "./events.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
@@ -24,7 +25,7 @@ import {
 	pendingBatch,
 	readOutboxStatus,
 } from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
+import { backendFor, type OutboxBatch, type RecordBackend, readGroupStoredRecordsAsync } from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
 	readReportingState,
@@ -358,6 +359,9 @@ export async function reconcileReporting(
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
 const CHUNK_UNITS = 100
+/** Large groups use a longer local build, but yield and keep the original lease and cancellation. */
+const COOPERATIVE_RECORDS = 1000
+const GROUP_BUILD_MS = 3 * 60_000
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
 /** Each group's committed units survive later groups running before it resumes. */
@@ -415,7 +419,17 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
 		let translated: boolean | undefined
 		try {
-			translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
+			translated = await translateGroup(
+				agentDir,
+				works,
+				changed,
+				producer,
+				deadline,
+				bounded,
+				check,
+				signal,
+				assertLease,
+			)
 		} catch (error) {
 			if (!(error instanceof CaptureTimeLimit)) throw error
 		}
@@ -486,15 +500,41 @@ async function translateGroup(
 	deadline: number,
 	bounded: AbortSignal,
 	check: () => void,
+	signal: AbortSignal,
+	assertLease: () => void,
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
-	const stored = works.flatMap((workId) => backend.readRecords({ workId }, check))
-	const records = stored.map((row) => {
-		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
-	const { report } = readWorkCostReport(agentDir, records)
-	const { repositories, settled } = await repositoryIdentities(agentDir, records, report, deadline, bounded, check)
+	const cooperative = works.reduce((count, workId) => count + backend.recordCount(workId), 0) > COOPERATIVE_RECORDS
+	const groupDeadline = cooperative ? Date.now() + GROUP_BUILD_MS : deadline
+	const groupCheck = () => {
+		if (!cooperative) return check()
+		assertLease()
+		signal.throwIfAborted()
+		if (Date.now() >= groupDeadline) throw new CaptureTimeLimit("PR reporting group build time limit exceeded")
+	}
+	const stored = cooperative
+		? await readGroupStoredRecordsAsync(agentDir, works, groupCheck)
+		: works.flatMap((workId) => backend.readRecords({ workId }, check))
+	const records = cooperative
+		? await runCooperatively(
+				mapInChunks(stored, 128, (row) => JSON.parse(row.body) as WorkRecord),
+				groupCheck,
+			)
+		: stored.map((row) => {
+				check()
+				return JSON.parse(row.body) as WorkRecord
+			})
+	const { report } = cooperative
+		? await runCooperatively(readWorkCostReportSteps(agentDir, records), groupCheck)
+		: readWorkCostReport(agentDir, records)
+	const { repositories, settled } = await repositoryIdentities(
+		agentDir,
+		records,
+		report,
+		cooperative ? Date.now() + PASS_MS : deadline,
+		cooperative ? AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)]) : bounded,
+		groupCheck,
+	)
 	// A commit or work link can move any request of the group; other records touch only their own request.
 	const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
 	const touched = structural
@@ -507,16 +547,14 @@ async function translateGroup(
 				),
 				records: new Set(changed.keys()),
 			}
-	const built = buildEvents(
-		stored,
-		report,
-		repositories,
-		producer,
-		check,
-		(account, entity) => effectiveClaim(backend, account, entity),
-		touched,
-	)
-	check()
+	const claim = (account: string, entity: string) => effectiveClaim(backend, account, entity)
+	const built = cooperative
+		? await runCooperatively(
+				buildEventsSteps(stored, report, repositories, producer, groupCheck, claim, touched, records),
+				groupCheck,
+			)
+		: buildEvents(stored, report, repositories, producer, check, claim, touched)
+	groupCheck()
 	const facts = new Map(
 		built.accounts.map((group) => [
 			accountKey(group.account),
@@ -541,7 +579,7 @@ async function translateGroup(
 			: 0
 	const observed = new Set<string>()
 	while (done < built.units.length) {
-		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return undefined
+		if (Date.now() >= groupDeadline - CHUNK_RESERVE_MS) return undefined
 		const chunk = built.units.slice(done, done + CHUNK_UNITS)
 		const byAccount = new Map<string, Fact[]>()
 		for (const unit of chunk)
@@ -556,7 +594,7 @@ async function translateGroup(
 			}
 		done += chunk.length
 		backend.tx(() => {
-			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], check)
+			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], groupCheck)
 			if (done === built.units.length) {
 				// A repository lookup that failed retries the group with a later pass.
 				if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
@@ -567,7 +605,7 @@ async function translateGroup(
 	}
 	if (built.units.length === 0)
 		backend.tx(() => {
-			check()
+			groupCheck()
 			if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
 			backend.deleteNote("agent", progressNote)
 		})

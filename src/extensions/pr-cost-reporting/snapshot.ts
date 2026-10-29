@@ -1,12 +1,13 @@
 import { isIssueKey } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { runSynchronously } from "../work-attribution/cooperative.js"
 import {
 	type PullRequestCost,
 	type PullRequestCostReport,
 	type RequestCostAllocation,
 	time,
 } from "../work-attribution/costs.js"
-import { requestWorkLinks } from "../work-attribution/links.js"
+import { requestWorkLinksSteps } from "../work-attribution/links.js"
 import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 
@@ -77,15 +78,16 @@ export interface RequestAttribution {
 }
 
 /** Full local attribution of every request; events carry it without an upload window or size limit. */
-export function requestAttributions(
+export function* requestAttributionsSteps(
 	records: WorkRecord[],
 	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
-): Map<string, RequestAttribution> {
+): Generator<void, Map<string, RequestAttribution>> {
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
 	const conflictingLinkStatus = new Set<string>()
 	for (const row of records) {
+		yield
 		if (row.type === "request" && typeof row.requestId === "string")
 			original.set(row.requestId, [...(original.get(row.requestId) ?? []), row])
 		if (row.type === "work_link" && typeof row.linkId === "string" && typeof row.revision === "number") {
@@ -101,12 +103,13 @@ export function requestAttributions(
 
 	// Reuse the native proof validator. Revocations are explicit user decisions;
 	// validate their original scope and evidence before sending the receipt.
-	const verified = requestWorkLinks(
+	const verified = yield* requestWorkLinksSteps(
 		records.map((row) => (row.type === "work_link" && row.status === "revoked" ? { ...row, status: "active" } : row)),
 	)
 
 	const attributions = new Map<string, RequestAttribution>()
 	for (const request of report.requests) {
+		yield
 		const account = request.account
 		const candidates = report.pullRequests.filter(
 			(pr) => account && pr.account && sameWorkAccount(pr.account, account) && request.pullRequestIds.includes(pr.key),
@@ -189,6 +192,14 @@ export function requestAttributions(
 		})
 	}
 	return attributions
+}
+
+export function requestAttributions(
+	records: WorkRecord[],
+	report: PullRequestCostReport,
+	repositories: Map<string, RepositoryIdentity>,
+): Map<string, RequestAttribution> {
+	return runSynchronously(requestAttributionsSteps(records, report, repositories))
 }
 
 export function allocationFor(attribution: RequestAttribution, pullRequestIds: string[]): Allocation {

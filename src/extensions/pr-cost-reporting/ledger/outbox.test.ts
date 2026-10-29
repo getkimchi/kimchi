@@ -5,6 +5,28 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 
+it.each(["memory", "sqlite"])("reuses a verified claim projection and rebuilds after a foreign head or conflict (%s)", {
+	timeout: 30_000,
+}, (mode) => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-claim-projection-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "claim-projection", dir, mode], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			unchangedReads: 0,
+			cachedParses: 2,
+			foreignReads: 1,
+			blockedReads: 1,
+			currentMatches: true,
+			restoredMatches: true,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and atomic rollback (%s)", {
 	timeout: 30_000,
 }, (mode) => {
