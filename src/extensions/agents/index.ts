@@ -150,6 +150,19 @@ export function resolveRoleModelRef(subagentType: string): string | undefined {
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
+/** Best-effort session id for telemetry attribution of a remote run. The
+ *  spawn ctx is captured at spawn time and its reads THROW once the session
+ *  was replaced or reloaded (stale runtime) — completion handling must not
+ *  throw out of onComplete for that; telemetry falls back to the
+ *  last-initialized instance for this one emission. */
+function spawnSessionTelemetryId(spawnCtx: Pick<ExtensionContext, "sessionManager"> | undefined): string {
+	try {
+		return spawnCtx?.sessionManager.getSessionId() ?? ""
+	} catch {
+		return ""
+	}
+}
+
 const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 
 // Hard cap for get_subagent_result(wait: true). A backgrounded agent should
@@ -1209,7 +1222,7 @@ export default function (pi: ExtensionAPI) {
 					isError ? "failed" : "completed",
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
-					record.spawnCtx?.sessionManager.getSessionId(),
+					spawnSessionTelemetryId(record.spawnCtx),
 				)
 				// spawnCtx is captured at spawn time — don't fall back to a stale
 				// global context.

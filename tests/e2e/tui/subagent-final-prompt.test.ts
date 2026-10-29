@@ -57,12 +57,22 @@ test("subagent request advertises its resolved active tool list", async ({ termi
 			// prompt built after binding — the active-tool list section with
 			// the tools the child can actually call, plus the persona block.
 			// Same detection the fake server uses for its subagent queue: the
-			// parent-session header (threaded by the harness on child requests).
-			const subagentRequests = fixture.fake.requests.filter(
-				(request) =>
-					request.url.endsWith("/chat/completions") &&
-					(request.headers as Record<string, unknown>)["x-parent-session-id"] !== undefined,
-			)
+			// parent-session header (present when telemetry is enabled) OR the
+			// sub-agent prompt marker — CI runs with telemetry off, so the
+			// header alone is not reliable there.
+			const subagentRequests = fixture.fake.requests.filter((request) => {
+				if (!request.url.endsWith("/chat/completions")) return false
+				if ((request.headers as Record<string, unknown>)["x-parent-session-id"] !== undefined) return true
+				const messages = (request.body as { messages?: Array<{ role: string; content: unknown }> } | null)?.messages
+				if (!Array.isArray(messages)) return false
+				return messages.some(
+					(m) =>
+						m.role === "system" &&
+						(typeof m.content === "string" ? m.content : JSON.stringify(m.content)).includes(
+							"You are a kimchi coding agent sub-agent.",
+						),
+				)
+			})
 			expect(subagentRequests.length).toBe(1)
 
 			const first = subagentRequests[0]
