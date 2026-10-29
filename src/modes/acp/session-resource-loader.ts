@@ -1,3 +1,4 @@
+import { basename, dirname } from "node:path"
 import {
 	type AgentSession,
 	DefaultResourceLoader,
@@ -52,8 +53,6 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	 * startup resources_discover) are the initial truth.
 	 */
 	private skillsSnapshot: { skills: Skill[]; diagnostics: ResourceDiagnostic[] } | undefined
-	/** Discovery loader receiving extension-contributed paths during a refresh. */
-	private staged: DefaultResourceLoader | undefined
 	/** Serializes refreshes: each runs a full rescan after the previous one. */
 	private refreshChain: Promise<void> = Promise.resolve()
 	/** Bumped by every full reload and by dispose(): a refresh whose captured
@@ -137,9 +136,6 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 
 	extendResources(paths: Parameters<ResourceLoader["extendResources"]>[0]): void {
 		this.mainLoader.extendResources(paths)
-		// During a refresh, extension-contributed paths are staged into the
-		// discovery loader too, so the committed snapshot includes them.
-		this.staged?.extendResources(paths)
 		// Resource changes alter the skill set the append block is built
 		// from — the cached block must not outlive them.
 		invalidateSkillListBlock(this)
@@ -177,7 +173,6 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	dispose(): void {
 		this.disposed = true
 		this.generation++
-		this.staged = undefined
 	}
 
 	/**
@@ -225,42 +220,65 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 			noThemes: true,
 			noContextFiles: true,
 		})
-		this.staged = discovery
-		try {
-			await discovery.reload()
-			// Re-run resources_discover on the existing runner so extension-
-			// contributed skill sources remain present. The bridge forwards
-			// the discovered paths through session.resourceLoader — THIS
-			// adapter — so they land on both the main loader and the staged
-			// discovery loader (see extendResources).
-			await runResourcesDiscover(session)
-			// Commit only after discovery succeeded AND the adapter's
-			// lifecycle has not moved on since the pass started (a full
-			// reload raced it, or the session was disposed mid-flight): a
-			// throw above leaves the previous snapshot and palette in place.
-			if (this.disposed || this.generation !== generation) return "discarded"
-			this.skillsSnapshot = discovery.getSkills()
-			return "committed"
-		} finally {
-			if (this.staged === discovery) this.staged = undefined
+		await discovery.reload()
+		// Collect the live runner's extension contributions WITHOUT applying
+		// anything: emitResourcesDiscover is the public, side-effect-free
+		// query the private extendResourcesFromExtensions bridge starts from.
+		// The bridge was used here before — it applies resources to the
+		// session's loader AND rebuilds the session prompt before this
+		// refresh could check lifecycle validity, so a disposed or reloaded
+		// session was mutated anyway (skills applied to the live loader,
+		// prompt rebuilt under a dead runner).
+		const discovered = await session.extensionRunner.emitResourcesDiscover(this.discoveryCwd, "reload")
+		// Lifecycle validity BEFORE any mutation: everything below touches
+		// only the throwaway discovery loader and the snapshot field — the
+		// session, its runner, and the main loader are left alone, so a
+		// discarded pass publishes nothing and rebuilds no prompts.
+		if (this.disposed || this.generation !== generation) return "discarded"
+		if (discovered.skillPaths.length > 0) {
+			discovery.extendResources({
+				skillPaths: extensionResourcePaths(discovered.skillPaths),
+				promptPaths: [],
+				themePaths: [],
+			})
 		}
+		this.skillsSnapshot = discovery.getSkills()
+		return "committed"
 	}
 }
 
+/** Mirrors upstream's private AgentSession.getExtensionSourceLabel +
+ * core/source-info isSyntheticPath: the display source label for an
+ * extension-contributed resource path (synthetic `<inline:...>`/`builtin:`
+ * paths have no file behind them). Small and stable — swap for the upstream
+ * helper if it is ever exported. */
+function isSyntheticPath(path: string): boolean {
+	return path.startsWith("builtin:") || path.startsWith("<")
+}
+
+function extensionSourceLabel(extensionPath: string): string {
+	if (isSyntheticPath(extensionPath)) return `extension:${extensionPath.replace(/[<>]/g, "")}`
+	const base = basename(extensionPath)
+	return `extension:${base.replace(/\.(ts|js)$/, "")}`
+}
+
 /**
- * Runs the upstream resources_discover pass against the session's live
- * extension runner and forwards the contributed paths through
- * `session.resourceLoader.extendResources(...)` — the same step
- * `bindExtensions()` runs after session_start (upstream:
- * packages/coding-agent/src/core/agent-session.ts). This is the ONE place the
- * ACP surface reaches into the private AgentSession method; the check fails
- * loudly if upstream renames it. Drop the cast once a public refresh API
- * exists.
+ * Maps resources_discover results to extendResources entries — the same
+ * metadata the private AgentSession.buildExtensionResourcePaths attaches
+ * (scope "temporary", origin "top-level", base dir for path resolution), so
+ * staged extension contributions carry identical source metadata to the
+ * ones the startup bridge applies.
  */
-export async function runResourcesDiscover(session: AgentSession): Promise<void> {
-	const refreshable = session as unknown as Record<string, unknown>
-	if (typeof refreshable.extendResourcesFromExtensions !== "function") {
-		throw new TypeError("AgentSession.extendResourcesFromExtensions missing (upstream pi rename?)")
-	}
-	await (refreshable.extendResourcesFromExtensions as (reason: "reload") => Promise<void>).call(session, "reload")
+function extensionResourcePaths(
+	entries: Array<{ path: string; extensionPath: string }>,
+): NonNullable<Parameters<ResourceLoader["extendResources"]>[0]["skillPaths"]> {
+	return entries.map((entry) => ({
+		path: entry.path,
+		metadata: {
+			source: extensionSourceLabel(entry.extensionPath),
+			scope: "temporary",
+			origin: "top-level",
+			baseDir: isSyntheticPath(entry.extensionPath) ? undefined : dirname(entry.extensionPath),
+		},
+	}))
 }

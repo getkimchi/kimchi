@@ -41,6 +41,7 @@ import {
 import { afterAll, describe, expect, it } from "vitest"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { invalidateSkillListBlock } from "./skill-commands.js"
+import { waitFor as sharedWaitFor } from "./test-utils.js"
 
 /** Minimal model stub — the session never streams in these tests. */
 const fakeModel = {
@@ -96,9 +97,23 @@ interface Harness {
 	extSkills: string
 	/** Project skill dir, also extension-contributed (claude-code-skills shape). */
 	projectSkills: string
+	/** The main loader's CURRENT skill names — live-mutation detector for the
+	 *  race tests (a refresh must never touch this set). */
+	mainSkillNames: () => string[]
 }
 
-async function setupHarness(): Promise<Harness> {
+/** Optional harness controls: parkDiscovery lets a test hold the extension's
+ *  REAL resources_discover handler mid-flight (returns a promise the handler
+ *  awaits) — the genuine side-effect path, not a bridge stub.
+ *  lateContributedDir is added to the handler's answer only AFTER the park
+ *  resolves, so the parked pass's contributions differ from startup's and
+ *  any live application of them is observable. */
+interface HarnessOptions {
+	parkDiscovery?: () => Promise<boolean>
+	lateContributedDir?: string
+}
+
+async function setupHarness(opts: HarnessOptions = {}): Promise<Harness> {
 	const cwd = makeTmpDir()
 	const agentDir = makeTmpDir()
 	const settingsSkills = makeTmpDir()
@@ -121,7 +136,17 @@ async function setupHarness(): Promise<Harness> {
 	const deliveries: unknown[] = []
 	const extension: InlineExtension = (pi: ExtensionAPI) => {
 		factoryRuns++
-		pi.on("resources_discover", () => ({ skillPaths: [extSkills, projectSkills] }))
+		pi.on("resources_discover", async () => {
+			// Optional test park point INSIDE the real handler — used to hold
+			// a refresh mid-discovery without stubbing any upstream seam. The
+			// late dir is contributed only after a REAL park so the parked
+			// pass's answer differs from startup's (an unparked invocation
+			// must answer identically to keep baselines comparable).
+			const parked = await opts.parkDiscovery?.()
+			return {
+				skillPaths: [extSkills, projectSkills, ...(parked && opts.lateContributedDir ? [opts.lateContributedDir] : [])],
+			}
+		})
 		pi.events.on("acp-adapter-test", (payload) => deliveries.push(payload))
 	}
 
@@ -159,7 +184,21 @@ async function setupHarness(): Promise<Harness> {
 		},
 	})
 
-	return { loader, session, factoryRuns: () => factoryRuns, deliveries, bus, settingsSkills, extSkills, projectSkills }
+	return {
+		loader,
+		session,
+		factoryRuns: () => factoryRuns,
+		deliveries,
+		bus,
+		settingsSkills,
+		extSkills,
+		projectSkills,
+		mainSkillNames: () =>
+			mainLoader
+				.getSkills()
+				.skills.map((sk) => sk.name)
+				.sort(),
+	}
 }
 
 async function dispose(h: Harness): Promise<void> {
@@ -243,10 +282,10 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 			expect(skillNames(h.loader)).toContain("doomed-skill")
 			const before = skillNames(h.loader)
 
-			// Force the refresh to fail: a session without the upstream
-			// resources-discover bridge trips the adapter's rename guard.
+			// Force the refresh to fail: a session without a live extension
+			// runner cannot answer the resources_discover query.
 			const brokenSession = {} as unknown as Parameters<AcpSessionResourceLoader["refreshSkills"]>[0]
-			await expect(h.loader.refreshSkills(brokenSession)).rejects.toThrow(/extendResourcesFromExtensions/)
+			await expect(h.loader.refreshSkills(brokenSession)).rejects.toThrow(/emitResourcesDiscover/)
 
 			// The previously committed snapshot is unchanged.
 			expect(skillNames(h.loader)).toEqual(before)
@@ -281,44 +320,106 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 })
 
 describe("AcpSessionResourceLoader — refresh lifecycle races", () => {
-	/** Gate the private resources-discover bridge so a refresh can be parked
-	 *  mid-flight, deterministically interleaving reload/dispose with it.
-	 *  One-shot: releasing restores the original bridge so later refreshes
-	 *  (the post-race follow-up) run for real. */
-	function gateBridge(session: Awaited<ReturnType<typeof createAgentSession>>["session"]) {
-		const refreshable = session as unknown as Record<string, unknown>
-		const original = refreshable.extendResourcesFromExtensions
+	/** Park a REAL resources_discover handler mid-flight. The handler also
+	 *  runs at session startup (bindExtensions), so the park is ARMED from the
+	 *  test after setup: armed() lets the next invocation (the refresh's
+	 *  discovery query) enter; entered() reports it; release() lets it (and
+	 *  the refresh) continue. This is the genuine side-effect path — no
+	 *  upstream seam is stubbed. */
+	function parkDiscoveryHandler() {
+		let armed = false
+		let entries = 0
 		let release: (() => void) | undefined
-		refreshable.extendResourcesFromExtensions = () =>
-			new Promise<void>((resolve) => {
-				release = () => {
-					refreshable.extendResourcesFromExtensions = original
-					resolve()
-				}
-			})
-		return () => release?.()
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		return {
+			arm: () => {
+				armed = true
+			},
+			/** How many handler invocations are parked (a refresh AND a full
+			 *  reload's own bridge call can park simultaneously). */
+			enteredCount: () => entries,
+			release: () => release?.(),
+			parkDiscovery: () => {
+				if (!armed) return Promise.resolve(false)
+				entries++
+				return gate.then(() => true)
+			},
+		}
 	}
 
-	it("a refresh that races a full reload discards its result", async () => {
-		const h = await setupHarness()
+	it("a delayed discovery pass disposed mid-flight mutates nothing", async () => {
+		const park = parkDiscoveryHandler()
+		// The parked handler contributes a NEW dir once released: any live
+		// application of the pass's answer (the old bridge behavior) would
+		// publish it.
+		const lateDir = makeTmpDir()
+		writeSkill(lateDir, "posthumous-skill", "Must never be published")
+		const h = await setupHarness({ parkDiscovery: park.parkDiscovery, lateContributedDir: lateDir })
 		try {
-			const release = gateBridge(h.session)
+			const mainBefore = h.mainSkillNames()
+			const promptBefore = h.session.systemPrompt
+
+			park.arm()
+			const refresh = h.loader.refreshSkills(h.session)
+			await sharedWaitFor(() => park.enteredCount() === 1, {
+				message: () => "refresh never reached the discovery handler",
+			})
+			// The session dies while the pass is parked inside the real
+			// handler — mirroring disposeSessionRecord's order.
+			h.loader.dispose()
+			h.session.dispose()
+			park.release()
+
+			expect(await refresh).toBe("discarded")
+			// The snapshot was not committed…
+			expect(skillNames(h.loader)).not.toContain("posthumous-skill")
+			// …and the live surfaces were not mutated either: the main
+			// loader's skill set and the disposed session's prompt are
+			// exactly what they were before the pass started.
+			expect(h.mainSkillNames()).toEqual(mainBefore)
+			expect(h.session.systemPrompt).toBe(promptBefore)
+		} finally {
+			await dispose(h)
+		}
+	})
+
+	it("a refresh that races a full reload discards without live mutations", async () => {
+		const park = parkDiscoveryHandler()
+		const h = await setupHarness({ parkDiscovery: park.parkDiscovery })
+		try {
+			const mainBefore = h.mainSkillNames()
 			writeSkill(h.settingsSkills, "racy-skill", "Deleted while the refresh is parked")
 
+			park.arm()
 			const refresh = h.loader.refreshSkills(h.session)
-			// Park the refresh inside the bridge; its discovery pass has
-			// already scanned racy-skill into its snapshot.
-			await new Promise<void>((r) => setTimeout(r, 20))
+			await sharedWaitFor(() => park.enteredCount() === 1, {
+				message: () => "refresh never reached the discovery handler",
+			})
 			// The skill is deleted while the pass is parked — the reload's
 			// scan no longer sees it, so the parked snapshot is obsolete.
 			rmSync(join(h.settingsSkills, "racy-skill"), { recursive: true, force: true })
-			await h.loader.reload()
-			release()
-			expect(await refresh).toBe("discarded")
+			// The TRUE intentional full reload. Its resources_discover pass
+			// re-enters the same parked handler (entry #2) before the reload
+			// can finish — release once both are parked.
+			const reloaded = h.session.reload()
+			await sharedWaitFor(() => park.enteredCount() === 2, {
+				message: () => "reload never reached its own discovery pass",
+			})
+			park.release()
 
-			// The obsolete snapshot (still containing the deleted skill) was
-			// NOT committed over the reload's state.
+			// The refresh's captured generation predates the reload's bump:
+			// its obsolete snapshot (with the since-deleted skill) discards.
+			expect(await refresh).toBe("discarded")
+			await reloaded
+
+			// The reload's own state stands: no racy-skill anywhere, the
+			// extension-contributed skills re-applied by the reload's bridge,
+			// and the prompt rebuilt by the reload (not the discarded pass).
 			expect(skillNames(h.loader)).not.toContain("racy-skill")
+			expect(h.mainSkillNames()).toEqual(mainBefore)
+			expect(h.session.systemPrompt).not.toContain("racy-skill")
 
 			// A fresh refresh after the reload commits normally.
 			expect(await h.loader.refreshSkills(h.session)).toBe("committed")
@@ -329,15 +430,18 @@ describe("AcpSessionResourceLoader — refresh lifecycle races", () => {
 	})
 
 	it("dispose discards an in-flight refresh and stops later ones", async () => {
-		const h = await setupHarness()
+		const park = parkDiscoveryHandler()
+		const lateDir = makeTmpDir()
+		writeSkill(lateDir, "posthumous-skill", "Must never be committed")
+		const h = await setupHarness({ parkDiscovery: park.parkDiscovery, lateContributedDir: lateDir })
 		try {
-			const release = gateBridge(h.session)
-			writeSkill(h.settingsSkills, "posthumous-skill", "Must never be committed")
-
+			park.arm()
 			const refresh = h.loader.refreshSkills(h.session)
-			await new Promise<void>((r) => setTimeout(r, 20))
+			await sharedWaitFor(() => park.enteredCount() === 1, {
+				message: () => "refresh never reached the discovery handler",
+			})
 			h.loader.dispose()
-			release()
+			park.release()
 			expect(await refresh).toBe("discarded")
 			expect(skillNames(h.loader)).not.toContain("posthumous-skill")
 
