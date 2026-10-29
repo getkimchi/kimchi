@@ -261,8 +261,11 @@ export async function postProcessHtmlExportOnce(filePath: string, options?: Expo
 		`<script id="session-data" type="application/json">${modifiedBase64}</script>`,
 	)
 
-	html = injectStaticRendererScripts(html)
+	// Inject in the same order the old two-pass pipeline produced: the tab
+	// scaffold and iframe data first, then the static renderer scripts —
+	// keeping the output byte-identical to pre-PR-2 exports.
 	html = injectSubAgentTabs(html, redactedTabs)
+	html = injectStaticRendererScripts(html)
 
 	// Single write.
 	writeFileSync(filePath, html, "utf-8")
