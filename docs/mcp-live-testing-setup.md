@@ -34,15 +34,27 @@ Store three repository secrets:
 One-time setup, repeated on rotation:
 
 1. Build the branch under test: `pnpm run build:binary`.
-2. Start an interactive session with an isolated home and a file-backed credential store (the store switches on `KIMCHI_MCP_E2E_KEYRING_DIR` alone — no OS keychain is touched):
+2. Create an isolated home with the server pre-configured (the `/mcp` panel is view-only; servers come from the adapter's config file) and a file-backed credential store (the store switches on `KIMCHI_MCP_E2E_KEYRING_DIR` alone — no OS keychain is touched):
 
    ```sh
-   HOME=$(mktemp -d) KIMCHI_MCP_E2E_KEYRING_DIR="$HOME/mcp-keyring" dist/bin/kimchi
+   mkdir -p /tmp/gmail-seed/.config/kimchi/harness
+   cat > /tmp/gmail-seed/.config/kimchi/harness/mcp-adapter.json <<'EOF'
+   {
+     "mcpServers": {
+       "gmail": {
+         "url": "https://gmailmcp.googleapis.com/mcp/v1",
+         "auth": "oauth",
+         "oauth": { "clientId": "<client id>", "clientSecret": "<client secret>" }
+       }
+     }
+   }
+   EOF
+   HOME=/tmp/gmail-seed KIMCHI_MCP_E2E_KEYRING_DIR=/tmp/gmail-seed/mcp-keyring dist/bin/kimchi
    ```
 
-3. In the session: add the Gmail MCP server through the `/mcp` panel (its URL, the test client id, and the client secret), then run `/mcp-auth <server-name>` and complete the Google consent in the browser that opens. Completing it proves the acceptance criterion the scheduled check cannot: a refresh token is issued on **first consent**, because the authorize URL carried `access_type=offline`. The credential lands in `$HOME/mcp-keyring/`.
+3. In the session: run `/mcp-auth gmail` and complete the Google consent in the browser that opens. Completing it proves the acceptance criterion the scheduled check cannot: a refresh token is issued on **first consent**, because the authorize URL carried `access_type=offline`. The credential lands in `$HOME/mcp-keyring/`.
 
-4. Extract the refresh token from the stored entry JSON (`tokens.refreshToken`) and save it as the `GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL` secret. Delete the temporary home directory afterwards.
+4. Extract the refresh token from the stored entry JSON (`tokens.refreshToken`) and save it as the `GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL` secret. Delete the temporary home directory afterwards — its config file holds the client secret.
 
 The extraction step is manual by design: the token passes from your screen to the secret store without transiting the repository or any log.
 
