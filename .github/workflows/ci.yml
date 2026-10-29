@@ -72,6 +72,9 @@ jobs:
       - name: Smoke tests
         run: pnpm run test:smoke
 
+      - name: Pi upgrade scripts tests
+        run: pnpm run test:pi-upgrade
+
   master-checks:
     # Run on both push-to-master and pull_request so PR CI exercises the same
     # post-merge checks (e.g. `make build` + `pnpm run test` without the
