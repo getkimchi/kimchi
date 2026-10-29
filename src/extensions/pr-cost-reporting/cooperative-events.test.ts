@@ -14,13 +14,13 @@ import type { StoredRecord } from "./ledger/records.js"
 import { accountKey, type RepositoryIdentity } from "./snapshot.js"
 
 const account = {
-	apiUrl: "https://api.lumbrook.invalid",
+	apiUrl: "https://api.testOrg.invalid",
 	organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 }
-const repository = "/lumbrook/platform/.git"
+const repository = "/testOrg/widgets/.git"
 const repositories = new Map<string, RepositoryIdentity>([
-	[repository, { provider: "github", host: "github.com", id: "4242", name: "lumbrook/platform" }],
+	[repository, { provider: "github", host: "github.com", id: "4242", name: "testOrg/widgets" }],
 ])
 const works = ["22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444"]
 const producer = "33333333-3333-4333-8333-333333333333"
@@ -33,7 +33,7 @@ function history(seed: number): WorkRecord[] {
 		const requestId = `11111111-1111-4111-8111-${(seed * 32 + index).toString(16).padStart(12, "0")}`
 		const workId = works[next() % works.length]
 		const startedAt = new Date(Date.UTC(2026, 9, 24, 8, 0, index)).toISOString()
-		const base = { version: 1 as const, workId, sessionId: `lumbrook-session-${workId}`, requestId }
+		const base = { version: 1 as const, workId, sessionId: `testOrg-session-${workId}`, requestId }
 		rows.push(
 			{ ...base, type: "request", startedAt, recordedAt: startedAt, scope: { account, repository } },
 			{ ...base, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
@@ -61,22 +61,22 @@ function storedRecords(rows: readonly WorkRecord[]): StoredRecord[] {
 
 it("uses a changed shared fact when its request is the cached last writer", () => {
 	const prior: Fact = {
-		entityId: "lumbrook-shared-work",
+		entityId: "testOrg-shared-work",
 		source: "kimchi",
 		sourceVersion: "unknown",
-		deviceId: "lumbrook-device",
+		deviceId: "testOrg-device",
 		observeTime: "2026-10-24T08:00:00.000Z",
-		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "LUM-1", source: "work" }] },
+		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "TEST-1", source: "work" }] },
 	}
 	const changed: Fact = {
 		...prior,
 		observeTime: "2026-10-24T08:00:01.000Z",
-		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "LUM-2", source: "work" }] },
+		work: { reason: "observed_request", quality: "observed", issueKeys: [{ key: "TEST-2", source: "work" }] },
 	}
 	const key = accountKey(account)
 	const cache: GroupCache = {
 		version: 1,
-		group: "lumbrook-group",
+		group: "testOrg-group",
 		producer,
 		through: 1,
 		context: [],
@@ -88,8 +88,8 @@ it("uses a changed shared fact when its request is the cached last writer", () =
 				account: key,
 				entityId: prior.entityId,
 				fact: prior,
-				writer: "lumbrook-request",
-				first: "lumbrook-request",
+				writer: "testOrg-request",
+				first: "testOrg-request",
 				order: 0,
 				headId: null,
 				headHash: null,
@@ -99,7 +99,7 @@ it("uses a changed shared fact when its request is the cached last writer", () =
 	const built: CommonEvents = {
 		accounts: [{ account, facts: [changed], recordHashes: [] }],
 		units: [
-			{ account: key, requestId: "lumbrook-request", entities: ["lumbrook-request", prior.entityId], recordHashes: [] },
+			{ account: key, requestId: "testOrg-request", entities: ["testOrg-request", prior.entityId], recordHashes: [] },
 		],
 		unresolved: [],
 	}
@@ -108,8 +108,8 @@ it("uses a changed shared fact when its request is the cached last writer", () =
 		work: {
 			...changed.work,
 			issueKeys: [
-				{ key: "LUM-1", source: "work" },
-				{ key: "LUM-2", source: "work" },
+				{ key: "TEST-1", source: "work" },
+				{ key: "TEST-2", source: "work" },
 			],
 		},
 	})
@@ -183,7 +183,7 @@ console.log(JSON.stringify(results));
 })
 
 function sqliteParity(scenario?: string) {
-	const agent = mkdtempSync(join(tmpdir(), "lumbrook-pr-cost-parity-"))
+	const agent = mkdtempSync(join(tmpdir(), "testOrg-pr-cost-parity-"))
 	try {
 		const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
 		const output = execFileSync("bun", [driver, "incremental-parity", agent, ...(scenario ? [scenario] : [])], {
@@ -214,7 +214,7 @@ it.each([
 	const result = sqliteParity(scenario)
 	const evidence =
 		scenario === "cold-response"
-			? '"actualModel":"lumbrook-serving"'
+			? '"actualModel":"testOrg-serving"'
 			: scenario === "cold-tool"
 				? '"name":"read"'
 				: "2026-10-24T08:00:04"
@@ -259,7 +259,7 @@ it.each([
 	"unitless-response",
 ])("replays only a known request for late %s evidence", (scenario) => {
 	const result = sqliteParity(scenario)
-	const fact = scenario === "tool-row" ? '"name":"read"' : '"actualModel":"lumbrook-serving"'
+	const fact = scenario === "tool-row" ? '"name":"read"' : '"actualModel":"testOrg-serving"'
 	expect(result.reference.some(({ body }) => body.includes(fact))).toBe(true)
 	expect(result.scanned).toBeLessThanOrEqual(8)
 	expect(result.incremental).toEqual(result.reference)
@@ -267,7 +267,7 @@ it.each([
 
 it("preserves earlier response evidence when a tool arrives in a second pass", () => {
 	const result = sqliteParity("response-then-tool")
-	expect(result.reference.some(({ body }) => body.includes('"actualModel":"lumbrook-serving"'))).toBe(true)
+	expect(result.reference.some(({ body }) => body.includes('"actualModel":"testOrg-serving"'))).toBe(true)
 	expect(result.reference.some(({ body }) => body.includes('"name":"read"'))).toBe(true)
 	expect(result.scanned).toBeLessThanOrEqual(8)
 	expect(result.incremental).toEqual(result.reference)

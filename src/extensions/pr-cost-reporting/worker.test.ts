@@ -171,19 +171,19 @@ async function seedLinked(priced = true) {
 }
 
 const largeWork = "11111111-1111-4111-8111-111111111111"
-async function seedLargeLumbrookGroup(smallWork?: string, requestCount = 1001, dispatchesPerRequest = 0) {
+async function seedLargeTestOrgGroup(smallWork?: string, requestCount = 1001, dispatchesPerRequest = 0) {
 	const at = "2026-10-04T12:00:00.000Z"
 	const rows: Record<string, unknown>[] = Array.from({ length: requestCount }, (_, index) => ({
 		version: 1,
 		type: "request",
 		workId: largeWork,
-		sessionId: "lumbrook-session",
-		requestId: `lumbrook-request-${index}`,
+		sessionId: "testOrg-session",
+		requestId: `testOrg-request-${index}`,
 		startedAt: at,
 		recordedAt: at,
 		scope: {
-			account: { apiUrl: "https://api.lumbrook.invalid", organizationId: org, userId: user },
-			repository: "/lumbrook/platform/.git",
+			account: { apiUrl: "https://api.testOrg.invalid", organizationId: org, userId: user },
+			repository: "/testOrg/widgets/.git",
 		},
 	}))
 	for (const request of rows.slice())
@@ -199,18 +199,18 @@ async function seedLargeLumbrookGroup(smallWork?: string, requestCount = 1001, d
 			version: 1,
 			type: "request",
 			workId: smallWork,
-			sessionId: "lumbrook-session",
-			requestId: "lumbrook-small",
+			sessionId: "testOrg-session",
+			requestId: "testOrg-small",
 			startedAt: at,
 			recordedAt: at,
 			scope: {
-				account: { apiUrl: "https://api.lumbrook.invalid", organizationId: org, userId: user },
-				repository: "/lumbrook/other/.git",
+				account: { apiUrl: "https://api.testOrg.invalid", organizationId: org, userId: user },
+				repository: "/testOrg/other/.git",
 			},
 		})
 	await mkdir(join(directory, "work-attribution"), { recursive: true })
 	await writeFile(
-		join(directory, "work-attribution", "lumbrook.jsonl"),
+		join(directory, "work-attribution", "testOrg.jsonl"),
 		`${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
 	)
 }
@@ -583,7 +583,7 @@ describe("account-fenced reporting delivery", () => {
 	})
 	it("records a safe capture reason and clears it after recovery", async () => {
 		const importer = vi.spyOn(summary, "importWorkRecordsAsync").mockRejectedValueOnce(
-			Object.assign(new Error("EACCES: permission denied, open '/lumbrook/private/secret-token'"), {
+			Object.assign(new Error("EACCES: permission denied, open '/testOrg/private/secret-token'"), {
 				code: "EACCES",
 			}),
 		)
@@ -895,10 +895,10 @@ describe("incremental translation", () => {
 
 	it("does not build an offline large group before giving the next group a turn", async () => {
 		const smallWork = "66666666-6666-4666-8666-666666666666"
-		await seedLargeLumbrookGroup(smallWork)
+		await seedLargeTestOrgGroup(smallWork)
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockImplementation(async (path) => {
-			if (path === "/lumbrook/platform/.git") throw new Error("offline")
-			return { ...repository, name: "lumbrook/platform" }
+			if (path === "/testOrg/widgets/.git") throw new Error("offline")
+			return { ...repository, name: "testOrg/widgets" }
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		const calledWorks = vi.mocked(eventBuilder.buildEvents).mock.calls.map(([stored]) => stored[0]?.workId)
@@ -909,12 +909,12 @@ describe("incremental translation", () => {
 	})
 
 	it("skips repository preflight for a B-shaped group with few requests", async () => {
-		await seedLargeLumbrookGroup(undefined, 320, 3)
+		await seedLargeTestOrgGroup(undefined, 320, 3)
 		const backend = backendFor(directory)
 		const pages = vi.spyOn(backend, "readRecordPage")
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
 			...repository,
-			name: "lumbrook/platform",
+			name: "testOrg/widgets",
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(backend.recordCount(largeWork)).toBe(1280)
@@ -923,19 +923,19 @@ describe("incremental translation", () => {
 	})
 
 	it("caps both large-group counts before preflight and translation", async () => {
-		await seedLargeLumbrookGroup()
+		await seedLargeTestOrgGroup()
 		const backend = backendFor(directory)
 		const records = vi.spyOn(backend, "recordCount")
 		const requests = vi.spyOn(backend, "requestCount")
-		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "testOrg/widgets" })
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(records).toHaveBeenCalledWith(largeWork, 1001)
 		expect(requests).toHaveBeenCalledWith(largeWork, 1001)
 	})
 
 	it("backs off a large group after its build deadline without losing its markers", async () => {
-		await seedLargeLumbrookGroup()
-		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		await seedLargeTestOrgGroup()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "testOrg/widgets" })
 		const start = Date.now()
 		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
@@ -968,8 +968,8 @@ describe("incremental translation", () => {
 
 	it("backs off a failing group while later groups translate and reports a safe reason", async () => {
 		const smallWork = "66666666-6666-4666-8666-666666666666"
-		await seedLargeLumbrookGroup(smallWork, 1)
-		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		await seedLargeTestOrgGroup(smallWork, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "testOrg/widgets" })
 		const start = Date.now()
 		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
@@ -1091,7 +1091,7 @@ describe("incremental translation", () => {
 			version: 1,
 			type: "request",
 			workId,
-			sessionId: "lumbrook-session",
+			sessionId: "testOrg-session",
 			requestId: `77777777-7777-4777-8777-${String(index).padStart(12, "0")}`,
 			recordedAt: "2026-10-04T12:00:00.000Z",
 			startedAt: "2026-10-04T12:00:00.000Z",
@@ -1119,7 +1119,7 @@ describe("incremental translation", () => {
 			version: 1,
 			type: "request_response",
 			workId,
-			sessionId: "lumbrook-session",
+			sessionId: "testOrg-session",
 			requestId: request(200).requestId,
 			recordedAt: "2026-10-04T12:00:01.000Z",
 			response: { status: 200 },
@@ -1163,7 +1163,7 @@ describe("incremental translation", () => {
 		// File evidence can change attribution for earlier requests even without a new request row.
 		await appendFile(
 			path,
-			`${JSON.stringify({ version: 1, type: "file_transition", workId, sessionId: "lumbrook-session", transitionId: "later-edit", toolCallId: "edit", repository: "/private/repo/.git", worktree: "/private/repo", path: "src/lumbrook.ts", before: null, after: { blob: "a".repeat(40), mode: "100644" }, recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
+			`${JSON.stringify({ version: 1, type: "file_transition", workId, sessionId: "testOrg-session", transitionId: "later-edit", toolCallId: "edit", repository: "/private/repo/.git", worktree: "/private/repo", path: "src/testOrg.ts", before: null, after: { blob: "a".repeat(40), mode: "100644" }, recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
 		)
 		workRows = 0
 		vi.mocked(outbox.observeEvents).mockClear()
@@ -1177,9 +1177,9 @@ describe("incremental translation", () => {
 			version: 1,
 			type: "file_observation",
 			workId,
-			sessionId: "lumbrook-session",
+			sessionId: "testOrg-session",
 			requestId: request(203).requestId,
-			observationId: "lumbrook-incomplete-scan",
+			observationId: "testOrg-incomplete-scan",
 			toolCallId: "read",
 			source: "bash",
 			repository: "/private/repo/.git",
@@ -1198,14 +1198,14 @@ describe("incremental translation", () => {
 	})
 
 	it("rebuilds fully when a replayed request becomes unresolved", async () => {
-		await seedLargeLumbrookGroup(undefined, 2, 1)
-		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
+		await seedLargeTestOrgGroup(undefined, 2, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "testOrg/widgets" })
 		const late = {
 			version: 1,
 			type: "request_dispatch",
 			workId: largeWork,
-			sessionId: "lumbrook-session",
-			requestId: "lumbrook-request-0",
+			sessionId: "testOrg-session",
+			requestId: "testOrg-request-0",
 			startedAt: "2026-10-04T12:00:01.000Z",
 			dispatchedAt: "2026-10-04T12:00:02.000Z",
 			recordedAt: "2026-10-04T12:00:02.000Z",
@@ -1216,7 +1216,7 @@ describe("incremental translation", () => {
 				return {
 					accounts: [],
 					units: selected.map((request) => ({
-						account: accountKey({ ...account, apiUrl: "https://api.lumbrook.invalid" }),
+						account: accountKey({ ...account, apiUrl: "https://api.testOrg.invalid" }),
 						requestId: request.requestId,
 						entities: [request.requestId],
 						recordHashes: [],
@@ -1232,7 +1232,7 @@ describe("incremental translation", () => {
 		await run()
 		const backend = backendFor(directory)
 		expect(backend.getNote("agent", groupKey([largeWork]))).toBeDefined()
-		await appendFile(join(directory, "work-attribution", "lumbrook.jsonl"), `${JSON.stringify(late)}\n`)
+		await appendFile(join(directory, "work-attribution", "testOrg.jsonl"), `${JSON.stringify(late)}\n`)
 		vi.mocked(eventBuilder.buildEvents).mockClear()
 		await run()
 		const calls = vi.mocked(eventBuilder.buildEvents).mock.calls
@@ -1242,16 +1242,16 @@ describe("incremental translation", () => {
 	})
 
 	it("observes every request in a forced full rebuild without a group note", async () => {
-		await seedLargeLumbrookGroup(undefined, 2, 1)
-		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "lumbrook/platform" })
-		const lumbrook = { ...account, apiUrl: "https://api.lumbrook.invalid" }
+		await seedLargeTestOrgGroup(undefined, 2, 1)
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({ ...repository, name: "testOrg/widgets" })
+		const testOrg = { ...account, apiUrl: "https://api.testOrg.invalid" }
 		vi.mocked(eventBuilder.buildEvents).mockImplementation(
 			(_stored, report, _repositories, _producer, _check, _claim, touched) => {
 				const selected = report.requests.filter((request) => !touched || touched.requests.has(request.requestId))
 				return {
 					accounts: [
 						{
-							account: lumbrook,
+							account: testOrg,
 							facts: selected.map((request) => ({
 								entityId: request.requestId,
 								source: "kimchi" as const,
@@ -1264,7 +1264,7 @@ describe("incremental translation", () => {
 						},
 					],
 					units: selected.map((request) => ({
-						account: accountKey(lumbrook),
+						account: accountKey(testOrg),
 						requestId: request.requestId,
 						entities: [request.requestId],
 						recordHashes: [],
@@ -1280,15 +1280,15 @@ describe("incremental translation", () => {
 		expect(backend.getNote("agent", groupKey([largeWork]))).toBeDefined()
 		backend.deleteNote("agent", groupKey([largeWork]))
 		await appendFile(
-			join(directory, "work-attribution", "lumbrook.jsonl"),
-			`${JSON.stringify({ version: 1, type: "request_response", workId: largeWork, sessionId: "lumbrook-session", requestId: "lumbrook-request-0", recordedAt: "2026-10-04T12:00:03.000Z", response: { status: 200 } })}\n`,
+			join(directory, "work-attribution", "testOrg.jsonl"),
+			`${JSON.stringify({ version: 1, type: "request_response", workId: largeWork, sessionId: "testOrg-session", requestId: "testOrg-request-0", recordedAt: "2026-10-04T12:00:03.000Z", response: { status: 200 } })}\n`,
 		)
 		vi.mocked(outbox.observeEvents).mockClear()
 		await run(true)
 		const observed = vi
 			.mocked(outbox.observeEvents)
 			.mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId))
-		expect(new Set(observed)).toEqual(new Set(["lumbrook-request-0", "lumbrook-request-1"]))
+		expect(new Set(observed)).toEqual(new Set(["testOrg-request-0", "testOrg-request-1"]))
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {
@@ -1344,12 +1344,12 @@ describe("incremental translation", () => {
 		expect(backend.markedRecords()).toEqual([])
 	})
 	it("keeps pending markers and the outbox unchanged when a large build is aborted mid-yield", async () => {
-		await seedLargeLumbrookGroup()
+		await seedLargeTestOrgGroup()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockResolvedValue({
 			provider: "github",
 			host: "github.com",
 			id: "42",
-			name: "lumbrook/platform",
+			name: "testOrg/widgets",
 		})
 		const controller = new AbortController()
 		const backend = backendFor(directory)

@@ -15,12 +15,12 @@ it("persists and validates large structural context without storing full bodies"
 		version: 1,
 		type: "commit",
 		workId,
-		sessionId: "lumbrook-session",
+		sessionId: "testOrg-session",
 		recordedAt: "2026-10-24T08:00:00.000Z",
-		repository: "/lumbrook/platform/.git",
-		worktree: "/lumbrook/platform",
+		repository: "/testOrg/widgets/.git",
+		worktree: "/testOrg/widgets",
 		sha: index.toString(16).padStart(40, "0"),
-		message: "lumbrook-change-".repeat(90),
+		message: "testOrg-change-".repeat(90),
 	}))
 	const stored: StoredRecord[] = rows.map((row, index) => {
 		const body = JSON.stringify(row)
@@ -73,7 +73,7 @@ it("retains native segment evidence across partial index updates", () => {
 		version: 1,
 		type: "request",
 		workId,
-		sessionId: "lumbrook-session",
+		sessionId: "testOrg-session",
 		recordedAt: "2026-10-24T08:00:00.000Z",
 		requestId,
 		segment: { id: "99999999-9999-4999-8999-000000000003", attribution: "session", reason: "matching-disabled" },
@@ -82,11 +82,11 @@ it("retains native segment evidence across partial index updates", () => {
 		version: 1,
 		type: "commit",
 		workId,
-		sessionId: "lumbrook-session",
+		sessionId: "testOrg-session",
 		recordedAt: "2026-10-24T08:00:01.000Z",
 		requestId,
-		repository: "/lumbrook/platform/.git",
-		worktree: "/lumbrook/platform",
+		repository: "/testOrg/widgets/.git",
+		worktree: "/testOrg/widgets",
 		sha: "a".repeat(40),
 	}
 	const stored: StoredRecord[] = [request, native].map((row) => {
@@ -132,10 +132,10 @@ it("rejects oversized structural context before reading any body", () => {
 		version: 1,
 		type: "commit",
 		workId,
-		sessionId: "lumbrook-session",
+		sessionId: "testOrg-session",
 		recordedAt: "2026-10-24T08:00:00.000Z",
-		repository: "/lumbrook/platform/.git",
-		worktree: "/lumbrook/platform",
+		repository: "/testOrg/widgets/.git",
+		worktree: "/testOrg/widgets",
 		sha: index.toString(16).padStart(40, "0"),
 	}))
 	const stored: StoredRecord[] = rows.map((row, index) => ({

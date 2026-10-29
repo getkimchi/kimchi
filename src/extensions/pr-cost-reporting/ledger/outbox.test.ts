@@ -62,7 +62,7 @@ it("indexes sendable events in rowid order after reopening a v1 ledger", { timeo
 			indexPresent: true,
 			indexUsed: true,
 			tempSort: false,
-			ids: ["lumbrook-event-020", "lumbrook-event-022", "lumbrook-event-023"],
+			ids: ["testOrg-event-020", "testOrg-event-022", "testOrg-event-023"],
 		})
 	} finally {
 		rmSync(dir, { recursive: true, force: true })

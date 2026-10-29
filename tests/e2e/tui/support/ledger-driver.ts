@@ -620,14 +620,14 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
 	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
 	const backend = backendFor(agent)
-	const account = "lumbrook-account"
+	const account = "testOrg-account"
 	const fact = {
 		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		source: "kimchi",
 		sourceVersion: "test",
 		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 		observeTime: "2026-10-23T10:00:00Z",
-		repository: { provider: "github", host: "github.com", id: "lumbrook-repo" },
+		repository: { provider: "github", host: "github.com", id: "testOrg-repo" },
 		usage: {
 			channel: "native",
 			counterScope: "request",
@@ -714,7 +714,7 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 		reads = 0
 		const restored = effectiveClaim(backend, account, fact.entityId)
 		const blockedReads = reads
-		const nonHeadAccount = "lumbrook-non-head"
+		const nonHeadAccount = "testOrg-non-head"
 		observeEvents(agent, nonHeadAccount, [fact], [], fence)
 		observeEvents(
 			agent,
@@ -760,14 +760,14 @@ async function claimProjectionScenario(agent: string, mode: string): Promise<voi
 async function captureReceiptConflictScenario(agent: string): Promise<void> {
 	const { observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
 	const backend = backendFor(agent)
-	const account = "lumbrook-account"
+	const account = "testOrg-account"
 	const claim = {
 		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		source: "kimchi",
 		sourceVersion: "test",
 		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 		observeTime: "2026-10-24T00:00:00Z",
-		repository: { provider: "github", host: "github.com", id: "lumbrook-repo" },
+		repository: { provider: "github", host: "github.com", id: "testOrg-repo" },
 		usage: {
 			channel: "native",
 			counterScope: "request",
@@ -799,11 +799,11 @@ async function captureReceiptConflictScenario(agent: string): Promise<void> {
 	const conflict = {
 		...claim,
 		observeTime: "2026-10-24T01:00:00Z",
-		allocation: { kind: "unmerged", pullRequestIds: ["lumbrook-pr-one"], method: "user-correction" },
+		allocation: { kind: "unmerged", pullRequestIds: ["testOrg-pr-one"], method: "user-correction" },
 	}
 	observeEvents(agent, account, [claim], [], () => {})
 	const before = backend.latestOutboxEvent(account, claim.entityId)
-	if (!before) throw new Error("Expected an initial Lumbrook claim")
+	if (!before) throw new Error("Expected an initial testOrg claim")
 	let strictRejected = false
 	try {
 		observeEvents(agent, account, [conflict, sibling], [], () => {})
@@ -2101,7 +2101,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	const { reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	const { setReportingEnabled } = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
 	const account = {
-		apiUrl: "https://api.lumbrook.invalid",
+		apiUrl: "https://api.testOrg.invalid",
 		organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 	}
@@ -2114,7 +2114,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	const reconcile = (directory: string) =>
 		reconcileReporting(directory, directory, new AbortController().signal, () => {}, directory === reference)
 	const oldKey = process.env.KIMCHI_API_KEY
-	process.env.KIMCHI_API_KEY = "lumbrook-test-key"
+	process.env.KIMCHI_API_KEY = "testOrg-test-key"
 	globalThis.fetch = async () => new Response("{}", { status: 503 })
 	const pairedRequests = (seed: number): number[] => {
 		let state = seed
@@ -2131,10 +2131,10 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 			workId: owner,
 			sessionId:
 				ownerless && index === 4
-					? "lumbrook-session-new"
+					? "testOrg-session-new"
 					: paired && index !== 2 && index !== 3
-						? `lumbrook-session-${index}`
-						: "lumbrook-session",
+						? `testOrg-session-${index}`
+						: "testOrg-session",
 			requestId,
 		}
 		capture(
@@ -2144,7 +2144,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 				type: "request",
 				startedAt,
 				recordedAt: startedAt,
-				scope: { account, repository: "/lumbrook/platform/.git" },
+				scope: { account, repository: "/testOrg/widgets/.git" },
 				...(sameInput && (index === 0 || index === 4)
 					? {
 							segment: {
@@ -2155,13 +2155,13 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						}
 					: {}),
 			},
-			"lumbrook-parity",
+			"testOrg-parity",
 		)
 		if (scenario === "unitless-response" || ((planFirst || newUnitless) && index === 4)) return
 		capture(
 			directory,
 			{ ...common, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
-			"lumbrook-parity",
+			"testOrg-parity",
 		)
 	}
 	const connectWorks = (directory: string) => {
@@ -2172,20 +2172,20 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 					version: 1,
 					type: "commit",
 					workId: owner,
-					sessionId: "lumbrook-session",
+					sessionId: "testOrg-session",
 					recordedAt: "2026-10-24T07:00:00.000Z",
-					repository: "/lumbrook/platform/.git",
-					worktree: "/lumbrook/platform",
+					repository: "/testOrg/widgets/.git",
+					worktree: "/testOrg/widgets",
 					sha: (index + 1).toString(16).repeat(40),
 					pullRequests: [
 						{
 							provider: "github",
-							id: "1534",
+							id: "42424242",
 							repositoryId: "4242",
 							host: "github.com",
-							repository: "lumbrook/platform",
-							number: 1534,
-							url: "https://github.com/lumbrook/platform/pull/1534",
+							repository: "testOrg/widgets",
+							number: 42424242,
+							url: "https://github.com/testOrg/widgets/pull/42424242",
 							state: "merged",
 							mergedAt: "2026-10-24T07:00:00.000Z",
 							closedAt: null,
@@ -2195,7 +2195,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						},
 					],
 				},
-				"lumbrook-parity",
+				"testOrg-parity",
 			)
 	}
 	const events = (directory: string) => {
@@ -2235,11 +2235,11 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						version: 1,
 						type: "work",
 						workId,
-						sessionId: "lumbrook-session-new",
+						sessionId: "testOrg-session-new",
 						recordedAt: "2026-10-24T08:00:02.849Z",
-						title: "Lumbrook rollout",
+						title: "testOrg rollout",
 					},
-					"lumbrook-parity",
+					"testOrg-parity",
 				)
 			if (planFirst)
 				capture(
@@ -2248,12 +2248,12 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						version: 1,
 						type: "plan",
 						workId,
-						sessionId: "lumbrook-session",
+						sessionId: "testOrg-session",
 						recordedAt: "2026-10-24T08:00:02.850Z",
-						path: ".kimchi/plans/lumbrook-rollout.md",
+						path: ".kimchi/plans/testOrg-rollout.md",
 						contentHash: "b".repeat(64),
 					},
-					"lumbrook-parity",
+					"testOrg-parity",
 				)
 			await reconcile(directory)
 			if (backendFor(directory).markedRecords().length) throw new Error("Initial capture did not settle")
@@ -2269,10 +2269,10 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 				const base = {
 					version: 1,
 					workId,
-					sessionId: "lumbrook-session",
+					sessionId: "testOrg-session",
 					requestId: "11111111-1111-4111-8111-000000000000",
 					recordedAt: "2026-10-24T08:00:20.000Z",
-					repository: "/lumbrook/platform/.git",
+					repository: "/testOrg/widgets/.git",
 				}
 				if (scenario === "unitless-response")
 					capture(
@@ -2283,7 +2283,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 							startedAt: "2026-10-24T08:00:00.000Z",
 							dispatchedAt: base.recordedAt,
 						},
-						"lumbrook-parity",
+						"testOrg-parity",
 					)
 				if (
 					scenario === "response-row" ||
@@ -2296,22 +2296,22 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						{
 							...base,
 							type: "request_response",
-							responseId: "lumbrook-response-0",
+							responseId: "testOrg-response-0",
 							nativeUsage: {
 								harness: "kimchi",
 								sourceVersion: "1.22",
 								api: "anthropic-messages",
 								schema: "anthropic-messages-v1",
 								provider: "anthropic",
-								reportedModel: "lumbrook-requested",
-								actualModel: "lumbrook-serving",
+								reportedModel: "testOrg-requested",
+								actualModel: "testOrg-serving",
 								dispatchObserved: true,
 								finalized: true,
 								finalUsageObserved: true,
 								raw: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
 							},
 						},
-						"lumbrook-parity",
+						"testOrg-parity",
 					)
 				else
 					capture(
@@ -2324,7 +2324,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 							outcome: "completed",
 							durationMs: 7,
 						},
-						"lumbrook-parity",
+						"testOrg-parity",
 					)
 			}
 			if (scenario === "work-row")
@@ -2334,11 +2334,11 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						version: 1,
 						type: "work",
 						workId,
-						sessionId: "lumbrook-session",
+						sessionId: "testOrg-session",
 						recordedAt: "2026-10-24T09:00:00.000Z",
-						title: "Lumbrook rollout",
+						title: "testOrg rollout",
 					},
-					"lumbrook-parity",
+					"testOrg-parity",
 				)
 			if (scenario === "plan-row")
 				capture(
@@ -2347,12 +2347,12 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 						version: 1,
 						type: "plan",
 						workId,
-						sessionId: "lumbrook-session",
+						sessionId: "testOrg-session",
 						recordedAt: "2026-10-24T09:00:00.000Z",
 						path: ".kimchi/plans/rollout.md",
 						contentHash: "a".repeat(64),
 					},
-					"lumbrook-parity",
+					"testOrg-parity",
 				)
 		}
 		if (cold)
@@ -2381,13 +2381,13 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 							version: 1,
 							type: "request_dispatch",
 							workId,
-							sessionId: "lumbrook-session",
+							sessionId: "testOrg-session",
 							requestId: "11111111-1111-4111-8111-000000000004",
 							startedAt: "2026-10-24T08:00:04.000Z",
 							dispatchedAt: "2026-10-24T08:00:21.000Z",
 							recordedAt: "2026-10-24T08:00:21.000Z",
 						},
-						"lumbrook-parity",
+						"testOrg-parity",
 					)
 				else
 					capture(
@@ -2396,16 +2396,16 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 							version: 1,
 							type: "tool_execution",
 							workId,
-							sessionId: "lumbrook-session",
+							sessionId: "testOrg-session",
 							requestId: "11111111-1111-4111-8111-000000000000",
 							recordedAt: "2026-10-24T08:00:21.000Z",
-							repository: "/lumbrook/platform/.git",
+							repository: "/testOrg/widgets/.git",
 							toolCallId: "read-two",
 							toolName: "read",
 							outcome: "completed",
 							durationMs: 8,
 						},
-						"lumbrook-parity",
+						"testOrg-parity",
 					)
 			}
 			for (const directory of [incremental, reference]) {
@@ -2442,8 +2442,8 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 }
 
 function outboxSendableIndexScenario(agent: string): void {
-	const account = "lumbrook-account"
-	const body = Buffer.from('{"source":"lumbrook"}')
+	const account = "testOrg-account"
+	const body = Buffer.from('{"source":"testOrg"}')
 	const hash = createHash("sha256").update(body).digest("hex")
 	const original = openStore(agent)
 	try {
@@ -2454,7 +2454,7 @@ function outboxSendableIndexScenario(agent: string): void {
 		)
 		original.tx(() => {
 			for (let index = 0; index < 300; index++) {
-				const id = `lumbrook-event-${index.toString().padStart(3, "0")}`
+				const id = `testOrg-event-${index.toString().padStart(3, "0")}`
 				insert.run(
 					id,
 					account,
@@ -2545,21 +2545,21 @@ function countLimitsScenario(agent: string): void {
 	const backend = backendFor(agent)
 	const workId = "11111111-1111-4111-8111-111111111111"
 	const rows = [
-		{ workId, type: "request", requestId: "lumbrook-request-1" },
-		{ workId, type: "request_response", requestId: "lumbrook-request-1" },
-		{ workId, type: "request", requestId: "lumbrook-request-2" },
-		{ workId: "22222222-2222-4222-8222-222222222222", type: "request", requestId: "lumbrook-other" },
+		{ workId, type: "request", requestId: "testOrg-request-1" },
+		{ workId, type: "request_response", requestId: "testOrg-request-1" },
+		{ workId, type: "request", requestId: "testOrg-request-2" },
+		{ workId: "22222222-2222-4222-8222-222222222222", type: "request", requestId: "testOrg-other" },
 	]
 	backend.tx(() => {
 		for (const row of rows) {
-			const body = JSON.stringify({ version: 1, ...row, sessionId: "lumbrook-session" })
+			const body = JSON.stringify({ version: 1, ...row, sessionId: "testOrg-session" })
 			backend.insertRecord({
 				recordHash: createHash("sha256").update(body).digest("hex"),
 				type: row.type,
 				workId: row.workId,
-				sessionId: "lumbrook-session",
+				sessionId: "testOrg-session",
 				body,
-				sourcePath: join(agent, "work-attribution", "lumbrook-count-limits.jsonl"),
+				sourcePath: join(agent, "work-attribution", "testOrg-count-limits.jsonl"),
 				sourceGeneration: 0,
 				sourceOffset: null,
 				importedAt: 1,
@@ -2591,7 +2591,7 @@ function markerClearScenario(agent: string): void {
 	const captured = new Set(hashes)
 	const replacement = "f".repeat(64)
 	backend.tx(() => {
-		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
 	})
 	let rolledBack = false
 	try {
@@ -2606,9 +2606,9 @@ function markerClearScenario(agent: string): void {
 	backend.tx(() => backend.clearTranslations(captured))
 	const afterClear = backend.markedRecords().length
 	backend.tx(() => {
-		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
 		backend.clearTranslation(hashes[0])
-		backend.upsertMarker(replacement, "lumbrook-work", "request")
+		backend.upsertMarker(replacement, "testOrg-work", "request")
 		backend.clearTranslations(captured)
 	})
 	out({ rolledBack, afterRollback, afterClear, remaining: backend.markedRecords().map((row) => row.recordHash) })
@@ -2632,16 +2632,16 @@ async function markerCleanupRecoveryScenario(agent: string): Promise<void> {
 		coverage: { code: "observed", count: "1" },
 	}
 	backend.tx(() => {
-		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
 	})
-	observeEvents(agent, "lumbrook-account", [fact], [], () => {})
-	const before = backend.latestOutboxEvent("lumbrook-account", fact.entityId)
-	if (!before) throw new Error("Expected a committed Lumbrook fact before marker cleanup")
+	observeEvents(agent, "testOrg-account", [fact], [], () => {})
+	const before = backend.latestOutboxEvent("testOrg-account", fact.entityId)
+	if (!before) throw new Error("Expected a committed testOrg fact before marker cleanup")
 	const transaction = backend.tx
 	let completedBatches = 0
 	backend.tx = (fn) => {
 		const result = transaction(fn)
-		if (++completedBatches === 1) backend.upsertMarker(lateHash, "lumbrook-work", "request")
+		if (++completedBatches === 1) backend.upsertMarker(lateHash, "testOrg-work", "request")
 		return result
 	}
 	let interrupted = false
@@ -2653,12 +2653,12 @@ async function markerCleanupRecoveryScenario(agent: string): Promise<void> {
 		interrupted = error instanceof Error && error.message === "simulated interruption between marker batches"
 	}
 	const midway = backend.markedRecords().map(({ recordHash }) => recordHash)
-	const beforeRestart = backend.latestOutboxEvent("lumbrook-account", fact.entityId)
+	const beforeRestart = backend.latestOutboxEvent("testOrg-account", fact.entityId)
 	closeBackends()
 	const reopened = backendFor(agent)
-	const afterRestart = reopened.latestOutboxEvent("lumbrook-account", fact.entityId)
-	observeEvents(agent, "lumbrook-account", [fact], [], () => {})
-	const replayed = reopened.outboxEntityEvents("lumbrook-account", fact.entityId)
+	const afterRestart = reopened.latestOutboxEvent("testOrg-account", fact.entityId)
+	observeEvents(agent, "testOrg-account", [fact], [], () => {})
+	const replayed = reopened.outboxEntityEvents("testOrg-account", fact.entityId)
 	await clearTranslatedMarkers(reopened, hashes, () => {})
 	out({
 		interrupted,
