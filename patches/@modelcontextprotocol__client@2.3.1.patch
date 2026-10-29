@@ -12,6 +12,13 @@
 #     the 1.x package. Rebased from 2.0.0 to 2.3.1 alongside the
 #     pi-mcp-adapter 5.3.0 bump; upstream still sends json-only Accept at all
 #     three sites.
+#   - Transient metadata errors during OAuth discovery: discoverOAuthServerInfo
+#     treats any protected-resource-metadata failure other than a TypeError as
+#     "no metadata" and falls back to the MCP origin as authorization server,
+#     so a one-off 5xx/429 makes a re-auth discover the wrong issuer and fail
+#     stored-issuer checks; upstream issue pending at
+#     https://github.com/modelcontextprotocol/typescript-sdk (remove when
+#     upstream only falls back when metadata is absent)
 # Changes:
 #   - dist/index.{mjs,cjs} tryMetadataDiscovery: add Accept
 #     "application/json, text/event-stream" (covers RFC 9728 protected-resource
@@ -24,8 +31,12 @@
 #     plain form POST that worked against the affected gateway.
 #   - Trap for rebasers: patch both the mjs and cjs mirrors; line numbers
 #     differ between them.
+#   - dist/index.{mjs,cjs} discoverOAuthServerInfo: rethrow protected-resource
+#     metadata errors reporting HTTP 5xx or 429 instead of falling back to the
+#     MCP origin; 404 and other failures keep the fallback. See the transient
+#     metadata errors tracking entry above.
 diff --git a/dist/index.cjs b/dist/index.cjs
-index 71cf630..4c6d3cd 100644
+index 71cf63076b073284aa14f63cd41efa653e8def0f..44b2eb056fb3a319ac95a6b6085dd38d5ace84c1 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
 @@ -1017,7 +1017,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
@@ -46,7 +57,17 @@ index 71cf630..4c6d3cd 100644
  	};
  	const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
  	for (const { url: endpointUrl, type } of urlsToTry) {
-@@ -1440,7 +1440,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
+@@ -1187,6 +1187,9 @@ async function discoverOAuthServerInfo(serverUrl, opts) {
+ 		if (resourceMetadata.authorization_servers && resourceMetadata.authorization_servers.length > 0) authorizationServerUrl = resourceMetadata.authorization_servers[0];
+ 	} catch (error) {
+ 		if (error instanceof TypeError) throw error;
++		// A transient server error (5xx/429) is not "no metadata": falling back to the
++		// MCP origin would discover the wrong authorization server.
++		if (error instanceof Error && /^HTTP (?:5\d\d|429)\b/.test(error.message)) throw error;
+ 	}
+ 	if (!authorizationServerUrl) authorizationServerUrl = String(new URL("/", serverUrl));
+ 	const authorizationServerMetadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, {
+@@ -1440,7 +1443,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
  	};
  	const response = await require_src.fetchWithinOrigin(fetchFn ?? fetch)(registrationUrl, {
  		method: "POST",
@@ -56,7 +77,7 @@ index 71cf630..4c6d3cd 100644
  	});
  	if (!response.ok) throw new RegistrationRejectedError({
 diff --git a/dist/index.mjs b/dist/index.mjs
-index c1a09a8..c3da7ac 100644
+index c1a09a82b8121d6a1b038ccc6d02bae46d55dbcf..3bb01da06b459c9c979f1fd0c51616561dbc0261 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -1014,7 +1014,7 @@ function buildWellKnownPath(wellKnownPrefix, pathname = "", options = {}) {
@@ -77,7 +98,17 @@ index c1a09a8..c3da7ac 100644
  	};
  	const urlsToTry = buildDiscoveryUrls(authorizationServerUrl);
  	for (const { url: endpointUrl, type } of urlsToTry) {
-@@ -1437,7 +1437,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
+@@ -1184,6 +1184,9 @@ async function discoverOAuthServerInfo(serverUrl, opts) {
+ 		if (resourceMetadata.authorization_servers && resourceMetadata.authorization_servers.length > 0) authorizationServerUrl = resourceMetadata.authorization_servers[0];
+ 	} catch (error) {
+ 		if (error instanceof TypeError) throw error;
++		// A transient server error (5xx/429) is not "no metadata": falling back to the
++		// MCP origin would discover the wrong authorization server.
++		if (error instanceof Error && /^HTTP (?:5\d\d|429)\b/.test(error.message)) throw error;
+ 	}
+ 	if (!authorizationServerUrl) authorizationServerUrl = String(new URL("/", serverUrl));
+ 	const authorizationServerMetadata = await discoverAuthorizationServerMetadata(authorizationServerUrl, {
+@@ -1437,7 +1440,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
  	};
  	const response = await fetchWithinOrigin(fetchFn ?? fetch)(registrationUrl, {
  		method: "POST",

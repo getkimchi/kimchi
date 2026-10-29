@@ -39,6 +39,11 @@ const oauthClientId = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_ID ?? "kimchi-
 // Redirect URI the "oauth-pre-registered" scenario's client was registered with.
 // Mirrors the localhost form kimchi's pre-1.3.0 adapter sent by default.
 const OAUTH_PRE_REGISTERED_REDIRECT_URI = "http://localhost:19876/callback"
+// oauth-split-issuer-flaky-prm: the authorization server lives under /as (not the
+// MCP origin), and the first protected-resource-metadata request after a token has
+// been issued fails with 503, and tokens expire after 1s so the next auth attempt
+// has to rediscover metadata. Emulates a transient metadata outage during re-auth.
+let flakyPrmArmed = false
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
 const oauthAccessToken = "kimchi-e2e-oauth-access-token"
 const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
@@ -275,20 +280,46 @@ async function runHttpFixture() {
 			if (oauthEnabled && url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
 				record("oauth_resource_metadata_requested", { path: url.pathname, accept: request.headers.accept })
 				if (rejectOnStrictAccept(request, response, url.pathname)) return
+				if (scenario === "oauth-split-issuer-flaky-prm" && flakyPrmArmed) {
+					flakyPrmArmed = false
+					record("oauth_resource_metadata_failed", { path: url.pathname, status: 503 })
+					sendJson(response, 503, { error: "temporarily_unavailable" })
+					return
+				}
 				sendJson(response, 200, {
 					resource: `${origin}/mcp`,
-					authorization_servers: [origin],
-					scopes_supported: ["mcp:tools"],
+					authorization_servers: [scenario === "oauth-split-issuer-flaky-prm" ? `${origin}/as` : origin],
+					scopes_supported:
+						// oauth-offline-access-scope advertises the OIDC offline_access scope so the client
+						// can append it to a configured scope; all other scenarios keep the narrow list.
+						scenario === "oauth-offline-access-scope" ? ["mcp:tools", "offline_access"] : ["mcp:tools"],
 				})
 				return
 			}
 
-			if (oauthEnabled && url.pathname === "/.well-known/oauth-authorization-server") {
+			const splitIssuer = scenario === "oauth-split-issuer-flaky-prm"
+			if (oauthEnabled && splitIssuer && url.pathname === "/.well-known/oauth-authorization-server") {
+				// Only a client that fell back to the MCP origin asks here.
+				record("oauth_origin_fallback_attempted", { path: url.pathname })
+				sendJson(response, 404, { error: "not_found" })
+				return
+			}
+			if (
+				oauthEnabled &&
+				url.pathname ===
+					(splitIssuer ? "/.well-known/oauth-authorization-server/as" : "/.well-known/oauth-authorization-server")
+			) {
 				record("oauth_server_metadata_requested", { accept: request.headers.accept })
 				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 200, {
-					issuer: origin,
-					authorization_endpoint: `${origin}/authorize`,
+					issuer: splitIssuer ? `${origin}/as` : origin,
+					// oauth-google-authorization-endpoint advertises Google's endpoint so tests can
+					// inspect the authorize URL Kimchi builds; the record-only browser driver
+					// never fetches it.
+					authorization_endpoint:
+						scenario === "oauth-google-authorization-endpoint"
+							? "https://accounts.google.com/o/oauth2/v2/auth"
+							: `${origin}/authorize`,
 					token_endpoint: `${origin}/token`,
 					registration_endpoint: `${origin}/register`,
 					response_types_supported: ["code"],
@@ -297,7 +328,10 @@ async function runHttpFixture() {
 					code_challenge_methods_supported: ["S256"],
 					token_endpoint_auth_methods_supported:
 						oauthGrantType === "client_credentials" ? ["client_secret_post"] : ["none"],
-					scopes_supported: ["mcp:tools"],
+					scopes_supported:
+						// oauth-offline-access-scope advertises the OIDC offline_access scope so the client
+						// can append it to a configured scope; all other scenarios keep the narrow list.
+						scenario === "oauth-offline-access-scope" ? ["mcp:tools", "offline_access"] : ["mcp:tools"],
 				})
 				return
 			}
@@ -346,7 +380,13 @@ async function runHttpFixture() {
 					codeChallenge,
 					redirectUri,
 				})
-				record("oauth_authorized", { redirectUri, state, codeChallengeMethod })
+				record("oauth_authorized", {
+					redirectUri,
+					state,
+					codeChallengeMethod,
+					accessType: url.searchParams.get("access_type") ?? undefined,
+					prompt: url.searchParams.get("prompt") ?? undefined,
+				})
 				const callback = new URL(redirectUri)
 				callback.searchParams.set("code", code)
 				callback.searchParams.set("state", state)
@@ -404,9 +444,10 @@ async function runHttpFixture() {
 						sendJson(response, 400, { error: "invalid_grant" })
 						return
 					}
-					const expiresIn = scenario === "oauth-expiring" ? 1 : 3600
+					const expiresIn = scenario === "oauth-expiring" || scenario === "oauth-split-issuer-flaky-prm" ? 1 : 3600
 					authorizationCodes.delete(code)
 					record("oauth_token_issued", { grantType, pkceVerified: true, expiresIn })
+					flakyPrmArmed = scenario === "oauth-split-issuer-flaky-prm"
 					oauthAccessTokenExpiresAt = Date.now() + expiresIn * 1000
 					sendJson(response, 200, {
 						access_token: oauthAccessToken,

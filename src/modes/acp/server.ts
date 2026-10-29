@@ -51,6 +51,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	estimateTokens,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
@@ -1842,6 +1843,12 @@ export class KimchiAcpAgent implements Agent {
 				})
 				return
 			}
+			case "compaction_end": {
+				// Successful compaction changed the context — refresh the client's
+				// usage gauge immediately (see emitPostCompactionUsage).
+				this.emitPostCompactionUsage(sessionId, entry.session, event)
+				return
+			}
 			default:
 				return
 		}
@@ -2489,6 +2496,45 @@ export class KimchiAcpAgent implements Agent {
 				sessionUpdate: "usage_update",
 				used: ctx.tokens,
 				size: ctx.contextWindow,
+			},
+		})
+	}
+
+	// Post-compaction context refresh: on a successful compaction the client's
+	// gauge is stale (getContextUsage().tokens stays null until the next LLM
+	// response after the boundary) and the turn-boundary path above cannot
+	// cover out-of-turn compaction. The compaction_end event carries pi's own
+	// post-compaction estimate, so emit straight from it — bare, no _meta.
+	// Success ⇔ result present (aborts/failures carry none); cancelled and
+	// failed compactions emit nothing. Full contract: docs/acp-compaction.md.
+	private emitPostCompactionUsage(
+		sessionId: string,
+		session: AgentSession,
+		event: Extract<AgentSessionEvent, { type: "compaction_end" }>,
+	): void {
+		const result = event.result
+		if (event.aborted || !result) return
+		// Prefer the event's estimate; if absent, recompute the same fold over
+		// session.messages (the exact list pi measured). The fold always yields
+		// a number, so success always emits; estimateMessagesTokens itself is
+		// not importable (pi's exports map) — re-verify parity on pi upgrades.
+		const used =
+			typeof result.estimatedTokensAfter === "number"
+				? result.estimatedTokensAfter
+				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
+		const contextWindow = session.getContextUsage()?.contextWindow
+		if (!contextWindow) {
+			// Unreachable for a succeeded compaction (pi requires a model) — log
+			// anyway so a future pi change can't strand the gauge silently.
+			console.warn(`[acp-usage] skipping post-compaction usage_update for ${sessionId}: context window unknown`)
+			return
+		}
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size: contextWindow,
 			},
 		})
 	}
