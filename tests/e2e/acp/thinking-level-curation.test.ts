@@ -31,6 +31,14 @@ const MODELS: FakeModel[] = [
 	},
 ]
 
+/** The current model ref, read from the model config option — the v1 ACP
+ *  newSession response carries no `models` field anymore (dropped in the
+ *  @agentclientprotocol/sdk 0.19.2 -> 1.9.0 migration), so the select
+ *  option's currentValue is the session's resolved model. */
+function currentModelRef(configOptions: Array<{ id: string; currentValue?: string }>): string | undefined {
+	return configOptions.find((opt) => opt.id === "model")?.currentValue
+}
+
 describe("ACP thinking-level curation", () => {
 	let fixture: AcpFixture | undefined
 
@@ -49,7 +57,7 @@ describe("ACP thinking-level curation", () => {
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(session.models?.currentModelId).toBe("kimchi-dev/glm-5.3")
+		expect(currentModelRef(session.configOptions)).toBe("kimchi-dev/glm-5.3")
 
 		const result = await prompt(fixture, session.sessionId, "Say ok")
 		expect(result.stopReason).toBe("end_turn")
@@ -72,7 +80,7 @@ describe("ACP thinking-level curation", () => {
 		})
 
 		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
-		expect(session.models?.currentModelId).toBe("kimchi-dev/minimax-m3")
+		expect(currentModelRef(session.configOptions)).toBe("kimchi-dev/minimax-m3")
 
 		const result = await prompt(fixture, session.sessionId, "Say ok")
 		expect(result.stopReason).toBe("end_turn")
