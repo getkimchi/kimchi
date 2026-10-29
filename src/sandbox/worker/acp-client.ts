@@ -61,6 +61,14 @@ const textDecoder = new TextDecoder()
 // Public types
 // ---------------------------------------------------------------------------
 
+/** Local ownership ended; disconnect without cancelling the worker's turn. */
+export class AcpSessionDetachedError extends Error {
+	constructor() {
+		super("Remote session observation detached")
+		this.name = "AcpSessionDetachedError"
+	}
+}
+
 /**
  * Thrown when the WebSocket transport fails (close, error, timeout) during
  * `initialize()` or `prompt()`. Distinct from ACP protocol errors (which are
@@ -120,7 +128,7 @@ export interface AcpSessionClientOptions {
 	 *  it as the turn-end signal and recover the result immediately (the remote
 	 *  child may be reaped shortly after the session goes idle). */
 	onForeignResponse?: (response: unknown) => void
-	/** Abort signal — when aborted, calls `cancel()` on the remote session. */
+	/** Abort sends remote cancel, unless the reason is AcpSessionDetachedError (local disconnect only). */
 	signal?: AbortSignal
 	/** Working directory for the session (passed to newSession). */
 	cwd?: string
@@ -203,6 +211,7 @@ export class AcpSessionClient {
 	 * Must be called before `prompt()` / `cancel()`.
 	 */
 	async initialize(): Promise<void> {
+		if (this._options.signal?.reason instanceof AcpSessionDetachedError) throw this._options.signal.reason
 		this._ws = this._connectWebSocket()
 		const stream = this._bridgeStreams()
 
@@ -217,22 +226,9 @@ export class AcpSessionClient {
 		// Register abort listener early so we catch aborts during initialize/newSession
 		// (before _sessionId is assigned). The listener sets _aborted so we can cancel
 		// after _sessionId is set.
-		if (this._options.signal) {
-			if (this._options.signal.aborted) {
-				this._aborted = true
-			} else {
-				this._abortListener = () => {
-					this._aborted = true
-					// Reject any pending initialize()/prompt() promise so callers
-					// don't hang waiting for a response that will never arrive.
-					this._rejectPending(new Error("Aborted"))
-					this.cancel().catch(() => {})
-				}
-				this._options.signal.addEventListener("abort", this._abortListener)
-			}
-		}
+		this.setSignal(this._options.signal)
 
-		await this._waitForOpen()
+		await this._withAbortRejection(this._waitForOpen())
 
 		await this._withAbortRejection(
 			this._withTimeout(
@@ -431,6 +427,24 @@ export class AcpSessionClient {
 	 *  Must NOT be called while a turn is in flight (single-owner contract). */
 	setCallbacks(callbacks: AcpSessionCallbacks): void {
 		this._options.callbacks = callbacks
+	}
+
+	/** Transfer cancellation ownership when a kept connection starts a new run. */
+	setSignal(signal: AbortSignal | undefined): void {
+		if (this._abortListener) this._options.signal?.removeEventListener("abort", this._abortListener)
+		this._options.signal = signal
+		this._abortListener = () => {
+			if (signal?.reason instanceof AcpSessionDetachedError) {
+				this._rejectPending(signal.reason)
+				this.close()
+				return
+			}
+			this._aborted = true
+			this._rejectPending(new Error("Aborted"))
+			this.cancel().catch(() => {})
+		}
+		if (signal?.aborted) this._abortListener()
+		else signal?.addEventListener("abort", this._abortListener, { once: true })
 	}
 
 	/** Closes the WebSocket and frees resources. Safe to call multiple times. */
@@ -664,6 +678,10 @@ export class AcpSessionClient {
 	 * from hanging indefinitely if the signal fires mid-flight.
 	 */
 	private _withAbortRejection<T>(promise: Promise<T>): Promise<T> {
+		if (this._options.signal?.reason instanceof AcpSessionDetachedError) {
+			promise.catch(() => {})
+			return Promise.reject(this._options.signal.reason)
+		}
 		if (this._aborted) {
 			// Swallow the underlying promise so it doesn't become an unhandled rejection.
 			promise.catch(() => {})

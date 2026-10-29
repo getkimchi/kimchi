@@ -2571,6 +2571,19 @@ describe("session isolation (concurrent instances)", () => {
 		expect(started).toHaveLength(0)
 	})
 
+	it("ratings with unreadable session ids do not emit into another live session", async () => {
+		const { trackFeedback, trackModelSwitchFeedback } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		trackFeedback({ sentiment: "positive", reason: "Helpful", reasonType: "freeform", sessionId: undefined })
+		trackModelSwitchFeedback({ reason: "Too slow", modelName: "Model", modelId: "model", sessionId: undefined })
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+		expect(allRecords().filter((record) => record.eventName === "survey_answered")).toHaveLength(0)
+	})
+
 	it("resolves session-scoped track* helpers to the originating session's instance", async () => {
 		const { resolveSessionTelemetryCtx, trackRemoteExecution } = await import("./index.js")
 		// Only the parent is bound here — the child below will steal the

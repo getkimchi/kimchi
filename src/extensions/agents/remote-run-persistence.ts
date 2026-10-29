@@ -7,11 +7,9 @@
  * entries so a resumed kimchi (kimchi --session <id>) can find the run and
  * reattach to it (see findResumableRemoteRuns + attachRemoteAgent).
  *
- * Entry lifecycle: a "running" entry is appended when the runner reports the
- * remote session ready (the RemoteSessionMeta + ACP session id only exist
- * then), and a terminal entry overwrites it (last-entry-wins) from the
- * completion path — so a non-terminal last entry means the process died with
- * the run still in flight.
+ * Entry lifecycle: readiness records a running entry. Completion saves the
+ * result with completionPending until the originating session handles its
+ * menu. The latest entry wins; resume restores running work or pending output.
  */
 
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
@@ -54,6 +52,9 @@ export interface RemoteRunState {
 	startedAt: number
 	/** "running" while the run is in flight; a terminal entry overwrites. */
 	status: "running" | "completed" | "error" | "stopped"
+	/** Finished output retained until its completion surface is handled. */
+	completionPending?: boolean
+	result?: string
 }
 
 /** Shape of a `remote_run:state` custom entry in the session. */
@@ -95,7 +96,7 @@ function isRemoteRunStateEntry(entry: unknown): entry is RemoteRunStateEntry {
 /**
  * Scans the session branch for remote runs that were still in flight when
  * kimchi closed: the LAST `remote_run:state` entry per id wins, and only
- * non-terminal entries with the full reattach metadata are returned.
+ * running entries and completed results awaiting user action are returned.
  */
 export function findResumableRemoteRuns(sessionManager: { getBranch: () => unknown[] }): RemoteRunState[] {
 	const lastById = new Map<string, RemoteRunState>()
@@ -103,5 +104,9 @@ export function findResumableRemoteRuns(sessionManager: { getBranch: () => unkno
 		if (!isRemoteRunStateEntry(entry)) continue
 		lastById.set(entry.data.id, entry.data)
 	}
-	return [...lastById.values()].filter((state) => state.status === "running")
+	return [...lastById.values()].filter(
+		(state) =>
+			state.status === "running" ||
+			(state.status === "completed" && state.completionPending === true && typeof state.result === "string"),
+	)
 }
