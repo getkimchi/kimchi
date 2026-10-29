@@ -19,7 +19,7 @@ it("restores a finished remote result only when its original ACP session is reop
 		const a = await newSession(fixture, fixture.workDir)
 		expect((await prompt(fixture, a, "hello")).stopReason).toBe("end_turn")
 		await prompt(fixture, a, "/seed-remote-completion")
-		await fixture.conn.unstable_closeSession({ sessionId: a })
+		await fixture.conn.closeSession({ sessionId: a })
 		const b = await newSession(fixture, fixture.workDir)
 		expect(fixture.client.elicitationRequests).toHaveLength(0)
 
