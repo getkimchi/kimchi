@@ -33,6 +33,13 @@
 #     rewrites the stored clientInfo for config-registered clients (issuer
 #     binding bookkeeping) and drops its redirectUris, destroying the legacy
 #     registration before re-auth can reuse it; same upstream tracking as above
+#   - Authorize-URL hook: upstream has no first-class way for a host to add
+#     offline-access request parameters (OIDC offline_access scope, vendor
+#     params such as Google's access_type=offline) without passing a
+#     programmatic config, which disables the /mcp panel and the config write
+#     flows; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     supports offline-access defaults or an authorize-URL customization hook)
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -117,7 +124,11 @@
 #     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
 #     the session context on parallel tool results; still overridable via
 #     settings.mcpToolOutputTuning.maxBytes.
-
+#   - mcp-oauth-provider (+dist mirror), oauth: setAuthorizationUrlTransform()
+#     hook, applied in redirectToAuthorization to the authorize URL (with the
+#     flow's saved discovery state) after the server's own
+#     authorizationParams, so a host only fills in what config left unset; default is identity. The
+#     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -445,10 +456,25 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
-index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..aa49d7414c1161aa1ac879b927230d38658ca750 100644
+index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
 --- a/dist/mcp-oauth-provider.js
 +++ b/dist/mcp-oauth-provider.js
-@@ -323,7 +323,10 @@ export class McpOAuthProvider {
+@@ -89,6 +89,14 @@ export function getOAuthCallbackPath() {
+ export function setOAuthCallbackPath(path) {
+     oauthCallbackPath = path.startsWith("/") ? path : `/${path}`;
+ }
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++let authorizationUrlTransform = (url) => url;
++export function setAuthorizationUrlTransform(transform) {
++    authorizationUrlTransform = transform;
++}
+ const reservedAuthorizationParams = new Set([
+     "client_id",
+     "code_challenge",
+@@ -323,7 +331,10 @@ export class McpOAuthProvider {
                  : undefined;
              if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
                  this.throwIfInactive();
@@ -460,6 +486,15 @@ index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..aa49d7414c1161aa1ac879b927230d38
              }
              const clientSecret = this.config.clientSecret?.startsWith("!")
                  ? resolveCommandSecret(this.config.clientSecret, `MCP server "${this.serverName}" OAuth clientSecret`)
+@@ -516,7 +527,7 @@ export class McpOAuthProvider {
+             throw new UnauthorizedError(`Re-authentication required for MCP server: ${this.serverName}`);
+         }
+         // URL is passed to callback, not logged (may contain sensitive params)
+-        await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams));
++        await this.callbacks.onRedirect(authorizationUrlTransform(addAuthorizationParams(authorizationUrl, this.config.authorizationParams), this.flowDiscoveryState));
+     }
+     /**
+      * Save the PKCE code verifier.
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
 index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6cbb8c187b 100644
 --- a/dist/metadata-cache.js
@@ -1026,10 +1061,29 @@ index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90a
    pendingAuths.delete(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
-index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a220fb1d0e8 100644
+index b724478bf4036c199d4574c87a200207706ceb29..38cc4edf7c4903b9ce2423517e9d396bd9b1c7a6 100644
 --- a/mcp-oauth-provider.ts
 +++ b/mcp-oauth-provider.ts
-@@ -224,7 +224,7 @@ async function loadConfiguredDiscoveryState(
+@@ -127,6 +127,18 @@ export function setOAuthCallbackPath(path: string): void {
+   oauthCallbackPath = path.startsWith("/") ? path : `/${path}`
+ }
+ 
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++export type AuthorizationUrlTransform = (url: URL, discovery: OAuthDiscoveryState | undefined) => URL
++
++let authorizationUrlTransform: AuthorizationUrlTransform = (url) => url
++
++export function setAuthorizationUrlTransform(transform: AuthorizationUrlTransform): void {
++  authorizationUrlTransform = transform
++}
++
+ /** Configuration options for OAuth */
+ export interface McpOAuthConfig {
+   grantType?: "authorization_code" | "client_credentials"
+@@ -224,7 +236,7 @@ async function loadConfiguredDiscoveryState(
    fetchFn: FetchLike,
  ): Promise<OAuthDiscoveryState> {
    const response = await fetchFn(metadataUrl, {
@@ -1038,7 +1092,7 @@ index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a22
    })
    if (!response.ok) {
      await response.text().catch(() => {})
-@@ -411,9 +411,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
+@@ -411,9 +423,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
          : undefined
        if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
          this.throwIfInactive()
@@ -1057,6 +1111,20 @@ index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a22
            this.serverUrl,
            this.storageOptions,
          )
+@@ -628,7 +648,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
+       )
+     }
+     // URL is passed to callback, not logged (may contain sensitive params)
+-    await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams))
++    await this.callbacks.onRedirect(
++      authorizationUrlTransform(
++        addAuthorizationParams(authorizationUrl, this.config.authorizationParams),
++        this.flowDiscoveryState,
++      ),
++    )
+   }
+ 
+   /**
 diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
 index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc09c4f391b 100644
 --- a/mcp-output-guard.ts
@@ -1145,6 +1213,20 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
 -    return undefined;
 -  }
 -}
+diff --git a/oauth.ts b/oauth.ts
+index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134a360c847 100644
+--- a/oauth.ts
++++ b/oauth.ts
+@@ -8,6 +8,9 @@ import {
+ 
+ import type { ServerEntry } from "./types.ts";
+ 
++// Kimchi: host hook for authorize-URL shaping (see mcp-oauth-provider.ts).
++export { setAuthorizationUrlTransform, type AuthorizationUrlTransform } from "./mcp-oauth-provider.ts";
++
+ export type McpOAuthTokens = StoredTokens;
+ export type McpOAuthStorageOptions = AuthStorageOptions;
+ export interface McpOAuthTokenOptions {
 diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
 index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
 --- a/pi-builtin-mcp.ts

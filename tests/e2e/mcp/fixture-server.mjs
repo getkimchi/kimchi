@@ -278,7 +278,10 @@ async function runHttpFixture() {
 				sendJson(response, 200, {
 					resource: `${origin}/mcp`,
 					authorization_servers: [origin],
-					scopes_supported: ["mcp:tools"],
+					scopes_supported:
+						// oauth-offline-access-scope advertises the OIDC offline_access scope so the client
+						// can append it to a configured scope; all other scenarios keep the narrow list.
+						scenario === "oauth-offline-access-scope" ? ["mcp:tools", "offline_access"] : ["mcp:tools"],
 				})
 				return
 			}
@@ -288,7 +291,13 @@ async function runHttpFixture() {
 				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 200, {
 					issuer: origin,
-					authorization_endpoint: `${origin}/authorize`,
+					// oauth-google-authorization-endpoint advertises Google's endpoint so tests can
+					// inspect the authorize URL Kimchi builds; the record-only browser driver
+					// never fetches it.
+					authorization_endpoint:
+						scenario === "oauth-google-authorization-endpoint"
+							? "https://accounts.google.com/o/oauth2/v2/auth"
+							: `${origin}/authorize`,
 					token_endpoint: `${origin}/token`,
 					registration_endpoint: `${origin}/register`,
 					response_types_supported: ["code"],
@@ -297,7 +306,10 @@ async function runHttpFixture() {
 					code_challenge_methods_supported: ["S256"],
 					token_endpoint_auth_methods_supported:
 						oauthGrantType === "client_credentials" ? ["client_secret_post"] : ["none"],
-					scopes_supported: ["mcp:tools"],
+					scopes_supported:
+						// oauth-offline-access-scope advertises the OIDC offline_access scope so the client
+						// can append it to a configured scope; all other scenarios keep the narrow list.
+						scenario === "oauth-offline-access-scope" ? ["mcp:tools", "offline_access"] : ["mcp:tools"],
 				})
 				return
 			}
@@ -346,7 +358,13 @@ async function runHttpFixture() {
 					codeChallenge,
 					redirectUri,
 				})
-				record("oauth_authorized", { redirectUri, state, codeChallengeMethod })
+				record("oauth_authorized", {
+					redirectUri,
+					state,
+					codeChallengeMethod,
+					accessType: url.searchParams.get("access_type") ?? undefined,
+					prompt: url.searchParams.get("prompt") ?? undefined,
+				})
 				const callback = new URL(redirectUri)
 				callback.searchParams.set("code", code)
 				callback.searchParams.set("state", state)
