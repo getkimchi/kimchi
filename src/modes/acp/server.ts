@@ -933,16 +933,20 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		}
-		const loading = this.loadingSessions.get(sessionId)
+		// Coalesce only across identical intents: concurrent load + resume of
+		// the same id must each run with their own replayHistory decision,
+		// otherwise the second caller inherits the first's replay behavior.
+		const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
+		const loading = this.loadingSessions.get(coalesceKey)
 		if (loading) return loading
 
 		const loadingPromise = this.loadSessionFresh(params, replayHistory)
-		this.loadingSessions.set(sessionId, loadingPromise)
+		this.loadingSessions.set(coalesceKey, loadingPromise)
 		try {
 			return await loadingPromise
 		} finally {
-			if (this.loadingSessions.get(sessionId) === loadingPromise) {
-				this.loadingSessions.delete(sessionId)
+			if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
+				this.loadingSessions.delete(coalesceKey)
 			}
 		}
 	}
@@ -3577,7 +3581,13 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		exitCode = 1
 	} finally {
 		for (const s of signals) process.off(s, onSignal)
-		await agentInstance?.shutdown()
+		// A rejecting or hanging shutdown must not swallow process.exit — a
+		// stdio agent must leave after stdin closes. Mirror the signal
+		// path's .catch, bounded so a wedged dispose can't outlive the pipe.
+		await Promise.race([
+			agentInstance?.shutdown().catch(() => {}),
+			new Promise((resolve) => setTimeout(resolve, 1_000)),
+		])
 		// The transport is closed and every session is disposed, but stray
 		// event-loop holders (extension timers, MCP clients, watchers) would
 		// otherwise keep us alive. A stdio agent must exit after stdin closes

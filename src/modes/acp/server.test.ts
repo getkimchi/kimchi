@@ -10321,6 +10321,25 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls).toBe(1)
 	})
 
+	it("does not coalesce a concurrent loadSession and resumeSession of the same sessionId", async () => {
+		// replayHistory is per-caller: load replays the transcript, resume
+		// must not. Coalescing them under one key would have the second
+		// caller inherit the first's replay decision, so each intent runs
+		// the loader on its own.
+		const fake = new FakeAgentSession("mutual-1")
+		let loaderCalls = 0
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls++
+			return asSession(fake)
+		}
+		const agent = makeAgent(loader)
+		const params = { sessionId: "mutual-1", cwd: "/tmp", mcpServers: [] }
+		const [loaded, resumed] = await Promise.all([agent.loadSession(params), agent.resumeSession(params)])
+		expect(loaded.configOptions).toBeDefined()
+		expect(resumed.configOptions).toBeDefined()
+		expect(loaderCalls).toBe(2)
+	})
+
 	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {
 		const agent = makeAgent(async () => {
 			throw Object.assign(new Error("session not found"), { code: -32602 })
