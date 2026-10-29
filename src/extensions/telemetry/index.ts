@@ -99,19 +99,34 @@ function unregisterSessionContext(sessionId: string | undefined): void {
 }
 
 /**
- * Resolve the telemetry instance for a session id. Registered instances
- * win; an explicit id that MISSES (a closed or unregistered session — e.g. a
- * late callback surviving its session, or one whose telemetry was never
- * bound) resolves to undefined and the emission is SKIPPED — falling back
- * to the last-initialized global there would attribute the record to
- * whichever session initialized most recently. Only callers without a
- * session id (pre-session emissions) use the global. NOT a parent/child
- * stack — concurrent sessions and children can finish out of order, so
- * identity-keyed lookup replaces nesting entirely.
+ * Resolve the telemetry instance for a session id. An id that MISSES —
+ * closed or unregistered (a late callback surviving its session, one whose
+ * telemetry was never bound), or UNREADABLE (a replaced/reloaded session
+ * whose ctx throws on read — see {@link trySessionId}) — resolves to
+ * undefined and the emission is SKIPPED. There is deliberately no fallback
+ * to the last-initialized global: that would attribute the record to
+ * whichever session started most recently — the exact cross-session mix-up
+ * this module exists to remove. NOT a parent/child stack — concurrent
+ * sessions and children can finish out of order, so identity-keyed lookup
+ * replaces nesting entirely.
  */
 export function resolveSessionTelemetryCtx(sessionId: string | undefined): TelemetryContext | undefined {
-	if (sessionId !== undefined) return sessionRegistry.get(sessionId)
-	return _telemetryCtx
+	return sessionId === undefined ? undefined : sessionRegistry.get(sessionId)
+}
+
+/**
+ * Best-effort session id for telemetry attribution from a context that may
+ * have gone stale: a replaced or reloaded session's ctx throws on EVERY
+ * read, so the read is guarded — callers never crash on a session that was
+ * swapped out from under them. Undefined means unreadable; pass it on and
+ * the emission resolves nothing and is skipped.
+ */
+export function trySessionId(ctx: Pick<ExtensionContext, "sessionManager"> | undefined): string | undefined {
+	try {
+		return ctx?.sessionManager.getSessionId()
+	} catch {
+		return undefined
+	}
 }
 
 /** Enablement check for a specific instance's effective configuration. */
@@ -224,8 +239,14 @@ export async function trackSubagentSpawned(
 ): Promise<void> {
 	// Attribute to the SPAWNING session: the agents extension calling this runs
 	// in the parent, and a subagent created in between (or a concurrent ACP
-	// session) would otherwise steal the last-initialized global.
-	const ctx = resolveSessionTelemetryCtx(piCtx.sessionManager.getSessionId())
+	// session) would otherwise steal the last-initialized global. The id read
+	// is guarded — a session replaced while the subagent waited to start
+	// makes the raw read throw, and this hook is invoked fire-and-forget, so
+	// an unguarded throw took down the whole process. Unreadable → skip the
+	// record.
+	const sessionId = trySessionId(piCtx)
+	if (sessionId === undefined) return
+	const ctx = resolveSessionTelemetryCtx(sessionId)
 	if (!isCtxEnabled(ctx)) return
 	ctx.emit("subagent.spawned", { agent_type: args.type, reason: args.description }, piCtx)
 }

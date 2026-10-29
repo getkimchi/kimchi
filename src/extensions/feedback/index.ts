@@ -5,19 +5,7 @@ import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 
-/** Best-effort session id for telemetry attribution. A torn-down runtime's
- *  sessionManager getter throws — the rating record must still be written
- *  (the entry IS the record); telemetry then falls back to the
- *  last-initialized instance for this one emission. */
-function sessionTelemetryId(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
-	try {
-		return ctx.sessionManager.getSessionId()
-	} catch {
-		return undefined
-	}
-}
-
-import { trackModelSwitchFeedback } from "../telemetry/index.js"
+import { trackModelSwitchFeedback, trySessionId } from "../telemetry/index.js"
 import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
@@ -320,7 +308,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				try {
 					const payload: ModelSwitchSummaryDetails = { model: modelName, reason }
 					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
-					trackModelSwitchFeedback({ reason, modelName, modelId, sessionId: sessionTelemetryId(ctx) })
+					trackModelSwitchFeedback({ reason, modelName, modelId, sessionId: trySessionId(ctx) })
 				} catch (err) {
 					setModelSwitchInvitation({ modelName, modelId })
 					listenForCtrlR(ctx)
@@ -412,7 +400,7 @@ async function handleRating(
 			sentiment,
 			reason: result.reason,
 			window: { autoModelUsed, routedModelId: routedUsedId },
-			sessionId: sessionTelemetryId(ctx),
+			sessionId: trySessionId(ctx),
 		})
 		consumeRatingWindow(ctx.sessionManager.getSessionId())
 	} catch (err) {

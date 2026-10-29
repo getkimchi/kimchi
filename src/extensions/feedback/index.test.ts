@@ -97,6 +97,15 @@ const ratingDialogMock = vi.hoisted(() => ({ show: vi.fn() }))
 vi.mock("../telemetry/index.js", () => ({
 	trackFeedback: feedbackMock.trackFeedback,
 	trackModelSwitchFeedback: trackModelSwitchFeedbackMock,
+	// The feedback ctx carries a sessionManager (see makeApi); the guarded
+	// read just unwraps it.
+	trySessionId: (ctx: { sessionManager?: { getSessionId(): string | undefined } }) => {
+		try {
+			return ctx.sessionManager?.getSessionId()
+		} catch {
+			return undefined
+		}
+	},
 }))
 
 vi.mock("./dialog.js", () => ({

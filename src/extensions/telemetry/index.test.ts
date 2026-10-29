@@ -371,7 +371,7 @@ describe("telemetryExtension integration", () => {
 			"done",
 		] as const
 		for (const stage of stages) {
-			trackRemoteExecution(stage, "ferment plan")
+			trackRemoteExecution(stage, "ferment plan", undefined, "test-session")
 		}
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
@@ -397,13 +397,18 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		trackRemoteExecution("completed", "plan", {
-			duration_ms: 42_000,
-			tool_calls: 7,
-			turns: 3,
-			input_tokens: 1000,
-			output_tokens: 500,
-		})
+		trackRemoteExecution(
+			"completed",
+			"plan",
+			{
+				duration_ms: 42_000,
+				tool_calls: 7,
+				turns: 3,
+				input_tokens: 1000,
+				output_tokens: 500,
+			},
+			"test-session",
+		)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -432,7 +437,7 @@ describe("telemetryExtension integration", () => {
 		const { handlers, api } = createMockApi()
 		telemetryExtension(makeConfig({ enabled: false }))(api)
 
-		trackRemoteExecution("started", "plan")
+		trackRemoteExecution("started", "plan", undefined, "test-session")
 		expect(handlers.size).toBe(0)
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -446,9 +451,9 @@ describe("telemetryExtension integration", () => {
 		await getHandler(handlers, "session_start")({}, ctx)
 
 		const submissionId = "submission-1"
-		trackSurveyShown({ survey: TEST_SURVEY })
-		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" })
-		trackSurveyDismissed({ survey: TEST_SURVEY })
+		trackSurveyShown({ survey: TEST_SURVEY }, "test-session")
+		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" }, "test-session")
+		trackSurveyDismissed({ survey: TEST_SURVEY }, "test-session")
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -2507,6 +2512,44 @@ describe("session isolation (concurrent instances)", () => {
 		expect(recA?.attrs.session_type).toBe("ferment")
 		expect(recB?.attrs.ferment_v2_id).toBeUndefined()
 		expect(recB?.attrs.session_type).toBe("coding")
+	})
+
+	it("trackSubagentSpawned with a replaced session ctx neither throws nor emits", async () => {
+		const { trackSubagentSpawned } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+
+		// A session replaced while the subagent waited to start: every read
+		// of the old ctx throws. The hook is invoked fire-and-forget, so an
+		// unguarded throw took down the whole process.
+		const staleCtx = {
+			get sessionManager(): never {
+				throw new Error("This extension ctx is stale after session replacement or reload.")
+			},
+		} as unknown as Parameters<typeof trackSubagentSpawned>[1]
+
+		await expect(
+			trackSubagentSpawned({ id: "agent-1", type: "General-Purpose", description: "stale" }, staleCtx),
+		).resolves.toBeUndefined()
+
+		// And the parent session's records were not polluted either.
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		const spawned = allRecords().filter((r) => r.eventName === "subagent.spawned")
+		expect(spawned).toHaveLength(0)
+	})
+
+	it("an unreadable session id emits nothing instead of falling back to the last-started session", async () => {
+		const { trackRemoteExecution } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		// The guarded read yields undefined for a replaced session — the
+		// emission must skip, not land on the child (last initialized).
+		trackRemoteExecution("started", "plan", undefined, undefined)
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+		const started = allRecords().filter((r) => r.eventName === "remote_execution.started")
+		expect(started).toHaveLength(0)
 	})
 
 	it("an explicit session-id miss does not fall back to another session", async () => {

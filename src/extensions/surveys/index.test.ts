@@ -19,6 +19,15 @@ vi.mock("../telemetry/index.js", () => ({
 	trackSurveyShown: (...args: unknown[]) => trackSurveyShown(...args),
 	trackSurveyAnswered: (...args: unknown[]) => trackSurveyAnswered(...args),
 	trackSurveyDismissed: (...args: unknown[]) => trackSurveyDismissed(...args),
+	// The survey ctx carries a sessionManager (see createSurveyCtx); the
+	// guarded read just unwraps it.
+	trySessionId: (ctx: { sessionManager?: { getSessionId(): string | undefined } }) => {
+		try {
+			return ctx.sessionManager?.getSessionId()
+		} catch {
+			return undefined
+		}
+	},
 }))
 
 type Handler = (...args: unknown[]) => Promise<void> | void

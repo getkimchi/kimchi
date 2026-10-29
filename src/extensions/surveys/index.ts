@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { getActiveFerment } from "../ferment/index.js"
-import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown } from "../telemetry/index.js"
+import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown, trySessionId } from "../telemetry/index.js"
 import {
 	hasInitialSurveyBeenSeen,
 	INITIAL_SURVEY,
@@ -39,7 +39,7 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 			}
 			if (ctx.mode !== "tui") return
 			const trigger = pendingSurveyTrigger
-			const sessionId = ctx.sessionManager.getSessionId()
+			const sessionId = trySessionId(ctx)
 			surveyShowing = true
 			const submissionId = randomUUID()
 			void showInitialSurvey(ctx, {
