@@ -459,7 +459,80 @@ describe("import loop over the memory backend", () => {
 		reads.mockRestore()
 	})
 
-	it("keeps capture prefix chunks current across consecutive appends", async () => {
+	it("skips settled capture journals without a process-local prefix cache", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const body = Buffer.from(`${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		writeFileSync(file, body)
+		const settled = new Date(Date.now() - 60_000)
+		utimesSync(file, settled, settled)
+		const stat = fs.statSync(file)
+		backend.putJournalCursor({
+			path: file,
+			dev: stat.dev,
+			ino: stat.ino,
+			generation: 1,
+			offset: body.length,
+			boundaryHash: boundaryHashOf(body, body.length),
+			updatedAt: Date.now() + 10_000,
+		})
+		backend.putNote("journal-coverage", file, "[]")
+		const reads = vi.spyOn(fs, "readSync")
+		try {
+			expect((await importJournals(dir, { parallelPrefix: true })).files).toEqual([])
+			expect(reads).not.toHaveBeenCalled()
+		} finally {
+			reads.mockRestore()
+		}
+	})
+
+	it("keeps an unchanged cursor stable until both modification and change times settle", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()))
+		const past = new Date(Date.now() - 60_000)
+		utimesSync(file, past, past)
+		expect((await importJournals(dir)).imported).toBe(1)
+		const cursor = backend.getJournalCursor(file)
+		if (!cursor) throw new Error("Expected journal cursor")
+		const clock = vi.spyOn(Date, "now").mockReturnValue(cursor.updatedAt + 100)
+		try {
+			expect((await importJournals(dir)).files).toEqual([])
+			expect(backend.getJournalCursor(file)).toEqual(cursor)
+		} finally {
+			clock.mockRestore()
+		}
+	})
+
+	it("ignores a journal removed after its cursor commits during capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()))
+		let removed = false
+		const result = await importJournals(dir, {
+			parallelPrefix: true,
+			checkBudget: () => {
+				if (removed || !backend.getJournalCursor(file)?.offset) return
+				unlinkSync(file)
+				removed = true
+			},
+		})
+		expect(removed).toBe(true)
+		expect(result.imported).toBe(1)
+		expect(readRecords(dir)).toHaveLength(1)
+		expect((await importJournals(dir)).anomalies).toEqual([{ path: file, code: "journal-removed" }])
+	})
+
+	it("hashes the old capture prefix only once per append", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
 		useBackendFactory(() => createMemoryRecords())
@@ -474,14 +547,14 @@ describe("import loop over the memory backend", () => {
 			appendFileSync(file, line(request("req-2")))
 			expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
 			expect(update.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.length >= 1024 * 1024)).toHaveLength(
-				0,
+				1,
 			)
 		} finally {
 			update.mockRestore()
 		}
 	})
 
-	it("verifies capture-only appends in parallel and rejects same-inode prefix rewrites", async () => {
+	it("verifies capture-only appends with serial SHA-256 and rejects same-inode prefix rewrites", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
 		useBackendFactory(() => createMemoryRecords())
@@ -495,7 +568,7 @@ describe("import loop over the memory backend", () => {
 			appendFileSync(file, line(request("req-2")))
 			const appended = await importJournals(dir, { parallelPrefix: true })
 			expect(appended.imported).toBe(1)
-			expect(digest).toHaveBeenCalled()
+			expect(digest).not.toHaveBeenCalled()
 			writeFileSync(file, original.replace("req-1", "req-X") + line(request("req-3")))
 			const changedTime = new Date(Date.now() + 10_000)
 			utimesSync(file, changedTime, changedTime)
@@ -506,6 +579,30 @@ describe("import loop over the memory backend", () => {
 		} finally {
 			digest.mockRestore()
 		}
+	})
+
+	it("detects a same-size capture rewrite even when its old mtime is restored", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(request("req-1"))
+		const rewritten = original.replace("req-1", "req-X")
+		expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
+		writeFileSync(file, original)
+		expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+		const cursor = backend.getJournalCursor(file)
+		if (!cursor) throw new Error("Expected journal cursor")
+		backend.putJournalCursor({ ...cursor, updatedAt: Date.now() - 10_000 })
+		writeFileSync(file, rewritten)
+		expect(fs.statSync(file).ino).toBe(cursor.ino)
+		const restored = new Date(Date.now() - 60_000)
+		utimesSync(file, restored, restored)
+		let result = await importJournals(dir, { parallelPrefix: true })
+		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		while (result.pending) result = await importJournals(dir, { parallelPrefix: true })
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X"])
 	})
 
 	it("reuses verified prefix line counts after an idle pass without shifting diagnostics", async () => {

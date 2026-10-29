@@ -594,6 +594,10 @@ async function translateGroup(
 	const { report } = cooperative
 		? await runCooperatively(readWorkCostReportSteps(agentDir, records), groupCheck)
 		: readWorkCostReport(agentDir, records)
+	if (fast)
+		for (const [requestId, prior] of fast.replayed)
+			if (JSON.stringify(report.requests.find((row) => row.requestId === requestId)) !== JSON.stringify(prior.result))
+				return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
 	const { repositories, settled } = await repositoryIdentities(
 		agentDir,
 		records,
@@ -604,17 +608,13 @@ async function translateGroup(
 	)
 	if (fast && !sameCachedRepositories(fast.cache, repositories))
 		return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
-	// An uncached group needs all request units to establish complete shared facts and bootstrap its projection.
-	const touched = !fast
-		? undefined
-		: {
-				requests: new Set(
-					records.flatMap((row, index) =>
-						changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
-					),
-				),
-				records: new Set(changed.keys()),
-			}
+	// The complete build keeps shared facts and the group projection; touched only narrows the cached path.
+	const touchedRequests = new Set(
+		records.flatMap((row, index) =>
+			changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
+		),
+	)
+	const touched = fast ? { requests: touchedRequests, records: new Set(changed.keys()) } : undefined
 	const claim = (account: string, entity: string) => effectiveClaim(backend, account, entity)
 	const partial = cooperative
 		? await runCooperatively(
@@ -626,8 +626,8 @@ async function translateGroup(
 	groupCheck()
 	const cache = settled
 		? fast
-			? advanceGroupCache(backend, fast.cache, through, fast.rows, report, repositories, built)
-			: prepareGroupCache(backend, works, producer, through, stored, records, report, repositories, built)
+			? advanceGroupCache(backend, fast.cache, through, fast.rows, repositories, built)
+			: prepareGroupCache(backend, works, producer, through, stored, records, repositories, built)
 		: undefined
 	if (cache && !fast) {
 		const index = requestIndexEntries(stored, records, report)
@@ -645,7 +645,31 @@ async function translateGroup(
 			new Map(group.facts.map((fact) => [fact.entityId, fact])),
 		]),
 	)
-	const units = fast ? observationUnits(fast.cache, built) : built.units
+	// Without a cache, build every contributor but observe only changed request facts and the earlier shared carriers.
+	// A structural change, invalidated cache or forced fallback can alter old allocations, so those observe all units.
+	// A new billing source can also invalidate one request's bill and reprice another request sharing that bill.
+	const pruneUnchanged =
+		!fast &&
+		!forceFull &&
+		!backend.hasNote("agent", groupKey(works)) &&
+		!records.some(
+			(row, index) =>
+				row.type === "request_response" && row.billingSource !== undefined && changed.has(stored[index].recordHash),
+		) &&
+		[...changed.values()].every(
+			(type) => type === "request" || type === "request_response" || type === "tool_execution",
+		)
+	const units = fast
+		? observationUnits(fast.cache, built)
+		: pruneUnchanged
+			? built.units.flatMap((unit) => {
+					if (unit.requestId === undefined)
+						return unit.recordHashes.some((recordHash) => changed.has(recordHash)) ? [unit] : []
+					if (touchedRequests.has(unit.requestId)) return [unit]
+					const shared = unit.entities.slice(1)
+					return shared.length ? [{ ...unit, entities: shared }] : []
+				})
+			: built.units
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
 	const progress = {
 		group: hash(works),
@@ -690,7 +714,7 @@ async function translateGroup(
 				if (settled) {
 					if (cache) {
 						if (fast)
-							for (const entry of requestIndexEntries(fast.stored, fast.rows, report))
+							for (const entry of requestIndexEntries(fast.stored, fast.rows, report, fast.replayed))
 								backend.putNote(entry.owner, entry.name, entry.body)
 						saveGroupCache(backend, {
 							...cache,

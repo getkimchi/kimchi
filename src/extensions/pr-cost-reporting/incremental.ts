@@ -12,6 +12,8 @@ const MAX_CONTEXT_ROWS = 512
 const MAX_CONTEXT_BYTES = 256 * 1024
 const MAX_CHANGED_ROWS = 128
 
+type ReplayedRequest = { hashes: string[]; result: RequestCostAllocation }
+
 type Shared = {
 	account: string
 	entityId: string
@@ -67,28 +69,84 @@ export function requestIndexEntries(
 	stored: readonly StoredRecord[],
 	rows: readonly WorkRecord[],
 	report: PullRequestCostReport,
+	replayed: ReadonlyMap<string, ReplayedRequest> = new Map(),
 ): { owner: string; name: string; body: string }[] {
 	const { requests, segments, bills } = indexes(rows)
 	for (let i = 0; i < rows.length; i++) {
 		const requestId = rows[i].requestId
 		if (typeof requestId === "string") requests.get(requestId)?.hashes.push(stored[i].recordHash)
 	}
+	for (const [requestId, prior] of replayed) {
+		const entry = requests.get(requestId)
+		if (entry) entry.hashes = [...new Set([...prior.hashes, ...entry.hashes])]
+	}
 	for (const result of report.requests) {
 		const entry = requests.get(result.requestId)
 		if (entry) entry.result = result
 	}
 	return [
-		...[...requests].map(([requestId, entry]) => ({
-			owner: entry.workId,
-			name: requestKey(requestId),
-			body: JSON.stringify(entry),
-		})),
+		...[...requests].map(([requestId, entry]) => {
+			const body = JSON.stringify(entry)
+			return { owner: entry.workId, name: requestKey(requestId), body: JSON.stringify({ digest: digest(body), body }) }
+		}),
 		...[...segments].map(([id, owner]) => ({ owner, name: segmentKey(id), body: "1" })),
 		...[...bills].map(([id, owner]) => ({ owner, name: billKey(id), body: "1" })),
 	]
 }
 
-/** A cache is eligible only when every request produced a validated unit and all shared contributors were seen. */
+function loadIndexedRequest(
+	backend: RecordBackend,
+	workId: string,
+	requestId: string,
+	changed: ReadonlyMap<string, string>,
+	check: () => void,
+): { stored: StoredRecord[]; rows: WorkRecord[]; hashes: string[]; result: RequestCostAllocation } | undefined {
+	const note = backend.getNote(workId, requestKey(requestId))
+	if (!note) return undefined
+	let entry: { workId: string; hashes: string[]; result?: RequestCostAllocation }
+	try {
+		const saved: { digest: string; body: string } = JSON.parse(note)
+		if (typeof saved.body !== "string" || digest(saved.body) !== saved.digest) return undefined
+		entry = JSON.parse(saved.body)
+		if (
+			!entry ||
+			entry.workId !== workId ||
+			!Array.isArray(entry.hashes) ||
+			!entry.hashes.length ||
+			entry.hashes.length > MAX_CHANGED_ROWS ||
+			entry.hashes.some((hash) => typeof hash !== "string") ||
+			new Set(entry.hashes).size !== entry.hashes.length ||
+			entry.result?.requestId !== requestId ||
+			!Array.isArray(entry.result.workIds) ||
+			!entry.result.workIds.includes(workId)
+		)
+			return undefined
+	} catch {
+		return undefined
+	}
+	const stored: StoredRecord[] = []
+	const rows: WorkRecord[] = []
+	for (const hash of entry.hashes) {
+		check()
+		const row = backend.getRecord(hash)
+		if (!row || row.workId !== workId || changed.has(hash)) return undefined
+		let parsed: WorkRecord
+		try {
+			parsed = JSON.parse(row.body)
+		} catch {
+			return undefined
+		}
+		if (parsed.workId !== workId || parsed.requestId !== requestId) return undefined
+		stored.push(row)
+		rows.push(parsed)
+	}
+	const original = rows.find((row) => row.type === "request")
+	if (!original || !isWorkScope(original.scope) || rows.some((row) => row.sessionId !== original.sessionId))
+		return undefined
+	return { stored, rows, hashes: entry.hashes, result: entry.result }
+}
+
+/** A complete build can cache requests that have no unit yet; their immutable rows remain indexed for later evidence. */
 export function prepareGroupCache(
 	backend: RecordBackend,
 	works: readonly string[],
@@ -96,15 +154,10 @@ export function prepareGroupCache(
 	through: number,
 	stored: readonly StoredRecord[],
 	rows: readonly WorkRecord[],
-	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
 	built: CommonEvents,
 ): GroupCache | undefined {
-	if (
-		built.unresolved.length ||
-		built.units.filter((unit) => unit.requestId !== undefined).length !== report.requests.length
-	)
-		return undefined
+	if (built.unresolved.length) return undefined
 	const context = stored.filter((row) =>
 		["commit", "work_link", "file_transition", "file_observation"].includes(row.type),
 	)
@@ -186,15 +239,10 @@ export function advanceGroupCache(
 	cache: GroupCache,
 	through: number,
 	rows: readonly WorkRecord[],
-	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
 	built: CommonEvents,
 ): GroupCache | undefined {
-	if (
-		built.unresolved.length ||
-		built.units.filter((unit) => unit.requestId !== undefined).length !== report.requests.length
-	)
-		return undefined
+	if (built.unresolved.length) return undefined
 	if (!sameCachedRepositories(cache, repositories)) return undefined
 	const scopes = new Map(cache.scopes)
 	for (const row of rows) {
@@ -244,7 +292,15 @@ export function readChangedGroup(
 	producer: string,
 	changed: ReadonlyMap<string, string>,
 	check: () => void,
-): { cache: GroupCache; through: number; stored: StoredRecord[]; rows: WorkRecord[] } | undefined {
+):
+	| {
+			cache: GroupCache
+			through: number
+			stored: StoredRecord[]
+			rows: WorkRecord[]
+			replayed: Map<string, ReplayedRequest>
+	  }
+	| undefined {
 	const raw = backend.getNote("agent", groupKey(works))
 	if (!raw) return undefined
 	let cache: GroupCache
@@ -288,14 +344,44 @@ export function readChangedGroup(
 	const rows = stored.map((row) => JSON.parse(row.body) as WorkRecord)
 	const scopeByWork = new Map(cache.scopes)
 	const known = indexes(rows)
-	for (const row of rows)
+	const requestOwners = new Set(
+		rows.filter((row) => row.type === "request").map((row) => JSON.stringify([row.workId, row.sessionId])),
+	)
+	for (const row of rows) {
 		if (["commit", "work_link", "file_transition", "file_observation"].includes(row.type)) return undefined
-	for (const [requestId, entry] of known.requests) {
-		if (!rows.some((row) => row.type === "request" && row.requestId === requestId)) return undefined
-		if (works.some((workId) => backend.hasNote(workId, requestKey(requestId)))) return undefined
-		const scope = rows.find((row) => row.type === "request" && row.requestId === requestId)
-		if (!scope || !isWorkScope(scope.scope) || scopeByWork.get(entry.workId) !== JSON.stringify(scope.scope))
+		if ((row.type === "work" || row.type === "plan") && !requestOwners.has(JSON.stringify([row.workId, row.sessionId])))
 			return undefined
+	}
+	const replayed = new Map<string, ReplayedRequest>()
+	const prior: StoredRecord[] = []
+	const priorRows: WorkRecord[] = []
+	const contextHashes = new Set(cache.context.map((row) => row.recordHash))
+	for (const [requestId, entry] of known.requests) {
+		const source = rows.filter((row) => row.requestId === requestId)
+		const fresh = source.find((row) => row.type === "request")
+		if (fresh) {
+			if (works.some((workId) => backend.hasNote(workId, requestKey(requestId)))) return undefined
+			if (!isWorkScope(fresh.scope) || scopeByWork.get(entry.workId) !== JSON.stringify(fresh.scope)) return undefined
+			continue
+		}
+		if (
+			source.some(
+				(row) => row.type !== "request_dispatch" && row.type !== "request_response" && row.type !== "tool_execution",
+			)
+		)
+			return undefined
+		if (works.filter((workId) => backend.hasNote(workId, requestKey(requestId))).length !== 1) return undefined
+		const restored = loadIndexedRequest(backend, entry.workId, requestId, changed, check)
+		if (!restored) return undefined
+		const original = restored.rows.find((row) => row.type === "request")
+		if (!original || scopeByWork.get(entry.workId) !== JSON.stringify(original.scope)) return undefined
+		if (prior.length + restored.stored.length + stored.length > MAX_CHANGED_ROWS) return undefined
+		replayed.set(requestId, { hashes: restored.hashes, result: restored.result })
+		for (let index = 0; index < restored.stored.length; index++)
+			if (!contextHashes.has(restored.stored[index].recordHash)) {
+				prior.push(restored.stored[index])
+				priorRows.push(restored.rows[index])
+			}
 	}
 	for (const segment of known.segments.keys())
 		if (works.some((workId) => backend.hasNote(workId, segmentKey(segment)))) return undefined
@@ -304,9 +390,13 @@ export function readChangedGroup(
 	for (const link of cache.context)
 		if (link.type === "work_link") {
 			const row: WorkRecord = JSON.parse(link.body)
-			if (Array.isArray(row.requestIds) && row.requestIds.some((id) => known.requests.has(String(id)))) return undefined
+			if (
+				Array.isArray(row.requestIds) &&
+				row.requestIds.some((id) => known.requests.has(String(id)) && !replayed.has(String(id)))
+			)
+				return undefined
 		}
-	return { cache, through, stored, rows }
+	return { cache, through, stored: [...prior, ...stored], rows: [...priorRows, ...rows], replayed }
 }
 
 /** Replay shared facts at their first request, not at the newly changed request's position. */
@@ -337,10 +427,14 @@ export function observationUnits(cache: GroupCache, built: CommonEvents): EventU
 export function mergeSharedFacts(cache: GroupCache, built: CommonEvents): CommonEvents {
 	const accounts = new Map(built.accounts.map((entry) => [accountKey(entry.account), entry]))
 	const current = new Map(cache.shared.map((entry) => [`${entry.account}\0${entry.entityId}`, entry]))
-	for (const unit of built.units) {
+	const seen = new Set<string>()
+	for (const unit of [...built.units].reverse()) {
 		if (!unit.requestId) continue
 		for (const entityId of unit.entities.slice(1)) {
-			const prior = current.get(`${unit.account}\0${entityId}`)
+			const identity = `${unit.account}\0${entityId}`
+			if (seen.has(identity)) continue
+			seen.add(identity)
+			const prior = current.get(identity)
 			const group = accounts.get(unit.account)
 			const index = group?.facts.findIndex((fact) => fact.entityId === entityId) ?? -1
 			if (!prior || !group || index < 0) continue

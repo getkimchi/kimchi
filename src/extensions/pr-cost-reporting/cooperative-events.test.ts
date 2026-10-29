@@ -135,6 +135,7 @@ function sqliteParity(scenario?: string) {
 		return JSON.parse(output.trim().split("\n").at(-1) ?? "null") as {
 			incremental: { id: string; entityId: string; body: string; hash: string }[]
 			reference: { id: string; entityId: string; body: string; hash: string }[]
+			scanned?: number
 		}
 	} finally {
 		rmSync(agent, { recursive: true, force: true })
@@ -150,5 +151,38 @@ it("preserves SQLite outbox event bytes and revisions when a new request uses th
 it.each([1, 2, 3, 4, 5, 6])("matches full outbox bytes for linked works and request order, seed %i", (seed) => {
 	const result = sqliteParity(`linked:${seed}`)
 	expect(result.incremental.length).toBeGreaterThanOrEqual(9)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it.each([1, 2, 3, 4, 5, 6])("matches full outbox bytes for same-pass requests across sessions, seed %i", (seed) => {
+	const result = sqliteParity(`paired:${seed}`)
+	expect(result.incremental.length).toBeGreaterThanOrEqual(5)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it.each(["work-row", "plan-row"])("keeps request-less %s facts equal to a full build", (scenario) => {
+	const result = sqliteParity(scenario)
+	const reason = scenario === "work-row" ? "observed_work" : "saved_plan"
+	expect(result.reference.some(({ body }) => body.includes(`"reason":"${reason}"`))).toBe(true)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it.each([
+	"response-row",
+	"tool-row",
+	"unitless-response",
+])("replays only a known request for late %s evidence", (scenario) => {
+	const result = sqliteParity(scenario)
+	const fact = scenario === "tool-row" ? '"name":"read"' : '"actualModel":"lumbrook-serving"'
+	expect(result.reference.some(({ body }) => body.includes(fact))).toBe(true)
+	expect(result.scanned).toBeLessThanOrEqual(8)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it("preserves earlier response evidence when a tool arrives in a second pass", () => {
+	const result = sqliteParity("response-then-tool")
+	expect(result.reference.some(({ body }) => body.includes('"actualModel":"lumbrook-serving"'))).toBe(true)
+	expect(result.reference.some(({ body }) => body.includes('"name":"read"'))).toBe(true)
+	expect(result.scanned).toBeLessThanOrEqual(8)
 	expect(result.incremental).toEqual(result.reference)
 })

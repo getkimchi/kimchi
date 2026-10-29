@@ -1045,8 +1045,26 @@ describe("incremental translation", () => {
 		// A v1.22 ledger has no derived group note; rebuild it once, then use only new evidence again.
 		backend.deleteNote("agent", groupKey([workId]))
 		await appendFile(path, `${JSON.stringify(request(201))}\n`)
+		vi.mocked(outbox.observeEvents).mockClear()
 		await run()
+		expect(
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId)),
+		).toEqual([request(201).requestId])
 		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
+
+		// A conflicting response can invalidate billed evidence, so a cold rebuild must revisit older request facts.
+		backend.deleteNote("agent", groupKey([workId]))
+		await appendFile(
+			path,
+			`${JSON.stringify({ version: 1, type: "request_response", workId, sessionId: "private-session", requestId, recordedAt: "2026-10-04T12:00:00.000Z", billingSource: { apiUrl: "https://api.example", gatewayUrl: "https://other.example/v1/chat/completions", credentialHash: "b".repeat(64) }, response: { status: 200 } })}\n`,
+		)
+		vi.mocked(outbox.observeEvents).mockClear()
+		await run()
+		expect(
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , facts]) => facts.map((fact) => fact.entityId)),
+		).toContain(request(0).requestId)
+		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
+
 		await appendFile(path, `${JSON.stringify(request(202))}\n`)
 		workRows = 0
 		await run()
@@ -1058,8 +1076,10 @@ describe("incremental translation", () => {
 			`${JSON.stringify({ version: 1, type: "file_transition", workId, sessionId: "lumbrook-session", transitionId: "later-edit", toolCallId: "edit", repository: "/private/repo/.git", worktree: "/private/repo", path: "src/lumbrook.ts", before: null, after: { blob: "a".repeat(40), mode: "100644" }, recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
 		)
 		workRows = 0
+		vi.mocked(outbox.observeEvents).mockClear()
 		await run()
 		expect(workRows).toBeGreaterThan(8)
+		expect(vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , facts]) => facts)).toHaveLength(204)
 		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
 
 		const beforeObservation = backend.recordCount(workId)

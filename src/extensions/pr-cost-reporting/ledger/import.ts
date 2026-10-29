@@ -1,6 +1,7 @@
 import { createHash, type Hash } from "node:crypto"
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { setImmediate } from "node:timers/promises"
 import {
 	journalParser,
 	object,
@@ -43,8 +44,7 @@ const COVERAGE_NOTES = "journal-coverage"
 const TAIL_NOTES = "journal-tail"
 const WINDOW_BYTES = 512 * 1024
 const READ_BYTES = 64 * 1024
-const PREFIX_CHUNK_BYTES = 4 * 1024 * 1024
-const PREFIX_BATCH = 8
+const PREFIX_CHUNK_BYTES = 8 * 1024 * 1024
 
 function savedProblem(value: unknown, path: string): value is WorkRecordProblem {
 	return (
@@ -159,21 +159,6 @@ const continued = new Map<
 >()
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
-/** Disposable SHA-256 chunks for checking an old cursor without serially hashing its whole prefix on each append. */
-const prefixChunks = new Map<
-	string,
-	{
-		dev: number
-		ino: number
-		offset: number
-		boundaryHash: string
-		size: number
-		mtimeMs: number
-		ctimeMs: number
-		hashes: string[]
-	}
->()
-
 /** Capture-only preflight: verify every old byte before the synchronous importer can reuse its running hash. */
 async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBudget?: () => void): Promise<void> {
 	if (!cursor.offset) return
@@ -188,59 +173,34 @@ async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBud
 			known.ino === cursor.ino &&
 			known.offset === cursor.offset &&
 			known.boundaryHash === cursor.boundaryHash
-		const saved = prefixChunks.get(path)
-		const sameChunks =
-			saved?.dev === cursor.dev &&
-			saved.ino === cursor.ino &&
-			saved.offset === cursor.offset &&
-			saved.boundaryHash === cursor.boundaryHash
 		const sameStat =
 			samePrefix && known.size === before.size && known.mtimeMs === before.mtimeMs && known.ctimeMs === before.ctimeMs
 		if (
-			sameStat &&
-			sameChunks &&
-			saved.size === before.size &&
-			saved.mtimeMs === before.mtimeMs &&
-			saved.ctimeMs === before.ctimeMs
+			sameStat ||
+			(before.size === cursor.offset &&
+				before.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS &&
+				before.ctimeMs < cursor.updatedAt - MTIME_SLACK_MS)
 		)
 			return
-		const reuseHash = samePrefix && (sameChunks || sameStat)
-		const prefix = reuseHash && known ? known.hash.copy() : createHash("sha256")
-		let lines = reuseHash && known ? known.lines : 0
-		// A committed append has already extended the authoritative running hash. Rehash only its final partial chunk.
-		const extend = sameStat && saved?.dev === cursor.dev && saved.ino === cursor.ino && saved.offset < cursor.offset
-		const start = extend && saved ? Math.floor(saved.offset / PREFIX_CHUNK_BYTES) * PREFIX_CHUNK_BYTES : 0
-		const hashes: string[] = extend && saved ? saved.hashes.slice(0, start / PREFIX_CHUNK_BYTES) : []
-		for (let position = start; position < cursor.offset; position += PREFIX_BATCH * PREFIX_CHUNK_BYTES) {
-			const tasks: Promise<ArrayBuffer>[] = []
-			for (
-				let offset = position;
-				offset < Math.min(position + PREFIX_BATCH * PREFIX_CHUNK_BYTES, cursor.offset);
-				offset += PREFIX_CHUNK_BYTES
-			) {
+		const prefix = createHash("sha256")
+		let lines = samePrefix ? known.lines : 0
+		const buffer = Buffer.allocUnsafe(Math.min(PREFIX_CHUNK_BYTES, cursor.offset))
+		for (let position = 0; position < cursor.offset; ) {
+			checkBudget?.()
+			const length = Math.min(buffer.length, cursor.offset - position)
+			let read = 0
+			while (read < length) {
 				checkBudget?.()
-				const buffer = Buffer.allocUnsafe(Math.min(PREFIX_CHUNK_BYTES, cursor.offset - offset))
-				for (let read = 0; read < buffer.length; ) {
-					const count = readSync(fd, buffer, read, buffer.length - read, offset + read)
-					if (!count) throw new Error("Legacy journal changed during prefix verification")
-					read += count
-				}
-				if (!reuseHash) {
-					prefix.update(buffer)
-					for (let lf = buffer.indexOf(0x0a); lf !== -1; lf = buffer.indexOf(0x0a, lf + 1)) lines++
-				}
-				tasks.push(crypto.subtle.digest("SHA-256", buffer))
+				const count = readSync(fd, buffer, read, length - read, position + read)
+				if (!count) throw new Error("Legacy journal changed during prefix verification")
+				read += count
 			}
-			for (const digest of await Promise.all(tasks)) {
-				checkBudget?.()
-				const hex = Buffer.from(digest).toString("hex")
-				if (sameChunks && saved && saved.hashes[hashes.length] !== hex) {
-					continued.delete(path)
-					prefixChunks.delete(path)
-					return
-				}
-				hashes.push(hex)
-			}
+			const chunk = buffer.subarray(0, length)
+			prefix.update(chunk)
+			if (!samePrefix) for (let lf = chunk.indexOf(0x0a); lf !== -1; lf = chunk.indexOf(0x0a, lf + 1)) lines++
+			position += length
+			checkBudget?.()
+			await setImmediate()
 		}
 		const after = fstatSync(fd)
 		if (
@@ -249,10 +209,9 @@ async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBud
 			after.size !== before.size ||
 			after.mtimeMs !== before.mtimeMs ||
 			after.ctimeMs !== before.ctimeMs ||
-			(!reuseHash && prefix.copy().digest("hex") !== cursor.boundaryHash)
+			prefix.copy().digest("hex") !== cursor.boundaryHash
 		) {
 			continued.delete(path)
-			prefixChunks.delete(path)
 			return
 		}
 		continued.set(path, {
@@ -266,18 +225,6 @@ async function verifyCapturePrefix(path: string, cursor: JournalCursor, checkBud
 			hash: prefix,
 			lines,
 		})
-		prefixChunks.delete(path)
-		prefixChunks.set(path, {
-			dev: after.dev,
-			ino: after.ino,
-			offset: cursor.offset,
-			boundaryHash: cursor.boundaryHash,
-			size: after.size,
-			mtimeMs: after.mtimeMs,
-			ctimeMs: after.ctimeMs,
-			hashes,
-		})
-		if (prefixChunks.size > 256) prefixChunks.delete(prefixChunks.keys().next().value ?? path)
 	} finally {
 		closeSync(fd)
 	}
@@ -293,12 +240,13 @@ function prepareJournal(
 ) {
 	checkBudget?.()
 	// A journal last modified well before its cursor was written still holds the prefix that cursor hashed.
-	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number }) =>
+	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }) =>
 		!replay &&
 		cursor?.dev === stat.dev &&
 		cursor.ino === stat.ino &&
 		stat.size >= cursor.offset &&
-		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS
+		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS &&
+		stat.ctimeMs < cursor.updatedAt - MTIME_SLACK_MS
 	const seen = statSync(path)
 	if (untouched(seen) && seen.size === cursor?.offset) return undefined
 	const fd = openSync(path, "r")
@@ -417,10 +365,7 @@ function importJournalFiles(
 		}
 		if (!prepared) continue
 		const { dev, ino, size, mtimeMs, ctimeMs, decision, prefix, lineOffset, data } = prepared
-		if (decision.mode === "mutation") {
-			prefixChunks.delete(path)
-			result.anomalies.push({ path, code: "journal-mutation" })
-		}
+		if (decision.mode === "mutation") result.anomalies.push({ path, code: "journal-mutation" })
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
 			if (cursor && decision.mode === "clean-append")
@@ -443,7 +388,7 @@ function importJournalFiles(
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
 			// A verified journal that settled since its cursor skips verification from now on.
-			else if (cursor && decision.mode === "clean-append" && Date.now() - mtimeMs > MTIME_SLACK_MS)
+			else if (cursor && decision.mode === "clean-append" && Date.now() - Math.max(mtimeMs, ctimeMs) > MTIME_SLACK_MS)
 				backend.putJournalCursor({ ...cursor, updatedAt: Date.now() })
 			continue
 		}
@@ -562,7 +507,6 @@ function forgetJournal(agentDir: string, backend: RecordBackend, path: string, r
 		backend.deleteNote(TAIL_NOTES, path)
 	})
 	continued.delete(path)
-	prefixChunks.delete(path)
 	diagnostic(agentDir, "journal-removed")
 }
 
@@ -570,7 +514,7 @@ interface ImportOptions {
 	maxBytes?: number
 	onRecordProblem?: (problem: WorkRecordProblem) => void
 	checkBudget?: () => void
-	/** Only background capture verifies old chunks before reusing a process-local running hash. */
+	/** Only background capture verifies the old prefix before reusing a process-local running hash. */
 	parallelPrefix?: boolean
 	/** After a journal that imported something, stop once this time has passed; the result is then pending. */
 	until?: number
@@ -600,7 +544,12 @@ export async function importJournals(agentDir: string, options: ImportOptions = 
 		for (const file of result.files) {
 			options.checkBudget?.()
 			const cursor = backend.getJournalCursor(file.path)
-			if (cursor && file.mode !== "mutation") await verifyCapturePrefix(file.path, cursor, options.checkBudget)
+			if (cursor && file.mode !== "mutation")
+				try {
+					await verifyCapturePrefix(file.path, cursor, options.checkBudget)
+				} catch (error) {
+					if (!object(error) || error.code !== "ENOENT") throw error
+				}
 		}
 	}
 	return result

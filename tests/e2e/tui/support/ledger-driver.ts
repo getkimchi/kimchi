@@ -1984,7 +1984,16 @@ async function knownSchemaRace(agent: string): Promise<void> {
 }
 
 async function incrementalParity(agent: string, scenario?: string): Promise<void> {
-	const linked = scenario?.startsWith("linked:") ? Number(scenario.slice("linked:".length)) : undefined
+	const paired = scenario?.startsWith("paired:") === true
+	const split =
+		scenario === "response-row" ||
+		scenario === "tool-row" ||
+		scenario === "response-then-tool" ||
+		scenario === "unitless-response"
+	const linked =
+		scenario && (scenario.startsWith("linked:") || paired)
+			? Number(scenario.slice(scenario.indexOf(":") + 1))
+			: undefined
 	if (linked !== undefined && (!Number.isSafeInteger(linked) || linked < 1)) throw new Error("Invalid parity seed")
 	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const { groupKey } = await import("../../../../src/extensions/pr-cost-reporting/incremental.js")
@@ -2004,11 +2013,22 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	const oldKey = process.env.KIMCHI_API_KEY
 	process.env.KIMCHI_API_KEY = "lumbrook-test-key"
 	globalThis.fetch = async () => new Response("{}", { status: 503 })
+	const pairedRequests = (seed: number): number[] => {
+		let state = seed
+		const next = () => (state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0)
+		const high = 7 + (next() % 20)
+		return seed % 2 ? [next() % 2, high] : [high, 27 + (next() % 20)]
+	}
 	const seed = (directory: string, index: number) => {
 		const requestId = `11111111-1111-4111-8111-${index.toString(16).padStart(12, "0")}`
 		const startedAt = new Date(Date.UTC(2026, 9, 24, 8, 0, index)).toISOString()
 		const owner = linked !== undefined && (index + linked) % 2 ? otherWorkId : workId
-		const common = { version: 1 as const, workId: owner, sessionId: "lumbrook-session", requestId }
+		const common = {
+			version: 1 as const,
+			workId: owner,
+			sessionId: paired && index !== 2 && index !== 3 ? `lumbrook-session-${index}` : "lumbrook-session",
+			requestId,
+		}
 		capture(
 			directory,
 			{
@@ -2020,6 +2040,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 			},
 			"lumbrook-parity",
 		)
+		if (scenario === "unitless-response") return
 		capture(
 			directory,
 			{ ...common, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
@@ -2083,19 +2104,157 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 			await setReportingEnabled(directory, true)
 			backendFor(directory).putNote("agent", "reporting-producer", JSON.stringify({ version: 1, producerId }))
 			if (linked !== undefined) connectWorks(directory)
-			for (let index = 0; index < (linked === undefined ? 4 : 8); index++)
-				seed(directory, index + (linked === undefined ? 0 : 10))
+			const initial = paired
+				? [2, 3, 4, 6]
+				: Array.from(
+						{ length: split ? 64 : linked === undefined ? 4 : 8 },
+						(_, index) => index + (linked === undefined ? 0 : 10),
+					)
+			for (const index of initial) seed(directory, index)
 			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
 			if (backendFor(directory).markedRecords().length) throw new Error("Initial capture did not settle")
 			if (!backendFor(directory).getNote("agent", groupKey(works))) throw new Error("Initial group cache is absent")
 		}
-		for (const directory of [incremental, reference]) seed(directory, linked === undefined ? 4 : linked % 2 ? 1 : 20)
-		backendFor(reference).deleteNote("agent", groupKey(works))
+		const requestless = scenario === "work-row" || scenario === "plan-row"
+		let appended = requestless || split ? [] : [linked === undefined ? 4 : linked % 2 ? 1 : 20]
+		if (paired && linked !== undefined) appended = pairedRequests(linked)
 		for (const directory of [incremental, reference]) {
-			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
-			if (backendFor(directory).markedRecords().length) throw new Error("Appended request did not settle")
+			for (const index of appended) seed(directory, index)
+			if (split) {
+				const base = {
+					version: 1,
+					workId,
+					sessionId: "lumbrook-session",
+					requestId: "11111111-1111-4111-8111-000000000000",
+					recordedAt: "2026-10-24T08:00:20.000Z",
+					repository: "/lumbrook/platform/.git",
+				}
+				if (scenario === "unitless-response")
+					capture(
+						directory,
+						{
+							...base,
+							type: "request_dispatch",
+							startedAt: "2026-10-24T08:00:00.000Z",
+							dispatchedAt: base.recordedAt,
+						},
+						"lumbrook-parity",
+					)
+				if (scenario === "response-row" || scenario === "response-then-tool" || scenario === "unitless-response")
+					capture(
+						directory,
+						{
+							...base,
+							type: "request_response",
+							responseId: "lumbrook-response-0",
+							nativeUsage: {
+								harness: "kimchi",
+								sourceVersion: "1.22",
+								api: "anthropic-messages",
+								schema: "anthropic-messages-v1",
+								provider: "anthropic",
+								reportedModel: "lumbrook-requested",
+								actualModel: "lumbrook-serving",
+								dispatchObserved: true,
+								finalized: true,
+								finalUsageObserved: true,
+								raw: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
+							},
+						},
+						"lumbrook-parity",
+					)
+				else
+					capture(
+						directory,
+						{
+							...base,
+							type: "tool_execution",
+							toolCallId: "read-one",
+							toolName: "read",
+							outcome: "completed",
+							durationMs: 7,
+						},
+						"lumbrook-parity",
+					)
+			}
+			if (scenario === "work-row")
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "work",
+						workId,
+						sessionId: "lumbrook-session",
+						recordedAt: "2026-10-24T09:00:00.000Z",
+						title: "Lumbrook rollout",
+					},
+					"lumbrook-parity",
+				)
+			if (scenario === "plan-row")
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "plan",
+						workId,
+						sessionId: "lumbrook-session",
+						recordedAt: "2026-10-24T09:00:00.000Z",
+						path: ".kimchi/plans/rollout.md",
+						contentHash: "a".repeat(64),
+					},
+					"lumbrook-parity",
+				)
 		}
-		if (linked !== undefined) {
+		backendFor(reference).deleteNote("agent", groupKey(works))
+		let scanned = 0
+		for (const directory of [incremental, reference]) {
+			const backend = backendFor(directory)
+			const readRecords = backend.readRecords
+			if (split && directory === incremental)
+				backend.readRecords = (filter, check) => {
+					const rows = readRecords(filter, check)
+					if (filter?.workId === workId) scanned += rows.length
+					return rows
+				}
+			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+			if (backend.markedRecords().length) throw new Error("Appended request did not settle")
+			if (split && directory === incremental) backend.readRecords = readRecords
+		}
+		if (scenario === "response-then-tool") {
+			for (const directory of [incremental, reference])
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "tool_execution",
+						workId,
+						sessionId: "lumbrook-session",
+						requestId: "11111111-1111-4111-8111-000000000000",
+						recordedAt: "2026-10-24T08:00:21.000Z",
+						repository: "/lumbrook/platform/.git",
+						toolCallId: "read-two",
+						toolName: "read",
+						outcome: "completed",
+						durationMs: 8,
+					},
+					"lumbrook-parity",
+				)
+			backendFor(reference).deleteNote("agent", groupKey(works))
+			for (const directory of [incremental, reference]) {
+				const backend = backendFor(directory)
+				const readRecords = backend.readRecords
+				if (directory === incremental)
+					backend.readRecords = (filter, check) => {
+						const rows = readRecords(filter, check)
+						if (filter?.workId === workId) scanned += rows.length
+						return rows
+					}
+				await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+				if (backend.markedRecords().length) throw new Error("Second split row did not settle")
+				if (directory === incremental) backend.readRecords = readRecords
+			}
+		}
+		if (linked !== undefined && !paired) {
 			for (const directory of [incremental, reference]) seed(directory, linked % 2 ? 21 : 2)
 			backendFor(reference).deleteNote("agent", groupKey(works))
 			for (const directory of [incremental, reference]) {
@@ -2103,7 +2262,7 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 				if (backendFor(directory).markedRecords().length) throw new Error("Second request did not settle")
 			}
 		}
-		out({ incremental: events(incremental), reference: events(reference) })
+		out({ incremental: events(incremental), reference: events(reference), ...(split ? { scanned } : {}) })
 	} finally {
 		closeBackends()
 		if (oldKey === undefined) delete process.env.KIMCHI_API_KEY
