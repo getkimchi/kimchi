@@ -133,8 +133,17 @@ export function readTranscript(filePath: string, baseDir?: string): TranscriptEn
  *
  * The resulting object has the same `{ header, entries }` shape as the main
  * session-data, so it can be rendered by the exact same template in an iframe.
+ *
+ * The system prompt fallback resolves in order: the record's own persisted
+ * prompt, then `agentSystemPrompts` (a type → prompt map the offloaded worker
+ * carries from the parent's live persona registry — the child process cannot
+ * see `.kimchi/agents` registrations), then the in-process registry, then
+ * the built-in defaults.
  */
-export function buildSubAgentSessionData(data: SubAgentRecordData): {
+export function buildSubAgentSessionData(
+	data: SubAgentRecordData,
+	agentSystemPrompts?: Readonly<Record<string, string>>,
+): {
 	header: Record<string, unknown>
 	entries: Record<string, unknown>[]
 	systemPrompt?: string
@@ -147,7 +156,10 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
 	// Pass it as a top-level field so the upstream HTML export template renders
 	// it in the same violet "System Prompt" box used for the main session.
 	const systemPrompt =
-		data.systemPrompt ?? getAgentConfig(data.type)?.systemPrompt ?? DEFAULT_AGENTS.get(data.type)?.systemPrompt
+		data.systemPrompt ??
+		agentSystemPrompts?.[data.type.toLowerCase()] ??
+		getAgentConfig(data.type)?.systemPrompt ??
+		DEFAULT_AGENTS.get(data.type)?.systemPrompt
 
 	for (let i = 0; i < (data.transcript ?? []).length; i++) {
 		const t = data.transcript?.[i]
@@ -191,10 +203,17 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
  * before base64-encoding them, so nothing sensitive is injected after
  * redaction.
  *
+ * `agentSystemPrompts` (type → prompt, lowercase keys) overrides the
+ * in-process persona registry fallback — the offloaded worker carries the
+ * parent's registry state this way.
+ *
  * Returns one entry per `subagents:record` entry that has a non-empty
  * transcript.
  */
-export function collectSubAgentTabData(entries: Record<string, unknown>[]): SubAgentTabData[] {
+export function collectSubAgentTabData(
+	entries: Record<string, unknown>[],
+	agentSystemPrompts?: Readonly<Record<string, string>>,
+): SubAgentTabData[] {
 	const tabs: SubAgentTabData[] = []
 
 	for (const entry of entries) {
@@ -210,7 +229,7 @@ export function collectSubAgentTabData(entries: Record<string, unknown>[]): SubA
 			id: data.id || "unknown",
 			label: data.type || "Agent",
 			subtitle: `${data.status || "unknown"}${duration ? ` · ${duration}` : ""}`,
-			sessionData: buildSubAgentSessionData(data),
+			sessionData: buildSubAgentSessionData(data, agentSystemPrompts),
 		})
 	}
 

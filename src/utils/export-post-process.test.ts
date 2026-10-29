@@ -9,7 +9,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -1205,6 +1205,57 @@ describe("runSecureExport — workspace lifecycle", () => {
 		})
 
 		expect(statSync(finalPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("resolves `~/` paths against the home directory, not the session cwd", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: "~/kimchi-export-tilde-test.html",
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: () => Promise.resolve(),
+		})
+		expect(finalPath.startsWith(homedir())).toBe(true)
+		expect(finalPath).not.toContain("~")
+		rmSync(finalPath, { force: true })
+	})
+
+	it("converts file:// URL output paths to plain paths", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		const target = join(tmpDir, "url-out.html")
+		const finalPath = await runSecureExport({
+			mode: "html",
+			outputPath: `file://${target}`,
+			session,
+			upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+			pipeline: () => Promise.resolve(),
+		})
+		expect(finalPath).toBe(target)
+	})
+
+	it("a rename failure sweeps the temp and leaves the destination untouched", async () => {
+		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
+		// The destination is a directory — rename(file, dir) fails with EISDIR
+		// after the temp's mode was already set to the destination's.
+		const finalPath = join(tmpDir, "out.html")
+		mkdirSync(finalPath)
+
+		await expect(
+			runSecureExport({
+				mode: "html",
+				outputPath: "out.html",
+				session,
+				upstreamExport: stubHtmlUpstream({ version: 3, id: "s1", entries: [] }),
+				pipeline: () => Promise.resolve(),
+			}),
+		).rejects.toThrow()
+
+		// The destination directory survived, and no temp (whose mode was
+		// widened to the directory's 0755 before the failed rename) is left.
+		expect(existsSync(finalPath)).toBe(true)
+		expect(statSync(finalPath).isDirectory()).toBe(true)
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
 	})
 
 	it("JSONL exports publish through the same workspace", async () => {

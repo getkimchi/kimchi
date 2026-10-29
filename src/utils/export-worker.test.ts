@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { registerAgents } from "../extensions/agents/personas/agent-types.js"
+import type { AgentConfig } from "../extensions/agents/personas/types.js"
 import { resetRedactorEngine } from "../extensions/pii-redaction/redactor.js"
 import { startEventLoopDelayMonitor } from "./event-loop-delay.js"
 import * as exportPostProcess from "./export-post-process.js"
@@ -232,5 +234,77 @@ describe("runExportOffloaded", () => {
 		expect(reportedMode).toBe(0o600)
 		// The state file is gone after the run.
 		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
+	})
+
+	it("worker output preserves custom persona fallback prompts (parity with inline)", {
+		skip: !bunAvailable,
+	}, async () => {
+		// Register a custom persona in THIS process only — the worker child
+		// starts with an empty registry, so the prompt can only arrive via the
+		// serialized state (the review's reproduction).
+		const customAuditor: AgentConfig = {
+			name: "Auditor",
+			description: "custom persona for the parity test",
+			extensions: false,
+			skills: false,
+			systemPrompt: "CUSTOM-PERSONA-PROMPT: audit everything twice.",
+			promptMode: "replace",
+		}
+		registerAgents(new Map([["Auditor", customAuditor]]))
+		try {
+			const sessionData = {
+				version: 3,
+				id: "s1",
+				entries: [
+					{
+						type: "custom",
+						id: "sub-aud",
+						parentId: null,
+						customType: "subagents:record",
+						// No persisted systemPrompt — the persona fallback must supply it.
+						data: {
+							id: "agent-aud",
+							type: "Auditor",
+							status: "completed",
+							startedAt: 1700000000000,
+							completedAt: 1700000010000,
+							transcript: [
+								{
+									isSidechain: true,
+									agentId: "agent-aud",
+									type: "user",
+									message: { role: "user", content: "audit this" },
+									timestamp: "2026-01-01T00:00:00.000Z",
+									cwd: "/project",
+								},
+							],
+						},
+					},
+				],
+			}
+			const inlinePath = join(tmpDir, "persona-inline.html")
+			const workerPath = join(tmpDir, "persona-worker.html")
+			writeFileSync(inlinePath, buildRawHtml(sessionData), "utf-8")
+			writeFileSync(workerPath, buildRawHtml(sessionData), "utf-8")
+
+			await postProcessHtmlExportOnce(inlinePath)
+			await runExportOffloaded({ mode: "html", filePath: workerPath }, { buildCommand: bunCommand })
+
+			const tabPrompt = (html: string): string | undefined => {
+				const dataMatch = html.match(/id="subagent-data-agent-aud">([\s\S]*?)<\/script>/)
+				if (!dataMatch?.[1]) throw new Error("subagent data not found")
+				const subData = JSON.parse(Buffer.from(dataMatch[1], "base64").toString("utf-8")) as {
+					systemPrompt?: string
+				}
+				return subData.systemPrompt
+			}
+			// Both paths resolved the custom persona prompt.
+			expect(tabPrompt(readFileSync(inlinePath, "utf-8"))).toBe("CUSTOM-PERSONA-PROMPT: audit everything twice.")
+			expect(tabPrompt(readFileSync(workerPath, "utf-8"))).toBe("CUSTOM-PERSONA-PROMPT: audit everything twice.")
+			// Full byte parity between the inline and worker pipelines.
+			expect(readFileSync(workerPath, "utf-8")).toBe(readFileSync(inlinePath, "utf-8"))
+		} finally {
+			registerAgents(new Map())
+		}
 	})
 })

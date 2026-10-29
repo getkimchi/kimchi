@@ -22,6 +22,7 @@ import { type ChildProcess, spawn } from "node:child_process"
 import { closeSync, openSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { getAgentConfig, getUserAgentNames } from "../extensions/agents/personas/agent-types.js"
 import type { ExportMode, ExportPipelineOptions } from "./export-post-process.js"
 import { postProcessHtmlExportOnce, postProcessJsonlExportOnce } from "./export-post-process.js"
 import { getConfigChanges, getSessionStartMetadata } from "./session-metadata-store.js"
@@ -35,8 +36,27 @@ export interface ExportOffloadOptions {
 	systemPrompt?: string
 }
 
-/** The pipeline state serialized to the worker — the in-process stores, which the child cannot see. */
+/** The pipeline state serialized to the worker — the in-process facts, which the child cannot see. */
 type ExportWorkerState = ExportPipelineOptions
+
+/**
+ * Persona fallback prompts from the live registry — user-defined agents
+ * (`.kimchi/agents`) are registered only in the exporting process, so the
+ * worker child would otherwise fall back to built-in defaults for
+ * sub-records without a persisted system prompt. Keys are lowercased agent
+ * types; built-in defaults resolve identically in the child and are not
+ * serialized.
+ */
+function collectAgentSystemPrompts(): Record<string, string> | undefined {
+	const prompts: Record<string, string> = {}
+	for (const name of getUserAgentNames()) {
+		const prompt = getAgentConfig(name)?.systemPrompt
+		if (typeof prompt === "string" && prompt.length > 0) {
+			prompts[name.toLowerCase()] = prompt
+		}
+	}
+	return Object.keys(prompts).length > 0 ? prompts : undefined
+}
 
 /**
  * Build the child command for the given worker argv.
@@ -86,11 +106,12 @@ export interface ExportOffloadDeps {
  */
 export async function runExportOffloaded(options: ExportOffloadOptions, deps: ExportOffloadDeps = {}): Promise<void> {
 	// Serialize the in-process state the child cannot see: live system prompt,
-	// launch metadata, buffered config changes.
+	// launch metadata, buffered config changes, and the user persona registry.
 	const state: ExportWorkerState = {
 		systemPrompt: options.systemPrompt,
 		metadata: getSessionStartMetadata(),
 		configChanges: [...getConfigChanges()],
+		agentSystemPrompts: collectAgentSystemPrompts(),
 	}
 	const statePath = writeWorkerStateFile(options.filePath, state)
 

@@ -38,7 +38,9 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs"
+import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { redactObjectStringsStrict } from "../extensions/pii-redaction/redactor.js"
 import { getVersion } from "../utils.js"
 import { collectSubAgentTabData, enrichSubAgentEntries, type SubAgentTabData } from "./export-subagents.js"
@@ -66,6 +68,14 @@ export interface ExportPipelineOptions {
 	metadata?: SessionStartMetadata
 	/** Buffered in-session config changes. Defaults to the in-process store — the offloaded worker passes it explicitly. */
 	configChanges?: ReadonlyArray<ConfigChangeRecord>
+	/**
+	 * Persona fallback prompts (agent type → system prompt, lowercase keys),
+	 * built from the parent's live persona registry — user agents registered
+	 * from `.kimchi/agents` exist only in the exporting process, so the
+	 * offloaded worker carries them explicitly. Built-in defaults resolve
+	 * identically in the child and are not serialized.
+	 */
+	agentSystemPrompts?: Readonly<Record<string, string>>
 }
 
 function resolvePipelineOptions(options?: ExportPipelineOptions): {
@@ -231,7 +241,7 @@ export async function postProcessHtmlExportOnce(filePath: string, options?: Expo
 		}
 	}
 	appendConfigChangeEntries(entries, configChanges)
-	const tabData = collectSubAgentTabData(entries)
+	const tabData = collectSubAgentTabData(entries, options?.agentSystemPrompts)
 
 	// Redact the complete assembled object graph — fail closed. The walk
 	// returns new structures; assign them.
@@ -658,13 +668,33 @@ export interface SecureExportOptions {
  * ("Session exported to: …") stays correct regardless of upstream's own
  * return value.
  */
+/**
+ * Normalize a user-supplied output path the way upstream's exporter does
+ * (normalizePath with its defaults): expand `~` / `~/` against the home
+ * directory (plus `~\` on Windows) and convert `file://` URLs to plain
+ * paths. Without this, `/export ~/out.html` would resolve to a literal
+ * `~` directory under the session cwd.
+ */
+function expandExportOutputPath(raw: string): string {
+	if (raw === "~") return homedir()
+	if (raw.startsWith("~/") || (process.platform === "win32" && raw.startsWith("~\\"))) {
+		return join(homedir(), raw.slice(2))
+	}
+	if (/^file:\/\//.test(raw)) {
+		return fileURLToPath(raw)
+	}
+	return raw
+}
+
 export async function runSecureExport(options: SecureExportOptions): Promise<string> {
 	const { mode, outputPath, session, upstreamExport, pipeline } = options
 
-	// 1. Resolve the destination before generation.
+	// 1. Resolve the destination before generation. Tilde and file:// forms
+	// are normalized first (upstream parity), then resolved against the
+	// session cwd; absolute paths pass through unchanged.
 	const finalPath =
 		outputPath !== undefined && outputPath !== ""
-			? resolve(session.cwd, outputPath)
+			? resolve(session.cwd, expandExportOutputPath(outputPath))
 			: computeDefaultExportPath(mode, session)
 	const destDir = dirname(finalPath)
 	// Upstream's JSONL exporter mkdirs the destination directory; keep that
@@ -683,8 +713,16 @@ export async function runSecureExport(options: SecureExportOptions): Promise<str
 		await upstreamExport(tempPath)
 		// 4. Single-pass transform in place.
 		await pipeline(tempPath)
+		// 5. Publish on success only, preserving destination permissions.
+		// Inside the protected lifecycle: a failed rename (e.g. the destination
+		// is a directory) must sweep the temp too — otherwise a widened temp
+		// (destMode is applied before the rename) is left behind.
+		const destMode = existsSync(finalPath) ? statSync(finalPath).mode & 0o777 : 0o600
+		chmodSync(tempPath, destMode)
+		renameSync(tempPath, finalPath)
 	} catch (err) {
-		// Ownership-scoped cleanup: remove only the temp we created.
+		// Ownership-scoped cleanup: remove only the temp we created. Applies to
+		// every failure phase — generation, pipeline, and publication alike.
 		try {
 			unlinkSync(tempPath)
 		} catch (unlinkErr) {
@@ -694,11 +732,6 @@ export async function runSecureExport(options: SecureExportOptions): Promise<str
 		}
 		throw err
 	}
-
-	// 5. Publish on success only, preserving destination permissions.
-	const destMode = existsSync(finalPath) ? statSync(finalPath).mode & 0o777 : 0o600
-	chmodSync(tempPath, destMode)
-	renameSync(tempPath, finalPath)
 
 	// 6. Our own resolution keeps the caller's status message correct.
 	return finalPath
