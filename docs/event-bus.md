@@ -12,7 +12,7 @@ Handlers are called synchronously in registration order. Keep handlers fast and 
 
 | Channel | Payload | When |
 |---|---|---|
-| `subagents:ready` | `{}` | Agent extension finished loading |
+| `subagents:ready` | `{}` | Agents extension finished loading |
 | `subagents:started` | `{ id, ... }` | A subagent run begins |
 | `subagents:completed` | `{ id, ... }` | A subagent finishes successfully |
 | `subagents:failed` | `{ id, error, ... }` | A subagent fails |
