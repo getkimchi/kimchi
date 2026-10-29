@@ -129,6 +129,13 @@
 #     flow's saved discovery state) after the server's own
 #     authorizationParams, so a host only fills in what config left unset; default is identity. The
 #     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -1576,3 +1583,104 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..919630995231617af84a175f00724757
      }
      if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
        return true;
+diff --git a/init.ts b/init.ts
+index 247d300..b4ee7e6 100644
+--- a/init.ts
++++ b/init.ts
+@@ -725,9 +725,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+   throwIfAborted(ownedSignal);
+   const connection = state.manager.getConnection(serverName);
+-  if (connection?.status === "needs-auth") {
++  if (connection?.status === "needs-auth"
++    && hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++    // A user-initiated interactive flow owns this needs-auth episode right
++    // now; racing it from a tool call would create competing OAuth owners.
+     return false;
+   }
++  // Otherwise a needs-auth route may be satisfiable again after an
++  // out-of-band re-auth (settings probe, another chat): fall through to the
++  // normal connect path, which re-reads the shared credential store.
+   if (connection?.status === "connected") {
+     await state.manager.ensureListen?.(serverName, connection);
+     updateServerMetadata(state, serverName);
+@@ -736,7 +742,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   }
+ 
+   const failedAgo = getFailureAgeSeconds(state, serverName);
+-  if (failedAgo !== null) return false;
++  if (failedAgo !== null && connection?.status !== "needs-auth") return false;
+ 
+   const definition = state.config.mcpServers[serverName];
+   if (!definition || isServerDisabled(definition)) return false;
+@@ -746,7 +752,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+       const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
+       state.ui.setStatus("mcp", status);
+     }
+-    const newConnection = await state.manager.connect(serverName, definition, ownedSignal);
++    const newConnection = connection?.status === "needs-auth"
++      ? await state.manager.reconnect(serverName, definition, connection, ownedSignal)
++      : await state.manager.connect(serverName, definition, ownedSignal);
+     if (newConnection.status === "needs-auth") {
+       return false;
+     }
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 6abc16f..801e538 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { formatAuthRequiredMessage, formatMcpStatus, normalizeToolArguments, resolveServerUrl, truncateAtWord, withToolCallIdMeta } from "./utils.ts";
+-import { authenticate, completeAuthFromInput, getAuthStatus, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, completeAuthFromInput, getAuthStatus, hasPendingAuth, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { callToolViaTaskSession } from "./mcp-tasks.ts";
+ import { callToolPausingForElicitation } from "./elicitation-handler.ts";
+@@ -1488,6 +1488,22 @@ export async function executeCall(
+       }
+     }
+ 
++    // An out-of-band re-auth (settings probe, another chat) may have written
++    // a fresh credential since this episode started; reconnect re-reads the
++    // shared store. Skipped while an interactive flow owns the episode so
++    // they don't race as competing OAuth owners.
++    const definition = state.config.mcpServers[serverName];
++    if (connection?.status === "needs-auth"
++      && definition !== undefined
++      && !hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime)) {
++      try {
++        connection = await state.manager.reconnect(serverName, definition, connection, ownedSignal);
++      } catch (error) {
++        if (isAbortError(error, ownedSignal)) throw error;
++        // Fall through to the auth-required guidance below.
++      }
++    }
++
+     if (connection?.status === "needs-auth") {
+       const message = getAuthRequiredMessage(state, serverName);
+       return {
+diff --git a/session-recovery.ts b/session-recovery.ts
+index 286242f..1f34143 100644
+--- a/session-recovery.ts
++++ b/session-recovery.ts
+@@ -113,8 +113,17 @@ export async function withSessionRecovery<T>(
+     if (definition && supportsOAuth(definition) && unauthorized) {
+       invalidateAuthEntryCache(serverName);
+     }
+-    // A provider token rejected or gone reconnects, which ends in needs-auth when Pi has no token.
+-    if (!isTerminatedSession(err, hadSessionId) && !(unauthorized && typeof definition?.auth === "object")) {
++    // A provider or OAuth token rejected or gone reconnects, which ends in
++    // needs-auth when Pi has no token. supportsOAuth covers plain OAuth
++    // definitions (auth: "oauth" or auto-detected), so an out-of-band
++    // re-auth (settings probe, another session) heals the live session on
++    // the next tool call.
++    if (
++      !isTerminatedSession(err, hadSessionId)
++      && !(unauthorized
++        && definition !== undefined
++        && (typeof definition.auth === "object" || supportsOAuth(definition)))
++    ) {
+       throw err;
+     }
+ 

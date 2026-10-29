@@ -50,6 +50,8 @@ interface McpFixtureEventDetails {
 	}
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
+	oauth_refresh_rejected: Record<string, never>
+	oauth_manual_revoke: Record<string, never>
 	oauth_browser_opened: { target: string }
 	oauth_browser_completed: {
 		status: number
@@ -107,6 +109,8 @@ export type McpFixtureScenario =
 	| "oauth-google-authorization-endpoint"
 	| "oauth-offline-access-scope"
 	| "oauth-split-issuer-flaky-prm"
+	| "oauth-refresh-revoked"
+	| "oauth-manual-revoke"
 	| "ui-app"
 
 export type McpFixtureToolResponse =

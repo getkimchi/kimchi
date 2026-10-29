@@ -17,6 +17,11 @@ import {
 
 const eventPath = process.env.KIMCHI_MCP_FIXTURE_EVENTS
 const scenario = process.env.KIMCHI_MCP_FIXTURE_SCENARIO ?? "basic"
+let authorizationCodeGrants = 0
+// "oauth-manual-revoke": calling the revoke_auth tool expires the current access
+// token immediately; the next refresh grant is rejected once (the user must run
+// a fresh authorization-code flow, which clears both flags).
+let oauthManualRevoked = false
 const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
@@ -131,6 +136,15 @@ function createFixtureServer() {
 				},
 				...(fixtureBehavior.catalogTools ?? []),
 				...uiTools,
+				...(scenario === "oauth-manual-revoke"
+					? [
+							{
+								name: "revoke_auth",
+								description: "Revoke the fixture's stored OAuth access token",
+								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							},
+						]
+					: []),
 			],
 		}
 	})
@@ -172,6 +186,10 @@ function createFixtureServer() {
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params
 		record("tool_called", { name, arguments: args ?? {} })
+		if (scenario === "oauth-manual-revoke" && name === "revoke_auth") {
+			oauthManualRevoked = true
+			record("oauth_manual_revoke", {})
+		}
 		const behavior = findToolBehavior(name, args)
 
 		if (behavior?.response.type === "result") return behavior.response.value
@@ -444,7 +462,14 @@ async function runHttpFixture() {
 						sendJson(response, 400, { error: "invalid_grant" })
 						return
 					}
-					const expiresIn = scenario === "oauth-expiring" || scenario === "oauth-split-issuer-flaky-prm" ? 1 : 3600
+					const expiresIn =
+						scenario === "oauth-expiring" ||
+						scenario === "oauth-split-issuer-flaky-prm" ||
+						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0)
+							? 1
+							: 3600
+					authorizationCodeGrants += 1
+					oauthManualRevoked = false
 					authorizationCodes.delete(code)
 					record("oauth_token_issued", { grantType, pkceVerified: true, expiresIn })
 					flakyPrmArmed = scenario === "oauth-split-issuer-flaky-prm"
@@ -456,6 +481,16 @@ async function runHttpFixture() {
 						refresh_token: oauthRefreshToken,
 						scope: "mcp:tools",
 					})
+					return
+				}
+				if (grantType === "refresh_token" && scenario === "oauth-refresh-revoked") {
+					record("oauth_refresh_rejected", {})
+					sendJson(response, 400, { error: "invalid_grant" })
+					return
+				}
+				if (grantType === "refresh_token" && scenario === "oauth-manual-revoke" && oauthManualRevoked) {
+					record("oauth_refresh_rejected", {})
+					sendJson(response, 400, { error: "invalid_grant" })
 					return
 				}
 				if (grantType === "refresh_token" && params.get("refresh_token") === oauthRefreshToken) {
@@ -481,7 +516,9 @@ async function runHttpFixture() {
 
 			const authorization = request.headers.authorization
 			const authorized = oauthEnabled
-				? authorization === `Bearer ${oauthAccessToken}` && Date.now() < oauthAccessTokenExpiresAt
+				? authorization === `Bearer ${oauthAccessToken}` &&
+					Date.now() < oauthAccessTokenExpiresAt &&
+					!oauthManualRevoked
 				: expectedBearerToken === undefined || authorization === `Bearer ${expectedBearerToken}`
 			const sessionIdHeader = request.headers["mcp-session-id"]
 			const sessionId = typeof sessionIdHeader === "string" ? sessionIdHeader : undefined
