@@ -8151,7 +8151,9 @@ describe("newSession skill commands", () => {
 		const fake = new FakeAgentSession(id, dir)
 		fake.resourceLoader = {
 			...makeSkillLoader(skills),
-			reload: async () => {
+			// The refresh sweep calls refreshSkills (the ACP adapter's
+			// resources-only discovery), not loader.reload().
+			refreshSkills: async () => {
 				reloads.n++
 			},
 		} as unknown as ResourceLoader

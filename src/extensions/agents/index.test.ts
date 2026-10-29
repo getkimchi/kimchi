@@ -160,6 +160,7 @@ vi.mock("./manager/agent-manager.js", () => {
 				getRunningCount: vi.fn().mockReturnValue(0),
 				hasRunning: vi.fn().mockReturnValue(false),
 				detachToBackground: vi.fn().mockReturnValue(false),
+				detachRemoteRuns: vi.fn(),
 			}
 			return manager
 		}),
@@ -172,7 +173,8 @@ vi.mock("./manager/agent-manager.js", () => {
 	}
 })
 
-vi.mock("./telemetry/index.js", () => ({
+vi.mock("./telemetry/index.js", async (importOriginal) => ({
+	trySessionId: (await importOriginal<typeof import("../telemetry/index.js")>()).trySessionId,
 	trackSubagentSpawned: vi.fn().mockResolvedValue(undefined),
 	trackRemoteExecution: vi.fn(),
 }))
@@ -1021,7 +1023,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 			resultConsumed: false,
 			result: "remote result",
 			triggersRemoteCompletion: true,
-			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify: vi.fn() } },
 			remoteOrigin: "plan",
 			acpSessionId: "acp-1",
 			startedAt,
@@ -1061,7 +1063,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 		const record = {
 			...makeCloudRecord(5_000),
 			fermentId: "ferment-1",
-			spawnCtx: { hasUI: true, ui: { notify } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify } },
 		}
 		fireTurnEnd(pi, "aborted")
 		manager.onComplete(record)
@@ -1346,7 +1348,7 @@ describe("remote run session resume (persisted across kimchi restarts)", () => {
 			resultConsumed: false,
 			result: "remote result",
 			triggersRemoteCompletion: true,
-			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			spawnCtx: { hasUI: true, sessionManager: { getSessionId: () => "spawn-session" }, ui: { notify: vi.fn() } },
 			remote: true,
 			remoteSession: RUNNING.remoteSession,
 			acpSessionId: "remote-acp-1",
@@ -2073,5 +2075,78 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 
 		const record = makeRunningRecord({ status: "completed", result: "done", completedAt: Date.now() })
 		expect(() => manager.onComplete(record)).toThrowError("transcript disk full")
+	})
+})
+
+describe("remote completion ownership during session replacement", () => {
+	beforeEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("retains the finished result when shutdown interrupts its completion menu", async () => {
+		const pi = createExtensionApi()
+		const live = createLiveContext({ mode: "tui" })
+		const menu = deferred<void>()
+		vi.mocked(handleRemoteCompletion).mockReturnValueOnce(menu.promise)
+		agentsExtension(pi.api)
+		latestManagerInstance().onComplete(
+			makeRunningRecord({
+				status: "completed",
+				result: "saved work",
+				remote: true,
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "remote-1",
+					wsUrl: "ws://test",
+					host: "test",
+					cwd: "/remote",
+				},
+				acpSessionId: "remote-acp-1",
+				triggersRemoteCompletion: true,
+				spawnCtx: live.ctx,
+			}),
+		)
+		expect(pi.getAppendedEntries<RemoteRunState>("remote_run:state").at(-1)).toMatchObject({
+			completionPending: true,
+			result: "saved work",
+		})
+
+		await pi.emit("session_shutdown", { reason: "new" }, live.ctx)
+		live.invalidate()
+		pi.invalidate()
+		menu.resolve()
+		await menu.promise
+		await Promise.resolve()
+		expect(pi.getAppendedEntries<RemoteRunState>("remote_run:state")).toHaveLength(1)
+	})
+
+	it("acknowledges the saved completion after the user handles its menu", async () => {
+		const pi = createExtensionApi()
+		const ctx = createLiveContext({ mode: "tui" }).ctx
+		agentsExtension(pi.api)
+		latestManagerInstance().onComplete(
+			makeRunningRecord({
+				status: "completed",
+				result: "saved work",
+				remote: true,
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "remote-1",
+					wsUrl: "ws://test",
+					host: "test",
+					cwd: "/remote",
+				},
+				acpSessionId: "remote-acp-1",
+				triggersRemoteCompletion: true,
+				spawnCtx: ctx,
+				gitWorkflow: { branch: "test-branch" },
+			}),
+		)
+		await vi.waitFor(() =>
+			expect(pi.getAppendedEntries<RemoteRunState>("remote_run:state").at(-1)).toMatchObject({
+				completionPending: false,
+			}),
+		)
 	})
 })

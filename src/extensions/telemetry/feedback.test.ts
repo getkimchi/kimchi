@@ -21,12 +21,18 @@ const TEST_TRACE = { "request.trace_id": "aaaabbbbccccddddeeeeffff00001111", "re
 interface FakeCtx {
 	emit: ReturnType<typeof vi.fn>
 	getTraceAttributes: () => Record<string, string>
+	config: { enabled: boolean; endpoint: string }
 }
 
 function enableTelemetry(traceAttrs: Record<string, string> | null = TEST_TRACE): FakeCtx {
-	const ctx: FakeCtx = { emit: vi.fn(), getTraceAttributes: () => traceAttrs ?? {} }
-	vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
-	vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(ctx as never)
+	const ctx: FakeCtx = {
+		emit: vi.fn(),
+		getTraceAttributes: () => traceAttrs ?? {},
+		config: { enabled: true, endpoint: "https://test.example.com/logs" },
+	}
+	// The seam feedback resolves its instance through (session-keyed registry
+	// with last-initialized fallback). Mocking it hands the test the fake ctx.
+	vi.spyOn(telemetryIndex, "resolveSessionTelemetryCtx").mockReturnValue(ctx as never)
 	return ctx
 }
 
@@ -54,10 +60,9 @@ function attrs(record: LogRecord): Record<string, string> {
 
 /** Real emit path (common attrs incl. `model` injected) with a chosen selected model. */
 function enableRealTelemetry(currentModel: string): TelemetryContext {
-	const ctx = new TelemetryContext(makeConfig())
+	const ctx = new TelemetryContext(makeConfig({ enabled: true }))
 	ctx.currentModel = currentModel
-	vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(true)
-	vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue(ctx as never)
+	vi.spyOn(telemetryIndex, "resolveSessionTelemetryCtx").mockReturnValue(ctx as never)
 	return ctx
 }
 
@@ -89,8 +94,11 @@ describe("post-turn feedback telemetry", () => {
 
 	it("emits no survey event when telemetry is disabled even if a ctx exists", () => {
 		const emit = vi.fn()
-		vi.spyOn(telemetryIndex, "_isTelemetryEnabled").mockReturnValue(false)
-		vi.spyOn(telemetryIndex, "_getTelemetryCtx").mockReturnValue({ emit } as never)
+		vi.spyOn(telemetryIndex, "resolveSessionTelemetryCtx").mockReturnValue({
+			emit,
+			getTraceAttributes: () => ({}),
+			config: { enabled: false, endpoint: "" },
+		} as never)
 
 		trackFeedback({ sentiment: "positive", reason: "x", reasonType: "predefined" })
 
@@ -105,7 +113,9 @@ describe("post-turn feedback telemetry", () => {
 
 			trackFeedback({ sentiment: "negative", reason: "Too slow", reasonType: "predefined" })
 
-			expect(_isTelemetryEnabled()).toBe(true)
+			// The resolved instance is the spied seam's return value — the emit
+			// below proves the session resolution handed feedback the fake ctx.
+			expect(telemetryIndex.resolveSessionTelemetryCtx(undefined)).toBe(ctx)
 			expect(ctx.emit).toHaveBeenCalledTimes(1)
 			expect(ctx.emit).toHaveBeenCalledWith("survey_answered", {
 				survey_id: RATING_SURVEY_ID,

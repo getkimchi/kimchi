@@ -24,6 +24,8 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
+import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
@@ -43,7 +45,12 @@ import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
+import {
+	type RemoteExecutionStats,
+	trackRemoteExecution,
+	trackSubagentSpawned,
+	trySessionId,
+} from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -63,7 +70,7 @@ import {
 import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
-import type { RemoteSessionMeta } from "./manager/remote-agent-runner.js"
+import { deleteRemoteSession, type RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
@@ -1137,13 +1144,27 @@ export default function (pi: ExtensionAPI) {
 		lastUserAbortAt = Date.now()
 	})
 
+	async function retirePlainRemote(record: AgentRecord): Promise<void> {
+		if (record.gitWorkflow || !record.remoteSession) return
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (apiKey)
+			await deleteRemoteSession(record.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT }).catch(
+				(err) => {
+					console.warn(`[agents] failed to retire remote session: ${err}`)
+				},
+			)
+	}
+
+	let sessionShuttingDown = false
 	const manager = new AgentManager(
 		(record) => {
+			if (record.remote && sessionShuttingDown) return
 			const retryCandidate = budgetRetryCandidates.get(record.id)
 			budgetRetryCandidates.delete(record.id)
 			blockBudgetRetryIfNeeded(record, retryCandidate)
 
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
+			const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
 			const eventData = buildEventData(record)
 			if (isError) {
 				emitSubagentEvent("subagents:failed", eventData)
@@ -1154,8 +1175,9 @@ export default function (pi: ExtensionAPI) {
 			appendSubagentRecordSafe(record)
 			// Overwrite the persisted running state with the terminal outcome — a
 			// later session resume must not reattach to a finished run.
+			let completionState: RemoteRunState | undefined
 			if (record.remote && record.acpSessionId && record.remoteSession) {
-				persistRemoteRunStateSafe({
+				completionState = {
 					id: record.id,
 					description: record.description,
 					remoteSession: record.remoteSession,
@@ -1171,7 +1193,12 @@ export default function (pi: ExtensionAPI) {
 							: record.status === "completed" || record.status === "steered"
 								? "completed"
 								: "stopped",
-				})
+					...(record.triggersRemoteCompletion && !isError && !userAbortedRun
+						? { completionPending: true, result: record.result ?? "" }
+						: {}),
+				}
+				persistRemoteRunStateSafe(completionState)
+				if (!isError && !completionState.completionPending) void retirePlainRemote(record)
 			}
 
 			// A consumed result normally suppresses the completion surface — but
@@ -1209,6 +1236,7 @@ export default function (pi: ExtensionAPI) {
 					isError ? "failed" : "completed",
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
+					trySessionId(record.spawnCtx),
 				)
 				// spawnCtx is captured at spawn time — don't fall back to a stale
 				// global context.
@@ -1216,7 +1244,6 @@ export default function (pi: ExtensionAPI) {
 				// A user abort (Escape) after this agent started means the user opted
 				// out of the cloud run — it finishes on its own, but its completion is
 				// surfaced nowhere.
-				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
 				if (isError) {
 					// Errored runs have no result to review/sync — no completion
 					// dropdown. handleRemoteFailure notifies the user (or steers a
@@ -1244,12 +1271,19 @@ export default function (pi: ExtensionAPI) {
 						fermentId: record.fermentId,
 						gitWorkflow: record.gitWorkflow,
 						recoveryNote: record.recoveryNote,
-					}).catch((err) => {
-						currentUi?.notify(
-							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
-							"warning",
-						)
 					})
+						.then(async () => {
+							if (sessionShuttingDown || !completionState) return
+							persistRemoteRunStateSafe({ ...completionState, completionPending: false })
+							await retirePlainRemote(record)
+						})
+						.catch((err) => {
+							if (isStaleCtxError(err)) return
+							currentUi?.notify(
+								`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+								"warning",
+							)
+						})
 				} else if (!userAbortedRun) {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
 				} else if (record.fermentId) {
@@ -1470,6 +1504,8 @@ export default function (pi: ExtensionAPI) {
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
+		sessionShuttingDown = true
+		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
 		unsubKill?.()
@@ -1532,7 +1568,11 @@ export default function (pi: ExtensionAPI) {
 				continue
 			}
 			agentActivity.set(run.id, bgState)
-			ctx.ui.notify?.(`Resumed remote cloud agent: ${run.description} — still running in the sandbox`)
+			ctx.ui.notify?.(
+				outcome === "completed"
+					? `Remote cloud agent result restored: ${run.description}`
+					: `Resumed remote cloud agent: ${run.description} — still running in the sandbox`,
+			)
 		}
 		widget.ensureTimer()
 		widget.update()

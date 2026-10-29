@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { _getTelemetryCtx, _isTelemetryEnabled } from "./index.js"
+import { resolveSessionTelemetryCtx } from "./index.js"
+import type { TelemetryContext } from "./session-context.js"
 import { emitSurveyAnswered, type SurveyTelemetryDefinition } from "./survey.js"
 
 // PostHog survey definitions (created in PostHog on 2026-09-21 — do NOT create
@@ -61,6 +62,12 @@ export function clampReason(reason: string): { value: string; truncated: boolean
 	return { value: reason.slice(0, MAX_REASON_LENGTH), truncated: true }
 }
 
+/** Enablement check on the resolved instance (same policy-filtered config
+ *  the telemetry factory gated on at construction). */
+function isFeedbackCtxEnabled(ctx: TelemetryContext | undefined): ctx is TelemetryContext {
+	return !!ctx && ctx.config.enabled && !!ctx.config.endpoint
+}
+
 /**
  * Emit a `survey_answered` event for the post-turn thumbs up/down rating.
  *
@@ -70,6 +77,10 @@ export function clampReason(reason: string): { value: string; truncated: boolean
  * verbatim so the team can act on what users actually report; `reason_type`
  * marks which reasons are free-form (may contain file paths, hostnames or
  * pasted code) so downstream pipelines can treat them differently.
+ *
+ * `sessionId` attributes the record to the session that produced the rating
+ * (trace attrs are session-scoped); omitted, it falls back to the
+ * last-initialized instance.
  */
 export function trackFeedback(args: {
 	sentiment: "positive" | "negative"
@@ -79,10 +90,12 @@ export function trackFeedback(args: {
 	 * virtual model was used. Its presence implies routing — no separate
 	 * was-routed flag is emitted. Omitted otherwise. */
 	routingModelId?: string
+	/** Session id of the rated turn — resolves the originating session's
+	 *  telemetry instance (trace attrs, turn state). */
+	sessionId?: string
 }): void {
-	if (!_isTelemetryEnabled()) return
-	const ctx = _getTelemetryCtx()
-	if (!ctx) return
+	const ctx = resolveSessionTelemetryCtx(args.sessionId)
+	if (!isFeedbackCtxEnabled(ctx)) return
 	const reason = clampReason(args.reason)
 	emitSurveyAnswered(ctx, {
 		survey: POST_TURN_RATING_SURVEY,
@@ -108,10 +121,15 @@ export function trackFeedback(args: {
  * intentionally not emitted — whether to attach `model_name` in addition to
  * `model_id` is an open product question.
  */
-export function trackModelSwitchFeedback(args: { reason: string; modelName: string; modelId: string }): void {
-	if (!_isTelemetryEnabled()) return
-	const ctx = _getTelemetryCtx()
-	if (!ctx) return
+export function trackModelSwitchFeedback(args: {
+	reason: string
+	modelName: string
+	modelId: string
+	/** Session id of the switch — resolves the originating session's instance. */
+	sessionId?: string
+}): void {
+	const ctx = resolveSessionTelemetryCtx(args.sessionId)
+	if (!isFeedbackCtxEnabled(ctx)) return
 	const reason = clampReason(args.reason)
 	emitSurveyAnswered(ctx, {
 		survey: MODEL_SWITCH_SURVEY,

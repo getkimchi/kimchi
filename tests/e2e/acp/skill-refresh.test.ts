@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, describe, expect, it } from "vitest"
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { commandNames, newSession } from "./support/scenarios.js"
+import { commandNames, newSession, prompt } from "./support/scenarios.js"
 
 const WATCHER_TIMEOUT_MS = 20_000
 
@@ -111,6 +111,48 @@ describe("ACP integration — skill change re-advertises palettes", () => {
 				if (!gone) await delay(100)
 			}
 			expect(gone).toBe(true)
+		},
+		STARTUP_TIMEOUT_MS + WATCHER_TIMEOUT_MS,
+	)
+
+	it(
+		"serves the refreshed skill list in the next request's system prompt without restarting anything",
+		async () => {
+			fixture = await startAcpFixture({ artifactName: "skill-refresh-prompt", responses: [{ stream: ["Done."] }] })
+			const sessionId = await newSession(fixture, fixture.workDir)
+			await waitForBaseline(fixture, sessionId)
+
+			const harnessSkills = join(fixture.homeDir, ".config", "kimchi", "harness", "skills")
+			await waitForSkillWatcher(fixture, sessionId, harnessSkills)
+			writeTestSkill(harnessSkills, "e2e-prompt-skill", "E2E prompt-injected skill")
+			expect(await lastUpdateIncludes(fixture, sessionId, "skill:e2e-prompt-skill")).toBe(true)
+
+			// The palette update alone is not enough: the next outgoing model
+			// request must carry the refreshed skill list in its system prompt.
+			// The refresh sweep rebuilds the prompt options against the committed
+			// skills snapshot — no session restart, no extension reload (the
+			// single-load contract: same runner, same tool set).
+			const result = await prompt(fixture, sessionId, "say done")
+			expect(result.stopReason, "turn stop reason").toBe("end_turn")
+
+			// Select the CONVERSATION request (the one carrying the user's
+			// prompt) — a session-title namer request races alongside it.
+			const chatRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.endsWith("/chat/completions") &&
+					request.body !== null &&
+					typeof request.body === "object" &&
+					Array.isArray((request.body as { messages?: unknown[] }).messages) &&
+					(request.body as { messages: Array<{ role: string; content: unknown }> }).messages.some(
+						(m) => m.role === "user" && JSON.stringify(m.content).includes("say done"),
+					),
+			)
+			expect(chatRequests.length).toBeGreaterThan(0)
+			const first = chatRequests[0]
+			const messages = (first?.body as { messages?: Array<{ role: string; content: unknown }> })?.messages
+			const system = messages?.find((m) => m.role === "system")
+			const systemText = typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "")
+			expect(systemText).toContain("e2e-prompt-skill")
 		},
 		STARTUP_TIMEOUT_MS + WATCHER_TIMEOUT_MS,
 	)

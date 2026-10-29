@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { getActiveFerment } from "../ferment/index.js"
-import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown } from "../telemetry/index.js"
+import { trackSurveyAnswered, trackSurveyDismissed, trackSurveyShown, trySessionId } from "../telemetry/index.js"
 import {
 	hasInitialSurveyBeenSeen,
 	INITIAL_SURVEY,
@@ -39,26 +39,33 @@ export default function surveysExtension(options: SurveysExtensionOptions = {}) 
 			}
 			if (ctx.mode !== "tui") return
 			const trigger = pendingSurveyTrigger
+			const sessionId = trySessionId(ctx)
 			surveyShowing = true
 			const submissionId = randomUUID()
 			void showInitialSurvey(ctx, {
 				configPath: options.configPath,
 				now: options.now,
 				trigger,
-				onShown: (shownTrigger) => trackSurveyShown({ survey: INITIAL_SURVEY, trigger: shownTrigger }),
+				onShown: (shownTrigger) => trackSurveyShown({ survey: INITIAL_SURVEY, trigger: shownTrigger }, sessionId),
 				onAnswered: (answerId: InitialSurveyAnswerId, answeredTrigger) =>
-					trackSurveyAnswered({
-						survey: INITIAL_SURVEY,
-						answerId,
-						submissionId,
-						trigger: answeredTrigger,
-					}),
+					trackSurveyAnswered(
+						{
+							survey: INITIAL_SURVEY,
+							answerId,
+							submissionId,
+							trigger: answeredTrigger,
+						},
+						sessionId,
+					),
 				onDismissed: (reason: InitialSurveyDismissReason, dismissedTrigger) =>
-					trackSurveyDismissed({
-						survey: INITIAL_SURVEY,
-						reason,
-						trigger: dismissedTrigger,
-					}),
+					trackSurveyDismissed(
+						{
+							survey: INITIAL_SURVEY,
+							reason,
+							trigger: dismissedTrigger,
+						},
+						sessionId,
+					),
 			})
 				.catch((err: unknown) => {
 					ctx.ui.notify(`Survey failed: ${err instanceof Error ? err.message : String(err)}`, "warning")

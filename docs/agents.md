@@ -271,3 +271,16 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
+
+## Remote runs and session replacement
+
+Starting a new session, resuming another session, or reloading extensions detaches
+local observation of remote agents. It does not cancel their work on the worker.
+Local subagents are stopped during shutdown. Explicitly stopping a remote agent
+still cancels its remote turn.
+
+Remote runs belong to their originating session. Resuming that session reattaches
+to work still running on the worker, or restores a saved result and its completion
+menu. Finished output is persisted as `remote_run:state` with `completionPending`
+and `result` until the menu is handled. Plain remote sessions are retired after
+the menu, or after returning a foreground result; PR-intent sessions follow their review, steer, and terminal-action lifecycle.

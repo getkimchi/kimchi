@@ -7,7 +7,6 @@ import {
 	type AgentSessionEvent,
 	type CreateAgentSessionOptions,
 	createAgentSession,
-	DefaultResourceLoader,
 	type ExtensionAPI,
 	getAgentDir,
 	type InlineExtension,
@@ -55,6 +54,7 @@ import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.j
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
@@ -524,7 +524,16 @@ ${skillLines}`
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
-	const loader = new DefaultResourceLoader({
+	// SubagentResourceLoader reads the system prompt live via the
+	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
+	// final active-tool list is known, reassigning `systemPrompt` and calling
+	// session.setActiveToolsByName() is enough for the session to rebuild its
+	// prompt options from the current value — NO second loader.reload(). That
+	// second reload used to exist only to re-evaluate systemPromptOverride, and
+	// it re-ran every inline extension factory against the loader's shared
+	// event bus, leaving orphaned duplicate copies whose bus subscriptions
+	// duplicated channel events (e.g. 2× subagent.bash_clamped telemetry).
+	const loader = new SubagentResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
 		noExtensions: effectiveExtensions === false,
@@ -532,7 +541,7 @@ ${skillLines}`
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		systemPromptOverride: () => systemPrompt,
+		readSystemPrompt: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
 		extensionFactories,
 	})
@@ -594,12 +603,14 @@ ${skillLines}`
 			activeTools.push(WORKER_REPORT_TOOL_NAME)
 		}
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
+		// No loader.reload() here: SubagentResourceLoader reads the prompt live
+		// on every getSystemPrompt() call, so reassigning `systemPrompt` above
+		// is all setActiveToolsByName needs to rebuild the session's prompt
+		// options from the final tool list.
 		session.setActiveToolsByName(activeTools)
 	} else {
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 

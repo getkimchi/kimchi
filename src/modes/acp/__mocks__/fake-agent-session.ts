@@ -47,6 +47,7 @@ export class BaseFakeAgentSession {
 	}
 
 	getToolDefinition = vi.fn((_name: string) => undefined)
+	getActiveToolNames = vi.fn(() => ["read", "bash"])
 	setActiveToolsByName = vi.fn()
 	subscribe = () => () => {}
 	async bindExtensions(): Promise<void> {}

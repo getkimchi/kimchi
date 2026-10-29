@@ -40,13 +40,13 @@ describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 
 function makeSession(opts: {
 	skills: Array<{ name: string; description?: string; filePath: string }>
-	reloads?: { n: number }
+	refreshes?: { n: number }
 }): AgentSession {
 	const fake = new BaseFakeAgentSession("acp-test-session")
 	fake.resourceLoader = makeResourceLoader({
 		skills: opts.skills,
-		onReload: () => {
-			if (opts.reloads) opts.reloads.n++
+		onRefreshSkills: () => {
+			if (opts.refreshes) opts.refreshes.n++
 		},
 	})
 	return asSession(fake)
@@ -74,34 +74,42 @@ describe("composeAvailableCommands", () => {
 
 describe("discoverSkillCommandsMap", () => {
 	it("reads the loader's current skills without rescanning", () => {
-		const reloads = { n: 0 }
+		const refreshes = { n: 0 }
 		const session = makeSession({
 			skills: [{ name: "deploy", description: "Ship it", filePath: "/skills/deploy/SKILL.md" }],
-			reloads,
+			refreshes,
 		})
 
 		expect(discoverSkillCommandsMap(session).get("deploy")).toMatchObject({ name: "deploy" })
-		expect(reloads.n).toBe(0)
+		expect(refreshes.n).toBe(0)
 	})
 })
 
 describe("reloadSkillCommandsMap", () => {
-	it("rescans the loader before discovering skills", async () => {
-		const reloads = { n: 0 }
+	it("refreshes skills through the adapter before discovering them", async () => {
+		const refreshes = { n: 0 }
 		const session = makeSession({
 			skills: [{ name: "deploy", description: "Ship it", filePath: "/skills/deploy/SKILL.md" }],
-			reloads,
+			refreshes,
 		})
 
 		expect((await reloadSkillCommandsMap(session)).get("deploy")).toBeDefined()
-		expect(reloads.n).toBe(1)
+		// One resources-only refresh — never a loader.reload(), which would
+		// re-run every extension factory behind the sweep's back.
+		expect(refreshes.n).toBe(1)
+		// The prompt options are rebuilt against the committed snapshot
+		// (public API, same active list — no tool-set change).
+		expect(session.setActiveToolsByName).toHaveBeenCalledWith(session.getActiveToolNames())
 	})
 
-	it("fails loudly when the private resource-refresh API disappears (upstream rename guard)", async () => {
-		const session = makeSession({ skills: [] })
-		;(session as unknown as Record<string, unknown>).extendResourcesFromExtensions = undefined
+	it("fails loudly when the session loader is not the ACP adapter (wiring drift guard)", async () => {
+		const fake = new BaseFakeAgentSession("acp-test-session")
+		fake.resourceLoader = makeResourceLoader({ skills: [] })
+		// Simulate wiring drift: the loader lost its refreshSkills operation.
+		const drifty = fake.resourceLoader as unknown as Record<string, unknown>
+		drifty.refreshSkills = undefined
 
-		await expect(reloadSkillCommandsMap(session)).rejects.toThrow(/extendResourcesFromExtensions/)
+		await expect(reloadSkillCommandsMap(asSession(fake))).rejects.toThrow(/refreshSkills/)
 	})
 })
 
@@ -119,7 +127,7 @@ describe("createCommandsRefresher", () => {
 		const session = new BaseFakeAgentSession("acp-test-session")
 		session.resourceLoader = makeResourceLoader({
 			skills,
-			onReload: () => {
+			onRefreshSkills: () => {
 				reloads.n++
 				skills.push({ name: `s${reloads.n}`, description: "", filePath: `/s/s${reloads.n}/SKILL.md` })
 				return new Promise<void>((r) => {
@@ -172,7 +180,7 @@ describe("createCommandsRefresher", () => {
 	it("a failed reload keeps that session's palette but does not stop the sweep", async () => {
 		const failingSession = new BaseFakeAgentSession("s-bad")
 		failingSession.resourceLoader = makeResourceLoader({
-			onReload: () => {
+			onRefreshSkills: () => {
 				throw new Error("boom")
 			},
 		})
@@ -222,7 +230,7 @@ describe("createCommandsRefresher", () => {
 		const session = new BaseFakeAgentSession("acp-test-session")
 		session.resourceLoader = makeResourceLoader({
 			skills,
-			onReload: () => {
+			onRefreshSkills: () => {
 				reloads.n++
 				skills.push({ name: `s${reloads.n}`, description: "", filePath: `/s/s${reloads.n}/SKILL.md` })
 			},

@@ -8,7 +8,7 @@ import { loadConfig } from "../../../config.js"
 import { resolveWorkspaceSpec } from "../../../sandbox/cloud/spec.js"
 import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
-import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
+import { type AcpSessionCallbacks, AcpSessionDetachedError } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
@@ -43,6 +43,8 @@ import {
 import {
 	attachRemoteAgent,
 	continueRemoteAgent,
+	deleteRemoteSession,
+	discardLiveKeptAcpClient,
 	isRemoteSessionConnected,
 	type RemoteSessionMeta,
 	runRemoteAgent,
@@ -164,6 +166,9 @@ Do not perform more task work, edit files, explore, or run verification. Based o
 }
 
 export class AgentManager {
+	private disposed = false
+	private remoteSignals = new WeakMap<AgentRecord, AbortSignal>()
+	private remoteDetachControllers = new WeakMap<AgentRecord, AbortController>()
 	private agents = new Map<string, AgentRecord>()
 	private runtimeCleanups = new WeakMap<AgentRecord, () => void>()
 	private activeResumePromises = new WeakMap<AgentRecord, Promise<unknown>>()
@@ -187,6 +192,33 @@ export class AgentManager {
 		this.onCompact = onCompact
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
+	}
+
+	private remoteSignal(record: AgentRecord): AbortSignal {
+		let controller = this.remoteDetachControllers.get(record)
+		if (!controller) {
+			controller = new AbortController()
+			this.remoteDetachControllers.set(record, controller)
+			if (this.disposed) controller.abort(new AcpSessionDetachedError())
+		}
+		let signal = this.remoteSignals.get(record)
+		if (!signal) {
+			signal = record.abortController
+				? AbortSignal.any([record.abortController.signal, controller.signal])
+				: controller.signal
+			this.remoteSignals.set(record, signal)
+		}
+		return signal
+	}
+
+	/** End local observation while leaving worker work available for session resume. */
+	detachRemoteRuns(): void {
+		for (const record of this.agents.values()) {
+			if (!record.remote) continue
+			this.remoteSignal(record)
+			this.remoteDetachControllers.get(record)?.abort(new AcpSessionDetachedError())
+			if (record.remoteSession) discardLiveKeptAcpClient(record.remoteSession)
+		}
 	}
 
 	setMaxConcurrent(n: number) {
@@ -376,7 +408,7 @@ export class AgentManager {
 
 						if (record.isBackground) {
 							this.runningBackground--
-							this.onComplete?.(record)
+							if (!this.disposed) this.onComplete?.(record)
 							this.drainQueue()
 						}
 						return finalText
@@ -391,7 +423,7 @@ export class AgentManager {
 
 						if (record.isBackground) {
 							this.runningBackground--
-							this.onComplete?.(record)
+							if (!this.disposed) this.onComplete?.(record)
 							this.drainQueue()
 						}
 						return ""
@@ -467,11 +499,11 @@ export class AgentManager {
 	/** Shared completion mapping for remote runs: syncs the record with the
 	 *  final meta + recovery note, whitelists stop reasons, and shapes the
 	 *  RunResult the manager machinery consumes. */
-	private _remoteCompletedResult(
+	private async _remoteCompletedResult(
 		record: AgentRecord,
 		remoteSession: RemoteAgentSession,
 		result: Awaited<ReturnType<typeof runRemoteAgent>>,
-	): RemoteRunResult {
+	): Promise<RemoteRunResult> {
 		record.remoteSession = result.remoteSession
 		if (result.recoveryNote) {
 			record.recoveryNote = result.recoveryNote
@@ -492,6 +524,16 @@ export class AgentManager {
 		// are failures, not completions. "cancelled" maps to aborted below.
 		if (result.stopReason !== "end_turn" && result.stopReason !== "recovered" && result.stopReason !== "cancelled") {
 			throw new Error(`remote agent stopped unexpectedly (stopReason: ${result.stopReason})`)
+		}
+
+		if (!record.isBackground && !record.gitWorkflow && !this.remoteSignal(record).aborted) {
+			const apiKey = resolveGatewayCredentials(loadConfig()).token
+			if (apiKey)
+				await deleteRemoteSession(result.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT }).catch(
+					(err) => {
+						console.warn(`[agent-manager] failed to retire remote session: ${err}`)
+					},
+				)
 		}
 
 		return {
@@ -528,7 +570,7 @@ export class AgentManager {
 		const result = await continueRemoteAgent({
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: record.abortController?.signal,
+			signal: this.remoteSignal(record),
 			remoteSession: continuation.remoteSession,
 			acpSessionId: continuation.acpSessionId,
 			prompt,
@@ -578,7 +620,7 @@ export class AgentManager {
 
 		const workspaces = await listWorkspaces(apiKey, {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: record.abortController?.signal,
+			signal: this.remoteSignal(record),
 		})
 		// Match a workspace whose name matches the current repo dir (same convention
 		// as /teleport, which names workspaces by basename(cwd)). If no match is
@@ -621,16 +663,18 @@ export class AgentManager {
 			gitCredential = undefined
 		}
 
+		this.remoteSignal(record).throwIfAborted()
 		const remoteSession = this._prepareRemoteAdapter(record, prompt, options)
 
 		let baselineCaptureAttempted = false
 		const result = await runRemoteAgent(workspaceId, prompt, {
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: record.abortController?.signal,
-			// PR-intent runs keep the remote session after completion — the
-			// review/steer loop attaches to it (deleted at terminal actions).
-			keepAlive: record.gitWorkflow !== undefined,
+			signal: this.remoteSignal(record),
+			// Keep the result recoverable until the originating session handles
+			// its completion menu. Plain runs are retired after that menu;
+			// PR-intent runs are retired by their terminal actions.
+			keepAlive: true,
 			gitDetails,
 			gitCredential,
 			localPath: remoteCwd,
@@ -671,7 +715,7 @@ export class AgentManager {
 								endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 							})
 							const baseline = await captureBaseline(connection, {
-								signal: record.abortController?.signal,
+								signal: this.remoteSignal(record),
 								timeoutMs: 45_000,
 							})
 							record.gitWorkflow.baseSha = baseline.baseSha
@@ -725,7 +769,7 @@ export class AgentManager {
 				record.status = "error"
 				record.error = err instanceof Error ? err.message : String(err)
 				record.completedAt = Date.now()
-				this.onComplete?.(record)
+				if (!this.disposed) this.onComplete?.(record)
 			}
 		}
 	}
@@ -1008,6 +1052,10 @@ export class AgentManager {
 	}
 
 	private removeRecord(id: string, record: AgentRecord): void {
+		if (record.remote) {
+			this.remoteDetachControllers.get(record)?.abort(new AcpSessionDetachedError())
+			if (record.remoteSession) discardLiveKeptAcpClient(record.remoteSession)
+		}
 		this.cleanupRecordRuntime(record)
 		record.session?.dispose?.()
 		record.session = undefined
@@ -1063,6 +1111,7 @@ export class AgentManager {
 	): Promise<string> {
 		return runPromise
 			.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
+				if (this.disposed) return responseText
 				if (record.status !== "stopped") {
 					record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 				}
@@ -1078,12 +1127,13 @@ export class AgentManager {
 
 				if (record.isBackground) {
 					this.runningBackground--
-					this.onComplete?.(record)
+					if (!this.disposed) this.onComplete?.(record)
 					this.drainQueue()
 				}
 				return finalText
 			})
 			.catch((err) => {
+				if (this.disposed || this.remoteSignal(record).reason instanceof AcpSessionDetachedError) return ""
 				if (record.status !== "stopped") {
 					record.status = "error"
 					record.error = err instanceof Error ? err.message : String(err)
@@ -1093,7 +1143,7 @@ export class AgentManager {
 
 				if (record.isBackground) {
 					this.runningBackground--
-					this.onComplete?.(record)
+					if (!this.disposed) this.onComplete?.(record)
 					this.drainQueue()
 				}
 				return ""
@@ -1123,30 +1173,16 @@ export class AgentManager {
 		state: RemoteRunState,
 		ctx: ExtensionContext,
 		options?: { callbacks?: AcpSessionCallbacks },
-	): Promise<"resumed" | "already-watched"> {
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
-
-		// Guard against double-attach: a live WS on the session means another
-		// kimchi process (typically the one that dispatched the run, or an
-		// earlier resume of it) is still watching it. Best-effort: only a
-		// POSITIVE sighting skips — a failed poll falls through to the attach,
-		// whose recovery machinery handles the real session state.
-		if (
-			await isRemoteSessionConnected(state.remoteSession, apiKey, {
-				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			})
-		) {
-			return "already-watched"
-		}
-
+	): Promise<"resumed" | "already-watched" | "completed"> {
+		if (this.disposed) return "already-watched"
 		const abortController = new AbortController()
 		const record: AgentRecord = {
 			id: state.id,
 			type: "Remote-Runner",
 			description: state.description,
 			visibility: "user",
-			status: "running",
+			status: state.status === "completed" ? "completed" : "running",
+			result: state.result,
 			toolUses: 0,
 			startedAt: state.startedAt,
 			abortController,
@@ -1165,6 +1201,20 @@ export class AgentManager {
 			isBackground: true,
 			triggersRemoteCompletion: true,
 		}
+		if (state.status === "completed" && state.completionPending && typeof state.result === "string") {
+			this.agents.set(record.id, record)
+			queueMicrotask(() => {
+				if (!this.disposed) this.onComplete?.(record)
+			})
+			return "completed"
+		}
+
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
+		if (await isRemoteSessionConnected(state.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })) {
+			return "already-watched"
+		}
+		if (this.disposed) return "already-watched"
 		this.agents.set(record.id, record)
 		this.runningBackground++
 
@@ -1176,12 +1226,12 @@ export class AgentManager {
 		const promise = attachRemoteAgent({
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
-			signal: abortController.signal,
+			signal: this.remoteSignal(record),
 			remoteSession: state.remoteSession,
 			acpSessionId: state.acpSessionId,
 			outputFile: state.outputFile,
-			// A resumed PR-intent run keeps the session for the steer loop.
-			keepAlive: state.gitWorkflow !== undefined,
+			// Keep recovered work available until the completion menu is handled.
+			keepAlive: true,
 			onReconnecting: (reconnecting) => {
 				// Mirror the attach state onto the record (same as the in-run
 				// reconnecting flow).
@@ -1284,6 +1334,8 @@ export class AgentManager {
 	}
 
 	dispose() {
+		this.disposed = true
+		this.detachRemoteRuns()
 		clearInterval(this.cleanupInterval)
 		this.queue = []
 		for (const record of this.agents.values()) {

@@ -35,7 +35,11 @@ const CTRL_R = "\x12"
 // agent_settled arming works out of the box; pass [] for a fresh session.
 function makeApi(entries: SessionEntry[] = settledEntries()) {
 	const harness = createExtensionApi()
-	const ctx = createContext({ hasUI: true, mode: "tui", sessionManager: { getEntries: () => entries } })
+	const ctx = createContext({
+		hasUI: true,
+		mode: "tui",
+		sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
+	})
 	return { ...harness, ctx }
 }
 
@@ -93,6 +97,15 @@ const ratingDialogMock = vi.hoisted(() => ({ show: vi.fn() }))
 vi.mock("../telemetry/index.js", () => ({
 	trackFeedback: feedbackMock.trackFeedback,
 	trackModelSwitchFeedback: trackModelSwitchFeedbackMock,
+	// The feedback ctx carries a sessionManager (see makeApi); the guarded
+	// read just unwraps it.
+	trySessionId: (ctx: { sessionManager?: { getSessionId(): string | undefined } }) => {
+		try {
+			return ctx.sessionManager?.getSessionId()
+		} catch {
+			return undefined
+		}
+	},
 }))
 
 vi.mock("./dialog.js", () => ({
@@ -295,7 +308,9 @@ describe("feedbackExtension rating window registry", () => {
 			const entries = settledEntries()
 			tailAssistant(entries).model = "auto"
 			tailAssistant(entries).responseModel = "glm-5.3"
-			const resumeCtx = createContext({ sessionManager: { getEntries: () => entries } })
+			const resumeCtx = createContext({
+				sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
+			})
 			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 			await getHandler("session_start")({ reason: "resume" }, resumeCtx)
 			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: true, routedModelId: "glm-5.3" })
@@ -409,6 +424,7 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "negative",
 			reason: "Too slow",
 			reasonType: "predefined",
+			sessionId: "test-session",
 		})
 	})
 
@@ -427,6 +443,7 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "positive",
 			reason: "Solved my task",
 			reasonType: "predefined",
+			sessionId: "test-session",
 		})
 	})
 
@@ -520,7 +537,11 @@ describe("feedbackExtension state machine", () => {
 		// The replacement session's log rates nothing — the reset wins over any
 		// invitation carried across. (A log that rates something re-arms by
 		// design; that's the restore path, not a leak.)
-		const freshCtx = createContext({ hasUI: true, mode: "tui", sessionManager: { getEntries: () => [] } })
+		const freshCtx = createContext({
+			hasUI: true,
+			mode: "tui",
+			sessionManager: { getEntries: () => [], getSessionId: () => "test-session" },
+		})
 		await getHandler("session_start")({ reason: "resume" }, freshCtx)
 
 		await getShortcutHandler(Key.ctrl("1"))?.(freshCtx)
@@ -733,6 +754,7 @@ describe("feedbackExtension state machine", () => {
 			reason: "Better at code",
 			modelName: "Concrete",
 			modelId: "concrete-model",
+			sessionId: "test-session",
 		})
 	})
 
@@ -792,6 +814,7 @@ describe("feedbackExtension state machine", () => {
 			reason: "second try",
 			modelName: "Concrete",
 			modelId: "concrete-model",
+			sessionId: "test-session",
 		})
 	})
 
@@ -1130,6 +1153,7 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 			reason: "Too slow",
 			reasonType: "predefined",
 			routingModelId: undefined,
+			sessionId: "test-session",
 		})
 	})
 

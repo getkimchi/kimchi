@@ -99,6 +99,7 @@ describe("KimchiAcpAgent extMethod feedback", () => {
 			reason: "Auto picked the right model",
 			reasonType: "predefined",
 			routingModelId: "glm-5.3",
+			sessionId: "sess-1",
 		})
 	})
 
