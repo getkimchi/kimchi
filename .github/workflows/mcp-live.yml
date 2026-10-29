@@ -10,7 +10,7 @@ name: MCP live
 # lifecycle — credentialed: proves an expired Google-backed MCP access
 # token is renewed silently (tools listed, no browser consent, stored
 # expiry advanced) using a dedicated test account's refresh token. Runs on
-# pull requests labelled `run-live` (labelling re-triggers the workflow)
+# pull requests labelled `mcp-e2e-live` (labelling re-triggers the workflow)
 # and on manual dispatch.
 #
 # Neither job is a required merge check: a failure shows on the PR but does
@@ -24,7 +24,7 @@ name: MCP live
 
 on:
   pull_request:
-    # `labeled`/`unlabeled` re-trigger the workflow so adding `run-live` to
+    # `labeled`/`unlabeled` re-trigger the workflow so adding `mcp-e2e-live` to
     # an existing PR runs the lifecycle job.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     paths-ignore:
@@ -100,7 +100,7 @@ jobs:
   lifecycle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run-live')) }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'mcp-e2e-live')) }}
     steps:
       - uses: actions/checkout@v4
         with:
