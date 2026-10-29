@@ -19,6 +19,13 @@ name: MCP live
 # fork pull requests skip the live steps entirely; the `skip-live-mcp`
 # label skips the probe during provider outages.
 #
+# Concurrency is per job, not per workflow: every label event re-triggers
+# the workflow (paths filters do not apply to labelled/unlabelled), and an
+# unrelated label churning mid-run must not cancel an in-flight credentialed
+# lifecycle run — each one spends the test account's credential. The
+# lifecycle job therefore only runs for label events whose label is
+# `mcp-e2e-live`, and a skipped job never joins its concurrency group.
+#
 # Assertions are limited to deterministic OAuth error contracts, and every
 # probe entry retries once on network errors and 5xx responses.
 
@@ -48,14 +55,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: mcp-live-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: mcp-live-probe-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,7 +106,18 @@ jobs:
   lifecycle:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'mcp-e2e-live')) }}
+    concurrency:
+      group: mcp-live-lifecycle-${{ github.ref }}
+      cancel-in-progress: true
+    # Label events only reach this job when the event's label is `mcp-e2e-live` —
+    # other label churn must neither start a second credentialed run nor cancel
+    # an in-flight one (a skipped job never joins the concurrency group).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(github.event.pull_request.labels.*.name, 'mcp-e2e-live') &&
+       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+        github.event.label.name == 'mcp-e2e-live'))
     steps:
       - uses: actions/checkout@v4
         with:

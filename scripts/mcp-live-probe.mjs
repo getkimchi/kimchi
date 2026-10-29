@@ -24,7 +24,9 @@
  *
  * Entry names appear in this script's output; if the inventory itself is
  * sensitive, choose non-revealing names. Authorize URLs (which carry client
- * ids) are checked and then dropped — they never reach the output matrix.
+ * ids) are checked and then dropped — they never reach the output matrix or
+ * the log: the probe child's stderr is captured and echoed only URL-redacted,
+ * and failure strings carry check names, not URLs.
  *
  * Runs without the variable print a notice and exit 0. `--self-test` runs
  * the pure checks on canned inputs.
@@ -42,6 +44,11 @@ import {
 } from "./mcp-live-support.mjs"
 
 const PROVIDERS_ENV = "MCP_LIVE_PROVIDERS"
+
+/** Strip http(s) URLs from text — they carry client ids and provider hosts from the inventory. */
+function redactText(text) {
+	return text.replace(/https?:\/\/[^\s"'>\]]+/g, "<redacted-url>")
+}
 
 /** OAuth error markers a provider's answer page must not contain. */
 const PROVIDER_ERROR_MARKERS = [
@@ -62,12 +69,14 @@ export function checkAuthorizeUrl(rawUrl, entry) {
 	try {
 		url = new URL(rawUrl)
 	} catch {
-		return [`authorize URL is not parseable: ${redactUrl(rawUrl)}`]
+		return ["authorize URL is not parseable"]
 	}
 	const redirectUri = url.searchParams.get("redirect_uri")
 	if (!redirectUri) failures.push("authorize URL has no redirect_uri parameter")
 	else if (!redirectUriMatchesClass(redirectUri, entry.redirectUriPrefix))
-		failures.push(`redirect_uri host/port does not match the expected class ${entry.redirectUriPrefix}`)
+		failures.push(
+			`redirect_uri does not match the expected class (${redirectClassMismatch(redirectUri, entry.redirectUriPrefix)})`,
+		)
 	if (!url.searchParams.get("state")) failures.push("authorize URL has no state parameter")
 	const challenge = url.searchParams.get("code_challenge")
 	if (!challenge) failures.push("authorize URL has no PKCE code_challenge")
@@ -82,14 +91,23 @@ export function checkAuthorizeUrl(rawUrl, entry) {
 	return failures
 }
 
-/** Redact query strings (they carry client ids and state) — keeps host and path for diagnostics. */
-function redactUrl(rawUrl) {
+/**
+ * Describe why a redirect URI missed its expected class without echoing either
+ * URL — the prefix and the actual redirect both derive from the inventory.
+ */
+function redirectClassMismatch(redirectUri, redirectUriPrefix) {
+	let actual
+	let expected
 	try {
-		const url = new URL(rawUrl)
-		return `${url.origin}${url.pathname}?<redacted>`
+		actual = new URL(redirectUri)
+		expected = new URL(redirectUriPrefix)
 	} catch {
-		return "<unparseable url>"
+		return "unparseable redirect_uri"
 	}
+	if (actual.protocol !== expected.protocol) return "scheme mismatch"
+	if (actual.hostname !== expected.hostname) return "host mismatch"
+	if (expected.port !== "" && actual.port !== expected.port) return "port mismatch"
+	return "class mismatch"
 }
 
 /**
@@ -98,7 +116,8 @@ function redactUrl(rawUrl) {
  */
 export function checkProviderAnswer(answer, baseUrl) {
 	const { status, location, body } = answer
-	if (answer.networkError !== undefined) return { failures: [`network error: ${answer.networkError}`], transient: true }
+	if (answer.networkError !== undefined)
+		return { failures: [`network error: ${redactText(answer.networkError)}`], transient: true }
 	if (status >= 500) return { failures: [`provider answered HTTP ${status}`], transient: true }
 	if (status >= 400) {
 		const marker = PROVIDER_ERROR_MARKERS.find((candidate) => (body ?? "").toLowerCase().includes(candidate))
@@ -154,15 +173,32 @@ export async function captureAuthorizeUrl(entry, options = {}) {
 	}
 	const child = spawn(BINARY, ["mcp", "probe", "--json"], {
 		env: probeChildEnv({ homeDir, binDir }),
-		stdio: ["pipe", "pipe", "inherit"],
+		stdio: ["pipe", "pipe", "pipe"],
 	})
 	const stdout = []
 	child.stdout.on("data", (chunk) => stdout.push(String(chunk)))
+	// The probe's OAuth diagnostics — including the authorize URL — go to stderr.
+	// Echo them URL-redacted so the inventory (hosts, client ids) never reaches
+	// the log; line-buffer so a URL split across chunks cannot slip through.
+	let stderrTail = ""
+	const flushStderrTail = () => {
+		if (stderrTail.length > 0) {
+			process.stderr.write(`${redactText(stderrTail)}\n`)
+			stderrTail = ""
+		}
+	}
+	child.stderr.on("data", (chunk) => {
+		stderrTail += String(chunk)
+		const lines = stderrTail.split("\n")
+		stderrTail = lines.pop() ?? ""
+		for (const line of lines) process.stderr.write(`${redactText(line)}\n`)
+	})
 	child.stdin.end(`${JSON.stringify({ name: "live-probe", server })}\n`)
 	let exitState = null
 	const exited = new Promise((resolveExit) => child.once("exit", (code, signal) => resolveExit({ code, signal })))
 	exited.then((state) => {
 		exitState = state
+		flushStderrTail()
 	})
 	const stop = async () => {
 		if (exitState === null) {
@@ -176,9 +212,10 @@ export async function captureAuthorizeUrl(entry, options = {}) {
 		const startedAt = Date.now()
 		while (Date.now() - startedAt < timeoutMs) {
 			if (exitState !== null) {
-				throw new Error(
-					`probe exited (code=${exitState.code} signal=${exitState.signal}) before opening a browser: ${stdout.join("").slice(-500)}`,
-				)
+				// Redacted probe output goes to the log only — never the matrix.
+				const tail = redactText(stdout.join("").slice(-500)).trim()
+				if (tail) console.error(`probe output: ${tail}`)
+				throw new Error(`probe exited (code=${exitState.code} signal=${exitState.signal}) before opening a browser`)
 			}
 			try {
 				const lines = readFileSync(urlLog, "utf-8").split("\n").filter(Boolean)
@@ -212,7 +249,7 @@ export async function runProviderEntry(entry) {
 		if (transient) result.transient = true
 		return result
 	} catch (error) {
-		result.error = error instanceof Error ? error.message : String(error)
+		result.error = redactText(error instanceof Error ? error.message : String(error))
 		return result
 	}
 }
@@ -275,14 +312,14 @@ function selfTest() {
 		checkAuthorizeUrl(okUrl, { ...googleEntry, redirectUriPrefix: "http://127.0.0.1:" }).filter((failure) =>
 			failure.includes("redirect_uri"),
 		),
-		["redirect_uri host/port does not match the expected class http://127.0.0.1:"],
+		["redirect_uri does not match the expected class (host mismatch)"],
 	)
 	expect(
 		"partial port prefix does not over-match",
 		checkAuthorizeUrl(okUrl, { ...googleEntry, redirectUriPrefix: "http://localhost:198" }).filter((failure) =>
 			failure.includes("redirect_uri"),
 		),
-		["redirect_uri host/port does not match the expected class http://localhost:198"],
+		["redirect_uri does not match the expected class (port mismatch)"],
 	)
 	expect(
 		"unpinned port accepts any port",
@@ -345,6 +382,11 @@ function selfTest() {
 			failures: ["provider answer page contains not registered for this client"],
 			transient: false,
 		},
+	)
+	expect(
+		"redaction strips URLs from text",
+		redactText("see https://as.example/auth?client_id=secret now"),
+		"see <redacted-url> now",
 	)
 	expect("5xx is transient", checkProviderAnswer({ status: 503, body: "" }), {
 		failures: ["provider answered HTTP 503"],
