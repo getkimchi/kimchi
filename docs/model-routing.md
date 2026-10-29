@@ -4,7 +4,7 @@ Auto models are virtual models the Kimchi backend routes itself: you select
 one, every request goes out under the virtual id, and the backend picks and
 serves a concrete model, reporting the pick in the OpenAI response `model`
 field. `auto` and `auto-beta` are current examples. The convention is general:
-a model is routed virtual when it is a `kimchi-dev` catalog model whose id
+a model is considered routed-virtual when it is a `kimchi-dev` catalog model whose id
 starts with `auto` (`isAutoRoutedModel`); concrete models never use that
 namespace.
 
@@ -23,7 +23,7 @@ entries: no special authentication, endpoint, or custom provider.
 
 Every request goes to the backend as the virtual id; the backend selects the
 concrete model, serves the request, and reports the pick in the response
-`model` field. pi-ai surfaces that on the assistant message as
+`model` field. pi-mono surfaces that on the assistant message as
 `responseModel` (upstream, since pi-ai 0.71.0), and the auto-model extension
 (`src/extensions/auto-model/`) uses it to:
 
@@ -65,7 +65,7 @@ that request was a pinned concrete selection the backend redirected. Filtering
 to Auto turns is therefore client-side: key the per-turn label on
 `requestedId`. Today the backend only routes virtual ids (see
 `isRoutableProvider` in the auto-model extension), so a redirected pin is not
-expected; the harness just doesn't assume it away on the client's behalf.
+expected; the harness does not filter it out on the client's behalf.
 
 A client that wants a label on every turn keeps the last pick per session
 and applies it to subsequent messages, the same way it replays the persisted

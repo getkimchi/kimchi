@@ -16,7 +16,7 @@ Available models:
 |-------|------|-----------|------|-------|
 | kimi-k2.6 | heavy | research, plan, review | $$$ | Best reasoning, vision |
 | minimax-m2.7 | standard | build, review | $$ | Best coder |
-| nemotron-3-super | light | build, explore | $ | 1M context, cheapest, weakest at complex code |
+| nemotron-3-super-fp4 | light | build, explore | $ | 1M context, cheapest, weakest at complex code |
 
 ---
 

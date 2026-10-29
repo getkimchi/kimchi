@@ -5,7 +5,7 @@ The interactive TUI emits OSC 7501 program-status sequences (`working` / `blocke
 ## When it is emitted
 
 - **Interactive TUI only.** Print mode (`-p`) and ACP/IDE mode never emit.
-- **Detection-gated.** At TUI startup pi sends an `OSC 7501;?` query and enables emission only if the terminal answers before the primary Device Attributes reply. There are no `TERM` / `TERM_PROGRAM` / `CI` heuristics — no reply means nothing is emitted.
+- **Detection-gated.** At TUI startup pi-tui sends an `OSC 7501;?` query and enables emission only if the terminal answers before the primary Device Attributes reply. There are no `TERM` / `TERM_PROGRAM` / `CI` heuristics — no reply means nothing is emitted.
 - **tmux:** tmux does not answer the query, so emission stays off unless forced.
 
 ## Overrides

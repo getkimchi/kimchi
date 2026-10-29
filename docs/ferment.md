@@ -207,7 +207,7 @@ ferment was `planned` or `running`, exit pauses it before detaching; drafts stay
 drafts, paused ferments stay paused, and completed or abandoned ferments are only
 detached. Exit does not change manual/automated continuation policy.
 
-Sessions resume automatically. When you close and reopen Kimchi with an active ferment, the agent picks up exactly where it left off.
+Sessions resume automatically when you reopen Kimchi with an active ferment.
 
 ### Example flow
 
@@ -655,7 +655,7 @@ Ferment is split into three layers:
 ```
 
 The state machine is pure: same inputs always produce the same outputs, no
-hidden state. This makes it exhaustively testable (58 unit tests cover every
+hidden state. This makes it exhaustively testable (unit tests cover every
 command × prerequisite-state combination) and reusable — a future server-side
 state service would consume the same module.
 

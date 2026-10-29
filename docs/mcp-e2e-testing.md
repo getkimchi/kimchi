@@ -1,6 +1,7 @@
 # MCP end-to-end testing
 
 Kimchi's MCP end-to-end suite runs the real compiled Kimchi client against a deterministic, repository-owned MCP server. It covers both product entry points: PTY-driven TUI sessions and ACP sessions over NDJSON stdio.
+
 ## Architecture
 
 The suite has four cooperating parts:

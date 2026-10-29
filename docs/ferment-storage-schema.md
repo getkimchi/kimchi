@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-08  
 **Status:** Proposed / In Implementation  
-**Scope:** Replaces the overwrite-heavy `FermentStorage` concrete class with an append-only event log + derived snapshot model.
+**Scope:** Replaces the overwrite-heavy `FermentStorage` class with an append-only event log + derived snapshot model.
 
 ## Goals
 

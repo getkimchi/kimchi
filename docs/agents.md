@@ -34,7 +34,7 @@ running or completed agent to view its full conversation in a live overlay.
 
 ## Discovery hierarchy
 
-Agents are discovered from three locations, in priority order (later wins):
+Agents are discovered from three locations, in priority order (highest wins):
 
 | Priority | Location | Scope |
 |---|---|---|
@@ -97,8 +97,8 @@ You are a senior X engineer who...
 ### Field details
 
 - **`models`** — Set of models this persona may use, e.g. `["kimchi-dev/nemotron-3-super-fp4", "kimchi-dev/minimax-m2.7", "kimchi-dev/kimi-k2.6"]`. **List order has no semantics** — it is not a tier ranking. The set is shown to the calling LLM as part of the `Agent` tool description; the LLM picks per spawn using its knowledge of each model's tier/strengths (from the orchestration model registry). If the caller omits `model`, the runtime falls back to the first entry as a stable default — this is **not** a complexity-aware pick, so for non-trivial tasks always pass an explicit `model`. Omit `models` entirely to inherit the parent session's model. For default agents, kimchi resolves `models` from the strength registry at startup; see `default-agents.ts` for the strength-tag mapping.
-- **`tools`** — Omit or set `none` to inherit/disable. Comma-separated lists
-  restrict the agent to a subset.
+- **`tools`** — Omit to inherit all parent tools, or set `none` to disable
+  built-in tools. Comma-separated lists restrict the agent to a subset.
 - **`extensions`** — `true` (default) inherits the parent's MCP and extension
   tools. `false` disables them. A comma-list whitelists specific names.
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list

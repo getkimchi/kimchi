@@ -1,6 +1,6 @@
 # Inspect running Bash commands
 
-Run **`/processes`** while Kimchi is executing a managed Bash command. It replaces the input with a full-width menu, with the conversation visible above. Select a command and press **Enter** to inspect it. Closing restores the input without replaying conversation history.
+Run **`/processes`** while Kimchi is executing a managed Bash command. It replaces the input with a full-width menu; the conversation stays visible above. Select a command and press **Enter** to inspect it. Closing restores the input without replaying conversation history.
 
 The list shows one row per process: its purpose (or command when no purpose was provided), status and elapsed time. It grows as processes start, up to half the terminal height. In fullscreen mode, click a row to inspect it, then click **Script** or **Output** to switch views. The text cursor stays hidden while inspecting.
 
@@ -34,6 +34,6 @@ The Bash tool accepts an optional short `description` alongside `command`. The d
 
 `bash_control` remains the model-facing tool name. `wait` is optional and defaults to an immediate inspection: use `wait: true` to wait for an exit or a bounded checkpoint, and omit it (or pass `wait: false`) to inspect. An optional `handles` list restricts an immediate inspection to the selected commands — only their new output and evidence is returned, unselected commands keep running with their output cursors untouched, and unknown handles are reported individually. `stop_handles` stops selected commands independently of the filter, and a stop-only call needs no `wait`. Commands continue by default, and while any command runs, conflicting write/execute calls receive one concurrency advisory per session. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
 
-Automatic exit results arrive as one compact notification per delivery boundary: exits landing within a short window of each other batch into a single message that carries every terminal result, error, and output. A notice reports only what ended — cohort status belongs to inspection — and an outcome reads as pending until its notification has been acknowledged in the conversation.
+Automatic exit results arrive as one compact notification per delivery boundary: exits that land within a short window batch into a single message that carries every terminal result, error, and output. A notice reports only what ended — cohort status belongs to inspection — and an outcome reads as pending until its notification has been acknowledged in the conversation.
 
 See the [design research](research/bash-visibility.md) for the prior behavior, alternatives and integration rationale.

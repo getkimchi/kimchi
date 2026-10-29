@@ -68,7 +68,7 @@ natively since 2.34.0 (upstream #529, `formatServerNamespace` with a hash
 fallback for long names); a 128-character server name previously produced a
 133-character wire name. The 2.32.1 → 2.34.0 upgrade re-validated the facade
 unit suites (101 MCP facade tests, 464 ACP tests), lint, typechecking (with
-`DOM.AsyncIterable` added for the new `http-ca.ts` per-origin CA support),
+a `DOM.AsyncIterable` lib entry added for the new `http-ca.ts` per-origin CA support),
 and the compiled binary — `mcp keyring-check --json` passes on macOS arm64
 despite 2.34.0's lazy runtime module loading (#576). OAuth credential-store
 layout changes (#560: single-item records on macOS/Linux) are absorbed by
@@ -131,7 +131,7 @@ routed through Apple's `/usr/bin/security` CLI (`SecurityToolEntry`). macOS
 binds a generic-password ACL to the *creating process's* code-signing
 designated requirement, so items written in-process by differently signed
 kimchi binaries (ad-hoc dev builds, the Developer ID CLI, the Studio-bundled
-harness) re-prompted on every cross-signature access — and on every ad-hoc
+harness) re-prompt on every cross-signature access — and on every ad-hoc
 rebuild, since its requirement is the build's cdhash. Items created via the
 `security` tool trust that Apple-signed tool itself, so every calling binary
 accesses them with zero prompts. Payloads are wrapped in a printable-ASCII
