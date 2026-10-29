@@ -123,7 +123,12 @@ test("logs into an HTTP MCP server with OAuth authorization code and PKCE", asyn
 
 			expect(fixture.mcp.hasEvent("oauth_resource_metadata_requested")).toBe(true)
 			expect(fixture.mcp.hasEvent("oauth_server_metadata_requested")).toBe(true)
-			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(true)
+			// Dynamic registration keeps the upstream loopback-IP default; only
+			// fixed-client servers switch to the localhost callback.
+			const dcr = await fixture.mcp.waitForEvent("oauth_client_registered", {
+				description: "dynamic client registration used the default loopback redirect URI",
+			})
+			expect(dcr.redirectUris).toEqual(["http://127.0.0.1:19876/callback"])
 			expect(fixture.mcp.hasEvent("oauth_browser_opened")).toBe(true)
 			expect(fixture.mcp.hasEvent("oauth_browser_completed")).toBe(true)
 			expect(fixture.mcp.hasEvent("http_request", { authorized: true })).toBe(true)
@@ -366,6 +371,132 @@ test("re-auth with a pre-registered client secret reuses the stored redirect URI
 			})
 			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-stored-redirect-secret")
 			trace.step("authenticated MCP call after secret-bearing stored-redirect re-auth verified")
+		},
+	)
+})
+
+test("first auth of a pre-registered client uses the localhost callback", async ({ terminal }) => {
+	// Fixed-client registrations (e.g. Google) list the localhost
+	// callback only. With no stored registration and no redirectUri in config,
+	// the 127.0.0.1 default would be rejected as redirect_uri_mismatch.
+	const echo = gatewayMcpCall("echo", { message: "oauth-first-auth-localhost" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-first-auth-localhost",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-first-auth-localhost" }] },
+							{ message: "oauth-first-auth-localhost" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The first auth used the localhost callback.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed against the localhost redirect URI",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			trace.step("first auth completed against the pre-registered localhost redirect URI")
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The first auth used the localhost callback.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-first-auth-localhost" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-first-auth-localhost")
+		},
+	)
+})
+
+test("re-auth of a pre-registered client whose stored redirect URIs were dropped uses the localhost callback", async ({
+	terminal,
+}) => {
+	// Registrations rewritten by the unpatched 1.3.0 adapter keep the clientId but
+	// lose redirectUris, so there is nothing to reuse and the default must still
+	// be the localhost callback.
+	const echo = gatewayMcpCall("echo", { message: "oauth-dropped-redirect" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-oauth-dropped-redirect",
+			mcp: {
+				transport: "oauth",
+				scenario: "oauth-pre-registered",
+				oauth: { clientId: "kimchi-e2e-pre-registered-client" },
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: oauth-dropped-redirect" }] },
+							{ message: "oauth-dropped-redirect" },
+						),
+					],
+				},
+			},
+			responses: [echo.response, modelReply("The re-auth fell back to the localhost callback.")],
+			seedHome(homeDir) {
+				const agentDir = join(homeDir, ".config", "kimchi", "harness")
+				const config = JSON.parse(readFileSync(join(agentDir, "mcp.json"), "utf8")) as {
+					mcpServers?: { fixture?: { url?: unknown } }
+				}
+				const serverUrl = config.mcpServers?.fixture?.url
+				if (typeof serverUrl !== "string") throw new Error("OAuth fixture config is missing its URL")
+				const account = `sha256-${createHash("sha256").update("fixture").digest("hex")}`
+				const keyringPath = join(
+					agentDir,
+					"mcp-keyring",
+					createHash("sha256").update(`dev.kimchi.mcp.oauth\u0000${account}`).digest("hex"),
+				)
+				mkdirSync(dirname(keyringPath), { recursive: true })
+				writeFileSync(
+					keyringPath,
+					JSON.stringify({
+						clientInfo: {
+							clientId: "kimchi-e2e-pre-registered-client",
+							clientIdIssuedAt: Math.floor(Date.now() / 1_000),
+						},
+						serverUrl,
+					}),
+					{ mode: 0o600 },
+				)
+			},
+		},
+		async (fixture, trace) => {
+			terminal.submit("/mcp-auth fixture")
+			const authorized = await fixture.mcp.waitForEvent("oauth_authorized", {
+				description: "authorization request carried the localhost redirect URI",
+			})
+			expect(authorized.redirectUri).toBe("http://localhost:19876/callback")
+			await fixture.mcp.waitForEvent("oauth_token_issued", {
+				where: { grantType: "authorization_code", pkceVerified: true },
+				description: "token exchange completed against the localhost redirect URI",
+			})
+			await waitForText(terminal, "MCP: Reconnected to fixture", { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("oauth_client_registered")).toBe(false)
+			trace.step("re-auth completed after the stored redirect URIs were dropped")
+
+			terminal.submit("Call the OAuth-protected MCP echo tool")
+			await waitForText(terminal, "The re-auth fell back to the localhost callback.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "oauth-dropped-redirect" } },
+			})
+			expect(toolResultText(fixture.fake.requests, echo)).toContain("fixture echo: oauth-dropped-redirect")
 		},
 	)
 })

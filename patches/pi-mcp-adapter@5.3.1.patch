@@ -22,9 +22,13 @@
 #   - Stored redirect URI reuse: upstream 5.3.1 defaults the loopback host to
 #     127.0.0.1 (PR #712), so re-auth of a pre-registered client (e.g. Google)
 #     whose registration was created with a localhost URI now sends a different
-#     redirect and fails with redirect_uri_mismatch; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     prefers the stored registration's redirect URIs)
+#     redirect and fails with redirect_uri_mismatch. Fixed-client servers with
+#     no usable stored registration (first auth, or a registration whose
+#     redirectUris were dropped) now default to the localhost callback adapter
+#     2.x sent, since such clients register localhost only; upstream issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream prefers the stored registration's redirect URIs and defaults
+#     fixed-client servers to the localhost callback)
 #   - Stored redirect URI preservation: mcp-oauth-provider clientInformation()
 #     rewrites the stored clientInfo for config-registered clients (issuer
 #     binding bookkeeping) and drops its redirectUris, destroying the legacy
@@ -71,7 +75,9 @@
 #     and no explicit redirectUri, startAuth reuses the stored client
 #     registration's first redirect URI (only when the stored registration's
 #     clientId matches the configured one) instead of the current default
-#     host; unreadable or non-matching stored state falls back to the default.
+#     host; unreadable or non-matching stored state falls back to
+#     http://localhost:<configured callback port>/callback. Dynamic-registration
+#     servers (no clientId) keep upstream's 127.0.0.1 default.
 #     See the stored-redirect-URI-reuse tracking entry above.
 #   - mcp-oauth-provider: clientInformation() preserves the stored client
 #     registration's redirectUris when it rewrites the entry for a
@@ -383,10 +389,19 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf1fb58558 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4bd86596c 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
-@@ -400,6 +400,39 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
+@@ -5,7 +5,7 @@
+  */
+ import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
+ import open from "open";
+-import { getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
++import { DEFAULT_OAUTH_CALLBACK_PATH, getConfiguredOAuthCallbackPort, getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
+ import { ensureCallbackServer, waitForCallback, cancelPendingCallback, stopCallbackServer, stopCallbackServerIfIdle, releaseCallbackServer, } from "./mcp-callback-server.js";
+ import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, OAuthCredentialStoreError, } from "./mcp-auth.js";
+ import { isServerDisabled } from "./types.js";
+@@ -400,6 +400,42 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
          existingPendingAuth.authority();
          return { authorizationUrl: existingPendingAuth.authorizationUrl };
      }
@@ -395,8 +410,9 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf
 +    // (upstream PR #712), so a registration stored by an earlier version now
 +    // mismatches what servers such as Google pre-registered (Error 400:
 +    // redirect_uri_mismatch). When the server is configured with a fixed
-+    // clientId, reuse the stored registration's first redirect URI; clients that
-+    // register dynamically re-register instead and keep upstream's default.
++    // clientId, reuse the stored registration's first redirect URI, or default to
++    // the localhost callback when nothing usable is stored; clients that register
++    // dynamically re-register instead and keep upstream's 127.0.0.1 default.
 +    // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
 +    // — remove when upstream prefers the stored registration's redirect URIs.
 +    if (config.redirectUri === undefined && config.clientId !== undefined) {
@@ -419,9 +435,11 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf
 +        }
 +        authority();
 +        throwIfAborted(signal);
-+        if (storedRedirectUri !== undefined) {
-+            config.redirectUri = storedRedirectUri;
-+        }
++        // No usable stored URI: a fixed-client registration predates this adapter's
++        // 127.0.0.1 default and typically lists only the localhost callback, so
++        // send that instead (what adapter 2.x sent). Use the configured port, not
++        // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++        config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`;
 +    }
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
@@ -662,10 +680,19 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..0fb04f4050308bb1d2caa8f89ec13461
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee0386e3f4d6 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccbab1cc37d 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -26,6 +26,8 @@ import {
+@@ -15,6 +15,8 @@ import {
+ } from "@modelcontextprotocol/client"
+ import open from "open"
+ import {
++  DEFAULT_OAUTH_CALLBACK_PATH,
++  getConfiguredOAuthCallbackPort,
+   getOAuthCallbackPort,
+   McpOAuthProvider,
+   type McpOAuthConfig,
+@@ -26,6 +28,8 @@ import {
    stopCallbackServer,
    stopCallbackServerIfIdle,
    releaseCallbackServer,
@@ -674,7 +701,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  } from "./mcp-callback-server.ts"
  import {
    getAuthForUrl,
-@@ -53,6 +55,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+@@ -53,6 +57,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
  /** Auth status for a server */
  export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
  
@@ -687,7 +714,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  export interface McpOAuthRuntime {
    readonly signal: AbortSignal
  }
-@@ -94,6 +102,12 @@ type PendingAuth = {
+@@ -94,6 +104,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -700,7 +727,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -344,7 +358,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+@@ -344,7 +360,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
          params: {
            protocolVersion: LATEST_PROTOCOL_VERSION,
            capabilities: {},
@@ -709,7 +736,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
          },
        }),
        ...(discoverySignal ? { signal: discoverySignal } : {}),
-@@ -461,7 +475,7 @@ export async function startAuth(
+@@ -461,7 +477,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -718,7 +745,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -512,13 +526,55 @@ export async function startAuth(
+@@ -512,13 +528,58 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -731,8 +758,9 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
 +  // (upstream PR #712), so a registration stored by an earlier version now
 +  // mismatches what servers such as Google pre-registered (Error 400:
 +  // redirect_uri_mismatch). When the server is configured with a fixed
-+  // clientId, reuse the stored registration's first redirect URI; clients that
-+  // register dynamically re-register instead and keep upstream's default.
++  // clientId, reuse the stored registration's first redirect URI, or default to
++  // the localhost callback when nothing usable is stored; clients that register
++  // dynamically re-register instead and keep upstream's 127.0.0.1 default.
 +  // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
 +  // — remove when upstream prefers the stored registration's redirect URIs.
 +  if (config.redirectUri === undefined && config.clientId !== undefined) {
@@ -754,9 +782,11 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
 +    }
 +    authority()
 +    throwIfAborted(signal)
-+    if (storedRedirectUri !== undefined) {
-+      config.redirectUri = storedRedirectUri
-+    }
++    // No usable stored URI: a fixed-client registration predates this adapter's
++    // 127.0.0.1 default and typically lists only the localhost callback, so
++    // send that instead (what adapter 2.x sent). Use the configured port, not
++    // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++    config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`
    }
  
    const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined
@@ -775,7 +805,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -551,6 +607,18 @@ export async function startAuth(
+@@ -551,6 +612,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -794,7 +824,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    }
  
    let capturedUrl: URL | undefined
-@@ -612,13 +680,14 @@ export async function startAuth(
+@@ -612,13 +685,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -810,7 +840,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -901,6 +970,13 @@ export async function completeAuthFromInput(
+@@ -901,6 +975,13 @@ export async function completeAuthFromInput(
      throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
    }
    const parsed = parseAuthorizationRedirectInput(input, oauthState)
@@ -824,7 +854,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    return completeAuth(serverName, parsed, options)
  }
  
-@@ -921,6 +997,13 @@ export async function completeAuth(
+@@ -921,6 +1002,13 @@ export async function completeAuth(
    const signal = combineAbortSignals(runtime.signal, options.signal)
    throwIfAborted(signal)
    const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
@@ -838,7 +868,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    const pendingAuth = runtimeState.pendingAuths.get(key)
    const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
    if (!pendingAuth) {
-@@ -965,6 +1048,9 @@ export async function completeAuth(
+@@ -965,6 +1053,9 @@ export async function completeAuth(
      if (result !== "AUTHORIZED") {
        throw new UnauthorizedError("Failed to authorize")
      }
@@ -848,7 +878,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
      return "authenticated"
    } catch (error) {
      caughtError = error
-@@ -982,6 +1068,14 @@ export async function completeAuth(
+@@ -982,6 +1073,14 @@ export async function completeAuth(
        if (caughtError === undefined) pendingAuth.authority()
      }
    }
@@ -863,7 +893,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  }
  
  /**
-@@ -1045,7 +1139,7 @@ export async function authenticate(
+@@ -1045,7 +1144,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -872,7 +902,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1053,7 +1147,7 @@ export async function authenticate(
+@@ -1053,7 +1152,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
