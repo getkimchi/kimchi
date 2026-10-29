@@ -67,6 +67,17 @@ export function readOutboxStatus(agentDir: string) {
 	)
 }
 
+/** Read only accounts that can deliver; the full status read remains available to the UI. */
+export function readDeliveryStatus(agentDir: string) {
+	const backend = backendFor(agentDir)
+	return backend.tx(() =>
+		backend.outboxDeliveryStatus().map((status) => ({
+			...status,
+			retry: deliveryRetry(backend, status.accountKey, status.firstBatchId),
+		})),
+	)
+}
+
 function isClaim(event: Event): boolean {
 	return (
 		event.source === "kimchi" &&

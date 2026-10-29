@@ -96,6 +96,8 @@ export interface RecordBackend {
 	/** Every record not yet translated into events, by work. */
 	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
+	/** Clear exactly these markers in the caller's transaction, preserving any markers added later. */
+	clearTranslations(recordHashes: ReadonlySet<string>): void
 	/** The entity's newest event that was not set aside. */
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
@@ -104,6 +106,8 @@ export interface RecordBackend {
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
+	/** Delivery needs only accounts with sendable events or frozen batches, not historical totals. */
+	outboxDeliveryStatus(): Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">[]
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
@@ -576,6 +580,8 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"SELECT w.rowid AS position, w.record_hash AS recordHash, w.type, w.work_id AS workId, w.session_id AS sessionId, w.body, w.source_path AS sourcePath, w.source_generation AS sourceGeneration, w.source_offset AS sourceOffset, w.imported_at AS importedAt FROM pending_translation p JOIN work_records w ON w.record_hash = p.record_hash WHERE w.rowid > ? AND w.rowid <= ? ORDER BY w.rowid LIMIT ?",
 	)
 	const clearTranslation = db.query("DELETE FROM pending_translation WHERE record_hash = ?")
+	const clearAllTranslations = db.query("DELETE FROM pending_translation")
+	const markedHashes = db.query<{ recordHash: string }, []>("SELECT record_hash AS recordHash FROM pending_translation")
 	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
 		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
 	)
@@ -628,6 +634,29 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		LEFT JOIN (SELECT account_key, COUNT(*) AS batches FROM outbox_batches GROUP BY account_key) b
 			USING (account_key)
 		ORDER BY a.account_key
+	`)
+	const outboxDeliveryStatus = db.query<
+		Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">,
+		[]
+	>(`
+		WITH RECURSIVE event_accounts(account_key) AS (
+			SELECT MIN(account_key) FROM outbox_events
+			UNION ALL
+			SELECT (SELECT MIN(account_key) FROM outbox_events WHERE account_key > event_accounts.account_key)
+			FROM event_accounts WHERE event_accounts.account_key IS NOT NULL
+		), accounts AS (
+			SELECT account_key FROM event_accounts WHERE account_key IS NOT NULL
+			UNION SELECT account_key FROM outbox_batches
+		), delivery AS (
+			SELECT a.account_key AS accountKey,
+				EXISTS(SELECT 1 FROM outbox_events e INDEXED BY outbox_pending
+					WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '' LIMIT 1) AS sendable,
+				EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key LIMIT 1) AS batches,
+				(SELECT id FROM outbox_batches b WHERE b.account_key = a.account_key
+					ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+			FROM accounts a
+		)
+		SELECT * FROM delivery WHERE sendable > 0 OR batches > 0 ORDER BY accountKey
 	`)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
@@ -723,6 +752,17 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		pendingTranslations: (after, through, limit) => translations.all(after, through, limit),
 		markedRecords: () => marked.all(),
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
+		clearTranslations: (recordHashes) => {
+			// Avoid scanning every group for B's many small works; large all-marker groups can clear in one statement.
+			if (recordHashes.size >= 10_000) {
+				const pending = markedHashes.all()
+				if (pending.length === recordHashes.size && pending.every(({ recordHash }) => recordHashes.has(recordHash))) {
+					clearAllTranslations.run()
+					return
+				}
+			}
+			for (const recordHash of recordHashes) clearTranslation.run(recordHash)
+		},
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
@@ -741,6 +781,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			),
 		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
 		outboxStatus: () => outboxStatus.all(),
+		outboxDeliveryStatus: () => outboxDeliveryStatus.all(),
 		getOutboxBatch: (accountKey) => {
 			const batch = pendingBatch.get(accountKey)
 			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined

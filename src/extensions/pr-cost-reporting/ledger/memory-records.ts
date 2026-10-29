@@ -117,6 +117,9 @@ export function createMemoryRecords(): RecordBackend {
 				.filter((row) => markers.has(row.recordHash))
 				.slice(0, limit),
 		clearTranslation: (recordHash) => markers.delete(recordHash),
+		clearTranslations: (recordHashes) => {
+			for (const recordHash of recordHashes) markers.delete(recordHash)
+		},
 		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
@@ -181,6 +184,31 @@ export function createMemoryRecords(): RecordBackend {
 			)) {
 				const status = account(batch.accountKey)
 				status.batches++
+				status.firstBatchId ??= batch.id
+			}
+			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))
+		},
+		outboxDeliveryStatus: () => {
+			const accounts = new Map<
+				string,
+				Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">
+			>()
+			const account = (accountKey: string) => {
+				let status = accounts.get(accountKey)
+				if (!status) {
+					status = { accountKey, sendable: 0, batches: 0, firstBatchId: null }
+					accounts.set(accountKey, status)
+				}
+				return status
+			}
+			for (const event of events.values()) {
+				if (event.ackedAt === null && event.blocked === "") account(event.accountKey).sendable = 1
+			}
+			for (const batch of [...batches.values()].sort(
+				(a, b) => Buffer.compare(Buffer.from(a.orderKey), Buffer.from(b.orderKey)) || a.createdAt - b.createdAt,
+			)) {
+				const status = account(batch.accountKey)
+				status.batches = 1
 				status.firstBatchId ??= batch.id
 			}
 			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))

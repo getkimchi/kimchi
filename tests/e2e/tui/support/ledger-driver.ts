@@ -23,6 +23,7 @@ import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
+	backendFor,
 	capture,
 	fingerprint,
 	getNote,
@@ -51,6 +52,7 @@ function sleep(ms: number): Promise<void> {
 async function probe(agent: string): Promise<void> {
 	const store = openStore(agent)
 	const version = store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
+	const cacheKiB = store.db.query<{ cache_size: number }, []>("PRAGMA cache_size").get()?.cache_size
 	const tables = store.db
 		.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 		.all()
@@ -58,6 +60,7 @@ async function probe(agent: string): Promise<void> {
 	const path = ledgerDbPath(agent)
 	out({
 		version,
+		cacheKiB,
 		tables,
 		dirMode: statSync(dirname(path)).mode & 0o777,
 		fileMode: statSync(path).mode & 0o777,
@@ -815,6 +818,18 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	backend.insertOutboxEvent({ ...other, id: "status-blocked", accountKey: "status-blocked", blocked: "fixture" })
 	backend.insertOutboxEvent({ ...other, id: "status-acked", accountKey: "status-acked", ackedAt: 1234 })
 	const statuses = readOutboxStatus(agent)
+	const deliveryAccountsMatch =
+		JSON.stringify(backend.outboxDeliveryStatus()) ===
+		JSON.stringify(
+			statuses
+				.filter((status) => status.sendable > 0 || status.batches > 0)
+				.map(({ accountKey, sendable, batches, firstBatchId }) => ({
+					accountKey,
+					sendable: Number(sendable > 0),
+					batches: Number(batches > 0),
+					firstBatchId,
+				})),
+		)
 	const statusA = statuses.find((status) => status.accountKey === "account-a")
 	const statusOnlyBatch = statuses.find((status) => status.accountKey === "ordering")
 	const readOnlyStatus =
@@ -1314,6 +1329,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		byteIsolation,
 		binaryBatchOrder,
 		readOnlyStatus,
+		deliveryAccountsMatch,
 		retryStatus,
 		resumedStatus,
 		invalidRetryRetained,
@@ -2270,8 +2286,38 @@ async function incrementalParity(agent: string, scenario?: string): Promise<void
 	}
 }
 
+function markerClearScenario(agent: string): void {
+	const backend = backendFor(agent)
+	const hashes = Array.from({ length: 10_001 }, (_, index) => index.toString(16).padStart(64, "0"))
+	const captured = new Set(hashes)
+	const replacement = "f".repeat(64)
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+	})
+	let rolledBack = false
+	try {
+		backend.tx(() => {
+			backend.clearTranslations(captured)
+			throw new Error("rollback")
+		})
+	} catch (error) {
+		rolledBack = error instanceof Error && error.message === "rollback"
+	}
+	const afterRollback = backend.markedRecords().length
+	backend.tx(() => backend.clearTranslations(captured))
+	const afterClear = backend.markedRecords().length
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "lumbrook-work", "request")
+		backend.clearTranslation(hashes[0])
+		backend.upsertMarker(replacement, "lumbrook-work", "request")
+		backend.clearTranslations(captured)
+	})
+	out({ rolledBack, afterRollback, afterClear, remaining: backend.markedRecords().map((row) => row.recordHash) })
+}
+
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
 	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
+	"marker-clear": (agent) => markerClearScenario(agent),
 	probe: (agent) => probe(agent),
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),

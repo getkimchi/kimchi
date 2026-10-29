@@ -87,6 +87,8 @@ export function openStore(agentDir: string): LedgerStore {
 		const decision = classifyUserVersion(version)
 		if (decision === "foreign") throw new LedgerSchemaError(version)
 		db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
+		// Large journal imports repeatedly touch the record and marker indexes; this connection-local cache is allocated on demand.
+		db.exec("PRAGMA cache_size=-131072")
 		if (decision === "create") {
 			db.transaction(() => {
 				// Re-read inside the immediate lock: a concurrent process may have finished creating (or written a

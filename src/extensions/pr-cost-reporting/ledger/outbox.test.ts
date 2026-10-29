@@ -43,6 +43,7 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 			byteIsolation: true,
 			binaryBatchOrder: true,
 			readOnlyStatus: true,
+			deliveryAccountsMatch: true,
 			retryStatus: true,
 			resumedStatus: true,
 			invalidRetryRetained: true,

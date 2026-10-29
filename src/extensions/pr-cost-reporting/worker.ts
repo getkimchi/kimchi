@@ -35,7 +35,7 @@ import {
 	type Fact,
 	observeEvents,
 	pendingBatch,
-	readOutboxStatus,
+	readDeliveryStatus,
 } from "./ledger/outbox.js"
 import {
 	backendFor,
@@ -160,9 +160,7 @@ export function deliverEvents(
 		// Keep sending while the pass has time left: one iteration sends one frozen batch.
 		while (Date.now() < deadline - DELIVERY_RESERVE_MS) {
 			check()
-			const due = readOutboxStatus(agentDir).filter(
-				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
-			)
+			const due = readDeliveryStatus(agentDir).filter((status) => (status.retry?.retryAt ?? 0) <= Date.now())
 			if (!due.length) return
 			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
@@ -363,8 +361,8 @@ export async function reconcileReporting(
 	if (!state.enabled) return
 	try {
 		await captureEvents(agentDir, signal, assertLease)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
+	} catch (error) {
+		if (!signal.aborted) await recordReportingError(agentDir, captureFailure(error))
 	}
 	// Batches already queued go out even when this pass could not capture new evidence.
 	if (signal.aborted) return
@@ -392,6 +390,34 @@ const PROGRESS_NOTE = "translation-progress-v2:"
 const NEXT_GROUP_NOTE = "translation-next-group"
 class CaptureTimeLimit extends Error {}
 class GroupBuildTimeLimit extends CaptureTimeLimit {}
+
+function captureFailure(error: unknown): string {
+	let reason: string
+	if (error instanceof CaptureTimeLimit) reason = "local capture time limit exceeded"
+	else if (error instanceof Error && error.message === "PR reporting is waiting for readable source records")
+		reason = "source records are unreadable"
+	else {
+		const code = object(error) ? error.code : undefined
+		switch (code) {
+			case "EACCES":
+			case "EPERM":
+				reason = "source access denied"
+				break
+			case "ENOSPC":
+				reason = "disk is full"
+				break
+			case "ENOENT":
+				reason = "source changed while reading"
+				break
+			case "SQLITE_BUSY":
+				reason = "ledger is busy"
+				break
+			default:
+				reason = "unexpected capture error"
+		}
+	}
+	return `${CAPTURE_FAILED}: ${reason}`
+}
 
 /**
  * Translates the works whose records changed since their last translation into events, one connected group at a
@@ -425,7 +451,8 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	if (!marked.size) {
 		// Nothing changed since the last translation; only a failure an earlier pass recorded is out of date.
-		if ((await readReportingState(agentDir)).error === CAPTURE_FAILED) await recordReportingError(agentDir, undefined)
+		if ((await readReportingState(agentDir)).error?.startsWith(CAPTURE_FAILED))
+			await recordReportingError(agentDir, undefined)
 		return
 	}
 	const producer = await reportingProducer(agentDir, check)
@@ -724,7 +751,7 @@ async function translateGroup(
 							}),
 						})
 					} else backend.deleteNote("agent", groupKey(works))
-					for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+					backend.clearTranslations(new Set(changed.keys()))
 				}
 				backend.deleteNote("agent", progressNote)
 			} else backend.putNote("agent", progressNote, JSON.stringify({ ...progress, units: done }))
@@ -737,7 +764,7 @@ async function translateGroup(
 			if (settled) {
 				if (cache) saveGroupCache(backend, cache)
 				else backend.deleteNote("agent", groupKey(works))
-				for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+				backend.clearTranslations(new Set(changed.keys()))
 			}
 			backend.deleteNote("agent", progressNote)
 		})

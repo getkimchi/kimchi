@@ -239,6 +239,27 @@ describe("records conformance (memory backend)", () => {
 		expect(backend.getRecord("b".repeat(64))).toBeUndefined()
 	})
 
+	it("bulk marker clearing preserves a replacement and rolls back atomically in memory", () => {
+		const backend = createMemoryRecords()
+		const first = "a".repeat(64)
+		const second = "b".repeat(64)
+		const replacement = "c".repeat(64)
+		backend.upsertMarker(first, WORK, "request")
+		backend.upsertMarker(second, WORK, "request")
+		const captured = new Set([first, second])
+		expect(() =>
+			backend.tx(() => {
+				backend.clearTranslations(captured)
+				throw new Error("rollback")
+			}),
+		).toThrow("rollback")
+		expect(backend.markedRecords().map((row) => row.recordHash)).toEqual([first, second])
+		backend.clearTranslation(first)
+		backend.upsertMarker(replacement, WORK, "request")
+		backend.tx(() => backend.clearTranslations(captured))
+		expect(backend.markedRecords().map((row) => row.recordHash)).toEqual([replacement])
+	})
+
 	it("recovery rolls back marker clearing with the projection and only clears the rebuilt work", () => {
 		const dir = agentDir()
 		dirs.push(dir)
@@ -360,6 +381,20 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 			const head = driver("head", dir, WORK) as ReturnType<typeof readWorkHead> | null
 			expect(head?.workId).toBe(WORK)
 			expect(again.records).toBe("1")
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("bulk marker clearing preserves a replacement and rolls back atomically in SQLite", () => {
+		const dir = agentDir()
+		try {
+			expect(driver("marker-clear", dir)).toEqual({
+				rolledBack: true,
+				afterRollback: 10_001,
+				afterClear: 0,
+				remaining: ["f".repeat(64)],
+			})
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}

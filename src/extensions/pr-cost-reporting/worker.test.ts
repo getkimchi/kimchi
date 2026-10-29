@@ -580,6 +580,21 @@ describe("account-fenced reporting delivery", () => {
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect((await readReportingState(directory)).error).toContain("could not capture a complete inventory")
 	})
+	it("records a safe capture reason and clears it after recovery", async () => {
+		const importer = vi.spyOn(summary, "importWorkRecordsAsync").mockRejectedValueOnce(
+			Object.assign(new Error("EACCES: permission denied, open '/lumbrook/private/secret-token'"), {
+				code: "EACCES",
+			}),
+		)
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const status = (await readReportingState(directory)).error
+		expect(status).toContain("source access denied")
+		expect(status?.length).toBeLessThanOrEqual(200)
+		expect(status).not.toContain("secret-token")
+		importer.mockRestore()
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect((await readReportingState(directory)).error).toBeUndefined()
+	})
 	it("leaves an older version's pending snapshot on disk without sending it", async () => {
 		await seedLinked()
 		const path = reportingStatePath(directory)
@@ -971,10 +986,11 @@ describe("incremental translation", () => {
 			}
 		})
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => observed.push(active))
-		const clear = backend.clearTranslation
-		vi.spyOn(backend, "clearTranslation").mockImplementation((hash) => {
+		const clear = backend.clearTranslations
+		vi.spyOn(backend, "clearTranslations").mockImplementation((hashes) => {
+			expect(hashes.size).toBeGreaterThan(0)
 			cleared.push(active)
-			clear(hash)
+			clear(hashes)
 		})
 		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		expect(observed).toHaveLength(1)
