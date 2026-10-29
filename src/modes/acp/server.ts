@@ -1362,6 +1362,11 @@ export class KimchiAcpAgent implements Agent {
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
+		// Stop the adapter from publishing skill-refresh results: a discovery
+		// pass still in flight must not commit an obsolete snapshot (or
+		// rebuild prompt options) after the session is gone.
+		const disposable = entry.session.resourceLoader as { dispose?: () => void }
+		disposable.dispose?.()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async

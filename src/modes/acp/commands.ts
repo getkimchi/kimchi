@@ -38,8 +38,10 @@ export function discoverSkillCommandsMap(session: AgentSession): Map<string, Acp
 /** Minimal session surface the refresher's skill refresh needs. */
 interface SkillRefreshLoader extends ResourceLoader {
 	/** Provided by AcpSessionResourceLoader (see session-resource-loader.ts):
-	 *  a resources-only discovery pass that never re-runs extension factories. */
-	refreshSkills: (session: AgentSession) => Promise<void>
+	 *  a resources-only discovery pass that never re-runs extension factories.
+	 *  "discarded" means the pass lost its race with a full reload or the
+	 *  session's disposal — nothing was committed. */
+	refreshSkills: (session: AgentSession) => Promise<"committed" | "discarded">
 }
 
 /**
@@ -59,7 +61,12 @@ export async function reloadSkillCommandsMap(session: AgentSession): Promise<Map
 	if (typeof loader.refreshSkills !== "function") {
 		throw new TypeError("session resourceLoader has no refreshSkills (ACP adapter wiring drift?)")
 	}
-	await loader.refreshSkills(session)
+	const outcome = await loader.refreshSkills(session)
+	if (outcome === "discarded") {
+		// The pass lost its race (full reload / session disposal): nothing was
+		// committed — keep the previous palette and prompt untouched.
+		return discoverSkillCommandsMap(session)
+	}
 	// The snapshot is committed: drop any cached system-prompt skill-list block
 	// and rebuild the prompt options against it — a prompt rebuild that raced
 	// the refresh cannot permanently re-cache stale content (nothing later

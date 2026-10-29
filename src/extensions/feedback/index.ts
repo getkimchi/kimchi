@@ -9,7 +9,7 @@ import { isStaleCtxError } from "../stale-ctx.js"
  *  sessionManager getter throws — the rating record must still be written
  *  (the entry IS the record); telemetry then falls back to the
  *  last-initialized instance for this one emission. */
-function sessionTelemetryId(ctx: { sessionManager: { getSessionId(): string | undefined } }): string | undefined {
+function sessionTelemetryId(ctx: Pick<ExtensionContext, "sessionManager">): string | undefined {
 	try {
 		return ctx.sessionManager.getSessionId()
 	} catch {

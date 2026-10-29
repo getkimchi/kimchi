@@ -148,9 +148,9 @@ describe("ACP integration — skill change re-advertises palettes", () => {
 					),
 			)
 			expect(chatRequests.length).toBeGreaterThan(0)
-			const system = (
-				chatRequests[0]?.body as { messages: Array<{ role: string; content: unknown }> }
-			).messages.find((m) => m.role === "system")
+			const first = chatRequests[0]
+			const messages = (first?.body as { messages?: Array<{ role: string; content: unknown }> })?.messages
+			const system = messages?.find((m) => m.role === "system")
 			const systemText = typeof system?.content === "string" ? system.content : JSON.stringify(system?.content ?? "")
 			expect(systemText).toContain("e2e-prompt-skill")
 		},

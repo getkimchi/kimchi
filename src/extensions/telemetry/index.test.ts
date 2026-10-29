@@ -2509,6 +2509,25 @@ describe("session isolation (concurrent instances)", () => {
 		expect(recB?.attrs.session_type).toBe("coding")
 	})
 
+	it("an explicit session-id miss does not fall back to another session", async () => {
+		const { resolveSessionTelemetryCtx, trackRemoteExecution } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		// A closed/unregistered session resolves to undefined — NOT to the
+		// last-initialized global (here: the child).
+		expect(resolveSessionTelemetryCtx("closed-session")).toBeUndefined()
+
+		// A late callback surviving its session therefore emits nothing
+		// rather than landing on the child's records.
+		trackRemoteExecution("started", "plan", undefined, "closed-session")
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+
+		const started = allRecords().filter((r) => r.eventName === "remote_execution.started")
+		expect(started).toHaveLength(0)
+	})
+
 	it("resolves session-scoped track* helpers to the originating session's instance", async () => {
 		const { resolveSessionTelemetryCtx, trackRemoteExecution } = await import("./index.js")
 		// Only the parent is bound here — the child below will steal the

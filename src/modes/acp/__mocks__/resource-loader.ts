@@ -21,8 +21,9 @@ export function makeResourceLoader(opts: {
 		getAppendSystemPrompt: () => [],
 		getAppendSystemPromptSources: () => [],
 		extendResources: () => {},
-		refreshSkills: async (session: unknown) => {
+		refreshSkills: async (session: unknown): Promise<"committed" | "discarded"> => {
 			await opts.onRefreshSkills?.(session)
+			return "committed"
 		},
 		reload: async () => {
 			await opts.onReload?.()

@@ -279,3 +279,94 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 		}
 	})
 })
+
+describe("AcpSessionResourceLoader — refresh lifecycle races", () => {
+	/** Gate the private resources-discover bridge so a refresh can be parked
+	 *  mid-flight, deterministically interleaving reload/dispose with it.
+	 *  One-shot: releasing restores the original bridge so later refreshes
+	 *  (the post-race follow-up) run for real. */
+	function gateBridge(session: Awaited<ReturnType<typeof createAgentSession>>["session"]) {
+		const refreshable = session as unknown as Record<string, unknown>
+		const original = refreshable.extendResourcesFromExtensions
+		let release: (() => void) | undefined
+		refreshable.extendResourcesFromExtensions = () =>
+			new Promise<void>((resolve) => {
+				release = () => {
+					refreshable.extendResourcesFromExtensions = original
+					resolve()
+				}
+			})
+		return () => release?.()
+	}
+
+	it("a refresh that races a full reload discards its result", async () => {
+		const h = await setupHarness()
+		try {
+			const release = gateBridge(h.session)
+			writeSkill(h.settingsSkills, "racy-skill", "Deleted while the refresh is parked")
+
+			const refresh = h.loader.refreshSkills(h.session)
+			// Park the refresh inside the bridge; its discovery pass has
+			// already scanned racy-skill into its snapshot.
+			await new Promise<void>((r) => setTimeout(r, 20))
+			// The skill is deleted while the pass is parked — the reload's
+			// scan no longer sees it, so the parked snapshot is obsolete.
+			rmSync(join(h.settingsSkills, "racy-skill"), { recursive: true, force: true })
+			await h.loader.reload()
+			release()
+			expect(await refresh).toBe("discarded")
+
+			// The obsolete snapshot (still containing the deleted skill) was
+			// NOT committed over the reload's state.
+			expect(skillNames(h.loader)).not.toContain("racy-skill")
+
+			// A fresh refresh after the reload commits normally.
+			expect(await h.loader.refreshSkills(h.session)).toBe("committed")
+			expect(skillNames(h.loader)).not.toContain("racy-skill")
+		} finally {
+			await dispose(h)
+		}
+	})
+
+	it("dispose discards an in-flight refresh and stops later ones", async () => {
+		const h = await setupHarness()
+		try {
+			const release = gateBridge(h.session)
+			writeSkill(h.settingsSkills, "posthumous-skill", "Must never be committed")
+
+			const refresh = h.loader.refreshSkills(h.session)
+			await new Promise<void>((r) => setTimeout(r, 20))
+			h.loader.dispose()
+			release()
+			expect(await refresh).toBe("discarded")
+			expect(skillNames(h.loader)).not.toContain("posthumous-skill")
+
+			// Post-dispose refreshes are no-ops.
+			expect(await h.loader.refreshSkills(h.session)).toBe("discarded")
+			expect(skillNames(h.loader)).not.toContain("posthumous-skill")
+		} finally {
+			await dispose(h)
+		}
+	})
+
+	it("a full reload drops the stale cached skill-list block from the served append", async () => {
+		const h = await setupHarness()
+		try {
+			writeSkill(h.settingsSkills, "stale-after-reload", "Visible until the reload")
+			expect(await h.loader.refreshSkills(h.session)).toBe("committed")
+			// The sweep invalidates the cached block after the commit.
+			invalidateSkillListBlock(h.loader)
+			expect(h.loader.getAppendSystemPrompt().join("\n")).toContain("stale-after-reload")
+
+			// Delete the skill, then full-reload: the skills AND the cached
+			// append block must both drop it (the cache is invalidated by the
+			// reload, so the model never reads a stale advertisement).
+			rmSync(join(h.settingsSkills, "stale-after-reload"), { recursive: true, force: true })
+			await h.loader.reload()
+			expect(skillNames(h.loader)).not.toContain("stale-after-reload")
+			expect(h.loader.getAppendSystemPrompt().join("\n")).not.toContain("stale-after-reload")
+		} finally {
+			await dispose(h)
+		}
+	})
+})

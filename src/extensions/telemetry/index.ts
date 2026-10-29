@@ -99,16 +99,18 @@ function unregisterSessionContext(sessionId: string | undefined): void {
 }
 
 /**
- * Resolve the telemetry instance for a session id. Registered instances win;
- * otherwise the last-initialized global (pre-session emissions, legacy
- * callers). NOT a parent/child stack — concurrent sessions and children can
- * finish out of order, so identity-keyed lookup replaces nesting entirely.
+ * Resolve the telemetry instance for a session id. Registered instances
+ * win; an explicit id that MISSES (a closed or unregistered session — e.g. a
+ * late callback surviving its session, or one whose telemetry was never
+ * bound) resolves to undefined and the emission is SKIPPED — falling back
+ * to the last-initialized global there would attribute the record to
+ * whichever session initialized most recently. Only callers without a
+ * session id (pre-session emissions) use the global. NOT a parent/child
+ * stack — concurrent sessions and children can finish out of order, so
+ * identity-keyed lookup replaces nesting entirely.
  */
 export function resolveSessionTelemetryCtx(sessionId: string | undefined): TelemetryContext | undefined {
-	if (sessionId !== undefined) {
-		const registered = sessionRegistry.get(sessionId)
-		if (registered !== undefined) return registered
-	}
+	if (sessionId !== undefined) return sessionRegistry.get(sessionId)
 	return _telemetryCtx
 }
 

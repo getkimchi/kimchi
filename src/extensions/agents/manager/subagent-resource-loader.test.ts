@@ -39,7 +39,10 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { afterAll, describe, expect, it } from "vitest"
+import { createToolContext } from "../../__mocks__/context.js"
+import { textResult } from "../tool-result.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 
 /** Minimal model stub — the session never streams in these tests, so the
@@ -221,7 +224,7 @@ describe("SubagentResourceLoader — single-load contract", () => {
 		session.dispose()
 	})
 
-	it("keeps an extension-registered tool callable through the no-reload activation path", async () => {
+	it("keeps an extension-registered tool callable and executable through the no-reload activation path", async () => {
 		const tmp = makeTmpDir()
 		const bus = createEventBus()
 		let systemPrompt = "initial"
@@ -232,13 +235,8 @@ describe("SubagentResourceLoader — single-load contract", () => {
 					name: "test_extension_tool",
 					label: "Test Extension Tool",
 					description: "Extension-registered tool (worker-report shape).",
-					parameters: {
-						type: "object",
-						properties: { value: { type: "string" } },
-						required: ["value"],
-					} as const,
-					execute: async (_toolCallId, params) =>
-						({ output: `received ${(params as { value: string }).value}` }) as never,
+					parameters: Type.Object({ value: Type.String() }),
+					execute: async (_toolCallId, params) => textResult(`received ${params.value}`),
 				}),
 			)
 		}
@@ -285,6 +283,23 @@ describe("SubagentResourceLoader — single-load contract", () => {
 		session.setActiveToolsByName([...active])
 		expect(new Set(session.getActiveToolNames()).has("test_extension_tool")).toBe(true)
 		expect(session.systemPrompt).toContain("final")
+
+		// Execute the tool after activation — the same execute path the agent
+		// loop dispatches model-issued calls through (established repo pattern:
+		// model-switch.test.ts). The result must satisfy the AgentToolResult
+		// contract without casts.
+		const definition = session.getToolDefinition("test_extension_tool")
+		expect(definition).toBeDefined()
+		const result = await definition?.execute(
+			"test-call-id",
+			{ value: "executed" },
+			undefined,
+			undefined,
+			createToolContext(),
+		)
+		expect(result).toBeDefined()
+		expect(result?.isError).toBeFalsy()
+		expect(result?.content).toEqual([{ type: "text", text: "received executed" }])
 
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		session.dispose()

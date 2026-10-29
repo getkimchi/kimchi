@@ -6,7 +6,12 @@ import {
 	type SettingsManager,
 	type Skill,
 } from "@earendil-works/pi-coding-agent"
-import { buildSkillListBlock, cachedSkillListBlock, setCachedSkillListBlock } from "./skill-commands.js"
+import {
+	buildSkillListBlock,
+	cachedSkillListBlock,
+	invalidateSkillListBlock,
+	setCachedSkillListBlock,
+} from "./skill-commands.js"
 
 /** Upstream reload options — derived from the interface so it cannot drift. */
 type LoaderReloadOptions = Parameters<ResourceLoader["reload"]>[0]
@@ -51,6 +56,15 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private staged: DefaultResourceLoader | undefined
 	/** Serializes refreshes: each runs a full rescan after the previous one. */
 	private refreshChain: Promise<void> = Promise.resolve()
+	/** Bumped by every full reload and by dispose(): a refresh whose captured
+	 *  generation no longer matches discards its result instead of committing
+	 *  an obsolete snapshot. */
+	private generation = 0
+	/** Set when the owning session is disposed: refreshes stop publishing. */
+	private disposed = false
+	/** Resolves when the in-flight full reload completes; refreshes started
+	 *  while a reload runs wait for it so they scan the reloaded state. */
+	private reloadGate: Promise<void> | undefined
 
 	constructor(options: {
 		mainLoader: DefaultResourceLoader
@@ -98,9 +112,10 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	/**
 	 * ACP append content, computed per call: the configured base plus the
 	 * skill-list block built from THIS adapter's current skills. The
-	 * per-adapter cache (WeakMap) is invalidated by the refresh sweep, so a
-	 * committed snapshot is reflected on the next prompt rebuild without a
-	 * main-loader reload.
+	 * per-adapter cache (WeakMap) is invalidated by the refresh sweep, by
+	 * resource changes (extendResources), and by full reloads, so a
+	 * committed/reloaded skill set is reflected on the next prompt rebuild
+	 * without a main-loader reload.
 	 */
 	getAppendSystemPrompt(): string[] {
 		let block = cachedSkillListBlock(this)
@@ -125,14 +140,44 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		// During a refresh, extension-contributed paths are staged into the
 		// discovery loader too, so the committed snapshot includes them.
 		this.staged?.extendResources(paths)
+		// Resource changes alter the skill set the append block is built
+		// from — the cached block must not outlive them.
+		invalidateSkillListBlock(this)
 	}
 
 	async reload(options?: LoaderReloadOptions): Promise<void> {
-		await this.mainLoader.reload(options)
-		// An intentional full reload re-binds the extension set: reset the
-		// discovery snapshot so the newly bound set's resources (applied by
-		// the reload's own resources_discover pass) are exposed normally.
-		this.skillsSnapshot = undefined
+		// In-flight refreshes (and any started against the pre-reload state)
+		// discard their results: their snapshot could be obsolete next to the
+		// reloaded extension set.
+		this.generation++
+		let gate: Promise<void> | undefined
+		gate = (async () => {
+			try {
+				await this.mainLoader.reload(options)
+				// An intentional full reload re-binds the extension set: reset the
+				// discovery snapshot so the newly bound set's resources (applied
+				// by the reload's own resources_discover pass) are exposed
+				// normally, and drop the cached skill-list block so the append
+				// prompt is rebuilt from the reloaded skills.
+				this.skillsSnapshot = undefined
+				invalidateSkillListBlock(this)
+			} finally {
+				if (this.reloadGate === gate) this.reloadGate = undefined
+			}
+		})()
+		this.reloadGate = gate
+		await gate
+	}
+
+	/**
+	 * Stop publishing refresh results — called when the owning session is
+	 * disposed. In-flight refreshes discard; later refreshSkills calls
+	 * resolve without rescanning.
+	 */
+	dispose(): void {
+		this.disposed = true
+		this.generation++
+		this.staged = undefined
 	}
 
 	/**
@@ -144,17 +189,31 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	 * a failure keeps the previous snapshot (and the advertised palette).
 	 *
 	 * Refreshes are serialized per adapter; concurrent callers each get a
-	 * full rescan in order.
+	 * full rescan in order. The outcome tells the caller whether the new
+	 * snapshot was committed ("committed") or discarded because the adapter's
+	 * lifecycle moved on — a full reload raced the pass, or the owning
+	 * session was disposed while discovery was in flight ("discarded"): a
+	 * late pass must not publish an obsolete snapshot or rebuild prompt
+	 * options after disposal.
 	 */
-	refreshSkills(session: AgentSession): Promise<void> {
+	refreshSkills(session: AgentSession): Promise<"committed" | "discarded"> {
+		if (this.disposed) return Promise.resolve("discarded")
 		const run = this.refreshChain.then(() => this.doRefreshSkills(session))
 		// Keep the chain alive across failures so a later refresh is not
 		// permanently wedged behind a rejected predecessor.
-		this.refreshChain = run.catch(() => {})
+		this.refreshChain = run.then(
+			() => undefined,
+			() => undefined,
+		)
 		return run
 	}
 
-	private async doRefreshSkills(session: AgentSession): Promise<void> {
+	private async doRefreshSkills(session: AgentSession): Promise<"committed" | "discarded"> {
+		// A full reload started while this refresh waited for the refresh
+		// slot: let it finish first so the scan sees the reloaded state.
+		if (this.reloadGate) await this.reloadGate
+		const generation = this.generation
+		if (this.disposed) return "discarded"
 		const discovery = new DefaultResourceLoader({
 			cwd: this.discoveryCwd,
 			agentDir: this.discoveryAgentDir,
@@ -175,11 +234,15 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 			// adapter — so they land on both the main loader and the staged
 			// discovery loader (see extendResources).
 			await runResourcesDiscover(session)
-			// Commit only after discovery succeeded (a throw above leaves the
-			// previous snapshot and palette in place).
+			// Commit only after discovery succeeded AND the adapter's
+			// lifecycle has not moved on since the pass started (a full
+			// reload raced it, or the session was disposed mid-flight): a
+			// throw above leaves the previous snapshot and palette in place.
+			if (this.disposed || this.generation !== generation) return "discarded"
 			this.skillsSnapshot = discovery.getSkills()
+			return "committed"
 		} finally {
-			this.staged = undefined
+			if (this.staged === discovery) this.staged = undefined
 		}
 	}
 }
