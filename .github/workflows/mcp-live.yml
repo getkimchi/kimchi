@@ -1,0 +1,130 @@
+name: MCP live
+
+# Live OAuth provider checks against real servers.
+#
+# probe — credential-free: proves the authorize request the built binary
+# constructs is still accepted by real providers (redirect-URI class,
+# Google-style offline-access parameters, provider answers with a sign-in
+# page rather than an OAuth error). Runs on every pull request.
+#
+# lifecycle — credentialed: proves an expired Google-backed MCP access
+# token is renewed silently (tools listed, no browser consent, stored
+# expiry advanced) using a dedicated test account's refresh token. Runs on
+# pull requests labelled `run-live` (labelling re-triggers the workflow)
+# and on manual dispatch.
+#
+# Neither job is a required merge check: a failure shows on the PR but does
+# not gate merging. The provider inventory (MCP_LIVE_PROVIDERS) and the
+# Google credentials (GOOGLE_MCP_TEST_*) come from repository secrets, so
+# fork pull requests skip the live steps entirely; the `skip-live-mcp`
+# label skips the probe during provider outages.
+#
+# Assertions are limited to deterministic OAuth error contracts, and every
+# probe entry retries once on network errors and 5xx responses.
+
+on:
+  pull_request:
+    # `labeled`/`unlabeled` re-trigger the workflow so adding `run-live` to
+    # an existing PR runs the lifecycle job.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+  workflow_dispatch:
+    inputs:
+      server:
+        description: 'Google MCP server for the lifecycle check ("gmail", "drive", or "calendar")'
+        required: false
+        default: 'gmail'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: 'true'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
+      - name: Pure checks self-test
+        run: node scripts/mcp-live-probe.mjs --self-test
+
+      # Same-repository pull requests only (collaborator trust boundary);
+      # dispatched runs always pass the gate.
+      - name: Build binary
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-live-mcp') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: pnpm run build:binary
+
+      - name: Run live provider check
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-live-mcp') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        env:
+          MCP_LIVE_PROVIDERS: ${{ secrets.MCP_LIVE_PROVIDERS }}
+        run: node scripts/mcp-live-probe.mjs
+
+      - name: Upload probe matrix
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-live-probe-matrix-${{ github.run_attempt }}
+          path: mcp-live-probe-matrix.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'run-live')) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: 'true'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make -C tools/proxy-helper build
+
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Run Google renewal check
+        env:
+          GOOGLE_MCP_TEST_CLIENT_ID: ${{ secrets.GOOGLE_MCP_TEST_CLIENT_ID }}
+          GOOGLE_MCP_TEST_CLIENT_SECRET: ${{ secrets.GOOGLE_MCP_TEST_CLIENT_SECRET }}
+          GOOGLE_MCP_TEST_REFRESH_TOKEN: ${{ inputs.server == 'drive' && secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_DRIVE || inputs.server == 'calendar' && secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_CALENDAR || secrets.GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL }}
+          GOOGLE_MCP_TEST_SERVER: ${{ inputs.server == 'drive' && 'https://drivemcp.googleapis.com/mcp/v1' || inputs.server == 'calendar' && 'https://calendarmcp.googleapis.com/mcp/v1' || 'https://gmailmcp.googleapis.com/mcp/v1' }}
+        run: node scripts/mcp-live-google-lifecycle.mjs

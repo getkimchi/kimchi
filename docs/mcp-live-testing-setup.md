@@ -18,7 +18,7 @@ Fork pull requests see no secrets and the live step is skipped entirely; the `sk
 The lifecycle check needs a **dedicated test Google account** — not a staff account — with only `gmail.readonly` granted, used solely against a test mailbox. Create an OAuth app for it in the Google Cloud console:
 
 - Prefer an **Internal** app under your Workspace: refresh tokens for internal apps do not expire on a schedule.
-- A **Testing** app works, but Google expires its refresh tokens after 7 days — the stored token must be re-seeded weekly (below), and the nightly schedule is not worth enabling in that mode.
+- A **Testing** app works, but Google expires its refresh tokens after 7 days — the stored token must be re-seeded weekly (below).
 - Register both loopback redirect URIs the harness sends: `http://localhost:19876/callback` and `http://127.0.0.1:19876/callback`.
 
 Store three repository secrets:
@@ -52,7 +52,7 @@ One-time setup, repeated on rotation:
    HOME=/tmp/gmail-seed KIMCHI_MCP_E2E_KEYRING_DIR=/tmp/gmail-seed/mcp-keyring dist/bin/kimchi
    ```
 
-3. In the session: run `/mcp-auth gmail` and complete the Google consent in the browser that opens. Completing it proves the acceptance criterion the scheduled check cannot: a refresh token is issued on **first consent**, because the authorize URL carried `access_type=offline`. The credential lands in `$HOME/mcp-keyring/`.
+3. In the session: run `/mcp-auth gmail` and complete the Google consent in the browser that opens. Completing it proves the acceptance criterion the CI check cannot: a refresh token is issued on **first consent**, because the authorize URL carried `access_type=offline`. The credential lands in `$HOME/mcp-keyring/`.
 
 4. Extract the refresh token from the stored entry JSON (`tokens.refreshToken`) and save it as the `GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL` secret. Delete the temporary home directory afterwards — its config file holds the client secret.
 
@@ -70,7 +70,7 @@ node scripts/mcp-live-google-lifecycle.mjs
 
 Locally, the renewal check reads `GOOGLE_MCP_TEST_CLIENT_ID`, `GOOGLE_MCP_TEST_CLIENT_SECRET`, `GOOGLE_MCP_TEST_REFRESH_TOKEN`, and optionally `GOOGLE_MCP_TEST_SERVER`/`GOOGLE_MCP_TEST_ISSUER`. In the workflow, the per-server secrets (`GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL`, `_DRIVE`, `_CALENDAR`) are mapped onto `GOOGLE_MCP_TEST_REFRESH_TOKEN` for the selected server; dispatching Drive or Calendar without its secret fails fast with a clear "not set" error.
 
-Or dispatch the `MCP live lifecycle` workflow, choosing Gmail, Drive, or Calendar (only Gmail is provisioned by default).
+Or run the `MCP live` workflow's lifecycle job: dispatch it (choosing Gmail, Drive, or Calendar — only Gmail is provisioned by default), or add the `run-live` label to a pull request to run it against that PR's build. Labelling re-triggers the workflow; the lifecycle job only runs with the label present on a same-repository pull request.
 
 ## Triage
 
