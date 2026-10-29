@@ -108,6 +108,7 @@ export function createMemoryRecords(): RecordBackend {
 			order.push(row)
 			return true
 		},
+		getRecord: (recordHash) => records.get(recordHash),
 		upsertMarker: (recordHash, workId, type) => markers.set(recordHash, { workId, type }),
 		pendingTranslations: (after, through, limit) =>
 			order

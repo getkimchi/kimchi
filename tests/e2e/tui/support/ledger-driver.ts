@@ -1886,7 +1886,136 @@ async function knownSchemaRace(agent: string): Promise<void> {
 	}
 }
 
+async function incrementalParity(agent: string, scenario?: string): Promise<void> {
+	const linked = scenario?.startsWith("linked:") ? Number(scenario.slice("linked:".length)) : undefined
+	if (linked !== undefined && (!Number.isSafeInteger(linked) || linked < 1)) throw new Error("Invalid parity seed")
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { groupKey } = await import("../../../../src/extensions/pr-cost-reporting/incremental.js")
+	const { reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	const { setReportingEnabled } = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
+	const account = {
+		apiUrl: "https://api.lumbrook.invalid",
+		organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}
+	const workId = "22222222-2222-4222-8222-222222222222"
+	const otherWorkId = "44444444-4444-4444-8444-444444444444"
+	const works = linked === undefined ? [workId] : [workId, otherWorkId]
+	const producerId = "33333333-3333-4333-8333-333333333333"
+	const incremental = join(agent, "incremental")
+	const reference = join(agent, "reference")
+	const oldKey = process.env.KIMCHI_API_KEY
+	process.env.KIMCHI_API_KEY = "lumbrook-test-key"
+	globalThis.fetch = async () => new Response("{}", { status: 503 })
+	const seed = (directory: string, index: number) => {
+		const requestId = `11111111-1111-4111-8111-${index.toString(16).padStart(12, "0")}`
+		const startedAt = new Date(Date.UTC(2026, 9, 24, 8, 0, index)).toISOString()
+		const owner = linked !== undefined && (index + linked) % 2 ? otherWorkId : workId
+		const common = { version: 1 as const, workId: owner, sessionId: "lumbrook-session", requestId }
+		capture(
+			directory,
+			{
+				...common,
+				type: "request",
+				startedAt,
+				recordedAt: startedAt,
+				scope: { account, repository: "/lumbrook/platform/.git" },
+			},
+			"lumbrook-parity",
+		)
+		capture(
+			directory,
+			{ ...common, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
+			"lumbrook-parity",
+		)
+	}
+	const connectWorks = (directory: string) => {
+		for (const [index, owner] of works.entries())
+			capture(
+				directory,
+				{
+					version: 1,
+					type: "commit",
+					workId: owner,
+					sessionId: "lumbrook-session",
+					recordedAt: "2026-10-24T07:00:00.000Z",
+					repository: "/lumbrook/platform/.git",
+					worktree: "/lumbrook/platform",
+					sha: (index + 1).toString(16).repeat(40),
+					pullRequests: [
+						{
+							provider: "github",
+							id: "1534",
+							repositoryId: "4242",
+							host: "github.com",
+							repository: "lumbrook/platform",
+							number: 1534,
+							url: "https://github.com/lumbrook/platform/pull/1534",
+							state: "merged",
+							mergedAt: "2026-10-24T07:00:00.000Z",
+							closedAt: null,
+							checkedAt: "2026-10-24T07:00:00.000Z",
+							headSha: (index + 1).toString(16).repeat(40),
+							mergeCommitSha: null,
+						},
+					],
+				},
+				"lumbrook-parity",
+			)
+	}
+	const events = (directory: string) => {
+		const store = openStore(directory)
+		try {
+			return store.db
+				.query<{ id: string; entity_id: string; body: Uint8Array; hash: string }, []>(
+					"SELECT id, entity_id, body, hash FROM outbox_events ORDER BY rowid",
+				)
+				.all()
+				.map((row) => ({
+					id: row.id,
+					entityId: row.entity_id,
+					body: Buffer.from(row.body).toString("utf8"),
+					hash: row.hash,
+				}))
+		} finally {
+			store.close()
+		}
+	}
+	try {
+		for (const directory of [incremental, reference]) {
+			await setReportingEnabled(directory, true)
+			backendFor(directory).putNote("agent", "reporting-producer", JSON.stringify({ version: 1, producerId }))
+			if (linked !== undefined) connectWorks(directory)
+			for (let index = 0; index < (linked === undefined ? 4 : 8); index++)
+				seed(directory, index + (linked === undefined ? 0 : 10))
+			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+			if (backendFor(directory).markedRecords().length) throw new Error("Initial capture did not settle")
+			if (!backendFor(directory).getNote("agent", groupKey(works))) throw new Error("Initial group cache is absent")
+		}
+		for (const directory of [incremental, reference]) seed(directory, linked === undefined ? 4 : linked % 2 ? 1 : 20)
+		backendFor(reference).deleteNote("agent", groupKey(works))
+		for (const directory of [incremental, reference]) {
+			await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+			if (backendFor(directory).markedRecords().length) throw new Error("Appended request did not settle")
+		}
+		if (linked !== undefined) {
+			for (const directory of [incremental, reference]) seed(directory, linked % 2 ? 21 : 2)
+			backendFor(reference).deleteNote("agent", groupKey(works))
+			for (const directory of [incremental, reference]) {
+				await reconcileReporting(directory, directory, new AbortController().signal, () => {})
+				if (backendFor(directory).markedRecords().length) throw new Error("Second request did not settle")
+			}
+		}
+		out({ incremental: events(incremental), reference: events(reference) })
+	} finally {
+		closeBackends()
+		if (oldKey === undefined) delete process.env.KIMCHI_API_KEY
+		else process.env.KIMCHI_API_KEY = oldKey
+	}
+}
+
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
+	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
 	probe: (agent) => probe(agent),
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),

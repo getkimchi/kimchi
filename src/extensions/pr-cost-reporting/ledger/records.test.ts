@@ -221,6 +221,24 @@ describe("records conformance (memory backend)", () => {
 		expect(ledgerSessionInfo(dir, SESSION).recordCount).toBe(1)
 	})
 
+	it("looks up immutable authority by hash without scanning a work", () => {
+		const backend = createMemoryRecords()
+		const record = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		expect(backend.insertRecord(record)).toBe(true)
+		expect(backend.getRecord(record.recordHash)).toEqual(record)
+		expect(backend.getRecord("b".repeat(64))).toBeUndefined()
+	})
+
 	it("recovery rolls back marker clearing with the projection and only clears the rebuilt work", () => {
 		const dir = agentDir()
 		dirs.push(dir)

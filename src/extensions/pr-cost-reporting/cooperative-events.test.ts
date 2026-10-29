@@ -1,5 +1,9 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
 import type { WorkRecord } from "../work-attribution/summary.js"
@@ -118,4 +122,33 @@ console.log(JSON.stringify(results));
 			JSON.stringify(full.unresolved.filter((unit) => unit.requestId === result.changed)),
 		)
 	}
+})
+
+function sqliteParity(scenario?: string) {
+	const agent = mkdtempSync(join(tmpdir(), "lumbrook-pr-cost-parity-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const output = execFileSync("bun", [driver, "incremental-parity", agent, ...(scenario ? [scenario] : [])], {
+			encoding: "utf8",
+			timeout: 30_000,
+		})
+		return JSON.parse(output.trim().split("\n").at(-1) ?? "null") as {
+			incremental: { id: string; entityId: string; body: string; hash: string }[]
+			reference: { id: string; entityId: string; body: string; hash: string }[]
+		}
+	} finally {
+		rmSync(agent, { recursive: true, force: true })
+	}
+}
+
+it("preserves SQLite outbox event bytes and revisions when a new request uses the incremental path", () => {
+	const result = sqliteParity()
+	expect(result.incremental.length).toBeGreaterThanOrEqual(5)
+	expect(result.incremental).toEqual(result.reference)
+})
+
+it.each([1, 2, 3, 4, 5, 6])("matches full outbox bytes for linked works and request order, seed %i", (seed) => {
+	const result = sqliteParity(`linked:${seed}`)
+	expect(result.incremental.length).toBeGreaterThanOrEqual(9)
+	expect(result.incremental).toEqual(result.reference)
 })

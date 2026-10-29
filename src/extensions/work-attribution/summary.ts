@@ -233,12 +233,17 @@ export async function importWorkRecordsAsync(
 	agentDir: string,
 	checkBudget: () => void,
 	onRecordProblem?: (problem: WorkRecordProblem) => void,
+	parallelPrefix = false,
 ): Promise<void> {
 	checkBudget()
 	for (;;) {
 		await setImmediate()
 		checkBudget()
-		const imported = await importJournals(agentDir, { checkBudget, until: Date.now() + IMPORT_SLICE_MS })
+		const imported = await importJournals(agentDir, {
+			checkBudget,
+			until: Date.now() + IMPORT_SLICE_MS,
+			parallelPrefix,
+		})
 		if (!imported.pending) break
 	}
 	if (onRecordProblem) reportJournalProblems(agentDir, onRecordProblem, checkBudget)

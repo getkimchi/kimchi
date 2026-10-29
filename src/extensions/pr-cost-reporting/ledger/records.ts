@@ -89,6 +89,8 @@ export interface RecordBackend {
 	tx<T>(fn: () => T): T
 	/** True when a NEW row was inserted; false when the record hash already exists (import dedup). */
 	insertRecord(row: StoredRecord): boolean
+	/** Read one immutable authority row without scanning its work. */
+	getRecord(recordHash: string): StoredRecord | undefined
 	upsertMarker(recordHash: string, workId: string, type: string): void
 	pendingTranslations(after: number, through: number, limit: number): PositionedRecord[]
 	/** Every record not yet translated into events, by work. */
@@ -619,6 +621,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
 	const recordColumns =
 		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const getRecord = db.query<StoredRecord, [string]>(`SELECT ${recordColumns} FROM work_records WHERE record_hash = ?`)
 	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
@@ -740,6 +743,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		},
 		putHead: (head) => putHead.run(head.workId, JSON.stringify(head), Date.now()),
 		allHeads: () => allHeads.all().map((row) => JSON.parse(row.body) as WorkHead),
+		getRecord: (recordHash) => getRecord.get(recordHash) ?? undefined,
 		readRecords: (opts, checkBudget) => {
 			checkBudget?.()
 			// An index narrows the read; any other option filters its rows.

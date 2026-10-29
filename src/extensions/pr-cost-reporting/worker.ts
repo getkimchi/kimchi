@@ -17,6 +17,18 @@ import { isWorkAccount, isWorkScope, platformApiUrl } from "../work-attribution/
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents, buildEventsSteps } from "./events.js"
 import {
+	advanceGroupCache,
+	groupKey,
+	mergeSharedFacts,
+	observationUnits,
+	prepareGroupCache,
+	readChangedGroup,
+	requestIndexEntries,
+	sameCachedRepositories,
+	saveGroupCache,
+	verifySharedHeads,
+} from "./incremental.js"
+import {
 	acknowledgeBatch,
 	deliveryRetry,
 	effectiveClaim,
@@ -384,9 +396,14 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	check()
 	let historyComplete = true
-	await importWorkRecordsAsync(agentDir, check, () => {
-		historyComplete = false
-	})
+	await importWorkRecordsAsync(
+		agentDir,
+		check,
+		() => {
+			historyComplete = false
+		},
+		true,
+	)
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const backend = backendFor(agentDir)
 	const marked = new Map<string, Map<string, string>>()
@@ -502,9 +519,12 @@ async function translateGroup(
 	check: () => void,
 	signal: AbortSignal,
 	assertLease: () => void,
+	forceFull = false,
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
-	const cooperative = works.reduce((count, workId) => count + backend.recordCount(workId), 0) > COOPERATIVE_RECORDS
+	const fast = forceFull ? undefined : readChangedGroup(backend, works, producer, changed, check)
+	const cooperative =
+		fast !== undefined || works.reduce((count, workId) => count + backend.recordCount(workId), 0) > COOPERATIVE_RECORDS
 	const groupDeadline = cooperative ? Date.now() + GROUP_BUILD_MS : deadline
 	const groupCheck = () => {
 		if (!cooperative) return check()
@@ -512,18 +532,26 @@ async function translateGroup(
 		signal.throwIfAborted()
 		if (Date.now() >= groupDeadline) throw new CaptureTimeLimit("PR reporting group build time limit exceeded")
 	}
-	const stored = cooperative
-		? await readGroupStoredRecordsAsync(agentDir, works, groupCheck)
-		: works.flatMap((workId) => backend.readRecords({ workId }, check))
-	const records = cooperative
-		? await runCooperatively(
-				mapInChunks(stored, 128, (row) => JSON.parse(row.body) as WorkRecord),
-				groupCheck,
-			)
-		: stored.map((row) => {
-				check()
-				return JSON.parse(row.body) as WorkRecord
-			})
+	const through = fast?.through ?? backend.recordWatermark()
+	const stored = fast
+		? works.flatMap((workId) => [
+				...fast.cache.context.filter((row) => row.workId === workId),
+				...fast.stored.filter((row) => row.workId === workId),
+			])
+		: cooperative
+			? await readGroupStoredRecordsAsync(agentDir, works, groupCheck)
+			: works.flatMap((workId) => backend.readRecords({ workId }, check))
+	const records = fast
+		? stored.map((row) => JSON.parse(row.body) as WorkRecord)
+		: cooperative
+			? await runCooperatively(
+					mapInChunks(stored, 128, (row) => JSON.parse(row.body) as WorkRecord),
+					groupCheck,
+				)
+			: stored.map((row) => {
+					check()
+					return JSON.parse(row.body) as WorkRecord
+				})
 	const { report } = cooperative
 		? await runCooperatively(readWorkCostReportSteps(agentDir, records), groupCheck)
 		: readWorkCostReport(agentDir, records)
@@ -535,9 +563,10 @@ async function translateGroup(
 		cooperative ? AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)]) : bounded,
 		groupCheck,
 	)
-	// A commit or work link can move any request of the group; other records touch only their own request.
-	const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
-	const touched = structural
+	if (fast && !sameCachedRepositories(fast.cache, repositories))
+		return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
+	// An uncached group needs all request units to establish complete shared facts and bootstrap its projection.
+	const touched = !fast
 		? undefined
 		: {
 				requests: new Set(
@@ -548,24 +577,41 @@ async function translateGroup(
 				records: new Set(changed.keys()),
 			}
 	const claim = (account: string, entity: string) => effectiveClaim(backend, account, entity)
-	const built = cooperative
+	const partial = cooperative
 		? await runCooperatively(
 				buildEventsSteps(stored, report, repositories, producer, groupCheck, claim, touched, records),
 				groupCheck,
 			)
 		: buildEvents(stored, report, repositories, producer, check, claim, touched)
+	const built = fast ? mergeSharedFacts(fast.cache, partial) : partial
 	groupCheck()
+	const cache = settled
+		? fast
+			? advanceGroupCache(backend, fast.cache, through, fast.rows, report, repositories, built)
+			: prepareGroupCache(backend, works, producer, through, stored, records, report, repositories, built)
+		: undefined
+	if (cache && !fast) {
+		const index = requestIndexEntries(stored, records, report)
+		for (let offset = 0; offset < index.length; offset += 100) {
+			groupCheck()
+			backend.tx(() => {
+				for (const entry of index.slice(offset, offset + 100)) backend.putNote(entry.owner, entry.name, entry.body)
+			})
+			await setImmediate()
+		}
+	}
 	const facts = new Map(
 		built.accounts.map((group) => [
 			accountKey(group.account),
 			new Map(group.facts.map((fact) => [fact.entityId, fact])),
 		]),
 	)
+	const units = fast ? observationUnits(fast.cache, built) : built.units
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
 	const progress = {
 		group: hash(works),
 		markers: changed.size,
-		plan: hash(built.units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+		plan: hash(units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
 	const progressNote = `${PROGRESS_NOTE}${progress.group}`
 	const saved: unknown = JSON.parse(backend.getNote("agent", progressNote) ?? "null")
@@ -578,9 +624,9 @@ async function translateGroup(
 			? Number(saved.units)
 			: 0
 	const observed = new Set<string>()
-	while (done < built.units.length) {
+	while (done < units.length) {
 		if (Date.now() >= groupDeadline - CHUNK_RESERVE_MS) return undefined
-		const chunk = built.units.slice(done, done + CHUNK_UNITS)
+		const chunk = units.slice(done, done + CHUNK_UNITS)
 		const byAccount = new Map<string, Fact[]>()
 		for (const unit of chunk)
 			for (const entity of unit.entities) {
@@ -594,19 +640,39 @@ async function translateGroup(
 			}
 		done += chunk.length
 		backend.tx(() => {
+			if (fast && done === chunk.length && !verifySharedHeads(backend, fast.cache))
+				throw new Error("PR reporting shared facts changed during incremental capture")
 			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], groupCheck)
-			if (done === built.units.length) {
+			if (done === units.length) {
 				// A repository lookup that failed retries the group with a later pass.
-				if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+				if (settled) {
+					if (cache) {
+						if (fast)
+							for (const entry of requestIndexEntries(fast.stored, fast.rows, report))
+								backend.putNote(entry.owner, entry.name, entry.body)
+						saveGroupCache(backend, {
+							...cache,
+							shared: cache.shared.map((entry) => {
+								const head = backend.latestOutboxEvent(entry.account, entry.entityId)
+								return { ...entry, headId: head?.id ?? null, headHash: head?.hash ?? null }
+							}),
+						})
+					} else backend.deleteNote("agent", groupKey(works))
+					for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+				}
 				backend.deleteNote("agent", progressNote)
 			} else backend.putNote("agent", progressNote, JSON.stringify({ ...progress, units: done }))
 		})
 		await setImmediate()
 	}
-	if (built.units.length === 0)
+	if (units.length === 0)
 		backend.tx(() => {
 			groupCheck()
-			if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+			if (settled) {
+				if (cache) saveGroupCache(backend, cache)
+				else backend.deleteNote("agent", groupKey(works))
+				for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+			}
 			backend.deleteNote("agent", progressNote)
 		})
 	return built.unresolved.length > 0

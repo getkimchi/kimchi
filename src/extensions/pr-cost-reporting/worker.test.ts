@@ -12,6 +12,7 @@ import * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import * as eventBuilder from "./events.js"
+import { groupKey } from "./incremental.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
 import { backendFor, readRecords } from "./ledger/records.js"
@@ -873,6 +874,110 @@ describe("incremental translation", () => {
 		expect(cleared.length).toBeGreaterThan(0)
 		expect(new Set(cleared)).toEqual(new Set(observed))
 		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("reads only new request evidence after a group has caught up", async () => {
+		await seedLinked()
+		// This suite mocks the builder; return complete request units so it can persist a complete group projection.
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(
+			(_stored, report, _repos, _producer, _check, _claim, touched) => {
+				const selected = report.requests.filter((request) => !touched || touched.requests.has(request.requestId))
+				return {
+					accounts: [
+						{
+							account,
+							facts: selected.map((request) => ({
+								entityId: request.requestId,
+								source: "kimchi" as const,
+								sourceVersion: "test",
+								deviceId: request.requestId,
+								observeTime: "2026-10-04T12:00:00Z",
+								coverage: { code: "fixture", count: "1" },
+							})),
+							recordHashes: [],
+						},
+					],
+					units: selected.map((request) => ({
+						account: accountKey(account),
+						requestId: request.requestId,
+						entities: [request.requestId],
+						recordHashes: [],
+					})),
+					unresolved: [],
+				}
+			},
+		)
+		const path = join(directory, "work-attribution", "source.jsonl")
+		const workId = "55555555-5555-4555-8555-555555555555"
+		const request = (index: number) => ({
+			version: 1,
+			type: "request",
+			workId,
+			sessionId: "lumbrook-session",
+			requestId: `77777777-7777-4777-8777-${String(index).padStart(12, "0")}`,
+			recordedAt: "2026-10-04T12:00:00.000Z",
+			startedAt: "2026-10-04T12:00:00.000Z",
+			scope: { account, repository: "/private/repo/.git" },
+		})
+		await appendFile(path, `${Array.from({ length: 200 }, (_, index) => JSON.stringify(request(index))).join("\n")}\n`)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(backendFor(directory).markedRecords()).toEqual([])
+		await appendFile(path, `${JSON.stringify(request(200))}\n`)
+		const backend = backendFor(directory)
+		const read = backend.readRecords
+		let workRows = 0
+		vi.spyOn(backend, "readRecords").mockImplementation((opts, checkBudget) => {
+			const rows = read(opts, checkBudget)
+			if (opts.workId === workId) workRows += rows.length
+			return rows
+		})
+		await run()
+		expect(workRows).toBeLessThanOrEqual(8)
+
+		// A v1.22 ledger has no derived group note; rebuild it once, then use only new evidence again.
+		backend.deleteNote("agent", groupKey([workId]))
+		await appendFile(path, `${JSON.stringify(request(201))}\n`)
+		await run()
+		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
+		await appendFile(path, `${JSON.stringify(request(202))}\n`)
+		workRows = 0
+		await run()
+		expect(workRows).toBeLessThanOrEqual(8)
+
+		// File evidence can change attribution for earlier requests even without a new request row.
+		await appendFile(
+			path,
+			`${JSON.stringify({ version: 1, type: "file_transition", workId, sessionId: "lumbrook-session", transitionId: "later-edit", toolCallId: "edit", repository: "/private/repo/.git", worktree: "/private/repo", path: "src/lumbrook.ts", before: null, after: { blob: "a".repeat(40), mode: "100644" }, recordedAt: "2026-10-04T12:00:00.000Z" })}\n`,
+		)
+		workRows = 0
+		await run()
+		expect(workRows).toBeGreaterThan(8)
+		expect(backend.getNote("agent", groupKey([workId]))).toBeDefined()
+
+		const beforeObservation = backend.recordCount(workId)
+		const observation = {
+			version: 1,
+			type: "file_observation",
+			workId,
+			sessionId: "lumbrook-session",
+			requestId: request(203).requestId,
+			observationId: "lumbrook-incomplete-scan",
+			toolCallId: "read",
+			source: "bash",
+			repository: "/private/repo/.git",
+			worktree: "/private/repo",
+			startedAt: "2026-10-04T12:00:00.000Z",
+			recordedAt: "2026-10-04T12:00:00.000Z",
+			complete: false,
+			files: [],
+			reason: "incomplete-snapshot",
+		}
+		await appendFile(path, `${JSON.stringify(request(203))}\n${JSON.stringify(observation)}\n`)
+		workRows = 0
+		await run()
+		expect(backend.recordCount(workId)).toBe(beforeObservation + 2)
+		expect(workRows).toBeGreaterThan(8)
 	})
 
 	it("rebuilds only the group of works whose records changed", async () => {

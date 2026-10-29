@@ -459,6 +459,81 @@ describe("import loop over the memory backend", () => {
 		reads.mockRestore()
 	})
 
+	it("keeps capture prefix chunks current across consecutive appends", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		while ((await importJournals(dir)).pending) {}
+		await importJournals(dir, { parallelPrefix: true })
+		appendFileSync(file, line(request("req-1")))
+		expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+		const update = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update")
+		try {
+			appendFileSync(file, line(request("req-2")))
+			expect((await importJournals(dir, { parallelPrefix: true })).imported).toBe(1)
+			expect(update.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.length >= 1024 * 1024)).toHaveLength(
+				0,
+			)
+		} finally {
+			update.mockRestore()
+		}
+	})
+
+	it("verifies capture-only appends in parallel and rejects same-inode prefix rewrites", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = `${" ".repeat(2 * 1024 * 1024)}\n${line(request("req-1"))}`
+		writeFileSync(file, original)
+		while ((await importJournals(dir)).pending) {}
+		const digest = vi.spyOn(crypto.subtle, "digest")
+		try {
+			await importJournals(dir, { parallelPrefix: true })
+			appendFileSync(file, line(request("req-2")))
+			const appended = await importJournals(dir, { parallelPrefix: true })
+			expect(appended.imported).toBe(1)
+			expect(digest).toHaveBeenCalled()
+			writeFileSync(file, original.replace("req-1", "req-X") + line(request("req-3")))
+			const changedTime = new Date(Date.now() + 10_000)
+			utimesSync(file, changedTime, changedTime)
+			let rewritten = await importJournals(dir, { parallelPrefix: true })
+			expect(rewritten.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+			while (rewritten.pending) rewritten = await importJournals(dir, { parallelPrefix: true })
+			expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-2", "req-X", "req-3"])
+		} finally {
+			digest.mockRestore()
+		}
+	})
+
+	it("reuses verified prefix line counts after an idle pass without shifting diagnostics", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(work()) + line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir)).imported).toBe(2)
+		const changedTime = new Date(Date.now() + 10_000)
+		utimesSync(file, changedTime, changedTime)
+		expect((await importJournals(dir)).files).toEqual([])
+		const scan = vi.spyOn(Buffer.prototype, "indexOf")
+		try {
+			appendFileSync(file, "not json\n")
+			const result = await importJournals(dir)
+			expect(result.problems).toMatchObject([{ kind: "invalid", path: file, line: 3 }])
+			const prefixScans = scan.mock.calls.filter(
+				([needle], index) =>
+					needle === 0x0a && (scan.mock.contexts[index] as Buffer).length === Buffer.byteLength(original),
+			)
+			expect(prefixScans).toHaveLength(0)
+		} finally {
+			scan.mockRestore()
+		}
+	})
+
 	it("detects a consumed-prefix rewrite even when a new record is appended", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
