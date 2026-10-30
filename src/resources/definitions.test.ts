@@ -112,6 +112,15 @@ describe("resource definitions", () => {
 		})
 	})
 
+	it("registers PII redaction as a default-off extension resource", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.pii-redaction")).toMatchObject({
+			kind: "extensions",
+			label: "PII redaction",
+			defaultEnabled: false,
+			restartRequired: true,
+		})
+	})
+
 	it("registers Kimchi Workflows as a default-off built-in extension", () => {
 		const resource = getResourceDefinitions().find((candidate) => candidate.id === "extensions.workflows")
 

@@ -21,9 +21,10 @@
  * - No memory doubling — the WeakMap holds one redacted reference per message
  *   and is GC'd when the session manager drops the original
  *
- * Redaction is disabled by default. Enable via:
- *   - KIMCHI_REDACTION_ENABLED=1 env var
- *   - config.json { "redaction": { "enabled": true } }
+ * Redaction is disabled by default. It is governed by the resources system:
+ *   - /resources toggle or settings.json resources override
+ *   - KIMCHI_ENABLE_RESOURCES=extensions.pii-redaction env (transient)
+ *   - the org policy's kimchiResources entry (ON/OFF defaults, FORCE_* locks)
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
