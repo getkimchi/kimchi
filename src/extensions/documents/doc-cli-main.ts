@@ -7,7 +7,7 @@
  * script-exec bootstrap (and its tempdir-EPERM failure class) is not
  * involved at all.
  */
-import { existsSync } from "node:fs"
+import { existsSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
@@ -16,6 +16,25 @@ import { DOC_CLI_SKILLS, type DocCliSkill } from "./doc-cli-skills.js"
 import { isDocumentError } from "./model.js"
 
 type CliRunner = (argv: string[], io: Pick<DocumentCliIo, "stdout" | "stderr">) => Promise<number>
+
+/** Deterministic line writer: one writeSync(2) syscall per line, so every
+ *  byte is in the OS pipe before the next statement runs. No exit path —
+ *  process.exit, a drained event loop, anything — can drop it. EAGAIN on a
+ *  non-blocking fd retries, mirroring Node's own sync-writer fallback. */
+function writeLineSync(fd: 1 | 2): (line: string) => void {
+	return (line: string) => {
+		const buffer = Buffer.from(`${line}\n`, "utf8")
+		let written = 0
+		while (written < buffer.length) {
+			try {
+				written += writeSync(fd, buffer, written, buffer.length - written)
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === "EAGAIN") continue
+				throw err
+			}
+		}
+	}
+}
 
 export interface DocCliDeps {
 	/** Bundled skills dir resolver; defaults to resolveBundledSkillsDir(). */
@@ -38,8 +57,8 @@ export async function runDocCliMain(args: string[], deps: DocCliDeps = {}): Prom
 	const io =
 		deps.io ??
 		({
-			stdout: (line: string) => console.log(line),
-			stderr: (line: string) => console.error(line),
+			stdout: writeLineSync(1),
+			stderr: writeLineSync(2),
 		} satisfies Pick<DocumentCliIo, "stdout" | "stderr">)
 	const [skill, ...rest] = args
 	if (!skill || !(DOC_CLI_SKILLS as readonly string[]).includes(skill)) {
