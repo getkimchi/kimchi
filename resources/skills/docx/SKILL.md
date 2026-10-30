@@ -3,6 +3,10 @@ name: docx
 description: Read, create, and edit local .docx files — extract to Markdown, write from Markdown, replace text, insert content, edit tables, add comments. Use whenever the user mentions a .docx file.
 requires-resource: skills.docx
 disables-skills: docx
+triggers:
+  prompt:
+    extensions: [docx]
+    keywords: [docx, word document, word doc, microsoft word]
 ---
 
 # docx

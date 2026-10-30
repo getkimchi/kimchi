@@ -67,6 +67,7 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
+	skill_autoload: `_${CAPABILITIES_KEY}/skill_autoload`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

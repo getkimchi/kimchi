@@ -33,3 +33,10 @@ export const markOrchestratorSteer = markHarnessSteer
 export function isHarnessSteer(text: string): boolean {
 	return text.startsWith(SYSTEM_REMINDER_OPEN) && text.endsWith(SYSTEM_REMINDER_CLOSE)
 }
+
+/** Neutralize literal closing markers inside content about to be wrapped by
+ *  {@link markHarnessSteer}: a `</system-reminder>` in the payload would close
+ *  the wrapper early, letting trailing text read as a genuine user prompt. */
+export function escapeClosingMarker(text: string): string {
+	return text.replaceAll("</system-reminder>", "< /system-reminder>")
+}

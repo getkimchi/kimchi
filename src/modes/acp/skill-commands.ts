@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent"
+import { SKILL_INVOKE_PREFIX } from "../../extensions/skills-manager/skill-triggers.js"
 
 export interface AcpSkillInfo {
 	readonly name: string
@@ -131,7 +132,7 @@ export async function tryParseSkillCommand(
  */
 export function buildSkillCommandPrompt(rewrite: SkillCommandRewrite): string {
 	const { skillName, remainingText, skillContent } = rewrite
-	const header = `Invoking skill: ${skillName}`
+	const header = `${SKILL_INVOKE_PREFIX}${skillName}`
 	const prefix = [header, "", skillContent].join("\n")
 	return remainingText ? `${prefix}\n\n${remainingText}` : prefix
 }
