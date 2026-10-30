@@ -77,7 +77,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn,
-				sessions: [
+				getSessions: () => [
 					{ sessionId: "sess-1", turnActive: false, isCompacting: false, reloadToken: "tok-1" },
 					{ sessionId: "sess-2", turnActive: false, isCompacting: false, reloadToken: "tok-2" },
 				],
@@ -100,7 +100,7 @@ describe("handleReloadMcpConfig", () => {
 		await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{ servers: ["github"] },
 		)
@@ -116,7 +116,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [
+				getSessions: () => [
 					{ sessionId: "sess-busy", turnActive: true, isCompacting: false, reloadToken: "tok-busy" },
 					{ sessionId: "sess-idle", turnActive: false, isCompacting: false, reloadToken: "tok-idle" },
 				],
@@ -136,7 +136,10 @@ describe("handleReloadMcpConfig", () => {
 		registerReloadHandle("tok-1", handle)
 
 		const result = await handleReloadMcpConfig(
-			{ conn: makeConn(), sessions: [{ sessionId: "s", turnActive: false, isCompacting: true, reloadToken: "tok-1" }] },
+			{
+				conn: makeConn(),
+				getSessions: () => [{ sessionId: "s", turnActive: false, isCompacting: true, reloadToken: "tok-1" }],
+			},
 			{},
 		)
 
@@ -152,7 +155,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{},
 		)
@@ -180,7 +183,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{},
 		)
@@ -198,7 +201,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{},
 		)
@@ -212,7 +215,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [
+				getSessions: () => [
 					{ sessionId: "s1", turnActive: false, isCompacting: false },
 					{ sessionId: "s2", turnActive: false, isCompacting: false, reloadToken: "tok-missing" },
 				],
@@ -235,7 +238,7 @@ describe("handleReloadMcpConfig", () => {
 		const result = await handleReloadMcpConfig(
 			{
 				conn,
-				sessions: [
+				getSessions: () => [
 					{ sessionId: "sess-1", turnActive: false, isCompacting: false, reloadToken: "tok-1" },
 					{ sessionId: "sess-2", turnActive: false, isCompacting: false, reloadToken: "tok-2" },
 				],
@@ -295,7 +298,7 @@ describe("handleReloadMcpConfig", () => {
 		await handleReloadMcpConfig(
 			{
 				conn,
-				sessions: [
+				getSessions: () => [
 					{ sessionId: "sess-busy", turnActive: true, isCompacting: false, reloadToken: busyToken },
 					{ sessionId: "sess-refused", turnActive: false, isCompacting: false, reloadToken: refusedToken },
 					{ sessionId: "sess-error", turnActive: false, isCompacting: false, reloadToken: errorToken },
@@ -335,14 +338,14 @@ describe("handleReloadMcpConfig", () => {
 		const first = handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s1", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s1", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{},
 		)
 		const second = handleReloadMcpConfig(
 			{
 				conn: makeConn(),
-				sessions: [{ sessionId: "s2", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
+				getSessions: () => [{ sessionId: "s2", turnActive: false, isCompacting: false, reloadToken: "tok-1" }],
 			},
 			{},
 		)
@@ -359,17 +362,33 @@ describe("handleReloadMcpConfig", () => {
 		expect(maxActive).toBe(1)
 	})
 
+	it("evaluates the idle gate from a snapshot re-read at apply time, not request time", async () => {
+		// The snapshot callback runs inside the serialized section: mutating the
+		// session between the request and the (microtask-deferred) apply must be
+		// observed — a request-time snapshot would miss the turn and reload into
+		// a live turn.
+		registerReloadHandle("tok-1", makeHandle())
+		const entry = { sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }
+		const getSessions = vi.fn(() => [entry])
+		const promise = handleReloadMcpConfig({ conn: makeConn(), getSessions }, { applyToken: "tok-x" })
+		entry.turnActive = true
+		const result = await promise
+		expect(getSessions).toHaveBeenCalledTimes(1)
+		expect(result.fallbackReason).toBe("sessions_busy")
+		expect(result.sessions[0]).toMatchObject({ sessionId: "s", status: "busy" })
+	})
+
 	it("unregistered handles mid-flight are picked up per call, not cached", async () => {
 		const handle = makeHandle()
 		registerReloadHandle("tok-1", handle)
 		const conn = makeConn()
 		const sessions = [{ sessionId: "s", turnActive: false, isCompacting: false, reloadToken: "tok-1" }]
 
-		const first = await handleReloadMcpConfig({ conn, sessions }, {})
+		const first = await handleReloadMcpConfig({ conn, getSessions: () => sessions }, {})
 		expect(first.applied).toBe(true)
 
 		unregisterReloadHandle("tok-1")
-		const second = await handleReloadMcpConfig({ conn, sessions }, {})
+		const second = await handleReloadMcpConfig({ conn, getSessions: () => sessions }, {})
 		expect(second.fallbackReason).toBe("no_mcp_extension")
 		expect(second.sessions[0]).toMatchObject({ status: "no_extension" })
 	})
