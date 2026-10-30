@@ -13,6 +13,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { deferExtensionAction } from "../deferred-action.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
+import { survivingSteerNames } from "../steer-survival.js"
 import { TriggerEngine } from "./engine.js"
 import { EvalEngine } from "./eval-engine.js"
 import { registerRulesBlock } from "./rules-block.js"
@@ -58,36 +59,6 @@ function collectSessionSpecs(triggered: readonly TriggeredBehaviour[]): ProbeSpe
 
 function isTriggered(b: Behaviour): b is TriggeredBehaviour {
 	return b.kind === "triggered"
-}
-
-/** A session-branch entry that carries a steered behaviour body. */
-function isBehaviourSteerEntry(entry: unknown): entry is { details: { name: string } } {
-	if (!entry || typeof entry !== "object") return false
-	const record = entry as { type?: unknown; customType?: unknown; details?: unknown }
-	if (record.type !== "custom_message" || record.customType !== BEHAVIOUR_BODY_TYPE) return false
-	return typeof (record.details as { name?: unknown } | undefined)?.name === "string"
-}
-
-/** Names of behaviours whose steer entry is still in the post-compaction
- *  context — i.e. inside the keep-recent window the rewrite retained
- *  verbatim. Undefined when the compaction entry or the session branch
- *  cannot be read (synthetic events, exotic session managers): callers fall
- *  back to re-steering, preserving the delivery guarantee over the dedup. */
-function survivingSteerNames(
-	event: { compactionEntry?: { id?: string; firstKeptEntryId?: string } },
-	ctx?: { sessionManager?: { getBranch?: () => unknown[] } },
-): Set<string> | undefined {
-	const compaction = event?.compactionEntry
-	const branch = ctx?.sessionManager?.getBranch?.()
-	if (!compaction || !Array.isArray(branch)) return undefined
-	const cutId = compaction.firstKeptEntryId ?? compaction.id
-	const cutIndex = branch.findIndex((entry) => (entry as { id?: string }).id === cutId)
-	if (cutIndex < 0) return undefined
-	const names = new Set<string>()
-	for (const entry of branch.slice(cutIndex)) {
-		if (isBehaviourSteerEntry(entry)) names.add(entry.details.name)
-	}
-	return names
 }
 
 export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[], options: WireOptions = {}): void {
@@ -201,7 +172,7 @@ export function wireBehaviours(pi: ExtensionAPI, behaviours: readonly Behaviour[
 	// at one body per tool-loaded behaviour per compaction. The reason detail
 	// distinguishes re-steers from first deliveries without a new entry type.
 	pi.on("session_compact", async (event, ctx) => {
-		const keptNames = survivingSteerNames(event, ctx)
+		const keptNames = survivingSteerNames(event, ctx, BEHAVIOUR_BODY_TYPE)
 		for (const b of triggered) {
 			if (engine.loadRecord(b.name)?.trigger !== "tool") continue
 			if (keptNames?.has(b.name)) continue

@@ -50,6 +50,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/model-routing.md](docs/model-routing.md) — auto model routing (incl. multi-model: main/author/verifier)
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
+- [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on `triggers.prompt` keyword matches
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes

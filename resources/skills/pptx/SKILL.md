@@ -3,6 +3,9 @@ name: pptx
 description: Read, inspect, check, create, edit, and visually render PowerPoint decks (.pptx) locally. Use whenever the user mentions a .pptx file or slides.
 requires-resource: skills.pptx
 disables-skills: pptx
+triggers:
+  prompt:
+    - '\.pptx\b'
 ---
 
 # pptx

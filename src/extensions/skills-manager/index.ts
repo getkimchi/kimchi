@@ -2,6 +2,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { createSkillAutoLoader } from "./auto-load.js"
 import { SkillManager } from "./skill-manager.js"
 import { createSkillManageTool, createSkillViewTool } from "./tool.js"
 import { UsageTracker } from "./usage.js"
@@ -38,6 +39,8 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 		discoveredSkills = []
 	})
 	manager.setDiscoveredSkillsProvider(() => discoveredSkills)
+
+	createSkillAutoLoader(pi, manager, { tracker })
 
 	pi.registerTool(createSkillViewTool(manager, tracker))
 	if (options?.registerSkillManageTool !== false) {
