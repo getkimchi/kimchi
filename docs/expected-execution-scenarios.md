@@ -254,7 +254,7 @@ All three models used, each on its strength.
 **Option B — kimi explores itself (it can read files), then plans, then delegates build:**
 Kimi reads the handler files directly (it has tool access). Skips the
 explore subagent. Plans. Delegates build to minimax. Total: ~150k kimi
-(explore + plan) + ~250k minimax (build). Simpler but kimi's explore tokens
+(explore + plan) + ~250k minimax (build). Simpler, but kimi's explore tokens
 are expensive. This violates the strengths rule — kimi does not have
 `explore` in its strengths.
 
