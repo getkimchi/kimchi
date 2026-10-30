@@ -29,6 +29,7 @@ import {
 	sendNotification,
 	sendRequest,
 	shutdownAll,
+	splitStderrLines,
 } from "./client.js"
 import {
 	LSP_EVICT_GRACE_MS,
@@ -75,7 +76,9 @@ interface FakeProc {
 	enqueueRaw: (content: string) => void
 	closeStdout: () => void
 	errorStdout: (err: Error) => void
+	errorStderr: (err: Error) => void
 	isKilled: () => boolean
+	killCount: () => number
 }
 
 function createFakeProc(): FakeProc {
@@ -93,6 +96,7 @@ function createFakeProc(): FakeProc {
 	})
 	const written: string[] = []
 	let killed = false
+	let kills = 0
 	const proc: BunProcess = {
 		stdin: {
 			write(data: Uint8Array | string) {
@@ -109,6 +113,7 @@ function createFakeProc(): FakeProc {
 		stderr,
 		kill() {
 			killed = true
+			kills++
 			try {
 				stdoutController?.close()
 			} catch {
@@ -146,7 +151,15 @@ function createFakeProc(): FakeProc {
 				/* already closed */
 			}
 		},
+		errorStderr: (err: Error) => {
+			try {
+				stderrController?.error(err)
+			} catch {
+				/* already closed */
+			}
+		},
 		isKilled: () => killed,
+		killCount: () => kills,
 	}
 }
 
@@ -440,6 +453,11 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		await expect(
 			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
 		).rejects.toThrow(/pipe closed/)
+		// The original transport error survives as `cause` — code/errno/syscall
+		// and the stack stay available to upstream classifiers and logs.
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).rejects.toMatchObject({ cause: epipe })
 
 		// The corpse must not stay registered: otherwise the next file op keeps
 		// writing into the dead pipe instead of respawning a fresh server.
@@ -502,6 +520,51 @@ describe("dead server pipe (EPIPE) resilience", () => {
 
 		expect(getAllClients()).toHaveLength(0)
 		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("survives an errored stderr stream without leaking an unhandled rejection", async () => {
+		// closeDeadClient's kill can race an in-flight stderr read; the errored
+		// stream must not escape the drain IIFE as an unhandled rejection
+		// (fatal in Bun — the exact crash class this module guards against).
+		const client = await startChain()
+		fakes[0].errorStderr(new Error("simulated stderr stream error"))
+		await new Promise((r) => setTimeout(r, 100))
+
+		// The chain itself is unaffected: writes still work.
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).resolves.toBeUndefined()
+	})
+
+	it("survives a reader crash racing a failed write (double teardown)", async () => {
+		// Both death paths fire for the same chain: closeDeadClient must be
+		// idempotent — double kill() and identity-checked registry removal
+		// must not throw, and the corpse must be gone either way.
+		const client = await startChain()
+		const pending = sendRequest(client, "textDocument/hover", {}).catch(() => "rejected")
+		killStdin(fakes[0])
+
+		const notification = sendNotification(client, "textDocument/didOpen", {
+			textDocument: { uri: fileToUri(`${CWD}/f0.ts`) },
+		}).catch(() => "n-failed")
+		fakes[0].errorStdout(new Error("simulated reader crash"))
+
+		expect(await Promise.all([pending, notification])).toEqual(["rejected", "n-failed"])
+		await new Promise((r) => setTimeout(r, 100))
+
+		expect(getAllClients()).toHaveLength(0)
+		// Both teardowns ran — the second kill is the point: it must not throw.
+		expect(fakes[0].killCount()).toBe(2)
+	})
+})
+
+describe("splitStderrLines", () => {
+	it("emits complete lines and keeps the trailing partial line buffered", () => {
+		expect(splitStderrLines("first\nsecond\npar")).toEqual({ lines: ["first", "second"], rest: "par" })
+		expect(splitStderrLines("tail\n")).toEqual({ lines: ["tail"], rest: "" })
+		expect(splitStderrLines("")).toEqual({ lines: [], rest: "" })
+		// A crash dump without a trailing newline stays buffered until done.
+		expect(splitStderrLines("no newline at all")).toEqual({ lines: [], rest: "no newline at all" })
 	})
 })
 
