@@ -701,6 +701,8 @@ export function calculatePullRequestCosts(
 			}
 		}
 	}
+	/** Per work: when it first recorded each commit, the commit's PR, and when the work's stretch for that PR ends. */
+	const workCommits = new Map<string, { at: number; sha: string; key?: string; end: number }[]>()
 	// A commit first linked to one PR keeps its cost there even when later rows also name the PRs it
 	// passed through. Closed-without-merge links yield to open or merged candidates, and keys first
 	// listed together stay shared, and keys without a known listing time are never dropped: dropping an
@@ -728,6 +730,36 @@ export function calculatePullRequestCosts(
 			const linked = JSON.stringify([links.workId, key])
 			if (recordedAt < (firstLinked.get(linked) ?? Number.POSITIVE_INFINITY)) firstLinked.set(linked, recordedAt)
 		}
+		const commits = workCommits.get(links.workId) ?? []
+		commits.push({
+			at: recordedAt,
+			sha: links.sha,
+			// A commit still in several PRs keeps its stretch of the work shared.
+			key: keys.size === 1 ? [...keys][0] : undefined,
+			end: Math.min(...[...keys].map((key) => links.listedAt.get(key) ?? Number.POSITIVE_INFINITY)),
+		})
+		workCommits.set(links.workId, commits)
+	}
+	/**
+	 * A work whose commits went to several PRs splits its requests by time, as the backend splits a Claude Code or Codex
+	 * work: each commit's PR takes the requests up to that PR's first listing or the work's next commit, whichever came
+	 * first, and the last PR takes the rest.
+	 */
+	for (const commits of workCommits.values()) {
+		commits.sort(
+			(a, b) => a.at - b.at || a.sha.localeCompare(b.sha) || (a.key ?? "").localeCompare(b.key ?? "") || a.end - b.end,
+		)
+		for (const [index, commit] of commits.entries())
+			if (index && commit.at < commits[index - 1].end) commits[index - 1].end = commit.at
+	}
+	/** The PR a work was heading for when a request started: the first stretch ending at or after it, else the last. */
+	const prAt = (workId: string, startedAt: number) => {
+		const commits = workCommits.get(workId) ?? []
+		return (commits.find((commit) => commit.end >= startedAt) ?? commits.at(-1))?.key
+	}
+	const repositoryOf = (key: string) => {
+		const pr = pulls.get(key)?.pullRequest
+		return JSON.stringify([pr?.provider, pr?.host, pr?.repositoryId ?? pr?.repository])
 	}
 	/**
 	 * A request that started before one candidate PR merged is not shared with a follow-up PR
@@ -794,6 +826,20 @@ export function calculatePullRequestCosts(
 					pullRequestIds = pullRequestIds.filter((key) => !followUps.has(key))
 					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 					// Timing narrows the candidates but never confirms the remaining PR.
+					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
+				}
+
+				// The rest follow their work's time split. A request linked to other works keeps all their PRs, and one
+				// whose PRs are in different repositories is still reported as unknown in each.
+				const heading = link || owner.startedAt === undefined ? undefined : prAt(workIds[0], owner.startedAt)
+				if (
+					allocated.allocation === "shared" &&
+					heading &&
+					pullRequestIds.includes(heading) &&
+					pullRequestIds.every((key) => repositoryOf(key) === repositoryOf(heading))
+				) {
+					pullRequestIds = [heading]
+					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 			}

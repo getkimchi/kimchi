@@ -475,9 +475,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 			otherCommit(),
 		]
 		const prices = [charge("a", "1")]
-		expect(calculatePullRequestCosts(rows, prices).requests[0].allocation).toBe(
-			attribution === "inferred" ? "inferred" : "shared",
-		)
+		expect(calculatePullRequestCosts(rows, prices).requests[0].allocation).toBe("inferred")
 		rows.push(contribution(edit))
 		const report = calculatePullRequestCosts(rows, prices)
 		expect(report.requests[0]).toMatchObject({ allocation: "pull-request", pullRequestIds: [firstKey] })
@@ -485,7 +483,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		expect(calculatePullRequestCosts(rows.toReversed(), prices)).toEqual(report)
 	})
 
-	it("allocates each editing request once while leaving planning and auxiliary requests shared", () => {
+	it("allocates each editing request once and gives planning and auxiliary requests to the first PR by time", () => {
 		const first = nativeEdit("first")
 		const second = nativeEdit("second", { sessionId: "child" })
 		const report = calculatePullRequestCosts(
@@ -511,10 +509,11 @@ describe("exclusive native contributions within a multi-PR work", () => {
 			sessionIds: ["child"],
 		})
 		expect(report.pullRequests.map((row) => [row.requestIds, row.knownCostUsd, row.totalCostUsd])).toEqual([
-			[["first"], "0.100000000", null],
-			[["second"], "0.200000000", null],
+			[["first", "plan", "title"], "0.410000000", "0.410000000"],
+			[["second"], "0.200000000", "0.200000000"],
 		])
-		expect(report.unallocated.shared).toMatchObject({ requestIds: ["plan", "title"], totalCostUsd: "0.310000000" })
+		expect(report.unallocated.inferred).toMatchObject({ requestIds: ["plan", "title"], totalCostUsd: "0.310000000" })
+		expect(report.unallocated.shared.requestIds).toEqual([])
 	})
 
 	it("joins separate PR observations and all native transitions without replaying charges twice", () => {
@@ -538,17 +537,15 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		)
 	})
 
-	it("keeps a whole request shared when its native edits contribute to different PRs", () => {
+	it("keeps a whole request unconfirmed when its native edits contribute to different PRs", () => {
 		const first = nativeEdit("a")
 		const second = nativeEdit("a", { transitionId: "edit-other", path: "other.ts" })
 		const report = calculatePullRequestCosts(
 			[request("a"), first, second, contribution(first), contribution(second, secondPull(), { sha: "b".repeat(40) })],
 			[charge("a", "1")],
 		)
-		expect(report.unallocated.shared.totalCostUsd).toBe("1.000000000")
-		expect(report.pullRequests.every((row) => row.knownCostUsd === "0.000000000" && row.totalCostUsd === null)).toBe(
-			true,
-		)
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [firstKey] })
+		expect(report.pullRequests.map((row) => row.knownCostUsd)).toEqual(["1.000000000", "0.000000000"])
 	})
 
 	it.each(["unlinked", "weak"])("requires every native transition a commit names to be covered (%s)", (kind) => {
@@ -576,7 +573,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 						}),
 			}),
 		]
-		expect(calculatePullRequestCosts(records, [charge("a", "1")]).requests[0].allocation).toBe("shared")
+		expect(calculatePullRequestCosts(records, [charge("a", "1")]).requests[0].allocation).toBe("inferred")
 	})
 
 	it("does not let a native edit no commit names, such as a scratch file, block the PR its other edits prove", () => {
@@ -602,7 +599,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		const conflicting = { ...edit, [field]: field === "after" ? { blob: "f".repeat(40), mode: "100644" } : "different" }
 		const records = [request("a"), edit, conflicting, contribution(edit), otherCommit()]
 		const report = calculatePullRequestCosts(records, [charge("a", "1")])
-		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.requests[0].allocation).toBe("inferred")
 		expect(calculatePullRequestCosts(records.toReversed(), [charge("a", "1")])).toEqual(report)
 	})
 
@@ -610,7 +607,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		const edit = nativeEdit("a")
 		const forged = contribution(edit, pullRequest(), { [field]: "different" })
 		const report = calculatePullRequestCosts([request("a"), edit, forged, commit(), otherCommit()], [charge("a", "1")])
-		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.requests[0].allocation).toBe("inferred")
 	})
 
 	it.each([
@@ -626,7 +623,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 			[request("a"), ...rows, contribution(edit), otherCommit()],
 			[charge("a", "1")],
 		)
-		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.requests[0].allocation).toBe("inferred")
 	})
 
 	it("requires the native file match rather than broad commit transition IDs", () => {
@@ -638,7 +635,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		})
 		expect(
 			calculatePullRequestCosts([request("a"), edit, record, otherCommit()], [charge("a", "1")]).requests[0].allocation,
-		).toBe("shared")
+		).toBe("inferred")
 	})
 
 	it("does not claim complete coverage when one file match references a missing transition", () => {
@@ -655,7 +652,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		})
 		expect(
 			calculatePullRequestCosts([request("a"), edit, record, otherCommit()], [charge("a", "1")]).requests[0].allocation,
-		).toBe("shared")
+		).toBe("inferred")
 	})
 
 	it.each([
@@ -668,7 +665,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		expect(
 			calculatePullRequestCosts([request("a"), edit, contribution(edit), broken], [charge("a", "1")]).requests[0]
 				.allocation,
-		).toBe("shared")
+		).toBe("inferred")
 	})
 
 	it("does not validate a chain whose other recorded member is malformed", () => {
@@ -688,18 +685,18 @@ describe("exclusive native contributions within a multi-PR work", () => {
 			calculatePullRequestCosts(
 				[request("a"), request("b"), edit, broken, record, otherCommit()],
 				[charge("a", "1"), charge("b", "1")],
-			).requests.every((row) => row.allocation === "shared"),
+			).requests.every((row) => row.allocation === "inferred"),
 		).toBe(true)
 	})
 
-	it("keeps a tracked rewrite without its own native file proof shared", () => {
+	it("keeps a tracked rewrite without its own native file proof unconfirmed", () => {
 		const edit = nativeEdit("a")
 		const copy = otherCommit()
 		copy.rewrittenFrom = "a".repeat(40)
 		expect(
 			calculatePullRequestCosts([request("a"), edit, contribution(edit), copy], [charge("a", "1")]).requests[0]
 				.allocation,
-		).toBe("shared")
+		).toBe("inferred")
 	})
 
 	it("keeps the original request owner even when all native evidence claims another owner", () => {
@@ -708,7 +705,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 			[request("a"), edit, contribution(edit), commit(), otherCommit()],
 			[charge("a", "1")],
 		)
-		expect(report.requests[0]).toMatchObject({ allocation: "shared", workIds: ["work-a"], sessionIds: ["session-a"] })
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", workIds: ["work-a"], sessionIds: ["session-a"] })
 	})
 
 	it("supports a native new file in a root commit without inventing an earlier blob", () => {
@@ -732,7 +729,7 @@ describe("exclusive native contributions within a multi-PR work", () => {
 		expect(
 			calculatePullRequestCosts([request("a"), edit, contribution(edit), copied, otherCommit()], [charge("a", "1")])
 				.requests[0].allocation,
-		).toBe("shared")
+		).toBe("inferred")
 	})
 
 	it.each(["boundary", "after", "open"])("uses only the proven target's merge cutoff (%s)", (kind) => {
@@ -798,7 +795,7 @@ describe("confirmed and inferred spend per input", () => {
 			inferred: { requestIds: ["chat"], totalCostUsd: "0.000000001" },
 		})
 	})
-	it("keeps an input shared when its requests edited two different PRs", () => {
+	it("keeps an input unconfirmed when its requests edited two different PRs", () => {
 		const segment = { id: "one-input", attribution: "session", reason: "matching-disabled" }
 		const first = nativeEdit("first")
 		const second = nativeEdit("second", { path: "second.ts" })
@@ -813,8 +810,8 @@ describe("confirmed and inferred spend per input", () => {
 			],
 			[charge("first", "1"), charge("second", "2")],
 		)
-		expect(costs.requests.map((row) => row.allocation)).toEqual(["shared", "shared"])
-		expect(costs.pullRequests.every((row) => row.totalCostUsd === null)).toBe(true)
+		expect(costs.requests.map((row) => row.allocation)).toEqual(["inferred", "inferred"])
+		expect(costs.pullRequests.every((row) => row.explicit.requestIds.length === 0)).toBe(true)
 	})
 })
 
@@ -1442,14 +1439,14 @@ describe("one work across a merged PR and its follow-up", () => {
 		it.each([
 			["a commit recorded before the merge", followUpCommit({ recordedAt: time(25) })],
 			["a rebased commit whose original came before the merge", followUpCommit({ rewrittenFrom: "d".repeat(40) })],
-		])("keeps planning shared with a PR that has %s", (_case, secondCommit) => {
+		])("gives planning to the first PR by time when the follow-up PR has %s", (_case, secondCommit) => {
 			const original = commit("work-a", [], "session-a", { sha: "d".repeat(40), recordedAt: time(25) })
 			const report = calculatePullRequestCosts(
 				[plan(), implement, edit, firstCommit, original, followUp, secondCommit],
 				prices,
 			)
-			expect(allocated(report, "plan")).toMatchObject({ allocation: "shared" })
-			expect(first(report)).toMatchObject({ totalCostUsd: null, sharedRequestIds: ["plan"] })
+			expect(allocated(report, "plan")).toMatchObject({ allocation: "inferred", pullRequestIds: [first(report)?.key] })
+			expect(first(report)).toMatchObject({ totalCostUsd: "3.000000000", sharedRequestIds: [] })
 		})
 	})
 	it("keeps a post-merge request's bucket but marks a bill from another account", () => {
@@ -1530,7 +1527,7 @@ describe("exclusive allocation with tool-observed edits", () => {
 			{ complete: true, files: [{ path: "b.ts", before: null, after: { blob: "1".repeat(40), mode: "100644" } }] },
 		],
 		["an incomplete Bash observation", { complete: false, files: [], reason: "incomplete-snapshot" }],
-	])("keeps a request shared when %s shows it also wrote outside its native edits", (_case, fields) => {
+	])("keeps a request unconfirmed when %s shows it also wrote outside its native edits", (_case, fields) => {
 		const observation: WorkRecord = {
 			version: 1,
 			type: "file_observation",
@@ -1549,7 +1546,7 @@ describe("exclusive allocation with tool-observed edits", () => {
 			[request("r"), edit, nativeCommit, observation, bashCommit],
 			[charge("r", "1")],
 		)
-		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.requests[0].allocation).toBe("inferred")
 	})
 
 	it.each([
@@ -1587,9 +1584,9 @@ describe("exclusive allocation with tool-observed edits", () => {
 		expect(report.requests[0].allocation).toBe(allocation)
 	})
 
-	it("keeps a request shared when its Bash commit belongs to another PR without an observation", () => {
+	it("keeps a request unconfirmed when its Bash commit belongs to another PR without an observation", () => {
 		const report = calculatePullRequestCosts([request("r"), edit, nativeCommit, bashCommit], [charge("r", "1")])
-		expect(report.requests[0].allocation).toBe("shared")
+		expect(report.requests[0].allocation).toBe("inferred")
 	})
 
 	it.each([
@@ -1613,7 +1610,7 @@ describe("exclusive allocation with tool-observed edits", () => {
 
 	it.each([
 		{ name: "same PR", pull: pullRequest(), allocation: "pull-request" },
-		{ name: "other PR", pull: second, allocation: "shared" },
+		{ name: "other PR", pull: second, allocation: "inferred" },
 	])("checks a local child's Bash commit to the $name for the whole input", ({ pull, allocation }) => {
 		const segment = { id: "input", attribution: "session", reason: "new-task" }
 		const report = calculatePullRequestCosts(
@@ -1812,7 +1809,7 @@ describe("first-linked narrowing", () => {
 		})
 	})
 
-	it("keeps a request shared across two commits in different PRs", () => {
+	it("splits a request across two commits in different PRs by time", () => {
 		const report = calculatePullRequestCosts(
 			[
 				request("a"),
@@ -1828,10 +1825,7 @@ describe("first-linked narrowing", () => {
 			],
 			[charge("a", "1")],
 		)
-		expect(report.requests[0]).toMatchObject({
-			allocation: "shared",
-			pullRequestIds: [featureKey, integrationKey],
-		})
+		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
 	})
 
 	it("keeps a commit in one PR exactly as today", () => {
@@ -1840,5 +1834,39 @@ describe("first-linked narrowing", () => {
 			[charge("a", "1")],
 		)
 		expect(report.requests[0]).toMatchObject({ allocation: "inferred", pullRequestIds: [featureKey] })
+	})
+})
+
+describe("time split across a work's PRs", () => {
+	// One work commits for PR 1, then for PR 2, as a session that opens a second PR does.
+	const open = { state: "open" as const, mergeCommitSha: null, mergedAt: null, closedAt: null }
+	const one = "github:github.com/example/repository#1"
+	const two = "github:github.com/example/repository#2"
+	const records = (firstListed: number) => [
+		...[5, 25, 28, 35, 50].map((minute) =>
+			request(`r${String(minute).padStart(2, "0")}`, "work-a", "session-a", time(minute)),
+		),
+		commit("work-a", [pullRequest({ ...open, checkedAt: time(firstListed) })], "session-a", {
+			recordedAt: time(20),
+			prLookup: { status: "linked", checkedAt: time(firstListed) },
+		}),
+		commit("work-a", [{ ...secondPull(), ...open, checkedAt: time(40) }], "session-a", {
+			sha: "b".repeat(40),
+			recordedAt: time(30),
+			prLookup: { status: "linked", checkedAt: time(40) },
+		}),
+	]
+
+	it.each([
+		["at its first listing when that came before the next commit", 26, [one, one, two, two, two]],
+		["at the next commit when the PR was listed after it", 32, [one, one, one, two, two]],
+	])("ends the first PR's part of the work %s", (_case, firstListed, keys) => {
+		const report = calculatePullRequestCosts(records(firstListed), [])
+		expect(report.requests.map((row) => row.requestId)).toEqual(["r05", "r25", "r28", "r35", "r50"])
+		expect(report.requests.map((row) => [row.allocation, ...row.pullRequestIds])).toEqual(
+			keys.map((key) => ["unmerged", key]),
+		)
+		expect(report.unallocated.shared.requestIds).toEqual([])
+		expect(calculatePullRequestCosts(records(firstListed).toReversed(), [])).toEqual(report)
 	})
 })
