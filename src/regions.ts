@@ -98,8 +98,9 @@ export function selectableRegions(): KimchiRegion[] {
  *
  * Each value is an ORIGIN ONLY — no path suffix. The consumer appends the
  * API shape it speaks (see discoveredSelfHostedRegion):
- *   console → webAppUrl (SPA, /cli-auth login handoff, platform /api proxy)
- *   api     → castApiUrl (REST API: /v1/llm, /ai-optimizer, /v1/me)
+ *   console → webAppUrl (SPA, /cli-auth login handoff — console UI only)
+ *   api     → castApiUrl (REST API: /v1/llm, /ai-optimizer, /v1/me — also
+ *             the platform API base, see platformApiUrl below)
  *   llm     → llmBaseUrl (gateway: /openai/v1, /anthropic, /v1/search, /v1/rerank)
  */
 export interface SelfHostedEndpoints {
@@ -115,7 +116,8 @@ export interface SelfHostedEndpoints {
  * standalone install fronts the console/API host and the LLM gateway
  * host-scoped:
  *
- *   webAppUrl  = console  (the SPA host; its nginx proxies /api/* to the API)
+ *   webAppUrl  = console  (the SPA host — login hand-off and links only;
+ *                         no API traffic)
  *   castApiUrl = api      (the REST API host — paths live at the root:
  *                         /v1/me, /v1/llm, /ai-optimizer)
  *   llmBaseUrl = llm      (the gateway ORIGIN ONLY — no path suffix)
@@ -123,10 +125,10 @@ export interface SelfHostedEndpoints {
  * Every llmBaseUrl-derived endpoint then appends its own API shape via the
  * shared region helpers: openAiBaseUrl = <llm>/openai/v1,
  * anthropicBaseUrl = <llm>/anthropic, searchUrl = <llm>/v1/search — matching
- * the discovery contract. platformApiUrl stays webAppUrl + "/api" (the
- * console's /api proxy path), which equals the api origin in the common
- * path-routed case. Endpoints are expected pre-normalized
- * (see normalizeSelfHostedEndpoints); trailing slashes are stripped defensively.
+ * the discovery contract. platformApiUrl is the api origin directly (alias
+ * of castApiUrl — see platformApiUrl below). Endpoints are expected
+ * pre-normalized (see normalizeSelfHostedEndpoints); trailing slashes are
+ * stripped defensively.
  */
 export function discoveredSelfHostedRegion(endpoints: SelfHostedEndpoints): KimchiRegion {
 	return {
@@ -183,9 +185,19 @@ export function normalizeSelfHostedEndpoints(raw: unknown): SelfHostedEndpoints 
  * that are genuinely region-fixed regardless of any env override (e.g.
  * telemetry ingest URLs in src/integrations/constants.ts).
  */
-/** Platform API base (`/v1/me`, teleport, agents, sandbox). */
+/**
+ * Platform API base (`/v1/me`, org settings, workspaces, cost reporting).
+ *
+ * Alias of castApiUrl: the platform REST API serves these paths directly at
+ * the region's API origin root. The SaaS console (app.kimchi.dev/api) used
+ * to proxy them, and every route the harness calls is served on the API
+ * origin — so the console never carries API traffic and stays UI-only.
+ * Kept as a distinct name so callers keep one conceptual handle, and as a
+ * repoint seam if platform-only routes ever move to a dedicated platform
+ * host (KIMCHI_REMOTE_ENDPOINT overrides this — see endpointsForRegion).
+ */
 export function platformApiUrl(r: KimchiRegion): string {
-	return `${r.webAppUrl}/api`
+	return r.castApiUrl
 }
 
 /** Main chat/completions base. */

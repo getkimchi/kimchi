@@ -17,7 +17,7 @@ It is automatically disabled when kimchi runs inside a sandbox worker (detected 
 
 | Variable | Description |
 |---|---|
-| `KIMCHI_REMOTE_ENDPOINT` | Override the remote API endpoint (advanced/internal use). |
+| `KIMCHI_REMOTE_ENDPOINT` | Override the remote API endpoint (advanced/internal use). Defaults to the region's API origin (`https://api.cast.ai` for the US region). |
 | `KIMCHI_API_KEY` | Provide an API key without running `kimchi login`. |
 
 ---

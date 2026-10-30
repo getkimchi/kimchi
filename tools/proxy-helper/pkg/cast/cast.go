@@ -200,7 +200,9 @@ func fetchWorkspaceByID(ctx context.Context, orgID, workspaceID, apiKey, endpoin
 
 // ─── Config / API key ────────────────────────────────────────────────────────
 
-const DefaultEndpoint = "https://app.kimchi.dev/api"
+// DefaultEndpoint is the US region's API origin. The tool is region-unaware —
+// other regions are reached via KIMCHI_REMOTE_ENDPOINT (see ResolveEndpoint).
+const DefaultEndpoint = "https://api.cast.ai"
 
 // ReadAPIKey returns the Kimchi API key from the environment.
 func ReadAPIKey() (string, error) {

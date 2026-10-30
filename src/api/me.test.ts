@@ -33,7 +33,7 @@ describe("getMe", () => {
 		expect(me).toEqual({ id: "user-1", email: "alice@example.com", name: "Alice" })
 		expect(mockFetch).toHaveBeenCalledOnce()
 		const [url, opts] = mockFetch.mock.calls[0]
-		expect(url).toBe("https://app.kimchi.dev/api/v1/me")
+		expect(url).toBe("https://api.cast.ai/v1/me")
 		expect(opts.headers.Authorization).toBe("Bearer test-key")
 	})
 
