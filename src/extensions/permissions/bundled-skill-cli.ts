@@ -13,7 +13,7 @@
 
 import { realpathSync } from "node:fs"
 import { dirname, isAbsolute, relative, resolve } from "node:path"
-import { DOC_CLI_SKILLS } from "../documents/doc-cli-skills.js"
+import { DOC_CLI_READ_ONLY_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../documents/doc-cli-skills.js"
 import { isHardBlockedBash, parseCommandSegments, splitLeadingEnv, stripTrailingOutputFilters } from "./taxonomy.js"
 
 /**
@@ -86,6 +86,21 @@ export function isDocCliCommand(command: string): boolean {
 	if (tokens[1] !== "doc-cli") return false
 	if (!(DOC_CLI_SKILLS as readonly string[]).includes(tokens[2])) return false
 	return true
+}
+
+/** True when the command is the documented doc-cli shape AND its
+ *  subcommand is read-only for that skill — `pdf read/info/fields/dump-shapes`,
+ *  `docx read/info`, `xlsx read/info`, `pptx read/inspect/check`. Used by the
+ *  permission gate to accept without prompting in default mode; mutating
+ *  subcommands (create/edit/render/…) still prompt there. Token extraction
+ *  reads the original command's first segment: the output-filter tail the
+ *  shape check strips is ops-only, so the head tokens are identical. */
+export function isReadOnlyDocCliCommand(command: string): boolean {
+	if (!isDocCliCommand(command)) return false
+	const tokens = parseCommandSegments(command)[0]?.tokens ?? []
+	const skill = tokens[2] as DocCliSkill
+	const sub = tokens[3]
+	return typeof sub === "string" && (DOC_CLI_READ_ONLY_COMMANDS[skill] ?? []).includes(sub)
 }
 
 /**

@@ -14,10 +14,13 @@ workers, so repeated calls stay invisible to `app_started` instrumentation.
 In auto mode (and headless default mode) the permission gate
 deterministically accepts the fixed command shape — one segment, no env
 prefix, no redirection/substitution/compound tails, bare `kimchi` — and
-skips the classifier (decision source `bundled_skill_cli`). Everything
-else, including the legacy `BUN_BE_BUN=1 kimchi <path>/pdf.mjs …` script
-form and any `cd … &&` compound variant, goes through the classifier as
-before. Default mode with a UI still prompts; user deny rules still win.
+skips the classifier (decision source `bundled_skill_cli`). In default
+mode with a UI, the read-only subcommands (`pdf read/info/fields/dump-shapes`,
+`docx read/info`, `xlsx read/info`, `pptx read/inspect/check`) accept the
+same way; mutating subcommands still prompt. Everything else, including
+the legacy `BUN_BE_BUN=1 kimchi <path>/pdf.mjs …` script form and any
+`cd … &&` compound variant, goes through the classifier as before.
+User deny rules still win.
 
 The bundled skills dir — where the route loads its staged bundles from —
 is protected by a deterministic write/edit deny (decision source

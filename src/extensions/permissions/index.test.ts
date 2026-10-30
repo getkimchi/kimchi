@@ -3950,15 +3950,32 @@ describe("document-skill CLI route (kimchi doc-cli)", () => {
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
-	it("still prompts in default mode with a UI", async () => {
+	it("accepts read-only subcommands in default mode with a UI without prompting", async () => {
 		const harness = createPermissionsHarness(["bash"])
 		const ctx = createMockContext([])
 		await harness.fire("session_start", {}, ctx)
 
 		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
 
+		expect(result).toBeUndefined()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("still prompts in default mode with a UI for mutating subcommands", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			tcall("kimchi doc-cli pdf fill-form docs/report.pdf --values v.json"),
+			ctx,
+		)
+
 		// The mock select returns nothing -> the user "declined": default mode
-		// still runs the prompt (the matcher is an auto-mode gate only).
+		// still runs the prompt for mutating commands (the read-only matcher
+		// is the only default-mode gate).
 		expect(result).toEqual(expect.objectContaining({ block: true }))
 		expect(ctx.ui.select).toHaveBeenCalled()
 		expect(classifyToolCall).not.toHaveBeenCalled()

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { isDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
+import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
 
 describe("isDocCliCommand", () => {
 	// Tokenizer-divergence shapes (shell-quote vs the executing shell): each
@@ -132,5 +132,48 @@ describe("isUnderBundledSkillsDir", () => {
 		} finally {
 			rmSync(root, { recursive: true, force: true })
 		}
+	})
+})
+
+describe("isReadOnlyDocCliCommand", () => {
+	const readOnly = [
+		"kimchi doc-cli pdf read report.pdf",
+		"kimchi doc-cli pdf fields report.pdf",
+		"kimchi doc-cli pdf dump-shapes report.pdf --page 2",
+		"kimchi doc-cli pdf info report.pdf 2>&1 | tail -5",
+		"kimchi doc-cli docx read notes.docx",
+		"kimchi doc-cli docx info notes.docx",
+		"kimchi doc-cli xlsx read sheet.xlsx --sheet Budget",
+		"kimchi doc-cli xlsx info sheet.xlsx",
+		"kimchi doc-cli pptx read deck.pptx",
+		"kimchi doc-cli pptx inspect deck.pptx",
+		"kimchi doc-cli pptx check deck.pptx",
+	]
+	it.each(readOnly)("accepts %s", (command) => {
+		expect(isReadOnlyDocCliCommand(command)).toBe(true)
+	})
+
+	const mutating = [
+		"kimchi doc-cli pdf fill-form report.pdf --values v.json",
+		"kimchi doc-cli pdf write out.pdf --content doc.md",
+		"kimchi doc-cli pdf render page.pdf --out page.png",
+		"kimchi doc-cli pdf merge a.pdf b.pdf --out merged.pdf",
+		"kimchi doc-cli docx create out.docx --content doc.md",
+		"kimchi doc-cli docx edit in.docx --out out.docx --ops ops.json",
+		"kimchi doc-cli xlsx edit in.xlsx --out out.xlsx --ops ops.json",
+		"kimchi doc-cli xlsx recalc in.xlsx --out out.xlsx",
+		"kimchi doc-cli pptx create out.pptx --spec spec.json",
+		"kimchi doc-cli pptx edit in.pptx --out out.pptx --ops ops.json",
+	]
+	it.each(mutating)("rejects the mutating subcommand %s", (command) => {
+		expect(isReadOnlyDocCliCommand(command)).toBe(false)
+		// the shape itself still matches — only the subcommand class differs
+		expect(isDocCliCommand(command)).toBe(true)
+	})
+
+	it("rejects shapes the doc-cli matcher rejects", () => {
+		expect(isReadOnlyDocCliCommand("pdftotext report.pdf -")).toBe(false)
+		expect(isReadOnlyDocCliCommand("kimchi doc-cli pdf read x.pdf && echo hi")).toBe(false)
+		expect(isReadOnlyDocCliCommand("BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf")).toBe(false)
 	})
 })

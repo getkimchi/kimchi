@@ -75,7 +75,7 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
-import { isDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
+import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { registerCommands } from "./commands.js"
@@ -1509,20 +1509,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// Auto mode + non-promptable default mode (headless/subagents) both go
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
-			if (mode === "auto" || !promptAvailable) {
-				// The hidden document-skill CLI route (`kimchi doc-cli pdf …`) is
-				// first-party: the binary resolves and loads the staged bundle, the
-				// model only supplies the fixed command shape. It skips the classifier
-				// — the deterministic shape check accepts exactly the documented form.
-				// User deny rules (evaluateRules above) still win; default mode still
-				// prompts.
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : ""
-					if (isDocCliCommand(command)) {
-						emitToolDecision(pi, event, mode, "accept", "bundled_skill_cli")
-						return undefined
-					}
+			// The hidden document-skill CLI route (`kimchi doc-cli pdf …`) is
+			// first-party: the binary resolves and loads the staged bundle, the
+			// model only supplies the fixed command shape. It skips the classifier
+			// — the deterministic shape check accepts exactly the documented form.
+			// Default mode accepts without prompting only for the read-only
+			// subcommands; mutating ones still prompt. User deny rules
+			// (evaluateRules above) still win.
+			if (toolName === "bash") {
+				const command = typeof input.command === "string" ? input.command : ""
+				if (
+					isDocCliCommand(command) &&
+					(mode === "auto" || !promptAvailable || (mode === "default" && isReadOnlyDocCliCommand(command)))
+				) {
+					emitToolDecision(pi, event, mode, "accept", "bundled_skill_cli")
+					return undefined
 				}
+			}
+			if (mode === "auto" || !promptAvailable) {
 				const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
 				const verdict = await classifyToolCall(
 					candidates,

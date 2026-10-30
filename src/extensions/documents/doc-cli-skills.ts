@@ -7,3 +7,15 @@
  */
 export const DOC_CLI_SKILLS = ["pdf", "docx", "xlsx", "pptx"] as const
 export type DocCliSkill = (typeof DOC_CLI_SKILLS)[number]
+
+/** Read-only subcommands per skill — the ones the permission gate also
+ *  accepts in default mode (mutating commands still prompt there, and
+ *  everything still skips the classifier in auto mode). Derived from each
+ *  CLI's case list: anything that writes a file (create/edit/render/…)
+ *  is excluded. */
+export const DOC_CLI_READ_ONLY_COMMANDS: Record<DocCliSkill, readonly string[]> = {
+	pdf: ["read", "info", "fields", "dump-shapes"],
+	docx: ["read", "info"],
+	xlsx: ["read", "info"],
+	pptx: ["read", "inspect", "check"],
+}
