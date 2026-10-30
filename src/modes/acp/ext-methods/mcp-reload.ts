@@ -56,7 +56,14 @@ export interface McpReloadSessionSnapshot {
 }
 
 export interface HandleReloadMcpConfigDeps {
-	sessions: McpReloadSessionSnapshot[]
+	/**
+	 * Live (non-disposed) ACP sessions as idle/busy snapshots, re-read lazily.
+	 * The callback runs INSIDE the serialized reload section so the idle gate is
+	 * evaluated at apply time, not on a snapshot taken at request time: a
+	 * session that started a turn or a compaction while this reload waited on
+	 * the FIFO must still be seen as busy (§3.4).
+	 */
+	getSessions: () => McpReloadSessionSnapshot[]
 	conn: AgentSideConnection
 }
 
@@ -130,6 +137,8 @@ async function applyReloadAcrossSessions(
 	servers: string[] | undefined,
 	applyToken: string | null,
 ): Promise<McpReloadResult> {
+	// Snapshot inside the serialized section (this runs after any FIFO wait).
+	const sessions = deps.getSessions()
 	const reloadOpts: ReloadConfigOptions | undefined = servers !== undefined ? { servers } : undefined
 	const sessionResults: McpReloadSessionResult[] = []
 	const appliedSessions: Array<{ sessionId: string; diff: McpReloadDiffBuckets }> = []
@@ -137,7 +146,7 @@ async function applyReloadAcrossSessions(
 	let anyRefused = false
 	let anyError = false
 
-	for (const entry of deps.sessions) {
+	for (const entry of sessions) {
 		// Idle gate (§3.4): not mid-turn AND not compacting. Compaction runs
 		// outside turn bookkeeping (that is why prompt() gates on it
 		// separately), so the turn check alone would let a reload mutate the

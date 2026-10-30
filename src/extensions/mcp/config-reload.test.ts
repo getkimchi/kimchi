@@ -9,7 +9,7 @@
  * Scaffold adapted from auth-heal.test.ts (the #1574 seam suite).
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
@@ -211,6 +211,10 @@ describe("MCP runtime config reload (adapter seam)", () => {
 		gateway: (params: Record<string, unknown>) => Promise<GatewayResult>
 		reload: (reloadOpts?: { servers?: string[] }) => Promise<SessionReloadOutcome>
 		ctx: ExtensionContext
+		/** Emits on the adapter's pi.events bus (e.g. MCP_RUNTIME_REGISTER_EVENT). */
+		emitEvent: (channel: string, data: unknown) => void
+		/** Currently registered Pi tool names (the model-facing surface). */
+		listTools: () => string[]
 	}> {
 		const { createMcpAdapter } = await import("pi-mcp-adapter")
 		const host = createExtensionApi()
@@ -224,13 +228,14 @@ describe("MCP runtime config reload (adapter seam)", () => {
 			},
 			getMcpServers: () => [],
 			unregisterTool: (name: string) => {
-				const tool = host.getRegisteredTools().find((candidate) => candidate.name === name)
-				if (tool === undefined) return false
-				host.registerTool.mock.calls.splice(
-					host.registerTool.mock.calls.findIndex(([candidate]) => candidate.name === name),
-					1,
-				)
-				return true
+				let removed = false
+				for (let index = host.registerTool.mock.calls.length - 1; index >= 0; index -= 1) {
+					if (host.registerTool.mock.calls[index]?.[0]?.name === name) {
+						host.registerTool.mock.calls.splice(index, 1)
+						removed = true
+					}
+				}
+				return removed
 			},
 		} as unknown as typeof host.api
 		const handleHolder: { handle: McpReloadHandle | null } = { handle: null }
@@ -254,6 +259,13 @@ describe("MCP runtime config reload (adapter seam)", () => {
 		)
 		return {
 			ctx,
+			emitEvent: (channel, data) => {
+				host.api.events.emit(channel, data)
+			},
+			// Track the call LOG, not the mock's map: the factory's unregisterTool
+			// override splices unregistered names out of registerTool.mock.calls
+			// (that splice is the seam the adapter's direct-tool resync uses).
+			listTools: () => [...new Set(host.registerTool.mock.calls.map(([tool]) => tool.name))],
 			gateway: async (params) =>
 				(await gatewayTool.execute(
 					`test-${Math.random().toString(36).slice(2)}`,
@@ -271,7 +283,9 @@ describe("MCP runtime config reload (adapter seam)", () => {
 					},
 					{ timeout: 15_000, interval: 50 },
 				)
-				return handleHolder.handle!.reload(reloadOpts)
+				const handle = handleHolder.handle
+				if (!handle) throw new Error("reload handle missing after waitFor")
+				return handle.reload(reloadOpts)
 			},
 		}
 	}
@@ -485,6 +499,90 @@ describe("MCP runtime config reload (adapter seam)", () => {
 		expect(textOf(status)).toContain("1 disabled")
 		const call = await callTool(session.gateway, "proj", "proj_tool")
 		expect(call.details?.error).toBeDefined()
+	}, 60_000)
+
+	it("runtime-registered servers survive a hot-apply — never classified removed", async () => {
+		const stubA = await startStubMcpServer("alpha_tool")
+		const stubR = await startStubMcpServer("runtime_tool")
+		openStubs.push(stubA, stubR)
+		const session = await createReloadableSession({
+			config: {
+				mcpServers: { alpha: { url: stubA.url, lifecycle: "lazy" } },
+				settings: { directTools: false, toolPrefix: "none" },
+			},
+			provider: async () => ({
+				mcpServers: { alpha: { url: stubA.url, lifecycle: "lazy" } },
+			}),
+		})
+
+		// Runtime-register the way pi.registerMcpServer / the built-in gateway
+		// does: the entry lives only in state (the reload diff's config sides
+		// never mention it) and the registration survives in runtimeServers.
+		const request: { version: number; name: string; definition: Record<string, unknown>; result?: { ok: boolean } } = {
+			version: 1,
+			name: "runtime-one",
+			definition: { url: stubR.url, lifecycle: "lazy" },
+		}
+		session.emitEvent("pi-mcp-adapter:runtime-register:v1", request)
+		expect(request.result?.ok).toBe(true)
+
+		// Materialize the connection so a buggy removal would have something to
+		// tear down — and something to check for afterwards.
+		const before = await callTool(session.gateway, "runtime-one", "runtime_tool")
+		expect(before.details?.error).toBeUndefined()
+
+		const outcome = await session.reload()
+		expect(outcome.status).toBe("applied")
+		expect(outcome.removed).toEqual([])
+		expect(outcome.unchanged).toEqual(expect.arrayContaining(["alpha", "runtime-one"]))
+
+		// Connection kept; still callable after the reload.
+		const after = await callTool(session.gateway, "runtime-one", "runtime_tool")
+		expect(after.details?.error).toBeUndefined()
+		expect(textOf(after)).toContain("runtime_tool:hi")
+	}, 60_000)
+
+	it("blocked path re-syncs the tool surface — previously-direct tools unregister in the same pass", async () => {
+		const stubA = await startStubMcpServer("proj_tool")
+		openStubs.push(stubA)
+		writeFileSync(
+			join(cwd, ".mcp.json"),
+			JSON.stringify({ mcpServers: { proj: { url: stubA.url, lifecycle: "lazy" } } }),
+			"utf-8",
+		)
+		const sharedConfigPath = join(agentDir, "mcp.json")
+		writeFileSync(
+			sharedConfigPath,
+			// user-global policy "allow" is what a trusted non-interactive session
+			// needs for project-layer servers to be live (no per-server approval).
+			JSON.stringify({ mcpServers: {}, settings: { directTools: true, toolPrefix: "auto", projectServers: "allow" } }),
+			"utf-8",
+		)
+		let trusted = true
+		const session = await createReloadableSession({
+			configPath: sharedConfigPath,
+			ctxOverrides: { isProjectTrusted: () => trusted },
+		})
+
+		// Live connection + registered direct tools while trusted.
+		const call = await callTool(session.gateway, "proj", "proj_tool")
+		expect(call.details?.error).toBeUndefined()
+		await vi.waitFor(
+			() => {
+				if (!session.listTools().some((name) => name.includes("proj"))) {
+					throw new Error("proj direct tool not registered yet")
+				}
+			},
+			{ timeout: 10_000, interval: 50 },
+		)
+
+		// Revoke trust mid-session: the reload re-resolves trust, classifies proj
+		// as blocked, and must drop its model-facing direct tools in the same pass.
+		trusted = false
+		const outcome = await session.reload()
+		expect(outcome.status).toBe("applied")
+		expect(outcome.blocked[0]?.name).toBe("proj")
+		expect(session.listTools().filter((name) => name.includes("proj"))).toEqual([])
 	}, 60_000)
 
 	it("callerServers overlays survive base removal and are never disconnected", async () => {

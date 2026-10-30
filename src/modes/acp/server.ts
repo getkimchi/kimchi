@@ -1283,12 +1283,16 @@ export class KimchiAcpAgent implements Agent {
 				return {
 					...(await handleReloadMcpConfig(
 						{
-							sessions: [...this.sessions.values()].map((entry) => ({
-								sessionId: entry.session.sessionId,
-								turnActive: entry.turn !== undefined && !entry.turn.cancelled,
-								isCompacting: entry.session.isCompacting,
-								...(entry.reloadToken !== undefined ? { reloadToken: entry.reloadToken } : {}),
-							})),
+							// Re-read lazily INSIDE the reload FIFO: the idle gate runs on
+							// turn/compaction state at apply time, so a session that began
+							// a turn while this reload queued is still gated as busy.
+							getSessions: () =>
+								[...this.sessions.values()].map((entry) => ({
+									sessionId: entry.session.sessionId,
+									turnActive: entry.turn !== undefined && !entry.turn.cancelled,
+									isCompacting: entry.session.isCompacting,
+									...(entry.reloadToken !== undefined ? { reloadToken: entry.reloadToken } : {}),
+								})),
 							conn: this.conn,
 						},
 						params,
