@@ -21,7 +21,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import type { SessionUpdate } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { E2E_WAIT_MS, newSession, waitForSessionUpdate } from "./support/scenarios.js"
+import { E2E_WAIT_MS, newSession, waitFor, waitForSessionUpdate } from "./support/scenarios.js"
 
 const COMPACT_METHOD = "_kimchi.dev/compact"
 const COMPACT_ABORT_METHOD = "_kimchi.dev/compact_abort"
@@ -112,30 +112,38 @@ describe("ACP integration — user-triggered compaction", () => {
 		expect(activities).toContainEqual(
 			expect.objectContaining({ sessionId, kind: "compaction_start", reason: "manual" }),
 		)
-		expect(activities).toContainEqual(expect.objectContaining({ sessionId, kind: "compaction_end", reason: "manual" }))
+		// The extMethod response can resolve before the notifications trailing
+		// the compaction dispatch reach the client — wait for the end activity
+		// instead of asserting against a mid-flight capture.
+		const endActivity = await waitForActivity(fixture, "compaction_end")
+		expect(endActivity.params).toEqual(expect.objectContaining({ sessionId, reason: "manual" }))
 
 		// Post-compaction value refresh (docs/acp-compaction.md): success
 		// always emits exactly one bare usage_update carrying pi's
-		// post-compaction estimate, positioned after the compaction_end
-		// activity notification (turn-boundary updates are excluded via the
-		// pre-compact baseline).
-		const refreshes = fixture.client.sessionUpdates
-			.filter(
-				(u): u is typeof u & { update: Extract<SessionUpdate, { sessionUpdate: "usage_update" }> } =>
-					u.update.sessionUpdate === "usage_update",
-			)
-			.slice(usageUpdatesBeforeCompact)
-		expect(refreshes).toHaveLength(1)
+		// post-compaction estimate (turn-boundary updates are excluded via
+		// the pre-compact baseline). Like the end activity, its delivery
+		// trails the extMethod response resolution — wait for it to land.
+		const refreshes = await waitFor(
+			() =>
+				fixture.client.sessionUpdates
+					.filter(
+						(u): u is typeof u & { update: Extract<SessionUpdate, { sessionUpdate: "usage_update" }> } =>
+							u.update.sessionUpdate === "usage_update",
+					)
+					.slice(usageUpdatesBeforeCompact),
+			(candidates) => candidates.length === 1,
+		)
 		expect(refreshes[0].update.used).toBeGreaterThan(0)
 		expect(refreshes[0].update.used).toBeLessThanOrEqual(refreshes[0].update.size)
 		// The gauge actually dropped: pi's post-compaction estimate (a forced
 		// compact keeps only the summary) sits far below the usage-anchored
 		// pre-compaction count the client last saw.
 		expect(refreshes[0].update.used).toBeLessThan(result.tokensBefore)
-		const arrival = fixture.client.wireArrivalOrder
-		const endIndex = arrival.lastIndexOf("ext-notification:_kimchi.dev/agent_activity:compaction_end")
-		expect(endIndex).toBeGreaterThanOrEqual(0)
-		expect(arrival.indexOf("session-update:usage_update", endIndex + 1)).toBeGreaterThan(endIndex)
+		// (The strict "usage_update lands after compaction_end in
+		// wireArrivalOrder" check was dropped: the server emits both
+		// synchronously and in order, but the recording client dispatches
+		// session updates and ext notifications through different paths, so
+		// recorded cross-channel order is arrival-timing dependent.)
 
 		// The session is immediately usable afterwards.
 		const followUp = await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "and follow up" }] })
