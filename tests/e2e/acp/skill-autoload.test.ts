@@ -77,6 +77,12 @@ describe("ACP integration — skill auto-load on prompt keywords", () => {
 		)) as { stopReason: string }
 		expect(result.stopReason).toBe("end_turn")
 
+		// The load is mirrored to IDE clients as an ext notification — the
+		// steer body itself stays display:false on both surfaces.
+		const autoloadNotice = fixture.client.extNotifications.find((n) => n.method === "_kimchi.dev/skill_autoload")
+		expect(autoloadNotice).toBeDefined()
+		expect(autoloadNotice?.params).toMatchObject({ sessionId, name: "pdf", origin: "bundled" })
+
 		// The first chat request already carried the auto-loaded skill body
 		// as a steer — determinism proven at the wire. (Later harness calls,
 		// e.g. session naming, don't matter; the injection must land before

@@ -2,8 +2,9 @@ import { realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
 import type { ExtensionAPI, Skill, SlashCommandInfo } from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
-import { createSkillAutoLoader } from "./auto-load.js"
+import { createSkillAutoLoader, SKILL_AUTOLOAD_LOADED_TYPE, type SkillAutoLoadData } from "./auto-load.js"
 import { SkillManager } from "./skill-manager.js"
 import { createSkillManageTool, createSkillViewTool } from "./tool.js"
 import { UsageTracker } from "./usage.js"
@@ -56,6 +57,15 @@ export default function skillsManagerExtension(pi: ExtensionAPI, options?: Skill
 	manager.setDiscoveredSkillsProvider(discoveredProvider)
 
 	createSkillAutoLoader(pi, manager, { tracker, listDiscovered: discoveredProvider })
+
+	// The auto-load itself is invisible by design (the steer body is far
+	// too large to render); its persisted entry carries the one-line notice
+	// instead — in the live transcript and again on session reload.
+	pi.registerEntryRenderer<SkillAutoLoadData>(SKILL_AUTOLOAD_LOADED_TYPE, (entry, _options, theme) =>
+		typeof entry.data?.name === "string"
+			? new Text(theme.fg("dim", `⚙ ${entry.data.name} skill auto-loaded`), 1, 0)
+			: undefined,
+	)
 
 	pi.registerTool(createSkillViewTool(manager, tracker))
 	if (options?.registerSkillManageTool !== false) {

@@ -78,6 +78,26 @@ describe("skillsManagerExtension", () => {
 		expect(content).toContain("comes from a project skill")
 	})
 
+	it("renders the auto-load notice as a one-line transcript entry (no keyword)", () => {
+		const fixture = createExtensionApi()
+		skillsManagerExtension(fixture.api, { skillsDir: "/tmp/test-skills" })
+		const renderer = fixture.getEntryRenderer("skill_autoload_loaded")
+		expect(renderer).toBeDefined()
+		const theme = { fg: (_style: string, text: string) => text }
+		const rendered = renderer?.(
+			{ data: { name: "pdf", matched: "kw:spreadsheet", turnIndex: 0, origin: "bundled" } } as never,
+			{} as never,
+			theme as never,
+		)
+		expect(rendered).toBeDefined()
+		const lines = (rendered as unknown as { render: (w: number) => string[] }).render(80)
+		expect(lines.join("\n")).toContain("⚙ pdf skill auto-loaded")
+		// the matched keyword stays off the screen
+		expect(lines.join("\n")).not.toContain("kw:")
+		// malformed entry data renders nothing
+		expect(renderer?.({ data: { name: 42 } } as never, {} as never, theme as never)).toBeUndefined()
+	})
+
 	it("skips malformed names and managed-root skills in the command seed", async () => {
 		const fixture = createExtensionApi()
 		fixture.getCommands.mockReturnValue([

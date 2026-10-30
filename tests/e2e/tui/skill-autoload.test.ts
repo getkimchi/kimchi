@@ -15,6 +15,8 @@ test("a prompt naming a .pdf file auto-loads the pdf skill before the first infe
 		async (fixture, trace) => {
 			terminal.submit("read ~/runbook-q4.pdf and summarize it in two lines")
 			await waitForText(terminal, "Acknowledged.", { timeoutMs: STREAM_TIMEOUT_MS })
+			// the one-line notice is visible in the transcript (the steer body is not)
+			await waitForText(terminal, "pdf skill auto-loaded")
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("first turn settled")
 

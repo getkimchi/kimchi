@@ -165,6 +165,7 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
+import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
@@ -1470,6 +1471,9 @@ export class KimchiAcpAgent implements Agent {
 		// Routed-model pick changes mirror the transcript entry as an ext
 		// notification; change-only, per the extension's dedup.
 		emitRoutedModelUpdate(this.conn, sessionId, event)
+		// Skill auto-loads mirror their transcript entry the same way, so IDE
+		// clients can surface what the TUI renders as a one-line entry.
+		emitSkillAutoloadUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {
