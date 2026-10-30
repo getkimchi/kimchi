@@ -5,7 +5,8 @@ requires-resource: skills.pptx
 disables-skills: pptx
 triggers:
   prompt:
-    - '\.pptx\b'
+    extensions: [pptx]
+    keywords: [pptx, ppt, powerpoint, power point, slide deck, pitch deck, slide presentation, slides]
 ---
 
 # pptx

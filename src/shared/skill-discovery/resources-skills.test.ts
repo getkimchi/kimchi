@@ -10,7 +10,11 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
-import { parseSkillTriggers } from "../../extensions/skills-manager/skill-triggers.js"
+import {
+	buildTriggerRegistry,
+	matchPrompt,
+	parseSkillTriggers,
+} from "../../extensions/skills-manager/skill-triggers.js"
 import { validateSkill } from "./validate-skill.js"
 
 const SKILLS_ROOT = fileURLToPath(new URL("../../../resources/skills", import.meta.url))
@@ -39,33 +43,82 @@ describe("bundled resources/skills", () => {
 		expect(dirs).not.toContain("glab-cli")
 	})
 
-	// Deterministic auto-load contract: document skills declare `triggers.prompt`
-	// patterns that hit their own file extensions and reject the others'.
-	const DOCUMENT_TRIGGERS: Record<string, { matches: string[]; rejects: string[] }> = {
+	// Deterministic auto-load contract: document skills declare the
+	// extensions/keywords grammar that hits their own file types and words,
+	// and rejects the others'. `extensions` matches file names only; bare
+	// extension words ("make it a docx") must be listed in `keywords`.
+	const DOCUMENT_TRIGGERS: Record<
+		string,
+		{ extensions: string[]; keywords: string[]; matches: string[]; rejects: string[] }
+	> = {
 		pdf: {
-			matches: ["runbook.pdf", "~/q4-mail-migration/mail-migration-runbook-q4-hard.pdf"],
+			extensions: ["pdf"],
+			keywords: ["pdf"],
+			matches: [
+				"runbook.pdf",
+				"~/q4-mail-migration/mail-migration-runbook-q4-hard.pdf",
+				"convert it to PDF",
+				"summarize the attached pdf",
+			],
 			rejects: ["notes.docx", "pdftk"],
 		},
-		docx: { matches: ["letter.docx"], rejects: ["slides.pptx"] },
-		xlsx: { matches: ["data.xlsx", "book.xlsm"], rejects: ["a.pdf"] },
-		pptx: { matches: ["deck.pptx"], rejects: ["a.pdf"] },
+		docx: {
+			extensions: ["docx"],
+			keywords: ["docx", "word document", "word doc", "microsoft word"],
+			matches: ["letter.docx", "export it as a docx", "edit the Word document", "open the Microsoft Word file"],
+			rejects: ["slides.pptx", "a.pdf"],
+		},
+		xlsx: {
+			extensions: ["xlsx", "xlsm"],
+			keywords: ["xlsx", "xlsm", "spreadsheet", "excel", "workbook"],
+			matches: [
+				"data.xlsx",
+				"book.xlsm",
+				"what's in this spreadsheet",
+				"open the Excel file",
+				"fill the workbook",
+				"save as xlsx",
+			],
+			rejects: ["a.pdf", "data.csv", "spreadsheeting"],
+		},
+		pptx: {
+			extensions: ["pptx"],
+			keywords: [
+				"pptx",
+				"ppt",
+				"powerpoint",
+				"power point",
+				"slide deck",
+				"pitch deck",
+				"slide presentation",
+				"slides",
+			],
+			matches: [
+				"deck.pptx",
+				"make a PowerPoint",
+				"export as ppt",
+				"summarize the slide deck",
+				"the pitch deck",
+				"edit the slide presentation",
+				"add two slides",
+			],
+			rejects: ["a.pdf", "slide animation"],
+		},
 	}
 
 	it.each(Object.keys(DOCUMENT_TRIGGERS))("%s declares working prompt triggers", (name) => {
-		const { prompt } = parseSkillTriggers(readFileSync(join(SKILLS_ROOT, name, "SKILL.md"), "utf-8"))
-		expect(prompt.length, `${name} must declare at least one triggers.prompt pattern`).toBeGreaterThan(0)
+		const content = readFileSync(join(SKILLS_ROOT, name, "SKILL.md"), "utf-8")
+		const { extensions, keywords } = parseSkillTriggers(content)
 		const spec = DOCUMENT_TRIGGERS[name]
+		expect(extensions, `${name} extensions`).toEqual(spec.extensions)
+		expect(keywords, `${name} keywords`).toEqual(spec.keywords)
+		const registry = buildTriggerRegistry([{ name, content, origin: "bundled" }])
+		expect(registry.has(name), `${name} must declare at least one trigger`).toBe(true)
 		for (const sample of spec.matches) {
-			expect(
-				prompt.some((re) => re.test(sample)),
-				`${name} should match '${sample}'`,
-			).toBe(true)
+			expect(matchPrompt(registry, sample), `${name} should match '${sample}'`).toHaveLength(1)
 		}
 		for (const sample of spec.rejects) {
-			expect(
-				prompt.some((re) => re.test(sample)),
-				`${name} should not match '${sample}'`,
-			).toBe(false)
+			expect(matchPrompt(registry, sample), `${name} should not match '${sample}'`).toHaveLength(0)
 		}
 	})
 })

@@ -5,7 +5,8 @@ requires-resource: skills.docx
 disables-skills: docx
 triggers:
   prompt:
-    - '\.docx\b'
+    extensions: [docx]
+    keywords: [docx, word document, word doc, microsoft word]
 ---
 
 # docx

@@ -5,8 +5,8 @@ requires-resource: skills.xlsx
 disables-skills: xlsx
 triggers:
   prompt:
-    - '\.xlsx\b'
-    - '\.xlsm\b'
+    extensions: [xlsx, xlsm]
+    keywords: [xlsx, xlsm, spreadsheet, excel, workbook]
 ---
 
 # xlsx

@@ -24,8 +24,30 @@ test("a prompt naming a .pdf file auto-loads the pdf skill before the first infe
 			const chat = chatRequests(fixture)
 			expect(chat.length).toBe(1)
 			const messages = JSON.stringify((chat[0].body as { messages?: unknown[] }).messages ?? [])
-			expect(messages).toContain("auto-loaded because the prompt matched its declared trigger")
+			expect(messages).toContain("auto-loaded because the prompt matched its declared trigger (ext:.pdf)")
 			expect(messages).toContain("Skill directory:")
+			expect(messages).toContain("dump-shapes")
+		},
+	)
+})
+
+test("a keyword-only prompt (no file name) auto-loads the pdf skill too", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "skill-autoload-keyword",
+			responses: [{ stream: ["Acknowledged."], responseModel: "kimi-k3" }],
+		},
+		async (fixture, trace) => {
+			terminal.submit("summarize the attached pdf in two lines")
+			await waitForText(terminal, "Acknowledged.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("first turn settled")
+
+			const chat = chatRequests(fixture)
+			expect(chat.length).toBe(1)
+			const messages = JSON.stringify((chat[0].body as { messages?: unknown[] }).messages ?? [])
+			expect(messages).toContain("auto-loaded because the prompt matched its declared trigger (kw:pdf)")
 			expect(messages).toContain("dump-shapes")
 		},
 	)

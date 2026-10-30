@@ -31,7 +31,7 @@ async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
 interface SessionEntryLine {
 	type: string
 	customType?: string
-	data?: { name?: string; pattern?: string; turnIndex?: number }
+	data?: { name?: string; matched?: string; turnIndex?: number; origin?: string }
 }
 
 function readJsonl(path: string): SessionEntryLine[] {
@@ -103,7 +103,37 @@ describe("ACP integration — skill auto-load on prompt keywords", () => {
 		const loaded = entries.filter((e) => e.type === "custom" && e.customType === "skill_autoload_loaded")
 		expect(loaded).toHaveLength(1)
 		expect(loaded[0].data?.name).toBe("pdf")
-		expect(loaded[0].data?.pattern).toBe("\\.pdf\\b")
+		expect(loaded[0].data?.matched).toBe("ext:.pdf")
 		expect(loaded[0].data?.turnIndex).toBe(0)
+		expect(loaded[0].data?.origin).toBe("bundled")
+	})
+
+	it("injects the pdf skill body on a keyword-only prompt (no file name)", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		const result = (await withTimeout(
+			fixture.conn.prompt({
+				sessionId,
+				prompt: [{ type: "text", text: "summarize the attached pdf in two lines" }],
+			}),
+			"prompt",
+		)) as { stopReason: string }
+		expect(result.stopReason).toBe("end_turn")
+
+		const chatBodies = fixture.fake.requests
+			.filter((r) => r.method === "POST" && r.url?.includes("/chat/completions"))
+			.map((r) => JSON.stringify(r.body))
+		expect(chatBodies.length).toBeGreaterThan(0)
+		expect(chatBodies[0]).toContain("auto-loaded because the prompt matched its declared trigger (kw:pdf)")
+		for (const marker of BODY_MARKERS) expect(chatBodies[0]).toContain(marker)
+		expect(chatBodies[0]).not.toContain('"name": "skill_view"')
+
+		const encodedWorkDir = `--${fixture.workDir.replace(/^[\\/]/, "").replace(/[\\/:]/g, "-")}--`
+		const sessionSubdir = join(fixture.homeDir, ".config", "kimchi", "harness", "sessions", encodedWorkDir)
+		const sessionFiles = readdirSync(sessionSubdir).filter((f) => f.endsWith(".jsonl"))
+		expect(sessionFiles, "session JSONL under the ACP agent dir").toHaveLength(1)
+		const entries = readJsonl(join(sessionSubdir, sessionFiles[0]))
+		const loaded = entries.filter((e) => e.type === "custom" && e.customType === "skill_autoload_loaded")
+		expect(loaded).toHaveLength(1)
+		expect(loaded[0].data?.matched).toBe("kw:pdf")
 	})
 })

@@ -5,7 +5,8 @@ requires-resource: skills.pdf
 disables-skills: pdf
 triggers:
   prompt:
-    - '\.pdf\b'
+    extensions: [pdf]
+    keywords: [pdf]
 ---
 
 # pdf

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import {
 	buildTriggerRegistry,
 	isModelInvocationDisabled,
+	matchesExtension,
+	matchesKeyword,
 	matchPrompt,
 	parseSkillCommand,
 	parseSkillTriggers,
@@ -10,51 +12,67 @@ import {
 const docWith = (frontmatter: string) => `---\n${frontmatter}\n---\n\n# body\n`
 
 describe("parseSkillTriggers", () => {
-	it("parses the map form into case-insensitive regexes", () => {
-		const { prompt } = parseSkillTriggers(docWith("name: pdf\ntriggers:\n  prompt:\n    - '\\.pdf\\b'"))
-		expect(prompt).toHaveLength(1)
-		expect(prompt[0].test("open report.pdf")).toBe(true)
-		expect(prompt[0].test("open REPORT.PDF")).toBe(true)
-		expect(prompt[0].test("pdftk extract")).toBe(false)
+	it("parses extensions and keywords from the map form", () => {
+		const triggers = parseSkillTriggers(
+			docWith("name: pptx\ntriggers:\n  prompt:\n    extensions: [pptx]\n    keywords: [powerpoint, slide deck]"),
+		)
+		expect(triggers).toEqual({ extensions: ["pptx"], keywords: ["powerpoint", "slide deck"] })
 	})
 
-	it("parses multiple patterns", () => {
-		const { prompt } = parseSkillTriggers(docWith("triggers:\n  prompt:\n    - '\\.xlsx\\b'\n    - '\\.xlsm\\b'"))
-		expect(prompt).toHaveLength(2)
-		expect(prompt.some((re) => re.test("data.xlsm"))).toBe(true)
+	it("normalizes extensions and keywords", () => {
+		const triggers = parseSkillTriggers(
+			docWith("triggers:\n  prompt:\n    extensions: ['.PDF', pdf]\n    keywords: ['  Slide   Deck  ', PDF]"),
+		)
+		expect(triggers).toEqual({ extensions: ["pdf"], keywords: ["slide deck", "pdf"] })
 	})
 
 	it("tolerates the legacy prose-list form as no triggers", () => {
 		expect(
 			parseSkillTriggers(
 				docWith("triggers:\n  - a test or build fails repeatedly and static reasoning stalls\n  - user asks to debug"),
-			).prompt,
+			).keywords,
 		).toEqual([])
 	})
 
-	it("returns empty when frontmatter or triggers are absent", () => {
-		expect(parseSkillTriggers("# no frontmatter at all\n").prompt).toEqual([])
-		expect(parseSkillTriggers(docWith("name: pdf\ndescription: nope")).prompt).toEqual([])
-		expect(parseSkillTriggers(docWith("triggers: {}")).prompt).toEqual([])
-	})
-
-	it("drops an invalid regex with a warning and keeps the valid ones", () => {
+	it("warns and ignores the unreleased regex-array form", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			const { prompt } = parseSkillTriggers(docWith("triggers:\n  prompt:\n    - '[unclosed'\n    - '\\.pdf\\b'"))
-			expect(prompt).toHaveLength(1)
-			expect(prompt[0].source).toBe("\\.pdf\\b")
+			const triggers = parseSkillTriggers(docWith("triggers:\n  prompt:\n    - '\\.pdf\\b'"))
+			expect(triggers).toEqual({ extensions: [], keywords: [] })
 			expect(warn).toHaveBeenCalled()
 		} finally {
 			warn.mockRestore()
 		}
 	})
 
-	it("drops non-string entries with a warning", () => {
+	it("returns empty when frontmatter or triggers are absent", () => {
+		expect(parseSkillTriggers("# no frontmatter at all\n").extensions).toEqual([])
+		expect(parseSkillTriggers(docWith("name: pdf\ndescription: nope")).keywords).toEqual([])
+		expect(parseSkillTriggers(docWith("triggers: {}")).extensions).toEqual([])
+		expect(parseSkillTriggers(docWith("triggers:\n  prompt: {}")).keywords).toEqual([])
+	})
+
+	it("drops invalid entries with a warning and keeps the valid ones", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			const { prompt } = parseSkillTriggers(docWith("triggers:\n  prompt:\n    - 42\n    - '\\.pdf\\b'"))
-			expect(prompt).toHaveLength(1)
+			const triggers = parseSkillTriggers(
+				docWith(
+					"triggers:\n  prompt:\n    extensions: [pdf, '.p d f', '.waytoolongextensionname', 42]\n    keywords: [excel, x, a-very-long-keyword-that-keeps-going-and-going-past-any-reasonable-bound-for-a-trigger-phrase]",
+				),
+			)
+			expect(triggers).toEqual({ extensions: ["pdf"], keywords: ["excel"] })
+			expect(warn).toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("truncates a list at 16 entries", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const many = Array.from({ length: 20 }, (_, i) => `kw${i}`)
+			const triggers = parseSkillTriggers(docWith(`triggers:\n  prompt:\n    keywords: [${many.join(", ")}]`))
+			expect(triggers.keywords).toHaveLength(16)
 			expect(warn).toHaveBeenCalled()
 		} finally {
 			warn.mockRestore()
@@ -64,45 +82,137 @@ describe("parseSkillTriggers", () => {
 	it("survives malformed frontmatter YAML without throwing", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		try {
-			expect(parseSkillTriggers(docWith("triggers:\n  prompt: [unclosed yaml\n  - x")).prompt).toEqual([])
+			expect(parseSkillTriggers(docWith("triggers:\n  prompt: [unclosed yaml\n  - x")).extensions).toEqual([])
 		} finally {
 			warn.mockRestore()
 		}
 	})
 })
 
+describe("matchesExtension", () => {
+	it.each([
+		["read report.pdf", "pdf"],
+		["read REPORT.PDF", "pdf"],
+		["open `a.pdf` first", "pdf"],
+		["see (a.pdf).", "pdf"],
+		["download https://x.dev/guide.pdf now", "pdf"],
+		["~/q4-mail-migration/mail-migration-runbook-q4-hard.pdf", "pdf"],
+		["data.XLSX and book.xlsm", "xlsx"],
+		["book.xlsm", "xlsm"],
+	])("matches %s", (text, ext) => {
+		expect(matchesExtension(text, ext)).toBe(true)
+	})
+
+	it.each([
+		["a.pdfx", "pdf"], // longer extension
+		["make it a docx", "docx"], // bare word, no dot
+		["pdftk extract", "pdf"],
+		["the pdfid file", "pdf"],
+		["notes.docx", "pdf"],
+	])("does not match %s", (text, ext) => {
+		expect(matchesExtension(text, ext)).toBe(false)
+	})
+})
+
+describe("matchesKeyword", () => {
+	it.each([
+		["update the spreadsheet", "spreadsheet"],
+		["update the spreadsheets", "spreadsheet"], // optional plural
+		["Spreadsheets, tables, etc", "spreadsheet"],
+		["open the Excel file", "excel"],
+		["excel,", "excel"],
+		["make a slide deck", "slide deck"], // multi-word
+		["make   a   slide\t\ndeck", "slide deck"], // whitespace collapsed
+		["powerpoint please", "powerpoint"],
+		["PowerPoint", "powerpoint"],
+		["x word document y", "word document"],
+	])("matches %s", (text, keyword) => {
+		expect(matchesKeyword(text, keyword)).toBe(true)
+	})
+
+	it.each([
+		["spreadsheeting", "spreadsheet"], // plural "s" then more letters
+		["xcel file", "excel"], // partial word
+		["slide decker", "slide deck"], // partial phrase tail
+		["preslidewide", "slide"],
+	])("does not match %s", (text, keyword) => {
+		expect(matchesKeyword(text, keyword)).toBe(false)
+	})
+})
+
 describe("buildTriggerRegistry", () => {
 	it("omits skills with empty trigger sets and keeps first occurrence per name", () => {
 		const registry = buildTriggerRegistry([
-			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    - 'harness-wins'") },
-			{ name: "quiet", content: docWith("name: quiet") },
-			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    - 'bundled-loses'") },
+			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    keywords: [harness-wins]"), origin: "harness" },
+			{ name: "quiet", content: docWith("name: quiet"), origin: "harness" },
+			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    keywords: [bundled-loses]"), origin: "bundled" },
 		])
 		expect([...registry.keys()]).toEqual(["pdf"])
-		expect(registry.get("pdf")?.map((re) => re.source)).toEqual(["harness-wins"])
+		expect(registry.get("pdf")?.triggers.keywords).toEqual(["harness-wins"])
+		expect(registry.get("pdf")?.origin).toBe("harness")
+	})
+
+	it("carries the origin and provenance label through", () => {
+		const registry = buildTriggerRegistry([
+			{
+				name: "vendor",
+				content: docWith("triggers:\n  prompt:\n    keywords: [deploy]"),
+				origin: "discovered",
+				label: "a project skill",
+			},
+		])
+		expect(registry.get("vendor")).toMatchObject({ origin: "discovered", label: "a project skill" })
 	})
 })
 
 describe("matchPrompt", () => {
-	it("reports each matching skill with the winning pattern", () => {
+	it("reports each matching skill with the winning trigger, in registry order", () => {
 		const registry = buildTriggerRegistry([
-			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    - '\\.pdf\\b'") },
-			{ name: "docx", content: docWith("triggers:\n  prompt:\n    - '\\.docx\\b'") },
+			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    extensions: [pdf]"), origin: "bundled" },
+			{ name: "docx", content: docWith("triggers:\n  prompt:\n    keywords: [word document]"), origin: "bundled" },
 		])
-		expect(matchPrompt(registry, "read runbook.pdf then notes.docx")).toEqual([
-			{ name: "pdf", pattern: "\\.pdf\\b" },
-			{ name: "docx", pattern: "\\.docx\\b" },
+		expect(matchPrompt(registry, "read runbook.pdf then the word document")).toEqual([
+			{ name: "pdf", matched: "ext:.pdf" },
+			{ name: "docx", matched: "kw:word document" },
 		])
 		expect(matchPrompt(registry, "nothing here")).toEqual([])
 	})
 
+	it("prefers the extension match over keywords and reports the matched keyword", () => {
+		const registry = buildTriggerRegistry([
+			{
+				name: "pdf",
+				content: docWith("triggers:\n  prompt:\n    extensions: [pdf]\n    keywords: [pdf]"),
+				origin: "bundled",
+			},
+		])
+		expect(matchPrompt(registry, "read a.pdf")[0].matched).toBe("ext:.pdf")
+		expect(matchPrompt(registry, "convert it to pdf")[0].matched).toBe("kw:pdf")
+	})
+
 	it("matches the failing session's literal prompt", () => {
 		const registry = buildTriggerRegistry([
-			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    - '\\.pdf\\b'") },
+			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    extensions: [pdf]"), origin: "bundled" },
 		])
 		const prompt =
 			"Autopilot morning: I got the mail migration runbook — ~/q4-mail-migration/mail-migration-runbook-q4-hard.pdf.\nRead it and execute whatever it requires, end to end."
-		expect(matchPrompt(registry, prompt)).toEqual([{ name: "pdf", pattern: "\\.pdf\\b" }])
+		expect(matchPrompt(registry, prompt)).toEqual([{ name: "pdf", matched: "ext:.pdf" }])
+	})
+
+	it("stays fast on hostile prompts (no regex from skill content)", () => {
+		const registry = buildTriggerRegistry([
+			{
+				name: "pdf",
+				content: docWith(
+					"triggers:\n  prompt:\n    extensions: [pdf]\n    keywords: [aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+				),
+				origin: "bundled",
+			},
+		])
+		const hostile = `${"a.".repeat(500_000)}report.pdf ${"aaaa".repeat(250_000)}`
+		const started = Date.now()
+		expect(matchPrompt(registry, hostile)).toEqual([{ name: "pdf", matched: "ext:.pdf" }])
+		expect(Date.now() - started).toBeLessThan(5_000)
 	})
 })
 
