@@ -206,6 +206,46 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
 	})
 
+	it("invokes an optional tool call through the connected session after tools/list", async () => {
+		mcpClient.state.tools = [{ name: "lookup" }]
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params !== "object" || params === null) throw new Error("Expected gateway parameters")
+			if ("connect" in params) return gatewayResult({})
+			if ("tool" in params) return gatewayResult({ called: true }, "fixture result text")
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"fixture",
+			{ command: "node", args: ["server.js"] },
+			{ authenticate: true, cwd: "/work", call: { tool: "lookup", args: { id: "a1" } } },
+		)
+
+		expect(result.tools).toEqual([{ name: "lookup" }])
+		expect(result.call).toEqual({ ok: true, error: null, content: "fixture result text" })
+		const callParams = upstream.gatewayExecute.mock.calls.at(-1)?.[1] as Record<string, unknown>
+		expect(callParams).toEqual({ tool: "lookup", args: { id: "a1" }, server: "fixture" })
+	})
+
+	it("reports a failed tool call on the result without failing the catalog", async () => {
+		mcpClient.state.tools = [{ name: "lookup" }]
+		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
+			if (typeof params !== "object" || params === null) throw new Error("Expected gateway parameters")
+			if ("connect" in params) return gatewayResult({})
+			if ("tool" in params) return gatewayResult({ error: "tool_failed", message: "the tool rejected the arguments" })
+			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
+		})
+
+		const result = await new UpstreamMcpProbe().probeTools(
+			"fixture",
+			{ command: "node", args: ["server.js"] },
+			{ authenticate: true, cwd: "/work", call: { tool: "lookup" } },
+		)
+
+		expect(result.tools).toEqual([{ name: "lookup" }])
+		expect(result.call).toEqual({ ok: false, error: "the tool rejected the arguments", content: null })
+	})
+
 	// The declared-OAuth URL server case is deliberately absent here: with
 	// authenticate=true its first connect races the interactive consent budget
 	// instead of the 60s deadline (see the connect-time auth tests below).

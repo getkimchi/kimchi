@@ -77,6 +77,7 @@ export function checkAuthorizeUrl(rawUrl, entry) {
 		failures.push(
 			`redirect_uri does not match the expected class (${redirectClassMismatch(redirectUri, entry.redirectUriPrefix)})`,
 		)
+	if (url.searchParams.get("response_type") !== "code") failures.push("authorize URL has no response_type=code")
 	if (!url.searchParams.get("state")) failures.push("authorize URL has no state parameter")
 	const challenge = url.searchParams.get("code_challenge")
 	if (!challenge) failures.push("authorize URL has no PKCE code_challenge")
@@ -128,6 +129,17 @@ export function checkProviderAnswer(answer, baseUrl) {
 		const redirectUrl = new URL(location, baseUrl)
 		const error = redirectUrl.searchParams.get("error")
 		if (error) return { failures: [`provider redirect carries error=${error}`], transient: false }
+		const signin = answer.signin
+		if (signin?.networkError !== undefined)
+			return { failures: [`sign-in page network error: ${redactText(signin.networkError)}`], transient: true }
+		if (signin !== undefined && signin.status >= 500)
+			return { failures: [`sign-in page answered HTTP ${signin.status}`], transient: true }
+		if (signin !== undefined && signin.status >= 400)
+			return { failures: [`sign-in page answered HTTP ${signin.status}`], transient: false }
+		if (signin?.body !== undefined) {
+			const marker = PROVIDER_ERROR_MARKERS.find((candidate) => signin.body.toLowerCase().includes(candidate))
+			if (marker) return { failures: [`sign-in page contains ${marker}`], transient: false }
+		}
 		return { failures: [], transient: false }
 	}
 	const marker = PROVIDER_ERROR_MARKERS.find((candidate) => (body ?? "").toLowerCase().includes(candidate))
@@ -135,8 +147,8 @@ export function checkProviderAnswer(answer, baseUrl) {
 	return { failures: [], transient: false }
 }
 
-/** GET the authorize URL without following into a sign-in, with a bounded body read. */
-async function fetchProviderAnswer(url) {
+/** GET one URL without following redirects, with a bounded body read. */
+async function fetchOnce(url) {
 	try {
 		const response = await fetch(url, {
 			redirect: "manual",
@@ -152,7 +164,31 @@ async function fetchProviderAnswer(url) {
 	}
 }
 
+/**
+ * GET the authorize URL without following into a sign-in, then follow exactly
+ * one redirect hop — a redirect to a dead or erroring sign-in page must not
+ * read as provider acceptance.
+ */
+async function fetchProviderAnswer(url) {
+	const answer = await fetchOnce(url)
+	if (answer.networkError !== undefined || answer.location === undefined) return answer
+	const redirectUrl = new URL(answer.location, url)
+	if (redirectUrl.searchParams.get("error")) return answer
+	const signin = await fetchOnce(redirectUrl)
+	return { ...answer, signin }
+}
+
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
+
+// Live temp dirs: removed in `finally` on the normal path, and from signal
+// handlers so an interrupted run never leaves a probe HOME (with its OAuth
+// credential store) behind in the system tmpdir.
+const liveTempDirs = new Set()
+for (const signal of ["SIGINT", "SIGTERM"])
+	process.on(signal, () => {
+		for (const dir of liveTempDirs) rmSync(dir, { recursive: true, force: true })
+		process.exit(130)
+	})
 
 /**
  * Run `kimchi mcp probe` for one entry until the browser driver records the
@@ -161,6 +197,7 @@ const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms)
 export async function captureAuthorizeUrl(entry, options = {}) {
 	const { timeoutMs = 45_000 } = options
 	const homeDir = mkdtempSync(join(tmpdir(), "kimchi-live-probe-"))
+	liveTempDirs.add(homeDir)
 	const binDir = join(homeDir, "browser-bin")
 	const { urlLog } = writeRecordingBrowserDriver(binDir)
 	const oauth = entry.clientId ? { clientId: entry.clientId } : {}
@@ -229,6 +266,7 @@ export async function captureAuthorizeUrl(entry, options = {}) {
 		throw new Error(`timed out after ${timeoutMs}ms waiting for an authorize URL`)
 	} finally {
 		await stop()
+		liveTempDirs.delete(homeDir)
 		rmSync(homeDir, { recursive: true, force: true })
 	}
 }
@@ -249,7 +287,12 @@ export async function runProviderEntry(entry) {
 		if (transient) result.transient = true
 		return result
 	} catch (error) {
-		result.error = redactText(error instanceof Error ? error.message : String(error))
+		const message = redactText(error instanceof Error ? error.message : String(error))
+		result.error = message
+		// Capture-phase failures (the probe exiting or timing out before a browser
+		// opens) are equally manifestations of a provider outage — they get the
+		// same single retry as network errors and 5xx responses.
+		if (message.startsWith("probe exited") || message.startsWith("timed out after")) result.transient = true
 		return result
 	}
 }
@@ -294,7 +337,7 @@ function selfTest() {
 
 	const googleEntry = { name: "g", url: "https://example/mcp", redirectUriPrefix: "http://localhost:", google: true }
 	const okUrl =
-		"https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2Flocalhost%3A19876%2Fcallback" +
+		"https://accounts.google.com/o/oauth2/v2/auth?response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A19876%2Fcallback" +
 		"&state=abc&code_challenge=xyz&code_challenge_method=S256&access_type=offline&prompt=consent"
 	expect("google authorize URL passes", checkAuthorizeUrl(okUrl, googleEntry), [])
 	expect(
@@ -336,7 +379,24 @@ function selfTest() {
 		redirectUriMatchesClass("https://localhost:19876/callback", "http://localhost:19876"),
 		false,
 	)
+	expect(
+		"missing response_type fails",
+		checkAuthorizeUrl(okUrl.replace("response_type=code&", ""), googleEntry).filter((failure) =>
+			failure.includes("response_type"),
+		),
+		["authorize URL has no response_type=code"],
+	)
 	expect("host must match", redirectUriMatchesClass("http://127.0.0.1:19876/callback", "http://localhost:19876"), false)
+	expect(
+		"pinned path must match exactly",
+		redirectUriMatchesClass("http://localhost:19876/other", "http://localhost:19876/callback"),
+		false,
+	)
+	expect(
+		"path-less prefix ignores the path",
+		redirectUriMatchesClass("http://localhost:59123/callback", "http://localhost:"),
+		true,
+	)
 	expect(
 		"missing PKCE fails",
 		checkAuthorizeUrl(okUrl.replace("&code_challenge=xyz&code_challenge_method=S256", ""), googleEntry),
@@ -388,6 +448,42 @@ function selfTest() {
 		redactText("see https://as.example/auth?client_id=secret now"),
 		"see <redacted-url> now",
 	)
+	expect(
+		"healthy sign-in page passes",
+		checkProviderAnswer(
+			{
+				status: 302,
+				location: "https://provider/signin?next=x",
+				signin: { status: 200, body: "<html>Sign in</html>" },
+			},
+			"https://as.example/authorize",
+		),
+		{ failures: [], transient: false },
+	)
+	expect(
+		"dead sign-in page fails",
+		checkProviderAnswer(
+			{ status: 302, location: "https://provider/signin", signin: { status: 404, body: "" } },
+			"https://as.example/authorize",
+		),
+		{ failures: ["sign-in page answered HTTP 404"], transient: false },
+	)
+	expect(
+		"sign-in page 5xx is transient",
+		checkProviderAnswer(
+			{ status: 302, location: "https://provider/signin", signin: { status: 503, body: "" } },
+			"https://as.example/authorize",
+		),
+		{ failures: ["sign-in page answered HTTP 503"], transient: true },
+	)
+	expect(
+		"sign-in page network error is transient",
+		checkProviderAnswer(
+			{ status: 302, location: "https://provider/signin", signin: { networkError: "fetch failed" } },
+			"https://as.example/authorize",
+		),
+		{ failures: ["sign-in page network error: fetch failed"], transient: true },
+	)
 	expect("5xx is transient", checkProviderAnswer({ status: 503, body: "" }), {
 		failures: ["provider answered HTTP 503"],
 		transient: true,
@@ -396,6 +492,72 @@ function selfTest() {
 		failures: ["network error: fetch failed"],
 		transient: true,
 	})
+
+	const throwsMessage = (fn) => {
+		try {
+			fn()
+			return "(no throw)"
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error)
+		}
+	}
+	expect(
+		"provider list parses and normalizes",
+		parseProviders(
+			JSON.stringify([
+				{
+					name: "a",
+					url: "https://a.example/mcp",
+					redirectUriPrefix: "http://localhost:",
+					google: true,
+					unknown: true,
+				},
+			]),
+		),
+		[
+			{
+				name: "a",
+				url: "https://a.example/mcp",
+				clientId: undefined,
+				redirectUriPrefix: "http://localhost:",
+				google: true,
+			},
+		],
+	)
+	expect(
+		"provider list rejects non-arrays",
+		throwsMessage(() => parseProviders("42")),
+		"provider list is not a JSON array",
+	)
+	expect(
+		"provider list rejects non-https urls",
+		throwsMessage(() =>
+			parseProviders(
+				JSON.stringify([{ name: "a", url: "http://example/mcp", redirectUriPrefix: "http://localhost:" }]),
+			),
+		),
+		"entry 0 (a): url must be an https:// string (http is only allowed for loopback hosts)",
+	)
+	expect(
+		"provider list accepts loopback http",
+		parseProviders(
+			JSON.stringify([{ name: "a", url: "http://127.0.0.1:9/mcp", redirectUriPrefix: "http://localhost:" }]),
+		),
+		[
+			{
+				name: "a",
+				url: "http://127.0.0.1:9/mcp",
+				clientId: undefined,
+				redirectUriPrefix: "http://localhost:",
+				google: false,
+			},
+		],
+	)
+	expect(
+		"provider list rejects a missing redirectUriPrefix",
+		throwsMessage(() => parseProviders(JSON.stringify([{ name: "a", url: "https://a.example/mcp" }]))),
+		"entry 0 (a): redirectUriPrefix must be a non-empty string",
+	)
 
 	const failed = cases.filter((testCase) => !testCase.pass)
 	for (const testCase of failed)

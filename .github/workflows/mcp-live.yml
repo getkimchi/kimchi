@@ -26,10 +26,19 @@ name: MCP live
 # lifecycle job therefore only runs for label events whose label is
 # `mcp-e2e-live`, and a skipped job never joins its concurrency group.
 #
-# Assertions are limited to deterministic OAuth error contracts, and every
-# probe entry retries once on network errors and 5xx responses.
+# A nightly schedule re-runs the credential-free probe so provider-side rule
+# or registration drift is caught between pull requests, not only on the next
+# MCP-touching change.
+#
+# Assertions are limited to deterministic OAuth error contracts; every probe
+# entry retries once on network errors, 5xx responses, and capture-phase
+# failures (the probe exiting or timing out before an authorize URL appears).
 
 on:
+  schedule:
+    # Nightly, credential-free probe only: the lifecycle job's `if` admits
+    # only workflow_dispatch and labelled pull requests.
+    - cron: "0 7 * * *"
   pull_request:
     # `labeled`/`unlabeled` re-trigger the workflow so adding `mcp-e2e-live` to
     # an existing PR runs the lifecycle job.

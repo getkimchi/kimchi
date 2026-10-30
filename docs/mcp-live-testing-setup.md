@@ -70,11 +70,15 @@ node scripts/mcp-live-google-lifecycle.mjs
 
 Locally, the renewal check reads `GOOGLE_MCP_TEST_CLIENT_ID`, `GOOGLE_MCP_TEST_CLIENT_SECRET`, `GOOGLE_MCP_TEST_REFRESH_TOKEN`, and optionally `GOOGLE_MCP_TEST_SERVER`/`GOOGLE_MCP_TEST_ISSUER`. In the workflow, the per-server secrets (`GOOGLE_MCP_TEST_REFRESH_TOKEN_GMAIL`, `_DRIVE`, `_CALENDAR`) are mapped onto `GOOGLE_MCP_TEST_REFRESH_TOKEN` for the selected server; dispatching Drive or Calendar without its secret fails fast with a clear "not set" error.
 
+Each run performs two renewal cycles: the seeded expired token is renewed, one read-only tool is invoked through the live session (default `list_labels`; override with `GOOGLE_MCP_TEST_CALL_TOOL` and `GOOGLE_MCP_TEST_CALL_ARGS`), and the refreshed token is force-expired and renewed again — proving the renewed credential itself still renews. The stored scope is asserted to be present (and to contain `GOOGLE_MCP_TEST_EXPECTED_SCOPE` when set), so a silently narrowed grant fails the check. The tool call runs through `kimchi mcp probe --call`, which invokes one tool after listing the catalog.
+
 Or run the `MCP live` workflow's lifecycle job: dispatch it (choosing Gmail, Drive, or Calendar — only Gmail is provisioned by default), or add the `mcp-e2e-live` label to a pull request to run it against that PR's build. Labelling re-triggers the workflow; the lifecycle job only runs with the label present on a same-repository pull request.
 
 ## Triage
 
 - **Browser consent opened / tools empty**: renewal is broken — check the offline-access handling in the OAuth stack before anything else.
 - **`invalid_grant`**: the refresh token was revoked or expired (7-day expiry for Testing apps) — re-seed it.
-- **authorize-URL failures in the pull-request check**: the redirect-URI registration or the authorize-URL construction drifted — compare the failing entry's `redirect_uri` against the app's registered URIs.
-- **Provider 5xx or network errors**: retried once automatically; a persistent failure is a provider outage — label the pull request `skip-live-mcp` and file it.
+- **`tool call failed`**: the invoked tool name is wrong for the server (the check prints the available tool names) or the provider rejects the call — fix via `GOOGLE_MCP_TEST_CALL_TOOL`.
+- **`stored credential has no scope` / scope mismatch**: Google narrowed the grant — re-consent and re-seed the refresh token.
+- **authorize-URL failures in the pull-request check**: the redirect-URI registration or the authorize-URL construction drifted — compare the failing entry's `redirect_uri` against the app's registered URIs (host and path: a hosted-callback entry with a pinned callback path must match it exactly).
+- **Provider 5xx or network errors**: retried once automatically (as are probe-exit and capture-timeout failures); a persistent failure is a provider outage — label the pull request `skip-live-mcp` and file it.

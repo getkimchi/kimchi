@@ -48,6 +48,7 @@ export function probeChildEnv({ homeDir, binDir }) {
 		PATH: `${binDir}:${process.env.PATH ?? ""}`,
 		DISPLAY: "",
 		XDG_CURRENT_DESKTOP: "X-Generic",
+		...(process.env.WAYLAND_DISPLAY !== undefined ? { WAYLAND_DISPLAY: "" } : {}),
 		KIMCHI_NO_UPDATE_CHECK: "1",
 		KIMCHI_MCP_E2E_KEYRING_DIR: join(homeDir, "mcp-keyring"),
 	}
@@ -66,7 +67,10 @@ export function redirectUriMatchesClass(redirectUri, redirectUriPrefix) {
 	return (
 		actual.protocol === expected.protocol &&
 		actual.hostname === expected.hostname &&
-		(expected.port === "" || actual.port === expected.port)
+		(expected.port === "" || actual.port === expected.port) &&
+		// A prefix that pins a callback path must match it exactly — hosted-callback
+		// classes are distinguished by their path, not just their host.
+		(expected.pathname === "/" || actual.pathname === expected.pathname)
 	)
 }
 
