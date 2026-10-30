@@ -36,7 +36,7 @@ patchedDependencies:
     hash: 7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec
     path: patches/@modelcontextprotocol__client@2.3.1.patch
   pi-mcp-adapter@5.3.1:
-    hash: c6a0bb65caf200708204582a69f4561f9155029acb18335885db079b78fe4809
+    hash: f1dc3829f637995e7baca7a4363db808ffe6fdf0da39ed03106b68706b111010
     path: patches/pi-mcp-adapter@5.3.1.patch
   playwright-core@1.59.1:
     hash: 1f27acbc8250451c9eea2efa9b19956afcb881a2b7a69ad4550cf8e59f15e102
@@ -135,7 +135,7 @@ importers:
         version: 10.2.0
       pi-mcp-adapter:
         specifier: 5.3.1
-        version: 5.3.1(patch_hash=c6a0bb65caf200708204582a69f4561f9155029acb18335885db079b78fe4809)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.4.3)
+        version: 5.3.1(patch_hash=f1dc3829f637995e7baca7a4363db808ffe6fdf0da39ed03106b68706b111010)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.4.3)
       pptxgenjs:
         specifier: 4.0.1
         version: 4.0.1
@@ -881,60 +881,70 @@ packages:
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-arm64-gnu@2.1.1':
     resolution: {integrity: sha512-AcMk+ZDP8H20Ml5vaTuSh/Ibh5vU4lrAavS2tjoJ7EJJBLDYssONINWrvVgy43SfzntgQVDBcU5GlMI+z5IMFA==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-arm64-musl@1.3.0':
     resolution: {integrity: sha512-iIK6JWHXAJqDrEyLY3TmswwloVyt2vj+04TZnew+uSJ9gnDO8EwRbp3/iw3LpWaXiDO7VomGO6y8I0Id8uBZSw==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@napi-rs/keyring-linux-arm64-musl@2.1.1':
     resolution: {integrity: sha512-wUHecqT9SMUaQCsJO6vtFEsMcfskspXf6+J0AtKsnK8/GnAAb4hf2FHtwp2ZUOecOk1kTW3LPhU5LwTMJ1LLeA==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@napi-rs/keyring-linux-riscv64-gnu@1.3.0':
     resolution: {integrity: sha512-/PGqrwn6EwgtK6vccASSXJRfOSP4vN1F4ASsIQ+7MdrK6hNvAJ1FZPrIuD5gGGdxezo3F++To2Wq7DbuGIeuNQ==}
     engines: {node: '>= 10'}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-riscv64-gnu@2.1.1':
     resolution: {integrity: sha512-hrfvuY0zxrpJOa4k/LzWkrB/R/nXnniz/I2V39X5pWgxKJ1iZBQI03/wT8OI7BwSv9czSh5LLeX/o5D5ywRHBg==}
     engines: {node: '>= 10'}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-x64-gnu@1.3.0':
     resolution: {integrity: sha512-2PDK1WKWTu9lBGq9VvNEkSlQD3O7YwVpmnyN2M3cy4v7NJ/8gDMd9GXv3G+FVXN13uhp4gnnPBS+ScefmEeD2A==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-x64-gnu@2.1.1':
     resolution: {integrity: sha512-NHfMyYyu6laqRBzgfsB0zN12l+z5gz6xQqmLDT8ijevMMOc9ICcVo2GUJCPSX5WvRBgzui91D4R4QG0tahMurw==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@napi-rs/keyring-linux-x64-musl@1.3.0':
     resolution: {integrity: sha512-oJ2HkX8YUo46QBkn0pG+HuIKQNqr523q6vBobCn+P95s4C4K6/kLBqHY/1bg5J4ap31DzsznhnFKcfBNBsjCnw==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@napi-rs/keyring-linux-x64-musl@2.1.1':
     resolution: {integrity: sha512-5E2pO2zqOv+HJr2YorAUYmqItv8ts2oa+BccxZ07/I7x3XvxqwZGtRbkp4wM8psv7phhIfgy+0kZ/ItBsGiDhg==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@napi-rs/keyring-win32-arm64-msvc@1.3.0':
     resolution: {integrity: sha512-tOd3c/uAaeoE4ycVlmAdSvygz0Zt3zdca6Y7gokBeIbaRDWpjDIUOpU3MvML59XAaqyuKGsVVu0F/DZb1lHPmw==}
@@ -6056,7 +6066,7 @@ snapshots:
     dependencies:
       split2: 4.2.0
 
-  pi-mcp-adapter@5.3.1(patch_hash=c6a0bb65caf200708204582a69f4561f9155029acb18335885db079b78fe4809)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.4.3):
+  pi-mcp-adapter@5.3.1(patch_hash=f1dc3829f637995e7baca7a4363db808ffe6fdf0da39ed03106b68706b111010)(@earendil-works/pi-ai@1.3.0(patch_hash=d3f9e9b0940a480cce3b3c1a0913507c7d66b60092f0509a3983883ca79b5d37)(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.4.3))(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.10.2)(ws@8.22.0)(zod@4.4.3))(@earendil-works/pi-tui@1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937))(typebox@1.3.7)(zod@4.4.3):
     dependencies:
       '@earendil-works/pi-tui': 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
       '@modelcontextprotocol/client': 2.3.1(patch_hash=7bafb7800094c2ed593d612ad064d8b53d2363b6d09ee79740fd6bec680b3dec)
