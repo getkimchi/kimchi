@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -116,6 +116,15 @@ vi.mock("../../resources/store.js", async (importOriginal) => {
 })
 
 const isResourceEnabledMock = vi.mocked(isResourceEnabled)
+
+// Bundled skills root the permissions extension resolves at session start; the
+// write/edit deny over the doc-cli load path anchors on this dir. Tests set it
+// to a temp tree per case.
+const bundledSkillsDirState = vi.hoisted(() => ({ dir: "" as string }))
+
+vi.mock("../../shared/skill-discovery/resolve-skill-roots.js", () => ({
+	resolveBundledSkillsDir: vi.fn(() => bundledSkillsDirState.dir || null),
+}))
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -3898,6 +3907,222 @@ describe("permission mode session-log persistence", () => {
 			unregisterSessionPermissionFlagController(previousSessionId)
 			unregisterSessionPermissionFlagController(newSessionId)
 		}
+	})
+})
+
+describe("document-skill CLI route (kimchi doc-cli)", () => {
+	let bundledDir: string
+
+	beforeEach(() => {
+		bundledDir = mkdtempSync(join(tmpdir(), "bundle-doc-skills-"))
+		mkdirSync(join(bundledDir, "pdf", "scripts"), { recursive: true })
+		writeFileSync(join(bundledDir, "pdf", "scripts", "pdf.mjs"), "")
+		bundledSkillsDirState.dir = bundledDir
+		vi.mocked(classifyToolCall).mockClear()
+	})
+	afterEach(() => {
+		rmSync(bundledDir, { recursive: true, force: true })
+		bundledSkillsDirState.dir = ""
+	})
+
+	const docPdfRead = () => "kimchi doc-cli pdf read docs/report.pdf"
+	const tcall = (command: string) => ({ type: "tool_call", toolCallId: "tc-doc", toolName: "bash", input: { command } })
+
+	it("allows the doc-cli route in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("accepts in headless default mode (no UI) without the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext() // hasUI: false
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("still prompts in default mode with a UI", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		// The mock select returns nothing -> the user "declined": default mode
+		// still runs the prompt (the matcher is an auto-mode gate only).
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("a user deny rule still blocks the documented invocation", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true, "deny-tool": "bash(kimchi doc-cli *)" })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("the legacy script-path form still goes to the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const legacy = `BUN_BE_BUN=1 kimchi ${join(bundledDir, "pdf", "scripts", "pdf.mjs")} read x.pdf`
+		const result = await harness.fire("tool_call", tcall(legacy), ctx)
+
+		expect(result).toBeUndefined() // mocked classifier says safe
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("non-documented shapes of the route still go to the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const hostile = [
+			"BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf", // env prefix
+			"kimchi doc-cli pdf read x.pdf > out.txt", // redirect
+			"kimchi doc-cli evil read x.pdf", // unknown skill
+			"kimchi doc-cli pdf read x.pdf && echo done", // compound tail
+		]
+		for (const command of hostile) {
+			const result = await harness.fire("tool_call", tcall(command), ctx)
+			expect(result).toBeUndefined() // mocked classifier says safe
+		}
+		expect(classifyToolCall).toHaveBeenCalledTimes(hostile.length)
+	})
+
+	it("blocks write/edit inside the bundled dir (the auto-allow trust anchor)", async () => {
+		const harness = createPermissionsHarness(["write", "edit"], { auto: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const writeResult = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-w",
+				toolName: "write",
+				input: { path: `${bundledDir}/pwn/scripts/pwn.mjs`, content: "x" },
+			},
+			ctx,
+		)
+		const editResult = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-e",
+				toolName: "edit",
+				input: { file_path: `${bundledDir}/pdf/scripts/pdf.mjs`, edits: [] },
+			},
+			ctx,
+		)
+
+		expect(writeResult).toEqual(expect.objectContaining({ block: true }))
+		expect(editResult).toEqual(expect.objectContaining({ block: true }))
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		// the deny is a gated decision: visible to decision telemetry/ACP like every sibling deny path
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-w",
+				toolName: "write",
+				decision: "reject",
+				sourceDetail: "bundled_skill_dir_deny",
+				permissionMode: "auto",
+			},
+			{
+				toolCallId: "tc-e",
+				toolName: "edit",
+				decision: "reject",
+				sourceDetail: "bundled_skill_dir_deny",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("write outside the bundled dir still goes through the classifier in auto mode", async () => {
+		const harness = createPermissionsHarness(["write"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-w2",
+				toolName: "write",
+				input: { path: `${bundledDir}-outside.md`, content: "x" },
+			},
+			ctx,
+		)
+
+		expect(result).toBeUndefined() // mocked classifier says safe
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps the doc-cli gate identical across two sessions", async () => {
+		const harnessA = createPermissionsHarness(["bash"], { auto: true })
+		const harnessB = createPermissionsHarness(["bash"], { auto: true })
+		const ctxA = createClassifierContext()
+		const ctxB = createClassifierContext()
+		await harnessA.fire("session_start", {}, ctxA)
+		await harnessB.fire("session_start", {}, ctxB)
+
+		const resultA = await harnessA.fire("tool_call", tcall(docPdfRead()), ctxA)
+		const resultB = await harnessB.fire("tool_call", tcall(docPdfRead()), ctxB)
+
+		expect(resultA).toBeUndefined()
+		expect(resultB).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("warns when the bundled skills dir does not resolve (deny inactive)", async () => {
+		bundledSkillsDirState.dir = ""
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const harness = createPermissionsHarness(["bash"], { auto: true })
+			const ctx = createClassifierContext() // hasUI: false → console.error
+			await harness.fire("session_start", {}, ctx)
+			expect(spy).toHaveBeenCalledWith(expect.stringContaining("bundled skills dir not found"))
+		} finally {
+			spy.mockRestore()
+			bundledSkillsDirState.dir = bundledDir
+		}
+	})
+
+	it("emits the bundled_skill_cli decision source in auto mode", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-doc",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "bundled_skill_cli",
+				permissionMode: "auto",
+			},
+		])
 	})
 })
 

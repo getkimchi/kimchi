@@ -7,9 +7,9 @@ disables-skills: pdf
 
 # pdf
 
-All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
-- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/pdf.mjs <command> ...`
-- Fallback: run the same script under plain Node — `node <skill-dir>/scripts/pdf.mjs ...` — whenever the bun runtime fails to start (`bun is unable to write files to tempdir: EPERM` and other sandbox/bootstrap errors), or when `kimchi` isn't on PATH. Same commands, same output.
+All commands run the bundled runtime.
+- Primary: `kimchi doc-cli pdf <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed.
+- Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/pdf.mjs ...`. Same commands, same output.
 
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
 

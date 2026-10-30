@@ -30,6 +30,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
+import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -74,6 +75,7 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
+import { isDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
 import { registerCommands } from "./commands.js"
@@ -259,6 +261,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let currentCtx: ExtensionContext | undefined
+	// The bundled skills dir the binary ships — the dir the doc-cli route loads
+	// its staged CLI bundles from. Resolved per session; process-constant in
+	// practice. The doc-cli allow itself needs no anchor (the binary resolves
+	// the script, not the model); this root backs the write/edit denial that
+	// keeps the load path unplantable.
+	let bundledSkillCliRoot: string | null = null
 	let appliedPermissionMode: PermissionModeState | undefined
 	let applyingPermissionMode = false
 	let preFermentMode: PermissionModeState | undefined
@@ -621,6 +629,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activePlanSlug = undefined
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
+		bundledSkillCliRoot = resolveBundledSkillsDir()
+		if (bundledSkillCliRoot === null) {
+			// Fail-open visibility: without the root the write/edit deny over the
+			// doc-cli load path is inactive. Should only happen on a broken
+			// install (staged dir missing) — say so instead of degrading silently.
+			const msg = "permissions: bundled skills dir not found — the doc-cli write deny is inactive this session"
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning")
+			else console.error(msg)
+		}
 
 		for (const err of errors) {
 			if (ctx.hasUI) ctx.ui.notify(`permissions: ${err}`, "warning")
@@ -1319,6 +1336,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	})
 
+	/** Write/edit target path: `file_path` or `path`, whichever the tool names. */
+	const writeEditTargetPath = (input: Record<string, unknown>): string =>
+		typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
@@ -1338,8 +1359,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// write and edit are only allowed for .kimchi/plans/* paths.
 		if (process.env.KIMCHI_AGENT_PERSONA?.toLowerCase() === "plan") {
 			if (toolName === "write" || toolName === "edit") {
-				const filePath =
-					typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+				const filePath = writeEditTargetPath(input)
 				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
 					return {
 						block: true,
@@ -1348,6 +1368,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 				// path is within .kimchi/plans/ — allow without further checks
 				return undefined
+			}
+		}
+
+		// The bundled skills tree is where the doc-cli route loads its staged CLI
+		// bundles from — the agent must never be able to populate or overwrite it.
+		// write/edit to any path under it is blocked outright. Coverage is
+		// write/edit-only by design: bash file writes (and other write-capable
+		// tools) inside it stay behind the classifier, the documented residual
+		// (see docs/doc-cli.md).
+		if ((toolName === "write" || toolName === "edit") && bundledSkillCliRoot !== null) {
+			const filePath = writeEditTargetPath(input)
+			if (filePath && isUnderBundledSkillsDir(filePath, bundledSkillCliRoot, ctx.cwd)) {
+				emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "bundled_skill_dir_deny")
+				return {
+					block: true,
+					reason: `Blocked: ${toolName} inside the bundled skills directory is not allowed — it is the trust anchor for auto-allowed skill commands.`,
+				}
 			}
 		}
 
@@ -1473,6 +1510,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
+				// The hidden document-skill CLI route (`kimchi doc-cli pdf …`) is
+				// first-party: the binary resolves and loads the staged bundle, the
+				// model only supplies the fixed command shape. It skips the classifier
+				// — the deterministic shape check accepts exactly the documented form.
+				// User deny rules (evaluateRules above) still win; default mode still
+				// prompts.
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					if (isDocCliCommand(command)) {
+						emitToolDecision(pi, event, mode, "accept", "bundled_skill_cli")
+						return undefined
+					}
+				}
 				const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
 				const verdict = await classifyToolCall(
 					candidates,
