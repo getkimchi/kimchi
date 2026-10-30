@@ -27,6 +27,8 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	plan_readonly: "config",
 	plan_gate: "config",
 	builtin_safe: "config",
+	bundled_skill_cli: "config",
+	bundled_skill_dir_deny: "config",
 	readonly: "config",
 	ferment_internal: "config",
 	compound_rule: "config",

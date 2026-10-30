@@ -34,6 +34,15 @@ function extractCommands(markdown: string, cliName: string): string[] {
 	// `<cli>.mjs <command>` wherever it appears (headings, inline code, fences).
 	const pattern = new RegExp(`${cliName}\\.mjs\\s+([a-z][a-z-]*)\\b`, "g")
 	for (const m of markdown.matchAll(pattern)) if (m[1]) commands.add(m[1])
+	// `doc-cli <cli> <command>` — the primary invocation form. The capture is
+	// deliberately broad (`\S+`, skipping `<…>` placeholders): a drifted
+	// mis-cased command must FAIL the usage assertion below, not silently
+	// extract nothing.
+	const docCliPattern = new RegExp(`doc-cli\\s+${cliName}\\s+(\\S+)\\b`, "g")
+	for (const m of markdown.matchAll(docCliPattern)) {
+		const token = m[1]
+		if (token && !token.startsWith("<")) commands.add(token)
+	}
 	// Headings like `## read \`<file.pdf> [N-M]\`` — the verb right after ##.
 	for (const m of markdown.matchAll(/^##+\s+(?:`)?([a-z][a-z-]*)(?:`|\s|<)/gm)) {
 		const verb = m[1]
@@ -49,7 +58,7 @@ function extractCommands(markdown: string, cliName: string): string[] {
 function extractFlags(markdown: string, cliName: string): string[] {
 	const flags = new Set<string>()
 	for (const line of markdown.split(/\r?\n/)) {
-		const isCommandLine = line.includes(`${cliName}.mjs`)
+		const isCommandLine = line.includes(`${cliName}.mjs`) || line.includes(`doc-cli ${cliName}`)
 		const isCommandHeading = /^##\s/.test(line)
 		if (!isCommandLine && !isCommandHeading) continue
 		for (const m of line.matchAll(/(?<![\w-])(--[a-z][a-z-]+)\b/g)) if (m[1]) flags.add(m[1])

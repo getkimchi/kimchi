@@ -295,6 +295,23 @@ async function cliMain(): Promise<void> {
 		process.exit(await runExportWorkerMain(originalArgs.slice(1)))
 	}
 
+	// Document-skill CLI route: `kimchi doc-cli <pdf|docx|xlsx|pptx> …` loads the
+	// staged bundle in-process — the binary resolves the script, the agent
+	// never supplies a path. Routed before telemetry/org-policy like the workers
+	// above: the agent calls it repeatedly inside one session, and the route
+	// must stay invisible to app_started instrumentation.
+	if (originalArgs[0] === "doc-cli") {
+		const { runDocCliMain } = await import("./extensions/documents/doc-cli-main.js")
+		const code = await runDocCliMain(originalArgs.slice(1))
+		// Exit through the event loop, never process.exit(): a hard exit can
+		// truncate large piped output — the empty-write drain this route used
+		// still lost ~16% of a 3000-line `fields` dump on CI runners (the OS
+		// pipe had not drained when the callback fired). exitCode + return lets
+		// the runtime keep the process alive until stdio has flushed.
+		process.exitCode = code
+		return
+	}
+
 	// Observes provider transport failures in-process (via message_end) so the
 	// exit path can reclassify a failed run as infrastructure (exit 74).
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()

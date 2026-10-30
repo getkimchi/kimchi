@@ -106,6 +106,8 @@ export type PermissionDecisionSourceDetail =
 	| "plan_readonly"
 	| "plan_gate"
 	| "builtin_safe"
+	| "bundled_skill_cli"
+	| "bundled_skill_dir_deny"
 	| "readonly"
 	| "ferment_internal"
 	| "compound_rule"
