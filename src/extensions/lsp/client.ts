@@ -184,7 +184,13 @@ async function startMessageReader(client: LspClient): Promise<void> {
 					// (e.g. window/workDoneProgress/create, workspace/configuration)
 					if ("method" in message) {
 						const response: LspJsonRpcResponse = { jsonrpc: "2.0", id: message.id as number, result: null }
-						writeMessage(client.proc, response).catch(() => {})
+						writeMessage(client.proc, response).catch((err) => {
+							// Third write site (after sendRequest/sendNotification): a broken pipe
+							// on the reply means the server is gone — same teardown, so the corpse
+							// can't be handed out until stdout EOF happens to fire. Swallow after
+							// teardown: nothing awaits a reply the server will never read.
+							closeDeadClient(client, err)
+						})
 					}
 				} else if ("method" in message) {
 					if (message.method === "textDocument/publishDiagnostics" && message.params) {

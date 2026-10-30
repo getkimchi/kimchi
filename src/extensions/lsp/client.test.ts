@@ -481,6 +481,28 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		await ensureFileOpen(fresh, `${CWD}/f0.ts`)
 		expect(fakes[1].written.some((w) => w.includes('"textDocument/didOpen"'))).toBe(true)
 	})
+
+	it("evicts the client when the reply to a server-initiated request hits a dead pipe", async () => {
+		// Third write site: the reader's null reply to server-initiated requests
+		// (workspace/configuration, window/workDoneProgress/create) must get the
+		// same teardown as sendRequest/sendNotification — otherwise a pipe that
+		// breaks exactly there leaves the corpse registered until stdout EOF
+		// happens to fire. A real consumer request stays pending across the
+		// failed reply write, so teardown must reject it too.
+		const client = await startChain()
+		const pending = sendRequest(client, "textDocument/hover", {}).catch(() => "rejected")
+		killStdin(fakes[0])
+
+		fakes[0].enqueue({ jsonrpc: "2.0", id: 7, method: "workspace/configuration", params: {} })
+
+		const result = await Promise.race([pending, new Promise<string>((r) => setTimeout(() => r("timeout"), 2000))])
+		expect(result).toBe("rejected")
+		// Give the async reply-write catch a moment to run the teardown.
+		await new Promise((r) => setTimeout(r, 100))
+
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
 })
 
 describe("openFiles LRU bound", () => {
