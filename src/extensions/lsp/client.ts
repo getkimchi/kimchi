@@ -124,8 +124,21 @@ async function writeMessage(
 		// path and Bun treated it as fatal). Label it so callers, logs, and
 		// the status bar show a dead server instead of a bare syscall error.
 		const reason = err instanceof Error ? err.message : String(err)
-		throw new Error(`LSP server pipe closed (write failed: ${reason})`)
+		// `cause` keeps the original transport error (code/errno/syscall, stack)
+		// reachable for upstream classifiers and diagnostics.
+		throw new Error(`LSP server pipe closed (write failed: ${reason})`, { cause: err })
 	}
+}
+
+/** Split decoded stderr text into complete lines, keeping the trailing
+ *  partial line buffered for the next chunk. `reader.read()` returns
+ *  arbitrary byte chunks, not lines: without this, a multi-line crash
+ *  dump would be logged as one entry with embedded newlines and long
+ *  lines would split mid-text across entries. */
+export function splitStderrLines(text: string): { lines: string[]; rest: string } {
+	const parts = text.split("\n")
+	const rest = parts.pop() ?? ""
+	return { lines: parts, rest }
 }
 
 /** Shared teardown for a chain whose transport is gone — the reader crashed
@@ -406,17 +419,32 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		;(async () => {
 			const reader = client.proc.stderr.getReader()
 			const decoder = new TextDecoder()
+			let pending = ""
 			try {
 				while (true) {
 					const { done, value } = await reader.read()
 					if (done) break
-					const line = decoder.decode(value, { stream: true }).trimEnd()
-					if (line) debug(`LSP stderr [${client.name}]: ${line}`)
+					pending += decoder.decode(value, { stream: true })
+					const { lines, rest } = splitStderrLines(pending)
+					pending = rest
+					for (const line of lines) {
+						const trimmed = line.trimEnd()
+						if (trimmed) debug(`LSP stderr [${client.name}]: ${trimmed}`)
+					}
 				}
+				// Flush any trailing partial line the server wrote without a newline
+				// (decoder.decode() with no args also flushes pending UTF-8 state).
+				const tail = (pending + decoder.decode()).trimEnd()
+				if (tail) debug(`LSP stderr [${client.name}]: ${tail}`)
 			} finally {
 				reader.releaseLock()
 			}
-		})()
+		})().catch((err) => {
+			// The stderr stream can error when closeDeadClient's kill races an
+			// in-flight read. Swallow via debug(): an escaping rejection would be
+			// fatal in Bun — the exact crash class this module guards against.
+			debug(`LSP stderr drain failed [${client.name}]: ${err instanceof Error ? err.message : String(err)}`)
+		})
 
 		// Init is a lifecycle span: after the `initialize` response resolves,
 		// nothing registers a pendingRequest until projectLoaded resolves (up to
