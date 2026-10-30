@@ -769,3 +769,32 @@ describe("bashSegmentForms", () => {
 		expect(bashSegmentForms("echo `id`")).toEqual([])
 	})
 })
+
+describe("isReadOnlyBashCommand: doc-cli route", () => {
+	const readOnly = [
+		"kimchi doc-cli pdf read report.pdf",
+		"kimchi doc-cli pdf fields report.pdf",
+		"kimchi doc-cli pdf dump-shapes report.pdf --page 2",
+		"kimchi doc-cli pdf info report.pdf 2>&1 | tail -5",
+		"kimchi doc-cli docx read notes.docx",
+		"kimchi doc-cli xlsx info sheet.xlsx",
+		"kimchi doc-cli pptx check deck.pptx",
+	]
+	it.each(readOnly)("accepts %s in plan mode", (command) => {
+		expect(isReadOnlyBashCommand(command)).toBe(true)
+	})
+
+	const rejected = [
+		"kimchi doc-cli pdf fill-form report.pdf --values v.json",
+		"kimchi doc-cli pdf write out.pdf --content doc.md",
+		"kimchi doc-cli pptx edit in.pptx --out out.pptx --ops ops.json",
+		"kimchi doc-cli pdf read $(cat target)",
+		"kimchi doc-cli pdf read x.pdf > out.txt",
+		"BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf",
+		"kimchi doc-cli pdf",
+		"kimchi doc-cli unknown read x",
+	]
+	it.each(rejected)("rejects %s", (command) => {
+		expect(isReadOnlyBashCommand(command)).toBe(false)
+	})
+})

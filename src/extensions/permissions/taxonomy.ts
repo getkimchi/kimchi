@@ -1,4 +1,5 @@
 import { type ControlOperator, type ParseEntry, parse as parseShell } from "shell-quote"
+import { DOC_CLI_READ_ONLY_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../documents/doc-cli-skills.js"
 import type { ToolCategory } from "./types.js"
 
 // shell-quote >= 1.11 types ControlOperator as an interface; the operator
@@ -607,6 +608,17 @@ export function isReadOnlyBashCommand(command: string): boolean {
 			if (op.op === ">&" && op.target && /^[0-9]+$/.test(op.target)) continue
 			return false
 		}
+		// The document-skill CLI route must be bare to read as read-only — an
+		// env prefix must not reach the binary's route loading, matching the
+		// auto-mode gate (bundled-skill-cli.ts). parseCommandSegments strips
+		// leading `FOO=bar` assignments, so detect them on the raw command.
+		if (
+			segment.tokens[0] === "kimchi" &&
+			segment.tokens[1] === "doc-cli" &&
+			LEADING_ENV_ASSIGNMENT.test(command.trim())
+		) {
+			return false
+		}
 		if (!isSegmentReadOnly(segment.tokens)) return false
 	}
 	return true
@@ -615,6 +627,18 @@ export function isReadOnlyBashCommand(command: string): boolean {
 function isSegmentReadOnly(tokens: string[]): boolean {
 	const program = tokens[0]
 	if (!program) return false
+
+	// The hidden document-skill CLI route (`kimchi doc-cli pdf read …`) with
+	// a read-only subcommand is as safe here as cat/grep — the strict shape
+	// falls out of the token checks below (an env prefix makes tokens[0] the
+	// assignment, not `kimchi`; substitution/redirect ops fail the op gate
+	// above; mutating subcommands fail the read-only set). Mutating doc-cli
+	// calls stay rejected — plan mode is read-only.
+	if (program === "kimchi" && tokens[1] === "doc-cli") {
+		const skill = tokens[2] as DocCliSkill
+		if (!(DOC_CLI_SKILLS as readonly string[]).includes(tokens[2] ?? "")) return false
+		return DOC_CLI_READ_ONLY_COMMANDS[skill].includes(tokens[3] ?? "")
+	}
 
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {
