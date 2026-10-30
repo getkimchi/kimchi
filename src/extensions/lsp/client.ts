@@ -115,8 +115,34 @@ async function writeMessage(
 ): Promise<void> {
 	const content = JSON.stringify(msg)
 	const header = `Content-Length: ${Buffer.byteLength(content, "utf-8")}\r\n\r\n`
-	proc.stdin.write(header + content)
-	if (proc.stdin.flush) await proc.stdin.flush()
+	try {
+		proc.stdin.write(header + content)
+		if (proc.stdin.flush) await proc.stdin.flush()
+	} catch (err) {
+		// Bun throws EPIPE synchronously once the server process is gone
+		// (crash report, v1.21.0: this raw rejection escaped the tool-result
+		// path and Bun treated it as fatal). Label it so callers, logs, and
+		// the status bar show a dead server instead of a bare syscall error.
+		const reason = err instanceof Error ? err.message : String(err)
+		throw new Error(`LSP server pipe closed (write failed: ${reason})`)
+	}
+}
+
+/** Shared teardown for a chain whose transport is gone — the reader crashed
+ *  or a write failed because the server process died. Identity-checked
+ *  registry removal (a same-key respawn may already own the slot), reject
+ *  pending requests, and kill the process in case it's still alive, so the
+ *  next getOrCreateClient respawns a fresh server instead of handing out a
+ *  corpse. Both death paths must behave identically (crash report v1.21.0:
+ *  a dead server's EPIPE stayed unhandled and crashed the harness). */
+function closeDeadClient(client: LspClient, cause: unknown): void {
+	const closed = new Error(`LSP connection closed: ${cause}`)
+	for (const pending of client.pendingRequests.values()) {
+		pending.reject(closed)
+	}
+	client.pendingRequests.clear()
+	removeClientFromRegistries(client)
+	client.proc.kill()
 }
 
 // =============================================================================
@@ -194,17 +220,10 @@ async function startMessageReader(client: LspClient): Promise<void> {
 			}
 		}
 	} catch (err) {
-		const closed = new Error(`LSP connection closed: ${err}`)
-		for (const pending of client.pendingRequests.values()) {
-			pending.reject(closed)
-		}
-		client.pendingRequests.clear()
 		// Remove the zombie client so the next getOrCreateClient spawns a
 		// fresh server instead of returning a dead client whose reader has
-		// stopped. Kill the process in case it's still alive. Identity-checked:
-		// a same-key respawn may already own the slot.
-		removeClientFromRegistries(client)
-		client.proc.kill()
+		// stopped.
+		closeDeadClient(client, err)
 	} finally {
 		reader.releaseLock()
 		client.isReading = false
@@ -374,13 +393,19 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		})
 
 		startMessageReader(client)
-		// Drain stderr to prevent pipe buffer filling and blocking gopls stdout
+		// Drain stderr to prevent pipe buffer filling and blocking gopls stdout.
+		// Surface the output under NODE_DEBUG=kimchi:lsp — a server that dies
+		// mid-session (the v1.21.0 crash incident) used to leave no evidence
+		// of why. debug() only, never console: raw writes corrupt the TUI.
 		;(async () => {
 			const reader = client.proc.stderr.getReader()
+			const decoder = new TextDecoder()
 			try {
 				while (true) {
-					const { done } = await reader.read()
+					const { done, value } = await reader.read()
 					if (done) break
+					const line = decoder.decode(value, { stream: true }).trimEnd()
+					if (line) debug(`LSP stderr [${client.name}]: ${line}`)
 				}
 			} finally {
 				reader.releaseLock()
@@ -548,6 +573,10 @@ export async function sendRequest(client: LspClient, method: string, params: unk
 		writeMessage(client.proc, request).catch((err) => {
 			clearTimeout(timer)
 			client.pendingRequests.delete(id)
+			// A failed write means the server is gone — evict the corpse so the
+			// next operation respawns a fresh chain instead of writing into the
+			// dead pipe again.
+			closeDeadClient(client, err)
 			reject(err)
 		})
 	})
@@ -556,7 +585,15 @@ export async function sendRequest(client: LspClient, method: string, params: unk
 export async function sendNotification(client: LspClient, method: string, params: unknown): Promise<void> {
 	const notification: LspJsonRpcNotification = { jsonrpc: "2.0", method, params }
 	client.lastActivity = Date.now()
-	await writeMessage(client.proc, notification)
+	try {
+		await writeMessage(client.proc, notification)
+	} catch (err) {
+		// The server is gone. Evict the corpse so the next getOrCreateClient
+		// respawns a fresh chain, then rethrow: callers (e.g. the tool-result
+		// file sync) rely on the rejection to mark the server failed.
+		closeDeadClient(client, err)
+		throw err
+	}
 }
 
 /**
