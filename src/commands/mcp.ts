@@ -20,6 +20,11 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  *
+ * `--call <toolName>` optionally invokes one tool through the connected
+ * session after tools/list; `--args <json>` supplies its arguments (default
+ * `{}`). The outcome is reported in the output's `call` field and a failed
+ * call exits 1 (the catalog is still returned).
+ *
  * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract and consent budget: docs/mcp-forget-grant.md
  */
 
@@ -153,6 +158,36 @@ async function runProbe(args: string[]): Promise<number> {
 		return await emitError("--json flag is required", null)
 	}
 
+	// Optional single tool invocation: --call <toolName> [--args <json object>].
+	// Validated as strictly as forget-grant's positional: a missing value or a
+	// stray flag must not silently probe without the call the caller asked for.
+	let call: { tool: string; args?: Record<string, unknown> } | undefined
+	const callIndex = args.indexOf("--call")
+	const argsIndex = args.indexOf("--args")
+	if (callIndex !== -1 || argsIndex !== -1) {
+		if (callIndex === -1) {
+			return await emitError("--args requires --call: kimchi mcp probe --json --call <toolName> [--args <json>]", null)
+		}
+		const tool = args[callIndex + 1]
+		if (!tool || tool.startsWith("-")) {
+			return await emitError("--call requires a tool name: --call <toolName> [--args <json>]", null)
+		}
+		if (argsIndex !== -1) {
+			let parsedArgs: unknown
+			try {
+				parsedArgs = JSON.parse(args[argsIndex + 1] ?? "")
+			} catch {
+				return await emitError('--args must be a JSON object (e.g. --args \'{"query":"x"}\')', null)
+			}
+			if (typeof parsedArgs !== "object" || parsedArgs === null || Array.isArray(parsedArgs)) {
+				return await emitError("--args must be a JSON object", null)
+			}
+			call = { tool, args: parsedArgs as Record<string, unknown> }
+		} else {
+			call = { tool }
+		}
+	}
+
 	// Read server config from stdin
 	let input: string
 	try {
@@ -189,8 +224,12 @@ async function runProbe(args: string[]): Promise<number> {
 		const result = await probe.probeTools(name, definition, {
 			authenticate: true,
 			cwd: process.cwd(),
+			...(call ? { call } : {}),
 		})
 		if (result.error && !result.needsAuth) return await emitError(result.error, null)
+		// A requested tool call that failed exits 1 with the full result (catalog
+		// included) so the caller can see both the failure and what was available.
+		if (result.call && !result.call.ok) return await emitResult(result, 1)
 		return await emitResult(result, 0)
 	} catch (err) {
 		return await emitError(err instanceof Error ? err.message : String(err), null)
