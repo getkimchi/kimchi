@@ -829,9 +829,10 @@ export function calculatePullRequestCosts(
 					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 
-				// The rest follow their work's time split. A request linked to other works keeps all their PRs, and one
+				// The rest follow their work's time split. A request linked to or owned by several works keeps all their PRs, and one
 				// whose PRs are in different repositories is still reported as unknown in each.
-				const heading = link || owner.startedAt === undefined ? undefined : prAt(workIds[0], owner.startedAt)
+				const heading =
+					link || owner.startedAt === undefined || workIds.length !== 1 ? undefined : prAt(workIds[0], owner.startedAt)
 				if (
 					allocated.allocation === "shared" &&
 					heading &&
