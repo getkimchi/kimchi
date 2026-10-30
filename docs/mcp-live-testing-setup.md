@@ -1,11 +1,12 @@
 # Live MCP OAuth testing setup
 
-How to provision and operate the two live MCP OAuth checks that talk to real providers:
+How to provision and operate the live MCP checks that talk to real servers:
 
-- `scripts/mcp-live-probe.mjs` — credential-free authorize-URL check (runs on pull requests; see [mcp-e2e-testing.md](mcp-e2e-testing.md)).
+- `scripts/mcp-live-probe.mjs` — credential-free authorize-URL check against real OAuth providers (runs on pull requests and nightly; see [mcp-e2e-testing.md](mcp-e2e-testing.md)).
 - `scripts/mcp-live-google-lifecycle.mjs` — credentialed silent-renewal check against Google (manual dispatch, or the `mcp-e2e-live` PR label).
+- `scripts/mcp-live-public.mjs` — full add-and-use lifecycle against a public no-auth server (DeepWiki by default); needs no provisioning at all — no secrets, no credentials, no first-time setup.
 
-Both scripts print booleans, tool counts, and expiry timestamps. Refresh tokens and client secrets never appear in their output.
+The scripts print booleans, tool counts, and expiry timestamps. Refresh tokens and client secrets never appear in their output.
 
 ## Provider inventory for the authorize-URL check
 

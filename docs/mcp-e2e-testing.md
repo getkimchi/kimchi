@@ -56,6 +56,10 @@ The `MCP live` workflow runs this check as its `probe` job on every pull request
 
 Local development: `node scripts/mcp-live-probe.mjs --self-test` runs the pure URL/provider-answer checks on canned inputs without the binary or network; a full local run needs `MCP_LIVE_PROVIDERS` and `pnpm run build:binary` first. The matrix is written to `mcp-live-probe-matrix.json`.
 
+### Public no-auth server lifecycle check
+
+`scripts/mcp-live-public.mjs` runs the full add-and-use journey against a real public MCP server that requires no credentials (DeepWiki by default): the probe connects over streamable HTTP, lists the server's tools, and invokes one read-only tool through the live session. This is the only live coverage of the non-OAuth HTTP path — TLS, headers, session handling, and the server's own protocol implementation are real rather than the local fixture's. A no-auth server must never open a browser; any browser open fails the check. The default inventory is public information and lives in the script — override it with `MCP_LIVE_PUBLIC_SERVERS` (a JSON array of `{name, url, tool, args}` entries). It runs in the `MCP live` workflow's `probe` job with the same cadence and guardrails as the provider check; `node scripts/mcp-live-public.mjs --self-test` runs the pure checks on canned inputs.
+
 ## Coverage
 
 | Area | End-to-end behavior |
@@ -66,6 +70,7 @@ Local development: `node scripts/mcp-live-probe.mjs --self-test` runs the pure U
 | Streamable HTTP | initialization, session IDs, custom headers, static bearer authentication, unavailable server behavior, and legacy SSE fallback |
 | OAuth | protected-resource and authorization-server metadata, dynamic client registration, authorization code with PKCE, browser callback, remote https redirect completed through the loopback callback, denial, token failure, persistence, and refresh after restart; Google-style issuance rules (refresh token only for `access_type=offline`) and silent renewal across a restart |
 | live providers | authorize-URL shape and provider acceptance per configured provider class (see Live provider checks) |
+| public no-auth server | full add-and-use lifecycle against a real third-party MCP server with no credentials: connect, list tools, invoke one read tool (see Live provider checks) |
 | ACP | server probing, cache population, MCP-backed agent turns, image forwarding, authentication-required probing, OAuth login, and protected tool calls |
 | official conformance | the pinned runner's `initialize` and `tools_call` client scenarios against Kimchi's real ACP-hosted client stack |
 

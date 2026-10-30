@@ -5,7 +5,9 @@ name: MCP live
 # probe — credential-free: proves the authorize request the built binary
 # constructs is still accepted by real providers (redirect-URI class,
 # Google-style offline-access parameters, provider answers with a sign-in
-# page rather than an OAuth error). Runs on every pull request.
+# page rather than an OAuth error). Runs on every pull request. Also proves
+# the full add-and-use lifecycle against a public no-auth server (DeepWiki):
+# connect, list tools, invoke one read tool — no credentials involved.
 #
 # lifecycle — credentialed: proves an expired Google-backed MCP access
 # token is renewed silently (tools listed, no browser consent, stored
@@ -102,6 +104,14 @@ jobs:
         env:
           MCP_LIVE_PROVIDERS: ${{ secrets.MCP_LIVE_PROVIDERS }}
         run: node scripts/mcp-live-probe.mjs
+
+      # Full add-and-use lifecycle against a real third-party server that
+      # needs no credentials — the non-OAuth HTTP path (TLS, headers, session
+      # handling, someone else's protocol implementation) has no other live
+      # coverage. Same trust boundary and skip label as the provider check.
+      - name: Run public no-auth server check
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-live-mcp') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        run: node scripts/mcp-live-public.mjs
 
       - name: Upload probe matrix
         if: ${{ !cancelled() }}
