@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { type KimchiFixture, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { type KimchiFixture, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -173,15 +173,23 @@ test("widget shows multiple scopes together", async ({ terminal }) => {
 			await waitForText(terminal, "global task A", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("global scope visible")
 
-			terminal.submit("Add more todos")
-			trace.step("submitted second prompt")
-
 			// Wait for the combined-count strip header (done=1 of 4 across
 			// both scopes) so we know the second write landed. The default
 			// viewport windows by terminal-height budget, so not all four rows
 			// fit at once — the test expands the strip to verify both scopes.
+			//
+			// NOTE on ordering: inputs submitted WHILE the agent is streaming
+			// go through the steer/followUp queue — and submissions that land in
+			// the narrow window after the agent loop has exited but before the
+			// session clears its streaming flag get swallowed (the queue never
+			// flushes: observed in CI as the expand-all command sitting unflushed
+			// for 15s+, "Todos · Step" never painting, test timing out). Wait
+			// for the turn to fully settle before driving the UI command.
 			await waitForText(terminal, "Todos · 1/4", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("combined strip header visible")
+			await waitForText(terminal, "✻ Worked for", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, PROMPT_READY, { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("turn settled, editor idle")
 
 			// Expand-all dumps every row uncapped so both scope groups render.
 			terminal.submit("/todos expand all")

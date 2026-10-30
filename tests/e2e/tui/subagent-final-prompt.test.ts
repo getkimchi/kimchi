@@ -13,7 +13,7 @@
  */
 
 import { expect, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
+import { STREAM_TIMEOUT_MS, waitForRequest, waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -60,7 +60,13 @@ test("subagent request advertises its resolved active tool list", async ({ termi
 			// parent-session header (present when telemetry is enabled) OR the
 			// sub-agent prompt marker — CI runs with telemetry off, so the
 			// header alone is not reliable there.
-			const subagentRequests = fixture.fake.requests.filter((request) => {
+			//
+			// The Agent tool runs in the background by default, so the
+			// orchestrator's follow-up turn ("Delegation complete.") renders
+			// while the child is still booting — its request reaches the fake
+			// server a beat later. Wait for the evidence instead of asserting
+			// against a mid-flight request log (this was the CI flake).
+			const isSubagentRequest = (request: (typeof fixture.fake.requests)[number]) => {
 				if (!request.url.endsWith("/chat/completions")) return false
 				if ((request.headers as Record<string, unknown>)["x-parent-session-id"] !== undefined) return true
 				const messages = (request.body as { messages?: Array<{ role: string; content: unknown }> } | null)?.messages
@@ -72,10 +78,14 @@ test("subagent request advertises its resolved active tool list", async ({ termi
 							"You are a kimchi coding agent sub-agent.",
 						),
 				)
-			})
-			expect(subagentRequests.length).toBe(1)
-
-			const first = subagentRequests[0]
+			}
+			const first = await waitForRequest(
+				fixture.fake.requests,
+				isSubagentRequest,
+				"the subagent's chat/completions request",
+			)
+			trace.step("subagent request reached the fake server")
+			expect(fixture.fake.requests.filter(isSubagentRequest).length).toBe(1)
 			const messages = (first?.body as { messages?: Array<{ role: string; content: unknown }> })?.messages
 			const system = messages?.find((m) => m.role === "system")
 			const systemText = system && typeof system.content === "string" ? system.content : JSON.stringify(system?.content)
