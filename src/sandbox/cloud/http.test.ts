@@ -17,9 +17,9 @@ describe("resolveEndpoint", () => {
 		expect(resolveEndpoint()).toBe("https://from-env.example.com")
 	})
 
-	it("falls back to the production default when no option and no env", () => {
+	it("falls back to the region's API origin when no option and no env", () => {
 		vi.stubEnv("KIMCHI_REMOTE_ENDPOINT", undefined)
-		expect(resolveEndpoint()).toBe("https://app.kimchi.dev/api")
+		expect(resolveEndpoint()).toBe("https://api.cast.ai")
 	})
 })
 
