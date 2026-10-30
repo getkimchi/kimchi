@@ -40,6 +40,15 @@
 #     flows; upstream issue pending at
 #     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
 #     supports offline-access defaults or an authorize-URL customization hook)
+#   - Runtime config reload (reload.ts reloadConfig; metadata-cache
+#     evictServerMetadataCache; state reload-context fields; index.ts
+#     reload-handle sink): upstream 5.3.1 has no runtime config reload API —
+#     McpLifecycleManager exposes only reconnect/health/keepalive/idle, and
+#     config is read once per install/session replacement. Upstream tracking
+#     issue pending at https://github.com/nicobailon/pi-mcp-adapter (remove
+#     when upstream ships a runtime reload (re-read → diff → reconcile incl.
+#     deferred-catalog eviction, trust re-resolution, and tool-surface sync)
+#     plus a per-extension-instance callback to register a reload handle).
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -129,6 +138,10 @@
 #     flow's saved discovery state) after the server's own
 #     authorizationParams, so a host only fills in what config left unset; default is identity. The
 #     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
+#   - reload/config-state (+dist mirrors): runtime config reload driver
+#     (re-read → computeServerHash diff → per-server reconcile), metadata-cache
+#     eviction helper, reload-context state fields, and a reload-handle sink
+#     option so hosts can reconcile per live extension instance.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -1828,3 +1841,1188 @@ index 74e2d87..8b69041 100644
      "./host-managed": {
        "types": "./host-managed.ts",
        "import": "./host-managed.ts",
+diff --git a/commands.ts b/commands.ts
+index 8a336ee..522dd8c 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
+ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+ import type { OverlayHandle } from "@earendil-works/pi-tui";
+ import type { McpExtensionState } from "./state.ts";
+-import { isServerDisabled, type McpAuthResult, type McpConfig, type McpPanelCallbacks, type McpPanelResult, type ImportKind } from "./types.ts";
++import { isServerDisabled, type McpAuthResult, type McpConfig, type McpPanelCallbacks, type McpPanelResult, type ImportKind, type ReloadConfigOptions, type SessionReloadOutcome } from "./types.ts";
+ import {
+   ensureCompatibilityImports,
+   getSharedConfigPath,
+@@ -25,6 +25,7 @@ import {
+   writeStarterSharedConfig,
+ } from "./config.ts";
+ import { markKeepAliveAfterConnect, notifyToolMetadataUpdated, updateMetadataCache, updateStatusBar, getFailureAgeSeconds, getFailureMessage, clearFailure, recordFailure } from "./init.ts";
++import { reloadConfig } from "./reload.ts";
+ import { isServerInActiveFailureBackoff } from "./failure-backoff.ts";
+ import { loadMetadataCache, reconstructPromptMetadata } from "./metadata-cache.ts";
+ import { buildToolMetadata } from "./tool-metadata.ts";
+@@ -278,6 +279,21 @@ export async function showTools(state: McpExtensionState, ctx: ExtensionContext)
+   ctx.ui.notify(lines.join("\n"), "info");
+ }
+ 
++/**
++ * Runtime config reload for one live adapter state: re-reads the config from
++ * the session's captured sources, re-resolves project-server trust, diffs,
++ * and reconciles (see ./reload.ts). Exported for test reach and future /mcp
++ * affordances; the ACP hot-apply path drives reloadConfig through the
++ * McpReloadHandle sink instead.
++ */
++export async function reloadServerConfig(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++  opts: ReloadConfigOptions = {},
++): Promise<SessionReloadOutcome> {
++  return reloadConfig(state, ctx, opts);
++}
++
+ export async function reconnectServer(
+   state: McpExtensionState,
+   ctx: ExtensionContext,
+diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
+index 5405787..0d364e6 100644
+--- a/dist/metadata-cache.js
++++ b/dist/metadata-cache.js
+@@ -82,6 +82,22 @@ function updateMetadataCacheFile(update) {
+     writeFileSync(tmpPath, JSON.stringify({ version: CACHE_VERSION, servers: next }), "utf-8");
+     renameSync(tmpPath, cachePath);
+ }
++/**
++ * Removes one server's deferred-catalog entry from the persisted metadata cache.
++ * No-op when no cache file exists or the server has no entry; an atomic
++ * read-update-write (updateMetadataCacheFile) keeps concurrent processes safe.
++ */
++export function evictServerMetadataCache(serverName) {
++    if (loadMetadataCache() === null)
++        return;
++    updateMetadataCacheFile(servers => {
++        if (!Object.hasOwn(servers, serverName))
++            return undefined;
++        const next = { ...servers };
++        delete next[serverName];
++        return next;
++    });
++}
+ export function computeServerHash(definition, environment = process.env) {
+     // Hash only fields that affect server identity and tool/resource output.
+     // Exclude lifecycle, idleTimeout, requestTimeoutMs, debug — those are runtime behavior settings
+diff --git a/dist/reload.d.ts b/dist/reload.d.ts
+new file mode 100644
+index 0000000..a8c9b5c
+--- /dev/null
++++ b/dist/reload.d.ts
+@@ -0,0 +1,21 @@
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
++import type { McpExtensionState } from "./state.ts";
++import type { McpConfig, McpReloadContext, ProjectServerBlock, ReloadConfigOptions, ServerEntry, SessionReloadOutcome } from "./types.ts";
++/** The ExtensionContext surface reloadConfig needs. */
++type ReloadContext = McpReloadContext;
++type ReloadAction = "add" | "remove" | "disable" | "blocked" | "transport" | "exposure";
++/** Result of one server's reconcile: ok, or needs-auth (reconnect skipped or landed unauthenticated). */
++type DispatchResult = "ok" | "needs-auth";
++interface ReloadPlanEntry {
++    name: string;
++    action: ReloadAction;
++    definition?: ServerEntry;
++    blockedReason?: string;
++}
++/**
++ * Runtime config reload for one live adapter state: re-read, re-resolve
++ * trust, diff, and reconcile. Per-server failures are isolated (error bucket);
++ * the tool surface re-syncs through the state's metadata-updated hook, and the
++ * status snapshot is republished so both surfaces' UIs refresh.
++ */
++export declare function reloadConfig(state: McpExtensionState, ctx: ReloadContext, opts?: ReloadConfigOptions): Promise<SessionReloadOutcome>;
+diff --git a/dist/reload.js b/dist/reload.js
+new file mode 100644
+index 0000000..1570635
+--- /dev/null
++++ b/dist/reload.js
+@@ -0,0 +1,341 @@
++// reload.ts - Runtime config reload: re-read → diff → reconcile
++//
++// Driven by the host through McpReloadHandle (see McpAdapterOptions
++// .reloadHandleSink): re-reads the config from the same sources the session's
++// state was built from, re-resolves project-server trust, diffs against the
++// live state per computeServerHash, and reconciles each server:
++//
++// - added (incl. disabled:true→false) → register into config only; the lazy
++//   connect gates materialize the connection on first touch.
++// - removed → eager teardown (unregister → close → config delete → deferred
++//   catalog eviction → residue cleanup).
++// - disabled:false→true → surface teardown; config entry and metadata cache
++//   are kept so re-enabling reuses them.
++// - changed (transport/auth fields) → eager manager.reconnect + fresh
++//   tools/list + metadata refresh, guarded against racing an in-flight
++//   interactive OAuth flow (hasPendingAuth).
++// - changed (exposure-only fields) → config entry swap + tool-surface
++//   re-sync; a healthy connection survives.
++//
++// A reload never races the tool surface's freeze contract: with
++// settings.freezeDirectTools in force, any tool-set-changing diff is refused
++// before any mutation. Host-merged per-session overlay servers
++// (state.overlayServerNames) are excluded from the diff on both sides — they
++// are additive and survive base-config removal.
++import { isServerDisabled } from "./types.js";
++import { cloneMcpConfig, loadMcpConfig, resolveConfiguredClaudePluginMcp } from "./config.js";
++import { computeServerHash, evictServerMetadataCache } from "./metadata-cache.js";
++import { hasPendingAuth } from "./mcp-auth-flow.js";
++import { applyProjectServerTrustToConfig, describeProjectServerBlock } from "./project-server-trust.js";
++import { clearFailure, markKeepAliveAfterConnect, notifyToolMetadataUpdated, recordFailure, updateMetadataCache, updateServerMetadata, updateStatusBar } from "./init.js";
++import { logger } from "./logger.js";
++/** Exposure/visibility-only fields: changing them re-syncs the tool surface without touching the connection. */
++const EXPOSURE_FIELDS = ["directTools", "includeTools", "excludeTools", "toolPrefix", "description"];
++function exposurePick(definition) {
++    const pick = {};
++    for (const field of EXPOSURE_FIELDS)
++        pick[field] = definition[field];
++    return pick;
++}
++function exposureChanged(oldDefinition, newDefinition) {
++    return JSON.stringify(exposurePick(oldDefinition)) !== JSON.stringify(exposurePick(newDefinition));
++}
++/**
++ * Hash of the transport/auth-identity fields only: exposure fields (and the
++ * trust layer's `disabled` flag, classified separately) are stripped before
++ * computeServerHash, so a pure exposure change never classifies as transport.
++ */
++function transportHash(definition) {
++    const stripped = { ...definition };
++    for (const field of EXPOSURE_FIELDS)
++        delete stripped[field];
++    delete stripped.disabled;
++    return computeServerHash(stripped);
++}
++/**
++ * Mirrors init's per-server lifecycle registration so (re-)added servers get
++ * idle cleanup and keep-alive health recovery like configured servers.
++ */
++function registerServerLifecycle(state, name, definition) {
++    const lifecycleMode = definition.lifecycle ?? "lazy";
++    const persistsAfterFirstSpawn = lifecycleMode === "eager" || lifecycleMode === "lazy-keep-alive";
++    const idleOverride = definition.idleTimeout ?? (persistsAfterFirstSpawn ? 0 : undefined);
++    state.lifecycle.registerServer(name, definition, idleOverride !== undefined ? { idleTimeout: idleOverride } : undefined);
++    if (lifecycleMode === "keep-alive")
++        state.lifecycle.markKeepAlive(name, definition);
++}
++/**
++ * Post-reconnect metadata refresh — the reconnectServer sequence: rebuild
++ * metadata from the fresh tools/list, persist the cache entry, clear failure
++ * backoff, notify (which re-syncs the tool surface), and restore keep-alive.
++ */
++function refreshConnectedMetadata(state, name) {
++    updateServerMetadata(state, name);
++    updateMetadataCache(state, name);
++    const restored = clearFailure(state, name, "config-reload");
++    if (!restored)
++        notifyToolMetadataUpdated(state, name, "config-reload");
++    markKeepAliveAfterConnect(state, name);
++}
++/** Per-session runtime residue for one server (the config entry itself is managed by the dispatch). */
++function clearLiveServerState(state, name, keepSessionMetadata = false) {
++    if (!keepSessionMetadata)
++        state.sessionMetadata?.delete(name);
++    state.toolMetadata.delete(name);
++    state.resourceCounts?.delete(name);
++    state.directToolCounts?.delete(name);
++    state.promptMetadata?.delete(name);
++    state.promptMetadataLive?.delete(name);
++    state.serverInstructions.delete(name);
++    state.failureTracker.delete(name);
++    state.failureMessages?.delete(name);
++    state.blockedProjectServers?.delete(name);
++}
++function emptyBuckets() {
++    return { added: [], removed: [], changed: [], unchanged: [], blocked: [], needsAuth: [], serverErrors: [] };
++}
++function reloadErrorOutcome(message) {
++    return { status: "error", error: message, ...emptyBuckets() };
++}
++/**
++ * Re-read the config from the sources this session's state was built from and
++ * re-resolve project-server trust, mirroring initializeMcp's branch:
++ * file-backed sessions re-run `loadMcpConfig` on the captured path/cwd and
++ * `applyProjectServerTrustToConfig`; programmatic sessions re-apply the
++ * host-supplied config (the host re-runs its own load + selection).
++ */
++async function readFreshConfig(state, ctx) {
++    if (state.programmaticConfig) {
++        if (!state.reloadProgrammaticConfigProvider) {
++            throw new Error("MCP reload: programmatic config has no re-application provider");
++        }
++        const reapplied = await state.reloadProgrammaticConfigProvider(ctx);
++        if (!reapplied)
++            throw new Error("MCP reload: programmatic config provider returned no config");
++        return {
++            config: resolveConfiguredClaudePluginMcp(cloneMcpConfig(reapplied), state.reloadCwd ?? ctx.cwd),
++            blockedServers: new Map(),
++        };
++    }
++    return applyProjectServerTrustToConfig(loadMcpConfig(state.reloadConfigPath, state.reloadCwd ?? ctx.cwd), ctx);
++}
++/** Classifies the per-server diff between the live config and the freshly loaded one. */
++function planReload(state, fresh, blockedServers, opts) {
++    const oldServers = state.config.mcpServers;
++    const newServers = fresh.mcpServers;
++    const overlayNames = state.overlayServerNames;
++    const isOverlay = (name) => overlayNames?.has(name) ?? false;
++    const scope = opts.servers !== undefined ? new Set(opts.servers) : undefined;
++    const inScope = (name) => scope === undefined || scope.has(name);
++    const plan = [];
++    const unchanged = [];
++    for (const name of new Set([...Object.keys(oldServers), ...Object.keys(newServers)])) {
++        if (!inScope(name))
++            continue;
++        const oldDefinition = oldServers[name];
++        const newDefinition = newServers[name];
++        if (isOverlay(name)) {
++            // Per-session overlays are additive (D3): they survive base removal and
++            // are never removed, changed, or disconnected by a reload.
++            if (oldDefinition !== undefined || newDefinition !== undefined)
++                unchanged.push(name);
++            continue;
++        }
++        const block = blockedServers.get(name);
++        if (block) {
++            plan.push({ name, action: "blocked", definition: newDefinition, blockedReason: describeProjectServerBlock(block.reason) });
++            continue;
++        }
++        if (newDefinition === undefined) {
++            plan.push({ name, action: "remove" });
++            continue;
++        }
++        if (oldDefinition === undefined || (isServerDisabled(oldDefinition) && !isServerDisabled(newDefinition))) {
++            plan.push({ name, action: "add", definition: newDefinition });
++            continue;
++        }
++        if (!isServerDisabled(oldDefinition) && isServerDisabled(newDefinition)) {
++            plan.push({ name, action: "disable", definition: newDefinition });
++            continue;
++        }
++        if (isServerDisabled(oldDefinition) && isServerDisabled(newDefinition)) {
++            // Disabled on both sides: no runtime footprint to reconcile.
++            unchanged.push(name);
++            continue;
++        }
++        if (transportHash(oldDefinition) !== transportHash(newDefinition)) {
++            plan.push({ name, action: "transport", definition: newDefinition });
++            continue;
++        }
++        if (exposureChanged(oldDefinition, newDefinition)) {
++            plan.push({ name, action: "exposure", definition: newDefinition });
++            continue;
++        }
++        unchanged.push(name);
++    }
++    return { plan, unchanged };
++}
++/** True when the diff would churn the model-facing tool surface (the freeze contract's trigger). */
++function isToolSetChanging(plan) {
++    return plan.some(entry => entry.action === "add" ||
++        entry.action === "remove" ||
++        entry.action === "disable" ||
++        entry.action === "exposure" ||
++        entry.action === "blocked");
++}
++/** Reconciles one planned server. Returns "needs-auth" when the reconnect was skipped or landed unauthenticated. */
++async function dispatchPlanEntry(state, entry) {
++    switch (entry.action) {
++        case "add": {
++            // Register into config only: no connection work — the #1574 lazy gates
++            // materialize the connection (and its catalog) on first touch.
++            state.config.mcpServers[entry.name] = entry.definition;
++            registerServerLifecycle(state, entry.name, entry.definition);
++            notifyToolMetadataUpdated(state, entry.name, "config-reload-added");
++            return "ok";
++        }
++        case "remove": {
++            // Eager teardown, in order: lifecycle → connection → config → deferred
++            // catalog → residue. A tool already mid-call on this server errors with
++            // a clear tool error.
++            state.lifecycle.unregisterServer(entry.name);
++            await state.manager.close(entry.name);
++            delete state.config.mcpServers[entry.name];
++            evictServerMetadataCache(entry.name);
++            clearLiveServerState(state, entry.name);
++            notifyToolMetadataUpdated(state, entry.name, "config-reload-removed");
++            return "ok";
++        }
++        case "disable": {
++            // Surface teardown like removal, but keep the config entry and both
++            // metadata caches so re-enabling reuses them.
++            state.config.mcpServers[entry.name] = entry.definition;
++            state.lifecycle.unregisterServer(entry.name);
++            await state.manager.close(entry.name);
++            clearLiveServerState(state, entry.name, true);
++            notifyToolMetadataUpdated(state, entry.name, "config-reload-disabled");
++            return "ok";
++        }
++        case "blocked": {
++            // Blocked by project-server trust: never connected. A live connection
++            // from before the block tears down; the (disabled) entry stays so the
++            // status surface can explain the block.
++            const wasConnected = state.manager.getConnection(entry.name) !== undefined;
++            if (entry.definition !== undefined)
++                state.config.mcpServers[entry.name] = entry.definition;
++            if (wasConnected) {
++                state.lifecycle.unregisterServer(entry.name);
++                await state.manager.close(entry.name);
++            }
++            clearLiveServerState(state, entry.name, true);
++            return "ok";
++        }
++        case "transport": {
++            // EAGER reconnect (changed definition must not serve from the stale
++            // connection — manager.connect would return it unchanged). A server
++            // with no live connection has nothing stale: the new definition
++            // materializes lazily on first touch.
++            state.config.mcpServers[entry.name] = entry.definition;
++            const current = state.manager.getConnection(entry.name);
++            if (current === undefined)
++                return "ok";
++            if (hasPendingAuth(entry.name, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++                // An interactive OAuth flow owns this server right now; reconnecting
++                // under it would create competing OAuth owners. The #1574 call-path
++                // gates heal the definition swap on the next touch instead.
++                return "needs-auth";
++            }
++            const connection = await state.manager.reconnect(entry.name, entry.definition, current, state.owner.signal);
++            if (connection.status === "needs-auth")
++                return "needs-auth";
++            refreshConnectedMetadata(state, entry.name);
++            return "ok";
++        }
++        case "exposure": {
++            // No reconnect: a healthy connection survives; the model-visible
++            // registry refreshes in place via the metadata-updated hook.
++            state.config.mcpServers[entry.name] = entry.definition;
++            notifyToolMetadataUpdated(state, entry.name, "config-reload-exposure");
++            return "ok";
++        }
++    }
++}
++/**
++ * Runtime config reload for one live adapter state: re-read, re-resolve
++ * trust, diff, and reconcile. Per-server failures are isolated (error bucket);
++ * the tool surface re-syncs through the state's metadata-updated hook, and the
++ * status snapshot is republished so both surfaces' UIs refresh.
++ */
++export async function reloadConfig(state, ctx, opts = {}) {
++    state.owner.throwIfInactive();
++    let fresh;
++    let blockedServers;
++    try {
++        const loaded = await readFreshConfig(state, ctx);
++        fresh = loaded.config;
++        blockedServers = loaded.blockedServers;
++    }
++    catch (error) {
++        const message = error instanceof Error ? error.message : String(error);
++        logger.debug(`MCP: config reload failed to re-read config: ${message}`);
++        return reloadErrorOutcome(message);
++    }
++    // Trust re-resolution replaces the block set wholesale; fail-closed comes
++    // from the trust resolver itself, and no new grant is minted mid-apply.
++    state.blockedProjectServers = new Map(blockedServers);
++    const { plan, unchanged } = planReload(state, fresh, blockedServers, opts);
++    const outcome = {
++        status: "applied",
++        ...emptyBuckets(),
++        unchanged: [...unchanged],
++    };
++    // Freeze gate (settings.freezeDirectTools): refuse tool-set-changing diffs
++    // before any mutation — a bypass would knowingly serve an incoherent
++    // registry, which is exactly what the freeze exists to prevent. Pure
++    // transport changes still apply: the registry doesn't churn.
++    if (state.directToolsFrozen === true && isToolSetChanging(plan)) {
++        outcome.status = "refused";
++        outcome.reason = "direct_tools_frozen";
++        return outcome;
++    }
++    for (const entry of plan) {
++        try {
++            const dispatched = await dispatchPlanEntry(state, entry);
++            if (dispatched === "needs-auth") {
++                outcome.needsAuth.push(entry.name);
++                continue;
++            }
++            switch (entry.action) {
++                case "add":
++                    outcome.added.push(entry.name);
++                    break;
++                case "remove":
++                    outcome.removed.push(entry.name);
++                    break;
++                case "disable":
++                case "transport":
++                case "exposure":
++                    outcome.changed.push(entry.name);
++                    break;
++                case "blocked":
++                    outcome.blocked.push({
++                        name: entry.name,
++                        blockedReason: entry.blockedReason ?? "project server requires trust",
++                    });
++                    break;
++            }
++        }
++        catch (error) {
++            const message = error instanceof Error ? error.message : String(error);
++            outcome.serverErrors.push({ name: entry.name, message });
++            recordFailure(state, entry.name, message);
++            logger.debug(`MCP: config reload failed for ${entry.name}: ${message}`);
++        }
++    }
++    if (outcome.serverErrors.length > 0)
++        outcome.status = "error";
++    // Republish so the TUI status bar / /mcp panel and the ACP status snapshot
++    // reflect the reconciled state without any new affordance.
++    updateStatusBar(state);
++    return outcome;
++}
+diff --git a/dist/state.d.ts b/dist/state.d.ts
+index 77ce5a2..a7757ba 100644
+--- a/dist/state.d.ts
++++ b/dist/state.d.ts
+@@ -3,7 +3,7 @@ import type { ConsentManager } from "./consent-manager.ts";
+ import type { McpLifecycleManager } from "./lifecycle.ts";
+ import type { McpServerManager } from "./server-manager.ts";
+ import type { AuthStorageOptions } from "./mcp-auth.ts";
+-import type { ServerDefinition, ToolMetadata, PromptMetadata, ServerCacheEntry, McpConfig, UiSessionMessages, UiStreamSummary, McpStatusEventBus, UiServerHandle, ProjectServerBlock } from "./types.ts";
++import type { ServerDefinition, ToolMetadata, PromptMetadata, ServerCacheEntry, McpConfig, UiSessionMessages, UiStreamSummary, McpStatusEventBus, UiServerHandle, ProjectServerBlock, McpReloadContext } from "./types.ts";
+ import type { UiResourceHandler } from "./ui-resource-handler.ts";
+ import type { McpRuntimeOwner } from "./runtime-owner.ts";
+ import type { McpOAuthRuntime } from "./mcp-auth-flow.ts";
+@@ -81,4 +81,14 @@ export interface McpExtensionState {
+     sendMessage?: SendMessageFn;
+     onToolMetadataUpdated?: (serverName: string, reason: string) => void | Promise<void>;
+     statusEvents?: McpStatusEventBus;
++    /** Runtime config reload: the config path this session's file-backed config was loaded from (undefined for programmatic installs). Captured at initialization; the same loader call re-runs on reload. */
++    reloadConfigPath?: string;
++    /** Runtime config reload: the cwd the session's config was loaded with. */
++    reloadCwd?: string;
++    /** Runtime config reload: host-merged per-session overlay server names (callerServers). Excluded from reload diffs on both sides — additive, never removed. */
++    overlayServerNames?: ReadonlySet<string>;
++    /** Direct tool surface frozen (settings.freezeDirectTools). Reload refuses tool-set-changing diffs while set; metadata-only refresh still applies. Moved here from the install closure so the reload driver can read it. */
++    directToolsFrozen?: boolean;
++    /** Runtime config reload for programmatic installs: host-supplied re-application of the same load + selection the install used. */
++    reloadProgrammaticConfigProvider?: (ctx: McpReloadContext) => Promise<McpConfig | undefined> | McpConfig | undefined;
+ }
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index e7b9299..82b37e8 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -1,5 +1,6 @@
+ import type { CallToolResult, ContentBlock as McpContentBlock, ListPromptsResult, ListResourcesResult, ListToolsResult, Transport as McpTransport } from "@modelcontextprotocol/client";
+ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+ import type { UiStreamMode, UiStreamSummary } from "./ui-stream-types.ts";
+ import type { UiToolVisibility } from "./ui-tool-visibility.ts";
+ export type Transport = McpTransport;
+@@ -522,6 +523,52 @@ export interface McpConfig {
+ export interface McpAdapterOptions {
+     config?: McpConfig;
+     configPath?: string;
++    /** Runtime config reload: host-side sink receiving the live session's reload handle after each successful initialization, and null when the state shuts down. The handle's state object is replaced per session replacement, so the sink is re-invoked every time. */
++    reloadHandleSink?: (handle: McpReloadHandle | null) => void;
++    /** Server names the host merged into `config` as per-session overlays (e.g. ACP callerServers). Reload diffs exclude them from both sides: they are additive, never removed or changed by a reload. */
++    overlayServerNames?: ReadonlySet<string>;
++    /** Runtime config reload for programmatic installs: re-derives the fresh effective config at reload time with the same load + selection the install used (the host re-runs its own config resolution). When absent, programmatic reloads report an error. */
++    reloadProgrammaticConfigProvider?: (ctx: McpReloadContext) => Promise<McpConfig | undefined> | McpConfig | undefined;
++}
++/** The ExtensionContext surface config reload needs: cwd, ui mode, and trust re-resolution. */
++export type McpReloadContext = Pick<ExtensionContext, "cwd" | "hasUI" | "mode" | "ui" | "isProjectTrusted">;
++/** Options for a single config reload pass. */
++export interface ReloadConfigOptions {
++    /** Restrict the diff and reconcile to these server names; other names are untouched and unreported. */
++    servers?: string[];
++}
++/** A server blocked by project-server trust after a reload. */
++export interface ReloadBlockedServer {
++    name: string;
++    blockedReason: string;
++}
++/** One server whose reconcile step failed; other servers still apply. */
++export interface ReloadServerError {
++    name: string;
++    message: string;
++}
++/** Per-server buckets of one reload pass, in the status-snapshot vocabulary. */
++export interface ReloadBuckets {
++    added: string[];
++    removed: string[];
++    changed: string[];
++    unchanged: string[];
++    blocked: ReloadBlockedServer[];
++    /** Reconnects that landed on needs-auth, or were skipped because an interactive auth flow is in flight. */
++    needsAuth: string[];
++    serverErrors: ReloadServerError[];
++}
++/** Outcome of one reload pass on one session's adapter state. */
++export interface SessionReloadOutcome extends ReloadBuckets {
++    status: "applied" | "refused" | "error";
++    /** Set when status is "refused": the direct-tools surface is frozen and the diff was tool-set-changing. */
++    reason?: "direct_tools_frozen";
++    /** Set when status is "error" for a reason outside the per-server reconcile (re-read, trust, provider). */
++    error?: string;
++}
++/** Per-live-state handle the host registers via McpAdapterOptions.reloadHandleSink. */
++export interface McpReloadHandle {
++    reload: (opts?: ReloadConfigOptions) => Promise<SessionReloadOutcome>;
+ }
+ export type ServerDefinition = ServerEntry;
+ export interface ToolMetadata {
+diff --git a/index.ts b/index.ts
+index 0fb04f4..458842f 100644
+--- a/index.ts
++++ b/index.ts
+@@ -58,6 +58,7 @@ const loadDirectExecution = createRetryableLoader(() => import("./direct-tools.t
+ const loadCommands = createRetryableLoader(() => import("./commands.ts"));
+ const loadCodeMode = createRetryableLoader(() => import("./mcp-code.ts"));
+ const loadInstallParsing = createRetryableLoader(() => import("./mcp-install.ts"));
++const loadReloadRuntime = createRetryableLoader(() => import("./reload.ts"));
+ 
+ const INIT_WAIT_TIMEOUT_MS = 30_000;
+ const INIT_FAILURE_MESSAGE_MAX_CHARS = 1_000;
+@@ -313,6 +314,10 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   }
+ 
+   async function shutdownState(currentState: McpExtensionState | null, reason: string, publishStatus = true): Promise<void> {
++    // The reload handle for this state is going away (session replacement,
++    // shutdown, or interrupted initialization); drop the host's registration
++    // before teardown so a reload can never drive a shutting-down state.
++    options.reloadHandleSink?.(null);
+     if (!currentState) {
+       if (publishStatus) publishMcpStatusShutdown(pi.events);
+       return;
+@@ -399,7 +404,6 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+   const renderMcpToolResult = createMcpToolResultRenderer(toolRenderOptions);
+   let proxyToolRegistered = false;
+   let proxyToolDescription: string | null = null;
+-  let directToolsFrozen = false;
+   let largeDirectToolsAdvisoryDelivered = false;
+   let sessionMigrationNotices: string[] = [];
+   // Session/runtime scoped server registrations from other extensions. They
+@@ -1114,6 +1118,11 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+               ...(sessionConfig !== undefined ? { config: sessionConfig } : {}),
+             }
+           : {}),
++        ...(options.reloadHandleSink !== undefined ? { reloadHandleSink: options.reloadHandleSink } : {}),
++        ...(options.overlayServerNames !== undefined ? { overlayServerNames: options.overlayServerNames } : {}),
++        ...(options.reloadProgrammaticConfigProvider !== undefined
++          ? { reloadProgrammaticConfigProvider: options.reloadProgrammaticConfigProvider }
++          : {}),
+         oauthRuntime,
+         excludeProjectServers,
+         // Pi awaits session_start handlers in order. Returning before the approval
+@@ -1172,7 +1181,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+         nextState.onToolMetadataUpdated = (_serverName, _reason) => {
+           if (state !== nextState || !owner.isActive()) return;
+           syncPromptCommands();
+-          if (directToolsFrozen) {
++          if (nextState.directToolsFrozen) {
+             logger.debug(`MCP: metadata update for ${_serverName} (${_reason}) skipped — directTools frozen`);
+             return;
+           }
+@@ -1195,10 +1204,27 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+         clearRetainedInitFailure();
+         guard();
+         if (earlyConfig.settings?.freezeDirectTools === true) {
+-          directToolsFrozen = true;
++          nextState.directToolsFrozen = true;
+           logger.info("MCP: direct tools frozen after initial sync — metadata can refresh without rebuilding the active tool surface");
+         }
+         guard();
++        if (options.reloadHandleSink) {
++          const reloadHandleSink = options.reloadHandleSink;
++          // Hand the host the reload handle for THIS state after successful
++          // finalization. The handle reads the closure's `state` at call time,
++          // so session replacements that swap the state object are honored —
++          // the sink is re-invoked on every replacement, and shutdownState
++          // (replacement, shutdown, interrupted init) revokes it with null.
++          callReentrant(() => reloadHandleSink({
++            reload: async (reloadOpts) => {
++              const currentState = state;
++              if (!currentState) throw new Error("MCP session state is no longer live");
++              const { reloadConfig } = await loadReloadRuntime();
++              return reloadConfig(currentState, sessionCtx ?? ctx, reloadOpts);
++            },
++          }));
++        }
++        guard();
+         initPromise = null;
+         initStartedPromise = null;
+         return nextState;
+@@ -1855,7 +1881,7 @@ function installMcpAdapter(pi: ExtensionAPI, options: McpAdapterOptions) {
+     const proxyModes = await loadForRuntime(loadProxyModes, guard);
+     const result = await proxyModes.executeConnect(targetState, serverName, signal);
+     assertRuntimeGuard(guard);
+-    if (!directToolsFrozen) syncToolSurface(ctx);
++    if (!state?.directToolsFrozen) syncToolSurface(ctx);
+     const reportedNames = reportedDirectToolNamesByServer.get(serverName) ?? new Set<string>();
+     // Attribute only this server's new definitions; search-mode tools load on search, not connect.
+     const addedToolNames = [...registeredDirectTools.keys()].filter(
+@@ -2375,6 +2401,13 @@ export function createMcpAdapter(options: McpAdapterOptions = {}) {
+     installMcpAdapter(pi, {
+       ...(options.configPath !== undefined ? { configPath: options.configPath } : {}),
+       ...(factoryConfig !== undefined ? { config: cloneMcpConfig(factoryConfig) } : {}),
++      // Runtime config reload plumbing passes through by reference: the sink
++      // and provider are host callbacks, the overlay set a plain lookup table.
++      ...(options.reloadHandleSink !== undefined ? { reloadHandleSink: options.reloadHandleSink } : {}),
++      ...(options.overlayServerNames !== undefined ? { overlayServerNames: options.overlayServerNames } : {}),
++      ...(options.reloadProgrammaticConfigProvider !== undefined
++        ? { reloadProgrammaticConfigProvider: options.reloadProgrammaticConfigProvider }
++        : {}),
+     });
+   };
+ }
+diff --git a/init.ts b/init.ts
+index b4ee7e6..769771c 100644
+--- a/init.ts
++++ b/init.ts
+@@ -254,6 +254,15 @@ export async function initializeMcp(
+       });
+     },
+     ...(options.statusEvents !== undefined ? { statusEvents: options.statusEvents } : {}),
++    // Runtime config reload context: the same loader inputs initializeMcp just
++    // used, so reloadConfig re-reads the sources this state was built from.
++    reloadConfigPath: configPath,
++    reloadCwd: cwd,
++    ...(options.overlayServerNames !== undefined ? { overlayServerNames: options.overlayServerNames } : {}),
++    ...(options.reloadProgrammaticConfigProvider !== undefined
++      ? { reloadProgrammaticConfigProvider: options.reloadProgrammaticConfigProvider }
++      : {}),
++    directToolsFrozen: false,
+   };
+   if (sessionManager) restoreSessionApprovalState(state, sessionBranch);
+   if (ownsOAuthRuntime) owner.addCleanup(() => shutdownOAuth(oauthRuntime));
+diff --git a/metadata-cache.ts b/metadata-cache.ts
+index cceacbb..e995bee 100644
+--- a/metadata-cache.ts
++++ b/metadata-cache.ts
+@@ -104,6 +104,21 @@ function updateMetadataCacheFile(update: (servers: MetadataCache["servers"]) =>
+   renameSync(tmpPath, cachePath);
+ }
+ 
++/**
++ * Removes one server's deferred-catalog entry from the persisted metadata cache.
++ * No-op when no cache file exists or the server has no entry; an atomic
++ * read-update-write (updateMetadataCacheFile) keeps concurrent processes safe.
++ */
++export function evictServerMetadataCache(serverName: string): void {
++  if (loadMetadataCache() === null) return;
++  updateMetadataCacheFile(servers => {
++    if (!Object.hasOwn(servers, serverName)) return undefined;
++    const next = { ...servers };
++    delete next[serverName];
++    return next;
++  });
++}
++
+ export function computeServerHash(definition: ServerEntry, environment: NodeJS.ProcessEnv = process.env): string {
+   // Hash only fields that affect server identity and tool/resource output.
+   // Exclude lifecycle, idleTimeout, requestTimeoutMs, debug — those are runtime behavior settings
+diff --git a/reload.ts b/reload.ts
+new file mode 100644
+index 0000000..a6ac556
+--- /dev/null
++++ b/reload.ts
+@@ -0,0 +1,393 @@
++// reload.ts - Runtime config reload: re-read → diff → reconcile
++//
++// Driven by the host through McpReloadHandle (see McpAdapterOptions
++// .reloadHandleSink): re-reads the config from the same sources the session's
++// state was built from, re-resolves project-server trust, diffs against the
++// live state per computeServerHash, and reconciles each server:
++//
++// - added (incl. disabled:true→false) → register into config only; the lazy
++//   connect gates materialize the connection on first touch.
++// - removed → eager teardown (unregister → close → config delete → deferred
++//   catalog eviction → residue cleanup).
++// - disabled:false→true → surface teardown; config entry and metadata cache
++//   are kept so re-enabling reuses them.
++// - changed (transport/auth fields) → eager manager.reconnect + fresh
++//   tools/list + metadata refresh, guarded against racing an in-flight
++//   interactive OAuth flow (hasPendingAuth).
++// - changed (exposure-only fields) → config entry swap + tool-surface
++//   re-sync; a healthy connection survives.
++//
++// A reload never races the tool surface's freeze contract: with
++// settings.freezeDirectTools in force, any tool-set-changing diff is refused
++// before any mutation. Host-merged per-session overlay servers
++// (state.overlayServerNames) are excluded from the diff on both sides — they
++// are additive and survive base-config removal.
++import type { McpExtensionState } from "./state.ts";
++import {
++  isServerDisabled,
++  type McpConfig,
++  type McpReloadContext,
++  type ProjectServerBlock,
++  type ReloadConfigOptions,
++  type ReloadServerError,
++  type ServerEntry,
++  type SessionReloadOutcome,
++} from "./types.ts";
++import { cloneMcpConfig, loadMcpConfig, resolveConfiguredClaudePluginMcp } from "./config.ts";
++import { computeServerHash, evictServerMetadataCache } from "./metadata-cache.ts";
++import { hasPendingAuth } from "./mcp-auth-flow.ts";
++import { applyProjectServerTrustToConfig, describeProjectServerBlock } from "./project-server-trust.ts";
++import {
++  clearFailure,
++  markKeepAliveAfterConnect,
++  notifyToolMetadataUpdated,
++  recordFailure,
++  updateMetadataCache,
++  updateServerMetadata,
++  updateStatusBar,
++} from "./init.ts";
++import { logger } from "./logger.ts";
++
++/** Exposure/visibility-only fields: changing them re-syncs the tool surface without touching the connection. */
++const EXPOSURE_FIELDS = ["directTools", "includeTools", "excludeTools", "toolPrefix", "description"] as const;
++
++/** The ExtensionContext surface reloadConfig needs. */
++type ReloadContext = McpReloadContext;
++
++type ReloadAction = "add" | "remove" | "disable" | "blocked" | "transport" | "exposure";
++
++/** Result of one server's reconcile: ok, or needs-auth (reconnect skipped or landed unauthenticated). */
++type DispatchResult = "ok" | "needs-auth";
++
++interface ReloadPlanEntry {
++  name: string;
++  action: ReloadAction;
++  definition?: ServerEntry;
++  blockedReason?: string;
++}
++
++function exposurePick(definition: ServerEntry): Record<string, unknown> {
++  const pick: Record<string, unknown> = {};
++  for (const field of EXPOSURE_FIELDS) pick[field] = definition[field];
++  return pick;
++}
++
++function exposureChanged(oldDefinition: ServerEntry, newDefinition: ServerEntry): boolean {
++  return JSON.stringify(exposurePick(oldDefinition)) !== JSON.stringify(exposurePick(newDefinition));
++}
++
++/**
++ * Hash of the transport/auth-identity fields only: exposure fields (and the
++ * trust layer's `disabled` flag, classified separately) are stripped before
++ * computeServerHash, so a pure exposure change never classifies as transport.
++ */
++function transportHash(definition: ServerEntry): string {
++  const stripped: ServerEntry = { ...definition };
++  for (const field of EXPOSURE_FIELDS) delete stripped[field];
++  delete (stripped as Partial<Record<"disabled", unknown>>).disabled;
++  return computeServerHash(stripped);
++}
++
++/**
++ * Mirrors init's per-server lifecycle registration so (re-)added servers get
++ * idle cleanup and keep-alive health recovery like configured servers.
++ */
++function registerServerLifecycle(state: McpExtensionState, name: string, definition: ServerEntry): void {
++  const lifecycleMode = definition.lifecycle ?? "lazy";
++  const persistsAfterFirstSpawn = lifecycleMode === "eager" || lifecycleMode === "lazy-keep-alive";
++  const idleOverride = definition.idleTimeout ?? (persistsAfterFirstSpawn ? 0 : undefined);
++  state.lifecycle.registerServer(name, definition, idleOverride !== undefined ? { idleTimeout: idleOverride } : undefined);
++  if (lifecycleMode === "keep-alive") state.lifecycle.markKeepAlive(name, definition);
++}
++
++/**
++ * Post-reconnect metadata refresh — the reconnectServer sequence: rebuild
++ * metadata from the fresh tools/list, persist the cache entry, clear failure
++ * backoff, notify (which re-syncs the tool surface), and restore keep-alive.
++ */
++function refreshConnectedMetadata(state: McpExtensionState, name: string): void {
++  updateServerMetadata(state, name);
++  updateMetadataCache(state, name);
++  const restored = clearFailure(state, name, "config-reload");
++  if (!restored) notifyToolMetadataUpdated(state, name, "config-reload");
++  markKeepAliveAfterConnect(state, name);
++}
++
++/** Per-session runtime residue for one server (the config entry itself is managed by the dispatch). */
++function clearLiveServerState(state: McpExtensionState, name: string, keepSessionMetadata = false): void {
++  if (!keepSessionMetadata) state.sessionMetadata?.delete(name);
++  state.toolMetadata.delete(name);
++  state.resourceCounts?.delete(name);
++  state.directToolCounts?.delete(name);
++  state.promptMetadata?.delete(name);
++  state.promptMetadataLive?.delete(name);
++  state.serverInstructions.delete(name);
++  state.failureTracker.delete(name);
++  state.failureMessages?.delete(name);
++  state.blockedProjectServers?.delete(name);
++}
++
++function emptyBuckets(): Pick<SessionReloadOutcome, "added" | "removed" | "changed" | "unchanged" | "blocked" | "needsAuth" | "serverErrors"> {
++  return { added: [], removed: [], changed: [], unchanged: [], blocked: [], needsAuth: [], serverErrors: [] };
++}
++
++function reloadErrorOutcome(message: string): SessionReloadOutcome {
++  return { status: "error", error: message, ...emptyBuckets() };
++}
++
++/**
++ * Re-read the config from the sources this session's state was built from and
++ * re-resolve project-server trust, mirroring initializeMcp's branch:
++ * file-backed sessions re-run `loadMcpConfig` on the captured path/cwd and
++ * `applyProjectServerTrustToConfig`; programmatic sessions re-apply the
++ * host-supplied config (the host re-runs its own load + selection).
++ */
++async function readFreshConfig(
++  state: McpExtensionState,
++  ctx: ReloadContext,
++): Promise<{ config: McpConfig; blockedServers: Map<string, ProjectServerBlock> }> {
++  if (state.programmaticConfig) {
++    if (!state.reloadProgrammaticConfigProvider) {
++      throw new Error("MCP reload: programmatic config has no re-application provider");
++    }
++    const reapplied = await state.reloadProgrammaticConfigProvider(ctx);
++    if (!reapplied) throw new Error("MCP reload: programmatic config provider returned no config");
++    return {
++      config: resolveConfiguredClaudePluginMcp(cloneMcpConfig(reapplied), state.reloadCwd ?? ctx.cwd),
++      blockedServers: new Map(),
++    };
++  }
++  return applyProjectServerTrustToConfig(loadMcpConfig(state.reloadConfigPath, state.reloadCwd ?? ctx.cwd), ctx);
++}
++
++/** Classifies the per-server diff between the live config and the freshly loaded one. */
++function planReload(
++  state: McpExtensionState,
++  fresh: McpConfig,
++  blockedServers: ReadonlyMap<string, ProjectServerBlock>,
++  opts: ReloadConfigOptions,
++): { plan: ReloadPlanEntry[]; unchanged: string[] } {
++  const oldServers = state.config.mcpServers;
++  const newServers = fresh.mcpServers;
++  const overlayNames = state.overlayServerNames;
++  const isOverlay = (name: string): boolean => overlayNames?.has(name) ?? false;
++  const scope = opts.servers !== undefined ? new Set(opts.servers) : undefined;
++  const inScope = (name: string): boolean => scope === undefined || scope.has(name);
++
++  const plan: ReloadPlanEntry[] = [];
++  const unchanged: string[] = [];
++  for (const name of new Set([...Object.keys(oldServers), ...Object.keys(newServers)])) {
++    if (!inScope(name)) continue;
++    const oldDefinition = oldServers[name];
++    const newDefinition = newServers[name];
++    if (isOverlay(name)) {
++      // Per-session overlays are additive (D3): they survive base removal and
++      // are never removed, changed, or disconnected by a reload.
++      if (oldDefinition !== undefined || newDefinition !== undefined) unchanged.push(name);
++      continue;
++    }
++    const block = blockedServers.get(name);
++    if (block) {
++      plan.push({ name, action: "blocked", definition: newDefinition, blockedReason: describeProjectServerBlock(block.reason) });
++      continue;
++    }
++    if (newDefinition === undefined) {
++      plan.push({ name, action: "remove" });
++      continue;
++    }
++    if (oldDefinition === undefined || (isServerDisabled(oldDefinition) && !isServerDisabled(newDefinition))) {
++      plan.push({ name, action: "add", definition: newDefinition });
++      continue;
++    }
++    if (!isServerDisabled(oldDefinition) && isServerDisabled(newDefinition)) {
++      plan.push({ name, action: "disable", definition: newDefinition });
++      continue;
++    }
++    if (isServerDisabled(oldDefinition) && isServerDisabled(newDefinition)) {
++      // Disabled on both sides: no runtime footprint to reconcile.
++      unchanged.push(name);
++      continue;
++    }
++    if (transportHash(oldDefinition) !== transportHash(newDefinition)) {
++      plan.push({ name, action: "transport", definition: newDefinition });
++      continue;
++    }
++    if (exposureChanged(oldDefinition, newDefinition)) {
++      plan.push({ name, action: "exposure", definition: newDefinition });
++      continue;
++    }
++    unchanged.push(name);
++  }
++  return { plan, unchanged };
++}
++
++/** True when the diff would churn the model-facing tool surface (the freeze contract's trigger). */
++function isToolSetChanging(plan: readonly ReloadPlanEntry[]): boolean {
++  return plan.some(entry =>
++    entry.action === "add" ||
++    entry.action === "remove" ||
++    entry.action === "disable" ||
++    entry.action === "exposure" ||
++    entry.action === "blocked");
++}
++
++/** Reconciles one planned server. Returns "needs-auth" when the reconnect was skipped or landed unauthenticated. */
++async function dispatchPlanEntry(state: McpExtensionState, entry: ReloadPlanEntry): Promise<DispatchResult> {
++  switch (entry.action) {
++    case "add": {
++      // Register into config only: no connection work — the #1574 lazy gates
++      // materialize the connection (and its catalog) on first touch.
++      state.config.mcpServers[entry.name] = entry.definition!;
++      registerServerLifecycle(state, entry.name, entry.definition!);
++      notifyToolMetadataUpdated(state, entry.name, "config-reload-added");
++      return "ok";
++    }
++    case "remove": {
++      // Eager teardown, in order: lifecycle → connection → config → deferred
++      // catalog → residue. A tool already mid-call on this server errors with
++      // a clear tool error.
++      state.lifecycle.unregisterServer(entry.name);
++      await state.manager.close(entry.name);
++      delete state.config.mcpServers[entry.name];
++      evictServerMetadataCache(entry.name);
++      clearLiveServerState(state, entry.name);
++      notifyToolMetadataUpdated(state, entry.name, "config-reload-removed");
++      return "ok";
++    }
++    case "disable": {
++      // Surface teardown like removal, but keep the config entry and both
++      // metadata caches so re-enabling reuses them.
++      state.config.mcpServers[entry.name] = entry.definition!;
++      state.lifecycle.unregisterServer(entry.name);
++      await state.manager.close(entry.name);
++      clearLiveServerState(state, entry.name, true);
++      notifyToolMetadataUpdated(state, entry.name, "config-reload-disabled");
++      return "ok";
++    }
++    case "blocked": {
++      // Blocked by project-server trust: never connected. A live connection
++      // from before the block tears down; the (disabled) entry stays so the
++      // status surface can explain the block.
++      const wasConnected = state.manager.getConnection(entry.name) !== undefined;
++      if (entry.definition !== undefined) state.config.mcpServers[entry.name] = entry.definition;
++      if (wasConnected) {
++        state.lifecycle.unregisterServer(entry.name);
++        await state.manager.close(entry.name);
++      }
++      clearLiveServerState(state, entry.name, true);
++      return "ok";
++    }
++    case "transport": {
++      // EAGER reconnect (changed definition must not serve from the stale
++      // connection — manager.connect would return it unchanged). A server
++      // with no live connection has nothing stale: the new definition
++      // materializes lazily on first touch.
++      state.config.mcpServers[entry.name] = entry.definition!;
++      const current = state.manager.getConnection(entry.name);
++      if (current === undefined) return "ok";
++      if (hasPendingAuth(entry.name, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++        // An interactive OAuth flow owns this server right now; reconnecting
++        // under it would create competing OAuth owners. The #1574 call-path
++        // gates heal the definition swap on the next touch instead.
++        return "needs-auth";
++      }
++      const connection = await state.manager.reconnect(entry.name, entry.definition!, current, state.owner.signal);
++      if (connection.status === "needs-auth") return "needs-auth";
++      refreshConnectedMetadata(state, entry.name);
++      return "ok";
++    }
++    case "exposure": {
++      // No reconnect: a healthy connection survives; the model-visible
++      // registry refreshes in place via the metadata-updated hook.
++      state.config.mcpServers[entry.name] = entry.definition!;
++      notifyToolMetadataUpdated(state, entry.name, "config-reload-exposure");
++      return "ok";
++    }
++  }
++}
++
++/**
++ * Runtime config reload for one live adapter state: re-read, re-resolve
++ * trust, diff, and reconcile. Per-server failures are isolated (error bucket);
++ * the tool surface re-syncs through the state's metadata-updated hook, and the
++ * status snapshot is republished so both surfaces' UIs refresh.
++ */
++export async function reloadConfig(
++  state: McpExtensionState,
++  ctx: ReloadContext,
++  opts: ReloadConfigOptions = {},
++): Promise<SessionReloadOutcome> {
++  state.owner.throwIfInactive();
++
++  let fresh: McpConfig;
++  let blockedServers: ReadonlyMap<string, ProjectServerBlock>;
++  try {
++    const loaded = await readFreshConfig(state, ctx);
++    fresh = loaded.config;
++    blockedServers = loaded.blockedServers;
++  } catch (error) {
++    const message = error instanceof Error ? error.message : String(error);
++    logger.debug(`MCP: config reload failed to re-read config: ${message}`);
++    return reloadErrorOutcome(message);
++  }
++  // Trust re-resolution replaces the block set wholesale; fail-closed comes
++  // from the trust resolver itself, and no new grant is minted mid-apply.
++  state.blockedProjectServers = new Map(blockedServers);
++
++  const { plan, unchanged } = planReload(state, fresh, blockedServers, opts);
++  const outcome: SessionReloadOutcome = {
++    status: "applied",
++    ...emptyBuckets(),
++    unchanged: [...unchanged],
++  };
++
++  // Freeze gate (settings.freezeDirectTools): refuse tool-set-changing diffs
++  // before any mutation — a bypass would knowingly serve an incoherent
++  // registry, which is exactly what the freeze exists to prevent. Pure
++  // transport changes still apply: the registry doesn't churn.
++  if (state.directToolsFrozen === true && isToolSetChanging(plan)) {
++    outcome.status = "refused";
++    outcome.reason = "direct_tools_frozen";
++    return outcome;
++  }
++
++  for (const entry of plan) {
++    try {
++      const dispatched = await dispatchPlanEntry(state, entry);
++      if (dispatched === "needs-auth") {
++        outcome.needsAuth.push(entry.name);
++        continue;
++      }
++      switch (entry.action) {
++        case "add":
++          outcome.added.push(entry.name);
++          break;
++        case "remove":
++          outcome.removed.push(entry.name);
++          break;
++        case "disable":
++        case "transport":
++        case "exposure":
++          outcome.changed.push(entry.name);
++          break;
++        case "blocked":
++          outcome.blocked.push({
++            name: entry.name,
++            blockedReason: entry.blockedReason ?? "project server requires trust",
++          });
++          break;
++      }
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      outcome.serverErrors.push({ name: entry.name, message } satisfies ReloadServerError);
++      recordFailure(state, entry.name, message);
++      logger.debug(`MCP: config reload failed for ${entry.name}: ${message}`);
++    }
++  }
++
++  if (outcome.serverErrors.length > 0) outcome.status = "error";
++  // Republish so the TUI status bar / /mcp panel and the ACP status snapshot
++  // reflect the reconciled state without any new affordance.
++  updateStatusBar(state);
++  return outcome;
++}
+diff --git a/state.ts b/state.ts
+index c3e193d..b98bdcb 100644
+--- a/state.ts
++++ b/state.ts
+@@ -3,7 +3,7 @@ import type { ConsentManager } from "./consent-manager.ts";
+ import type { McpLifecycleManager } from "./lifecycle.ts";
+ import type { McpServerManager } from "./server-manager.ts";
+ import type { AuthStorageOptions } from "./mcp-auth.ts";
+-import type { ServerDefinition, ToolMetadata, PromptMetadata, ServerCacheEntry, McpConfig, UiSessionMessages, UiStreamSummary, McpStatusEventBus, UiServerHandle, ProjectServerBlock } from "./types.ts";
++import type { ServerDefinition, ToolMetadata, PromptMetadata, ServerCacheEntry, McpConfig, UiSessionMessages, UiStreamSummary, McpStatusEventBus, UiServerHandle, ProjectServerBlock, McpReloadContext } from "./types.ts";
+ import type { UiResourceHandler } from "./ui-resource-handler.ts";
+ import type { McpRuntimeOwner } from "./runtime-owner.ts";
+ import type { McpOAuthRuntime } from "./mcp-auth-flow.ts";
+@@ -79,4 +79,14 @@ export interface McpExtensionState {
+   sendMessage?: SendMessageFn;
+   onToolMetadataUpdated?: (serverName: string, reason: string) => void | Promise<void>;
+   statusEvents?: McpStatusEventBus;
++  /** Runtime config reload: the config path this session's file-backed config was loaded from (undefined for programmatic installs). Captured at initialization; the same loader call re-runs on reload. */
++  reloadConfigPath?: string;
++  /** Runtime config reload: the cwd the session's config was loaded with. */
++  reloadCwd?: string;
++  /** Runtime config reload: host-merged per-session overlay server names (callerServers). Excluded from reload diffs on both sides — additive, never removed. */
++  overlayServerNames?: ReadonlySet<string>;
++  /** Direct tool surface frozen (settings.freezeDirectTools). Reload refuses tool-set-changing diffs while set; metadata-only refresh still applies. Moved here from the install closure so the reload driver can read it. */
++  directToolsFrozen?: boolean;
++  /** Runtime config reload for programmatic installs: host-supplied re-application of the same load + selection the install used. */
++  reloadProgrammaticConfigProvider?: (ctx: McpReloadContext) => Promise<McpConfig | undefined> | McpConfig | undefined;
+ }
+diff --git a/types.ts b/types.ts
+index 9196309..322f5d0 100644
+--- a/types.ts
++++ b/types.ts
+@@ -8,6 +8,7 @@ import type {
+   Transport as McpTransport,
+ } from "@modelcontextprotocol/client";
+ import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
++import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+ import type { UiStreamMode, UiStreamSummary } from "./ui-stream-types.ts";
+ import type { UiToolVisibility } from "./ui-tool-visibility.ts";
+ import { createHash } from "node:crypto";
+@@ -732,6 +733,59 @@ export interface McpConfig {
+ export interface McpAdapterOptions {
+   config?: McpConfig;
+   configPath?: string;
++  /** Runtime config reload: host-side sink receiving the live session's reload handle after each successful initialization, and null when the state shuts down. The handle's state object is replaced per session replacement, so the sink is re-invoked every time. */
++  reloadHandleSink?: (handle: McpReloadHandle | null) => void;
++  /** Server names the host merged into `config` as per-session overlays (e.g. ACP callerServers). Reload diffs exclude them from both sides: they are additive, never removed or changed by a reload. */
++  overlayServerNames?: ReadonlySet<string>;
++  /** Runtime config reload for programmatic installs: re-derives the fresh effective config at reload time with the same load + selection the install used (the host re-runs its own config resolution). When absent, programmatic reloads report an error. */
++  reloadProgrammaticConfigProvider?: (ctx: McpReloadContext) => Promise<McpConfig | undefined> | McpConfig | undefined;
++}
++
++/** The ExtensionContext surface config reload needs: cwd, ui mode, and trust re-resolution. */
++export type McpReloadContext = Pick<ExtensionContext, "cwd" | "hasUI" | "mode" | "ui" | "isProjectTrusted">;
++
++/** Options for a single config reload pass. */
++export interface ReloadConfigOptions {
++  /** Restrict the diff and reconcile to these server names; other names are untouched and unreported. */
++  servers?: string[];
++}
++
++/** A server blocked by project-server trust after a reload. */
++export interface ReloadBlockedServer {
++  name: string;
++  blockedReason: string;
++}
++
++/** One server whose reconcile step failed; other servers still apply. */
++export interface ReloadServerError {
++  name: string;
++  message: string;
++}
++
++/** Per-server buckets of one reload pass, in the status-snapshot vocabulary. */
++export interface ReloadBuckets {
++  added: string[];
++  removed: string[];
++  changed: string[];
++  unchanged: string[];
++  blocked: ReloadBlockedServer[];
++  /** Reconnects that landed on needs-auth, or were skipped because an interactive auth flow is in flight. */
++  needsAuth: string[];
++  serverErrors: ReloadServerError[];
++}
++
++/** Outcome of one reload pass on one session's adapter state. */
++export interface SessionReloadOutcome extends ReloadBuckets {
++  status: "applied" | "refused" | "error";
++  /** Set when status is "refused": the direct-tools surface is frozen and the diff was tool-set-changing. */
++  reason?: "direct_tools_frozen";
++  /** Set when status is "error" for a reason outside the per-server reconcile (re-read, trust, provider). */
++  error?: string;
++}
++
++/** Per-live-state handle the host registers via McpAdapterOptions.reloadHandleSink. */
++export interface McpReloadHandle {
++  reload: (opts?: ReloadConfigOptions) => Promise<SessionReloadOutcome>;
+ }
+ 
+ // Alias for clarity

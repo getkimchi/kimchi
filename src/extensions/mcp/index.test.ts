@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { MCP_RUNTIME_REGISTER_EVENT, type McpRuntimeRegistrationRequest } from "pi-mcp-adapter"
-import type { McpAdapterOptions, McpConfig, ServerEntry } from "pi-mcp-adapter/types"
+import type { McpAdapterOptions, McpConfig, ServerEntry, SessionReloadOutcome } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import type * as CliArgs from "../../cli-args.js"
@@ -14,6 +14,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId } from "../work-attribution.js"
+import { getReloadHandle } from "./reload-registry.js"
 
 // Spies keep the real observer, so an attributed MCP write reaches Git snapshots and the work ledger.
 vi.mock("../work-attribution/file-observations.js", { spy: true })
@@ -168,6 +169,21 @@ async function start(
 ) {
 	await harness.getHandler("session_start")({ type: "session_start", reason: "startup" }, ctx)
 	return ctx
+}
+
+function stubReloadHandle() {
+	return {
+		reload: async (): Promise<SessionReloadOutcome> => ({
+			status: "applied",
+			added: [],
+			removed: [],
+			changed: [],
+			unchanged: [],
+			blocked: [],
+			needsAuth: [],
+			serverErrors: [],
+		}),
+	}
 }
 
 describe("upstream MCP adapter facade", () => {
@@ -447,6 +463,7 @@ describe("upstream MCP adapter facade", () => {
 
 			expect(upstream.options).toEqual({
 				config: { mcpServers: { "kimchi-mcp-gateway": { url: "https://ide.local/mcp" } } },
+				overlayServerNames: new Set(["kimchi-mcp-gateway"]),
 			})
 			expect(registrations).toEqual([])
 		})
@@ -799,6 +816,7 @@ describe("upstream MCP adapter facade", () => {
 				},
 				settings: { scriptMode: false },
 			},
+			overlayServerNames: new Set(["shared", "callerOnly"]),
 		})
 	})
 
@@ -821,8 +839,95 @@ describe("upstream MCP adapter facade", () => {
 					ide: { command: "ide-server" },
 				},
 			},
+			overlayServerNames: new Set(["ide"]),
 		})
 		expect(ctx.ui.notify).toHaveBeenCalledWith("project MCP config is not trusted", "warning")
+	})
+
+	it("wires the reload handle sink to the registry under the session's reload token", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			reloadToken: "tok-1",
+		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
+
+		const sink = upstream.options?.reloadHandleSink
+		expect(typeof sink).toBe("function")
+		expect(getReloadHandle("tok-1")).toBeUndefined()
+
+		const handle = stubReloadHandle()
+		sink?.(handle)
+		expect(getReloadHandle("tok-1")).toBe(handle)
+
+		// Session replacement shuts the previous state down: the adapter revokes
+		// the handle with null and the new state's handle re-registers.
+		sink?.(null)
+		expect(getReloadHandle("tok-1")).toBeUndefined()
+		const next = stubReloadHandle()
+		sink?.(next)
+		expect(getReloadHandle("tok-1")).toBe(next)
+	})
+
+	it("omits the reload sink without a token (TUI path unchanged)", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({ cwd: "/workspace" })(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
+
+		expect(upstream.options?.reloadHandleSink).toBeUndefined()
+		expect(upstream.options?.reloadProgrammaticConfigProvider).toBeUndefined()
+	})
+
+	it("supplies the programmatic re-application provider for hot-apply (fresh selection + overlays re-merged)", async () => {
+		configState.config = {
+			mcpServers: {
+				fresh: { command: "fresh-from-file" },
+			},
+		}
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			reloadToken: "tok-1",
+			callerServers: { ide: { command: "ide-server" } },
+		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
+
+		const provider = upstream.options?.reloadProgrammaticConfigProvider
+		expect(typeof provider).toBe("function")
+		const reapplied = await provider?.(createContext({ cwd: "/workspace", isProjectTrusted: () => true }))
+		// The fresh selection re-reads config state at reload time and re-merges
+		// the caller overlays (the adapter filters overlays from the diff).
+		expect(reapplied).toEqual({
+			mcpServers: {
+				fresh: { command: "fresh-from-file" },
+				ide: { command: "ide-server" },
+			},
+		})
+	})
+
+	it("stays user-only on reload while the project is untrusted (fail-closed hot-apply)", async () => {
+		projectTrust.trusted = false
+		configState.config = { mcpServers: { project: { command: "project-server" } } }
+		configState.userConfig = { mcpServers: { personal: { command: "personal-server" } } }
+		const harness = createExtensionApi()
+
+		createKimchiMcpAdapterExtension({
+			cwd: "/workspace",
+			reloadToken: "tok-1",
+		})(harness.api)
+		await start(harness, createContext({ cwd: "/workspace", isProjectTrusted: () => false }))
+
+		// The untrusted install went programmatic (user-only config); the
+		// provider re-runs the same selection at reload time.
+		const provider = upstream.options?.reloadProgrammaticConfigProvider
+		expect(typeof provider).toBe("function")
+		const reapplied = await provider?.(createContext({ cwd: "/workspace", isProjectTrusted: () => false }))
+		expect(reapplied).toEqual({ mcpServers: { personal: { command: "personal-server" } } })
 	})
 
 	it("removes impossible mcpScript guidance and Pi product wording from the gateway", async () => {
