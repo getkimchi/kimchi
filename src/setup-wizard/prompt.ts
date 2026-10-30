@@ -3,6 +3,7 @@ import {
 	multiselect as clackMultiselect,
 	password as clackPassword,
 	select as clackSelect,
+	text as clackText,
 	isCancel,
 } from "@clack/prompts"
 
@@ -110,6 +111,23 @@ export async function confirm(opts: {
 	return awaitWithCancelDetection(opts.backable, () =>
 		clackConfirm({ message: opts.message, initialValue: opts.initialValue }),
 	)
+}
+
+export async function text(opts: {
+	message: string
+	placeholder?: string
+	validate?: (v: string | undefined) => string | undefined
+	backable: boolean
+}): Promise<Outcome<string>> {
+	const result = await awaitWithCancelDetection<string | undefined>(
+		opts.backable,
+		() =>
+			clackText({ message: opts.message, placeholder: opts.placeholder, validate: opts.validate }) as Promise<
+				string | symbol | undefined
+			>,
+	)
+	if (result.kind !== "next") return result
+	return { kind: "next", value: result.value ?? "" }
 }
 
 export async function password(opts: {

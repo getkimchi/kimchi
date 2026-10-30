@@ -26,7 +26,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
 	{
 		name: "login",
-		summary: "Log in via browser — or to a self-hosted console URL — and update your API key",
+		summary: "Log in to Kimchi (SSO, account, or API key) — or to a self-hosted console URL",
 		run: runLogin,
 	},
 	{ name: "setup-tools", summary: "Configure coding tools in one pass", run: runSetupTools },
