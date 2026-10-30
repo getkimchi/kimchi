@@ -99,10 +99,17 @@ function readStoredCredential(keyringDir) {
 	}
 }
 
-/** Force the stored credential's access token back into the past for a second renewal cycle. */
+/**
+ * Force the stored credential back into a state that demands a real renewal:
+ * the access token is invalidated (the server rejects it) and the expiry is
+ * moved into the past. Expiry alone is not enough — a recently refreshed
+ * token is still valid server-side, so the probe would use it without
+ * renewing and the stored expiry would never advance.
+ */
 function forceExpiry(keyringDir) {
 	const entry = readStoredCredential(keyringDir)
 	if (!entry?.tokens) return false
+	entry.tokens.accessToken = "kimchi-live-seed-expired-access-token"
 	entry.tokens.expiresAt = Math.floor(Date.now() / 1000) - 600
 	writeFileSync(keyringEntryPath(keyringDir, SERVER_NAME), JSON.stringify(entry), {
 		encoding: "utf-8",
