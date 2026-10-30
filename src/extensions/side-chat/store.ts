@@ -45,6 +45,19 @@ export function isSafeId(id: unknown): id is string {
 /** Side-thread messages, as stored and replayed. */
 export type SideThread = AgentSession["messages"]
 
+/**
+ * Thread messages ready to persist: a trailing assistant reply that is still
+ * streaming (`stopReason: "pending"`) is excluded — it is saved once the turn
+ * settles. Closing a side chat aborts the turn first, so the saved reply
+ * carries `stopReason: "aborted"` and a reopened chat shows it as interrupted
+ * instead of as a plausible-looking final answer.
+ */
+export function persistableThread(thread: SideThread): SideThread {
+	const last = thread[thread.length - 1]
+	if (last?.role === "assistant" && last.stopReason === "pending") return thread.slice(0, -1)
+	return thread
+}
+
 type MainSession = Pick<
 	ExtensionContext["sessionManager"],
 	"getCwd" | "getSessionDir" | "getSessionFile" | "getSessionId"

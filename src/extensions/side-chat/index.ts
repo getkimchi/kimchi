@@ -60,7 +60,7 @@ import {
 	type WrapUpRun,
 } from "./session.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
-import { openSideChatLog, type SideChatLog, type SideThread } from "./store.js"
+import { openSideChatLog, persistableThread, type SideChatLog, type SideThread } from "./store.js"
 
 /** Side panel width chosen by dragging the divider; kept for the process lifetime. */
 let sideWidth: number | undefined
@@ -140,12 +140,15 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 
 	/**
 	 * Append the unsaved side-thread messages to the side chat's own file
-	 * (after every turn). The first save also records the side chat in the
-	 * main session, so a crash keeps it reachable from `/btw history`.
+	 * (after every turn). A reply still streaming is skipped here; it is saved
+	 * when the turn settles — on close the turn is aborted first, so the file
+	 * keeps it with `stopReason: "aborted"` (see persistableThread). The first
+	 * save also records the side chat in the main session, so a crash keeps it
+	 * reachable from `/btw history`.
 	 */
 	function saveThread(chat: ActiveSideChat): void {
 		if (!chat.side) return
-		const messages = sideThreadMessages(chat.side)
+		const messages = persistableThread(sideThreadMessages(chat.side))
 		const unsaved = messages.slice(chat.persistedCount)
 		if (unsaved.length === 0) return
 		try {
@@ -171,14 +174,19 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const chat = active
 		if (!chat) return
 		active = undefined
-		persist(chat, outcome)
-		chat.dispose()
-		const side = chat.side ?? (await chat.ready.catch(() => undefined))
 		chat.wrapUp?.abort()
+		const side = chat.side ?? (await chat.ready.catch(() => undefined))
+		// Settle an in-flight reply as "aborted" before saving and tearing down:
+		// the persisted turn then shows as interrupted when the chat is reopened,
+		// instead of the partial reply freezing as a plausible final answer.
 		if (side) {
 			await side.session.abort().catch(() => {})
+			persist(chat, outcome)
 			side.session.dispose()
+		} else {
+			persist(chat, outcome)
 		}
+		chat.dispose()
 	}
 
 	async function sendToMain(chat: ActiveSideChat, text: string): Promise<void> {

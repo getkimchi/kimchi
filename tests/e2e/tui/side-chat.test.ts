@@ -92,6 +92,49 @@ test("side chat answers next to the session and wraps up into a steer for the ma
 	)
 })
 
+test("closing a side chat mid-reply persists it as aborted and shows it interrupted on reopen", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-close-mid-reply",
+			extraArgs: ["--plan=false"],
+			seedHome: enableSideChat,
+			responses: [
+				{
+					match: isSideRequest,
+					rawDeltas: [{ delta: { content: "Partial reply…" } }, { delta: { content: " the rest" }, delayMs: 30_000 }],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/btw Which cache?")
+			await waitForText(terminal, "Partial reply…", { full: false })
+			expect(viewText(terminal)).not.toContain(" the rest")
+			trace.step("the side reply is still streaming when the chat is closed")
+
+			clickText(terminal, "✕")
+			expect(await poll(() => !viewText(terminal).includes("Side chat ·"), 100, 5_000)).toBe(true)
+			expect(await poll(() => sideChatFiles(fixture.homeDir).length === 1, 100, 5_000)).toBe(true)
+			const transcript = readFileSync(sideChatFiles(fixture.homeDir)[0], "utf-8")
+			expect(transcript).toContain("Partial reply…")
+			expect(transcript).toContain('"stopReason":"aborted"')
+			expect(transcript).not.toContain(" the rest")
+			trace.step("closing mid-reply saves the partial turn with stopReason aborted")
+
+			terminal.write(CTRL_ALT_RIGHT)
+			await waitForText(terminal, "Side chat · New side chat", { full: false })
+			clickText(terminal, "≡")
+			await waitForText(terminal, "Which cache?  (1 question)", { full: false })
+			clickText(terminal, "Which cache?  (1 question)")
+			await waitForText(terminal, "Operation aborted", { full: false })
+			expect(viewText(terminal)).toContain("Partial reply…")
+			trace.step("reopening from history shows the partial reply as interrupted")
+		},
+	)
+})
+
 test("side chat header closes it, lists past chats to reopen, and ctrl+alt+arrows move focus", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,

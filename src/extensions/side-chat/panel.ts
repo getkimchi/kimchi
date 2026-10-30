@@ -214,11 +214,19 @@ export class SideChatPanel {
 				this.addUserLine(contentText(message.content))
 			} else if (message.role === "assistant") {
 				this.transcript.addChild(this.assistantComponent(message))
+				// A turn persisted as aborted/error (e.g. the chat was closed
+				// mid-reply) never ran its trailing tool calls; mark them like
+				// message_end does so they don't look merely unfinished.
+				const failed = message.stopReason === "aborted" || message.stopReason === "error"
 				for (const part of message.content) {
 					if (part.type !== "toolCall") continue
 					const tool = this.toolComponent(part.name, part.id, part.arguments)
-					tool.setArgsComplete()
-					this.pendingTools.set(part.id, tool)
+					if (failed) {
+						tool.updateResult({ content: [{ type: "text", text: message.errorMessage ?? "Aborted" }], isError: true })
+					} else {
+						tool.setArgsComplete()
+						this.pendingTools.set(part.id, tool)
+					}
 				}
 			} else if (message.role === "toolResult") {
 				this.pendingTools.get(message.toolCallId)?.updateResult({ content: message.content, isError: message.isError })

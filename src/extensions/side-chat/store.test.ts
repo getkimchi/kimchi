@@ -3,11 +3,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
-import { openSideChatLog, type SideThread, sideChatFile } from "./store.js"
+import { openSideChatLog, persistableThread, type SideThread, sideChatFile } from "./store.js"
 
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
-const assistant = (text: string) =>
-	({ role: "assistant", content: [{ type: "text", text }], timestamp: 0 }) as SideThread[number]
+const assistant = (text: string, stopReason = "stop") =>
+	({ role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: 0 }) as SideThread[number]
 
 let dir: string | undefined
 
@@ -36,6 +36,32 @@ describe("sideChatFile", () => {
 		expect(sideChatFile("/sessions", "main-1", "side-1")).toBe(
 			join("/sessions", "side-chats", "main-1", "side-1.jsonl"),
 		)
+	})
+})
+
+describe("persistableThread", () => {
+	it("keeps a settled thread unchanged", () => {
+		const thread = [user("Which cache?"), assistant("LRU.")]
+
+		expect(persistableThread(thread)).toBe(thread)
+	})
+
+	it("excludes a reply that is still streaming", () => {
+		const thread = [user("Which cache?"), assistant("Use the…", "pending")]
+
+		expect(persistableThread(thread)).toEqual([user("Which cache?")])
+	})
+
+	it("keeps a reply persisted as aborted when the chat closed mid-stream", () => {
+		const thread = [user("Which cache?"), assistant("Use the…", "aborted")]
+
+		expect(persistableThread(thread)).toBe(thread)
+	})
+
+	it("only excludes a trailing in-flight reply", () => {
+		const thread = [user("Which cache?"), assistant("Use the…", "pending"), user("more")]
+
+		expect(persistableThread(thread)).toBe(thread)
 	})
 })
 
