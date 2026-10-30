@@ -26,6 +26,7 @@ import {
 	noteSessionStart,
 	reapIdleClients,
 	refreshFile,
+	sendNotification,
 	sendRequest,
 	shutdownAll,
 } from "./client.js"
@@ -36,7 +37,7 @@ import {
 	MAX_CHAINS,
 	OPEN_DOCS_MAX,
 } from "./lifecycle-constants.js"
-import type { BunProcess, ServerConfig } from "./types.js"
+import type { BunProcess, LspClient, ServerConfig } from "./types.js"
 import { fileToUri } from "./utils.js"
 
 // =============================================================================
@@ -383,6 +384,102 @@ describe("LSP client reader — zombie cleanup on crash", () => {
 		expect(getAllClients()).toHaveLength(0)
 		// Process should have been killed
 		expect(fake.isKilled()).toBe(true)
+	})
+})
+
+describe("dead server pipe (EPIPE) resilience", () => {
+	// Regression (crash report, harness v1.21.0): the typescript-native server
+	// died mid-session; the next tool result ran refreshFile → didOpen, and
+	// Bun threw EPIPE synchronously from proc.stdin.write. The raw rejection
+	// escaped as an unhandled rejection and Bun treated it as fatal — the
+	// whole harness crashed. Invariants at this seam:
+	//   1. a failed write rejects with a labelled "pipe closed" error, and
+	//   2. the failed write evicts the corpse so the next getOrCreateClient
+	//      respawns a fresh server instead of handing out the dead one.
+	const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), {
+		code: "EPIPE",
+		errno: -32,
+		syscall: "write",
+	})
+
+	let fakes: FakeProc[]
+
+	beforeEach(() => {
+		fakes = []
+		// One fake proc per spawn so the respawn assertion can observe a
+		// genuinely fresh chain.
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = {
+			spawn: () => {
+				const f = createFakeProc()
+				fakes.push(f)
+				return f.proc
+			},
+			file: (p: string) => ({ text: async () => `// content of ${p}` }),
+		}
+	})
+
+	/** Corrupt stdin the way a dead server does: Bun throws EPIPE
+	 *  synchronously from stdin.write once the child process is gone. */
+	function killStdin(fake: FakeProc): void {
+		fake.proc.stdin.write = () => {
+			throw epipe
+		}
+	}
+
+	async function startChain(): Promise<LspClient> {
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(fakes[fakes.length - 1])
+		return clientPromise
+	}
+
+	it("labels the write error and evicts the client when sendNotification hits a dead server", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).rejects.toThrow(/pipe closed/)
+
+		// The corpse must not stay registered: otherwise the next file op keeps
+		// writing into the dead pipe instead of respawning a fresh server.
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("rejects refreshFile cleanly (didOpen route) instead of leaking an unhandled rejection", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		// The crash route: a tool result syncing a file the dead server never
+		// opened. The rejection must stay a normal promise rejection — vitest
+		// fails the run if it escapes as an unhandled rejection.
+		await expect(refreshFile(client, `${CWD}/never-opened.ts`)).rejects.toThrow(/pipe closed/)
+		expect(getAllClients()).toHaveLength(0)
+	})
+
+	it("labels the write error and evicts the client when sendRequest hits a dead server", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		await expect(sendRequest(client, "textDocument/hover", {})).rejects.toThrow(/pipe closed/)
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("respawns a fresh server on the next getOrCreateClient after a write failure", async () => {
+		const dead = await startChain()
+		killStdin(fakes[0])
+		await sendRequest(dead, "textDocument/hover", {}).catch(() => {})
+		expect(getAllClients()).toHaveLength(0)
+
+		const fresh = await startChain()
+		expect(fresh).not.toBe(dead)
+		expect(getAllClients()).toHaveLength(1)
+
+		// The fresh chain is fully functional: didOpen reaches the new server.
+		await ensureFileOpen(fresh, `${CWD}/f0.ts`)
+		expect(fakes[1].written.some((w) => w.includes('"textDocument/didOpen"'))).toBe(true)
 	})
 })
 
