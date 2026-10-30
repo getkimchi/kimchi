@@ -2,8 +2,19 @@ import { initTheme, LoginDialogComponent } from "@earendil-works/pi-coding-agent
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { REGIONS } from "../../regions.js"
 import { setExperimentalFeaturesEnabled } from "../experimental.js"
-import { createRegionSelector, regionChoiceRequired, SwappableAuthComponent } from "./flow.js"
+import {
+	createRegionSelector,
+	KIMCHI_ACCOUNT_LABEL,
+	KIMCHI_API_KEY_LABEL,
+	KIMCHI_SSO_LABEL,
+	loginMethodChoices,
+	orderedLoginRegions,
+	regionChoiceRequired,
+	SUBSCRIPTION_LABEL,
+	SwappableAuthComponent,
+} from "./flow.js"
 
 beforeAll(() => {
 	initTheme("default")
@@ -110,6 +121,59 @@ describe("regionChoiceRequired", () => {
 	it("is true when self-hosted is experimental-gated but already configured", () => {
 		setExperimentalFeaturesEnabled(false)
 		expect(regionChoiceRequired("self-hosted")).toBe(true)
+	})
+})
+
+describe("orderedLoginRegions", () => {
+	beforeEach(() => setExperimentalFeaturesEnabled(true))
+	afterEach(() => setExperimentalFeaturesEnabled(false))
+
+	it("lists the current region first, then the remaining selectable regions", () => {
+		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us", "eu", "self-hosted"])
+		expect(orderedLoginRegions("eu").map((region) => region.id)).toEqual(["eu", "us", "self-hosted"])
+		expect(orderedLoginRegions("self-hosted").map((region) => region.id)).toEqual(["self-hosted", "us", "eu"])
+	})
+
+	it("honours a restricted candidate list (SSO login limits to OAuth-tenant regions)", () => {
+		expect(orderedLoginRegions("eu", [REGIONS.us]).map((region) => region.id)).toEqual(["eu", "us"])
+	})
+
+	it("lists only the current region when experimental features are off", () => {
+		setExperimentalFeaturesEnabled(false)
+		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us"])
+	})
+})
+
+describe("loginMethodChoices", () => {
+	it("lists SSO first when available, then account and API key, subscription last", () => {
+		expect(loginMethodChoices({ ssoAvailable: true, includeApiKey: true, includeSubscription: true })).toEqual([
+			{ id: "sso", label: KIMCHI_SSO_LABEL },
+			{ id: "account", label: KIMCHI_ACCOUNT_LABEL },
+			{ id: "api-key", label: KIMCHI_API_KEY_LABEL },
+			{ id: "subscription", label: SUBSCRIPTION_LABEL },
+		])
+	})
+
+	it("omits SSO when the region has no OAuth tenant", () => {
+		expect(
+			loginMethodChoices({ ssoAvailable: false, includeApiKey: true, includeSubscription: true }).map(
+				(choice) => choice.id,
+			),
+		).toEqual(["account", "api-key", "subscription"])
+	})
+
+	it("omits the subscription for the CLI menu", () => {
+		expect(loginMethodChoices({ ssoAvailable: true, includeApiKey: true }).map((choice) => choice.id)).toEqual([
+			"sso",
+			"account",
+			"api-key",
+		])
+	})
+
+	it("omits the API key entry when the surface has no handler", () => {
+		expect(loginMethodChoices({ ssoAvailable: false, includeApiKey: false }).map((choice) => choice.id)).toEqual([
+			"account",
+		])
 	})
 })
 
