@@ -78,16 +78,17 @@ export interface SubAgentRecordEntry {
 	[key: string]: unknown
 }
 
-/** A sub-agent summary suitable for tab display. */
-export interface SubAgentTab {
+/** A sub-agent summary suitable for tab display — plain, pre-encoding form. */
+export interface SubAgentTabData {
 	/** Unique tab id (the sub-agent record id). */
 	id: string
 	/** Display label, e.g. "Reviewer". */
 	label: string
 	/** Tab subtitle, e.g. "completed (109s)". */
 	subtitle: string
-	/** Base64-encoded session-data JSON for the iframe. */
-	sessionDataB64: string
+	/** Full session-data object for the iframe: header, entries, and the
+	 * persona-resolved system prompt. */
+	sessionData: ReturnType<typeof buildSubAgentSessionData>
 }
 
 /**
@@ -132,8 +133,17 @@ export function readTranscript(filePath: string, baseDir?: string): TranscriptEn
  *
  * The resulting object has the same `{ header, entries }` shape as the main
  * session-data, so it can be rendered by the exact same template in an iframe.
+ *
+ * The system prompt fallback resolves in order: the record's own persisted
+ * prompt, then `agentSystemPrompts` (a type → prompt map the offloaded worker
+ * carries from the parent's live persona registry — the child process cannot
+ * see `.kimchi/agents` registrations), then the in-process registry, then
+ * the built-in defaults.
  */
-export function buildSubAgentSessionData(data: SubAgentRecordData): {
+export function buildSubAgentSessionData(
+	data: SubAgentRecordData,
+	agentSystemPrompts?: Readonly<Record<string, string>>,
+): {
 	header: Record<string, unknown>
 	entries: Record<string, unknown>[]
 	systemPrompt?: string
@@ -146,7 +156,10 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
 	// Pass it as a top-level field so the upstream HTML export template renders
 	// it in the same violet "System Prompt" box used for the main session.
 	const systemPrompt =
-		data.systemPrompt ?? getAgentConfig(data.type)?.systemPrompt ?? DEFAULT_AGENTS.get(data.type)?.systemPrompt
+		data.systemPrompt ??
+		agentSystemPrompts?.[data.type.toLowerCase()] ??
+		getAgentConfig(data.type)?.systemPrompt ??
+		DEFAULT_AGENTS.get(data.type)?.systemPrompt
 
 	for (let i = 0; i < (data.transcript ?? []).length; i++) {
 		const t = data.transcript?.[i]
@@ -185,14 +198,23 @@ export function buildSubAgentSessionData(data: SubAgentRecordData): {
 }
 
 /**
- * Collect sub-agent tabs from enriched entries.
+ * Collect sub-agent tab data from enriched entries — plain objects, no
+ * encoding yet. The export pipeline assembles and redacts these payloads
+ * before base64-encoding them, so nothing sensitive is injected after
+ * redaction.
  *
- * Returns one `SubAgentTab` per `subagents:record` entry that has a
- * non-empty transcript. The `sessionDataB64` field contains the
- * base64-encoded session-data JSON ready for iframe embedding.
+ * `agentSystemPrompts` (type → prompt, lowercase keys) overrides the
+ * in-process persona registry fallback — the offloaded worker carries the
+ * parent's registry state this way.
+ *
+ * Returns one entry per `subagents:record` entry that has a non-empty
+ * transcript.
  */
-export function collectSubAgentTabs(entries: Record<string, unknown>[]): SubAgentTab[] {
-	const tabs: SubAgentTab[] = []
+export function collectSubAgentTabData(
+	entries: Record<string, unknown>[],
+	agentSystemPrompts?: Readonly<Record<string, string>>,
+): SubAgentTabData[] {
+	const tabs: SubAgentTabData[] = []
 
 	for (const entry of entries) {
 		if (entry.type !== "custom" || entry.customType !== "subagents:record") continue
@@ -203,18 +225,40 @@ export function collectSubAgentTabs(entries: Record<string, unknown>[]): SubAgen
 		const duration =
 			data.startedAt && data.completedAt ? `${Math.round((data.completedAt - data.startedAt) / 1000)}s` : ""
 
-		const sessionData = buildSubAgentSessionData(data)
-		const sessionDataB64 = Buffer.from(JSON.stringify(sessionData), "utf-8").toString("base64")
-
 		tabs.push({
 			id: data.id || "unknown",
 			label: data.type || "Agent",
 			subtitle: `${data.status || "unknown"}${duration ? ` · ${duration}` : ""}`,
-			sessionDataB64,
+			sessionData: buildSubAgentSessionData(data, agentSystemPrompts),
 		})
 	}
 
 	return tabs
+}
+
+/** A sub-agent tab with the base64-encoded iframe payload. */
+export interface SubAgentTab {
+	/** Unique tab id (the sub-agent record id). */
+	id: string
+	/** Display label, e.g. "Reviewer". */
+	label: string
+	/** Tab subtitle, e.g. "completed (109s)". */
+	subtitle: string
+	/** Base64-encoded session-data JSON for the iframe. */
+	sessionDataB64: string
+}
+
+/**
+ * Collect sub-agent tabs with base64-encoded session data, ready for iframe
+ * embedding. Thin encoding wrapper over `collectSubAgentTabData`.
+ */
+export function collectSubAgentTabs(entries: Record<string, unknown>[]): SubAgentTab[] {
+	return collectSubAgentTabData(entries).map((tab) => ({
+		id: tab.id,
+		label: tab.label,
+		subtitle: tab.subtitle,
+		sessionDataB64: Buffer.from(JSON.stringify(tab.sessionData), "utf-8").toString("base64"),
+	}))
 }
 
 /**

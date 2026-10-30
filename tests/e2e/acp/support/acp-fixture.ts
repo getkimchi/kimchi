@@ -111,6 +111,13 @@ export interface AcpFixtureOptions {
 	/** Keep self-created homeDir/workDir on stop() (restart tests: the first
 	 *  fixture hands its dirs to a second fixture and the test cleans up). */
 	keepDirsOnStop?: boolean
+	/**
+	 * Spawn the kimchi process with this cwd instead of `workDir`. Boundary
+	 * tests use a directory deliberately distinct from the session workDir to
+	 * pin where file side effects land when process cwd ≠ session cwd.
+	 * Defaults to `workDir` (the ACP protocol's session cwd).
+	 */
+	processCwd?: string
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -461,7 +468,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				...(options.telemetry === undefined ? {} : { KIMCHI_TELEMETRY_ENABLED: String(options.telemetry) }),
 				...(mcp?.env ?? {}),
 			},
-			cwd: workDir,
+			cwd: options.processCwd ?? workDir,
 		})
 		proc.on("error", (e) => {
 			process.stderr.write(`[acp-e2e] spawn error: ${e}\n`)
