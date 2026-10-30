@@ -164,6 +164,8 @@ describe("isReadOnlyDocCliCommand", () => {
 		"kimchi doc-cli xlsx recalc in.xlsx --out out.xlsx",
 		"kimchi doc-cli pptx create out.pptx --spec spec.json",
 		"kimchi doc-cli pptx edit in.pptx --out out.pptx --ops ops.json",
+		"kimchi doc-cli pdf read x.pdf --out copy.txt",
+		"kimchi doc-cli pdf fields x.pdf --out=fields.json",
 	]
 	it.each(mutating)("rejects the mutating subcommand %s", (command) => {
 		expect(isReadOnlyDocCliCommand(command)).toBe(false)
@@ -175,5 +177,7 @@ describe("isReadOnlyDocCliCommand", () => {
 		expect(isReadOnlyDocCliCommand("pdftotext report.pdf -")).toBe(false)
 		expect(isReadOnlyDocCliCommand("kimchi doc-cli pdf read x.pdf && echo hi")).toBe(false)
 		expect(isReadOnlyDocCliCommand("BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf")).toBe(false)
+		expect(isReadOnlyDocCliCommand("kimchi doc-cli pdf read x.pdf > out.txt")).toBe(false)
+		expect(isReadOnlyDocCliCommand("cd /dir && kimchi doc-cli pdf read x.pdf")).toBe(false)
 	})
 })

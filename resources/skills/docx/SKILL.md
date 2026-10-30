@@ -11,6 +11,10 @@ All commands run the bundled runtime.
 - Primary: `kimchi doc-cli docx <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed.
 - Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/docx.mjs ...`
 
+Run each command as its own single bash call: no `cd … &&`, `;` chains, or `echo`
+wrappers — a compound command loses the permission auto-allow and prompts. Use
+absolute paths instead of `cd`; the tool result already carries the exit status.
+
 Do NOT use python-docx or the `docx` npm package directly — the bundled CLI is the supported route. Never write through LibreOffice macros; edits go through `edit` below.
 
 Paragraphs and tables are numbered body blocks (`p3:`, `[table 1]`) — quote those numbers from read output rather than re-deriving them. Writes are atomic and never in place: `--out` must differ from the input. Files over the size cap (default 20 MB; raise via `KIMCHI_DOCUMENT_MAX_MB`) fail `too-large`.

@@ -11,6 +11,10 @@ All commands run the bundled runtime.
 - Primary: `kimchi doc-cli pdf <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed.
 - Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/pdf.mjs ...`. Same commands, same output.
 
+Run each command as its own single bash call: no `cd … &&`, `;` chains, or `echo`
+wrappers — a compound command loses the permission auto-allow and prompts. Use
+absolute paths instead of `cd`; the tool result already carries the exit status.
+
 Pages are 1-based everywhere. Writes are atomic and never in place: `--out` must differ from every input.
 
 ## Choosing an approach

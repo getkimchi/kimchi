@@ -100,7 +100,11 @@ export function isReadOnlyDocCliCommand(command: string): boolean {
 	const tokens = parseCommandSegments(command)[0]?.tokens ?? []
 	const skill = tokens[2] as DocCliSkill
 	const sub = tokens[3]
-	return typeof sub === "string" && (DOC_CLI_READ_ONLY_COMMANDS[skill] ?? []).includes(sub)
+	if (typeof sub !== "string" || !(DOC_CLI_READ_ONLY_COMMANDS[skill] ?? []).includes(sub)) return false
+	// A read verb redirected into a file via flag is not read-only
+	// (render/write use --out; a future read-verb flag must not smuggle
+	// one past the plan-mode gate).
+	return !tokens.slice(4).some((t) => t === "--out" || t.startsWith("--out="))
 }
 
 /**

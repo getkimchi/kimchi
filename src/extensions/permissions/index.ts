@@ -1408,7 +1408,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			if (mode === "plan") {
 				if (toolName === "bash") {
 					const command = typeof input.command === "string" ? input.command : ""
-					if (!isReadOnlyBashCommand(command)) {
+					// Read-only doc-cli verbs count as read-only here too, but only
+					// through the strict single-segment gate (bundled-skill-cli.ts) —
+					// the generic matcher stays unaware of the route, so a compound
+					// like `… doc-cli pdf read x && echo done` keeps failing the
+					// plan read-only check and rejects, mirroring the classifier
+					// contract in default/auto.
+					if (!isReadOnlyBashCommand(command) && !isReadOnlyDocCliCommand(command)) {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
 							block: true,

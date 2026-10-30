@@ -11,6 +11,10 @@ All commands run the bundled runtime. Replace `<deck>` with the user's path.
 - Primary: `kimchi doc-cli pptx <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed. The same form works on Windows/Git Bash.
 - Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/pptx.mjs ...`
 
+Run each command as its own single bash call: no `cd … &&`, `;` chains, or `echo`
+wrappers — a compound command loses the permission auto-allow and prompts. Use
+absolute paths instead of `cd`; the tool result already carries the exit status.
+
 ## read `<deck> [start-end]`
 
 Slides as Markdown with locators — `[shape "…"]` names, `[table N]` indices — the exact
