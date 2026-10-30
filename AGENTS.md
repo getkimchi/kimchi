@@ -8,7 +8,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Runtime**: Bun for dev (`pnpm run dev`), Node 22+ for built binaries
 - **Test runner**: vitest (`pnpm run test` — unit, `pnpm run test:smoke`, `pnpm run test:e2e:tui`, `pnpm run test:e2e:acp` — e2e)
 - **Linter**: biome (`pnpm run lint`, `pnpm run lint:fix`)
-- **Type check**: TypeScript (`pnpm run typecheck`)
+- **Type check**: TypeScript (`pnpm run typecheck` or `pnpm run tc`)
 
 ## Hard constraints
 
