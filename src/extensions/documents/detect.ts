@@ -9,6 +9,7 @@
  * extractor under ooxml/package.ts's caps.
  */
 
+import { DOC_SKILL_EXTENSIONS } from "./doc-cli-skills.js"
 import { DocumentError, type DocumentFormat } from "./model.js"
 import { listZipEntries } from "./ooxml/package.js"
 
@@ -18,15 +19,16 @@ export interface Detection {
 	reason: "magic" | "zip-parts" | "ole2-signature" | "ole2-extension" | "extension-text"
 }
 
-const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] // %PDF-
-const ZIP_MAGICS: ReadonlyArray<readonly number[]> = [
+export const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d] // %PDF-
+export const ZIP_MAGICS: ReadonlyArray<readonly number[]> = [
 	[0x50, 0x4b, 0x03, 0x04], // PK\x03\x04
 	[0x50, 0x4b, 0x05, 0x06], // empty archive
 	[0x50, 0x4b, 0x07, 0x08], // spanned
 ]
 const OLE2_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
 
-function hasMagic(data: Uint8Array, magic: readonly number[]): boolean {
+/** True when `data` begins with `magic`. */
+export function hasMagic(data: Uint8Array, magic: readonly number[]): boolean {
 	if (data.length < magic.length) return false
 	for (let i = 0; i < magic.length; i++) {
 		if (data[i] !== magic[i]) return false
@@ -34,10 +36,15 @@ function hasMagic(data: Uint8Array, magic: readonly number[]): boolean {
 	return true
 }
 
-function ext(path: string): string {
+/** The path's lowercase extension, `/`- and `\`-aware (no leading dot). */
+export function pathExtension(path: string): string {
 	const base = path.split(/[\\/]/).pop() ?? ""
 	const dot = base.lastIndexOf(".")
 	return dot > 0 ? base.slice(dot + 1).toLowerCase() : ""
+}
+
+function ext(path: string): string {
+	return pathExtension(path)
 }
 
 /** True if every byte (sampled) is plausibly UTF-8/ASCII text (CSV sniffing). */
@@ -97,11 +104,16 @@ export async function detectDocumentFormat(path: string, data: Uint8Array): Prom
 	return undefined
 }
 
+/** Extensions beyond the skill-routed ones that document handling still
+ *  recognizes: legacy binary formats (no bundled reader yet) and tabular
+ *  text the CSV sniffing path handles. */
+const NON_SKILL_DOCUMENT_EXTENSIONS = ["xls", "ods", "csv", "tsv", "doc", "ppt"]
+
 /** Fast path used by read interception and @file before loading the file:
  *  the file extension suggests a document we *might* handle; magic bytes
- *  decide once the file is loaded. */
+ *  decide once the file is loaded. Derived from the skill-routing map so the
+ *  two lists cannot drift apart. */
 export function isDocumentPath(path: string): boolean {
-	return ["pdf", "docx", "pptx", "xlsx", "xls", "xlsm", "docm", "pptm", "ods", "csv", "tsv", "doc", "ppt"].includes(
-		ext(path),
-	)
+	const extension = ext(path)
+	return DOC_SKILL_EXTENSIONS[extension] !== undefined || NON_SKILL_DOCUMENT_EXTENSIONS.includes(extension)
 }
