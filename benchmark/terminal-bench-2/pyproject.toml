@@ -38,6 +38,18 @@ constraint-dependencies = [
     "urllib3>=2.8.0",
     "cryptography>=50.0.0",
     "starlette>=1.3.1",
+    # litellm GHSA-g5ff-637f-6q2m needs >=1.95.0, but GHSA-7hp6-4w63-5g45
+    # (salt-key reuse, high) covers 1.91.0-1.103.0 line holes; first
+    # always-clean floor is 1.103.1.
+    "litellm>=1.103.1",
+]
+
+# litellm caps filelock<4.0 (through 1.106.6), so a constraint floor for
+# GHSA-v4x8-3wr5-3wq8 (high, ReadWriteLock symlink overwrite, fixed in
+# 4.2.1) cannot resolve. Override drops litellm's declared bound; benchmark
+# flows don't use ReadWriteLock.
+override-dependencies = [
+    "filelock>=4.2.1",
 ]
 
 [tool.uv.build-backend]
