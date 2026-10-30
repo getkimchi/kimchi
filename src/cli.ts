@@ -301,10 +301,15 @@ async function cliMain(): Promise<void> {
 	// above: the agent calls it repeatedly inside one session, and the route
 	// must stay invisible to app_started instrumentation.
 	if (originalArgs[0] === "doc-cli") {
-		const { drainDocCliOutput, runDocCliMain } = await import("./extensions/documents/doc-cli-main.js")
+		const { runDocCliMain } = await import("./extensions/documents/doc-cli-main.js")
 		const code = await runDocCliMain(originalArgs.slice(1))
-		await drainDocCliOutput()
-		process.exit(code)
+		// Exit through the event loop, never process.exit(): a hard exit can
+		// truncate large piped output — the empty-write drain this route used
+		// still lost ~16% of a 3000-line `fields` dump on CI runners (the OS
+		// pipe had not drained when the callback fired). exitCode + return lets
+		// the runtime keep the process alive until stdio has flushed.
+		process.exitCode = code
+		return
 	}
 
 	// Observes provider transport failures in-process (via message_end) so the

@@ -80,15 +80,3 @@ export async function runDocCliMain(args: string[], deps: DocCliDeps = {}): Prom
 		return 2
 	}
 }
-
-/** Drain piped stdout/stderr before process.exit — a large `read` through a
- *  pipe is otherwise truncated when the process reaps before the streams
- *  flush. The empty write enqueues behind all prior buffered writes; its
- *  callback fires once they have flushed. */
-export async function drainDocCliOutput(): Promise<void> {
-	const drain = (stream: { write: (chunk: string, cb?: (err?: Error | null) => void) => boolean }) =>
-		new Promise<void>((resolve) => {
-			stream.write("", () => resolve())
-		})
-	await Promise.all([drain(process.stdout), drain(process.stderr)])
-}

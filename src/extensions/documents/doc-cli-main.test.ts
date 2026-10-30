@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { drainDocCliOutput, runDocCliMain } from "./doc-cli-main.js"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { runDocCliMain } from "./doc-cli-main.js"
 import { DOC_CLI_SKILLS, type DocCliSkill } from "./doc-cli-skills.js"
 import { DocumentError } from "./model.js"
 
@@ -181,30 +181,5 @@ describe("runDocCliMain", () => {
 		})
 		expect(code).toBe(2)
 		expect(err).toEqual(["unexpected"])
-	})
-})
-
-describe("drainDocCliOutput", () => {
-	it("resolves only after previously queued writes have flushed", async () => {
-		// Model Node/Bun stream semantics: write callbacks fire in write order,
-		// asynchronously. The drain's empty write enqueues behind the queued
-		// chunk, so its callback — and the awaited promise — must land after it.
-		const order: string[] = []
-		const deferredWrite = (_buffer: string | Uint8Array, cb?: (err?: Error | null) => void): boolean => {
-			setTimeout(() => cb?.(), 0)
-			return true
-		}
-		const asStreamWrite = deferredWrite as unknown as typeof process.stdout.write
-		const stdout = vi.spyOn(process.stdout, "write").mockImplementation(asStreamWrite)
-		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(asStreamWrite)
-		try {
-			process.stdout.write("queued chunk", () => order.push("user-write-flushed"))
-			await drainDocCliOutput()
-			order.push("drain-resolved")
-			expect(order).toEqual(["user-write-flushed", "drain-resolved"])
-		} finally {
-			stdout.mockRestore()
-			stderr.mockRestore()
-		}
 	})
 })
