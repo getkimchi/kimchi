@@ -120,7 +120,10 @@ it(
 		await withDocCliEnv("plan", async () => {
 			// Pre-create the PDF with the built binary itself — the harness
 			// invokes it directly, outside the session's permission system.
-			const marker = "Plan-mode read through the in-binary route."
+			// The marker is a single unbreakable token: the PDF renderer
+			// wraps prose at the page width, so a sentence marker can break
+			// across lines and fail a substring match.
+			const marker = "PLANMODE_MARKER_X7F391"
 			const fixture = await startAcpFixture({
 				artifactName: "doc-cli-plan-read",
 				responses: [
