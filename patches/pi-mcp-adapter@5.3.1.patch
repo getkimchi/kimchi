@@ -22,13 +22,24 @@
 #   - Stored redirect URI reuse: upstream 5.3.1 defaults the loopback host to
 #     127.0.0.1 (PR #712), so re-auth of a pre-registered client (e.g. Google)
 #     whose registration was created with a localhost URI now sends a different
-#     redirect and fails with redirect_uri_mismatch; upstream issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     prefers the stored registration's redirect URIs)
+#     redirect and fails with redirect_uri_mismatch. Fixed-client servers with
+#     no usable stored registration (first auth, or a registration whose
+#     redirectUris were dropped) now default to the localhost callback adapter
+#     2.x sent, since such clients register localhost only; upstream issue
+#     pending at https://github.com/nicobailon/pi-mcp-adapter (remove when
+#     upstream prefers the stored registration's redirect URIs and defaults
+#     fixed-client servers to the localhost callback)
 #   - Stored redirect URI preservation: mcp-oauth-provider clientInformation()
 #     rewrites the stored clientInfo for config-registered clients (issuer
 #     binding bookkeeping) and drops its redirectUris, destroying the legacy
 #     registration before re-auth can reuse it; same upstream tracking as above
+#   - Authorize-URL hook: upstream has no first-class way for a host to add
+#     offline-access request parameters (OIDC offline_access scope, vendor
+#     params such as Google's access_type=offline) without passing a
+#     programmatic config, which disables the /mcp panel and the config write
+#     flows; upstream issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     supports offline-access defaults or an authorize-URL customization hook)
 # Changes:
 #   - agent-dir/config (+dist mirrors): resolve the MCP project config
 #     directory via piConfig.mcpProjectConfigDir so project MCP config can
@@ -71,7 +82,9 @@
 #     and no explicit redirectUri, startAuth reuses the stored client
 #     registration's first redirect URI (only when the stored registration's
 #     clientId matches the configured one) instead of the current default
-#     host; unreadable or non-matching stored state falls back to the default.
+#     host; unreadable or non-matching stored state falls back to
+#     http://localhost:<configured callback port>/callback. Dynamic-registration
+#     servers (no clientId) keep upstream's 127.0.0.1 default.
 #     See the stored-redirect-URI-reuse tracking entry above.
 #   - mcp-oauth-provider: clientInformation() preserves the stored client
 #     registration's redirectUris when it rewrites the entry for a
@@ -111,7 +124,11 @@
 #     (DEFAULT_MCP_OUTPUT_MAX_BYTES) so oversized MCP results no longer blow
 #     the session context on parallel tool results; still overridable via
 #     settings.mcpToolOutputTuning.maxBytes.
-
+#   - mcp-oauth-provider (+dist mirror), oauth: setAuthorizationUrlTransform()
+#     hook, applied in redirectToAuthorization to the authorize URL (with the
+#     flow's saved discovery state) after the server's own
+#     authorizationParams, so a host only fills in what config left unset; default is identity. The
+#     host (src/extensions/mcp/oauth-offline-access.ts) supplies the policy.
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -383,10 +400,19 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf1fb58558 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4bd86596c 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
-@@ -400,6 +400,39 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
+@@ -5,7 +5,7 @@
+  */
+ import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
+ import open from "open";
+-import { getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
++import { DEFAULT_OAUTH_CALLBACK_PATH, getConfiguredOAuthCallbackPort, getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
+ import { ensureCallbackServer, waitForCallback, cancelPendingCallback, stopCallbackServer, stopCallbackServerIfIdle, releaseCallbackServer, } from "./mcp-callback-server.js";
+ import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, OAuthCredentialStoreError, } from "./mcp-auth.js";
+ import { isServerDisabled } from "./types.js";
+@@ -400,6 +400,42 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
          existingPendingAuth.authority();
          return { authorizationUrl: existingPendingAuth.authorizationUrl };
      }
@@ -395,8 +421,9 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf
 +    // (upstream PR #712), so a registration stored by an earlier version now
 +    // mismatches what servers such as Google pre-registered (Error 400:
 +    // redirect_uri_mismatch). When the server is configured with a fixed
-+    // clientId, reuse the stored registration's first redirect URI; clients that
-+    // register dynamically re-register instead and keep upstream's default.
++    // clientId, reuse the stored registration's first redirect URI, or default to
++    // the localhost callback when nothing usable is stored; clients that register
++    // dynamically re-register instead and keep upstream's 127.0.0.1 default.
 +    // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
 +    // — remove when upstream prefers the stored registration's redirect URIs.
 +    if (config.redirectUri === undefined && config.clientId !== undefined) {
@@ -419,18 +446,35 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..831b7dc4f56cd3b014dff05dd833bfbf
 +        }
 +        authority();
 +        throwIfAborted(signal);
-+        if (storedRedirectUri !== undefined) {
-+            config.redirectUri = storedRedirectUri;
-+        }
++        // No usable stored URI: a fixed-client registration predates this adapter's
++        // 127.0.0.1 default and typically lists only the localhost callback, so
++        // send that instead (what adapter 2.x sent). Use the configured port, not
++        // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++        config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`;
 +    }
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
-index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..aa49d7414c1161aa1ac879b927230d38658ca750 100644
+index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
 --- a/dist/mcp-oauth-provider.js
 +++ b/dist/mcp-oauth-provider.js
-@@ -323,7 +323,10 @@ export class McpOAuthProvider {
+@@ -89,6 +89,14 @@ export function getOAuthCallbackPath() {
+ export function setOAuthCallbackPath(path) {
+     oauthCallbackPath = path.startsWith("/") ? path : `/${path}`;
+ }
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++let authorizationUrlTransform = (url) => url;
++export function setAuthorizationUrlTransform(transform) {
++    authorizationUrlTransform = transform;
++}
+ const reservedAuthorizationParams = new Set([
+     "client_id",
+     "code_challenge",
+@@ -323,7 +331,10 @@ export class McpOAuthProvider {
                  : undefined;
              if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
                  this.throwIfInactive();
@@ -442,6 +486,15 @@ index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..aa49d7414c1161aa1ac879b927230d38
              }
              const clientSecret = this.config.clientSecret?.startsWith("!")
                  ? resolveCommandSecret(this.config.clientSecret, `MCP server "${this.serverName}" OAuth clientSecret`)
+@@ -516,7 +527,7 @@ export class McpOAuthProvider {
+             throw new UnauthorizedError(`Re-authentication required for MCP server: ${this.serverName}`);
+         }
+         // URL is passed to callback, not logged (may contain sensitive params)
+-        await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams));
++        await this.callbacks.onRedirect(authorizationUrlTransform(addAuthorizationParams(authorizationUrl, this.config.authorizationParams), this.flowDiscoveryState));
+     }
+     /**
+      * Save the PKCE code verifier.
 diff --git a/dist/metadata-cache.js b/dist/metadata-cache.js
 index c10c5417a7b32388f947c6133811dcf15f67ec19..5405787efe81bfdd05f0741f47291c6cbb8c187b 100644
 --- a/dist/metadata-cache.js
@@ -662,10 +715,19 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..0fb04f4050308bb1d2caa8f89ec13461
    // Shortcut handlers get no reload(), so dispatch the command: its context has one.
    if (!programmaticConfig) {
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee0386e3f4d6 100644
+index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..0920db72b69ffb2c5ea18a5c845caccbab1cc37d 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -26,6 +26,8 @@ import {
+@@ -15,6 +15,8 @@ import {
+ } from "@modelcontextprotocol/client"
+ import open from "open"
+ import {
++  DEFAULT_OAUTH_CALLBACK_PATH,
++  getConfiguredOAuthCallbackPort,
+   getOAuthCallbackPort,
+   McpOAuthProvider,
+   type McpOAuthConfig,
+@@ -26,6 +28,8 @@ import {
    stopCallbackServer,
    stopCallbackServerIfIdle,
    releaseCallbackServer,
@@ -674,7 +736,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  } from "./mcp-callback-server.ts"
  import {
    getAuthForUrl,
-@@ -53,6 +55,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
+@@ -53,6 +57,12 @@ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts"
  /** Auth status for a server */
  export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
  
@@ -687,7 +749,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  export interface McpOAuthRuntime {
    readonly signal: AbortSignal
  }
-@@ -94,6 +102,12 @@ type PendingAuth = {
+@@ -94,6 +104,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -700,7 +762,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -344,7 +358,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
+@@ -344,7 +360,7 @@ async function probeAuthDiscovery(serverUrl: string, definition?: ServerEntry, s
          params: {
            protocolVersion: LATEST_PROTOCOL_VERSION,
            capabilities: {},
@@ -709,7 +771,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
          },
        }),
        ...(discoverySignal ? { signal: discoverySignal } : {}),
-@@ -461,7 +475,7 @@ export async function startAuth(
+@@ -461,7 +477,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -718,7 +780,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -512,13 +526,55 @@ export async function startAuth(
+@@ -512,13 +528,58 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -731,8 +793,9 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
 +  // (upstream PR #712), so a registration stored by an earlier version now
 +  // mismatches what servers such as Google pre-registered (Error 400:
 +  // redirect_uri_mismatch). When the server is configured with a fixed
-+  // clientId, reuse the stored registration's first redirect URI; clients that
-+  // register dynamically re-register instead and keep upstream's default.
++  // clientId, reuse the stored registration's first redirect URI, or default to
++  // the localhost callback when nothing usable is stored; clients that register
++  // dynamically re-register instead and keep upstream's 127.0.0.1 default.
 +  // Tracking: upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
 +  // — remove when upstream prefers the stored registration's redirect URIs.
 +  if (config.redirectUri === undefined && config.clientId !== undefined) {
@@ -754,9 +817,11 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
 +    }
 +    authority()
 +    throwIfAborted(signal)
-+    if (storedRedirectUri !== undefined) {
-+      config.redirectUri = storedRedirectUri
-+    }
++    // No usable stored URI: a fixed-client registration predates this adapter's
++    // 127.0.0.1 default and typically lists only the localhost callback, so
++    // send that instead (what adapter 2.x sent). Use the configured port, not
++    // the currently bound one, which other flows rebind (setOAuthCallbackPort).
++    config.redirectUri = storedRedirectUri ?? `http://localhost:${getConfiguredOAuthCallbackPort()}${DEFAULT_OAUTH_CALLBACK_PATH}`
    }
  
    const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined
@@ -775,7 +840,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -551,6 +607,18 @@ export async function startAuth(
+@@ -551,6 +612,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -794,7 +859,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    }
  
    let capturedUrl: URL | undefined
-@@ -612,13 +680,14 @@ export async function startAuth(
+@@ -612,13 +685,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -810,7 +875,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -901,6 +970,13 @@ export async function completeAuthFromInput(
+@@ -901,6 +975,13 @@ export async function completeAuthFromInput(
      throw new Error("Paste the full OAuth callback URL, including its code and state parameters")
    }
    const parsed = parseAuthorizationRedirectInput(input, oauthState)
@@ -824,7 +889,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    return completeAuth(serverName, parsed, options)
  }
  
-@@ -921,6 +997,13 @@ export async function completeAuth(
+@@ -921,6 +1002,13 @@ export async function completeAuth(
    const signal = combineAbortSignals(runtime.signal, options.signal)
    throwIfAborted(signal)
    const key = getPendingAuthKey(serverName, fallbackAuthStorageOptions)
@@ -838,7 +903,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
    const pendingAuth = runtimeState.pendingAuths.get(key)
    const authStorageOptions = pendingAuth?.authStorageOptions ?? fallbackAuthStorageOptions
    if (!pendingAuth) {
-@@ -965,6 +1048,9 @@ export async function completeAuth(
+@@ -965,6 +1053,9 @@ export async function completeAuth(
      if (result !== "AUTHORIZED") {
        throw new UnauthorizedError("Failed to authorize")
      }
@@ -848,7 +913,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
      return "authenticated"
    } catch (error) {
      caughtError = error
-@@ -982,6 +1068,14 @@ export async function completeAuth(
+@@ -982,6 +1073,14 @@ export async function completeAuth(
        if (caughtError === undefined) pendingAuth.authority()
      }
    }
@@ -863,7 +928,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
  }
  
  /**
-@@ -1045,7 +1139,7 @@ export async function authenticate(
+@@ -1045,7 +1144,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -872,7 +937,7 @@ index 9ded419e6b031061ae95ebfe6ab6a5660f2d3089..8a7f6181c8707c13407a1d03d49eee03
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1053,7 +1147,7 @@ export async function authenticate(
+@@ -1053,7 +1152,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -996,10 +1061,29 @@ index 32aad31f9fe94cef128de9e1576cbc04d53fa822..b2593924653dda1fe18be16da7e7a90a
    pendingAuths.delete(state)
    pending.resolve({ code, ...(iss !== null ? { iss } : {}) })
 diff --git a/mcp-oauth-provider.ts b/mcp-oauth-provider.ts
-index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a220fb1d0e8 100644
+index b724478bf4036c199d4574c87a200207706ceb29..38cc4edf7c4903b9ce2423517e9d396bd9b1c7a6 100644
 --- a/mcp-oauth-provider.ts
 +++ b/mcp-oauth-provider.ts
-@@ -224,7 +224,7 @@ async function loadConfiguredDiscoveryState(
+@@ -127,6 +127,18 @@ export function setOAuthCallbackPath(path: string): void {
+   oauthCallbackPath = path.startsWith("/") ? path : `/${path}`
+ }
+ 
++// Kimchi: host hook applied to every authorize URL after the server's own
++// authorizationParams, so a host only fills in what config left unset. Receives the discovery state saved for this flow, so a
++// host can add offline-access request parameters without network calls.
++// Removal: upstream first-class offline-access support.
++export type AuthorizationUrlTransform = (url: URL, discovery: OAuthDiscoveryState | undefined) => URL
++
++let authorizationUrlTransform: AuthorizationUrlTransform = (url) => url
++
++export function setAuthorizationUrlTransform(transform: AuthorizationUrlTransform): void {
++  authorizationUrlTransform = transform
++}
++
+ /** Configuration options for OAuth */
+ export interface McpOAuthConfig {
+   grantType?: "authorization_code" | "client_credentials"
+@@ -224,7 +236,7 @@ async function loadConfiguredDiscoveryState(
    fetchFn: FetchLike,
  ): Promise<OAuthDiscoveryState> {
    const response = await fetchFn(metadataUrl, {
@@ -1008,7 +1092,7 @@ index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a22
    })
    if (!response.ok) {
      await response.text().catch(() => {})
-@@ -411,9 +411,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
+@@ -411,9 +423,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
          : undefined
        if (issuer && (storedClient?.issuer !== issuer || storedClient.configPreRegistered !== true)) {
          this.throwIfInactive()
@@ -1027,6 +1111,20 @@ index b724478bf4036c199d4574c87a200207706ceb29..5e304383de961f566756330871766a22
            this.serverUrl,
            this.storageOptions,
          )
+@@ -628,7 +648,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
+       )
+     }
+     // URL is passed to callback, not logged (may contain sensitive params)
+-    await this.callbacks.onRedirect(addAuthorizationParams(authorizationUrl, this.config.authorizationParams))
++    await this.callbacks.onRedirect(
++      authorizationUrlTransform(
++        addAuthorizationParams(authorizationUrl, this.config.authorizationParams),
++        this.flowDiscoveryState,
++      ),
++    )
+   }
+ 
+   /**
 diff --git a/mcp-output-guard.ts b/mcp-output-guard.ts
 index 219c949f5de785a1e8ddc6927fcf366444862527..43ed93c9a86014a14129ca73490bccc09c4f391b 100644
 --- a/mcp-output-guard.ts
@@ -1115,6 +1213,20 @@ index 873b82a4ace4a614ca41a1c9031585b9acac62a9..cceacbb8baddfedcd7e2e6162bad4aa1
 -    return undefined;
 -  }
 -}
+diff --git a/oauth.ts b/oauth.ts
+index 16bde6bf20ef16ecf44a7bcd2edb4a2c56c0db0e..65956bd2d582acbdba35a66c454a8134a360c847 100644
+--- a/oauth.ts
++++ b/oauth.ts
+@@ -8,6 +8,9 @@ import {
+ 
+ import type { ServerEntry } from "./types.ts";
+ 
++// Kimchi: host hook for authorize-URL shaping (see mcp-oauth-provider.ts).
++export { setAuthorizationUrlTransform, type AuthorizationUrlTransform } from "./mcp-oauth-provider.ts";
++
+ export type McpOAuthTokens = StoredTokens;
+ export type McpOAuthStorageOptions = AuthStorageOptions;
+ export interface McpOAuthTokenOptions {
 diff --git a/pi-builtin-mcp.ts b/pi-builtin-mcp.ts
 index 4e3f8775e9e4770d776ed8e92eab80edc5f3f8df..5657644bb7c17ac9c0ead1886dcb20ad1bf644ea 100644
 --- a/pi-builtin-mcp.ts
@@ -1464,3 +1576,255 @@ index 6fdf19b5c9cf9f0d54b2b0c1418db74703a95fcd..919630995231617af84a175f00724757
      }
      if ((pattern.includes("*") || pattern.includes("?")) && [...candidates].some(candidate => globToRegExp(pattern).test(candidate))) {
        return true;
+#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
+#     the call-path readiness gates never re-read the shared credential store
+#     for a plain OAuth server in needs-auth, so a live session stayed broken
+#     after re-authentication elsewhere (settings probe, another chat) wrote a
+#     fresh credential; upstream tracking issue pending at
+#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
+#     retries needs-auth routes against the store without an interactive flow)
+diff --git a/init.ts b/init.ts
+index 247d300..b4ee7e6 100644
+--- a/init.ts
++++ b/init.ts
+@@ -725,9 +725,15 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   const ownedSignal = combineAbortSignals(state.owner?.signal, signal);
+   throwIfAborted(ownedSignal);
+   const connection = state.manager.getConnection(serverName);
+-  if (connection?.status === "needs-auth") {
++  if (connection?.status === "needs-auth"
++    && hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime ?? undefined)) {
++    // A user-initiated interactive flow owns this needs-auth episode right
++    // now; racing it from a tool call would create competing OAuth owners.
+     return false;
+   }
++  // Otherwise a needs-auth route may be satisfiable again after an
++  // out-of-band re-auth (settings probe, another chat): fall through to the
++  // normal connect path, which re-reads the shared credential store.
+   if (connection?.status === "connected") {
+     await state.manager.ensureListen?.(serverName, connection);
+     updateServerMetadata(state, serverName);
+@@ -736,7 +742,7 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+   }
+ 
+   const failedAgo = getFailureAgeSeconds(state, serverName);
+-  if (failedAgo !== null) return false;
++  if (failedAgo !== null && connection?.status !== "needs-auth") return false;
+ 
+   const definition = state.config.mcpServers[serverName];
+   if (!definition || isServerDisabled(definition)) return false;
+@@ -746,7 +752,9 @@ export async function lazyConnect(state: McpExtensionState, serverName: string,
+       const status = formatMcpStatus(state.config, `connecting to ${serverName}...`);
+       state.ui.setStatus("mcp", status);
+     }
+-    const newConnection = await state.manager.connect(serverName, definition, ownedSignal);
++    const newConnection = connection?.status === "needs-auth"
++      ? await state.manager.reconnect(serverName, definition, connection, ownedSignal)
++      : await state.manager.connect(serverName, definition, ownedSignal);
+     if (newConnection.status === "needs-auth") {
+       return false;
+     }
+diff --git a/proxy-modes.ts b/proxy-modes.ts
+index 6abc16f..af02f32 100644
+--- a/proxy-modes.ts
++++ b/proxy-modes.ts
+@@ -15,7 +15,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { formatAuthRequiredMessage, formatMcpStatus, normalizeToolArguments, resolveServerUrl, truncateAtWord, withToolCallIdMeta } from "./utils.ts";
+-import { authenticate, completeAuthFromInput, getAuthStatus, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, completeAuthFromInput, getAuthStatus, hasPendingAuth, startAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { callToolViaTaskSession } from "./mcp-tasks.ts";
+ import { callToolPausingForElicitation } from "./elicitation-handler.ts";
+@@ -1488,6 +1488,23 @@ export async function executeCall(
+       }
+     }
+ 
++    // An out-of-band re-auth (settings probe, another chat) may have written
++    // a fresh credential since this episode started; reconnect re-reads the
++    // shared store. Skipped while an interactive flow owns the episode so
++    // they don't race as competing OAuth owners.
++    const definition = state.config.mcpServers[serverName];
++    if (connection?.status === "needs-auth"
++      && definition !== undefined
++      && !isServerDisabled(definition)
++      && !hasPendingAuth(serverName, state.authStorageOptions, state.oauthRuntime)) {
++      try {
++        connection = await state.manager.reconnect(serverName, definition, connection, ownedSignal);
++      } catch (error) {
++        if (isAbortError(error, ownedSignal)) throw error;
++        // Fall through to the auth-required guidance below.
++      }
++    }
++
+     if (connection?.status === "needs-auth") {
+       const message = getAuthRequiredMessage(state, serverName);
+       return {
+@@ -1665,6 +1682,7 @@ export async function executeCall(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         serverName,
+         async (conn) => {
+@@ -1710,6 +1728,7 @@ export async function executeCall(
+         config: state.config,
+         ...(ownedSignal ? { signal: ownedSignal } : {}),
+         onNeedsAuth: recoverAuthConnection,
++        hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+       },
+       serverName,
+       async (conn) => {
+diff --git a/session-recovery.ts b/session-recovery.ts
+index 286242f..7878594 100644
+--- a/session-recovery.ts
++++ b/session-recovery.ts
+@@ -77,6 +77,13 @@ export interface SessionRecoveryDeps {
+   config: McpConfig;
+   signal?: AbortSignal;
+   onNeedsAuth?: (serverName: string) => Promise<ServerConnection | undefined>;
++  /**
++   * Reports that an interactive OAuth flow for this server is in flight.
++   * Set by call-path sites; when true the 401 recovery stays out of the way
++   * (errors surface unchanged) instead of racing the interactive flow with a
++   * reconnect that re-reads a store the flow is still writing to.
++   */
++  hasPendingAuth?: (serverName: string) => boolean;
+ }
+ 
+ /**
+@@ -113,8 +120,20 @@ export async function withSessionRecovery<T>(
+     if (definition && supportsOAuth(definition) && unauthorized) {
+       invalidateAuthEntryCache(serverName);
+     }
+-    // A provider token rejected or gone reconnects, which ends in needs-auth when Pi has no token.
+-    if (!isTerminatedSession(err, hadSessionId) && !(unauthorized && typeof definition?.auth === "object")) {
++    // A provider or OAuth token rejected or gone reconnects, which ends in
++    // needs-auth when Pi has no token. supportsOAuth covers plain OAuth
++    // definitions (auth: "oauth" or auto-detected), so an out-of-band
++    // re-auth (settings probe, another session) heals the live session on
++    // the next tool call.
++    if (
++      !isTerminatedSession(err, hadSessionId)
++      // Skip the healing reconnect while an interactive flow owns the
++      // episode, mirroring the call-path gates' hasPendingAuth guard.
++      && !(unauthorized
++        && definition !== undefined
++        && (typeof definition.auth === "object" || supportsOAuth(definition))
++        && !deps.hasPendingAuth?.(serverName))
++    ) {
+       throw err;
+     }
+ 
+diff --git a/direct-tools.ts b/direct-tools.ts
+index 8f0c1df..5028ff7 100644
+--- a/direct-tools.ts
++++ b/direct-tools.ts
+@@ -11,7 +11,7 @@ import { resolveMcpResultContent, transformMcpResourceContents } from "./tool-re
+ import { guardMcpOutput, guardedMcpDetails, resolveMcpOutputGuardOptions, scriptPipeHint } from "./mcp-output-guard.ts";
+ import { maybeStartUiSession, summarizeUiSessionResult, type UiSessionRuntime } from "./ui-session.ts";
+ import { isServerDisabled } from "./types.ts";
+-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
++import { authenticate, hasPendingAuth, supportsOAuth } from "./mcp-auth-flow.ts";
+ import { formatAuthRequiredMessage, normalizeToolArguments, resolveServerUrl, withToolCallIdMeta } from "./utils.ts";
+ import { SessionRecoveryAuthRequiredError, withSessionRecovery } from "./session-recovery.ts";
+ import { combineAbortSignals, isAbortError } from "./runtime-owner.ts";
+@@ -284,6 +284,7 @@ export function createDirectToolExecutor(
+             config: state.config,
+             ...(ownedSignal ? { signal: ownedSignal } : {}),
+             onNeedsAuth: recoverAuthConnection,
++            hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+           },
+           spec.serverName,
+           async (conn) => {
+@@ -327,6 +328,7 @@ export function createDirectToolExecutor(
+           config: state.config,
+           ...(ownedSignal ? { signal: ownedSignal } : {}),
+           onNeedsAuth: recoverAuthConnection,
++          hasPendingAuth: (name: string) => hasPendingAuth(name, state.authStorageOptions, state.oauthRuntime),
+         },
+         spec.serverName,
+         async (conn) => {
+#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
+#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
+#     drive ui.select/ui.input but not AltScreen overlays)
+diff --git a/commands.ts b/commands.ts
+index 40bb5f9..8a336ee 100644
+--- a/commands.ts
++++ b/commands.ts
+@@ -878,6 +878,47 @@ export async function openMcpPanel(
+   return { configChanged };
+ }
+ 
++/**
++ * Remote-capable `/mcp-auth` fallback for modes without TUI overlays (rpc, ACP).
++ *
++ * `canRenderPanel()` gates the AltScreen picker on `ctx.mode === "tui"`, so
++ * protocol hosts used to hit a dead end on bare `/mcp-auth`. Those hosts do
++ * implement the dialog primitives (`ui.select`, `ui.input`), so ask for the
++ * server with a plain select and run the same per-server authenticateServer
++ * flow that `/mcp-auth <server>` uses — including the post-auth reconnect.
++ */
++async function openMcpAuthFallback(
++  state: McpExtensionState,
++  ctx: ExtensionContext,
++): Promise<PanelFlowResult> {
++  if (state.programmaticConfig) {
++    ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
++    return { configChanged: false };
++  }
++
++  const config = state.config;
++  const oauthServers = Object.entries(config.mcpServers).filter(
++    ([, definition]) => !isServerDisabled(definition) && supportsOAuth(definition),
++  );
++  if (oauthServers.length === 0) {
++    ctx.ui.notify("No OAuth-capable MCP servers are configured.", "warning");
++    return { configChanged: false };
++  }
++
++  const names = oauthServers.map(([name]) => name);
++  let serverName: string | undefined = names[0];
++  if (names.length > 1) {
++    serverName = await ctx.ui.select("Select an OAuth MCP server to authenticate", names);
++  }
++  if (!serverName) return { configChanged: false };
++
++  const result = await authenticateServer(serverName, config, ctx, state.owner?.signal, state.oauthRuntime);
++  if (result.ok) {
++    await reconnectServer(state, ctx, serverName);
++  }
++  return { configChanged: false };
++}
++
+ export async function openMcpAuthPanel(
+   state: McpExtensionState,
+   pi: ExtensionAPI,
+@@ -886,8 +927,7 @@ export async function openMcpAuthPanel(
+ ): Promise<PanelFlowResult> {
+   if (!ctx.hasUI) return { configChanged: false };
+   if (!canRenderPanel(ctx)) {
+-    ctx.ui.notify(`The interactive MCP auth panel is only available in the terminal UI (current mode: ${ctx.mode}). Use /mcp-auth <server> to authenticate a specific server.`, "info");
+-    return { configChanged: false };
++    return openMcpAuthFallback(state, ctx);
+   }
+   if (state.programmaticConfig) {
+     ctx.ui.notify("Use /mcp-auth <server> to authenticate a server from the in-memory SDK config.", "info");
+diff --git a/package.json b/package.json
+index 74e2d87..8b69041 100644
+--- a/package.json
++++ b/package.json
+@@ -20,6 +20,11 @@
+       "import": "./oauth.ts",
+       "default": "./oauth.ts"
+     },
++    "./commands": {
++      "types": "./commands.ts",
++      "import": "./commands.ts",
++      "default": "./commands.ts"
++    },
+     "./host-managed": {
+       "types": "./host-managed.ts",
+       "import": "./host-managed.ts",

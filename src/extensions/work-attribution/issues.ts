@@ -1,18 +1,18 @@
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { lock } from "proper-lockfile"
-import { writeFileDurably } from "../../config/json.js"
+import { closeSync, fstatSync, openSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { branchIssueKeys, isIssueKey } from "../../shared/issue-keys.js"
 import { isWorkId } from "../../shared/work-id.js"
+import { backendFor, getNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { currentBranch } from "../pull-request-status/branch-status.js"
-import { LOCK_RETRIES, LOCK_STALE_MS, object } from "./summary.js"
+import { object } from "./summary.js"
 
 /*
- * The Jira issue chosen for a work with `/work issue`, in `work/<workId>/issue.json`. Writers hold the file's lock while
- * they read and replace it, as the work summary's writers do, so simultaneous sessions get consecutive revisions. It is
- * separate from the work's immutable `scope.json`. It is not a journal record: a selection belongs to a work and is read
- * before every input, while journals are per session, and an older Kimchi's PR cost reporting stops on journal record
- * types it does not know. Request rows copy the selection their input began with.
+ * The Jira issue chosen for a work with `/work issue`, as a ledger note keyed (workId, "issue"). Writers read and
+ * replace it inside one store transaction, so simultaneous sessions get consecutive revisions. It is separate from
+ * the work's immutable `scope` note. It is not a journal record: a selection belongs to a work and is read before
+ * every input, while journals are per session, and an older Kimchi's PR cost reporting stops on journal record types
+ * it does not know. A legacy `work/<workId>/issue.json` still answers for old installs. Request rows copy the selection
+ * their input began with.
  */
 
 const BRANCH_TIMEOUT_MS = 2000
@@ -61,10 +61,13 @@ export function workIssuePath(agentDir: string, workId: string): string {
 	return join(agentDir, "work", workId, "issue.json")
 }
 
-/** The work's issue. A missing file is a work without one; reading never throws. */
+/** The work's issue. A missing record is a work without one; reading never throws. */
 export function readWorkIssue(agentDir: string, workId: string): WorkIssue {
 	if (!isWorkId(workId)) return { revision: 0 }
 	const path = workIssuePath(agentDir, workId)
+	// A5: the note is the authority for new selections; a legacy issue.json still answers for old installs.
+	const note = getNote(agentDir, workId, "issue")
+	if (note !== undefined) return parseWorkIssue(path, workId, note)
 	let fd: number | undefined
 	let text: string
 	try {
@@ -101,32 +104,16 @@ export function parseWorkIssue(path: string, workId: string, text: string): Work
 }
 
 /**
- * Saves `issueKey`, or a clear when it is undefined, as the work's next revision unless it is already current. Writers
- * hold the file's lock while they read and replace it, so simultaneous sessions get consecutive revisions; a writer
- * whose lock was taken over saves nothing.
+ * Saves `issueKey`, or a clear when it is undefined, as the work's next revision unless it is already current. The
+ * store transaction serializes simultaneous writers, so every session saves consecutive revisions or nothing.
  */
-export async function changeWorkIssue(
+export function changeWorkIssue(
 	agentDir: string,
 	workId: string,
 	sessionId: string,
 	issueKey: string | undefined,
-): Promise<{ previous: WorkIssue; changed: boolean }> {
-	const path = workIssuePath(agentDir, workId)
-	// The lock is a directory beside the file.
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-	let compromised: Error | undefined
-	const release = await lock(path, {
-		realpath: false,
-		stale: LOCK_STALE_MS,
-		retries: LOCK_RETRIES,
-		onCompromised: (error) => {
-			compromised = error
-		},
-	})
-	const assertLease = () => {
-		if (compromised) throw compromised
-	}
-	try {
+): { previous: WorkIssue; changed: boolean } {
+	return backendFor(agentDir).tx(() => {
 		const previous = readWorkIssue(agentDir, workId)
 		if (!previous.unreadable && previous.selected?.key === issueKey) return { previous, changed: false }
 		const saved: SavedWorkIssue = {
@@ -137,12 +124,9 @@ export async function changeWorkIssue(
 			sessionId,
 			recordedAt: new Date().toISOString(),
 		}
-		await writeFileDurably(path, `${JSON.stringify(saved)}\n`, assertLease)
+		setNote(agentDir, workId, "issue", `${JSON.stringify(saved)}\n`)
 		return { previous, changed: true }
-	} finally {
-		// A compromised lease has already been removed from proper-lockfile's ownership map.
-		if (!compromised) await release()
-	}
+	})
 }
 
 /** What `/work` prints about a work's issue; nothing for a work without one. */
@@ -197,7 +181,7 @@ export async function workIssueCommand(
 			changed: false,
 			warning: true,
 		}
-	const { previous, changed } = await changeWorkIssue(work.agentDir, work.workId, work.sessionId, key)
+	const { previous, changed } = changeWorkIssue(work.agentDir, work.workId, work.sessionId, key)
 	const replaced = previous.selected?.key
 	if (key)
 		return {

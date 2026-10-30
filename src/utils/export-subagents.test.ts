@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { buildSubAgentSessionData, enrichSubAgentEntries, readTranscript } from "./export-subagents.js"
+import {
+	buildSubAgentSessionData,
+	collectSubAgentTabData,
+	enrichSubAgentEntries,
+	readTranscript,
+} from "./export-subagents.js"
 
 let tempDir: string
 
@@ -352,5 +357,61 @@ describe("buildSubAgentSessionData", () => {
 
 		expect(result.systemPrompt).toBeTruthy()
 		expect(typeof result.systemPrompt).toBe("string")
+	})
+
+	it("agentSystemPrompts override resolves before the in-process registry — case-insensitively", () => {
+		// The offloaded worker passes the parent's persona registry this way;
+		// the persisted record prompt still wins over the override.
+		const override: Record<string, string> = { auditor: "CUSTOM-PERSONA-PROMPT: audit everything twice." }
+
+		const fromOverride = buildSubAgentSessionData(
+			{ id: "agent-011", type: "Auditor", status: "completed", transcript: [] },
+			override,
+		)
+		expect(fromOverride.systemPrompt).toBe("CUSTOM-PERSONA-PROMPT: audit everything twice.")
+
+		const persistedWins = buildSubAgentSessionData(
+			{ id: "agent-012", type: "Auditor", status: "completed", systemPrompt: "persisted", transcript: [] },
+			override,
+		)
+		expect(persistedWins.systemPrompt).toBe("persisted")
+	})
+})
+
+describe("collectSubAgentTabData", () => {
+	it("threads agentSystemPrompts into the tab session data", () => {
+		const entries = [
+			{
+				type: "custom",
+				id: "sub-1",
+				parentId: null,
+				customType: "subagents:record",
+				data: {
+					id: "agent-aud",
+					type: "Auditor",
+					status: "completed",
+					startedAt: 1700000000000,
+					completedAt: 1700000010000,
+					transcript: [
+						{
+							isSidechain: true as const,
+							agentId: "agent-aud",
+							type: "user",
+							message: { role: "user", content: "audit" },
+							timestamp: "2026-01-01T00:00:00.000Z",
+							cwd: "/project",
+						},
+					],
+				},
+			},
+		]
+		const tabs = collectSubAgentTabData(entries as Array<Record<string, unknown>>)
+		expect(tabs).toHaveLength(1)
+		expect(tabs[0]?.sessionData.systemPrompt).toBeUndefined()
+
+		const withOverride = collectSubAgentTabData(entries as Array<Record<string, unknown>>, {
+			auditor: "worker-carried prompt",
+		})
+		expect(withOverride[0]?.sessionData.systemPrompt).toBe("worker-carried prompt")
 	})
 })

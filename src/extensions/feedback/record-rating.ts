@@ -39,6 +39,9 @@ export type RecordRatingOptions = {
 	reason: string
 	/** The settled turn's window state the rating attaches to. */
 	window: RatingWindow
+	/** Session id of the rated turn — attributes the telemetry record to the
+	 *  originating session instead of the last-initialized instance. */
+	sessionId?: string
 }
 
 export type RecordRatingResult = { status: "recorded" }
@@ -56,6 +59,7 @@ export function recordRating(opts: RecordRatingOptions): RecordRatingResult {
 			reason,
 			reasonType: isPredefinedReason(reason) ? "predefined" : "freeform",
 			routingModelId: window.autoModelUsed ? window.routedModelId : undefined,
+			sessionId: opts.sessionId,
 		})
 	} catch {
 		// Swallowed deliberately — delivery failures of buffered telemetry

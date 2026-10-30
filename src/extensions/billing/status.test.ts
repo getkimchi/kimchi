@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { discoveredSelfHostedRegion, openAiBaseUrl } from "../../regions.js"
 
@@ -449,6 +452,37 @@ describe("billing status", () => {
 
 		expect(getBillingStatus()).toBeUndefined()
 		expect(getBillingWarnings()[0]).toBeUndefined()
+	})
+
+	it("resolves SSO credentials from auth.json with the organization header", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "billing-oauth-"))
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-5" } }),
+		)
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		try {
+			const seen: Array<{ url: string; headers: Headers }> = []
+			const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+				seen.push({ url: String(input), headers: new Headers(init?.headers) })
+				return new Response(
+					JSON.stringify({ serverless: true, tier: "coder", is_paid_tier: true, billing_status: "ok", remaining: "9" }),
+					{ status: 200 },
+				)
+			}) as typeof fetch
+
+			await refreshBillingStatusFromConfig({
+				fetch: fetchImpl,
+				loadConfig: () => ({ apiKey: "", llmEndpoint: "https://llm.kimchi.dev/openai/v1" }),
+			})
+
+			expect(seen[0]?.url).toBe("https://llm.kimchi.dev/v1/credits")
+			expect(seen[0]?.headers.get("authorization")).toBe("Bearer oauth-access")
+			expect(seen[0]?.headers.get("x-castai-organization-id")).toBe("org-5")
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("discards stale in-flight refreshes after credentials change", async () => {

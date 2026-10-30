@@ -20,6 +20,39 @@ vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
 }))
 
+/** Controllable settings-watcher stand-in: counts starts/stops and tracks
+ *  which emit callbacks are live (a stopped watcher's emit is removed, so
+ *  nothing reaches a shut-down session). */
+const settingsWatcher = vi.hoisted(() => {
+	type EmitFn = (event: string, properties: Record<string, string | number | boolean>) => void
+	const state = { starts: 0, stops: 0, liveEmits: [] as EmitFn[] }
+	return {
+		state,
+		reset: () => {
+			state.starts = 0
+			state.stops = 0
+			state.liveEmits = []
+		},
+		/** Emit as if the (still-live) watchers had observed a settings change. */
+		emit: (event: string, properties: Record<string, string | number | boolean>) => {
+			for (const fn of [...state.liveEmits]) fn(event, properties)
+		},
+	}
+})
+vi.mock("./settings-change-emitter.js", () => ({
+	startSettingsChangeWatcher: (
+		emit: (event: string, properties: Record<string, string | number | boolean>) => void,
+	) => {
+		settingsWatcher.state.starts++
+		settingsWatcher.state.liveEmits.push(emit)
+		return () => {
+			settingsWatcher.state.stops++
+			const idx = settingsWatcher.state.liveEmits.indexOf(emit)
+			if (idx >= 0) settingsWatcher.state.liveEmits.splice(idx, 1)
+		}
+	},
+}))
+
 vi.mock("../../startup-context.js", () => ({
 	getAvailableModels: vi.fn(() => []),
 }))
@@ -45,7 +78,24 @@ const TEST_SURVEY = {
 
 type Handler = (...args: unknown[]) => Promise<void> | void
 
-function createMockApi(sessionId = "test-session") {
+/** Minimal pi.events bus stub. Create one per session — or share one to
+ *  model a loader event bus that two instances subscribe to (the shared-bus
+ *  orphan scenario from the double-extension-load bug). */
+function createMockEventBus() {
+	const eventBusListeners = new Map<string, ((data: unknown) => void)[]>()
+	return {
+		emit: (channel: string, data: unknown) => {
+			for (const fn of eventBusListeners.get(channel) ?? []) fn(data)
+		},
+		on: (channel: string, handler: (data: unknown) => void) => {
+			if (!eventBusListeners.has(channel)) eventBusListeners.set(channel, [])
+			;(eventBusListeners.get(channel) as ((d: unknown) => void)[]).push(handler)
+			return () => {}
+		},
+	}
+}
+
+function createMockApi(sessionId = "test-session", events = createMockEventBus()) {
 	const { api, getRegisteredTool } = createExtensionApi()
 	for (const name of ["read", "write", "edit", "bash"]) {
 		api.registerTool({
@@ -63,19 +113,6 @@ function createMockApi(sessionId = "test-session") {
 		const wrapped: Handler = (...args: unknown[]) => handler(args[0], ctx)
 		handlers.get(event)?.push(wrapped)
 	})
-	// pi.events: a minimal EventBus stub so the telemetry extension can
-	// subscribe to ferment domain events without throwing.
-	const eventBusListeners = new Map<string, ((data: unknown) => void)[]>()
-	const events = {
-		emit: (channel: string, data: unknown) => {
-			for (const fn of eventBusListeners.get(channel) ?? []) fn(data)
-		},
-		on: (channel: string, handler: (data: unknown) => void) => {
-			if (!eventBusListeners.has(channel)) eventBusListeners.set(channel, [])
-			;(eventBusListeners.get(channel) as ((d: unknown) => void)[]).push(handler)
-			return () => {}
-		},
-	}
 	return { on, handlers, events, api: { ...api, on, events } as unknown as ExtensionAPI, ctx, getRegisteredTool }
 }
 
@@ -334,7 +371,7 @@ describe("telemetryExtension integration", () => {
 			"done",
 		] as const
 		for (const stage of stages) {
-			trackRemoteExecution(stage, "ferment plan")
+			trackRemoteExecution(stage, "ferment plan", undefined, "test-session")
 		}
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
@@ -360,13 +397,18 @@ describe("telemetryExtension integration", () => {
 		telemetryExtension(makeConfig())(api)
 
 		await getHandler(handlers, "session_start")({}, ctx)
-		trackRemoteExecution("completed", "plan", {
-			duration_ms: 42_000,
-			tool_calls: 7,
-			turns: 3,
-			input_tokens: 1000,
-			output_tokens: 500,
-		})
+		trackRemoteExecution(
+			"completed",
+			"plan",
+			{
+				duration_ms: 42_000,
+				tool_calls: 7,
+				turns: 3,
+				input_tokens: 1000,
+				output_tokens: 500,
+			},
+			"test-session",
+		)
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -395,7 +437,7 @@ describe("telemetryExtension integration", () => {
 		const { handlers, api } = createMockApi()
 		telemetryExtension(makeConfig({ enabled: false }))(api)
 
-		trackRemoteExecution("started", "plan")
+		trackRemoteExecution("started", "plan", undefined, "test-session")
 		expect(handlers.size).toBe(0)
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -409,9 +451,9 @@ describe("telemetryExtension integration", () => {
 		await getHandler(handlers, "session_start")({}, ctx)
 
 		const submissionId = "submission-1"
-		trackSurveyShown({ survey: TEST_SURVEY })
-		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" })
-		trackSurveyDismissed({ survey: TEST_SURVEY })
+		trackSurveyShown({ survey: TEST_SURVEY }, "test-session")
+		trackSurveyAnswered({ survey: TEST_SURVEY, submissionId, answerId: "worked_great" }, "test-session")
+		trackSurveyDismissed({ survey: TEST_SURVEY }, "test-session")
 		await getHandler(handlers, "session_shutdown")({ reason: "test" })
 
 		const logCalls = fetchMock.mock.calls.filter(([url]: unknown[]) => String(url).includes("/logs"))
@@ -2056,8 +2098,8 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 		vi.restoreAllMocks()
 	})
 
-	async function setup() {
-		const { handlers, events, api, ctx } = createMockApi()
+	async function setup(events = createMockEventBus()) {
+		const { handlers, api, ctx } = createMockApi("test-session", events)
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
 		await getHandler(handlers, "session_start")({}, ctx)
@@ -2068,8 +2110,8 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 	 *  reproduces the orphaned telemetry instance that agent-runner's second
 	 *  loader.reload() creates: its pi.on handlers never dispatch, but its
 	 *  pi.events channel subscription survives on the shared bus. */
-	async function setupUnbound() {
-		const { handlers, events, api } = createMockApi()
+	async function setupUnbound(events = createMockEventBus()) {
+		const { handlers, api } = createMockApi("orphan-session", events)
 		const { default: ext } = await import("./index.js")
 		ext(makeConfig())(api)
 		return { handlers, events }
@@ -2166,26 +2208,21 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 	})
 
 	it("does not double-emit when the telemetry factory is loaded twice (orphaned instance never bound)", async () => {
-		// agent-runner reloads the child loader twice around bindExtensions; each
+		// agent-runner used to reload the child loader twice around bindExtensions; each
 		// reload re-invokes the inline extension factories against the loader's
-		// shared event bus. The first instance is bound to the session
+		// SHARED event bus. The first instance is bound to the session
 		// (session_start fired); the second is orphaned — its pi.on handlers
-		// never dispatch, but its channel subscription survives. One clamp
-		// emission must produce exactly one record: the bound-instance guard
-		// suppresses the orphan's copy.
-		const bound = await setup()
-		const orphan = await setupUnbound()
+		// never dispatch, but its channel subscription survives on the SAME bus.
+		// One clamp emission on that shared bus must produce exactly one record:
+		// the bound-instance guard suppresses the orphan's copy.
+		const sharedBus = createMockEventBus()
+		const bound = await setup(sharedBus)
+		const orphan = await setupUnbound(sharedBus)
 		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
 
-		bound.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
-			toolCallId: "tc-clamp-bound",
-			reason: "budget_tail",
-			requestedTimeoutS: 120,
-			clampedToS: 10,
-			remainingMs: 10_000,
-		})
-		orphan.events.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
-			toolCallId: "tc-clamp-orphan",
+		// ONE emission on the shared bus — both instances hear it.
+		sharedBus.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-clamp-shared",
 			reason: "budget_tail",
 			requestedTimeoutS: 120,
 			clampedToS: 10,
@@ -2280,5 +2317,403 @@ describe("workflow telemetry via pi.events", () => {
 			at: "2026-01-01T00:00:00.000Z",
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("session isolation (concurrent instances)", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	/** Create an instance bound to a session (session_start dispatched). */
+	async function setupBound(sessionId: string, events = createMockEventBus()) {
+		const mock = createMockApi(sessionId, events)
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(mock.api)
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		return mock
+	}
+
+	function allRecords() {
+		return logEvents(fetchMock)
+	}
+
+	it("attributes parent channel events to the parent session across a child's lifetime", async () => {
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+		const parent = await setupBound("parent-session")
+		// Child session initializes AFTER the parent is bound — the
+		// last-initialized global now points at the child, exactly like an
+		// in-process subagent or a second ACP session.
+		const child = await setupBound("child-session")
+
+		// Parent events after child initialization
+		parent.events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "interactive",
+			tool: "bash",
+			count: 1,
+			interactive: false,
+		})
+		// Child event while the child is active
+		child.events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "interactive",
+			tool: "bash",
+			count: 2,
+			interactive: false,
+		})
+		// Parent event while the child is still active
+		parent.events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "interactive",
+			tool: "bash",
+			count: 3,
+			interactive: false,
+		})
+
+		// Child shuts down; the parent keeps emitting
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+		parent.events.emit(BASH_TOOL_GUARD_EVENTS.BLOCK, {
+			category: "destructive",
+			tool: "bash",
+			count: 4,
+			interactive: false,
+		})
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+
+		const records = allRecords()
+		const warns = records.filter((r) => r.eventName === "bash_tool_guard.warn")
+		expect(warns).toHaveLength(3)
+		const sessionIds = warns.map((r) => r.attrs["session.id"])
+		expect(sessionIds.filter((id) => id === "parent-session")).toHaveLength(2)
+		expect(sessionIds.filter((id) => id === "child-session")).toHaveLength(1)
+
+		const block = records.find((r) => r.eventName === "bash_tool_guard.block")
+		expect(block?.attrs["session.id"]).toBe("parent-session")
+	})
+
+	it("keeps interleaved ferment phase tracking and token deltas per session", async () => {
+		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
+		const { _getTelemetryCtx } = await import("./index.js")
+		const a = await setupBound("session-a")
+		const b = await setupBound("session-b")
+
+		// Session A starts a phase, burns 1000 output tokens, completes it.
+		a.events.emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: "ferment-a",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Build",
+		})
+		// The process-level accumulator is shared by design (monotonic flush
+		// totals); token deltas come from snapshot timing per session.
+		const shared = _getTelemetryCtx()?.cumulative
+		if (!shared) throw new Error("no telemetry context for accumulator access")
+		shared.tokensByModel["test-model"] = { input: 0, output: 1000, cacheRead: 0, cacheWrite: 0 }
+		a.events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "ferment-a",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Build",
+		})
+
+		// Session B interleaves its own phase with different token totals.
+		b.events.emit(FERMENT_EVENTS.PHASE_STARTED, {
+			fermentId: "ferment-b",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Test",
+		})
+		shared.tokensByModel["test-model"].output += 500
+		b.events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
+			fermentId: "ferment-b",
+			phaseId: "ph-1",
+			phaseIndex: 1,
+			phaseName: "Test",
+		})
+
+		// Permission + workflow events interleave between the two sessions.
+		const { PERMISSION_EVENTS } = await import("../permissions/permissions-events.js")
+		const { WORKFLOW_TELEMETRY_CHANNEL } = await import("./workflow-events.js")
+		a.events.emit(PERMISSION_EVENTS.TOOL_DECISION, {
+			toolCallId: "tc-a",
+			toolName: "bash",
+			decision: "accept",
+			sourceDetail: "allow_once",
+			permissionMode: "default",
+		})
+		b.events.emit(WORKFLOW_TELEMETRY_CHANNEL, {
+			event: "run_started",
+			run_id: "wf-b",
+			workflow_name: "demo",
+			at: "2026-01-01T00:00:00.000Z",
+		})
+
+		await getHandler(a.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(b.handlers, "session_shutdown")({ reason: "test" })
+
+		const records = allRecords()
+		const phaseA = records.find((r) => r.eventName === "ferment.phase.completed" && r.attrs.ferment_id === "ferment-a")
+		expect(phaseA?.attrs["session.id"]).toBe("session-a")
+		expect(phaseA?.attrs.delta_output_tokens).toBe("1000")
+
+		const phaseB = records.find((r) => r.eventName === "ferment.phase.completed" && r.attrs.ferment_id === "ferment-b")
+		expect(phaseB?.attrs["session.id"]).toBe("session-b")
+		expect(phaseB?.attrs.delta_output_tokens).toBe("500")
+
+		const decision = records.find((r) => r.eventName === "claude_code.tool_decision")
+		expect(decision?.attrs["session.id"]).toBe("session-a")
+		const wf = records.find((r) => r.eventName === "workflow.run.started")
+		expect(wf?.attrs["session.id"]).toBe("session-b")
+	})
+
+	it("scopes ferment v2 context enrichment to the session that changed it", async () => {
+		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
+		const { BASH_TOOL_GUARD_EVENTS } = await import("../bash-tool-guard-events.js")
+		const a = await setupBound("session-a")
+		const b = await setupBound("session-b")
+
+		// Session A activates a ferment v2 context…
+		a.events.emit(FERMENT_V2_EVENTS.CONTEXT_CHANGED, { fermentV2Id: "fv2-a", revision: 3, status: "active" })
+		// …then both sessions emit an ambient event. Only A's record carries
+		// the v2 identity; the old module global stamped it onto every
+		// session's records.
+		a.events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "interactive",
+			tool: "bash",
+			count: 1,
+			interactive: false,
+		})
+		b.events.emit(BASH_TOOL_GUARD_EVENTS.WARN, {
+			category: "interactive",
+			tool: "bash",
+			count: 1,
+			interactive: false,
+		})
+
+		await getHandler(a.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(b.handlers, "session_shutdown")({ reason: "test" })
+
+		const records = allRecords().filter((r) => r.eventName === "bash_tool_guard.warn")
+		const recA = records.find((r) => r.attrs["session.id"] === "session-a")
+		const recB = records.find((r) => r.attrs["session.id"] === "session-b")
+		expect(recA?.attrs.ferment_v2_id).toBe("fv2-a")
+		expect(recA?.attrs.session_type).toBe("ferment")
+		expect(recB?.attrs.ferment_v2_id).toBeUndefined()
+		expect(recB?.attrs.session_type).toBe("coding")
+	})
+
+	it("trackSubagentSpawned with a replaced session ctx neither throws nor emits", async () => {
+		const { trackSubagentSpawned } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+
+		// A session replaced while the subagent waited to start: every read
+		// of the old ctx throws. The hook is invoked fire-and-forget, so an
+		// unguarded throw took down the whole process.
+		const staleCtx = {
+			get sessionManager(): never {
+				throw new Error("This extension ctx is stale after session replacement or reload.")
+			},
+		} as unknown as Parameters<typeof trackSubagentSpawned>[1]
+
+		await expect(
+			trackSubagentSpawned({ id: "agent-1", type: "General-Purpose", description: "stale" }, staleCtx),
+		).resolves.toBeUndefined()
+
+		// And the parent session's records were not polluted either.
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		const spawned = allRecords().filter((r) => r.eventName === "subagent.spawned")
+		expect(spawned).toHaveLength(0)
+	})
+
+	it("an unreadable session id emits nothing instead of falling back to the last-started session", async () => {
+		const { trackRemoteExecution } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		// The guarded read yields undefined for a replaced session — the
+		// emission must skip, not land on the child (last initialized).
+		trackRemoteExecution("started", "plan", undefined, undefined)
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+		const started = allRecords().filter((r) => r.eventName === "remote_execution.started")
+		expect(started).toHaveLength(0)
+	})
+
+	it("an explicit session-id miss does not fall back to another session", async () => {
+		const { resolveSessionTelemetryCtx, trackRemoteExecution } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		// A closed/unregistered session resolves to undefined — NOT to the
+		// last-initialized global (here: the child).
+		expect(resolveSessionTelemetryCtx("closed-session")).toBeUndefined()
+
+		// A late callback surviving its session therefore emits nothing
+		// rather than landing on the child's records.
+		trackRemoteExecution("started", "plan", undefined, "closed-session")
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+
+		const started = allRecords().filter((r) => r.eventName === "remote_execution.started")
+		expect(started).toHaveLength(0)
+	})
+
+	it("ratings with unreadable session ids do not emit into another live session", async () => {
+		const { trackFeedback, trackModelSwitchFeedback } = await import("./index.js")
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		trackFeedback({ sentiment: "positive", reason: "Helpful", reasonType: "freeform", sessionId: undefined })
+		trackModelSwitchFeedback({ reason: "Too slow", modelName: "Model", modelId: "model", sessionId: undefined })
+
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+		expect(allRecords().filter((record) => record.eventName === "survey_answered")).toHaveLength(0)
+	})
+
+	it("resolves session-scoped track* helpers to the originating session's instance", async () => {
+		const { resolveSessionTelemetryCtx, trackRemoteExecution } = await import("./index.js")
+		// Only the parent is bound here — the child below will steal the
+		// last-initialized global.
+		const parent = await setupBound("parent-session")
+		const child = await setupBound("child-session")
+
+		// The registry resolves the parent by session id even though the
+		// child initialized last.
+		expect(resolveSessionTelemetryCtx("parent-session")).not.toBe(resolveSessionTelemetryCtx("child-session"))
+		expect(resolveSessionTelemetryCtx("parent-session")?.piSessionId).toBe("parent-session")
+
+		trackRemoteExecution("started", "plan", undefined, "parent-session")
+		await getHandler(parent.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(child.handlers, "session_shutdown")({ reason: "test" })
+
+		const started = allRecords().find((r) => r.eventName === "remote_execution.started")
+		expect(started?.attrs["session.id"]).toBe("parent-session")
+	})
+
+	it("one clamp emission on a shared bus reaches one subscriber (bound + orphan)", async () => {
+		// Real shape of the pre-fix bug: two telemetry instances subscribed to
+		// ONE event bus (the loader's), one bound, one orphaned by a second
+		// reload. ONE emission must produce exactly one record.
+		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
+		const sharedBus = createMockEventBus()
+		const bound = await setupBound("bound-session", sharedBus)
+		const { default: ext } = await import("./index.js")
+		const orphan = createMockApi("orphan-session", sharedBus)
+		ext(makeConfig())(orphan.api)
+
+		sharedBus.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
+			toolCallId: "tc-shared-1",
+			agentType: "general-purpose",
+			reason: "budget_tail",
+			requestedTimeoutS: 120,
+			clampedToS: 10,
+			remainingMs: 10_000,
+		})
+		await getHandler(bound.handlers, "session_shutdown")({ reason: "test" })
+		await getHandler(orphan.handlers, "session_shutdown")({ reason: "test" })
+
+		const clamped = allRecords().filter((r) => r.eventName === "subagent.bash_clamped")
+		expect(clamped).toHaveLength(1)
+		expect(clamped[0]?.attrs["session.id"]).toBe("bound-session")
+	})
+})
+
+describe("settings watcher lifecycle (bound to the session)", () => {
+	let fetchMock: ReturnType<typeof vi.fn>
+	let originalFetch: typeof globalThis.fetch
+
+	beforeEach(() => {
+		fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" })
+		originalFetch = globalThis.fetch
+		// biome-ignore lint/suspicious/noExplicitAny: test mock
+		globalThis.fetch = fetchMock as any
+		settingsWatcher.reset()
+	})
+
+	afterEach(async () => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		const { _resetFermentTrackingState } = await import("./index.js")
+		_resetFermentTrackingState()
+		vi.restoreAllMocks()
+	})
+
+	async function createInstance(sessionId: string) {
+		const mock = createMockApi(sessionId)
+		const { default: ext } = await import("./index.js")
+		ext(makeConfig())(mock.api)
+		return mock
+	}
+
+	it("an unbound instance attaches no settings watcher and emits no config_changed", async () => {
+		await createInstance("unbound-session")
+
+		expect(settingsWatcher.state.starts).toBe(0)
+		// Even a stray emission from outside would have no live listener.
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	it("a bound instance attaches exactly one watcher at session_start", async () => {
+		const mock = await createInstance("watched-session")
+		// Factory evaluation alone must not attach anything.
+		expect(settingsWatcher.state.starts).toBe(0)
+
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		expect(settingsWatcher.state.starts).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(1)
+	})
+
+	it("repeated session starts replace the watcher instead of accumulating", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+
+		expect(settingsWatcher.state.starts).toBe(2)
+		expect(settingsWatcher.state.stops).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(1)
+	})
+
+	it("session shutdown stops the watcher and clears it before flushing", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+		await getHandler(mock.handlers, "session_shutdown")({ reason: "test" })
+
+		expect(settingsWatcher.state.stops).toBe(1)
+		expect(settingsWatcher.state.liveEmits).toHaveLength(0)
+
+		// A late settings change (or a pending debounce firing late) reaches
+		// nobody: the emit callback was detached at shutdown.
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		const changed = logEvents(fetchMock).filter((r) => r.eventName === "config_changed")
+		expect(changed).toHaveLength(0)
+	})
+
+	it("settings changes are attributed to the bound session", async () => {
+		const mock = await createInstance("watched-session")
+		await getHandler(mock.handlers, "session_start")({}, mock.ctx)
+
+		settingsWatcher.emit("config_changed", { key: "theme", value: "dark" })
+		await getHandler(mock.handlers, "session_shutdown")({ reason: "test" })
+
+		const changed = logEvents(fetchMock).find((r) => r.eventName === "config_changed")
+		expect(changed).toBeDefined()
+		expect(changed?.attrs["session.id"]).toBe("watched-session")
+		expect(changed?.attrs.key).toBe("theme")
+		expect(changed?.attrs.value).toBe("dark")
 	})
 })

@@ -7,6 +7,8 @@ import { promisify } from "node:util"
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as config from "../../config.js"
 import { createContext } from "../__mocks__/context.js"
+import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
+import { closeBackends, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import type { AttributionLabel } from "./accuracy.js"
 import { runCli } from "./accuracy-cli.js"
@@ -87,7 +89,8 @@ const EXPECTED_AMOUNTS = [
 const EXPECTED_PERCENTAGES = ["Correct coverage: 26.666666666%", "Wrong assignment: 83.333333333%"]
 const OVERLAP_NOTE =
 	"Wrong assignment divides wrong spending by assigned spending. Correct coverage divides correct spending by spending expected on a PR."
-const USAGE = "Usage: pnpm exec tsx src/extensions/work-attribution/accuracy-cli.ts <report.json> <reference.json>"
+const USAGE =
+	"Usage: bun src/extensions/work-attribution/accuracy-cli.ts <report.json|ledger:WORK_UUID> <reference.json>"
 
 type CliSpawnError = Error & { code: number | string | undefined; stdout: string; stderr: string }
 
@@ -317,6 +320,7 @@ describe("scoring a saved costs.json", () => {
 	const pullRequestId = "github:github.com/example/repo#1"
 	let agentDir: string
 	beforeEach(() => {
+		useBackendFactory(() => createMemoryRecords())
 		agentDir = mkdtempSync(join(tmpdir(), "kimchi-accuracy-saved-"))
 		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
 		const original = config.loadConfig()
@@ -345,6 +349,8 @@ describe("scoring a saved costs.json", () => {
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
 		vi.unstubAllGlobals()
+		closeBackends()
+		useBackendFactory(null)
 		rmSync(agentDir, { recursive: true, force: true })
 	})
 
@@ -394,7 +400,7 @@ describe("scoring a saved costs.json", () => {
 			],
 		})
 		await reconcileWorkCosts(agentDir, new AbortController().signal)
-		const reportPath = join(agentDir, "work", workId, "costs.json")
+		const reportPath = `ledger:${workId}`
 		// Independent facts: gateway receipt, verified key owner and the Git PR, not the report itself.
 		const referencePath = writeFixture("saved-costs-reference.json", {
 			version: 1,

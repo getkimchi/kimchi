@@ -2,17 +2,18 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
-import { getAutoRoutingState } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { trackModelSwitchFeedback } from "../telemetry/index.js"
+
+import { trackModelSwitchFeedback, trySessionId } from "../telemetry/index.js"
 import { isVisionGateDialogOpen } from "../vision-gate.js"
 import { type FeedbackSentiment, showFeedbackDetailsDialog } from "./dialog.js"
 import { clearModelSwitchInvitation, getModelSwitchInvitation, setModelSwitchInvitation } from "./invitation-state.js"
 import { showModelSwitchDialog } from "./model-switch-dialog.js"
 import { showRatingSelectorDialog } from "./rating-dialog.js"
 import { usesLegacyRatingPrompt } from "./rating-keys.js"
-import { armRatingWindow, clearRatingWindow, consumeRatingWindow } from "./rating-window.js"
+import { deriveRatingState } from "./rating-state.js"
+import { armRatingWindow, clearRatingWindow, consumeRatingWindow, type RatingWindow } from "./rating-window.js"
 import { FEEDBACK_SUMMARY_CUSTOM_TYPE, recordRating } from "./record-rating.js"
 import { feedbackSummaryRenderer, type ModelSwitchSummaryDetails } from "./renderer.js"
 
@@ -141,6 +142,29 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	// The invitation facts move together: whichever path arms the window (a
+	// fresh settle, or a transcript-derived re-arm on session start) also
+	// primes the shortcut state, so the TUI can rate the same reply.
+	const invite = (ctx: ExtensionContext, window: RatingWindow) => {
+		listenForLegacyRatingKey(ctx)
+		state = "inviting"
+		autoModelUsed = window.autoModelUsed
+		routedUsedId = window.routedModelId
+		armRatingWindow(ctx.sessionManager.getSessionId(), window)
+	}
+
+	// A session constructed from a persisted log (TUI resume, ACP
+	// session/load) re-derives its rating state at session_start: when the
+	// log's last reply settled end_turn unrated, the window arms exactly as
+	// it would have at settle time, so the restored reply is rateable in this
+	// process too — same derivation, same window, no second mechanism. Fresh
+	// sessions carry no entries and no-op; a reply the log already rates
+	// stays closed.
+	const armFromTranscript = (ctx: ExtensionContext) => {
+		const derived = deriveRatingState(ctx.sessionManager.getEntries())
+		if (derived.armable) invite(ctx, derived.window)
+	}
+
 	// Session replacement (/resume, /fork, /clone) fires session_shutdown then
 	// session_start. Reset on both so a stale invitation from the previous
 	// session can never leak into the new one. Each reset also clears the
@@ -152,6 +176,11 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		clearWindowForCtx(ctx)
 		reset()
+		try {
+			armFromTranscript(ctx)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
 	})
 
 	pi.on("turn_start", (_event, ctx) => {
@@ -169,20 +198,14 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		// stale ctx here. The rating bookkeeping below is best-effort, so bail
 		// on stale-ctx instead of surfacing the error.
 		try {
-			// All stale-prone ctx reads happen before any module-state mutation,
-			// so a torn-down session leaves the extension state fully untouched.
-			const sessionId = ctx.sessionManager.getSessionId()
-			const usedAutoModel = isAutoRoutedModel(ctx.model)
-			// Capture the concrete pick the router served, so `routing_model` reports
-			// the resolved model (e.g. `glm-5.3`) rather than the requested virtual id
-			// (`auto-beta`). Undefined when auto wasn't used or hasn't resolved yet.
-			const routingState = getAutoRoutingState(sessionId)
-			const resolvedModelId = routingState.status === "resolved" ? routingState.model.id : undefined
-			listenForLegacyRatingKey(ctx)
-			state = "inviting"
-			autoModelUsed = usedAutoModel
-			routedUsedId = resolvedModelId
-			armRatingWindow(sessionId, { autoModelUsed: usedAutoModel, routedModelId: resolvedModelId })
+			// The same derivation the restored path arms from — payload included:
+			// the reply's own persisted entry (model/responseModel) is the
+			// per-reply truth for what the turn ran on, so live and restored
+			// telemetry cannot disagree with each other or with the log. The
+			// final message persists before this event fires, so the entries are
+			// current.
+			const derived = deriveRatingState(ctx.sessionManager.getEntries())
+			if (derived.armable) invite(ctx, derived.window)
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}
@@ -285,7 +308,7 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 				try {
 					const payload: ModelSwitchSummaryDetails = { model: modelName, reason }
 					pi.appendEntry(MODEL_SWITCH_SUMMARY_CUSTOM_TYPE, payload)
-					trackModelSwitchFeedback({ reason, modelName, modelId })
+					trackModelSwitchFeedback({ reason, modelName, modelId, sessionId: trySessionId(ctx) })
 				} catch (err) {
 					setModelSwitchInvitation({ modelName, modelId })
 					listenForCtrlR(ctx)
@@ -377,6 +400,7 @@ async function handleRating(
 			sentiment,
 			reason: result.reason,
 			window: { autoModelUsed, routedModelId: routedUsedId },
+			sessionId: trySessionId(ctx),
 		})
 		consumeRatingWindow(ctx.sessionManager.getSessionId())
 	} catch (err) {

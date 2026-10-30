@@ -99,6 +99,7 @@ describe("KimchiAcpAgent extMethod feedback", () => {
 			reason: "Auto picked the right model",
 			reasonType: "predefined",
 			routingModelId: "glm-5.3",
+			sessionId: "sess-1",
 		})
 	})
 
@@ -374,6 +375,36 @@ describe("KimchiAcpAgent extMethod feedback", () => {
 				sentiment: "positive",
 			}),
 		).rejects.toMatchObject({ code: -32602, message: "Invalid params: unknown sessionId sess-2" })
+	})
+
+	it("racing identical submissions record exactly one entry — the loser gets the one-rating rejection", async () => {
+		const session = new FakeAgentSession("sess-1")
+		const agent = makeAgent(session)
+		await agent.initialize({ protocolVersion: 1 })
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		armRatingWindow("sess-1", CONCRETE_WINDOW)
+
+		const submission = {
+			sessionId: "sess-1",
+			action: "rate_response",
+			sentiment: "positive",
+			reason: "Solved my task",
+		} as const
+		const [first, second] = await Promise.allSettled([
+			agent.extMethod(AVAILABLE_EXT_METHODS.feedback, submission),
+			agent.extMethod(AVAILABLE_EXT_METHODS.feedback, submission),
+		])
+
+		expect(session.appendCustomEntry).toHaveBeenCalledTimes(1)
+		expect(getRatingWindow("sess-1")).toBeUndefined()
+		expect(feedbackMock.trackFeedback).toHaveBeenCalledTimes(1)
+		expect(first.status).toBe("fulfilled")
+		expect(second.status).toBe("rejected")
+		if (second.status === "rejected") {
+			const reason = second.reason as { code?: number; message?: string }
+			expect(reason.code).toBe(-32600)
+			expect(reason.message).toBe("Invalid request: no settled response to rate")
+		}
 	})
 
 	it("advertises feedback in the vendor-namespaced initialize response _meta", async () => {

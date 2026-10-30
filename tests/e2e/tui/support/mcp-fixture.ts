@@ -38,10 +38,20 @@ interface McpFixtureEventDetails {
 	oauth_server_metadata_requested: { accept?: string }
 	oauth_client_registered: { redirectUris?: string[]; accept?: string }
 	oauth_strict_accept_rejected: { path: string; accept?: string }
+	oauth_resource_metadata_failed: { path: string; status: number }
+	oauth_origin_fallback_attempted: { path: string }
 	oauth_authorization_denied: { redirectUri: string }
-	oauth_authorized: { redirectUri: string; state: string; codeChallengeMethod: string }
+	oauth_authorized: {
+		redirectUri: string
+		state: string
+		codeChallengeMethod: string
+		accessType?: string
+		prompt?: string
+	}
 	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
 	oauth_token_rejected: { grantType?: string }
+	oauth_refresh_rejected: Record<string, never>
+	oauth_manual_revoke: Record<string, never>
 	oauth_browser_opened: { target: string }
 	oauth_browser_completed: {
 		status: number
@@ -96,6 +106,11 @@ export type McpFixtureScenario =
 	| "oauth-pre-registered"
 	| "oauth-token-failure"
 	| "oauth-expiring"
+	| "oauth-google-authorization-endpoint"
+	| "oauth-offline-access-scope"
+	| "oauth-split-issuer-flaky-prm"
+	| "oauth-refresh-revoked"
+	| "oauth-manual-revoke"
 	| "ui-app"
 
 export type McpFixtureToolResponse =

@@ -33,15 +33,15 @@ import {
 	type PromptRequest,
 	type PromptResponse,
 	RequestError,
+	type ResumeSessionRequest,
+	type ResumeSessionResponse,
 	type SessionConfigOption,
 	type SessionConfigSelectOption,
-	type SessionModelState,
+	type SessionId,
 	type SessionNotification,
 	type SessionUpdate,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
-	type SetSessionModelRequest,
-	type SetSessionModelResponse,
 	type ToolCallContent,
 } from "@agentclientprotocol/sdk"
 import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
@@ -51,6 +51,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	estimateTokens,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
@@ -163,14 +164,8 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import {
-	type AcpSkillInfo,
-	buildSkillCommandPrompt,
-	buildSkillListBlock,
-	cachedSkillListBlock,
-	setCachedSkillListBlock,
-	tryParseSkillCommand,
-} from "./skill-commands.js"
+import { AcpSessionResourceLoader } from "./session-resource-loader.js"
+import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
@@ -383,6 +378,28 @@ interface RetireToolCallOpts {
 	removeFromHidden?: boolean
 }
 
+// ─── Schema-compat types removed upstream by SDK 1.9.0 ───
+// Upstream dropped model selectors: the `session/set_model` method and the
+// `models` field on session/new + session/load responses (model switching now
+// happens through `session/set_config_option`). These are local copies of the
+// 0.19.2-era shapes kept for `session/set_model`, which the 1.9 schema
+// deleted outright while in-flight clients (Zed, Kimchi Studio, the VS Code
+// extension) still call it. Served through the extension-method fallback —
+// see the compat tests. The legacy top-level `models` field on new/load
+// responses was dropped for the 1.9 line: spec-strict clients only get the
+// schema surface, and Studio/VS Code both read the model catalogue from the
+// `model` config option already.
+export type ModelId = string
+export interface SetSessionModelRequest {
+	sessionId: SessionId
+	modelId: ModelId
+	_meta?: { [key: string]: unknown } | null
+}
+export type SetSessionModelResponse = Record<string, never>
+
+/** Wire name of the upstream-removed set-model method, kept for old clients. */
+const SET_MODEL_COMPAT_METHOD = "session/set_model"
+
 export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionRecord>()
 	private readonly commandsRefresher = createCommandsRefresher({
@@ -498,7 +515,7 @@ export class KimchiAcpAgent implements Agent {
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
-				sessionCapabilities: { list: {}, close: {} },
+				sessionCapabilities: { list: {}, close: {}, resume: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
@@ -617,7 +634,7 @@ export class KimchiAcpAgent implements Agent {
 		return {}
 	}
 
-	async unstable_logout(_params: LogoutRequest): Promise<LogoutResponse> {
+	async logout(_params: LogoutRequest): Promise<LogoutResponse> {
 		// Clear the persisted API key from config (loadConfig().apiKey), so
 		// new sessions no longer pick it up via the login extension.
 		clearApiKey()
@@ -667,8 +684,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			registerAcpPrompter(
 				sessionId,
-				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
-					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				createAcpPermissionPrompter(
+					this.conn,
+					sessionId,
+					uiContext,
+					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+					record.cwd,
 				),
 			)
 			await this.bindAcpExtensions(session, uiContext)
@@ -695,7 +716,6 @@ export class KimchiAcpAgent implements Agent {
 			return {
 				sessionId,
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -753,6 +773,11 @@ export class KimchiAcpAgent implements Agent {
 		tracker.emitRestoredSnapshot()
 	}
 
+	// NOTE: upstream never stabilized this method — it was removed from the
+	// schema in favor of session/set_config_option. `unstable_setSessionModel`
+	// is kept as purely our legacy-compat surface (served to old clients over
+	// the removed wire name via the extMethod fallback); the name's `unstable_`
+	// prefix intentionally signals "not part of the current spec".
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
@@ -871,6 +896,20 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		return this.loadSessionInternal(params, true)
+	}
+
+	// session/resume (stable since the 1.9 schema line, advertised via
+	// sessionCapabilities.resume): attach to an existing session WITHOUT
+	// replaying its transcript — the client keeps its own history, so
+	// re-emitting it before the response would duplicate every message.
+	async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+		// mcpServers is optional on resume (unlike load) — normalize before
+		// sharing the load pipeline.
+		return this.loadSessionInternal({ ...params, mcpServers: params.mcpServers ?? [] }, false)
+	}
+
+	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
@@ -880,31 +919,34 @@ export class KimchiAcpAgent implements Agent {
 			if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
-			this.replayTranscript(existing.session)
+			if (replayHistory) this.replayTranscript(existing.session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		}
-		const loading = this.loadingSessions.get(sessionId)
+		// Coalesce only across identical intents: concurrent load + resume of
+		// the same id must each run with their own replayHistory decision,
+		// otherwise the second caller inherits the first's replay behavior.
+		const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
+		const loading = this.loadingSessions.get(coalesceKey)
 		if (loading) return loading
 
-		const loadingPromise = this.loadSessionFresh(params)
-		this.loadingSessions.set(sessionId, loadingPromise)
+		const loadingPromise = this.loadSessionFresh(params, replayHistory)
+		this.loadingSessions.set(coalesceKey, loadingPromise)
 		try {
 			return await loadingPromise
 		} finally {
-			if (this.loadingSessions.get(sessionId) === loadingPromise) {
-				this.loadingSessions.delete(sessionId)
+			if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
+				this.loadingSessions.delete(coalesceKey)
 			}
 		}
 	}
 
-	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+	private async loadSessionFresh(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
@@ -953,8 +995,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			registerAcpPrompter(
 				sessionId,
-				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
-					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				createAcpPermissionPrompter(
+					this.conn,
+					sessionId,
+					uiContext,
+					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+					record.cwd,
 				),
 			)
 			await this.bindAcpExtensions(session, uiContext)
@@ -977,7 +1023,7 @@ export class KimchiAcpAgent implements Agent {
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(session)
+			if (replayHistory) this.replayTranscript(session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
@@ -987,7 +1033,6 @@ export class KimchiAcpAgent implements Agent {
 			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sessionId)
@@ -1004,9 +1049,23 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
 		await this.closeSessionRecord(params.sessionId)
 		return {}
+	}
+
+	// ─── Compat aliases ───
+	// The `unstable_*` prefix was dropped from SDK method names when the wire
+	// methods stabilized (names on the wire never changed). Clients built
+	// against 0.19-era release of this harness may still be calling the old
+	// TS-surface names via subclassing/test helpers, so keep thin aliases —
+	// they delegate, they never duplicate logic.
+	async unstable_logout(params: LogoutRequest): Promise<LogoutResponse> {
+		return this.logout(params)
+	}
+
+	async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		return this.closeSession(params)
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -1281,6 +1340,22 @@ export class KimchiAcpAgent implements Agent {
 				// bookkeeping prompt() uses: upstream compact() would silently abort
 				// the running turn, so the handler requires an idle session.
 				return handleCompact((sessionId) => this.getSessionTurnTarget(sessionId), params)
+			case SET_MODEL_COMPAT_METHOD: {
+				// Compat: upstream removed `session/set_model` from the
+				// schema in favor of configOptions, so SDK 1.9.0 no longer routes
+				// it to a typed handler — it arrives here raw via the extMethod
+				// fallback. Validate the 0.19.2-era shape and delegate; new
+				// clients use session/set_config_option, which serves the same
+				// state (see buildConfigOptions).
+				const { sessionId, modelId } = params as { sessionId?: unknown; modelId?: unknown }
+				if (typeof sessionId !== "string" || !sessionId) {
+					throw RequestError.invalidParams(undefined, "sessionId is required")
+				}
+				if (typeof modelId !== "string" || !modelId) {
+					throw RequestError.invalidParams(undefined, "modelId is required")
+				}
+				return this.unstable_setSessionModel({ sessionId, modelId })
+			}
 			case AVAILABLE_EXT_METHODS.compact_abort:
 				// Compaction-specific abort (not the whole-turn kill switch): stops
 				// only the summarization; idempotent when nothing is compacting.
@@ -1368,6 +1443,11 @@ export class KimchiAcpAgent implements Agent {
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
+		// Stop the adapter from publishing skill-refresh results: a discovery
+		// pass still in flight must not commit an obsolete snapshot (or
+		// rebuild prompt options) after the session is gone.
+		const disposable = entry.session.resourceLoader as { dispose?: () => void }
+		disposable.dispose?.()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
@@ -1515,6 +1595,7 @@ export class KimchiAcpAgent implements Agent {
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
+							cwd: entry.cwd,
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -1577,7 +1658,7 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments)
+					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
@@ -1725,7 +1806,7 @@ export class KimchiAcpAgent implements Agent {
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, event.args)
+					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
@@ -1743,6 +1824,7 @@ export class KimchiAcpAgent implements Agent {
 						toolName: event.toolName,
 						rawInput: event.args,
 						status: "in_progress",
+						cwd: entry.cwd,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
@@ -1814,7 +1896,16 @@ export class KimchiAcpAgent implements Agent {
 				// Diffs are additional content blocks, appended after the existing
 				// text/image content. Failed mutations emit no diff: the client
 				// would otherwise render a change that never landed.
-				const diffs = event.isError ? [] : pending.map((p) => fileChangeToDiffContent(resolveFileChange(p, preWrite)))
+				// Protocol compatibility requires diff content `path` to be
+				// absolute — resolve the tool arg through pi's own normalization
+				// (cwd + @-prefix/nbsp handling) so the wire path matches what the
+				// tool touched.
+				const diffs = event.isError
+					? []
+					: pending.map((p) => {
+							const change = resolveFileChange(p, preWrite)
+							return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
+						})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
@@ -1840,6 +1931,12 @@ export class KimchiAcpAgent implements Agent {
 						title: name,
 					},
 				})
+				return
+			}
+			case "compaction_end": {
+				// Successful compaction changed the context — refresh the client's
+				// usage gauge immediately (see emitPostCompactionUsage).
+				this.emitPostCompactionUsage(sessionId, entry.session, event)
 				return
 			}
 			default:
@@ -2087,6 +2184,7 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						rawInput: args,
+						cwd: record?.cwd,
 					}),
 				})
 				this.send({
@@ -2493,6 +2591,45 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	// Post-compaction context refresh: on a successful compaction the client's
+	// gauge is stale (getContextUsage().tokens stays null until the next LLM
+	// response after the boundary) and the turn-boundary path above cannot
+	// cover out-of-turn compaction. The compaction_end event carries pi's own
+	// post-compaction estimate, so emit straight from it — bare, no _meta.
+	// Success ⇔ result present (aborts/failures carry none); cancelled and
+	// failed compactions emit nothing. Full contract: docs/acp-compaction.md.
+	private emitPostCompactionUsage(
+		sessionId: string,
+		session: AgentSession,
+		event: Extract<AgentSessionEvent, { type: "compaction_end" }>,
+	): void {
+		const result = event.result
+		if (event.aborted || !result) return
+		// Prefer the event's estimate; if absent, recompute the same fold over
+		// session.messages (the exact list pi measured). The fold always yields
+		// a number, so success always emits; estimateMessagesTokens itself is
+		// not importable (pi's exports map) — re-verify parity on pi upgrades.
+		const used =
+			typeof result.estimatedTokensAfter === "number"
+				? result.estimatedTokensAfter
+				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
+		const contextWindow = session.getContextUsage()?.contextWindow
+		if (!contextWindow) {
+			// Unreachable for a succeeded compaction (pi requires a model) — log
+			// anyway so a future pi change can't strand the gauge silently.
+			console.warn(`[acp-usage] skipping post-compaction usage_update for ${sessionId}: context window unknown`)
+			return
+		}
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size: contextWindow,
+			},
+		})
+	}
+
 	/**
 	 * Session lookup for the ext-method gating that steering, feedback and
 	 * compact share: the session plus whether a turn is truly active. A
@@ -2775,22 +2912,6 @@ function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode):
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
-export function buildSessionModelState(configOptions: SessionConfigOption[]): SessionModelState | null {
-	// biome-ignore lint/style/noNonNullAssertion: model config option is static, it is always available
-	const configOption = configOptions.find((opt) => opt.id === "model")!
-	const options = (configOption as SessionConfigOption & { type: "select" }).options as SessionConfigSelectOption[]
-	return {
-		currentModelId: configOption.currentValue as string,
-		availableModels: options.map((m) => ({
-			modelId: m.value,
-			name: m.name,
-			// Carry the option's secondary line through, so clients reading
-			// `models` see the same labelling as those reading `configOptions`.
-			...(m.description ? { description: m.description } : {}),
-		})),
-	}
-}
-
 // Checks model PRESENCE only — pi resolves a non-null model object even on
 // keyless machines, and this check is shared by newSession and loadSession.
 // The credential gate for session-create lives in assertSessionModelHasAuth
@@ -2996,9 +3117,15 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 		// Build the set of roots to enumerate: cwd (when present) plus any
 		// non-empty additionalDirectories. Dedupe to avoid double-listing when
 		// a client sends cwd as one of the additional roots.
+		// Compat: SDK 1.9.0 removed `additionalDirectories` from
+		// ListSessionsRequest (zod strips it before typed dispatch, so in
+		// practice old clients degrade gracefully to cwd-only listing). The
+		// cast keeps the merge for paths that still hand us the field.
+		const legacyAdditionalDirs = (params as ListSessionsRequest & { additionalDirectories?: string[] })
+			.additionalDirectories
 		const roots: string[] = []
 		if (params.cwd) roots.push(params.cwd)
-		for (const dir of params.additionalDirectories ?? []) {
+		for (const dir of legacyAdditionalDirs ?? []) {
 			if (!roots.includes(dir)) roots.push(dir)
 		}
 		if (roots.length === 0) {
@@ -3046,36 +3173,24 @@ async function createSessionSettings(
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
 	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
-	// Annotated explicitly: the appendSystemPromptOverride closure references
-	// `resourceLoader` in its own initializer, which TS otherwise flags as
-	// circular (7022).
-	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
+	// The main loader carries the LIVE extension set (inline factories + MCP
+	// adapter) and is only reloaded on intentional full session reloads. The
+	// ACP adapter in front of it serves skills from per-session discovery
+	// snapshots that skill refreshes recompute without extension reloads, and
+	// computes the append prompt per call so a committed skills snapshot is
+	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
-		appendSystemPromptOverride: () => {
-			// Per-loader cached so a mid-session project-trust grant can
-			// invalidate it (see invalidateSkillListBlock); built lazily on
-			// first access, errors fall back to an empty block — it is
-			// non-essential.
-			let block = cachedSkillListBlock(resourceLoader)
-			if (block === undefined) {
-				try {
-					block = buildSkillListBlock(resourceLoader)
-				} catch {
-					// If the loader isn't ready (e.g. during reload before skills
-					// are populated), return empty rather than crashing session
-					// startup.
-					block = ""
-				}
-				setCachedSkillListBlock(resourceLoader, block)
-			}
-			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
-			// then the skill list block (matches upstream override behaviour).
-			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
-			return [...base, ...(block ? [block] : [])]
-		},
+	})
+	const resourceLoader = new AcpSessionResourceLoader({
+		mainLoader,
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
@@ -3488,10 +3603,28 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	}
 	for (const s of signals) process.on(s, onSignal)
 
+	// A clean shutdown ends when the client closes stdin (conn.closed
+	// resolves). If the transport dies on an error instead — a json-stream
+	// failure, the pipe killed mid-turn — conn.closed rejects, and the
+	// launcher must see a failing exit code rather than a flat success.
+	let exitCode = 0
 	try {
 		await conn.closed
+	} catch {
+		exitCode = 1
 	} finally {
 		for (const s of signals) process.off(s, onSignal)
-		await agentInstance?.shutdown()
+		// A rejecting or hanging shutdown must not swallow process.exit — a
+		// stdio agent must leave after stdin closes. Mirror the signal
+		// path's .catch, bounded so a wedged dispose can't outlive the pipe.
+		await Promise.race([
+			agentInstance?.shutdown().catch(() => {}),
+			new Promise((resolve) => setTimeout(resolve, 1_000)),
+		])
+		// The transport is closed and every session is disposed, but stray
+		// event-loop holders (extension timers, MCP clients, watchers) would
+		// otherwise keep us alive. A stdio agent must exit after stdin closes
+		// (stdio-protocol compatibility, and Zed's own lifecycle expectations).
+		process.exit(exitCode)
 	}
 }

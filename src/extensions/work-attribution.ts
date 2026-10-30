@@ -1,16 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
-import {
-	closeSync,
-	existsSync,
-	fstatSync,
-	fsyncSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readSync,
-	writeFileSync,
-} from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { readFileSync } from "node:fs"
+import { join, resolve } from "node:path"
 import { contentText } from "@earendil-works/pi-ai"
 import {
 	type BeforeProviderHeadersEvent,
@@ -29,6 +19,8 @@ import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
+import { getVersion } from "../utils.js"
+import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
@@ -46,7 +38,7 @@ import {
 	pinWorkContinuation,
 	readContinuationHistory,
 } from "./work-attribution/links.js"
-import { subscribeCostReconciliation, subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
+import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
 import { prepareBillingTag } from "./work-attribution/request-tags.js"
 import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 import {
@@ -69,13 +61,7 @@ import {
 	workMatchingAvailable,
 	workMatchingEnabled,
 } from "./work-attribution/semantic.js"
-import {
-	flushWorkSummaries,
-	markNewWork,
-	object,
-	recoverWorkSummaries,
-	updateWorkSummary,
-} from "./work-attribution/summary.js"
+import { object, recoverWorkSummaries, type WorkRecord } from "./work-attribution/summary.js"
 
 export interface WorkSegment {
 	id: string
@@ -149,6 +135,8 @@ interface PendingRequest {
 	purpose?: "work-matching"
 	dispatched: boolean
 	responded: boolean
+	/** Shared by this logical call's attempts; retained observers do not depend on the bounded lookup map. */
+	call: { observers: number; current?: { requestId: string; request: PendingRequest; dispatchObserved: boolean } }
 	billingSource?: BillingSource
 	billingTag?: string
 	headers?: BeforeProviderHeadersEvent["headers"]
@@ -227,13 +215,16 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 	const scope = decided ? (readWorkScope(decided.workId) ?? null) : undefined
 	// A dispatch replaces a request's in-memory entry, so settle every copy that held or later rows come from.
 	const settle = (request: PendingRequest) => {
-		if (decided)
-			Object.assign(request, {
+		if (decided) {
+			const fields = {
 				workId: decided.workId,
 				segment: decided.segment,
 				scope,
 				issue: inputIssue(request.path, decided.workId),
-			})
+			}
+			Object.assign(request, fields)
+			if (request.call.current) Object.assign(request.call.current.request, fields)
+		}
 	}
 	if (decided) {
 		for (const request of pendingRequests.values()) if (request.deferred === deferred) settle(request)
@@ -257,10 +248,11 @@ function writeDeferredRows(match: PendingMatch, decided?: { workId: string; segm
 }
 
 function rememberRequest(requestId: string, request: PendingRequest): void {
-	// ponytail: retain at most 1000 attempts for SDK retries; older ledger rows remain durable.
-	if (pendingRequests.size >= 1000) {
-		const oldest = pendingRequests.keys().next().value
-		if (oldest) pendingRequests.delete(oldest)
+	// Keep in-flight native calls; older unobserved attempts remain durable in the ledger.
+	while (pendingRequests.size >= 1000) {
+		const oldest = [...pendingRequests].find(([, pending]) => pending.call.observers === 0)?.[0]
+		if (!oldest) break
+		pendingRequests.delete(oldest)
 	}
 	pendingRequests.set(requestId, request)
 }
@@ -293,10 +285,8 @@ export function appendWorkRecord(
 	ctx: WorkContext,
 	fields: { type: string; [key: string]: unknown },
 	workId = getWorkId(ctx),
-	path = workLedgerPath(ctx),
+	workLedger = workLedgerPath(ctx),
 ): void {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-	const fd = openSync(path, "a+", 0o600)
 	const record = {
 		...fields,
 		version: 1,
@@ -305,25 +295,14 @@ export function appendWorkRecord(
 		cwd: ctx.cwd,
 		recordedAt: new Date().toISOString(),
 	}
-	try {
-		const size = fstatSync(fd).size
-		const last = Buffer.alloc(1)
-		if (size) readSync(fd, last, 0, 1, size - 1)
-		// An unterminated tail is an interrupted append. Start a new line instead of truncating:
-		// another process may be appending, and readers skip only that cut-off record.
-		const repair = size && last[0] !== 10 ? "\n" : ""
-		writeFileSync(fd, `${repair}${JSON.stringify(record)}\n`)
-		fsyncSync(fd)
-	} finally {
-		closeSync(fd)
-	}
+	// The journal path stays a provenance pointer for the C3 importer; the durable write is the ledger.
+	capture(getAgentDir(), record as WorkRecord, workLedger)
 	if (fields.type === "plan" || fields.type === "commit" || fields.type === "file_transition") {
 		const key = workLedgerPath(ctx)
 		const outputs = workOutputs.get(key) ?? new Set<string>()
 		outputs.add(workId)
 		workOutputs.set(key, outputs)
 	}
-	updateWorkSummary(record)
 }
 export function setWorkId(
 	ctx: WorkContext,
@@ -333,10 +312,7 @@ export function setWorkId(
 ): string {
 	const workId = existingWorkId ?? randomUUID()
 	if (!isWorkId(workId)) throw new Error("Invalid work UUID")
-	if (!existingWorkId) {
-		markNewWork(workId)
-		newWorksToScope.set(workId, undefined)
-	}
+	if (!existingWorkId) newWorksToScope.set(workId, undefined)
 	const key = workLedgerPath(ctx)
 	const segment = identities.get(key) === workId ? activeSegments.get(key) : undefined
 	appendWorkRecord(ctx, { type: "work", segment, ...(continuation ? { continuation } : {}) }, workId)
@@ -351,23 +327,16 @@ export function getWorkId(ctx: WorkContext): string {
 	const path = workLedgerPath(ctx)
 	const cached = identities.get(path)
 	if (cached) return cached
-	const existed = existsSync(path)
-	if (existed) {
-		const lines = readFileSync(path, "utf8").trim().split("\n")
-		for (const line of lines.reverse()) {
-			// A process may have died during its final append; earlier records remain usable.
-			try {
-				const record = JSON.parse(line)
-				if (record.type === "work" && isWorkId(record.workId)) {
-					identities.set(path, record.workId)
-					if (isWorkSegment(record.segment)) activeSegments.set(path, record.segment)
-					return record.workId
-				}
-			} catch {}
-		}
+	const sessionId = ctx.sessionManager.getSessionId()
+	recoverWorkSummaries(path)
+	const info = ledgerSessionInfo(getAgentDir(), sessionId)
+	if (info.work && isWorkId(info.work.workId)) {
+		identities.set(path, info.work.workId)
+		if (isWorkSegment(info.work.segment)) activeSegments.set(path, info.work.segment)
+		return info.work.workId
 	}
 	const workId = setWorkId(ctx)
-	if (!existed) freshSessionLedgers.add(path)
+	if (info.recordCount === 0) freshSessionLedgers.add(path)
 	return workId
 }
 export function recordProviderRequest(
@@ -412,8 +381,10 @@ export function recordProviderRequest(
 		issue,
 		dispatched: false,
 		responded: false,
+		call: { observers: 0 },
 		...(deferred && !deferred.written ? { deferred } : {}),
 	}
+	request.call.current = { requestId, request, dispatchObserved: false }
 	if (request.deferred) request.deferred.rows.push({ request, fields })
 	rememberRequest(requestId, request)
 	return { requestId, workId }
@@ -436,6 +407,7 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 	const billingSelector = billingSource && tagging.billingTag ? requestTagSelector(requestId, dispatchedAt) : undefined
 	// Even a failed metadata write represents a dispatch; a subsequent SDK retry needs another ID.
 	request.dispatched = true
+	request.call.current = undefined
 	const active = activeRequests.get(request.path)
 	const isActive = active && pendingRequests.get(active.requestId)?.logicalRequestId === request.logicalRequestId
 	try {
@@ -471,20 +443,52 @@ export function prepareProviderRequest(headers: Headers, url: string, metadata: 
 		}
 		throw error
 	}
-	rememberRequest(requestId, {
+	const dispatched: PendingRequest = {
 		...request,
 		startedAt,
 		billingSource,
 		billingTag: billingSelector ? tagging.billingTag : undefined,
 		dispatched: true,
 		responded: false,
-	})
+	}
+	rememberRequest(requestId, dispatched)
+	request.call.current = { requestId, request: dispatched, dispatchObserved: true }
 	headers.set("X-Request-Id", requestId)
 	if (billingSelector && tagging.header) headers.set("X-Tags", tagging.header)
 	if (isActive) {
 		activeRequests.set(request.path, { requestId, workId: request.workId })
 		// Timing retains this same object from before_provider_headers; move both identities together.
 		if (request.headers) request.headers["X-Request-Id"] = requestId
+	}
+}
+/** Retain a logical call until release(); each usage sink keeps the exact attempt it observed. */
+export function pinProviderUsage(requestId: string) {
+	const call = pendingRequests.get(requestId)?.call
+	if (!call) return undefined
+	call.observers++
+	let released = false
+	return {
+		current() {
+			const attempt = call.current
+			if (!attempt || released) return undefined
+			return {
+				requestId: attempt.requestId,
+				save(nativeUsage: Record<string, unknown>): void {
+					tryWorkAttribution(() =>
+						appendRequestRecord(attempt.request, {
+							type: "request_response",
+							requestId: attempt.requestId,
+							nativeUsage: { ...nativeUsage, dispatchObserved: attempt.dispatchObserved },
+						}),
+					)
+				},
+			}
+		},
+		release(): void {
+			if (released) return
+			released = true
+			call.observers--
+		},
 	}
 }
 /** A response belongs to the identity captured before dispatch, even after /work new or /new. */
@@ -540,17 +544,7 @@ function hasWorkOutput(ctx: ExtensionContext, workId: string): boolean {
 		)
 			return true
 	}
-	if (!existsSync(path)) return false
-	return readFileSync(path, "utf8")
-		.split("\n")
-		.some((line) => {
-			try {
-				const row = JSON.parse(line)
-				return row.workId === workId && (row.type === "plan" || row.type === "commit")
-			} catch {
-				return false
-			}
-		})
+	return ledgerHasWorkOutput(getAgentDir(), workId)
 }
 function notify(ctx: ExtensionContext, message: string, type: "info" | "warning" = "info"): void {
 	if (ctx.hasUI) ctx.ui.notify(message, type)
@@ -581,7 +575,6 @@ export function createWorkAttributionExtension(
 			delivering = []
 		}
 		let stopReconciliation: (() => Promise<void>) | undefined
-		let stopCosts: (() => Promise<void>) | undefined
 		let activeContext: ExtensionContext | undefined
 		function notifyWorkChanged(): void {
 			if (!isChild) pi.events.emit(WORK_CHANGED_EVENT, undefined)
@@ -627,7 +620,6 @@ export function createWorkAttributionExtension(
 				warnWorkAttribution(ctx, error)
 			}
 			if (!isChild && !stopReconciliation) stopReconciliation = subscribeFileReconciliation()
-			if (!isChild && !stopCosts) stopCosts = subscribeCostReconciliation()
 			pi.registerTool(createCommitTrackingBashTool(ctx))
 			// Main sessions use tool-rendering's decorated tools; isolated children need these native fallbacks.
 			// Respect the resolved defaultTools filter (-name exclusions) the same
@@ -676,7 +668,10 @@ export function createWorkAttributionExtension(
 				return
 			}
 			const branch = ctx.sessionManager.getBranch()
-			const fresh = !existsSync(key) || freshSessionLedgers.has(key)
+			recoverWorkSummaries(key)
+			// C2 keeps session records in the ledger: a session with records is restored, not fresh.
+			const restored = ledgerSessionInfo(getAgentDir(), ctx.sessionManager.getSessionId()).recordCount > 0
+			const fresh = !restored || freshSessionLedgers.has(key)
 			let copiedWorkId: string | undefined
 			let copiedExplicit = false
 			let copiedSegment: WorkSegment | undefined
@@ -693,7 +688,7 @@ export function createWorkAttributionExtension(
 					break
 				}
 			}
-			if (!existsSync(key)) {
+			if (!restored) {
 				if (copiedWorkId || inheritedWorkId) setWorkId(ctx, copiedWorkId ?? inheritedWorkId ?? undefined)
 				else getWorkId(ctx)
 				const segment = copiedWorkId ? copiedSegment : inheritedSegment
@@ -977,10 +972,7 @@ export function createWorkAttributionExtension(
 							account: intents.account.account,
 						}
 						if (workId !== current) {
-							if (decision.decision === "new") {
-								newWorksToScope.set(workId, credential)
-								markNewWork(workId)
-							}
+							if (decision.decision === "new") newWorksToScope.set(workId, credential)
 							setWorkId(ctx, workId, pi, { source: "semantic", evidence })
 							notify(ctx, `Work matching ${decision.decision === "new" ? "started new" : "continued"} work: ${workId}`)
 						} else appendWorkRecord(ctx, { type: "work", continuation: { source: "semantic", evidence } }, current)
@@ -1065,12 +1057,37 @@ export function createWorkAttributionExtension(
 			if (!identity || event.message.stopReason === "error" || event.message.stopReason === "aborted") return
 			// Pi awaits this event before preparing tools. Keep the response's identity even
 			// if permissions, another work selection, or a queued mutation takes time.
-			const calls = new Map<string, { requestId: string; workId: string }>()
-			for (const block of event.message.content) if (block.type === "toolCall") calls.set(block.id, identity)
+			const calls = new Map<string, ToolRequest>()
+			const request = pendingRequests.get(identity.requestId)
+			for (const block of event.message.content)
+				if (block.type === "toolCall") calls.set(block.id, { ...identity, request })
 			if (calls.size) toolRequests.set(key, calls)
 		})
+		pi.on("tool_execution_start", (event, ctx) => {
+			const calls = toolRequests.get(workLedgerPath(ctx))
+			if (!calls || !event.parentToolCallId || calls.has(event.toolCallId)) return
+			const parent = calls.get(event.parentToolCallId)
+			if (parent) calls.set(event.toolCallId, parent)
+		})
 		pi.on("tool_execution_end", (event, ctx) => {
-			toolRequests.get(workLedgerPath(ctx))?.delete(event.toolCallId)
+			const calls = toolRequests.get(workLedgerPath(ctx))
+			const origin = calls?.get(event.toolCallId)
+			const request = origin?.request
+			if (request && typeof event.isError === "boolean" && event.toolName)
+				tryWorkAttribution(() =>
+					appendRequestRecord(request, {
+						type: "tool_execution",
+						requestId: origin.requestId,
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+						outcome: event.isError ? "failed" : "completed",
+						sourceVersion: getVersion(),
+						...(typeof event.durationMs === "number" && Number.isFinite(event.durationMs) && event.durationMs >= 0
+							? { durationMs: event.durationMs }
+							: {}),
+					}),
+				)
+			calls?.delete(event.toolCallId)
 		})
 		pi.on("turn_end", (_event, ctx) => {
 			toolRequests.delete(workLedgerPath(ctx))
@@ -1086,11 +1103,8 @@ export function createWorkAttributionExtension(
 			const key = workLedgerPath(ctx)
 			const stop = stopReconciliation
 			stopReconciliation = undefined
-			const costStop = stopCosts
-			stopCosts = undefined
 			continuationEligible.delete(key)
-			await Promise.all([costStop?.(), stop?.()])
-			await flushWorkSummaries()
+			await stop?.()
 			activeRequests.delete(key)
 			activeSegments.delete(key)
 			toolRequests.delete(key)
@@ -1215,7 +1229,8 @@ export function createWorkAttributionExtension(
 	}
 }
 const activeRequests = new Map<string, { requestId: string; workId: string }>()
-const toolRequests = new Map<string, Map<string, { requestId: string; workId: string }>>()
+type ToolRequest = { requestId: string; workId: string; request?: PendingRequest }
+const toolRequests = new Map<string, Map<string, ToolRequest>>()
 export function getActiveRequest(ctx: WorkContext): { requestId: string; workId: string } | undefined {
 	return activeRequests.get(workLedgerPath(ctx))
 }
@@ -1224,7 +1239,8 @@ export function getToolRequest(
 	ctx: WorkContext,
 	toolCallId: string,
 ): { requestId: string; workId: string } | undefined {
-	return toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+	const origin = toolRequests.get(workLedgerPath(ctx))?.get(toolCallId)
+	return origin && { requestId: origin.requestId, workId: origin.workId }
 }
 /**
  * Save a tool's plan in the work of the request that produced it, or else the session's work; a tool that awaits first

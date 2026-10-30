@@ -5,12 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import {
-	AgentSession,
-	type ExtensionAPI,
-	parseArgs as parsePiArgs,
-	readStoredCredential,
-} from "@earendil-works/pi-coding-agent"
+import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
@@ -32,6 +27,7 @@ import { isKnownCommand } from "./commands/registry.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
+import { installThinkingLevelAdvisor } from "./thinking-selection.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -41,6 +37,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
+import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
@@ -83,6 +80,7 @@ import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import compactionResilienceExtension from "./extensions/compaction-resilience.js"
 import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
@@ -151,6 +149,8 @@ import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
 import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
+import sideChatExtension from "./extensions/side-chat/index.js"
+import { SIDE_CHAT_RESOURCE_ID } from "./extensions/side-chat/resource.js"
 import skillsManagerExtension from "./extensions/skills-manager/index.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -178,6 +178,7 @@ import traceIdExtension from "./extensions/trace-id.js"
 import uiExtension from "./extensions/ui.js"
 import webFetchExtension from "./extensions/web-fetch/index.js"
 import webSearchExtension from "./extensions/web-search/index.js"
+import { installNativeUsageCapture } from "./extensions/work-attribution/native-usage.js"
 import { COST_PER_PR_RESOURCE_ID } from "./extensions/work-attribution/resource.js"
 import {
 	createWorkAttributionExtension,
@@ -218,17 +219,14 @@ import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installTuiConsoleLogging } from "./tui-console.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
-import {
-	postProcessHtmlExport,
-	postProcessJsonlExport,
-	redactHtmlExport,
-	redactJsonlExport,
-} from "./utils/export-post-process.js"
+import { runSecureExport } from "./utils/export-post-process.js"
+import { runExportOffloaded } from "./utils/export-worker.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
 installModelTableRenderer()
+installThinkingLevelAdvisor()
 installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
@@ -286,6 +284,17 @@ async function cliMain(): Promise<void> {
 		process.exit(await runImportMain(originalArgs.slice(1)))
 	}
 
+	// Export pipeline worker: transforms a pre-created private temp export in
+	// place (enrich + strict redaction + encode). Routed as a subcommand in
+	// compiled binaries where process.execPath is the kimchi binary itself; the
+	// dev runtime spawns the script directly (export-worker.ts). Routed before
+	// telemetry/session setup so worker invocations stay invisible to
+	// app_started, exactly like the memory workers above.
+	if (originalArgs[0] === "export-worker") {
+		const { runExportWorkerMain } = await import("./utils/export-worker-main.js")
+		process.exit(await runExportWorkerMain(originalArgs.slice(1)))
+	}
+
 	// Observes provider transport failures in-process (via message_end) so the
 	// exit path can reclassify a failed run as infrastructure (exit 74).
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
@@ -295,7 +304,10 @@ async function cliMain(): Promise<void> {
 	// reporting) before telemetry and session setup so both read the same view.
 	// Blocking only on the first run per API key (cache miss, capped at 1.5s);
 	// afterwards the cached policy applies and refreshes in the background.
-	await initOrgPolicy(resolveEffectiveApiKey() ?? "")
+	// SSO users resolve their credential from auth.json — same precedence as
+	// every other gateway/API call (resolver ignores the request-time refresh).
+	const orgPolicyCredentials = resolveGatewayCredentials({ apiKey: resolveEffectiveApiKey() ?? "" })
+	await initOrgPolicy(orgPolicyCredentials.token, { organizationId: orgPolicyCredentials.organizationId })
 
 	// --- Telemetry ---
 	// The org usage-reporting policy clamp applies at this single construction
@@ -324,43 +336,56 @@ async function cliMain(): Promise<void> {
 	}
 
 	// Monkey-patch AgentSession.prototype.exportToJsonl so ALL JSONL exports
-	// (interactive, ACP, and teleport mode) get trace IDs injected inline.
-	// The wrapper is async so PII redaction completes before the file path
-	// is returned — upstream's handleExportCommand is patched to await this.
+	// (interactive, ACP, and teleport mode) go through the secure workspace:
+	// the destination resolves against the session cwd (never process.cwd()),
+	// upstream generates into a pre-created private 0600 temp, and the
+	// single-pass pipeline (enrich + fail-closed strict redaction, offloaded to
+	// a child process) transforms it before the single atomic publish. A
+	// redaction engine failure aborts the export — never an unredacted file.
+	// The wrapper is async; upstream's handleExportCommand awaits it.
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	;(AgentSession as any).prototype.exportToJsonl = async function (outputPath?: string) {
-		const filePath = _origExportToJsonl.call(this, outputPath)
-		try {
-			const systemPrompt = typeof this.systemPrompt === "string" ? this.systemPrompt : undefined
-			postProcessJsonlExport(filePath, { systemPrompt })
-		} catch (err) {
-			console.warn("[export-post-process] Failed to post-process JSONL export:", err)
-		}
-		// Await redaction so the file is scrubbed before the caller sees the path.
-		// If redaction fails, throw — fail closed rather than returning an unredacted file.
-		await redactJsonlExport(filePath)
-		return filePath
+		return await runSecureExport({
+			mode: "jsonl",
+			outputPath,
+			session: {
+				sessionFile: this.sessionManager.getSessionFile(),
+				cwd: this.sessionManager.getCwd(),
+			},
+			upstreamExport: (tempPath) => _origExportToJsonl.call(this, tempPath),
+			pipeline: (tempPath) =>
+				runExportOffloaded({
+					mode: "jsonl",
+					filePath: tempPath,
+					systemPrompt: typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
+				}),
+		})
 	}
 
-	// Monkey-patch AgentSession.prototype.exportToHtml so HTML exports get
-	// trace IDs injected into assistant message entries the same way JSONL does.
+	// Monkey-patch AgentSession.prototype.exportToHtml the same way: secure
+	// workspace + offloaded single-pass pipeline (trace IDs, sub-agent tabs,
+	// fail-closed strict redaction). The upstream options argument (the TUI's
+	// /export passes the active theme) is forwarded — the previous wrapper
+	// dropped it, silently exporting with the default theme.
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	const _origExportToHtml = (AgentSession as any).prototype.exportToHtml
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
-	;(AgentSession as any).prototype.exportToHtml = async function (outputPath?: string) {
-		const filePath = await _origExportToHtml.call(this, outputPath)
-		// Post-processing and redaction are independent — a post-processing
-		// failure must not bypass the security redaction step.
-		try {
-			postProcessHtmlExport(filePath)
-		} catch (err) {
-			console.warn("[export-post-process] Failed to post-process HTML export:", err)
-		}
-		// Redaction is awaited and throws on failure — fail closed.
-		await redactHtmlExport(filePath)
-		return filePath
+	;(AgentSession as any).prototype.exportToHtml = async function (
+		outputPath?: string,
+		options?: { themeName?: string } | string,
+	) {
+		return await runSecureExport({
+			mode: "html",
+			outputPath,
+			session: {
+				sessionFile: this.sessionManager.getSessionFile(),
+				cwd: this.sessionManager.getCwd(),
+			},
+			upstreamExport: (tempPath) => _origExportToHtml.call(this, tempPath, options),
+			pipeline: (tempPath) => runExportOffloaded({ mode: "html", filePath: tempPath }),
+		})
 	}
 	const helpOrVersion = isHelpOrVersionArgs(originalArgs)
 
@@ -513,6 +538,7 @@ async function cliMain(): Promise<void> {
 				throw new Error("KIMCHI_CODING_AGENT_DIR is not set; cli.ts must be entered via entry.ts")
 			}
 			const modelsJsonPath = resolve(agentDir, "models.json")
+			installNativeUsageCapture()
 
 			let currentApiKey = apiKey
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
@@ -520,9 +546,9 @@ async function cliMain(): Promise<void> {
 			// metadata refresh so OAuth users get fresh models like key users;
 			// request-time token refresh is owned by the provider's OAuth config.
 			const authJsonPath = resolve(agentDir, "auth.json")
-			const storedOAuth = readStoredCredential("kimchi-dev", authJsonPath)
-			const oauthAccessToken = storedOAuth?.type === "oauth" ? storedOAuth.access : undefined
-			const oauthOrganizationId = storedOAuth?.type === "oauth" ? (storedOAuth as { orgId?: string }).orgId : undefined
+			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
+			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
+			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
@@ -923,6 +949,7 @@ async function cliMain(): Promise<void> {
 					{ id: "tools.web_fetch", factory: webFetchExtension },
 					{ id: "tools.web_search", factory: webSearchExtension },
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
+					{ id: SIDE_CHAT_RESOURCE_ID, factory: sideChatExtension },
 				] satisfies ManagedExtensionFactory[]),
 				modelWindowSnapshotExtension,
 				modelSwitchExtension,
@@ -943,6 +970,13 @@ async function cliMain(): Promise<void> {
 					{ id: COST_PER_PR_RESOURCE_ID, factory: pullRequestStatusExtension },
 					{ id: COST_PER_PR_RESOURCE_ID, factory: prCostReportingExtension },
 				] satisfies ManagedExtensionFactory[]),
+				// Compaction summarization with thinking off + scope-reduction fallback
+				// (session_before_compact hook). MUST register after work-attribution:
+				// handlers run sequentially in registration order, and work-attribution's
+				// session_before_compact handler mutates event.preparation in place
+				// (collapses spurious split-turns) — this extension must see the mutated
+				// form or that fix is silently defeated.
+				compactionResilienceExtension(),
 				requestTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,

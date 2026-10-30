@@ -17,6 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { thinkingSelection } from "../thinking-selection.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -555,7 +556,18 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const level = isAutoRoutedModel(ctx.model) ? "auto" : (ctx.thinkingLevel ?? "—")
+	// Tri-state curation: reasoning models without distinct levels show `on`
+	// (the provider default applies), non-reasoning models `off` — the same
+	// vocabulary as the /model THINKING column. A session level only shows
+	// when level selection is meaningful.
+	const selection = thinkingSelection(ctx.model)
+	const level = isAutoRoutedModel(ctx.model)
+		? "auto"
+		: selection.mode === "none"
+			? selection.reasoning
+				? "on"
+				: "off"
+			: (ctx.thinkingLevel ?? "—")
 	const text = `${dimText(theme, "thinking:")}${accentText(theme, level)}`
 	return { id: "thinking", text, width: visibleWidth(text) }
 }

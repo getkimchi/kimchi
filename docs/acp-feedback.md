@@ -50,8 +50,10 @@ Response on success:
 ## When a rating is valid — the rating window
 
 The server keeps one rating window per session, armed when a response's
-`prompt()` resolves `end_turn`. Exactly one accepted submission consumes it.
-The window clears without recording when:
+`prompt()` resolves `end_turn` — and, in a fresh process, when a session is
+constructed from its persisted log (see "Rating a restored session").
+Exactly one accepted submission consumes it. The window clears without
+recording when:
 
 - the next turn starts (`turn_start`),
 - the turn is cancelled or ends in a terminal error — **only `end_turn`
@@ -67,6 +69,34 @@ Invalid submissions fail with distinct errors:
 | No window armed (nothing settled yet, already consumed, cancelled/errored turn, window cleared) | `-32600` (invalidRequest) | `no settled response to rate` |
 | Bad params (missing `sessionId`, unknown action, sentiment outside the enum, non-string `reason`, unknown session) | `-32602` (invalidParams) | describes the param |
 | The transcript write fails (disk full, session mid-teardown) | `-32603` (internal) | `failed to record rating: <detail>` — **nothing was recorded**; the window stays armed, so a retry is safe and cannot double-record |
+
+## Rating a restored session
+
+A session constructed from its persisted log (TUI resume, ACP `session/load`
+— Studio's app-restart flow ensures the session is loaded before
+submitting) arms the same window from the transcript: the log's last
+assistant reply with visible text is rateable when its own persisted
+`stopReason` records a clean end_turn (pi-mono's `"stop"` — the ACP wire
+calls it `end_turn`) and no `feedback-summary` entry already attributes to
+it. A reply whose entry says `aborted`, `error`, or `length` was cancelled,
+errored, or truncated: never rateable, live or restored — the live settle
+path reads the same fact, so a cancelled turn invites nothing on any
+surface. Telemetry derives from the rated reply's own entry — `model`
+names the routed virtual (`auto*` on the kimchi-dev provider) and
+`responseModel` the concrete pick the backend served — identical live and
+restored, so the two paths cannot attribute differently.
+
+One divergence is accepted: a cancel *before the reply's first token*
+persists nothing, so the previous settled reply remains the log's tail and
+arms on restore where the live process had cleared it. The cancel is
+invisible on disk; the reply itself is a clean end_turn artifact.
+
+`session/load` of an id with no persisted log fabricates an empty session
+(pre-existing loader behavior): nothing arms and a rating rejects with the
+ordinary `no settled response to rate`. Studio validates the conversation
+id against its own store before submitting, so this is only reachable for
+direct callers; an id that reaches the handler without being registered
+still rejects with `unknown sessionId`, unchanged.
 
 ## Reason vocabulary
 
@@ -116,5 +146,8 @@ at the same 300-character boundary on both channels.
   for a `model_switch` action later without a wire break.
 - Subagent sessions carry no rating invitations — subagents are already a
   feedback signal of their own.
-- Restored sessions (`session/load`) arm no window until a fresh turn
-  settles; windows are in-memory by design.
+- Restored sessions arm their window at session start from the log's
+  settled-unrated tail (see "Rating a restored session") — the same
+  in-memory window a fresh settle arms, so a reloaded conversation rates
+  without waiting for a new turn; the TUI's resume arms the same window, so
+  its rating shortcuts work for the restored reply.

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWindows } from "../../utils/os-metadata.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
@@ -15,7 +16,10 @@ type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
 
 function makeHandler(run: CommandFn) {
 	return async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
-		const apiKey = loadConfig().apiKey
+		// Same credential resolution as every other harness caller: configured
+		// key first, then the SSO credential in auth.json. The cloud helpers
+		// take this bearer and derive org/user from workspace-tokens:verifyKey.
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
 		const tctx: TeleportContext = {
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,

@@ -7,7 +7,7 @@
  * surface; and remote dispatch is a quality-of-life feature for
  * supervised, user-led sessions — an unsupervised agent should never
  * spend remote compute on its own initiative. The
- * `/remote-run` command and shutdown handler register regardless; the
+ * `/remote-run` command registers regardless; the
  * command is simply unreachable without a TUI. All remote-agent spawns go
  * through the shared `runCloudAgent()` helper, which handles the full
  * lifecycle: Ctrl+X kill handler, spawn, notification, and cleanup.
@@ -22,7 +22,6 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import { getActiveManager } from "../agents/index.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { shouldSuppressInteractiveTools } from "../print-mode.js"
 import { registerDispatchToCloudAgentTool } from "./dispatch-tool.js"
@@ -95,20 +94,5 @@ export default function remoteRunExtension(pi: ExtensionAPI): void {
 				// Error notification already handled inside runCloudAgent.
 			}
 		},
-	})
-
-	pi.on("session_shutdown", () => {
-		// Abort any running remote agents (foreground or detached-to-background)
-		// so the process can exit cleanly. Discovers agents via the manager
-		// instead of module-level state, which would be unreliable if multiple
-		// runs have overlapped.
-		const manager = getActiveManager()
-		if (manager) {
-			for (const agent of manager.listAgents()) {
-				if (agent.remote && (agent.status === "running" || agent.status === "error")) {
-					manager.abort(agent.id)
-				}
-			}
-		}
 	})
 }

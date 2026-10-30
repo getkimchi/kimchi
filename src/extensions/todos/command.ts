@@ -6,8 +6,8 @@ import { applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js
 import type { TodoStatus, WriteTodosDetails, WriteTodosParams } from "./types.js"
 import {
 	buildTodoLines,
-	collapseTodoWidget,
 	expandTodoWidget,
+	hideTodoWidget,
 	openTodoWidget,
 	syncTodoWidget,
 	toggleTodoWidget,
@@ -113,10 +113,10 @@ function parseTodoArgs(args: string): TodoUiLine {
 function notifyUsage(theme: Theme): string[] {
 	return [
 		theme.fg("warning", "Todo usage:"),
-		`  /${TODOS_COMMAND}                    Toggle todo overlay`,
-		`  /${TODOS_COMMAND} expand             Expand todo overlay`,
-		`  /${TODOS_COMMAND} expand all         Expand todo overlay without capping`,
-		`  /${TODOS_COMMAND} collapse           Collapse todo overlay`,
+		`  /${TODOS_COMMAND}                    Collapse/expand todo list`,
+		`  /${TODOS_COMMAND} expand             Expand todo list`,
+		`  /${TODOS_COMMAND} expand all         Expand todo list without capping`,
+		`  /${TODOS_COMMAND} collapse           Hide todo list`,
 		`  /${TODOS_COMMAND} add <text>          Add a todo item`,
 		`  /${TODOS_COMMAND} done <n>            Mark an item completed`,
 		`  /${TODOS_COMMAND} pending <n>         Mark an item pending`,
@@ -223,7 +223,7 @@ async function handleTodosCommand(args: string, ctx: ExtensionCommandContext, pi
 		return
 	}
 	if (parsed.action === "collapse") {
-		collapseTodoWidget(ctx)
+		hideTodoWidget(ctx)
 		return
 	}
 	if (parsed.action === "list") {

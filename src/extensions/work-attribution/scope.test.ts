@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -43,6 +43,31 @@ it("asks Git once per working folder for a while", async () => {
 	expect(await workRepository(cwd)).toBe(repository)
 	vi.advanceTimersByTime(30_000)
 	await expect(workRepository(cwd)).rejects.toThrow()
+})
+
+it("resolves the account from an SSO login (auth.json) and routes verify by its organization", async () => {
+	const agentDir = join(root, "agent")
+	mkdirSync(agentDir, { recursive: true })
+	writeFileSync(
+		join(agentDir, "auth.json"),
+		JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: ORG } }),
+	)
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+	// The startup mock configures an API key; an SSO user's config key is empty
+	// and the credential comes from auth.json instead.
+	const keyedConfig = config.loadConfig()
+	vi.mocked(config.loadConfig).mockImplementation(() => ({ ...keyedConfig, apiKey: "" }))
+	const verify = vi.mocked(organizations.verifyApiKey).mockResolvedValueOnce({ organizationId: ORG, userId: USER })
+
+	expect((await captureWorkAccount(root))?.account).toMatchObject({
+		apiUrl: "https://account.example/api",
+		organizationId: ORG,
+		userId: USER,
+	})
+	expect(verify).toHaveBeenCalledWith(
+		"oauth-access",
+		expect.objectContaining({ endpoint: "https://account.example/api", organizationId: ORG }),
+	)
 })
 
 it("keeps answering with the verified identity while a refresh runs after a minute", async () => {

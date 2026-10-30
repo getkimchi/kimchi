@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isStatusLineElementHidden } from "../../config/status-line-config.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	subscribePullRequestReconciliation,
@@ -56,6 +57,8 @@ export default function pullRequestStatusExtension(pi: ExtensionAPI): void {
 	function warnOnce(error: unknown): void {
 		const message = error instanceof Error ? error.message : String(error)
 		if (!started || !context || warnings.has(message)) return
+		// Hiding Branch / PR opts out of its notifications too; /work still lists lookup failures.
+		if (isStatusLineElementHidden("work-pr")) return
 		warnings.add(message)
 		const text = `PR/MR lookup unavailable: ${message}`
 		if (context.hasUI) context.ui.notify(text, "warning")

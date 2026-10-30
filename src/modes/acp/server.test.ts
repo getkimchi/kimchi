@@ -28,6 +28,7 @@ import {
 	type AgentSessionEventListener,
 	type ExtensionContext,
 	type ExtensionUIContext,
+	estimateTokens,
 	type ModelRegistry,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
@@ -40,6 +41,7 @@ import {
 import * as chokidar from "chokidar"
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest"
 import { ROUTED_MODEL_RESOLUTION_ENTRY } from "../../extensions/auto-model/index.js"
+import feedbackExtension from "../../extensions/feedback/index.js"
 import {
 	isProjectScopeAllowed,
 	resetProjectScopeTrustForTests,
@@ -164,7 +166,6 @@ import {
 	type AcpSessionLister,
 	type AcpSessionLoader,
 	assertSessionHasModel,
-	buildSessionModelState,
 	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
@@ -320,6 +321,15 @@ class FakeAgentSession {
 		contextWindow: 200_000,
 		percent: 25,
 	}
+	// Post-compaction message list, as the real session exposes via its
+	// `messages` getter. The post-compaction usage_update fallback recomputes
+	// the chars/4 estimate over it when the event payload lacks
+	// estimatedTokensAfter. Typed unknown[] deliberately: the estimator's
+	// parameter type is pi's full AgentMessage union (its assistant member
+	// requires api/provider/model/usage…), which would force manufacturing
+	// provider metadata this wiring test never reads — hence the single cast
+	// at the expected-value computation.
+	messages: unknown[] = []
 	sessionStats: SessionStats = {
 		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		cost: 0,
@@ -477,19 +487,27 @@ function makeRecordingConn(): {
 	conn: AgentSideConnection
 	updates: SessionNotification[]
 	extNotifications: Array<{ method: string; params: unknown }>
+	trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
 } {
 	const updates: SessionNotification[] = []
 	const extNotifications: Array<{ method: string; params: unknown }> = []
+	// Unified send-order trace across both channels: the two arrays above lose
+	// their interleaving, so tests asserting relative ordering between session
+	// updates and ext notifications read this instead.
+	const trace: Array<{ channel: "session-update" | "ext-notification"; label: string }> = []
 	const stub = {
 		sessionUpdate: async (p: SessionNotification) => {
 			updates.push(p)
+			trace.push({ channel: "session-update", label: p.update.sessionUpdate })
 		},
 		extNotification: async (method: string, params: unknown) => {
 			extNotifications.push({ method, params })
+			const kind = (params as { kind?: string }).kind
+			trace.push({ channel: "ext-notification", label: kind ? `${method}:${kind}` : method })
 		},
 		requestPermission: vi.fn().mockResolvedValue({ outcome: "cancelled" }),
 	}
-	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications }
+	return { conn: stub as unknown as AgentSideConnection, updates, extNotifications, trace }
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -3240,6 +3258,162 @@ describe("KimchiAcpAgent usage reporting", () => {
 	})
 })
 
+// Post-compaction context refresh (docs/acp-compaction.md): a successful
+// compaction — manual (_kimchi.dev/compact) or automatic threshold/overflow —
+// rebuilds the context, so the client's usage gauge is stale the moment
+// compaction_end lands, and getContextUsage().tokens stays null until the
+// next LLM response after the compaction boundary. The server therefore
+// emits a bare usage_update carrying the compaction_end event's own
+// post-compaction estimate, positioned after the compaction_end activity
+// notification, and stays silent on cancelled or failed compactions (the
+// context did not change).
+describe("KimchiAcpAgent post-compaction usage_update", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+	let trace: Array<{ channel: "session-update" | "ext-notification"; label: string }>
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-post-compact-usage")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		trace = rec.trace
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function compactionEndEvent(
+		overrides: Partial<Extract<AgentSessionEvent, { type: "compaction_end" }>> = {},
+	): AgentSessionEvent {
+		return {
+			type: "compaction_end",
+			reason: "manual",
+			result: {
+				summary: "post-compaction summary",
+				firstKeptEntryId: "entry-1",
+				tokensBefore: 190_000,
+				estimatedTokensAfter: 40_000,
+			},
+			aborted: false,
+			willRetry: false,
+			...overrides,
+		}
+	}
+
+	const usageUpdates = () => updates.filter((u) => u.update.sessionUpdate === "usage_update")
+
+	it("emits a bare usage_update after the compaction_end activity when compaction succeeds", () => {
+		fake.emit({ type: "compaction_start", reason: "manual" })
+		fake.emit(compactionEndEvent())
+
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].sessionId).toBe(sessionId)
+		// Bare payload — out-of-turn compaction has no lifetime usage for _meta,
+		// and the count comes straight off the event's CompactionResult.
+		expect(usage[0].update).toEqual({ sessionUpdate: "usage_update", used: 40_000, size: 200_000 })
+		// Ordering contract: the value refresh lands after the lifecycle-end
+		// notification so clients process compaction_end before the new count.
+		const endIndex = trace.findIndex((t) => t.label === "_kimchi.dev/agent_activity:compaction_end")
+		const usageIndex = trace.findIndex((t) => t.channel === "session-update" && t.label === "usage_update")
+		expect(endIndex).toBeGreaterThanOrEqual(0)
+		expect(usageIndex).toBeGreaterThan(endIndex)
+	})
+
+	it("emits nothing when compaction is aborted", () => {
+		fake.emit(compactionEndEvent({ result: undefined, aborted: true }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("emits nothing when compaction fails", () => {
+		fake.emit(compactionEndEvent({ result: undefined, errorMessage: "Compaction failed: boom" }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("emits nothing when the event is aborted even with a result payload", () => {
+		// Pins the `event.aborted` disjunct independently of the missing-result
+		// disjunct: a result on an aborted event must not resurrect the emit.
+		fake.emit(compactionEndEvent({ aborted: true }))
+
+		expect(usageUpdates()).toHaveLength(0)
+	})
+
+	it("logs and stays silent when the context window is unknown", () => {
+		// The window-missing guard is unreachable for a compaction that
+		// succeeded (both pi compaction paths require a model) — the diagnostic
+		// exists so a future pi shape change can't silently strand the client's
+		// gauge with no trace of why the refresh never landed.
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		onTestFinished(() => warnSpy.mockRestore())
+		fake.contextUsage = undefined
+		fake.emit(compactionEndEvent())
+
+		expect(usageUpdates()).toHaveLength(0)
+		expect(warnSpy).toHaveBeenCalledTimes(1)
+		const message = String(warnSpy.mock.calls[0]?.[0])
+		expect(message).toContain(sessionId)
+		expect(message).toContain("context window unknown")
+	})
+
+	it("recomputes the estimate from session.messages when the payload omits the count", () => {
+		// The fallback reproduces exactly what pi's estimateMessagesTokens
+		// computes: a fold of the exported estimateTokens over the rebuilt
+		// post-compaction message list. Deriving the expected value with that
+		// same exported function pins the wiring (right source, right scope,
+		// right function), not the formula — estimateMessagesTokens itself is
+		// not root-exported (pi's exports map allows only "." and
+		// "./rpc-entry"), so re-check the fold's parity with pi when upgrading
+		// pi.
+		const kept = [
+			{ role: "user", content: [{ type: "text", text: "kept user turn" }] },
+			{ role: "assistant", content: [{ type: "text", text: "kept assistant reply" }] },
+		]
+		fake.messages = kept
+		fake.emit(
+			compactionEndEvent({
+				result: {
+					summary: "post-compaction summary",
+					firstKeptEntryId: "entry-1",
+					tokensBefore: 190_000,
+				},
+			}),
+		)
+
+		const expected = kept.reduce((n, m) => n + estimateTokens(m as Parameters<typeof estimateTokens>[0]), 0)
+		expect(expected).toBeGreaterThan(0)
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", used: expected, size: 200_000 })
+	})
+
+	it("emits the refreshed count even while getContextUsage is in its null window", () => {
+		// In-turn auto-compaction: pi nulls tokens until the next LLM response
+		// after the boundary; the refresh must not be subject to that skip.
+		fake.contextUsage = { tokens: null, contextWindow: 200_000, percent: null }
+		fake.emit(compactionEndEvent({ reason: "threshold" }))
+
+		const usage = usageUpdates()
+		expect(usage).toHaveLength(1)
+		expect(usage[0].update).toMatchObject({ sessionUpdate: "usage_update", used: 40_000, size: 200_000 })
+	})
+
+	it("emits the refresh on a successful willRetry compaction", () => {
+		// willRetry flags turn continuation after overflow recovery — the
+		// compaction itself succeeded and the context changed.
+		fake.emit(compactionEndEvent({ reason: "overflow", willRetry: true }))
+
+		expect(usageUpdates()).toHaveLength(1)
+	})
+})
+
 // ACP ContentChunk contract (src/modes/acp/server.ts onSessionEvent):
 // "All chunks belonging to the same message share the same messageId.
 // A change in messageId indicates a new message has started." pi-mono
@@ -5594,8 +5768,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		expect(content.some((b) => b.type === "content")).toBe(true)
 	})
 
-	// Relative path exercises the server-side cwd resolution for the pre-write
-	// read; the emitted diff path stays verbatim from args.path.
+	// Relative path exercises the server-side cwd resolution: the pre-write
+	// read and the emitted diff path both resolve against the session cwd —
+	// protocol compatibility requires absolute paths on the wire.
 	it("emits a diff with oldText null for a write tool call creating a new file", async () => {
 		fake.promptImpl = async () => {
 			fake.emit({ type: "agent_start" })
@@ -5620,7 +5795,9 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 
 		const content = terminalContent("tc-write-new") as Array<{ type: string }>
 		const diffs = content.filter((b) => b.type === "diff")
-		expect(diffs).toEqual([{ type: "diff", path: "brand-new.txt", newText: "fresh content", oldText: null }])
+		expect(diffs).toEqual([
+			{ type: "diff", path: join(tmpDir, "brand-new.txt"), newText: "fresh content", oldText: null },
+		])
 	})
 
 	// Overwrite: tool_execution_start must read the existing file into
@@ -5683,7 +5860,7 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 				toolCallId: "tc-write-nbsp",
 				toolName: "write",
 				// No-break space as typed by an LLM mimicking the on-disk name.
-				args: { path: "my\u00A0file.txt", content: "space after" },
+				args: { path: join(tmpDir, "my file.txt"), content: "space after" },
 			})
 			fake.emit({
 				type: "tool_execution_end",
@@ -5698,13 +5875,15 @@ describe("KimchiAcpAgent per-turn diffs", () => {
 		const res = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "do" }] })
 		expect(res.stopReason).toBe("end_turn")
 
-		// Emitted diff paths stay verbatim from args.path; only the pre-write
-		// READ uses the normalized path.
+		// Emitted diff paths are absolute and normalized (the same
+		// resolution pi's write tool applies — protocol compatibility).
 		const atDiffs = (terminalContent("tc-write-at") as Array<{ type: string }>).filter((b) => b.type === "diff")
-		expect(atDiffs).toEqual([{ type: "diff", path: "@notes.txt", oldText: "at before", newText: "at after" }])
+		expect(atDiffs).toEqual([
+			{ type: "diff", path: join(tmpDir, "notes.txt"), oldText: "at before", newText: "at after" },
+		])
 		const nbspDiffs = (terminalContent("tc-write-nbsp") as Array<{ type: string }>).filter((b) => b.type === "diff")
 		expect(nbspDiffs).toEqual([
-			{ type: "diff", path: "my\u00A0file.txt", oldText: "space before", newText: "space after" },
+			{ type: "diff", path: join(tmpDir, "my file.txt"), oldText: "space before", newText: "space after" },
 		])
 	})
 
@@ -7515,57 +7694,6 @@ describe("initializeHeadlessTheme", () => {
 	})
 })
 
-function modelConfigOption(
-	currentValue: string,
-	options: { value: string; name: string }[],
-): {
-	id: "model"
-	name: string
-	type: "select"
-	category: string
-	description: string
-	currentValue: string
-	options: { value: string; name: string }[]
-} {
-	return {
-		id: "model",
-		name: "Model",
-		type: "select",
-		category: "model",
-		description: "",
-		currentValue,
-		options,
-	}
-}
-
-describe("buildSessionModelState", () => {
-	it("returns currentModelId and availableModels from the model config option", () => {
-		const configOptions = [
-			modelConfigOption("openai/gpt-4", [
-				{ value: "anthropic/claude-3", name: "Claude 3" },
-				{ value: "openai/gpt-4", name: "GPT-4" },
-			]),
-		]
-		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toEqual({
-			currentModelId: "openai/gpt-4",
-			availableModels: [
-				{ modelId: "anthropic/claude-3", name: "Claude 3" },
-				{ modelId: "openai/gpt-4", name: "GPT-4" },
-			],
-		})
-	})
-
-	it("returns empty availableModels when the model config option has no entries", () => {
-		const configOptions = [modelConfigOption("openai/gpt-4", [])]
-		const result = buildSessionModelState(configOptions as unknown as Parameters<typeof buildSessionModelState>[0])
-		expect(result).toEqual({
-			currentModelId: "openai/gpt-4",
-			availableModels: [],
-		})
-	})
-})
-
 describe("newSession model state", () => {
 	it("returns model state in the response when a model is available", async () => {
 		const sessionId = "session-model"
@@ -7587,20 +7715,18 @@ describe("newSession model state", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		expect(res.sessionId).toBe("session-model")
-		expect(res.models).toBeDefined()
-		expect(res.models?.currentModelId).toBe("openai/gpt-4")
-		expect(res.models?.availableModels).toHaveLength(3)
+		const modelOption = res.configOptions?.find((opt) => opt.id === "model")
+		expect(modelOption?.type).toBe("select")
+		expect(modelOption?.currentValue).toBe("openai/gpt-4")
+		const options = (
+			modelOption as unknown as { options: Array<{ value: string; name: string; description?: string }> }
+		).options
+		expect(options).toHaveLength(3)
 		// Concrete models sorted by modelId; the deprecated routing entry sits last.
-		expect(res.models?.availableModels[0]).toEqual({
-			modelId: "anthropic/claude-3",
-			name: "Claude 3",
-		})
-		expect(res.models?.availableModels[1]).toEqual({
-			modelId: "openai/gpt-4",
-			name: "GPT-4",
-		})
-		expect(res.models?.availableModels[2]).toEqual({
-			modelId: "multi-model",
+		expect(options[0]).toEqual({ value: "anthropic/claude-3", name: "Claude 3" })
+		expect(options[1]).toEqual({ value: "openai/gpt-4", name: "GPT-4" })
+		expect(options[2]).toEqual({
+			value: "multi-model",
 			name: "Multi-model (kimi-k2.7)",
 			// Harness-side deprecation label + routing one-liner.
 			description: "[Deprecated] Routes each task to the best model, with an orchestrator and workers.",
@@ -7672,12 +7798,6 @@ describe("newSession model state", () => {
 		const options = modelSelectOptions(res)
 		expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 			value: "kimchi-dev/auto",
-			name: "Auto",
-			description: "Picks the best model for your tasks automatically.",
-		})
-		// The description threads through the models surface as well.
-		expect(res.models?.availableModels.find((m) => m.modelId === "kimchi-dev/auto")).toEqual({
-			modelId: "kimchi-dev/auto",
 			name: "Auto",
 			description: "Picks the best model for your tasks automatically.",
 		})
@@ -8031,7 +8151,9 @@ describe("newSession skill commands", () => {
 		const fake = new FakeAgentSession(id, dir)
 		fake.resourceLoader = {
 			...makeSkillLoader(skills),
-			reload: async () => {
+			// The refresh sweep calls refreshSkills (the ACP adapter's
+			// resources-only discovery), not loader.reload().
+			refreshSkills: async () => {
 				reloads.n++
 			},
 		} as unknown as ResourceLoader
@@ -9756,7 +9878,12 @@ describe("KimchiAcpAgent listSessions", () => {
 			cwd: "/repo/foo",
 			additionalDirectories: ["/repo/bar", "/repo/baz"],
 		} as never)
-		expect(received?.additionalDirectories).toEqual(["/repo/bar", "/repo/baz"])
+		// SDK 1.9.0 removed additionalDirectories from ListSessionsRequest
+		// — assert through a widening cast for the old clients that
+		// still send it.
+		expect(
+			(received as (ListSessionsRequest & { additionalDirectories?: string[] }) | undefined)?.additionalDirectories,
+		).toEqual(["/repo/bar", "/repo/baz"])
 	})
 
 	it("dedupes sessions returned across multiple roots by id", async () => {
@@ -9911,6 +10038,91 @@ function testEncodeCwdDir(cwd: string): string {
 }
 
 describe("KimchiAcpAgent loadSession", () => {
+	/** An isolated agent dir configured like the real harness: a fake provider
+	 * catalog plus its default selection. */
+	function makeRestartAgentDir(prefix: string): { agentDir: string; cwd: string } {
+		const agentDir = mkdtempSync(join(tmpdir(), prefix))
+		const cwd = join(agentDir, "work")
+		mkdirSync(cwd)
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					fake: {
+						api: "openai-completions",
+						apiKey: "fake",
+						baseUrl: "http://127.0.0.1:1/v1",
+						models: [{ id: "fake-model", name: "Fake Model", input: ["text"], contextWindow: 64_000, maxTokens: 1024 }],
+					},
+				},
+			}),
+		)
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ defaultProvider: "fake", defaultModel: "fake-model" }),
+		)
+		return { agentDir, cwd }
+	}
+
+	/** A minimal persisted log a restart-rate test loads: session header, one
+	 * user prompt, one assistant reply carrying its own persisted stop reason
+	 * (the settle fact the derivation reads), optionally pre-rated. Returns
+	 * the session file path. */
+	function writeRestartRateLog(
+		agentDir: string,
+		cwd: string,
+		sessionId: string,
+		opts?: { stopReason?: string; rated?: boolean },
+	): string {
+		const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(cwd))
+		mkdirSync(sessionDir, { recursive: true })
+		const sessionFile = join(sessionDir, `2026-05-09T00-00-00.000Z_${sessionId}.jsonl`)
+		const lines: object[] = [
+			{ type: "session", version: 3, id: sessionId, timestamp: "2026-05-09T00:00:00Z", cwd },
+			{
+				type: "message",
+				id: "m1",
+				parentId: null,
+				timestamp: "2026-05-09T00:00:01Z",
+				message: { role: "user", content: "do work", timestamp: 0 },
+			},
+			{
+				type: "message",
+				id: "m2",
+				parentId: "m1",
+				timestamp: "2026-05-09T00:00:02Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: "openai-completions",
+					provider: "fake",
+					model: "fake-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: opts?.stopReason ?? "stop",
+					timestamp: 0,
+				},
+			},
+		]
+		if (opts?.rated) {
+			lines.push({
+				type: "custom",
+				id: "m3",
+				parentId: "m2",
+				timestamp: "2026-05-09T00:00:03Z",
+				customType: "feedback-summary",
+				data: { sentiment: "positive", reason: "already recorded" },
+			})
+		}
+		writeFileSync(sessionFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`)
+		return sessionFile
+	}
 	function makeAgent(loader: AcpSessionLoader, opts?: { conn?: AgentSideConnection }): KimchiAcpAgent {
 		return new KimchiAcpAgent(opts?.conn ?? makeConn(), {
 			extensionFactories: [],
@@ -9955,7 +10167,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
 		})
 
-		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		// History was replayed for the attaching client.
 		const replayUpdates = replayOnly(updates)
 		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
@@ -9993,6 +10205,7 @@ describe("KimchiAcpAgent loadSession", () => {
 		} as never)
 		expect(init.agentCapabilities?.loadSession).toBe(true)
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
+		expect(init.agentCapabilities?.sessionCapabilities?.resume).toEqual({})
 	})
 
 	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
@@ -10038,9 +10251,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			mcpServers: [],
 		})
 
-		expect(res.models).toMatchObject({
-			currentModelId: "test/test-model",
-		})
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		expect(loaderCalls.count).toBe(0)
 
 		const replayUpdates = replayOnly(updates)
@@ -10049,6 +10260,97 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(replayUpdates[0].update).toMatchObject({
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
+		})
+	})
+
+	describe("resumeSession", () => {
+		it("attaches to an already loaded session without replaying history", async () => {
+			// session/resume differs from session/load precisely in the replay:
+			// the client keeps its own transcript, so the agent must NOT
+			// re-emit history before the response (spec: resume carries no replay).
+			const live = new FakeAgentSession("resume-live")
+			live.branch = [userTextEntry("already here", "u1", null)]
+			const factory: AcpSessionFactory = async () => asSession(live)
+			const loaderCalls = { count: 0 }
+			const loader: AcpSessionLoader = async () => {
+				loaderCalls.count++
+				return asSession(new FakeAgentSession("unused"))
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: factory,
+				sessionLoader: loader,
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const before = updates.length
+
+			const res = await agent.resumeSession({
+				sessionId: "resume-live",
+				cwd: "/tmp",
+				mcpServers: [],
+			})
+
+			expect(res.configOptions).toBeDefined()
+			expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
+			expect(loaderCalls.count).toBe(0)
+
+			const resumeReplay = replayOnly(updates.slice(before)).filter(
+				(u) => u.update.sessionUpdate === "user_message_chunk" || u.update.sessionUpdate === "agent_message_chunk",
+			)
+			expect(resumeReplay).toHaveLength(0)
+		})
+
+		it("loads a cold session through the loader without replaying history, defaulting mcpServers", async () => {
+			let receivedServers: LoadSessionRequest["mcpServers"] | undefined
+			const cold = new FakeAgentSession("resume-cold")
+			cold.branch = [userTextEntry("old mission", "u1", null)]
+			const loader: AcpSessionLoader = async (params) => {
+				receivedServers = params.mcpServers
+				return asSession(cold)
+			}
+			const { conn, updates } = makeRecordingConn()
+			const agent = new KimchiAcpAgent(conn, {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionLoader: loader,
+			})
+
+			// mcpServers is optional on ResumeSessionRequest (unlike
+			// LoadSessionRequest) — the handler normalizes it to [].
+			const res = await agent.resumeSession({
+				sessionId: "resume-cold",
+				cwd: "/tmp",
+			})
+
+			expect(receivedServers).toEqual([])
+			expect(res.configOptions).toBeDefined()
+			expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
+
+			const replay = replayOnly(updates).filter((u) => u.update.sessionUpdate === "user_message_chunk")
+			expect(replay).toHaveLength(0)
+		})
+
+		it("shares the mid-turn attach guard with loadSession", async () => {
+			const live = new FakeAgentSession("resume-turn")
+			live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+			const factory: AcpSessionFactory = async () => asSession(live)
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: factory,
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			void agent.prompt({
+				sessionId: "resume-turn",
+				prompt: [{ type: "text", text: "go" }],
+			})
+			await new Promise((r) => setTimeout(r, 0))
+
+			await expect(agent.resumeSession({ sessionId: "resume-turn", cwd: "/tmp" })).rejects.toThrow(
+				"has a turn in progress; cancel it first",
+			)
 		})
 	})
 
@@ -10083,7 +10385,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
 		})
 
-		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 		// History was replayed for the attaching client.
 		const replayUpdates = replayOnly(updates)
 		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
@@ -10195,6 +10497,25 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls).toBe(1)
 	})
 
+	it("does not coalesce a concurrent loadSession and resumeSession of the same sessionId", async () => {
+		// replayHistory is per-caller: load replays the transcript, resume
+		// must not. Coalescing them under one key would have the second
+		// caller inherit the first's replay decision, so each intent runs
+		// the loader on its own.
+		const fake = new FakeAgentSession("mutual-1")
+		let loaderCalls = 0
+		const loader: AcpSessionLoader = async () => {
+			loaderCalls++
+			return asSession(fake)
+		}
+		const agent = makeAgent(loader)
+		const params = { sessionId: "mutual-1", cwd: "/tmp", mcpServers: [] }
+		const [loaded, resumed] = await Promise.all([agent.loadSession(params), agent.resumeSession(params)])
+		expect(loaded.configOptions).toBeDefined()
+		expect(resumed.configOptions).toBeDefined()
+		expect(loaderCalls).toBe(2)
+	})
+
 	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {
 		const agent = makeAgent(async () => {
 			throw Object.assign(new Error("session not found"), { code: -32602 })
@@ -10243,6 +10564,96 @@ describe("KimchiAcpAgent loadSession", () => {
 				expect(readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"))).toEqual([])
 				await agent.unstable_closeSession({ sessionId })
 			}
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded session's settled-unrated tail arms the rating window — the restart flow rates end-to-end", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rate-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId)
+
+			// A fresh process: the session is not live in it, only its log.
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			const result = await agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+				sessionId,
+				action: "rate_response",
+				sentiment: "positive",
+				reason: "Solved my task",
+			})
+			expect(result).toEqual({ status: "recorded" })
+
+			// The rating landed in the SAME log the session was loaded from.
+			const persisted = readFileSync(sessionFile, "utf-8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { type: string; customType?: string; data?: unknown })
+			const summary = persisted.find((entry) => entry.type === "custom" && entry.customType === "feedback-summary")
+			expect(summary?.data).toEqual({ sentiment: "positive", reason: "Solved my task" })
+
+			// One rating per settled response — byte-identical rejection.
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "negative",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded log with an aborted tail leaves nothing to rate — byte-identical rejection", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-aborted-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			writeRestartRateLog(agentDir, cwd, sessionId, { stopReason: "aborted" })
+
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "positive",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("a loaded log whose reply is already rated leaves nothing to rate — byte-identical rejection", async () => {
+		const { agentDir, cwd } = makeRestartAgentDir("kimchi-acp-restart-rated-")
+		try {
+			const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+			const sessionFile = writeRestartRateLog(agentDir, cwd, sessionId, { rated: true })
+
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [feedbackExtension], agentDir })
+			await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+
+			await expect(
+				agent.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+					sessionId,
+					action: "rate_response",
+					sentiment: "negative",
+				}),
+			).rejects.toMatchObject({ code: -32600, message: "Invalid request: no settled response to rate" })
+
+			// Nothing new was recorded: the pre-seeded rating is the only one.
+			const summaries = readFileSync(sessionFile, "utf-8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { customType?: string; data?: { reason?: string } })
+				.filter((entry) => entry.customType === "feedback-summary")
+			expect(summaries).toHaveLength(1)
+			expect(summaries[0]?.data?.reason).toBe("already recorded")
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true })
 		}
@@ -10394,16 +10805,7 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "agent_message_chunk",
 			content: { type: "text", text: "doing well" },
 		})
-		expect(res.models).toMatchObject({
-			currentModelId: "test/test-model",
-			availableModels: [
-				{ modelId: "test/test-model", name: "Test Model" },
-				{
-					modelId: "multi-model",
-					name: expect.stringMatching(/^Multi-model \(/),
-				},
-			],
-		})
+		expect(res.configOptions?.find((opt) => opt.id === "model")?.currentValue).toBe("test/test-model")
 	})
 
 	// Replay walker: text + thinking + tool calls all surface as their own

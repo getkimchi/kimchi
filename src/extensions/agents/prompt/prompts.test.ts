@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+import { hasUserLoop } from "../../prompt-construction/session-user-loop.js"
+
+vi.mock("../../prompt-construction/session-user-loop.js", () => ({
+	hasUserLoop: vi.fn(() => true),
+}))
+
+const mockedHasUserLoop = vi.mocked(hasUserLoop)
+
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
@@ -469,6 +477,22 @@ describe("includeCoreGuidelines", () => {
 		expect(output).not.toContain("Listing a directory → use `ls`")
 		expect(output).not.toContain("mcp({ search:")
 		expect(output).not.toContain("Content search: paths first")
+	})
+
+	it("swaps consent for the autonomous note when the session is headless", () => {
+		mockedHasUserLoop.mockReturnValueOnce(false)
+		const agent: AgentConfig = {
+			name: "Test-Headless-Core",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+			includeCoreGuidelines: true,
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT)
+		expect(output).not.toContain("## Consent & Irreversible Actions")
+		expect(output).toContain("## Autonomous Session")
 	})
 
 	it("does not include core guidelines when includeCoreGuidelines is absent (replace mode)", () => {
