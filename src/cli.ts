@@ -399,7 +399,7 @@ async function cliMain(): Promise<void> {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
-		// Only chat TUI sessions load the warning extension after startup dialogs.
+		// Only chat TUI sessions load the api-key warning extension after startup dialogs.
 		// Setup commands render their own Clack warning; other subcommands exit before extensions load.
 		if (
 			apiKeyWarning &&

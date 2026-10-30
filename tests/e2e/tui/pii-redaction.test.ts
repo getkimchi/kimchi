@@ -6,7 +6,9 @@ test.use(TUI_TEST_CONFIG)
 /**
  * The PII redaction extension (src/extensions/pii-redaction/) hooks
  * `before_provider_request` and scrubs PII/secrets from outgoing messages
- * before they reach the LLM provider. These TUI E2E tests verify the full
+ * before they reach the LLM provider. It is gated by the
+ * `extensions.pii-redaction` resource (enabled here transitively via
+ * KIMCHI_ENABLE_RESOURCES). These TUI E2E tests verify the full
  * pipeline end-to-end: a user types PII into the TUI, the prompt is
  * transformed through the extension, and the fake OpenAI server records
  * the redacted request body.
@@ -53,7 +55,7 @@ function firstChatRequest(fixture: { fake: { requests: Array<{ url: string; body
 function withRedactionEnabled<T extends { env?: Record<string, string> }>(
 	options: T,
 ): T & { env: Record<string, string> } {
-	return { ...options, env: { ...options.env, KIMCHI_REDACTION_ENABLED: "1" } }
+	return { ...options, env: { ...options.env, KIMCHI_ENABLE_RESOURCES: "extensions.pii-redaction" } }
 }
 
 type RecordedChatRequest = { url: string; body: unknown }
@@ -201,13 +203,12 @@ test("redacts kimchi API key from Bearer authorization header in prompt", async 
 	)
 })
 
-test("disables redaction when KIMCHI_REDACTION_ENABLED=0", async ({ terminal }) => {
+test("leaves PII untouched when the redaction resource is off (the default)", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "pii-redaction-disabled",
 			responses: [{ stream: ["OK"] }],
-			env: { KIMCHI_REDACTION_ENABLED: "0" },
 		},
 		async (fixture) => {
 			terminal.submit("Reach me at alice@example.com or 555-867-5309")
