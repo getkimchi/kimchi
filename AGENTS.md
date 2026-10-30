@@ -51,6 +51,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
+- [docs/side-loop.md](docs/side-loop.md) — experimental in-time side loop: stage-aware cards (PR/CI, tests, deploy, Slack), d3 gating, cost ledger
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
 - [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md) — TUI wheel-scroll speed tuning
