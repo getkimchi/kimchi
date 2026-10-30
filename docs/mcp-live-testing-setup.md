@@ -3,7 +3,7 @@
 How to provision and operate the two live MCP OAuth checks that talk to real providers:
 
 - `scripts/mcp-live-probe.mjs` — credential-free authorize-URL check (runs on pull requests; see [mcp-e2e-testing.md](mcp-e2e-testing.md)).
-- `scripts/mcp-live-google-lifecycle.mjs` — credentialed silent-renewal check against Google (manual dispatch only).
+- `scripts/mcp-live-google-lifecycle.mjs` — credentialed silent-renewal check against Google (manual dispatch, or the `mcp-e2e-live` PR label).
 
 Both scripts print booleans, tool counts, and expiry timestamps. Refresh tokens and client secrets never appear in their output.
 
