@@ -791,6 +791,8 @@ describe("isReadOnlyBashCommand: doc-cli route", () => {
 		"kimchi doc-cli pdf read $(cat target)",
 		"kimchi doc-cli pdf read x.pdf > out.txt",
 		"BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf",
+		"kimchi doc-cli pdf read x.pdf --out copy.txt",
+		"kimchi doc-cli pdf fields x.pdf --out=fields.json",
 		"kimchi doc-cli pdf",
 		"kimchi doc-cli unknown read x",
 	]

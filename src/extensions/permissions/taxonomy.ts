@@ -637,7 +637,11 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 	if (program === "kimchi" && tokens[1] === "doc-cli") {
 		const skill = tokens[2] as DocCliSkill
 		if (!(DOC_CLI_SKILLS as readonly string[]).includes(tokens[2] ?? "")) return false
-		return DOC_CLI_READ_ONLY_COMMANDS[skill].includes(tokens[3] ?? "")
+		if (!DOC_CLI_READ_ONLY_COMMANDS[skill].includes(tokens[3] ?? "")) return false
+		// A read verb redirected into a file via flag is not read-only
+		// (render/write use --out; a future read-verb flag must not smuggle
+		// one past the plan-mode gate).
+		return !tokens.slice(4).some((t) => t === "--out" || t.startsWith("--out="))
 	}
 
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
