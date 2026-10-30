@@ -12,7 +12,8 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // - sessionless inbound: no session involved (auth, onboarding, import,
 //   trust reads/decisions that operate on paths or project state, resource
 //   and memory store ops).
-// - misc inbound: probe_mcp_server (SDK-era probing helper).
+// - misc inbound: probe_mcp_server (SDK-era probing helper) and
+//   reload_mcp_config (restart-free MCP config hot-apply).
 //
 // project_trust_update is an agent→client extNotification (pushed after
 //   session creation and whenever a trust decision changes), following the
@@ -23,6 +24,12 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 // routed_model is an agent→client extNotification mirroring the auto-router's
 //   routed-pick entry, on the project_trust_update precedent: not advertised
 //   in _meta, sessionId carried in the payload.
+//
+// mcp_config_applied is an agent→client extNotification reporting one
+//   session's applied MCP config diff (one emission per applied session, all
+//   sharing the caller's applyToken), on the project_trust_update precedent:
+//   not advertised in _meta, sessionId carried in the payload, emitted via
+//   setImmediate after the ext-method response.
 //
 // Capability advertising: every entry here is exposed in
 // `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
@@ -59,6 +66,10 @@ export const AVAILABLE_EXT_METHODS = {
 
 	// Misc inbound — standalone probing helper.
 	probe_mcp_server: `_${CAPABILITIES_KEY}/probe_mcp_server`,
+
+	// Misc inbound — restart-free MCP config hot-apply (sessionless; the
+	// handler fans out to every live session's MCP adapter instance itself).
+	reload_mcp_config: `_${CAPABILITIES_KEY}/reload_mcp_config`,
 } as const
 
 export const AVAILABLE_EXT_NOTIFICATIONS = {
@@ -67,6 +78,7 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	project_trust_update: `_${CAPABILITIES_KEY}/project_trust_update`,
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
+	mcp_config_applied: `_${CAPABILITIES_KEY}/mcp_config_applied`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

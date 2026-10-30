@@ -40,6 +40,7 @@ import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import { registerReloadHandle, unregisterReloadHandle } from "./reload-registry.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 const MCP_PROXY_TOOL = "mcp"
@@ -292,6 +293,43 @@ function createUpstreamApi(
 export interface KimchiMcpAdapterExtensionOptions {
 	cwd?: string
 	callerServers?: Record<string, ServerEntry>
+	/**
+	 * Per-session token joining this extension instance to the ACP
+	 * SessionRecord for `_kimchi.dev/reload_mcp_config` (restart-free MCP
+	 * config hot-apply). The adapter's reload handle registers under it via
+	 * the reloadHandleSink; undefined in TUI sessions, which have no registry
+	 * consumer.
+	 */
+	reloadToken?: string
+}
+
+/**
+ * The config selection the harness performs before installing the adapter:
+ * project vs user config by MCP project trust (fail-closed). Shared by the
+ * install path and the reload path so a reload re-runs exactly the same load
+ * + selection the session was built from (D5).
+ */
+async function resolveSelectedMcpConfig(
+	sessionCtx: Pick<ExtensionContext, "cwd" | "hasUI" | "mode" | "isProjectTrusted" | "ui">,
+	configCwd: string,
+) {
+	const cliOptions = getParsedCliArgs().options
+	const overridePath = cliOptions["mcp-config"]
+	const projectResult = loadKimchiMcpConfig({ cwd: configCwd, overridePath })
+	const userResult = loadKimchiMcpConfig({ cwd: configCwd, includeProjectSources: false })
+	const explicitTrust =
+		cliOptions["no-approve"] === true
+			? false
+			: cliOptions.approve === true || overridePath !== undefined
+				? true
+				: undefined
+	const projectTrusted = await resolveMcpProjectTrust(sessionCtx, {
+		projectConfig: projectResult.config,
+		userConfig: userResult.config,
+		...(explicitTrust === undefined ? {} : { explicitTrust }),
+	})
+	const selected = projectTrusted ? projectResult : userResult
+	return { selected, projectTrusted }
 }
 
 export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensionOptions = {}): ExtensionFactory {
@@ -342,23 +380,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		// its pending resnapshot is obsolete.
 		clearStatusResync()
 		if (!policy) {
-			const cliOptions = getParsedCliArgs().options
-			const overridePath = cliOptions["mcp-config"]
 			const cwd = options.cwd ?? ctx.cwd
-			const projectResult = loadKimchiMcpConfig({ cwd, overridePath })
-			const userResult = loadKimchiMcpConfig({ cwd, includeProjectSources: false })
-			const explicitTrust =
-				cliOptions["no-approve"] === true
-					? false
-					: cliOptions.approve === true || overridePath !== undefined
-						? true
-						: undefined
-			const projectTrusted = await resolveMcpProjectTrust(ctx, {
-				projectConfig: projectResult.config,
-				userConfig: userResult.config,
-				...(explicitTrust === undefined ? {} : { explicitTrust }),
-			})
-			const selectedResult = projectTrusted ? projectResult : userResult
+			const { selected: selectedResult, projectTrusted } = await resolveSelectedMcpConfig(ctx, cwd)
 			// The built-in gateway is a user-level server: registered after the
 			// trust-based selection, so it is present in untrusted projects too.
 			// A user-configured server wins over it — by gateway address, or by
@@ -401,12 +424,46 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
-					? { config }
+					? {
+							config,
+							// D5: programmatic installs re-apply the same load + selection
+							// at reload time — fresh trust decision, session's captured
+							// cwd/override — and the adapter diffs the re-applied config
+							// against the live state (caller overlays never re-received).
+							...(options.reloadToken !== undefined
+								? {
+										reloadProgrammaticConfigProvider: async (reloadCtx) => {
+											const { selected } = await resolveSelectedMcpConfig(reloadCtx, options.cwd ?? reloadCtx.cwd)
+											return options.callerServers
+												? {
+														...selected.config,
+														mcpServers: { ...selected.config.mcpServers, ...options.callerServers },
+													}
+												: selected.config
+										},
+									}
+								: {}),
+						}
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
 						// land where kimchi 1.14 and Studio read them. An explicit
 						// `--mcp-config` keeps winning; the trust flow never sees this default.
 						{ configPath: selectedResult.configPath ?? getSharedMcpConfigPath() }
+			if (options.reloadToken !== undefined) {
+				const reloadToken = options.reloadToken
+				// The adapter hands over the live session's reload handle after each
+				// successful initialization and revokes it on state shutdown — the
+				// registry entry tracks exactly the live adapter state.
+				adapterOptions.reloadHandleSink = (handle) => {
+					if (handle === null) unregisterReloadHandle(reloadToken)
+					else registerReloadHandle(reloadToken, handle)
+				}
+			}
+			if (options.callerServers) {
+				// Per-session caller overlays are additive (D3): the reload diff must
+				// never remove or change them.
+				adapterOptions.overlayServerNames = new Set(Object.keys(options.callerServers))
+			}
 			// Offline-access request parameters for every OAuth authorize URL; stateless, see
 			// oauth-offline-access.ts.
 			installOfflineAccessAuthorizationUrlTransform()

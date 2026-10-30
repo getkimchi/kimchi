@@ -90,6 +90,7 @@ import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
+import { unregisterReloadHandle } from "../../extensions/mcp/reload-registry.js"
 import {
 	availableModelRefs,
 	findModelByRef,
@@ -148,6 +149,7 @@ import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
+import { handleReloadMcpConfig } from "./ext-methods/mcp-reload.js"
 import {
 	handleMemoryDelete,
 	handleMemoryList,
@@ -366,6 +368,13 @@ type SessionRecord = {
 	skillCommands: Map<string, AcpSkillInfo>
 	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
 	planTracker?: AcpPlanTracker
+	/**
+	 * Per-session MCP reload token (restart-free config hot-apply): minted in
+	 * createSessionSettings when the MCP extension factory is wired, joined to
+	 * the MCP extension instance (which registers its reload handle under it),
+	 * and dropped — with the handle — when this record is disposed.
+	 */
+	reloadToken?: string
 }
 
 /** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
@@ -412,6 +421,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
 	private readonly mcpProbe: McpProbe | undefined
+	private readonly mcpExtensionFactory: RunAcpOptions["mcpExtensionFactory"]
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
@@ -456,6 +466,10 @@ export class KimchiAcpAgent implements Agent {
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 		this.mcpProbe = options.mcpProbe
+		// Presence of the MCP extension factory is the same condition that gates
+		// the factory wiring in cli.ts (mcpAdapterExtensions.length > 0); it
+		// de-advertises _kimchi.dev/reload_mcp_config when no adapter is wired.
+		this.mcpExtensionFactory = options.mcpExtensionFactory
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
 			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
@@ -522,6 +536,10 @@ export class KimchiAcpAgent implements Agent {
 				_meta: kimchiDevMetaOf({
 					...ADVERTISED_CAPABILITIES,
 					...(this.mcpProbe ? {} : { probe_mcp_server: false }),
+					// The hot-apply method exists only when the MCP adapter extension is
+					// wired — the same condition that gates the factory in cli.ts. Mirrors
+					// the probe's conditional de-advertising.
+					...(this.mcpExtensionFactory ? {} : { reload_mcp_config: false }),
 					// Advertises that the agent emits generated files at turn end
 					// as `resource_link` chunks carrying
 					// `_meta["kimchi.dev"].type = "artifact"`.
@@ -681,6 +699,7 @@ export class KimchiAcpAgent implements Agent {
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				reloadToken: takeSessionReloadToken(session),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -992,6 +1011,7 @@ export class KimchiAcpAgent implements Agent {
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				reloadToken: takeSessionReloadToken(session),
 			}
 			registerAcpPrompter(
 				sessionId,
@@ -1254,6 +1274,30 @@ export class KimchiAcpAgent implements Agent {
 				const result = await handleProbeMcpServer(this.mcpProbe, params)
 				return result as Record<keyof ProbeResult, unknown>
 			}
+			case AVAILABLE_EXT_METHODS.reload_mcp_config:
+				// Sessionless inbound: fan out to every live session's MCP adapter
+				// instance (each owns its own state) through the reload-handle
+				// registry. Idle-gated per session; see handleReloadMcpConfig.
+				// The spread satisfies the string-indexed record the extMethod
+				// contract wants without a cast (import_apply precedent).
+				return {
+					...(await handleReloadMcpConfig(
+						{
+							// Re-read lazily INSIDE the reload FIFO: the idle gate runs on
+							// turn/compaction state at apply time, so a session that began
+							// a turn while this reload queued is still gated as busy.
+							getSessions: () =>
+								[...this.sessions.values()].map((entry) => ({
+									sessionId: entry.session.sessionId,
+									turnActive: entry.turn !== undefined && !entry.turn.cancelled,
+									isCompacting: entry.session.isCompacting,
+									...(entry.reloadToken !== undefined ? { reloadToken: entry.reloadToken } : {}),
+								})),
+							conn: this.conn,
+						},
+						params,
+					)),
+				}
 			case AVAILABLE_EXT_METHODS.auth_status:
 				// Read the shared credential store per call so authenticate(),
 				// unstable_logout(), and logins from other Kimchi surfaces are
@@ -1443,6 +1487,10 @@ export class KimchiAcpAgent implements Agent {
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
+		// Drop the session's MCP reload handle with the record so the ext-method
+		// fan-out never drives a disposed session's adapter state (session
+		// replacement re-registers the replacement state's handle).
+		if (entry.reloadToken !== undefined) unregisterReloadHandle(entry.reloadToken)
 		// Stop the adapter from publishing skill-refresh results: a discovery
 		// pass still in flight must not commit an obsolete snapshot (or
 		// rebuild prompt options) after the session is gone.
@@ -3142,6 +3190,18 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 }
 
 /**
+ * Joins the MCP reload token minted inside createSessionSettings (where the
+ * MCP extension is built, before the AgentSession exists) to the session the
+ * factory/loader hands back. SessionRecord creation reads it and drops the
+ * entry's usefulness; the WeakMap lets abandoned sessions GC the token.
+ */
+const sessionReloadTokens = new WeakMap<object, string>()
+
+function takeSessionReloadToken(session: object): string | undefined {
+	return sessionReloadTokens.get(session)
+}
+
+/**
  * Shared session-setup: create settings manager, apply theme + HTTP idle
  * timeout, and load resources. Both the session loader and factory
  * diverge only in how they obtain a SessionManager.
@@ -3172,7 +3232,17 @@ async function createSessionSettings(
 	// all of them (see setStreamIdleTimeoutOverride).
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
-	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
+	// Per-session reload token for `_kimchi.dev/reload_mcp_config`: joins the
+	// MCP extension instance (its adapter registers the reload handle under
+	// this token) to the SessionRecord the ext-method fan-out iterates and the
+	// record disposal unregisters. TUI sessions run the same extension without
+	// a token — no registry consumer there.
+	const reloadToken = options.mcpExtensionFactory ? randomUUID() : undefined
+	const mcpExtension = options.mcpExtensionFactory?.({
+		cwd,
+		callerServers,
+		...(reloadToken !== undefined ? { reloadToken } : {}),
+	})
 	// The main loader carries the LIVE extension set (inline factories + MCP
 	// adapter) and is only reloaded on intentional full session reloads. The
 	// ACP adapter in front of it serves skills from per-session discovery
@@ -3193,7 +3263,7 @@ async function createSessionSettings(
 		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
-	return { settingsManager, resourceLoader }
+	return { settingsManager, resourceLoader, reloadToken }
 }
 
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
@@ -3236,7 +3306,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				const msg = err instanceof Error ? err.message : String(err)
 				throw RequestError.invalidParams(undefined, `invalid sessionId: ${msg}`)
 			}
-			const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+			const { settingsManager, resourceLoader, reloadToken } = await createSessionSettings(cwd, options, params)
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
@@ -3244,6 +3314,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 				resourceLoader,
 				sessionManager,
 			})
+			if (reloadToken !== undefined) sessionReloadTokens.set(session, reloadToken)
 			return session
 		}
 		let header: Pick<SessionHeader, "id" | "cwd"> | null
@@ -3288,7 +3359,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to open session: ${msg}`)
 		}
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader, reloadToken } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -3296,6 +3367,7 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 			resourceLoader,
 			sessionManager,
 		})
+		if (reloadToken !== undefined) sessionReloadTokens.set(session, reloadToken)
 		return session
 	}
 }
@@ -3304,13 +3376,14 @@ export function defaultSessionLoader(options: RunAcpOptions): AcpSessionLoader {
 export function defaultSessionFactory(options: RunAcpOptions): AcpSessionFactory {
 	return async (params: NewSessionRequest): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
-		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, params)
+		const { settingsManager, resourceLoader, reloadToken } = await createSessionSettings(cwd, options, params)
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
 			settingsManager,
 			resourceLoader,
 		})
+		if (reloadToken !== undefined) sessionReloadTokens.set(session, reloadToken)
 		return session
 	}
 }
