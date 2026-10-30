@@ -10,12 +10,12 @@ import {
 	type ExtensionAPI,
 	getAgentDir,
 	type InlineExtension,
-	type ModelRuntime,
 	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../../resources/store.js"
+import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
@@ -261,10 +261,6 @@ export interface RunResult {
 	maxTurns?: number
 	/** Absolute path to the saved plan file, if the agent produced a plan. */
 	planPath?: string
-}
-
-type ModelRegistryWithRuntime = {
-	runtime?: ModelRuntime
 }
 
 function collectResponseText(session: AgentSession) {
@@ -550,8 +546,7 @@ ${skillLines}`
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
-	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
-	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
+	const modelRuntime = requireModelRuntime(ctx.modelRegistry)
 
 	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
