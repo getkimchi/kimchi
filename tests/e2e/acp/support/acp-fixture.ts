@@ -47,6 +47,9 @@ export interface AcpFixture {
 	proc: ChildProcess
 	conn: ClientSideConnection
 	client: RecordingClient
+	/** Everything the kimchi process wrote to stderr, forwarded live to the
+	 *  test runner's stderr and kept for assertions (e.g. drop warnings). */
+	agentStderr: string
 	/** The initialize() response captured at connection setup, so tests can assert negotiated agent capabilities without a second initialization call. */
 	initializeResponse: acp.InitializeResponse
 	mcp?: McpFixture
@@ -336,6 +339,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 	}
 
 	let client: RecordingClient | null = null
+	let agentStderr = ""
 
 	// Dump the full client/server state on ANY test failure (not just fixture
 	// start failures) — scenario timeouts are otherwise invisible in CI logs.
@@ -447,7 +451,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 
 		const modelArgs = defaultModel === undefined ? ["--model", configuredModels[0].slug] : []
 		proc = spawn(BINARY_PATH, ["--mode", "acp", ...modelArgs, ...extraArgs], {
-			stdio: ["pipe", "pipe", "inherit"],
+			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				...process.env,
 				HOME: homeDir,
@@ -473,6 +477,12 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		proc.on("error", (e) => {
 			process.stderr.write(`[acp-e2e] spawn error: ${e}\n`)
 			abort.abort()
+		})
+		// Forward the agent's stderr live (it used to be inherited directly) and
+		// keep it for assertions — the drop-warning behavior lives there.
+		proc.stderr?.on("data", (chunk: Buffer) => {
+			agentStderr += chunk.toString()
+			process.stderr.write(chunk)
 		})
 
 		// biome-ignore lint/style/noNonNullAssertion: defined at this point
@@ -516,6 +526,10 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			proc,
 			conn,
 			client,
+			// Live view: stderr keeps arriving after the fixture returns.
+			get agentStderr() {
+				return agentStderr
+			},
 			initializeResponse: initResult,
 			mcp,
 			waitForExit,

@@ -163,6 +163,7 @@ import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
+import { promptBlockText } from "./prompt-blocks.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
@@ -1090,23 +1091,36 @@ export class KimchiAcpAgent implements Agent {
 		}
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
-		// type. Dropped images do NOT join this dedupe — they additionally surface
-		// to the client as a per-turn agent_message_chunk warning below, so every
-		// dropping turn is visible, not just the first one per connection.
+		// type. Anything with a text rendering — text, or a resource_link via
+		// promptBlockText (ACP spec: agents MUST support them) — never joins
+		// this dedupe. Dropped images do NOT join it either — they additionally
+		// surface to the client as a per-turn agent_message_chunk warning below,
+		// so every dropping turn is visible, not just the first one per
+		// connection.
 		for (const b of params.prompt) {
-			if (b.type !== "text" && b.type !== "image" && !this.warnedBlockTypes.has(b.type)) {
+			if (b.type !== "image" && promptBlockText(b) === undefined && !this.warnedBlockTypes.has(b.type)) {
 				this.warnedBlockTypes.add(b.type)
 				process.stderr.write(`acp prompt: dropping ${b.type} block (unsupported block type)\n`)
 			}
 		}
 		let text = params.prompt
-			.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
+			.map((b: ContentBlock) => promptBlockText(b) ?? "")
 			.join("")
 			.trim()
 
 		// If the prompt starts with `/skill:<name>` and matches a skill advertised
-		// for this session, rewrite the turn to inject the skill content.
-		const skillRewrite = await tryParseSkillCommand(text, entry.skillCommands)
+		// for this session, rewrite the turn to inject the skill content. The
+		// parse runs on text blocks only: a resource_link rendered before the
+		// command text must not defeat the rewrite (pre-rendering semantics),
+		// and the rewrite drops rendered links exactly as the pre-render drop
+		// did.
+		const skillRewrite = await tryParseSkillCommand(
+			params.prompt
+				.map((b: ContentBlock) => (b.type === "text" ? b.text : ""))
+				.join("")
+				.trim(),
+			entry.skillCommands,
+		)
 		if (skillRewrite) {
 			text = buildSkillCommandPrompt(skillRewrite)
 		}
