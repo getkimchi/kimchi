@@ -141,8 +141,7 @@ export class SideChatPanel {
 	showHistory(items: readonly HistoryItem[]): void {
 		this.history.setItems(items)
 		this.historyOpen = true
-		this.host.ui.setFocus(this.history)
-		this.host.requestRender()
+		this.host.focusComponent(this.history)
 	}
 
 	hideHistory(): void {
@@ -172,8 +171,7 @@ export class SideChatPanel {
 
 	/** Focus the side chat: its history list while open, else its editor. */
 	focus(): void {
-		this.host.ui.setFocus(this.historyOpen ? this.history : this.editor)
-		this.host.requestRender()
+		this.host.focusComponent(this.historyOpen ? this.history : this.editor)
 	}
 
 	/** Quote a transcript selection into the editor, Cursor "add to chat" style. */
@@ -374,7 +372,9 @@ export class SideChatPanel {
 		if (this.mode === "review") {
 			return ` ${key("enter")}${dim(" send to main · ")}${key("esc")}${dim(" keep chatting · ")}${key("/close")}${dim(" discard")}`
 		}
-		const escAction = this.busy ? dim(" stop · ") : dim(" main · ")
+		// While a main-session modal (a permission ask) is open, esc navigates to it — the
+		// modal owns the keyboard, so it takes precedence even over a running side stream.
+		const escAction = this.host.modalDialog() ? dim(" ask · ") : this.busy ? dim(" stop · ") : dim(" main · ")
 		const focusKeys = sideChatFocusHint()
 		const focusHint = focusKeys ? `${key(focusKeys)}${dim(" focus · ")}` : ""
 		return ` ${key("esc")}${escAction}${focusHint}${key("/wrap")}${dim(" → main")}`
