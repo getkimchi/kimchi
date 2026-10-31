@@ -39,12 +39,12 @@ import {
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
 	readReportingState,
-	trimFrozenSnapshot,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
 	type ServerLimit,
 	type SnapshotAck,
+	trimFrozenSnapshot,
 	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
@@ -318,19 +318,34 @@ export function deliverSnapshots(
 				} catch {
 					return
 				}
-				if (limit) {
-					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
-				} else if (status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
-					// The server rejected this body for its size; the next pass retries the halved one.
-				} else
-					await deferFrozenSnapshot(
-						agentDir,
-						job,
-						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-						errorMessage,
-						assertOwnership,
-					)
+				// Another process replaced or capped this body away while the upload was in flight; its
+				// claims moved with it, so this job is settled and the pass moves on to the next one.
+				const gone = () => {
+					try {
+						return !frozenSnapshotPending(agentDir, job)
+					} catch {
+						return true
+					}
+				}
+				if (gone()) continue
+				try {
+					if (limit) {
+						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
+						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+					} else if (status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
+						// The server rejected this body for its size; the next pass retries the halved one.
+					} else
+						await deferFrozenSnapshot(
+							agentDir,
+							job,
+							Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
+							errorMessage,
+							assertOwnership,
+						)
+				} catch (error) {
+					if (gone()) continue
+					throw error
+				}
 			}
 		}
 	})

@@ -256,7 +256,7 @@ function importJournalFiles(
 		// as quiet as before; an empty note marks a clean read and lets later passes skip.
 		const savedProblems = coverageProblems(backend, path)
 		const recheck = savedProblems.length > 0 && !rechecked.has(path)
-		const known = new Set(savedProblems.map((problem) => `${problem.kind}:${problem.line}`))
+		const known = new Set(savedProblems.map((problem) => JSON.stringify(problem)))
 		if (recheck) rechecked.add(path)
 		let prepared: ReturnType<typeof prepareJournal>
 		try {
@@ -281,6 +281,21 @@ function importJournalFiles(
 				checkBudget?.()
 				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
 				diagnostic(agentDir, "journal-mutation")
+			} else if (decision.offset === 0 && size === 0) {
+				// An emptied journal retires its stale note instead of wedging capture forever.
+				checkBudget?.()
+				backend.tx(() => {
+					putProblems(backend, path, COVERAGE_NOTES, [])
+					backend.putJournalCursor({
+						path,
+						dev,
+						ino,
+						generation: decision.generation,
+						offset: 0,
+						boundaryHash: boundaryHashOf(Buffer.alloc(0), 0),
+						updatedAt: Date.now(),
+					})
+				})
 			}
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
@@ -295,25 +310,20 @@ function importJournalFiles(
 		// start and earlier generations' records stay in the store. Only lines that fail to parse do.
 		const problems: WorkRecordProblem[] = []
 		let tail = decision.mode === "clean-append" ? coverageProblems(backend, path, TAIL_NOTES) : []
+		// Problems already saved are re-read, not re-reported; the note still records them.
+		const report = (problem: WorkRecordProblem, bucket: WorkRecordProblem[]) => {
+			const positioned = { ...problem, line: problem.line + lineOffset }
+			bucket.push(positioned)
+			if (!known.has(JSON.stringify(positioned))) {
+				result.problems.push(positioned)
+				onProblem?.(positioned)
+			}
+		}
 		const parser = journalParser(
 			path,
 			parsed,
-			(problem) => {
-				const positioned = { ...problem, line: problem.line + lineOffset }
-				problems.push(positioned)
-				if (!known.has(`${positioned.kind}:${positioned.line}`)) {
-					result.problems.push(positioned)
-					onProblem?.(positioned)
-				}
-			},
-			(problem) => {
-				const positioned = { ...problem, line: problem.line + lineOffset }
-				tail.push(positioned)
-				if (!known.has(`${positioned.kind}:${positioned.line}`)) {
-					result.problems.push(positioned)
-					onProblem?.(positioned)
-				}
-			},
+			(problem) => report(problem, problems),
+			(problem) => report(problem, tail),
 		)
 		for (const line of lines) {
 			checkBudget?.()
@@ -339,9 +349,11 @@ function importJournalFiles(
 		const boundaryHash = prefix.digest("hex")
 		let imported = 0
 		backend.tx(() => {
-			if (problems.length) saveCoverage(backend, path, problems)
-			// A window from the start that parses cleanly retires a stale problem note.
-			else if (decision.offset === 0) putProblems(backend, path, COVERAGE_NOTES, [])
+			// A read from the start that reached the end without a problem retires problems saved
+			// against older content; every other window keeps the clean marker fresh as before.
+			if (!problems.length && savedProblems.length > 0 && decision.offset === 0 && consumedEnd >= size)
+				putProblems(backend, path, COVERAGE_NOTES, [])
+			else saveCoverage(backend, path, problems)
 			putProblems(backend, path, TAIL_NOTES, tail)
 			if (entries.length) {
 				imported = importBatchInTx(backend, entries)

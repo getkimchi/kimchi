@@ -25,7 +25,15 @@ import {
 	reportJournalProblems,
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
-import { backendFor, capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
+import {
+	backendFor,
+	capture,
+	closeBackends,
+	type JournalCursor,
+	readRecords,
+	readWorkRows,
+	useBackendFactory,
+} from "./records.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
@@ -315,11 +323,7 @@ describe("import loop over the memory backend", () => {
 		writeFileSync(file, line(work()) + line(request("req-1")))
 		await importJournals(dir)
 		// The field state: an old build's mutation seed left a stale problem note behind.
-		backendFor(dir).putNote(
-			"journal-coverage",
-			file,
-			JSON.stringify([{ kind: "invalid", path: file, line: 1 }]),
-		)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
 		const problems: unknown[] = []
 		reportJournalProblems(dir, (problem) => problems.push(problem))
 		expect(problems).toHaveLength(1)
@@ -338,7 +342,7 @@ describe("import loop over the memory backend", () => {
 		useBackendFactory(() => createMemoryRecords())
 		const folder = journal(dir)
 		const file = join(folder, "parent.jsonl")
-		writeFileSync(file, "{not json\n" + line(request("req-1")))
+		writeFileSync(file, `{not json\n${line(request("req-1"))}`)
 		const result = await importJournals(dir)
 		expect(result.problems).toHaveLength(1)
 		expect(backendFor(dir).getNote("journal-coverage", file)).toBeDefined()

@@ -54,6 +54,7 @@ const account = {
 const requestId = "33333333-3333-4333-8333-333333333333"
 const otherRequestId = "44444444-4444-4444-8444-444444444444"
 const billing = "77777777-7777-4777-8777-777777777777"
+const contentRepo = { provider: "github" as const, host: "github.com", id: "42" }
 const snapshot = (requestIds: string[] = []): RepositorySnapshot => ({
 	account,
 	content: {
@@ -170,8 +171,9 @@ describe("durable reporting queue", () => {
 				// Every version carries all earlier requests, or the queue holds the previous body.
 				ids = [
 					...ids,
-					...Array.from({ length: 20 }, (_, request) =>
-							`${(index * 20 + request).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
+					...Array.from(
+						{ length: 20 },
+						(_, request) => `${(index * 20 + request).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
 					),
 				]
 				await queueSnapshots(directory, [snapshot(ids)])
@@ -197,6 +199,74 @@ describe("durable reporting queue", () => {
 			)
 			const after = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
 			expect(after).toHaveLength(index.length - 1)
+		} finally {
+			__setFrozenQueueCapForTest(FROZEN_QUEUE_BYTES)
+		}
+	})
+
+	it("keeps a held body when the per-key cap drops pending notes", async () => {
+		await setReportingEnabled(directory, true)
+		__setFrozenQueueCapForTest(10_000)
+		try {
+			const backend = backendFor(directory)
+			const base = await readReportingState(directory)
+			const producerId = base.producerId
+			const key =
+				Object.keys((await readReportingState(directory)).entries)[0] ??
+				`${accountKey(account)}:${repositoryKey(contentRepo)}`
+			const ids = (count: number, offset: number) =>
+				Array.from(
+					{ length: count },
+					(_, index) => `${(offset + index).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
+				)
+			const body = (count: number, offset: number, revision: string) =>
+				JSON.stringify({
+					schemaVersion: 1,
+					producerId,
+					revision,
+					generatedAt: "2026-10-04T12:00:00Z",
+					repository: contentRepo,
+					pullRequests: [],
+					requests: ids(count, offset).map((requestId) => ({
+						requestId,
+						billingRecordIds: [billing],
+						startedAt: "2026-10-04T12:00:00Z",
+						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+					})),
+					coverage: { observedRequests: count, unpricedRequests: 0, historyComplete: true },
+				})
+			const entryFor = (pending: string, held?: true) => ({
+				account,
+				repository: contentRepo,
+				revision: "1",
+				requestHashes: [],
+				attempts: 0,
+				retryAt: 0,
+				...(held ? { held: true } : {}),
+				pending: JSON.parse(pending),
+			})
+			const writeEntry = async (pending: string, held?: true) => {
+				await writeFile(
+					join(directory, "pr-cost-reporting/state.json"),
+					JSON.stringify({
+						...base,
+						entries: { [key]: entryFor(pending, held) },
+					}),
+				)
+				await freezeSnapshots(directory, () => {})
+			}
+			// A held body first: its claims may still live on the server, so the cap never drops it.
+			const heldBody = body(20, 0, "1")
+			await writeEntry(heldBody, true)
+			// Later versions cross the cap; only non-held bodies are dropped, oldest first.
+			for (let round = 0; round < 3; round++) await writeEntry(body(20, 100 + round * 20, "1"))
+			const pending = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
+			expect(pending.length).toBeLessThan(4)
+			const bodies = pending.map((row) => JSON.parse(row.body).body)
+			expect(bodies).toContain(heldBody)
+			const index = JSON.parse(backend.getNote("legacy-pr-cost-pending", key) ?? "[]")
+			expect(index.map((entry: { id: string }) => entry.id).sort()).toEqual(pending.map((row) => row.name).sort())
+			expect(index.some((entry: { held?: true }) => entry.held)).toBe(true)
 		} finally {
 			__setFrozenQueueCapForTest(FROZEN_QUEUE_BYTES)
 		}

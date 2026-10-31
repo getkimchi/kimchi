@@ -825,13 +825,19 @@ describe("account-fenced reporting delivery", () => {
 			const rows = backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
 			expect(rows).toHaveLength(1)
 			const parsed = JSON.parse(rows[0].body)
-			return JSON.parse(parsed.body) as { requests: unknown[]; coverage: { historyComplete: boolean } }
+			return JSON.parse(parsed.body) as {
+				requests: unknown[]
+				coverage: { historyComplete: boolean; trimmedRequests?: number }
+			}
 		}
 		await deliver()
 		expect(frozenBody().requests.length).toBe(20)
 		expect(frozenBody().coverage.historyComplete).toBe(false)
+		expect(frozenBody().coverage.trimmedRequests).toBe(20)
 		await deliver()
 		expect(frozenBody().requests.length).toBe(16)
+		// Trimmed requests accumulate across halvings, so the server sees the total omissions.
+		expect(frozenBody().coverage.trimmedRequests).toBe(24)
 		// At the floor the body no longer shrinks; the rejection defers like any other.
 		await deliver()
 		const entry = Object.values((await readReportingState(directory)).entries)[0]
@@ -882,7 +888,31 @@ describe("account-fenced reporting delivery", () => {
 		const backend = backendFor(directory)
 		expect(backend.readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(0)
 		expect(backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
-		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeUndefined()
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.pending).toBeUndefined()
+		// The trimmed ack keeps membership for the requests it left out, which the server retains.
+		expect(entry.requestHashes).toHaveLength(40)
+	})
+
+	it("treats a body deleted mid-delivery as settled and continues the pass", async () => {
+		await queueSnapshots(directory, [content])
+		let deleted = false
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (!deleted) {
+				// Another process caps this body away while its upload is in flight.
+				const backend = backendFor(directory)
+				for (const row of backend.readNotePage("legacy-pr-cost-snapshots", "", 100))
+					backend.deleteNote("legacy-pr-cost-snapshots", row.name)
+				deleted = true
+			}
+			return new Response(null, { status: 413 })
+		})
+		await deliver()
+		expect(deleted).toBe(true)
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.attempts).toBe(0)
+		expect(entry.lastError).toBeUndefined()
 	})
 
 	it("persists Retry-After and does not retry before its deadline", async () => {
