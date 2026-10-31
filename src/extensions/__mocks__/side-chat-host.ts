@@ -30,6 +30,9 @@ export function createSideChatHost(): {
 	let focused: Component | undefined
 	const host = {
 		isFullscreen: vi.fn(() => true),
+		ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+		editorTheme: {},
+		keybindings: { matches: vi.fn(() => false) },
 		modalDialog: vi.fn(() => modal),
 		focusComponent: vi.fn((component: Component) => {
 			focused = modal ?? component

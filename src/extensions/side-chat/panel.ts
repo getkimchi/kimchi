@@ -372,9 +372,9 @@ export class SideChatPanel {
 		if (this.mode === "review") {
 			return ` ${key("enter")}${dim(" send to main · ")}${key("esc")}${dim(" keep chatting · ")}${key("/close")}${dim(" discard")}`
 		}
-		// While a main-session modal (a permission ask) is open, esc navigates to it.
-		const escTarget = this.host.modalDialog() ? dim(" ask · ") : dim(" main · ")
-		const escAction = this.busy ? dim(" stop · ") : escTarget
+		// While a main-session modal (a permission ask) is open, esc navigates to it — the
+		// modal owns the keyboard, so it takes precedence even over a running side stream.
+		const escAction = this.host.modalDialog() ? dim(" ask · ") : this.busy ? dim(" stop · ") : dim(" main · ")
 		const focusKeys = sideChatFocusHint()
 		const focusHint = focusKeys ? `${key(focusKeys)}${dim(" focus · ")}` : ""
 		return ` ${key("esc")}${escAction}${focusHint}${key("/wrap")}${dim(" → main")}`

@@ -50,7 +50,11 @@ function enableSideChat(homeDir: string): void {
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	writeFileSync(
 		path,
-		JSON.stringify({ ...settings, tuiMode: "fullscreen", resources: { "extensions.side-chat": true } }),
+		JSON.stringify({
+			...settings,
+			tuiMode: "fullscreen",
+			resources: { ...((settings.resources as Record<string, boolean>) ?? {}), "extensions.side-chat": true },
+		}),
 		"utf-8",
 	)
 }
