@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
-import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore } from "./store.js"
+import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 const DRIVER = join(ROOT, "tests/e2e/tui/support/ledger-driver.ts")
@@ -43,6 +43,69 @@ describe("classifyUserVersion (pure)", () => {
 		[777, "foreign"],
 	])("user_version %i → %s", (version, action) => {
 		expect(classifyUserVersion(version)).toBe(action)
+	})
+})
+
+describe("retryOnBusy (pure)", () => {
+	const busy = (code = "SQLITE_BUSY") => Object.assign(new Error("busy"), { code })
+	function fakeClock() {
+		const c = {
+			t: 0,
+			sleeps: [] as number[],
+			now: () => c.t,
+			sleep: (ms: number) => {
+				c.sleeps.push(ms)
+				c.t += ms
+			},
+		}
+		return c
+	}
+
+	test("retries busy errors (any SQLITE_BUSY* code) with capped backoff, then succeeds", () => {
+		const clock = fakeClock()
+		let calls = 0
+		const result = retryOnBusy(
+			() => {
+				if (++calls <= 7) throw busy(calls % 2 ? "SQLITE_BUSY" : "SQLITE_BUSY_RECOVERY")
+				return "ok"
+			},
+			5000,
+			clock,
+		)
+		expect(result).toBe("ok")
+		expect(clock.sleeps).toEqual([10, 20, 40, 80, 160, 250, 250])
+	})
+
+	test("non-busy errors are rethrown immediately without sleeping", () => {
+		const clock = fakeClock()
+		const boom = Object.assign(new Error("boom"), { code: "SQLITE_CORRUPT" })
+		expect(() =>
+			retryOnBusy(
+				() => {
+					throw boom
+				},
+				5000,
+				clock,
+			),
+		).toThrow(boom)
+		expect(clock.sleeps).toEqual([])
+	})
+
+	test("gives up with the last busy error once the budget is spent", () => {
+		const clock = fakeClock()
+		let calls = 0
+		expect(() =>
+			retryOnBusy(
+				() => {
+					calls++
+					throw busy()
+				},
+				100,
+				clock,
+			),
+		).toThrow("busy")
+		expect(clock.t).toBe(100)
+		expect(calls).toBeGreaterThan(1)
 	})
 })
 

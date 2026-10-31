@@ -34,9 +34,10 @@ process.env.PI_CODING_AGENT_DIR = join(testHome, "agent-legacy")
 // The GIT_TRACE_REFS debug ref backend crashes some git binaries (a plain
 // `git pack-refs --all` segfaults on broken builds), and traces from scratch
 // repos pollute the developer's real attribution capture, so tests must not
-// inherit either.
-delete process.env.GIT_TRACE_REFS
-delete process.env.GIT_TRACE2_EVENT
+// inherit any git tracer. Scrub by prefix so tracers added later are covered too.
+for (const key of Object.keys(process.env)) {
+	if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_TRACE") delete process.env[key]
+}
 
 afterAll(() => {
 	// Retry through transient Windows EBUSY; a leftover only costs temp space,

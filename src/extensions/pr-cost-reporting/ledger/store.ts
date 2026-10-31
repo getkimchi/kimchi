@@ -11,8 +11,8 @@
  * fsync of the journal era; a 5s busy timeout orders concurrent Kimchi processes;
  * a writer that cannot get the lock within it surfaces SQLITE_BUSY (proven by the
  * store test via the Bun driver), never corruption. The open path additionally
- * retries transient SQLITE_BUSY for up to one busy-timeout window (a single
- * in-flight attempt can absorb a second window inside SQLite), because SQLite
+ * retries transient SQLITE_BUSY for a short window (an attempt started at the
+ * deadline can still wait one busy timeout inside SQLite), because SQLite
  * does not invoke the busy handler for WAL shared-memory locks during a
  * concurrent WAL upgrade of a fresh database.
  */
@@ -72,32 +72,67 @@ export interface LedgerStore {
 	close(): void
 }
 
+/** Per-connection busy timeout. */
+const BUSY_TIMEOUT_MS = 5000
+/**
+ * Open-retry window. The loser of the fresh-database WAL-upgrade race only waits for the winner to
+ * finish the upgrade and schema create: measured max 19ms over 120 three-way contended opens, so 1s
+ * leaves wide headroom while capping the synchronous event-loop stall.
+ */
+const OPEN_RETRY_BUDGET_MS = 1000
+
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function isBusy(error: unknown): boolean {
+	return String((error as { code?: unknown } | null)?.code ?? "").startsWith("SQLITE_BUSY")
+}
+
+/**
+ * Runs attempt, retrying with capped exponential backoff while it throws an SQLITE_BUSY* error and the
+ * budget lasts. Any other error, or the last busy error once the budget is spent, is rethrown. An attempt
+ * started just before the deadline may still wait inside SQLite, so the worst case is the budget plus one busy timeout.
+ * attempt must be safe to repeat and release its own resources when it throws.
+ */
+export function retryOnBusy<T>(
+	attempt: () => T,
+	budgetMs: number,
+	clock: { now(): number; sleep(ms: number): void } = { now: Date.now, sleep: sleepSync },
+): T {
+	const deadline = clock.now() + budgetMs
+	for (let delay = 10; ; delay = Math.min(delay * 2, 250)) {
+		try {
+			return attempt()
+		} catch (error) {
+			const remaining = deadline - clock.now()
+			if (!isBusy(error) || remaining <= 0) throw error
+			clock.sleep(Math.min(delay, remaining))
+		}
+	}
+}
+
 /**
  * Opens (and on first use creates) the ledger. Foreign schemas fail closed:
  * the file is left exactly as found, and callers report the collector degraded
  * instead of writing records a different build cannot read.
+ *
+ * The whole open is retried on SQLITE_BUSY*: SQLite does not invoke the busy handler for WAL
+ * shared-memory locks during a concurrent WAL upgrade of a fresh database, so two processes opening
+ * the same brand-new ledger race past busy_timeout and the loser fails instantly.
  */
-/** Shared wall-clock budget for the per-connection busy timeout and the open-retry deadline. */
-const OPEN_BUSY_BUDGET_MS = 5000
-
 export function openStore(agentDir: string): LedgerStore {
 	const { Database } = bunSqlite()
 	const path = ledgerDbPath(agentDir)
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
 	closeSync(openSync(path, "a", 0o600))
-	// Retry the whole open (construction included) on any SQLITE_BUSY* code: the busy handler is
-	// not invoked for WAL shared-memory locks during a concurrent WAL upgrade of a fresh database,
-	// so two processes opening the same brand-new ledger race past busy_timeout and the loser fails
-	// instantly (observed in 0ms). An attempt started just before the deadline may still wait up to
-	// busy_timeout inside SQLite, so the worst-case open is roughly twice the budget.
-	const deadline = Date.now() + OPEN_BUSY_BUDGET_MS
-	for (let delay = 10; ; delay = Math.min(delay * 2, 250)) {
+	return retryOnBusy(() => {
 		let db: Sqlite.Database | undefined
 		try {
 			const ledger = new Database(path, { create: true, strict: true })
 			db = ledger
 			// Connection-local: even the first schema read may race another process's initialization.
-			ledger.exec(`PRAGMA busy_timeout=${OPEN_BUSY_BUDGET_MS}`)
+			ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
 			// Read the version before any persisting pragma so a foreign database is left exactly as found.
 			const version = ledger.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
 			const decision = classifyUserVersion(version)
@@ -128,12 +163,9 @@ export function openStore(agentDir: string): LedgerStore {
 			} catch {
 				// A failed close never masks the original open error.
 			}
-			const busy = String((error as { code?: unknown }).code ?? "").startsWith("SQLITE_BUSY")
-			const remaining = deadline - Date.now()
-			if (!busy || remaining <= 0) throw error
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(delay, remaining))
+			throw error
 		}
-	}
+	}, OPEN_RETRY_BUDGET_MS)
 }
 
 /**
