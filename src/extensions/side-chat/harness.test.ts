@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it } from "vitest"
 import { frameBox, frameOf } from "../__mocks__/side-chat-host.js"
 import {
 	addCompositor,
+	addFocusGuard,
 	addMouseInterceptor,
 	addWheelInterceptor,
 	applyCompositors,
+	applyFocusGuards,
+	type FocusReader,
 	installSideChatHarnessPatch,
 	interceptMouse,
 	interceptWheel,
@@ -109,5 +112,52 @@ describe("hooks", () => {
 		expect(interceptMouse(press(0))).toBe(false)
 		expect(interceptWheel(0, 0, 1)).toBe(false)
 		expect(applyCompositors(["x"], frameOf(1, 1, []), 1)).toEqual(["x"])
+	})
+})
+
+describe("focus guards", () => {
+	/** Focusable whose current focus is a plain field. */
+	const fakeUi = (initial: Component): { ui: FocusReader; focused: () => Component | undefined } => {
+		let current: Component | undefined = initial
+		return {
+			ui: {
+				getFocusedComponent: () => current ?? null,
+				setFocus: (next) => {
+					current = next ?? undefined
+				},
+			},
+			focused: () => current,
+		}
+	}
+
+	it("no-ops without guards or a named dialog", () => {
+		const { ui } = fakeUi(component())
+		expect(applyFocusGuards(ui)).toBe(false)
+		removers.push(addFocusGuard(() => undefined))
+		expect(applyFocusGuards(ui)).toBe(false)
+	})
+
+	it("refocuses the dialog a mouse click unfocused, then stops after removal", () => {
+		const dialog = component()
+		const editor = component()
+		const { ui, focused } = fakeUi(dialog)
+		const remove = addFocusGuard(() => dialog)
+
+		ui.setFocus(editor) // a click on an editor answers with focus: true
+		expect(applyFocusGuards(ui)).toBe(true)
+		expect(focused()).toBe(dialog)
+
+		remove()
+		ui.setFocus(editor)
+		expect(applyFocusGuards(ui)).toBe(false)
+		expect(focused()).toBe(editor)
+	})
+
+	it("leaves focus alone while the dialog still holds it", () => {
+		const dialog = component()
+		const { ui, focused } = fakeUi(dialog)
+		removers.push(addFocusGuard(() => dialog))
+		expect(applyFocusGuards(ui)).toBe(true)
+		expect(focused()).toBe(dialog)
 	})
 })

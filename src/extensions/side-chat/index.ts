@@ -34,6 +34,7 @@ import { PaneDivider } from "./divider.js"
 import { applyFocusChrome } from "./focus-chrome.js"
 import {
 	addCompositor,
+	addFocusGuard,
 	addMouseInterceptor,
 	addWheelInterceptor,
 	getSideChatHost,
@@ -397,6 +398,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		})
 		const removeDividerPaint = addCompositor((screen, frame, width) => divider.paint(screen, frame, width))
 		const removeDividerMouse = addMouseInterceptor((event) => divider.handleMouse(event))
+		// Mouse dispatch refocuses clicked editors directly, bypassing focusComponent;
+		// keep a main-session modal dialog (a permission ask) focused regardless.
+		const removeFocusGuard = addFocusGuard(() => (active === chat ? host.modalDialog() : undefined))
 		let unsubscribe: (() => void) | undefined
 
 		const ready = createSideSession(ctx, {
@@ -446,6 +450,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				removeWheel()
 				removeDividerPaint()
 				removeDividerMouse()
+				removeFocusGuard()
 				restoreBorder()
 				host.clearSidePanel()
 				host.focusMainEditor()
