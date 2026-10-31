@@ -290,13 +290,13 @@ describe("kimchi config region", () => {
 		})
 	})
 
-	it("lists only the default region when EU is experimental-gated", async () => {
+	it("lists us and eu without the flag; self-hosted stays experimental-gated", async () => {
 		vi.mocked(loadConfig).mockReturnValue({ apiKey: "", region: "us" } as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
 
 		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States)")
+		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Available regions: us (United States), eu (Europe)")
 	})
 
 	it("notes the KIMCHI_REGION env override when it is in effect", async () => {

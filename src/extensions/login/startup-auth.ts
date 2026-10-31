@@ -14,7 +14,6 @@ import {
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	performKimchiSsoLoginWithExtensionUI,
-	regionChoiceRequired,
 	showSubscriptionLoginWithExtensionUI,
 	syncKimchiAuth,
 } from "./flow.js"
@@ -152,8 +151,6 @@ async function promptAuthChoice(
  */
 async function promptRegionChoice(ctx: ExtensionContext): Promise<RegionId | undefined> {
 	const currentRegion = loadConfig().region
-	// Skip the picker when experimental gating leaves no choice.
-	if (!regionChoiceRequired(currentRegion)) return currentRegion
 	return ctx.ui.custom<RegionId | undefined>((_tui, _theme, _keybindings, done) => {
 		const selector = createRegionSelector({
 			currentRegion,
