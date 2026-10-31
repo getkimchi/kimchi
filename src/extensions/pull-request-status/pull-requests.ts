@@ -272,14 +272,21 @@ async function scan(
 		0,
 		jobs.findIndex(([key]) => key === state.nextCommit),
 	)
+	// New pushes link on the next pass: commits still waiting for a PR go before known links refresh in their turn.
+	const order = jobs.map((_, offset) => (start + offset) % jobs.length)
+	order.sort(
+		(a, b) =>
+			Number(jobs[a][1].some((commit) => commit.pullRequests.length)) -
+			Number(jobs[b][1].some((commit) => commit.pullRequests.length)),
+	)
 
 	const repositories = new Map<string, Promise<Repository>>()
 	const tokens = new Map<string, Promise<string | undefined>>()
 	const associations = new Map<string, Promise<WorkPullRequest[]>>()
 	const refreshed = new Map<string, Promise<WorkPullRequest>>()
-	for (let offset = 0; offset < jobs.length && Date.now() < deadline; offset++) {
+	for (const index of order) {
+		if (Date.now() >= deadline) break
 		signal.throwIfAborted()
-		const index = (start + offset) % jobs.length
 		const [key, commits] = jobs[index]
 		state.nextCommit = jobs[(index + 1) % jobs.length][0]
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))

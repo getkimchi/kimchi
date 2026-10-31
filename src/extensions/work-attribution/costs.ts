@@ -574,6 +574,11 @@ export function calculatePullRequestCosts(
 	const pulls = new Map<string, PullObservation>()
 	const commitPulls = new Map<string, Set<string>>()
 	const identitiesByUrl = new Map<string, Set<string>>()
+	/** Per commit: identity parts and the earliest row time each PR key was listed for that commit. */
+	const commitLinks = new Map<
+		string,
+		{ workId: string; repository: string; sha: string; listedAt: Map<string, number> }
+	>()
 	// When each work first recorded each commit; a rewritten commit counts from its original.
 	const commitRecorded = new Map<string, number>()
 	const commitOrigins = new Map<string, string>()
@@ -651,12 +656,29 @@ export function calculatePullRequestCosts(
 					? [...aliases][0]
 					: `${identity.provider}:${identity.host}/${identity.repository}#${identity.number}`
 			const commitKey = commitIdentity(row)
-			if (commitKey !== undefined) add(commitPulls, commitKey, key)
-			add(workPulls, row.workId, key)
-			add(pullWorks, key, row.workId)
-			const linked = JSON.stringify([row.workId, key])
-			const recordedAt = firstRecorded(JSON.stringify([row.workId, row.repository, row.sha]))
-			if (recordedAt < (firstLinked.get(linked) ?? Number.POSITIVE_INFINITY)) firstLinked.set(linked, recordedAt)
+			if (commitKey !== undefined) {
+				// Filled from the narrowed per-commit sets after every row is read, below.
+				add(commitPulls, commitKey, key)
+				// commitIdentity only returns a key when every part is a string.
+				const [workId, , repository, , sha] = JSON.parse(commitKey)
+				const links = commitLinks.get(commitKey) ?? {
+					workId,
+					repository,
+					sha,
+					listedAt: new Map<string, number>(),
+				}
+				const listedAt = time(object(row.prLookup) ? row.prLookup.checkedAt : undefined) ?? time(pull?.checkedAt)
+				if (listedAt !== undefined && listedAt < (links.listedAt.get(key) ?? Number.POSITIVE_INFINITY))
+					links.listedAt.set(key, listedAt)
+				commitLinks.set(commitKey, links)
+			} else {
+				// Rows without a full commit identity keep their links exactly as recorded.
+				add(workPulls, row.workId, key)
+				add(pullWorks, key, row.workId)
+				const linked = JSON.stringify([row.workId, key])
+				const recordedAt = firstRecorded(JSON.stringify([row.workId, row.repository, row.sha]))
+				if (recordedAt < (firstLinked.get(linked) ?? Number.POSITIVE_INFINITY)) firstLinked.set(linked, recordedAt)
+			}
 			if (!pull) {
 				if (!pulls.has(key)) pulls.set(key, { checkedAt: Number.NEGATIVE_INFINITY, pullRequest: null })
 				continue
@@ -678,6 +700,66 @@ export function calculatePullRequestCosts(
 				else if (JSON.stringify(pull) < JSON.stringify(other)) previous.pullRequest = pull
 			}
 		}
+	}
+	/** Per work: when it first recorded each commit, the commit's PR, and when the work's stretch for that PR ends. */
+	const workCommits = new Map<string, { at: number; sha: string; key?: string; end: number }[]>()
+	// A commit first linked to one PR keeps its cost there even when later rows also name the PRs it
+	// passed through. Closed-without-merge links yield to open or merged candidates, and keys first
+	// listed together stay shared, and keys without a known listing time are never dropped: dropping an
+	// unresolvable identity would cancel today's pull-request-conflict guard.
+	for (const [commitKey, links] of commitLinks) {
+		const keys = commitPulls.get(commitKey) ?? new Set<string>()
+		if (keys.size > 1) {
+			const live = [...keys].filter((key) => {
+				const state = pulls.get(key)?.pullRequest?.state
+				return state === "open" || state === "merged"
+			})
+			if (live.length)
+				for (const key of [...keys]) if (pulls.get(key)?.pullRequest?.state === "closed") keys.delete(key)
+			const known = [...keys].map((key) => links.listedAt.get(key)).filter((listedAt) => listedAt !== undefined)
+			if (known.length) {
+				const earliest = Math.min(...known)
+				for (const key of [...keys])
+					if (links.listedAt.get(key) !== earliest && links.listedAt.get(key) !== undefined) keys.delete(key)
+			}
+		}
+		const recordedAt = firstRecorded(JSON.stringify([links.workId, links.repository, links.sha]))
+		for (const key of keys) {
+			add(workPulls, links.workId, key)
+			add(pullWorks, key, links.workId)
+			const linked = JSON.stringify([links.workId, key])
+			if (recordedAt < (firstLinked.get(linked) ?? Number.POSITIVE_INFINITY)) firstLinked.set(linked, recordedAt)
+		}
+		const commits = workCommits.get(links.workId) ?? []
+		commits.push({
+			at: recordedAt,
+			sha: links.sha,
+			// A commit still in several PRs keeps its stretch of the work shared.
+			key: keys.size === 1 ? [...keys][0] : undefined,
+			end: Math.min(...[...keys].map((key) => links.listedAt.get(key) ?? Number.POSITIVE_INFINITY)),
+		})
+		workCommits.set(links.workId, commits)
+	}
+	/**
+	 * A work whose commits went to several PRs splits its requests by time, as the backend splits a Claude Code or Codex
+	 * work: each commit's PR takes the requests up to that PR's first listing or the work's next commit, whichever came
+	 * first, and the last PR takes the rest.
+	 */
+	for (const commits of workCommits.values()) {
+		commits.sort(
+			(a, b) => a.at - b.at || a.sha.localeCompare(b.sha) || (a.key ?? "").localeCompare(b.key ?? "") || a.end - b.end,
+		)
+		for (const [index, commit] of commits.entries())
+			if (index && commit.at < commits[index - 1].end) commits[index - 1].end = commit.at
+	}
+	/** The PR a work was heading for when a request started: the first stretch ending at or after it, else the last. */
+	const prAt = (workId: string, startedAt: number) => {
+		const commits = workCommits.get(workId) ?? []
+		return (commits.find((commit) => commit.end >= startedAt) ?? commits.at(-1))?.key
+	}
+	const repositoryOf = (key: string) => {
+		const pr = pulls.get(key)?.pullRequest
+		return JSON.stringify([pr?.provider, pr?.host, pr?.repositoryId ?? pr?.repository])
 	}
 	/**
 	 * A request that started before one candidate PR merged is not shared with a follow-up PR
@@ -744,6 +826,21 @@ export function calculatePullRequestCosts(
 					pullRequestIds = pullRequestIds.filter((key) => !followUps.has(key))
 					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 					// Timing narrows the candidates but never confirms the remaining PR.
+					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
+				}
+
+				// The rest follow their work's time split. A request linked to or owned by several works keeps all their PRs, and one
+				// whose PRs are in different repositories is still reported as unknown in each.
+				const heading =
+					link || owner.startedAt === undefined || workIds.length !== 1 ? undefined : prAt(workIds[0], owner.startedAt)
+				if (
+					allocated.allocation === "shared" &&
+					heading &&
+					pullRequestIds.includes(heading) &&
+					pullRequestIds.every((key) => repositoryOf(key) === repositoryOf(heading))
+				) {
+					pullRequestIds = [heading]
+					allocated = allocation(owner, pullRequestIds, pulls, invalidWorkLinks)
 					if (allocated.allocation === "pull-request") allocated = { allocation: "inferred" }
 				}
 			}

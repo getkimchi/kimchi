@@ -2098,3 +2098,32 @@ describe("lookup failure reasons", () => {
 		})
 	})
 })
+
+describe("discovery order", () => {
+	// An earlier rate-limit case pauses github.com for an hour; use a host no other case touches.
+	beforeEach(() => {
+		remote("https://order.example/team/repo.git")
+		vi.stubEnv("GH_HOST", "order.example")
+	})
+	it("looks a new push up before refreshing known links when a pass runs out of time", async () => {
+		const old = "b".repeat(40)
+		const pushed = "c".repeat(40)
+		vi.useFakeTimers({ toFake: ["Date"] })
+		const seconds = (value: number) => new Date(Date.now() - value * 1000).toISOString()
+		seed({
+			sha: old,
+			recordedAt: "2026-10-01T12:00:00Z",
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [stored()],
+		})
+		// The push was first looked up before its PR opened.
+		seed({ sha: pushed, recordedAt: seconds(32), prLookup: { status: "pending", checkedAt: seconds(30) } })
+		replies((url) => {
+			// A slow provider spends the whole pass on the known link.
+			if (url.pathname.includes(old)) vi.setSystemTime(Date.now() + 11_000)
+			return url.pathname.includes(pushed) ? [pull(8, { head: { sha: pushed, ref: "feature" } })] : [pull()]
+		})
+		await lookup()
+		expect(commitCalls().map((url) => url.pathname.split("/").at(-2))).toContain(pushed)
+	})
+})

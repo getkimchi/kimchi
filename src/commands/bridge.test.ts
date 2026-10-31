@@ -10,6 +10,7 @@ vi.mock("node:fs", async (importOriginal) => ({
 	existsSync,
 }))
 vi.mock("../auxiliary-files/resolver.js", () => ({ resolveAuxiliaryFilesDir }))
+vi.mock("../update/paths.js", () => ({ stableExecutablePath: () => "/opt/homebrew/opt/kimchi/bin/kimchi" }))
 
 import { runBridge } from "./bridge.js"
 
@@ -39,6 +40,21 @@ describe("kimchi bridge command", () => {
 			"bash",
 			[expect.stringMatching(/install\.sh$/), "install", "both"],
 			expect.objectContaining({ stdio: "inherit" }),
+		)
+	})
+
+	it("setup links the plugins to a binary path that a Homebrew upgrade keeps", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		await runBridge(["setup"])
+
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			expect.anything(),
+			expect.objectContaining({
+				env: expect.objectContaining({ KIMCHI_BIN: "/opt/homebrew/opt/kimchi/bin/kimchi" }),
+			}),
 		)
 	})
 

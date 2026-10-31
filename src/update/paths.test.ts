@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { isHomebrewInstall } from "./paths.js"
+import { isHomebrewInstall, stableExecutablePath } from "./paths.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +84,25 @@ describe("isHomebrewInstall", () => {
 		process.env.HOMEBREW_PREFIX = tmp
 		setExecPath(binPath)
 		expect(isHomebrewInstall()).toBe(false)
+	})
+
+	it("names Homebrew's opt link for the binary, which an upgrade keeps", () => {
+		const keg = join(tmp, "Cellar", "kimchi", "1.2.3")
+		touch(join(keg, "bin", "kimchi"))
+		mkdirSync(join(tmp, "opt"), { recursive: true })
+		symlinkSync(keg, join(tmp, "opt", "kimchi"))
+		process.env.HOMEBREW_PREFIX = tmp
+		setExecPath(join(keg, "bin", "kimchi"))
+		expect(stableExecutablePath()).toBe(join(tmp, "opt", "kimchi", "bin", "kimchi"))
+	})
+
+	it("keeps the executable path outside Homebrew", () => {
+		mkdirSync(join(tmp, "Cellar"), { recursive: true })
+		const binPath = join(tmp, "bin", "kimchi")
+		touch(binPath)
+		process.env.HOMEBREW_PREFIX = tmp
+		setExecPath(binPath)
+		expect(stableExecutablePath()).toBe(binPath)
 	})
 
 	it("returns false when Cellar directory does not exist under prefix", () => {

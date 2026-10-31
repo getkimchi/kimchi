@@ -259,7 +259,9 @@ export function refreshBridge(shareDir: string, kimchiBin: string, prefix = defa
 	const bundled = read(join(shareDir, "bridge", "VERSION"))
 	// Clients without a receipt were never added, or were removed with kimchi-bridge uninstall.
 	const clients = ["claude", "codex"].filter((client) => read(join(prefix, "installed", client)) !== undefined)
-	if (!bundled || clients.length === 0 || read(join(prefix, "installed", "code")) === bundled) return []
+	// Also relink current plugins whose runtime link broke, as when `brew upgrade` removed the version it named.
+	const current = read(join(prefix, "installed", "code")) === bundled && existsSync(join(prefix, "runtime"))
+	if (!bundled || clients.length === 0 || current) return []
 	// One client at a time: the installer holds a lock for its whole run. $0 is the installer.
 	mkdirSync(prefix, { recursive: true })
 	const logPath = bridgeRefreshLogPath(prefix)

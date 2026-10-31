@@ -86,7 +86,7 @@ function projectClaim(raw: Event, previous?: Event): Event {
 	return effective
 }
 
-function validateClaimUpdate(next: Event, previous?: Event): void {
+export function validateClaimUpdate(next: Event, previous?: Event): void {
 	if (!isClaim(next) && (!previous || !isClaim(previous))) return
 	if (next.source !== "kimchi" || next.usage?.counterScope !== "request")
 		throw new Error("Claim source and request scope are immutable")

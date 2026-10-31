@@ -554,51 +554,41 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const queueDirectory = join(agent, "pr-cost-reporting")
 	const statePath = join(queueDirectory, "state.json")
 	const drainedState = readFileSync(statePath)
+	// The older writer's inventory keeps the acknowledged request, so its new revision is pending rather than held.
 	await queueSnapshots(agent, [
 		{
 			account,
 			content: {
 				repository: { provider: "github", host: "github.com", id: "999" },
 				pullRequests: [],
-				requests: [
-					{
-						requestId: crypto.randomUUID(),
-						startedAt: new Date().toISOString(),
-						billingRecordIds: [],
-						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-					},
-				],
-				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
+				requests: [request.startedAt, new Date().toISOString()].map((startedAt, index) => ({
+					requestId: index ? crypto.randomUUID() : request.requestId,
+					startedAt,
+					billingRecordIds: [],
+					allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+				})),
+				coverage: { observedRequests: 2, unpricedRequests: 2, historyComplete: true },
 			},
 		},
 	])
 	const oldWriterState = readFileSync(statePath)
+	const oldWriterPending = Object.values(JSON.parse(oldWriterState.toString()).entries).some(
+		(entry) => (entry as { pending?: unknown; held?: boolean }).pending && !(entry as { held?: boolean }).held,
+	)
 	writeFileSync(statePath, drainedState)
 	seed()
-	const backend = backendFor(agent)
-	const readPage = backend.readNotePage.bind(backend)
-	let scans = 0
-	let armed = false
-	backend.readNotePage = (...args) => {
-		const page = readPage(...args)
-		if (args[0] === "legacy-pr-cost-snapshots" && !page.length && ++scans === 2) armed = true
-		return page
-	}
+	// An older writer queues a legacy snapshot while events go out; they do not wait for it.
 	mode = "interleave"
-	try {
-		await deliverEvents(agent, agent, new AbortController().signal, () => {
-			if (!armed || legacyInterleaved || existsSync(`${queueDirectory}.lock`)) return
-			const release = lockSync(queueDirectory)
-			try {
-				writeFileSync(statePath, oldWriterState)
-			} finally {
-				release()
-			}
-			legacyInterleaved = true
-		})
-	} finally {
-		backend.readNotePage = readPage
-	}
+	await deliverEvents(agent, agent, new AbortController().signal, () => {
+		if (legacyInterleaved || existsSync(`${queueDirectory}.lock`)) return
+		const release = lockSync(queueDirectory)
+		try {
+			writeFileSync(statePath, oldWriterState)
+		} finally {
+			release()
+		}
+		legacyInterleaved = true
+	})
 	mode = "success"
 	const { deliverSnapshots } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	await deliverSnapshots(agent, agent, new AbortController().signal, check)
@@ -632,7 +622,7 @@ async function nativeDelivery(agent: string): Promise<void> {
 		otherBackoff,
 		rejectedBackoff,
 		keyFenced,
-		legacyBoundary: legacyInterleaved && !racedLegacy,
+		legacyBeside: oldWriterPending && legacyInterleaved && racedLegacy,
 		failedPassAborted,
 		abandonedRetained,
 		redirectsRejected: !redirected,

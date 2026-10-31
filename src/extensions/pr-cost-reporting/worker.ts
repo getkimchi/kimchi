@@ -43,7 +43,7 @@ import {
 	reportingStatePath,
 	type ServerLimit,
 	type SnapshotAck,
-	withDrainedLegacyAccount,
+	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
@@ -412,15 +412,13 @@ export function deliverEvents(
 			const own = due.filter((status) => status.accountKey === accountId)
 			if (!own.length) return
 			let batch: OutboxBatch | undefined
-			const ready = await withDrainedLegacyAccount(
+			const ready = await withReportingConsent(
 				agentDir,
-				account,
 				(fence) => {
 					batch = pendingBatch(agentDir, accountId, fence)
 				},
 				assertCurrent,
 			)
-			if (!ready) defer(own, "PR cost events are waiting for queued snapshots to upload")
 			if (!ready || !batch) return
 			const sent = batch
 			const schedule = deliveryRetry(backend, accountId, sent.id)
@@ -430,9 +428,8 @@ export function deliverEvents(
 			try {
 				let dispatched: Promise<Response> | undefined
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							const current = pendingBatch(agentDir, accountId, fence)
 							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
@@ -468,9 +465,8 @@ export function deliverEvents(
 				assertCurrent()
 				let acknowledged = false
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							backend.tx(() => {
 								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)

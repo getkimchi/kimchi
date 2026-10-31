@@ -68,13 +68,32 @@ function homebrewPrefixes(): string[] {
  * prefix that was never a real Homebrew installation).
  */
 export function isHomebrewInstall(): boolean {
-	if (process.platform === "win32") return false
+	return homebrewKeg() !== undefined
+}
+
+/**
+ * A path to the running binary that survives upgrades, for links such as the
+ * work-reporting plugins' runtime. `brew upgrade` removes the old Cellar
+ * version, so a link to the real path breaks; `<prefix>/opt/<formula>` always
+ * names the installed version. Other installs replace the binary in place.
+ */
+export function stableExecutablePath(): string {
+	const keg = homebrewKeg()
+	if (!keg) return process.execPath
+	// <Cellar>/<formula>/<version>/<path inside the keg>
+	const [formula, , ...inside] = keg.realExec.slice(keg.cellar.length + 1).split(sep)
+	const opt = join(keg.prefix, "opt", formula, ...inside)
+	return existsSync(opt) ? opt : process.execPath
+}
+
+function homebrewKeg(): { prefix: string; cellar: string; realExec: string } | undefined {
+	if (process.platform === "win32") return undefined
 
 	let realExec: string
 	try {
 		realExec = realpathSync(process.execPath)
 	} catch {
-		return false
+		return undefined
 	}
 
 	for (const prefix of homebrewPrefixes()) {
@@ -91,9 +110,9 @@ export function isHomebrewInstall(): boolean {
 			continue
 		}
 
-		if (realExec.startsWith(`${realCellar}${sep}`)) return true
+		if (realExec.startsWith(`${realCellar}${sep}`)) return { prefix, cellar: realCellar, realExec }
 	}
-	return false
+	return undefined
 }
 
 const sep = "/"
