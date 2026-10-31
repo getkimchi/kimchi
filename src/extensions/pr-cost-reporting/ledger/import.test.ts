@@ -336,6 +336,27 @@ describe("import loop over the memory backend", () => {
 		expect(replayed).toEqual([])
 	})
 
+	it("an emptied journal retires its stale problem note instead of wedging capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		const flagged: unknown[] = []
+		reportJournalProblems(dir, (problem) => flagged.push(problem))
+		expect(flagged).toHaveLength(1)
+		// The journal is emptied in place, the way copytruncate-style rotation does.
+		writeFileSync(file, "")
+		await importJournals(dir)
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
 	it("keeps the problem when a line really is damaged", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
