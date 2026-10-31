@@ -19,3 +19,18 @@ export const DOC_CLI_READ_ONLY_COMMANDS: Record<DocCliSkill, readonly string[]> 
 	xlsx: ["read", "info"],
 	pptx: ["read", "inspect", "check"],
 }
+
+/** File extensions the bundled skill CLIs read, routed to their skill.
+ *  Macro-enabled OOXML variants (xlsm/docm/pptm) are the same zip containers
+ *  their plain siblings are, and the CLIs classify by content, so they route
+ *  the same way. Legacy OLE2 formats (.doc/.ppt/.xls) and tabular text
+ *  (.csv/.tsv) have no bundled reader and stay un-routed. */
+export const DOC_SKILL_EXTENSIONS: Readonly<Record<string, DocCliSkill>> = {
+	pdf: "pdf",
+	docx: "docx",
+	docm: "docx",
+	xlsx: "xlsx",
+	xlsm: "xlsx",
+	pptx: "pptx",
+	pptm: "pptx",
+}
