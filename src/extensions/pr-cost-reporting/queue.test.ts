@@ -29,6 +29,7 @@ import {
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
+	trimLegacySnapshot,
 	withReportingConsent,
 } from "./queue.js"
 import {
@@ -38,6 +39,8 @@ import {
 	type RepositorySnapshot,
 	repositoryKey,
 	SNAPSHOT_LIMITS,
+	validateSnapshot,
+	type WireSnapshot,
 } from "./snapshot.js"
 
 const account = {
@@ -124,6 +127,35 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
+	it("trims a legacy pending body over the upload limits before it is frozen", async () => {
+		await setReportingEnabled(directory, true)
+		const requests = Array.from({ length: 33_000 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			startedAt: "2026-10-04T12:00:00Z",
+			billingRecordIds: [billing],
+			allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+		}))
+		const pending: WireSnapshot = {
+			schemaVersion: 1,
+			producerId: "55555555-5555-4555-8555-555555555555",
+			revision: "1",
+			generatedAt: "2026-10-04T12:00:00Z",
+			repository: { provider: "github" as const, host: "github.com", id: "42" },
+			pullRequests: [],
+			requests,
+			coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+		}
+		const trimmed = trimLegacySnapshot(pending)
+		expect(trimmed.requests.length).toBeLessThanOrEqual(SNAPSHOT_LIMITS.requests)
+		expect(Buffer.byteLength(JSON.stringify(trimmed))).toBeLessThanOrEqual(SNAPSHOT_LIMITS.bytes)
+		expect(trimmed.coverage.historyComplete).toBe(false)
+		expect(trimmed.coverage.trimmedRequests).toBeGreaterThan(0)
+		expect(trimmed.coverage.observedRequests).toBe(trimmed.requests.length)
+		validateSnapshot(trimmed)
+		// An under-limit body is stored unchanged.
+		expect(trimLegacySnapshot(trimmed)).toBe(trimmed)
+	})
+
 	it("runs an event step beside delayed, held and frozen legacy bodies of its account, but not after opt-out", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])

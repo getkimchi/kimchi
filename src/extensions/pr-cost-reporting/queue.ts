@@ -13,6 +13,7 @@ import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
 	accountKey,
+	fitSnapshot,
 	MAX_REVISION,
 	type ReportingRepository,
 	type RepositorySnapshot,
@@ -733,6 +734,46 @@ export interface FrozenSnapshot {
 	resume?: string
 }
 
+/** A kept request without billing evidence is the only unpriced one a legacy body can still identify. */
+const legacyUnpriced = (request: SnapshotContent["requests"][number]) => !request.billingRecordIds.length
+
+/**
+ * A legacy pending body over the upload limits is trimmed before it is frozen: an oversized body can
+ * never be delivered, and every later capture of the same claims would freeze another full copy.
+ * Trimmed coverage is marked incomplete so the server keeps its earlier claims.
+ */
+export function trimLegacySnapshot(pending: WireSnapshot): WireSnapshot {
+	const { schemaVersion, producerId, revision: rev, generatedAt, ...content } = pending
+	if (
+		content.requests.length <= SNAPSHOT_LIMITS.requests &&
+		content.pullRequests.length <= SNAPSHOT_LIMITS.pullRequests &&
+		Buffer.byteLength(JSON.stringify(pending)) <= SNAPSHOT_LIMITS.bytes
+	)
+		return pending
+	const fitted = fitSnapshot(content, SNAPSHOT_LIMITS, legacyUnpriced)
+	const trimmed: SnapshotContent = fitted
+		? fitted.content
+		: {
+				repository: content.repository,
+				pullRequests: [],
+				requests: [],
+				coverage: {
+					observedRequests: 0,
+					unpricedRequests: 0,
+					historyComplete: false,
+					trimmedRequests: content.requests.length,
+				},
+			}
+	// A body that cannot be represented under the limits still freezes; delivery retries trim it instead.
+	const next: WireSnapshot = { schemaVersion, producerId, revision: rev, generatedAt, ...trimmed }
+	try {
+		validateSnapshot(next)
+		return next
+	} catch {
+		return pending
+	}
+}
+
 function frozenId(account: WorkAccount, body: string): string {
 	return createHash("sha256")
 		.update(`${accountKey(account)}\0${body}`)
@@ -801,7 +842,13 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 	backend.tx(() => {
 		assertCurrent()
 		for (const [key, entry] of entries) {
-			const body = JSON.stringify(entry.pending)
+			// The queue's size limit applies to new frozen bodies whatever built them; the live entry keeps
+			// the trimmed body so the next pass freezes the same id instead of another full copy. An
+			// unchanged body leaves the entry alone: an acknowledged receipt clears `pending` here.
+			const original = entry.pending
+			if (!original) continue
+			const pending = trimLegacySnapshot(original)
+			const body = JSON.stringify(pending)
 			const id = frozenId(entry.account, body)
 			const frozen = storedFrozen(agentDir, id)
 			if (frozen === undefined) {
@@ -811,6 +858,7 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 				if (frozen.key !== key || frozen.body !== body) throw new Error("Frozen PR snapshot identity mismatch")
 				if (state.enabled && frozen.ack) applyAck(state, entry, entry.revision, frozen.ack)
 			}
+			if (pending !== original) entry.pending = pending
 		}
 		assertCurrent()
 	})
