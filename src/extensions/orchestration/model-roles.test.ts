@@ -26,8 +26,8 @@ vi.mock("../../config/json.js", async (importOriginal) => {
 	}
 })
 
+import { refFromModel } from "../../shared/model-ref.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
-import { refFromModel } from "../model-catalog/ref-utils.js"
 import { type ModelCustomMetadata, resetModelMetadataCache, saveModelMetadata } from "./model-metadata.js"
 import {
 	applyRoleAugmentation,

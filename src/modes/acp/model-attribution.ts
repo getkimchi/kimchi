@@ -15,7 +15,7 @@
 // identically.
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
-import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"
+import { refFromParts } from "../../shared/model-ref.js"
 import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
 
 export interface ModelAttribution {

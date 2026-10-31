@@ -6,11 +6,11 @@ import { getOrganization, type Organization, verifyApiKey } from "../../api/orga
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
+import { refFromModel } from "../../shared/model-ref.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { resolveEffectiveModel } from "../auto-model/state.js"
 import { getKimchiAuthPath } from "../login/flow.js"
-import { refFromModel } from "../model-catalog/ref-utils.js"
 import { createStatusPanelComponent } from "./panel.js"
 
 export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, and MCP status"
