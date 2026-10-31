@@ -39,6 +39,7 @@ import {
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
 	readReportingState,
+	trimFrozenSnapshot,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
@@ -320,6 +321,8 @@ export function deliverSnapshots(
 				if (limit) {
 					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
 					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+				} else if (status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
+					// The server rejected this body for its size; the next pass retries the halved one.
 				} else
 					await deferFrozenSnapshot(
 						agentDir,

@@ -1037,6 +1037,73 @@ export function deferFrozenSnapshot(
 	)
 }
 
+/** A 413 trim stops halving here; a body this small is deferred like any other rejection. */
+const TRIM_FLOOR_REQUESTS = 16
+const TRIM_FLOOR_BYTES = 64 * 1024
+
+/**
+ * A body the server rejected for its size (HTTP 413) is halved and replaced: the same claims, half
+ * the requests, coverage marked incomplete. The live queue entry keeps the trimmed body so the next
+ * capture does not freeze the rejected one again. Resolves false when the body cannot shrink
+ * further, so the caller defers it as before.
+ */
+export async function trimFrozenSnapshot(
+	agentDir: string,
+	sent: FrozenSnapshot,
+	assertCurrent: () => void,
+): Promise<boolean> {
+	let trimmed = false
+	await update(
+		agentDir,
+		(state, check) => {
+			if (!state.enabled) return
+			const backend = backendFor(agentDir)
+			backend.tx(() => {
+				assertCurrent()
+				check()
+				const frozen = storedFrozen(agentDir, sent.id)
+				if (frozen === undefined) throw new Error("Frozen PR snapshot disappeared")
+				if (frozen.body !== sent.body || frozen.key !== sent.key) throw new Error("Frozen PR snapshot changed")
+				if (frozen.ack) return
+				refreshFrozenSchedule(agentDir, frozen)
+				const current: WireSnapshot = JSON.parse(frozen.body)
+				if (current.requests.length <= TRIM_FLOOR_REQUESTS) return
+				const { schemaVersion, producerId, revision, generatedAt, ...content } = current
+				const fitted = fitSnapshot(content, {
+					requests: Math.max(TRIM_FLOOR_REQUESTS, Math.floor(current.requests.length / 2)),
+					pullRequests: SNAPSHOT_LIMITS.pullRequests,
+					bytes: Math.max(TRIM_FLOOR_BYTES, Math.floor(Buffer.byteLength(frozen.body) / 2)),
+				}, legacyUnpriced)
+				if (!fitted?.trimmed) return
+				const next: WireSnapshot = { schemaVersion, producerId, revision, generatedAt, ...fitted.content }
+				validateSnapshot(next)
+				const body = JSON.stringify(next)
+				const replacement: FrozenSnapshot = {
+					version: 1,
+					id: frozenId(frozen.entry.account, body),
+					key: frozen.key,
+					body,
+					entry: { ...frozen.entry, attempts: 0, retryAt: 0, uploadedAt: undefined },
+					resume: frozenResume(agentDir),
+				}
+				backend.putNote(FROZEN_SNAPSHOTS, replacement.id, encodeFrozen(replacement))
+				backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
+				// The live entry must not hold the rejected body: the next freeze would recreate its note.
+				const live = state.entries[frozen.key]
+				if (live?.pending && JSON.stringify(live.pending) === frozen.body) {
+					live.pending = next
+					live.attempts = 0
+					live.retryAt = 0
+					live.uploadedAt = undefined
+				}
+				trimmed = true
+			})
+		},
+		assertCurrent,
+	)
+	return trimmed
+}
+
 export function limitFrozenSnapshot(
 	agentDir: string,
 	sent: FrozenSnapshot,
