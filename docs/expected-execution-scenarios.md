@@ -263,7 +263,7 @@ Spawn nemotron for explore. Kimi reads findings and plans. Switch to
 minimax for build. Minimax inherits the plan from context and builds.
 Total: ~50k nemotron + ~80k kimi + ~250k minimax. Same cost as Option A
 but minimax has better context continuity — it sees the plan inline instead
-of via a file attachment.
+of through a file attachment.
 
 **Optimal:** Option C. Three-model pipeline with model switching for the
 build phase. Nemotron is the cheapest explorer (1M context ingests the
