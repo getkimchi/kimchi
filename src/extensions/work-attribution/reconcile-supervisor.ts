@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { lock } from "proper-lockfile"
+import { readE2eSeam } from "../e2e-seam.js"
 import {
 	readWorkPullRequestUpdates,
 	reconcileWorkPullRequests,
@@ -13,7 +14,17 @@ import { debugWorkAttribution as debug } from "./diagnostics.js"
 import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
 import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
 
-export const RECONCILIATION_INTERVAL_MS = 30_000
+const DEFAULT_RECONCILIATION_INTERVAL_MS = 30_000
+/**
+ * Test-only interval override, dead outside the test harness (readE2eSeam
+ * gate). Evaluated once at module load so callers keep treating
+ * RECONCILIATION_INTERVAL_MS as a value.
+ */
+export function resolveReconciliationIntervalMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_RECONCILIATION_INTERVAL_MS
+}
+export const RECONCILIATION_INTERVAL_MS = resolveReconciliationIntervalMs()
 const PASS_BUDGET_MS = 3000
 type ChannelKind = "pull-requests" | "costs" | "reporting"
 /** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */

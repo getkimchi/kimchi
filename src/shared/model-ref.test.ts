@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
-import { availableModelRefs, findModelByRef, modelIdFromRef, splitModelRef } from "./ref-utils.js"
+import { createModel, createModelRegistry } from "../extensions/__mocks__/model-registry.js"
+import { availableModelRefs, findModelByRef, modelIdFromRef, splitModelRef } from "./model-ref.js"
 
 describe("splitModelRef", () => {
 	it("splits a plain provider/model ref", () => {

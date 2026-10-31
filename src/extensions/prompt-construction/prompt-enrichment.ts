@@ -32,6 +32,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { findModelByRef } from "../../shared/model-ref.js"
 import {
 	collectBundledDisabledSkillNames,
 	resolveSkillPathsForDiscovery,
@@ -44,7 +45,6 @@ import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
