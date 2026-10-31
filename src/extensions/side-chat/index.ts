@@ -526,6 +526,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const pill = new SelectionPill({
 			host: getSideChatHost,
 			theme: ctx.ui.theme,
+			excludeWithin: () => active?.panel.root,
 			onAdd: (quote) => void openSideChat(ctx, { quote }),
 		})
 		const removePaint = addCompositor((screen, frame, width) => pill.paint(screen, frame, width))
