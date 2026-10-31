@@ -90,12 +90,6 @@ import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import {
-	availableModelRefs,
-	findModelByRef,
-	refFromModel,
-	splitModelRef,
-} from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -133,6 +127,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
