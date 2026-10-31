@@ -9,7 +9,7 @@ import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
-import { backendFor } from "./ledger/records.js"
+import { backendFor, diagnostic } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
 	accountKey,
@@ -724,6 +724,60 @@ export function limitSnapshot(
 
 const FROZEN_SNAPSHOTS = "legacy-pr-cost-snapshots"
 const SNAPSHOT_RECEIPTS = "legacy-pr-cost-snapshot-receipts"
+/** Per key, the pending frozen ids and their sizes; the guard that keeps a stuck queue bounded. */
+const FROZEN_INDEX = "legacy-pr-cost-pending"
+export const FROZEN_QUEUE_BYTES = 64 * 1024 * 1024
+let frozenQueueBytes = FROZEN_QUEUE_BYTES
+
+/** Test-only override for the per-key pending byte cap. */
+export function __setFrozenQueueCapForTest(bytes: number): void {
+	frozenQueueBytes = bytes
+}
+
+interface FrozenIndexEntry {
+	id: string
+	bytes: number
+}
+
+function readFrozenIndex(backend: ReturnType<typeof backendFor>, key: string): FrozenIndexEntry[] {
+	const body = backend.getNote(FROZEN_INDEX, key)
+	if (body === undefined) return []
+	try {
+		const value: unknown = JSON.parse(body)
+		if (Array.isArray(value) && value.every((entry) => object(entry) && typeof entry.id === "string" && typeof entry.bytes === "number" && entry.bytes >= 0))
+			return value as FrozenIndexEntry[]
+	} catch {
+		// A damaged index resets; the pending notes it forgot still drain through the normal walk.
+	}
+	return []
+}
+
+function writeFrozenIndex(backend: ReturnType<typeof backendFor>, key: string, entries: FrozenIndexEntry[]): void {
+	if (entries.length) backend.putNote(FROZEN_INDEX, key, JSON.stringify(entries))
+	else backend.deleteNote(FROZEN_INDEX, key)
+}
+
+/**
+ * Records a frozen id for its key and keeps the key's pending queue bounded: when the total passes
+ * the cap, the oldest pending bodies are dropped (with a diagnostic) so one undeliverable
+ * repository cannot grow without limit. Normal-size multi-version queues never reach it.
+ */
+function indexFrozen(backend: ReturnType<typeof backendFor>, agentDir: string, key: string, id: string, bytes: number): void {
+	const index = readFrozenIndex(backend, key).filter((entry) => entry.id !== id)
+	index.push({ id, bytes })
+	let total = index.reduce((sum, entry) => sum + entry.bytes, 0)
+	while (index.length > 1 && total > frozenQueueBytes) {
+		const oldest = index.shift()
+		if (!oldest) break
+		total -= oldest.bytes
+		if (oldest.id !== id) {
+			backend.deleteNote(FROZEN_SNAPSHOTS, oldest.id)
+			diagnostic(agentDir, "frozen-queue-capped")
+		}
+	}
+	writeFrozenIndex(backend, key, index)
+}
+
 export interface FrozenSnapshot {
 	version: 1
 	id: string
@@ -854,6 +908,7 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 			if (frozen === undefined) {
 				const value: FrozenSnapshot = { version: 1, id, key, body, entry, resume: frozenResume(agentDir) }
 				backend.putNote(FROZEN_SNAPSHOTS, id, encodeFrozen(value))
+				indexFrozen(backend, agentDir, key, id, Buffer.byteLength(body))
 			} else {
 				if (frozen.key !== key || frozen.body !== body) throw new Error("Frozen PR snapshot identity mismatch")
 				if (state.enabled && frozen.ack) applyAck(state, entry, entry.revision, frozen.ack)
@@ -979,9 +1034,14 @@ function updateFrozen(
 				const live = entry?.pending && JSON.stringify(entry.pending) === frozen.body ? entry : undefined
 				mutate(state, frozen, live)
 				if (frozen.ack) {
-					backend.putNote(SNAPSHOT_RECEIPTS, frozen.id, encodeFrozen(frozen))
-					backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
-				} else backend.putNote(FROZEN_SNAPSHOTS, frozen.id, encodeFrozen(frozen))
+				backend.putNote(SNAPSHOT_RECEIPTS, frozen.id, encodeFrozen(frozen))
+				backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
+				writeFrozenIndex(
+					backend,
+					frozen.key,
+					readFrozenIndex(backend, frozen.key).filter((entry) => entry.id !== frozen.id),
+				)
+			} else backend.putNote(FROZEN_SNAPSHOTS, frozen.id, encodeFrozen(frozen))
 				assertCurrent()
 			})
 		},
@@ -1088,6 +1148,12 @@ export async function trimFrozenSnapshot(
 				}
 				backend.putNote(FROZEN_SNAPSHOTS, replacement.id, encodeFrozen(replacement))
 				backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
+				writeFrozenIndex(
+					backend,
+					frozen.key,
+					readFrozenIndex(backend, frozen.key).filter((entry) => entry.id !== frozen.id),
+				)
+				indexFrozen(backend, agentDir, frozen.key, replacement.id, Buffer.byteLength(body))
 				// The live entry must not hold the rejected body: the next freeze would recreate its note.
 				const live = state.entries[frozen.key]
 				if (live?.pending && JSON.stringify(live.pending) === frozen.body) {

@@ -17,9 +17,12 @@ import type { WorkRecord } from "../work-attribution/summary.js"
 import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
+	__setFrozenQueueCapForTest,
+	acknowledgeFrozenSnapshot,
 	acknowledgeSnapshot,
 	deferSnapshot,
 	dueLimitNotices,
+	FROZEN_QUEUE_BYTES,
 	freezeSnapshots,
 	learnedLimits,
 	limitSnapshot,
@@ -133,7 +136,7 @@ describe("durable reporting queue", () => {
 			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
 			startedAt: "2026-10-04T12:00:00Z",
 			billingRecordIds: [billing],
-			allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
 		}))
 		const pending: WireSnapshot = {
 			schemaVersion: 1,
@@ -154,6 +157,49 @@ describe("durable reporting queue", () => {
 		validateSnapshot(trimmed)
 		// An under-limit body is stored unchanged.
 		expect(trimLegacySnapshot(trimmed)).toBe(trimmed)
+	})
+
+	it("bounds one key's pending frozen queue by bytes, dropping oldest first", async () => {
+		await setReportingEnabled(directory, true)
+		__setFrozenQueueCapForTest(10_000)
+		try {
+			const backend = backendFor(directory)
+			const keyOf = async () => Object.keys((await readReportingState(directory)).entries)[0]
+			let ids: string[] = []
+			for (let index = 0; index < 5; index++) {
+				// Every version carries all earlier requests, or the queue holds the previous body.
+				ids = [
+					...ids,
+					...Array.from({ length: 20 }, (_, request) =>
+							`${(index * 20 + request).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
+					),
+				]
+				await queueSnapshots(directory, [snapshot(ids)])
+				await freezeSnapshots(directory, () => {})
+			}
+			const pending = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
+			// The cap keeps only as many pending bodies as fit; the oldest were dropped, not the newest.
+			expect(pending.length).toBeLessThan(5)
+			expect(pending.length).toBeGreaterThanOrEqual(1)
+			const newest = JSON.parse(pending[pending.length - 1].body)
+			const state = await readReportingState(directory)
+			expect(JSON.stringify(Object.values(state.entries)[0].pending)).toBe(newest.body)
+			// The index matches the surviving notes.
+			const index = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
+			expect(index.map((entry: { id: string }) => entry.id).sort()).toEqual(pending.map((row) => row.name).sort())
+			// An acknowledged body leaves the index.
+			const acked = JSON.parse(pending[0].body)
+			await acknowledgeFrozenSnapshot(
+				directory,
+				{ ...acked, entry: { ...acked.entry, pending: JSON.parse(acked.body) } },
+				{ status: "accepted", revision: JSON.parse(acked.body).revision, receivedAt: new Date().toISOString() },
+				() => {},
+			)
+			const after = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
+			expect(after).toHaveLength(index.length - 1)
+		} finally {
+			__setFrozenQueueCapForTest(FROZEN_QUEUE_BYTES)
+		}
 	})
 
 	it("runs an event step beside delayed, held and frozen legacy bodies of its account, but not after opt-out", async () => {
