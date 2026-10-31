@@ -1,4 +1,5 @@
 import { isWorkId } from "../../shared/work-id.js"
+import { runSynchronously } from "../work-attribution/cooperative.js"
 import { isWorkScope, sameWorkScope, type WorkScope } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 import type { StoredRecord } from "./ledger/records.js"
@@ -91,13 +92,15 @@ function rawUsage(value: unknown): RawUsage {
 }
 
 /** Resolve native identity from the immutable prefix; summary projections and today's account cannot repair it. */
-export function nativeObservations(records: readonly Pick<StoredRecord, "body" | "recordHash">[]): {
-	observations: NativeObservation[]
-	unresolved: UnresolvedNativeObservation[]
-} {
+export function* nativeObservationsSteps(
+	records: readonly Pick<StoredRecord, "body" | "recordHash">[],
+	parsed?: readonly WorkRecord[],
+): Generator<void, { observations: NativeObservation[]; unresolved: UnresolvedNativeObservation[] }> {
 	const groups = new Map<string, { record: WorkRecord; recordHash: string }[]>()
-	for (const stored of records) {
-		const row: WorkRecord = JSON.parse(stored.body)
+	for (let index = 0; index < records.length; index++) {
+		yield
+		const stored = records[index]
+		const row: WorkRecord = parsed?.[index] ?? JSON.parse(stored.body)
 		if (
 			typeof row.requestId !== "string" ||
 			!(row.type === "request" || row.type === "request_dispatch" || row.type === "request_response")
@@ -110,6 +113,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 	const observations: NativeObservation[] = []
 	const unresolved: UnresolvedNativeObservation[] = []
 	for (const [requestId, stored] of groups) {
+		yield
 		const rows = stored.map((row) => row.record)
 		const responses = rows.filter((row) => row.type === "request_response" && row.nativeUsage !== undefined)
 		if (!responses.length) continue
@@ -127,6 +131,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 			)
 				throw new Error("missing_request_identity")
 			for (const row of rows) {
+				yield
 				if (row.version !== 1 || row.workId !== request.workId || row.sessionId !== request.sessionId)
 					throw new Error("conflicting_request_owner")
 				if (
@@ -149,6 +154,7 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 			let observation: NativeObservation | undefined
 			let signature: string | undefined
 			for (const row of responses) {
+				yield
 				const usage = row.nativeUsage
 				if (
 					!object(usage) ||
@@ -246,4 +252,12 @@ export function nativeObservations(records: readonly Pick<StoredRecord, "body" |
 		}
 	}
 	return { observations, unresolved }
+}
+
+/** The synchronous reader shares native validation with cooperative capture. */
+export function nativeObservations(records: readonly Pick<StoredRecord, "body" | "recordHash">[]): {
+	observations: NativeObservation[]
+	unresolved: UnresolvedNativeObservation[]
+} {
+	return runSynchronously(nativeObservationsSteps(records))
 }

@@ -10,6 +10,7 @@ import {
 	sameBillingSelector,
 	sameBillingSource,
 } from "./billing-source.js"
+import { runSynchronously } from "./cooperative.js"
 import type { RequestCostObservation } from "./costs.js"
 import { object, type WorkRecord } from "./summary.js"
 
@@ -142,9 +143,10 @@ function storedLookup(value: unknown): value is BillingLookup {
 	)
 }
 
-export function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
+export function* billingRequestsSteps(records: WorkRecord[]): Generator<void, Map<string, RequestBilling>> {
 	const requests = new Map<string, RequestBilling>()
 	for (const row of records) {
+		yield
 		if (row.type !== "request" || typeof row.requestId !== "string") continue
 		const previous = requests.get(row.requestId)
 		if (previous) {
@@ -154,6 +156,7 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 		requests.set(row.requestId, { request: row, requestId: row.requestId, invalid: false, observations: [] })
 	}
 	for (const row of records) {
+		yield
 		if (row.type !== "request_dispatch" && row.type !== "request_response") continue
 		const item = requests.get(String(row.requestId))
 		if (!item) continue
@@ -194,6 +197,7 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 
 	const evidence = new Map<RequestBilling, BillingLookup[]>()
 	for (const row of records) {
+		yield
 		if (row.type !== "request_cost") continue
 		const item = requests.get(String(row.requestId))
 		// Rows without a tag selector came from the removed prompt-ID lookup and prove nothing.
@@ -262,10 +266,15 @@ export function billingRequests(records: WorkRecord[]): Map<string, RequestBilli
 	}
 	for (const [item, lookups] of evidence)
 		for (const lookup of lookups.sort((left, right) => Date.parse(left.checkedAt) - Date.parse(right.checkedAt))) {
+			yield
 			// A changed key or account stops refreshes without reaching the billing API, so it can neither
 			// withdraw an earlier result nor close the window.
 			if (lookup.status === "account-changed") continue
 			item.substantiveLookup = lookup
 		}
 	return requests
+}
+
+export function billingRequests(records: WorkRecord[]): Map<string, RequestBilling> {
+	return runSynchronously(billingRequestsSteps(records))
 }

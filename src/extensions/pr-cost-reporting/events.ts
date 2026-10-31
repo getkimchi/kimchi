@@ -1,5 +1,6 @@
 import { isWorkId } from "../../shared/work-id.js"
 import { pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
+import { mapInChunks, runSynchronously } from "../work-attribution/cooperative.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import {
 	isWorkScope,
@@ -11,7 +12,7 @@ import {
 import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary.js"
 import type { Fact } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
-import { nativeObservations } from "./native.js"
+import { nativeObservationsSteps } from "./native.js"
 import {
 	type Event,
 	gitID,
@@ -27,7 +28,7 @@ import {
 	allocationFor,
 	type RepositoryIdentity,
 	repositoryKey,
-	requestAttributions,
+	requestAttributionsSteps,
 	validTime,
 } from "./snapshot.js"
 
@@ -52,7 +53,7 @@ type RequestOwner = { row: WorkRecord; scope: WorkScope }
  * Builds every fact the records support. Shared work and PR facts always aggregate every request, but with `touched`
  * only the named requests and auxiliary records become units, so untouched requests skip their claim reads.
  */
-export function buildEvents(
+export function* buildEventsSteps(
 	stored: readonly StoredRecord[],
 	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
@@ -60,17 +61,21 @@ export function buildEvents(
 	check: () => void,
 	existingClaim: (account: string, entity: string) => Event | undefined,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
-): CommonEvents {
-	const records = stored.map((row) => {
-		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
-	const native = nativeObservations(stored)
+	parsedRecords?: WorkRecord[],
+): Generator<void, CommonEvents> {
+	const records =
+		parsedRecords ??
+		(yield* mapInChunks(stored, 128, (row) => {
+			check()
+			return JSON.parse(row.body) as WorkRecord
+		}))
+	const native = yield* nativeObservationsSteps(stored, records)
 	const observations = new Map(native.observations.map((row) => [row.requestId, row]))
 	const nativeProblems = new Map(native.unresolved.map((row) => [row.requestId, row]))
-	const attribution = requestAttributions(records, report, repositories)
+	const attribution = yield* requestAttributionsSteps(records, report, repositories)
 	const requests = new Map<string, { row: WorkRecord; hash: string }[]>()
 	for (let i = 0; i < records.length; i++) {
+		yield
 		check()
 		const row = records[i]
 		if (row.type !== "request" && row.type !== "request_dispatch" && row.type !== "request_response") continue
@@ -84,6 +89,7 @@ export function buildEvents(
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
 	for (const [requestId, evidence] of attribution) {
+		yield
 		check()
 		const source = requests.get(requestId) ?? []
 		const recordHashes = [...new Set(source.map(({ hash }) => hash))]
@@ -103,6 +109,7 @@ export function buildEvents(
 			if (!evidence.request.account || !sameWorkAccount(scope.account, evidence.request.account))
 				throw new Error("conflicting_request_account")
 			for (const { row: other } of source) {
+				yield
 				check()
 				if (other.version !== 1 || other.workId !== row.workId || other.sessionId !== row.sessionId)
 					throw new Error("conflicting_request_owner")
@@ -263,6 +270,7 @@ export function buildEvents(
 				},
 			})
 			for (const candidate of evidence.candidates) {
+				yield
 				check()
 				const pr = candidate.pullRequest
 				if (!pr?.id || !pr.repositoryId || !validTime(pr.checkedAt)) continue
@@ -341,6 +349,7 @@ export function buildEvents(
 	}
 	const workOwners = new Map<string, Map<string, RequestOwner>>()
 	for (const owner of owners.values()) {
+		yield
 		check()
 		const scope = JSON.stringify([accountKey(owner.scope.account), owner.scope.repository])
 		for (const parts of [
@@ -354,6 +363,7 @@ export function buildEvents(
 		}
 	}
 	for (let index = 0; index < records.length; index++) {
+		yield
 		check()
 		const row = records[index]
 		if (!["work", "tool_execution", "file_transition", "file_observation", "plan", "commit"].includes(row.type))
@@ -502,6 +512,7 @@ export function buildEvents(
 					)
 						throw new Error("invalid_file_observation")
 					for (const value of row.files) {
+						yield
 						check()
 						if (!object(value)) throw new Error("invalid_file_observation")
 						file(value.path, value.before, value.after, row.observationId, "ambiguous")
@@ -551,6 +562,7 @@ export function buildEvents(
 			}
 			if (!facts.length) continue
 			for (const fact of facts) {
+				yield
 				check()
 				validateIngestEvent({ ...fact, id: stableID(fact.entityId), revision: "1" })
 			}
@@ -572,6 +584,7 @@ export function buildEvents(
 	const valid = new Map<string, boolean>()
 	for (const unit of units) {
 		if (unit.requestId === undefined) continue
+		yield
 		check()
 		const facts = accounts.get(unit.account)?.facts
 		const [request] = unit.entities
@@ -607,4 +620,16 @@ export function buildEvents(
 			})),
 		unresolved,
 	}
+}
+
+export function buildEvents(
+	stored: readonly StoredRecord[],
+	report: PullRequestCostReport,
+	repositories: Map<string, RepositoryIdentity>,
+	producerId: string,
+	check: () => void,
+	existingClaim: (account: string, entity: string) => Event | undefined,
+	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
+): CommonEvents {
+	return runSynchronously(buildEventsSteps(stored, report, repositories, producerId, check, existingClaim, touched))
 }

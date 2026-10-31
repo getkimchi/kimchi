@@ -1,45 +1,40 @@
 import { describe, expect, it } from "vitest"
-import type { PendingRepository, ReportingState } from "./queue.js"
-import { accountKey, repositoryKey } from "./snapshot.js"
-import { limitNoticeTexts, statusText } from "./status.js"
+import type { readOutboxStatus } from "./ledger/outbox.js"
+import type { ReportingState } from "./queue.js"
+import { statusText } from "./status.js"
 
 const now = Date.UTC(2026, 9, 8, 12)
-const account = {
-	apiUrl: "https://api.example",
-	organizationId: "11111111-1111-4111-8111-111111111111",
-	userId: "22222222-2222-4222-8222-222222222222",
-}
-function entry(id: string, fields: Partial<PendingRepository> = {}): [string, PendingRepository] {
-	const repository = { provider: "github" as const, host: "github.com", id, name: `example/${id}` }
-	return [
-		`${accountKey(account)}:${repositoryKey(repository)}`,
-		{ account, repository, revision: "1", requestHashes: [], attempts: 0, retryAt: 0, ...fields },
-	]
-}
-const pending = {
-	schemaVersion: 1 as const,
-	producerId: "33333333-3333-4333-8333-333333333333",
-	revision: "2",
-	generatedAt: new Date(now).toISOString(),
-	repository: { provider: "github" as const, host: "github.com", id: "1" },
-	pullRequests: [],
-	requests: [],
-	coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: true },
-}
-const state = (entries: [string, PendingRepository][], fields: Partial<ReportingState> = {}): ReportingState => ({
+const state = (fields: Partial<ReportingState> = {}): ReportingState => ({
 	version: 1,
 	enabled: true,
 	followsTelemetry: true,
 	producerId: "44444444-4444-4444-8444-444444444444",
-	entries: Object.fromEntries(entries),
 	...fields,
+})
+type OutboxStatus = ReturnType<typeof readOutboxStatus>[number]
+const outbox = (fields: Partial<OutboxStatus> = {}): OutboxStatus => ({
+	accountKey: "original-account",
+	pending: 0,
+	sendable: 0,
+	blocked: 0,
+	acknowledged: 0,
+	lastAcknowledgedAt: null,
+	batches: 0,
+	firstBatchId: null,
+	retry: undefined,
+	...fields,
+})
+const retry = (error?: string) => ({
+	batchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	attempts: 1,
+	retryAt: now + 60_000,
+	...(error ? { error } : {}),
 })
 
 describe("/pr-reporting status", () => {
-	it("keeps event delivery, retry failures and legacy repository counts separate", () => {
-		const status = statusText(state([], { enabled: false, error: undefined }), undefined, now, [
-			{
-				accountKey: "original-account",
+	it("shows event delivery and retry failures", () => {
+		const status = statusText(state({ enabled: false, error: undefined }), undefined, now, [
+			outbox({
 				pending: 3,
 				sendable: 2,
 				blocked: 1,
@@ -47,195 +42,84 @@ describe("/pr-reporting status", () => {
 				lastAcknowledgedAt: now - 1000,
 				batches: 1,
 				firstBatchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-				retry: {
-					batchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-					attempts: 1,
-					retryAt: now + 60_000,
-					error: "PR cost event upload returned HTTP 503",
-				},
-			},
+				retry: retry("PR cost event upload returned HTTP 503"),
+			}),
 		])
 		expect(status.warning).toBe(true)
 		const text = status.text.replace(/\n\s+/g, " ")
 		expect(text).toContain("PR cost event upload returned HTTP 503")
 		expect(text).toContain("1 event blocked; retained locally.")
-		expect(text).toContain("Repositories   0 queued · 0 acknowledged")
 		expect(text).toContain("Events         3 queued · 7 acknowledged")
 		expect(text).toContain("1 frozen batch awaiting acknowledgement")
 		expect(text).toContain("Event retry    in about 1 min")
 		expect(text).toContain("Last event ACK 2026-10-08T11:59:59.000Z")
 	})
 	it("shows a persisted batch even when no pending event rows remain", () => {
-		const status = statusText(state([]), undefined, now, [
-			{
-				accountKey: "original-account",
-				pending: 0,
-				sendable: 0,
-				blocked: 0,
-				acknowledged: 0,
-				lastAcknowledgedAt: null,
-				batches: 1,
-				firstBatchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-				retry: undefined,
-			},
+		const status = statusText(state(), undefined, now, [
+			outbox({ batches: 1, firstBatchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
 		])
 		expect(status.text).toContain("1 frozen batch awaiting acknowledgement")
 		expect(status.warning).toBe(false)
 	})
-	it("states the setting plainly and counts repositories on one line", () => {
-		expect(statusText(state([]), undefined, now)).toEqual({
-			text: ["PR reporting   Enabled (SaaS default)", "Repositories   0 queued · 0 acknowledged"].join("\n"),
+	it("states the setting plainly", () => {
+		expect(statusText(state(), undefined, now)).toEqual({
+			text: "PR reporting   Enabled (SaaS default)",
 			warning: false,
 		})
-	})
-	it("states an explicit opt-out with the repositories acknowledged before it", () => {
-		const acknowledged = { lastAcknowledgedAt: new Date(now).toISOString() }
-		expect(
-			statusText(
-				state([entry("1", acknowledged), entry("2", acknowledged)], { enabled: false, followsTelemetry: undefined }),
-				undefined,
-				now,
-			),
-		).toEqual({
-			text: ["PR reporting   Disabled (explicit choice)", "Repositories   0 queued · 2 acknowledged"].join("\n"),
-			warning: false,
-		})
-	})
-	it("reports incomplete history as information, because the other requests are still reported", () => {
-		expect(
-			statusText(
-				state([entry("1", { pending })], { followsTelemetry: undefined, skippedRequests: 3693 }),
-				undefined,
-				now,
-			),
-		).toEqual({
-			text: [
-				"PR reporting   Enabled (explicit choice)",
-				"Repositories   1 queued · 0 acknowledged",
-				"",
-				"History coverage incomplete",
-				"  3,693 requests skipped without original account or",
-				"  repository evidence. Other requests are still reported.",
-			].join("\n"),
+		expect(statusText(state({ enabled: false, followsTelemetry: undefined }), undefined, now)).toEqual({
+			text: "PR reporting   Disabled (explicit choice)",
 			warning: false,
 		})
 	})
 	it("leads with delivery problems, each shown once, and warns", () => {
 		expect(
-			statusText(
-				state(
-					[
-						entry("1", { pending, lastError: "PR reporting returned HTTP 503" }),
-						entry("2", { pending, lastError: "PR reporting returned HTTP 503" }),
-					],
-					{ error: "PR reporting held 1 repository snapshot(s) because earlier evidence is missing" },
-				),
-				undefined,
-				now,
-			),
+			statusText(state({ error: "PR cost event upload returned HTTP 503" }), undefined, now, [
+				outbox({ pending: 2, sendable: 2, retry: retry("PR cost event upload returned HTTP 503") }),
+				outbox({ accountKey: "other-account", pending: 1, sendable: 1, retry: retry() }),
+			]),
 		).toEqual({
 			text: [
 				"Delivery problems",
-				"- PR reporting held 1 repository snapshot(s) because",
-				"  earlier evidence is missing",
-				"- PR reporting returned HTTP 503",
+				"- PR cost event upload returned HTTP 503",
+				"- A previous PR cost event upload failed",
 				"",
 				"PR reporting   Enabled (SaaS default)",
-				"Repositories   2 queued · 0 acknowledged",
+				"Events         3 queued · 0 acknowledged",
+				"Event retry    in about 1 min",
 			].join("\n"),
 			warning: true,
 		})
 	})
-	it("explains a session that does not upload and repositories waiting for their upload window", () => {
-		const status = statusText(
-			state([
-				entry("1", { pending, uploadedAt: now - 60_000, lastAcknowledgedAt: new Date(now).toISOString() }),
-				entry("2", { pending, uploadedAt: now - 60_000, urgent: true }),
-			]),
-			"CI environment (GITHUB_ACTIONS)",
-			now,
-		)
-		expect(status).toEqual({
+	it("explains a session that does not upload", () => {
+		expect(statusText(state(), "CI environment (GITHUB_ACTIONS)", now)).toEqual({
 			text: [
 				"PR reporting   Enabled (SaaS default)",
 				"This session   No uploads; local attribution continues",
 				"               Reason: CI environment (GITHUB_ACTIONS)",
-				"Repositories   2 queued · 1 acknowledged",
-				"               1 waiting for the 5-minute upload window",
 			].join("\n"),
 			warning: false,
 		})
 	})
-	it("shows account pauses, repository limits and trimmed repositories with their next attempt", () => {
-		const limit = {
-			scope: "organization" as const,
-			limit: "requests" as const,
-			current: 50000,
-			maximum: 50000,
-			at: now,
-		}
-		const text = statusText(
-			state(
-				[
-					entry("1", {
-						pending,
-						retryAt: now + 6 * 3_600_000,
-						limit: { scope: "producer", limit: "repositories", current: 101, maximum: 100, at: now },
-					}),
-					entry("2", {
-						pending,
-						retryAt: now + 5 * 3_600_000,
-						limit: { scope: "snapshot", limit: "requests", current: 12, maximum: 10, at: now },
-						learned: { requests: 9, until: now + 1 },
-					}),
-					entry("3", { trimmed: 1200 }),
-				],
-				{ paused: { [accountKey(account)]: { limit, retryAt: now + 30 * 60_000 } } },
-			),
-			undefined,
-			now,
-		)
-		expect(text).toEqual({
-			text: [
-				"Delivery problems",
-				"- PR cost reporting paused for this organization:",
-				"  organization limit reached (requests 50,000 of 50,000).",
-				"  Ask an admin to free space or wait.",
-				"  Next try in about 30 min.",
-				"- example/1: producer limit reached (repositories 101 of",
-				"  100). Not reported; next try in about 6 h.",
-				"- example/2: snapshot limit reached (requests 12 of 10).",
-				"  Sending a smaller snapshot in about 5 h.",
-				"- example/3 is partially reported: 1,200 requests left out",
-				"  to fit the upload limits.",
-				"",
-				"PR reporting   Enabled (SaaS default)",
-				"Repositories   2 queued · 0 acknowledged",
-			].join("\n"),
-			warning: true,
-		})
-	})
 	it("fits a 60-column terminal with every section shown", () => {
 		const { text } = statusText(
-			state(
-				[
-					entry("1", {
-						pending,
-						retryAt: now + 3_600_000,
-						uploadedAt: now - 60_000,
-						limit: { scope: "contributor", limit: "windowedPullRequests", current: 1000, maximum: 1000, at: now },
-					}),
-					entry("2", { trimmed: 31_999, lastAcknowledgedAt: new Date(now).toISOString() }),
-				],
-				{
-					paused: { [accountKey(account)]: { limit: { scope: "contributor", at: now }, retryAt: now } },
-					error:
-						"PR reporting held 2 snapshot(s) until queued reports leave room in the local queue. Some queued reports are waiting for their original account endpoint and credentials",
-					skippedRequests: 123_456,
-				},
-			),
+			state({
+				error:
+					"PR reporting could not capture a complete inventory; previous reports were retained. Some PR cost events are waiting for complete original evidence",
+			}),
 			"benchmark run (KIMCHI_INFRA_BREAKER_THRESHOLD)",
 			now,
+			[
+				outbox({
+					pending: 123_456,
+					blocked: 31_999,
+					acknowledged: 1_234_567,
+					lastAcknowledgedAt: now,
+					batches: 12,
+					retry: retry(
+						"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)",
+					),
+				}),
+			],
 		)
 		// The TUI pads notifications by one column on each side.
 		expect(text.split("\n").filter((line) => line.length > 58)).toEqual([])
@@ -246,28 +130,5 @@ describe("/pr-reporting status", () => {
 				"               (KIMCHI_INFRA_BREAKER_THRESHOLD)",
 			].join("\n"),
 		)
-	})
-})
-
-describe("one-time limit notices", () => {
-	it("names the repository, or its provider identity, and tells account pauses apart", () => {
-		expect(
-			limitNoticeTexts({
-				repositories: [
-					{ provider: "github", host: "github.com", id: "1", name: "owner/repo" },
-					{ provider: "gitlab", host: "gitlab.example", id: "7" },
-				],
-				pauses: [
-					{ scope: "organization", limit: "requests", at: now },
-					{ scope: "organization", limit: "bytes", at: now },
-					{ scope: "contributor", at: now },
-				],
-			}),
-		).toEqual([
-			"PR cost reporting paused for this organization: limit reached. Ask an admin to free space or wait.",
-			"PR cost reporting paused for your account in this organization: limit reached. Ask an admin to free space or wait.",
-			"PR costs for owner/repo are partially reported: limit reached. See /pr-reporting status.",
-			"PR costs for gitlab.example repository 7 are partially reported: limit reached. See /pr-reporting status.",
-		])
 	})
 })

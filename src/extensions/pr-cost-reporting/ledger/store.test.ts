@@ -97,8 +97,11 @@ describe("open via Bun driver", () => {
 		expect(readFileSync(path, "utf8")).toBe("{}\n")
 	})
 	test("fresh open creates dir/file with modes, schema version and tables", { timeout: 60_000 }, () => {
-		const result = driver("probe", agentDir())
+		const dir = agentDir()
+		const result = driver("probe", dir)
 		expect(result.version).toBe(1)
+		expect(result.cacheKiB).toBe(-131072)
+		expect(driver("probe", dir).cacheKiB).toBe(-131072)
 		expect(result.dirMode).toBe(0o700)
 		expect(result.fileMode).toBe(0o600)
 		expect(result.tables).toEqual([
@@ -123,6 +126,20 @@ describe("open via Bun driver", () => {
 		expect(result.code).toBe("pr-cost-ledger/future-schema")
 		expect(result.version).toBe(777)
 		expect(result.tables).toBe(0)
+	})
+
+	test("opening an older v1 ledger defers the optional index while another writer holds the lock", {
+		timeout: 15_000,
+	}, () => {
+		const result = driver("outbox-sendable-index-lock", agentDir())
+		expect(result).toMatchObject({
+			openedWhileLocked: true,
+			indexDeferred: true,
+			openError: null,
+			installedAfterRelease: true,
+			version: 1,
+		})
+		expect(Number(result.elapsedMs)).toBeLessThan(200)
 	})
 
 	test("WAL: concurrent reader works while a writer holds; a second writer surfaces the busy timeout", {
