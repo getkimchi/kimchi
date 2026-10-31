@@ -225,6 +225,14 @@ interface InteractiveModeInternals {
 	extensionSelector?: Component
 	extensionInput?: Component
 	extensionEditor?: Component
+	/**
+	 * The editor slot's container: it holds `editor`, swapped for the active
+	 * dialog. Selector/input/editor dialogs are ALSO tracked in the members
+	 * above, but a `ctx.ui.custom` component (the questionnaire form) replaces
+	 * the editor without any tracked member — detectable here as "the slot's
+	 * only child is not the editor".
+	 */
+	editorContainer?: { children: Component[] }
 	init(): Promise<void>
 	getMarkdownThemeWithSettings(): MarkdownTheme
 	getRegisteredToolDefinition(name: string): ToolDefinition | undefined
@@ -331,8 +339,10 @@ export interface SideChatHost {
 	toolDefinition(name: string): ToolDefinition | undefined
 	mainEditor(): DecoratableEditor
 	/**
-	 * The main session's active modal dialog (a permission ask via `ctx.ui.select`,
-	 * an extension input/editor), if any. While one is open it owns the keyboard;
+	 * The main session's active modal dialog: a permission ask (`ctx.ui.select`),
+	 * an extension input/editor, a `ctx.ui.custom` dialog in the editor slot (the
+	 * questionnaire form), or a focus-capturing overlay (plan review, /help).
+	 * While one is open it owns the keyboard;
 	 * all side-chat focus transitions must go through `focusComponent` — the
 	 * dialogs have no mouse support, so once unfocused there is no way back to
 	 * them and the session deadlocks on an unanswerable ask.
@@ -363,11 +373,45 @@ function mountLayoutRoot(mode: InteractiveModeInternals, build: (base: Component
 	mode.ui.requestRender()
 }
 
+/** Private `TUI` members the side chat reads (declared `private` upstream). */
+interface TuiOverlayInternals {
+	getTopmostVisibleOverlay?(): { component: Component } | undefined
+}
+
+/** Structural slice of `InteractiveMode` that modal-dialog resolution reads. */
+export interface ModalDialogSource {
+	ui: object
+	editor: Component
+	extensionSelector?: Component
+	extensionInput?: Component
+	extensionEditor?: Component
+	editorContainer?: { children: Component[] }
+}
+
+/**
+ * The main session's active keyboard-only modal dialog, if any: a tracked
+ * selector/input/editor dialog (permission asks come through `ctx.ui.select`),
+ * the topmost focus-capturing overlay (plan review, feedback, /help), or a
+ * `ctx.ui.custom` dialog mounted in the editor slot — upstream keeps that one
+ * in a local closure (`showExtensionCustom`), so the only observable trace is
+ * that the slot's child is no longer the editor. Non-capturing overlays and a
+ * slot holding the plain editor both resolve to undefined.
+ */
+export function resolveModalDialog(mode: ModalDialogSource): Component | undefined {
+	if (mode.extensionSelector) return mode.extensionSelector
+	if (mode.extensionInput) return mode.extensionInput
+	if (mode.extensionEditor) return mode.extensionEditor
+	const overlay = (mode.ui as TuiOverlayInternals).getTopmostVisibleOverlay?.()
+	if (overlay) return overlay.component
+	const child = mode.editorContainer?.children[0]
+	return child && child !== mode.editor ? child : undefined
+}
+
 /** The live interactive session; undefined before `InteractiveMode.init`, outside the TUI, or when not installed. */
 export function getSideChatHost(): SideChatHost | undefined {
 	const mode = installState === "installed" ? activeMode : undefined
 	if (!mode) return undefined
-	const modalDialog = () => mode.extensionSelector ?? mode.extensionInput ?? mode.extensionEditor
+	const modalDialog = () => resolveModalDialog(mode)
 	const focusComponent = (component: Component) => {
 		mode.ui.setFocus(modalDialog() ?? component)
 		mode.ui.requestRender()

@@ -18,6 +18,7 @@ import {
 	type RawMouseEvent,
 	rectContains,
 	rectOf,
+	resolveModalDialog,
 } from "./harness.js"
 
 const component = (): Component => ({ render: () => [], invalidate: () => {} })
@@ -112,6 +113,49 @@ describe("hooks", () => {
 		expect(interceptMouse(press(0))).toBe(false)
 		expect(interceptWheel(0, 0, 1)).toBe(false)
 		expect(applyCompositors(["x"], frameOf(1, 1, []), 1)).toEqual(["x"])
+	})
+})
+
+describe("resolveModalDialog", () => {
+	const slotWith = (...children: Component[]) => ({ children })
+
+	it("prefers the tracked selector/input/editor dialogs", () => {
+		const editor = component()
+		const selector = component()
+		const custom = component()
+		expect(
+			resolveModalDialog({
+				ui: {},
+				editor,
+				extensionSelector: selector,
+				editorContainer: slotWith(custom),
+			}),
+		).toBe(selector)
+		expect(resolveModalDialog({ ui: {}, editor, extensionInput: component() })).toBeDefined()
+		expect(resolveModalDialog({ ui: {}, editor, extensionEditor: component() })).toBeDefined()
+	})
+
+	it("detects a ui.custom dialog as a non-editor child of the editor slot", () => {
+		const editor = component()
+		const form = component()
+		expect(resolveModalDialog({ ui: {}, editor, editorContainer: slotWith(form) })).toBe(form)
+	})
+
+	it("resolves undefined when the slot holds the editor", () => {
+		const editor = component()
+		expect(resolveModalDialog({ ui: {}, editor, editorContainer: slotWith(editor) })).toBeUndefined()
+		expect(resolveModalDialog({ ui: {}, editor, editorContainer: slotWith() })).toBeUndefined()
+		expect(resolveModalDialog({ ui: {}, editor })).toBeUndefined()
+	})
+
+	it("prefers a focus-capturing overlay over the editor slot", () => {
+		const editor = component()
+		const form = component()
+		const overlay = component()
+		const ui = { getTopmostVisibleOverlay: () => ({ component: overlay }) }
+		expect(resolveModalDialog({ ui, editor, editorContainer: slotWith(form) })).toBe(overlay)
+		const noOverlay = { getTopmostVisibleOverlay: () => undefined }
+		expect(resolveModalDialog({ ui: noOverlay, editor, editorContainer: slotWith(form) })).toBe(form)
 	})
 })
 
