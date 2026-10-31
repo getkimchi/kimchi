@@ -36,7 +36,7 @@ Only main sessions with work tracking run this extension. Child sessions contrib
 
 The existing reconciliation worker captures local history at startup, after agent turns and every 30 seconds while Kimchi runs. New observations become revisioned events in the same SQLite database as work tracking. There is no separate daemon or model call for delivery. A request can appear as unlinked or unknown, then acquire a PR or price through a later revision without adding the same charge again.
 
-New capture does not create legacy repository snapshots. Before an account can send events, its older pending snapshots must drain through their original endpoint with their original bytes. Backoff, held snapshots and unfinished scans keep that gate closed. A change still queued when Kimchi exits remains durable for the next session.
+New capture does not create legacy repository snapshots. Older pending snapshots still drain through their original endpoint with their original bytes, but events do not wait for them: a snapshot the server never accepts, such as one above the 1 MiB request limit in front of the API, would otherwise hold its account's events for good. A change still queued when Kimchi exits remains durable for the next session.
 
 ## Current event uploads
 

@@ -33,7 +33,7 @@ it("uploads real SDK capture through the worker with exact legacy drainage and a
 			rejectedBackoff: true,
 			keyFenced: true,
 			redirectsRejected: true,
-			legacyBoundary: true,
+			legacyBeside: true,
 			failedPassAborted: true,
 			abandonedRetained: true,
 		})
