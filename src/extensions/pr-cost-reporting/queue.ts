@@ -1172,7 +1172,11 @@ export async function trimFrozenSnapshot(
 					},
 					legacyUnpriced,
 				)
-				if (!fitted?.trimmed) return
+				if (!fitted?.trimmed) {
+					// The content cannot shrink further; make the permanent rejection observable.
+					diagnostic(agentDir, "frozen-413-floor")
+					return
+				}
 				fitted.content.coverage.trimmedRequests = (current.coverage.trimmedRequests ?? 0) + fitted.trimmed
 				const next: WireSnapshot = { schemaVersion, producerId, revision, generatedAt, ...fitted.content }
 				validateSnapshot(next)

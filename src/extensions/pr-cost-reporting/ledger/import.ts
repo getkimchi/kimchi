@@ -277,12 +277,9 @@ function importJournalFiles(
 		if (decision.mode === "mutation") result.anomalies.push({ path, code: "journal-mutation" })
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
-			if (decision.mode === "mutation") {
-				checkBudget?.()
-				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
-				diagnostic(agentDir, "journal-mutation")
-			} else if (decision.offset === 0 && size === 0) {
-				// An emptied journal retires its stale note instead of wedging capture forever.
+			if (decision.offset === 0 && decision.offset + data.length >= size) {
+				// An emptied or truncated-to-nothing journal retires its stale note instead of
+				// wedging capture forever: its records stay in the store from earlier imports.
 				checkBudget?.()
 				backend.tx(() => {
 					putProblems(backend, path, COVERAGE_NOTES, [])
@@ -291,11 +288,15 @@ function importJournalFiles(
 						dev,
 						ino,
 						generation: decision.generation,
-						offset: 0,
-						boundaryHash: boundaryHashOf(Buffer.alloc(0), 0),
+						offset: size,
+						boundaryHash: boundaryHashOf(data, size),
 						updatedAt: Date.now(),
 					})
 				})
+			} else if (decision.mode === "mutation") {
+				checkBudget?.()
+				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
+				diagnostic(agentDir, "journal-mutation")
 			}
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
