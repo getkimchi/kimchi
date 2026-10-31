@@ -145,6 +145,9 @@ const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: num
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
 
+/** Journals whose saved problems this process already re-verified from the start. */
+const rechecked = new Set<string>()
+
 /** Prefix verification and body reads both yield to the synchronous deadline between fixed-size reads. */
 function prepareJournal(
 	path: string,
@@ -247,11 +250,19 @@ function importJournalFiles(
 	for (const path of [...journals.slice(start), ...journals.slice(0, start)]) {
 		checkBudget?.()
 		const cursor = backend.getJournalCursor(path)
+		// A journal with saved problems is re-read from the start once per process: the note describes an
+		// older state of the file, and only a clean re-import can prove it stale. Problems the note
+		// already holds are not reported again while it re-verifies, so a still-damaged journal stays
+		// as quiet as before; an empty note marks a clean read and lets later passes skip.
+		const savedProblems = coverageProblems(backend, path)
+		const recheck = savedProblems.length > 0 && !rechecked.has(path)
+		const known = new Set(savedProblems.map((problem) => `${problem.kind}:${problem.line}`))
+		if (recheck) rechecked.add(path)
 		let prepared: ReturnType<typeof prepareJournal>
 		try {
 			prepared = prepareJournal(
 				path,
-				cursor,
+				recheck ? undefined : cursor,
 				!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined,
 				maxBytes,
 				checkBudget,
@@ -280,7 +291,9 @@ function importJournalFiles(
 		}
 		const parsed: WorkRecord[] = []
 		const entries: ImportEntry[] = []
-		const problems: WorkRecordProblem[] = decision.mode === "mutation" ? [{ kind: "invalid", path, line: 1 }] : []
+		// A mutated prefix does not itself mark history incomplete: every line is re-imported from the
+		// start and earlier generations' records stay in the store. Only lines that fail to parse do.
+		const problems: WorkRecordProblem[] = []
 		let tail = decision.mode === "clean-append" ? coverageProblems(backend, path, TAIL_NOTES) : []
 		const parser = journalParser(
 			path,
@@ -288,14 +301,18 @@ function importJournalFiles(
 			(problem) => {
 				const positioned = { ...problem, line: problem.line + lineOffset }
 				problems.push(positioned)
-				result.problems.push(positioned)
-				onProblem?.(positioned)
+				if (!known.has(`${positioned.kind}:${positioned.line}`)) {
+					result.problems.push(positioned)
+					onProblem?.(positioned)
+				}
 			},
 			(problem) => {
 				const positioned = { ...problem, line: problem.line + lineOffset }
 				tail.push(positioned)
-				result.problems.push(positioned)
-				onProblem?.(positioned)
+				if (!known.has(`${positioned.kind}:${positioned.line}`)) {
+					result.problems.push(positioned)
+					onProblem?.(positioned)
+				}
 			},
 		)
 		for (const line of lines) {
@@ -322,7 +339,9 @@ function importJournalFiles(
 		const boundaryHash = prefix.digest("hex")
 		let imported = 0
 		backend.tx(() => {
-			saveCoverage(backend, path, problems)
+			if (problems.length) saveCoverage(backend, path, problems)
+			// A window from the start that parses cleanly retires a stale problem note.
+			else if (decision.offset === 0) putProblems(backend, path, COVERAGE_NOTES, [])
 			putProblems(backend, path, TAIL_NOTES, tail)
 			if (entries.length) {
 				imported = importBatchInTx(backend, entries)

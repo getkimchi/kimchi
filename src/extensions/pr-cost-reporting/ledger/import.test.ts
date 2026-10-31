@@ -25,7 +25,7 @@ import {
 	reportJournalProblems,
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
-import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
+import { backendFor, capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
@@ -288,6 +288,63 @@ describe("import loop over the memory backend", () => {
 		expect(result.anomalies).toHaveLength(1)
 		expect(result).toMatchObject({ imported: 0, skipped: 2, files: [{ mode: "mutation", generation: 2 }] })
 		expect(readRecords(dir)).toHaveLength(3)
+	})
+
+	it("a mutation with parseable lines no longer marks history incomplete", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// A same-size rewrite is a mutation; every line still parses, so no problem is saved.
+		writeFileSync(file, line(work()) + line(request("req-2")))
+		const result = await importJournals(dir)
+		expect(result.anomalies).toHaveLength(1)
+		expect(result.problems).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
+	it("clears a saved problem note once the journal re-reads cleanly from the start", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// The field state: an old build's mutation seed left a stale problem note behind.
+		backendFor(dir).putNote(
+			"journal-coverage",
+			file,
+			JSON.stringify([{ kind: "invalid", path: file, line: 1 }]),
+		)
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toHaveLength(1)
+		// A flagged journal is re-read from the start; a clean window retires the note.
+		const result = await importJournals(dir)
+		expect(result.problems).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+	})
+
+	it("keeps the problem when a line really is damaged", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, "{not json\n" + line(request("req-1")))
+		const result = await importJournals(dir)
+		expect(result.problems).toHaveLength(1)
+		expect(backendFor(dir).getNote("journal-coverage", file)).toBeDefined()
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toHaveLength(1)
 	})
 
 	it("a removed journal keeps the imported rows and reports journal-removed", async () => {
