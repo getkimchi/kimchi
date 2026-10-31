@@ -255,15 +255,16 @@ function importJournalFiles(
 		// already holds are not reported again while it re-verifies, so a still-damaged journal stays
 		// as quiet as before; an empty note marks a clean read and lets later passes skip.
 		const savedProblems = coverageProblems(backend, path)
-		const recheck = savedProblems.length > 0 && !rechecked.has(path)
+		const savedDamage = savedProblems.length > 0 || coverageProblems(backend, path, TAIL_NOTES).length > 0
+		const recheck = savedDamage && !rechecked.has(path)
 		const known = new Set(savedProblems.map((problem) => JSON.stringify(problem)))
 		if (recheck) rechecked.add(path)
 		let prepared: ReturnType<typeof prepareJournal>
 		try {
 			prepared = prepareJournal(
 				path,
-				recheck ? undefined : cursor,
-				!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined,
+				cursor,
+				recheck || (!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined),
 				maxBytes,
 				checkBudget,
 			)
@@ -307,9 +308,12 @@ function importJournalFiles(
 		}
 		const parsed: WorkRecord[] = []
 		const entries: ImportEntry[] = []
-		// A mutated prefix does not itself mark history incomplete: every line is re-imported from the
-		// start and earlier generations' records stay in the store. Only lines that fail to parse do.
-		const problems: WorkRecordProblem[] = []
+		// A mutated prefix does not itself mark a healthy journal incomplete: every line is
+		// re-imported from the start and earlier generations' records stay in the store. A journal
+		// that already carried problems keeps them through a rewrite, because a rewrite can hide the
+		// correction or producer evidence behind them.
+		const tampered = decision.mode === "mutation" && savedDamage
+		const problems: WorkRecordProblem[] = tampered ? [{ kind: "invalid", path, line: 1 }] : []
 		let tail = decision.mode === "clean-append" ? coverageProblems(backend, path, TAIL_NOTES) : []
 		// Problems already saved are re-read, not re-reported; the note still records them.
 		const report = (problem: WorkRecordProblem, bucket: WorkRecordProblem[]) => {

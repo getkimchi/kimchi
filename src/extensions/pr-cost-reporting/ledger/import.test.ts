@@ -357,7 +357,7 @@ describe("import loop over the memory backend", () => {
 		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
 	})
 
-	it("retires a flagged journal's note only after the re-read reaches its end", async () => {
+	it("keeps a flagged journal's note until the re-read reaches its damage", async () => {
 		const dir = agentDir()
 		dirs.push(dir)
 		useBackendFactory(() => createMemoryRecords())
@@ -376,11 +376,15 @@ describe("import loop over the memory backend", () => {
 		reportJournalProblems(dir, (problem) => replayed.push(problem))
 		expect(replayed).toHaveLength(1)
 		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).not.toEqual([])
-		// Once the whole file re-reads cleanly, the note retires.
+		// A rewrite of damaged content is a mutation: it keeps the flag, because it can hide the
+		// evidence behind it (the continuation-repair contract).
 		writeFileSync(file, line(work()) + line(request("req-2")))
-		const clean = await importJournals(dir)
-		expect(clean.problems).toEqual([])
-		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+		await importJournals(dir)
+		const afterRewrite: unknown[] = []
+		reportJournalProblems(dir, (problem) => afterRewrite.push(problem))
+		// The seed joins the stale per-line problem; both stay, because both describe history
+		// this journal's current content can no longer prove.
+		expect(afterRewrite).toHaveLength(2)
 	})
 
 	it("a journal truncated to an unterminated line retires its stale problem note", async () => {
