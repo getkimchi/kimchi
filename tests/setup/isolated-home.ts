@@ -26,6 +26,17 @@ process.env.XDG_CACHE_HOME = join(testHome, ".cache")
 // credential source (keyless code paths silently become authenticated).
 // Per-test vi.stubEnv still wins over this default.
 process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
+// Same hazard for the legacy PI_CODING_AGENT_DIR name some shells export;
+// otherwise hydrate() imports the developer's real work-history journals
+// into unit tests and background imports can stall past the hook timeout.
+process.env.PI_CODING_AGENT_DIR = join(testHome, "agent-legacy")
+// The enclosing harness exports git tracing hooks for commit attribution.
+// The GIT_TRACE_REFS debug ref backend crashes some git binaries (a plain
+// `git pack-refs --all` segfaults on broken builds), and traces from scratch
+// repos pollute the developer's real attribution capture, so tests must not
+// inherit either.
+delete process.env.GIT_TRACE_REFS
+delete process.env.GIT_TRACE2_EVENT
 
 afterAll(() => {
 	// Retry through transient Windows EBUSY; a leftover only costs temp space,
