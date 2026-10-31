@@ -34,7 +34,7 @@ import { type HeaderAction, PanelHeader } from "./header.js"
 import { type HistoryItem, HistoryList } from "./history-list.js"
 import { compositeKeepingCursor, reapplyBackground, withoutCursorMarker } from "./line-paint.js"
 import { contentText } from "./records.js"
-import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
+import { sideChatFocusHint } from "./shortcuts.js"
 
 export type SidePanelMode = "chat" | "wrapping" | "review"
 
@@ -375,7 +375,9 @@ export class SideChatPanel {
 			return ` ${key("enter")}${dim(" send to main · ")}${key("esc")}${dim(" keep chatting · ")}${key("/close")}${dim(" discard")}`
 		}
 		const escAction = this.busy ? dim(" stop · ") : dim(" main · ")
-		return ` ${key("esc")}${escAction}${key(SIDE_CHAT_SHORTCUTS.focusHint)}${dim(" focus · ")}${key("/wrap")}${dim(" → main")}`
+		const focusKeys = sideChatFocusHint()
+		const focusHint = focusKeys ? `${key(focusKeys)}${dim(" focus · ")}` : ""
+		return ` ${key("esc")}${escAction}${focusHint}${key("/wrap")}${dim(" → main")}`
 	}
 
 	private assistantComponent(message: AssistantMessage): AssistantMessageComponent {

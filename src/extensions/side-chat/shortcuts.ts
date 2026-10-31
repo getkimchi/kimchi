@@ -1,3 +1,5 @@
+import { getKittyKeyboardSupport } from "../terminal-compat/keyboard-capability.js"
+
 /**
  * Side chat key bindings, shared by the shortcut registration and the panel's hints.
  *
@@ -9,6 +11,15 @@
 export const SIDE_CHAT_SHORTCUTS = {
 	focusMain: "ctrl+alt+left",
 	focusSide: "ctrl+alt+right",
-	/** Compact hint for both focus keys. */
-	focusHint: "ctrl+alt+←/→",
 } as const
+
+/**
+ * Compact hint for both focus keys, or undefined when the terminal can't
+ * deliver them: without the Kitty keyboard protocol (the same check the
+ * feedback extension applies to Ctrl+1) modified arrows may never arrive,
+ * so the panel must not advertise keys that can't fire — clicking a pane
+ * still focuses it.
+ */
+export function sideChatFocusHint(): string | undefined {
+	return getKittyKeyboardSupport() === false ? undefined : "ctrl+alt+←/→"
+}

@@ -1,4 +1,4 @@
-import { Container, ScrollView, stripTerminalSequences } from "@earendil-works/pi-tui"
+import { type Component, Container, ScrollView, stripTerminalSequences } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { createSideChatHost, frameBox, frameOf } from "../__mocks__/side-chat-host.js"
 import { testTheme } from "../__mocks__/theme.js"
@@ -13,7 +13,7 @@ function setup(rect = { x: 0, y: 0, width: 60, height: 10 }) {
 	const frame = frameOf(rect.width, rect.height, [frameBox(scrollView, rect)])
 	setFrame(frame)
 	const onAdd = vi.fn()
-	const pill = new SelectionPill({ host: () => host, theme: testTheme, onAdd })
+	const pill = new SelectionPill({ host: () => host, theme: testTheme, excludeWithin: () => undefined, onAdd })
 	const select = (startRow: number, endRow: number, endCol: number) =>
 		setSelection({
 			text: "selected text",
@@ -77,5 +77,54 @@ describe("SelectionPill", () => {
 		expect(pill.handleMouse(press(30, 4))).toBe(false)
 		expect(pill.handleMouse(press(41, 3))).toBe(false)
 		expect(onAdd).not.toHaveBeenCalled()
+	})
+
+	describe("with an excluded pane (the open side chat)", () => {
+		function splitSetup() {
+			const { host, setFrame, setSelection } = createSideChatHost()
+			const mainView = new ScrollView(new Container())
+			const sideView = new ScrollView(new Container())
+			const panelRoot: Component = { render: () => [], invalidate: () => {} }
+			const frame = frameOf(120, 10, [
+				frameBox(mainView, { x: 0, y: 0, width: 80, height: 10 }),
+				frameBox(panelRoot, { x: 80, y: 0, width: 40, height: 10 }, [
+					frameBox(sideView, { x: 80, y: 0, width: 40, height: 10 }),
+				]),
+			])
+			setFrame(frame)
+			const onAdd = vi.fn()
+			const pill = new SelectionPill({
+				host: () => host,
+				theme: testTheme,
+				excludeWithin: () => panelRoot,
+				onAdd,
+			})
+			const select = (scrollView: ScrollView) =>
+				setSelection({
+					text: "selected text",
+					bounds: { start: { row: 1, col: 0, scrollView }, end: { row: 2, col: 20, scrollView } },
+				})
+			const screen = Array.from({ length: 10 }, () => " ".repeat(120))
+			return { host, pill, frame, screen, select, onAdd, mainView, sideView }
+		}
+
+		it("paints nothing when the selection is inside the side chat pane", () => {
+			const { pill, frame, screen, select, sideView } = splitSetup()
+			select(sideView)
+
+			const result = pill.paint(screen, frame, 120)
+
+			expect(result).toBe(screen)
+			expect(plain(result).every((row) => !row.includes(LABEL))).toBe(true)
+		})
+
+		it("still paints when the selection is in the main transcript", () => {
+			const { pill, frame, screen, select, mainView } = splitSetup()
+			select(mainView)
+
+			const rows = plain(pill.paint(screen, frame, 120))
+
+			expect(rows[3]).toContain(LABEL)
+		})
 	})
 })

@@ -8,13 +8,19 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
-import { type Frame, isLeftPress, type RawMouseEvent, rectOf, type SideChatHost } from "./harness.js"
+import { type Component, visibleWidth } from "@earendil-works/pi-tui"
+import { type Frame, findBox, isLeftPress, type RawMouseEvent, rectOf, type SideChatHost } from "./harness.js"
 import { compositeKeepingCursor } from "./line-paint.js"
 
 export interface SelectionPillOptions {
 	host: () => SideChatHost | undefined
 	theme: Theme
+	/**
+	 * Pane the pill never paints over: quoting the side chat back into itself
+	 * makes no sense, so selections inside it get no pill. Undefined when no
+	 * side chat is open.
+	 */
+	excludeWithin: () => Component | undefined
 	onAdd(text: string): void
 }
 
@@ -30,6 +36,11 @@ export class SelectionPill {
 		const selection = this.options.host()?.settledSelection()
 		const scrollView = selection?.bounds.start.scrollView
 		if (!selection || !scrollView) return screen
+		const excluded = this.options.excludeWithin()
+		if (excluded) {
+			const excludedBox = findBox(frame.root, (box) => box.component === excluded)
+			if (excludedBox && findBox(excludedBox, (box) => box.component === scrollView)) return screen
+		}
 		const rect = rectOf(frame, scrollView)
 		if (!rect || rect.height <= 0) return screen
 		const top = rect.y
