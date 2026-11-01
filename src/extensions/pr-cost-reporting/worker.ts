@@ -332,6 +332,11 @@ export function deliverSnapshots(
 					if (limit) {
 						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
 						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+						else if (limit.scope === "snapshot" && limit.limit === "bytes") {
+							// The server's own byte cap rejected this body; trim it to the cap it stated, so the
+							// retry carries a body the server can accept instead of resending it for hours.
+							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
+						}
 					} else if (status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
 						// The server rejected this body for its size; the next pass retries the halved one.
 					} else

@@ -667,7 +667,7 @@ export function deferSnapshot(
  * less cannot be met by any upload, so only the proportional one applies then. The client never sends more
  * than the server's 2,000 windowed PR IDs, so that limit teaches nothing.
  */
-function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
+export function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
 	if (limit.limit !== "requests" && limit.limit !== "pullRequests" && limit.limit !== "bytes") return undefined
 	const measured = {
 		requests: pending.requests.length,
@@ -1132,15 +1132,18 @@ const TRIM_FLOOR_REQUESTS = 16
 const TRIM_FLOOR_BYTES = 64 * 1024
 
 /**
- * A body the server rejected for its size (HTTP 413) is halved and replaced: the same claims, half
- * the requests, coverage marked incomplete. The live queue entry keeps the trimmed body so the next
- * capture does not freeze the rejected one again. Resolves false when the body cannot shrink
- * further, so the caller defers it as before.
+ * A body the server rejected for its size is replaced: the same claims, fewer requests, coverage
+ * marked incomplete. Without a limit it is halved (the bare 413 an infrastructure layer returns);
+ * with a server-stated byte cap it shrinks to the cap the server named, so the retry carries a
+ * body the server can accept. The live queue entry keeps the trimmed body so the next capture does
+ * not freeze the rejected one again. Resolves false when the body cannot shrink further, so the
+ * caller defers or waits as before.
  */
 export async function trimFrozenSnapshot(
 	agentDir: string,
 	sent: FrozenSnapshot,
 	assertCurrent: () => void,
+	limit?: ServerLimit,
 ): Promise<boolean> {
 	let trimmed = false
 	await update(
@@ -1163,12 +1166,19 @@ export async function trimFrozenSnapshot(
 					return
 				}
 				const { schemaVersion, producerId, revision, generatedAt, ...content } = current
+				// A server-stated byte cap is the target; without one the body halves.
+				const target =
+					(limit ? learnedLimit(current, limit) : undefined) ?? Math.floor(Buffer.byteLength(frozen.body) / 2)
 				const fitted = fitSnapshot(
 					content,
 					{
-						requests: Math.max(TRIM_FLOOR_REQUESTS, Math.floor(current.requests.length / 2)),
+						// With a stated cap the bytes bind at the cap itself; halving keeps its own floor.
+						requests:
+							limit !== undefined
+								? SNAPSHOT_LIMITS.requests
+								: Math.max(TRIM_FLOOR_REQUESTS, Math.floor(current.requests.length / 2)),
 						pullRequests: SNAPSHOT_LIMITS.pullRequests,
-						bytes: Math.max(TRIM_FLOOR_BYTES, Math.floor(Buffer.byteLength(frozen.body) / 2)),
+						bytes: limit !== undefined ? Math.max(1, target) : Math.max(TRIM_FLOOR_BYTES, target),
 					},
 					legacyUnpriced,
 				)

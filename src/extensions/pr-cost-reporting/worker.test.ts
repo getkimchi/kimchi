@@ -894,6 +894,68 @@ describe("account-fenced reporting delivery", () => {
 		expect(entry.requestHashes).toHaveLength(40)
 	})
 
+	it("trims a body the server rejects with a snapshot byte limit and delivers the smaller one", async () => {
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+				},
+			},
+		])
+		let rejected = true
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (rejected)
+				return Response.json(
+					{
+						code: 8,
+						message: "PR cost reporting resource limit exceeded",
+						details: [
+							{
+								"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+								reason: "PR_COST_LIMIT",
+								domain: "ai-optimizer",
+								metadata: { scope: "snapshot", limit: "bytes", current: "16000", maximum: "2048" },
+							},
+						],
+					},
+					{ status: 429 },
+				)
+			return Response.json({
+				status: "accepted",
+				revision: JSON.parse(String(init?.body)).revision,
+				receivedAt: new Date().toISOString(),
+			})
+		})
+		await deliver()
+		// The learned cap replaced the body with one that fits the server's stated maximum.
+		const rows = () => backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
+		expect(rows()).toHaveLength(1)
+		const envelope = JSON.parse(rows()[0].body)
+		expect(Buffer.byteLength(envelope.body)).toBeLessThanOrEqual(2048)
+		expect(JSON.parse(envelope.body).coverage.historyComplete).toBe(false)
+		// The upload window settles, then the smaller body is accepted.
+		const settled = Date.now() + 6 * 60_000
+		vi.spyOn(Date, "now").mockReturnValue(settled)
+		rejected = false
+		await deliver()
+		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(0)
+		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
+	})
+
 	it("treats a body deleted mid-delivery as settled and continues the pass", async () => {
 		await queueSnapshots(directory, [content])
 		let deleted = false
