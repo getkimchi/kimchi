@@ -112,13 +112,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 					// Move on after a slow/broken repository; its own checkpoints preserve partial progress.
 					owner.nextRepository = repositories[(index + 1) % repositories.length]
 					try {
-						await reconcileRepositoryTransitions(
-							repositories[index],
-							signal,
-							checkBudget,
-							assertLease,
-							shared,
-						)
+						await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease, shared)
 					} catch (error) {
 						if (error === exhausted || signal.aborted) throw error
 						debug("Could not reconcile repository %s: %o", repositories[index], error)

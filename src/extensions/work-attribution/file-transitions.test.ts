@@ -38,12 +38,12 @@ import {
 	createTrackedEditTool,
 	createTrackedWriteTool,
 	type FileState,
-	type SharedTypeReads,
 	knownTransitionRepositories,
 	readAttributedFileState,
 	readAttributedFileStates,
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
+	type SharedTypeReads,
 } from "./file-transitions.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
@@ -305,7 +305,13 @@ describe("manual commit reconciliation", () => {
 		expect(repositories).toHaveLength(2)
 		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
 		for (const repository of repositories)
-			await reconcileRepositoryTransitions(repository, undefined, () => {}, () => {}, shared)
+			await reconcileRepositoryTransitions(
+				repository,
+				undefined,
+				() => {},
+				() => {},
+				shared,
+			)
 		// Discovery read the table once into `shared`; every repository's pass reused it.
 		expect(transitionReads).toBe(1)
 	})

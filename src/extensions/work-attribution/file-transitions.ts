@@ -509,7 +509,12 @@ export async function knownTransitionRepositories(
 	const repositories = new Set<string>()
 	// Native captures live in the store; include their repositories alongside legacy journal files.
 	try {
-		const rows = (shared ??= {}).fileTransitions ??= readWorkRecordsOfType(getAgentDir(), "file_transition")
+		if (shared === undefined) shared = {}
+		let rows = shared.fileTransitions
+		if (rows === undefined) {
+			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
+			shared.fileTransitions = rows
+		}
 		for (const row of rows) if (typeof row.repository === "string") repositories.add(row.repository)
 	} catch {
 		// No store; the JSONL scan below still works.
@@ -1100,10 +1105,12 @@ export async function reconcileRepositoryTransitions(
 	if (!journals.length) return
 	const histories: JournalHistory[] = []
 	// Commit contributions live in the ledger now; the old session journal files were imported (A2).
-	const recordedCommits: Record<string, unknown>[] = (shared ??= {}).commits ??= readWorkRecordsOfType(
-		getAgentDir(),
-		"commit",
-	)
+	if (shared === undefined) shared = {}
+	let recordedCommits: WorkRecord[] | undefined = shared.commits
+	if (recordedCommits === undefined) {
+		recordedCommits = readWorkRecordsOfType(getAgentDir(), "commit")
+		shared.commits = recordedCommits
+	}
 	for (const journal of journals) {
 		checkBudget()
 		histories.push(await readJournalHistory(journal, signal))
