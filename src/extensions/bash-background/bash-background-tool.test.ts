@@ -29,6 +29,7 @@ function makeState(handoffSeconds: number): BashSessionState {
 		coordinator: createReviewCoordinator({ registry, handoffSeconds }),
 		delivery: createTerminalDelivery(),
 		limitSeconds: 600,
+		sessionKind: "unattended",
 	}
 }
 

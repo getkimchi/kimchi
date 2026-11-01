@@ -15,8 +15,10 @@
  *  - Cohort wait (`awaitCohortEvent`): blocks until the first cohort
  *    exit (including joiners), the wait's bounded checkpoint (the
  *    effective duration validated by the caller, capped at
- *    `MAX_WAIT_SECONDS`), pending automatic delivery, abort, or cohort
- *    disposal. The checkpoint timer starts when the actual wait begins — after any requested
+ *    `MAX_WAIT_SECONDS`), pending automatic delivery, a queued user
+ *    message (only when the caller supplies a pending-user-message check
+ *    — user-facing executions), abort, or cohort disposal. The
+ *    checkpoint timer starts when the actual wait begins — after any requested
  *    stops were applied — and joining handles never postpone it.
  *
  * Exit observation uses ONE permanent `whenExited` continuation per
@@ -46,6 +48,14 @@ export const DEFAULT_WAIT_SECONDS = 300
 /** Harness-enforced maximum wait duration (seconds) per call. */
 export const MAX_WAIT_SECONDS = 600
 
+/**
+ * Polling interval (milliseconds) for the pending-user-input check of a
+ * user-facing wait. Short enough that a queued user message releases the
+ * wait well within the 100 ms responsiveness target, cheap enough to run
+ * for the whole bounded wait without measurable cost. Exported for tests.
+ */
+export const USER_INPUT_POLL_MS = 50
+
 export type HandoffResult = "exited" | "handoff" | "aborted"
 
 export type CohortWaitEvent =
@@ -54,6 +64,7 @@ export type CohortWaitEvent =
 	| { kind: "aborted" }
 	| { kind: "empty" }
 	| { kind: "pending-delivery" }
+	| { kind: "user-input" }
 
 export interface ReviewCoordinatorOptions {
 	registry: ProcessRegistry
@@ -82,14 +93,16 @@ export interface ReviewCoordinator {
 	/**
 	 * Block until the first cohort exit (joiners included), the bounded
 	 * checkpoint (starting NOW, for `waitSeconds` seconds), pending
-	 * automatic delivery, abort, or cohort disposal. Must be paired with `beginCohortWait`/
-	 * `endCohortWait`.
+	 * automatic delivery, a queued user message (`hasPendingUserInput`
+	 * supplied by user-facing executions only), abort, or cohort disposal.
+	 * Must be paired with `beginCohortWait`/`endCohortWait`.
 	 */
 	awaitCohortEvent(
 		toolCallId: string,
 		signal?: AbortSignal,
 		waitSeconds?: number,
 		delivery?: TerminalDelivery,
+		hasPendingUserInput?: () => boolean,
 	): Promise<CohortWaitEvent>
 	/** Release the cohort-wait slot without awaiting further events. */
 	endCohortWait(toolCallId: string): void
@@ -250,6 +263,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		signal?: AbortSignal,
 		waitSeconds?: number,
 		delivery?: TerminalDelivery,
+		hasPendingUserInput?: () => boolean,
 	): Promise<CohortWaitEvent> {
 		if (!activeWait || activeWait.toolCallId !== toolCallId) {
 			return Promise.resolve({ kind: "aborted" })
@@ -304,6 +318,27 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 				settle({ kind: "pending-delivery" })
 				return promise
 			}
+		}
+
+		// User-facing waits yield to queued user input. The check reads
+		// ACCEPTED queue state (never the earlier `input` interception hook,
+		// where another handler can still consume, transform, or reject the
+		// submission): check immediately — a message queued before the wait
+		// began releases it at once — and then at a short interval, so a
+		// message queued mid-wait releases it promptly. Settling here never
+		// touches processes: only the wait resolves, and the settlement
+		// cleanups clear the checkpoint timer, this interval, and every
+		// listener. Unattended waits pass no check and are unaffected.
+		if (hasPendingUserInput) {
+			if (hasPendingUserInput()) {
+				settle({ kind: "user-input" })
+				return promise
+			}
+			const inputTimer = setInterval(() => {
+				if (hasPendingUserInput()) settle({ kind: "user-input" })
+			}, USER_INPUT_POLL_MS)
+			inputTimer.unref?.()
+			cleanups.push(() => clearInterval(inputTimer))
 		}
 
 		// A handle that already reached a terminal state before the wait

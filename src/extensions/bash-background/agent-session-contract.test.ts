@@ -148,6 +148,7 @@ function backgroundBashFactory(ops: FakeOps) {
 				coordinator,
 				delivery: createTerminalDelivery(),
 				limitSeconds: 600,
+				sessionKind: "unattended",
 				cwd: sessionCtx.cwd,
 			}
 			setSessionState(sessionCtx.sessionManager.getSessionId(), state)
@@ -565,6 +566,51 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		const jsonl = await exportJsonl(harness)
 		expect(jsonl).toContain("completion reminder was suppressed")
 		expect(jsonl).not.toContain("Task completion requires a disposition")
+
+		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+	}, 20_000)
+
+	it("keeps an unattended run active when it tries to finish with a live process", async () => {
+		// Headless regression for the session policy: this contract session
+		// is unattended (the raw runner defaults to print mode), so a scripted
+		// attempt to finish early must NOT settle the run — the completion
+		// follow-up keeps it active until the process is explicitly stopped.
+		// (User-facing sessions release this guard; their coverage lives in the
+		// TUI/ACP e2e suites and bash-control-extension.test.ts.)
+		const stopArgs: { stop_handles: string[] } = { stop_handles: [] }
+		const harness = await setupSession([
+			{ stopReason: "toolUse", toolCalls: [{ id: "c1", name: "bash", arguments: { command: "train" } }] },
+			// Round 2: the model tries to finish with the process still running
+			// (a SLOW finishing attempt — the test fills the stop arguments
+			// mid-stream, before the reminder-driven round 3 exists).
+			{ stopReason: "stop", text: "I believe the work is complete; finishing now.", textDelayMs: 300 },
+			// Round 3 (the completion reminder): stop the process.
+			{
+				stopReason: "toolUse",
+				toolCalls: [{ id: "c2", name: "bash_control", arguments: stopArgs as unknown as Record<string, unknown> }],
+			},
+			{ stopReason: "stop", text: "The command is stopped; the task is complete." },
+		])
+
+		const pending = harness.session.prompt("Run the training command, then finish the task")
+		while (harness.requests.length < 2) await delay(20)
+		// Fill the stop arguments with the live handle (the handoff has
+		// happened by the second request).
+		const handle = getSessionState(harness.session.sessionManager.getSessionId())?.coordinator.handles()[0]
+		expect(handle).toBeTruthy()
+		stopArgs.stop_handles = [handle as string]
+
+		// The run settles only after the reminder-driven stop — an early
+		// finish would have resolved `pending` after round 2.
+		await pending
+
+		// The early finish did not settle the run: the reminder reached the
+		// provider (round 3) and the model stopped the process there.
+		expect(harness.requests.length).toBe(4)
+		const allRequests = JSON.stringify(harness.requests)
+		expect(allRequests).toContain("Task completion requires a disposition")
+		expect(allRequests).toContain("stopped on request")
+		expect(JSON.stringify(harness.session.messages)).toContain("stopped on request")
 
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	}, 20_000)

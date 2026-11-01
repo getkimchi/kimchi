@@ -303,21 +303,22 @@ test("background bash cohort: a short bounded wait checkpoints with evidence, th
 	)
 })
 
-// A bounded wait returns at its checkpoint with the command still alive —
-// a user message queued DURING the wait is processed at the next safe
-// boundary, an inspection confirms the command is alive with evidence,
-// and it is stopped explicitly. (Interrupting a wait mid-call via the
-// terminal's interrupt key is not reachable from the tui-test harness in
-// this environment — the abort contract, wait cancelled with the cohort
-// alive and no streak changes, is covered at unit level in
-// bash-control-tool.test.ts and bash-control-extension.test.ts.)
-test("background bash cohort: a checkpoint leaves the command alive; queued input is processed, then inspection and stop", async ({
+// A user message queued DURING a bounded wait RELEASES it (user-facing
+// session): the wait returns the distinct user-input result with the cohort
+// alive, the message reaches the model at the next safe boundary, an
+// inspection confirms the command is alive with evidence, and it is stopped
+// explicitly. (Interrupting a wait mid-call via the terminal's interrupt key
+// is not reachable from the tui-test harness in this environment — the abort
+// contract, wait cancelled with the cohort alive and no streak changes, is
+// covered at unit level in bash-control-tool.test.ts and
+// bash-control-extension.test.ts.)
+test("background bash cohort: a user message releases the wait; the command stays alive and is stopped", async ({
 	terminal,
 }) => {
 	await runKimchiSession(
 		terminal,
 		{
-			artifactName: "bash-background-cohort-checkpoint-alive-inspect-stop",
+			artifactName: "bash-background-cohort-user-input-releases-wait",
 			responses: [
 				// Turn 1: start a long-running command.
 				{
@@ -332,8 +333,8 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 						},
 					],
 				},
-				// Turn 2: the model blocks with a bounded wait — the test queues a
-				// user message while it is pending.
+				// Turn 2: the model blocks with a long bounded wait — only the queued
+				// user message can release it this early (60s outlives the scenario).
 				{
 					stream: ["Nothing else to do; waiting briefly."],
 					toolCalls: [
@@ -343,16 +344,16 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 								name: "bash_control",
 								arguments: JSON.stringify({
 									wait: true,
-									waitSeconds: 10,
+									waitSeconds: 60,
 								}),
 							},
 						},
 					],
 				},
-				// Turn 3 (the wait checkpointed with the command still running): the
-				// model inspects the cohort.
+				// Turn 3 (the wait was RELEASED by the user's message): the model acts
+				// on it and inspects the cohort.
 				{
-					stream: ["The checkpoint arrived; inspecting the cohort."],
+					stream: ["The user asked; inspecting the cohort."],
 					toolCalls: [
 						{
 							id: "call_inspect",
@@ -387,14 +388,14 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			terminal.submit("Run a long command and wait for it; I will chime in meanwhile")
 
 			// While the bounded wait is pending, queue a user message — it must
-			// be processed at the next safe boundary, not lost.
+			// release the wait and reach the model, not sit behind the timer.
 			await waitForText(terminal, "Nothing else to do; waiting briefly", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("While it waits: check the command and stop it")
 			trace.step("user message queued during the wait")
 
-			// The wait checkpoints (~12s after spawn) with the command alive.
+			// The wait was released by the message (far before its 60s checkpoint).
 			await waitForText(terminal, "inspecting the cohort", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
-			trace.step("checkpoint returned with the command alive")
+			trace.step("wait released by the user message; cohort inspected")
 
 			// The queued message is processed at the safe boundary; the command
 			// is confirmed alive and stopped.
@@ -403,10 +404,9 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			await waitForText(terminal, "the command was alive and is now stopped", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("session completed")
 
-			// The checkpoint and the inspection both reached the model; the
-			// checkpoint did not kill the process (the inspection saw it running)
-			// and the stop ended it. The queued user message was delivered
-			// exactly once.
+			// The release and the inspection both reached the model; the release
+			// did not kill the process (the inspection saw it running) and the
+			// stop ended it. The queued user message was delivered exactly once.
 			await waitForTurnToSettle(fixture.fake.requests)
 			const messages = fixture.fake.requests.flatMap(
 				(r) => (r.body as { messages?: { role?: string; content?: unknown }[] } | undefined)?.messages ?? [],
@@ -414,7 +414,12 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			const textOf = (content: unknown): string => (typeof content === "string" ? content : JSON.stringify(content))
 			const contains = (needle: string, role?: string) =>
 				messages.some((m) => textOf(m.content).includes(needle) && (role === undefined || m.role === role))
-			expect(contains("Wait checkpoint: requested 10s", "tool")).toBe(true)
+			expect(contains("Wait released: a message from the user is waiting.", "tool")).toBe(true)
+			expect(contains("Handle the user's message now", "tool")).toBe(true)
+			// The wait ended on the user's message, not its timer: no checkpoint
+			// response, no streak increment, no reassessment guidance.
+			expect(contains("Wait checkpoint:", "tool")).toBe(false)
+			expect(contains("Reassess the runtime", "tool")).toBe(false)
 			expect(contains("Inspection of 1 background bash process", "tool")).toBe(true)
 			expect(contains("Running:", "tool")).toBe(true)
 			expect(contains("While it waits: check the command and stop it", "user")).toBe(true)
@@ -422,6 +427,132 @@ test("background bash cohort: a checkpoint leaves the command alive; queued inpu
 			expect(contains("Task completion requires a disposition")).toBe(false)
 			// 5 LLM requests: spawn, wait, inspection, stop, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(5)
+		},
+	)
+})
+
+// The user-facing nonblocking-bash workflow: a message sent during a long
+// control wait reaches the agent immediately (releasing the wait), the agent
+// answers and settles with the command still running — no forced re-wait or
+// stop reminder — and the later completion notification wakes the idle agent
+// and delivers the exit result exactly once. The completion-reminder seam is
+// pinned near zero so a regression to forced reminders fires within the
+// settle window instead of after 30s.
+test("background bash cohort: user message interrupts the wait; the turn settles alive and the exit wakes the agent", async ({
+	terminal,
+}) => {
+	const EXIT_MARKER = "COHORT-WAKE-DONE-8c3f"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-cohort-user-interrupt-settle-wake",
+			env: { KIMCHI_E2E_COMPLETION_REMINDER_MS: "1" },
+			responses: [
+				// Turn 1: start a command that outlives the whole chat exchange.
+				{
+					stream: ["Starting a long command."],
+					toolCalls: [
+						{
+							id: "call_bash",
+							function: {
+								name: "bash",
+								arguments: JSON.stringify({ command: `sleep 25 && echo "COHORT-WAKE-"DONE-8c3f` }),
+							},
+						},
+					],
+				},
+				// Turn 2: nothing else to do — enter a long bounded wait (only the
+				// user's message releases it early).
+				{
+					stream: ["Nothing else to do; waiting."],
+					toolCalls: [
+						{
+							id: "call_wait",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({ wait: true, waitSeconds: 120 }),
+							},
+						},
+					],
+				},
+				// Turn 3 (the wait released by the question; the steering is consumed
+				// at the boundary): answer it and end the turn — the command keeps
+				// running. The TUI's stop-nudge follows the tool-free answer;
+				// acknowledge it with <done> so the run settles cleanly.
+				{ stream: ["2+2 is 4."] },
+				{ stream: ["<done>"] },
+				// The exit notification wakes the idle agent: wrap up (and
+				// acknowledge the stop-nudge again).
+				{ stream: ["The background command finished."] },
+				{ stream: ["<done>"] },
+				// Spare acknowledgement in case the exploration guard nudges the
+				// tool-free exchange.
+				{ stream: ["<done>"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Run a long command, then wait for it to finish")
+
+			// While the wait is active, ask an unrelated question — the wait
+			// must release so the answer arrives long before the command ends.
+			await waitForText(terminal, "Nothing else to do; waiting", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.submit("Quick question while it runs: what is 2+2?")
+			trace.step("user question queued during the wait")
+
+			await waitForText(terminal, "2+2 is 4", { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("wait released; the answer arrived while the command runs")
+
+			// The answering turn settles with the command alive: no forced
+			// re-wait, no stop reminder. The answer request (the one carrying the
+			// wait-release tool result and the user's steering) saw the question
+			// but not the exit output — the command is still running. Located by
+			// content: side traffic (titles, classifier probes) shares the prompt
+			// text, so indices are not stable.
+			await waitForTurnToSettle(fixture.fake.requests)
+			const bodyOf = (r: { body?: unknown }) => JSON.stringify(r.body ?? {})
+			const conversation = fixture.fake.requests.map(bodyOf).join("\n")
+			const answerRequest = fixture.fake.requests.find((r) =>
+				bodyOf(r).includes("Wait released: a message from the user is waiting."),
+			)
+			expect(answerRequest).toBeTruthy()
+			const answerBody = bodyOf(answerRequest as unknown as { body?: unknown })
+			expect(answerBody).toContain("what is 2+2")
+			expect(answerBody).not.toContain(EXIT_MARKER)
+			// User-facing session: no forced wait/stop reminder anywhere.
+			expect(conversation).not.toContain("Task completion requires a disposition")
+			const settledRequestCount = fixture.fake.requests.length
+			trace.step("answering turn settled with the command alive")
+
+			// Idle window: with the reminder seam at ~0ms, a regression that
+			// forces a wait/stop reminder would issue a new request at once.
+			await new Promise((resolve) => setTimeout(resolve, 4000))
+			expect(fixture.fake.requests.length).toBe(settledRequestCount)
+			trace.step("idle chat without a forced re-wait")
+
+			// The command exits; its notification wakes the idle agent.
+			await waitForText(terminal, "The background command finished", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
+			trace.step("completion notification woke the agent")
+
+			// Exactly-once delivery: the exit result appears once — in the wake
+			// request (the first one carrying the exit notification), after the
+			// settled answering turn.
+			await waitForTurnToSettle(fixture.fake.requests)
+			const allRequests = fixture.fake.requests
+			const wakeRequest = allRequests.find((r) => bodyOf(r).includes("[Background bash process ended"))
+			expect(wakeRequest).toBeTruthy()
+			const wakeBody = bodyOf(wakeRequest as unknown as { body?: unknown })
+			expect(wakeBody).toContain(EXIT_MARKER)
+			expect(wakeBody.split("[Background bash process ended").length - 1).toBe(1)
+			// The wake came after the settled answering turn, and the exit
+			// notification is present in the conversation history from the wake
+			// on (later requests replay it — the exactly-once check is the
+			// per-request count in wakeBody above).
+			expect(allRequests.length).toBeGreaterThan(settledRequestCount)
+			expect(
+				allRequests.filter((r) => bodyOf(r).includes("[Background bash process ended")).length,
+			).toBeGreaterThanOrEqual(1)
+			expect(allRequests.map(bodyOf).join("\n")).not.toContain("Task completion requires a disposition")
+			trace.step("exit delivered once through the completion notification")
 		},
 	)
 })
@@ -681,13 +812,13 @@ test("background bash cohort: filtered inspection returns only the selected hand
 	)
 })
 
-test("background bash cohort: a queued completion reminder is suppressed when the process is stopped first", async ({
+test("background bash cohort: stopping with unresolved work never queues a forced reminder (user-facing session)", async ({
 	terminal,
 }) => {
-	// Stopping with a reminder backlog: the model ends its turn while a
-	// process runs (one completion reminder queues behind the user's
-	// steering), the steering-driven turn stops the process, and the stale
-	// reminder is REPLACED at consumption — the provider never sees a demand.
+	// The TUI is a user-facing session: a stop with a live process queues NO
+	// completion reminder at all — steering drives the next turn, the
+	// steering-driven stop resolves the work, and the provider never sees a
+	// disposition demand (nor a suppression note — nothing was ever queued).
 	await runKimchiSession(
 		terminal,
 		{
@@ -704,8 +835,8 @@ test("background bash cohort: a queued completion reminder is suppressed when th
 					],
 				},
 				// Turn 2: the model tries to finish with the work unresolved. The
-				// slow stream gives the test time to queue steering ahead of the
-				// reminder.
+				// slow stream gives the test time to queue steering before the
+				// turn ends (no reminder queues behind it in a user-facing session).
 				{
 					stream: ["I believe the work is complete.", "Nothing further is needed from my side."],
 					textDelayMs: 700,
@@ -723,56 +854,47 @@ test("background bash cohort: a queued completion reminder is suppressed when th
 						},
 					],
 				},
-				// Turn 4: the model finishes — everything is resolved now.
-				{
-					stream: ["The command is stopped; the task is complete."],
-				},
-				// Turn 5: the drained (replaced) reminder continues the run once
-				// more; nothing remains unresolved, so it settles here.
-				{
-					stream: ["Everything is finished."],
-				},
+				// Turn 4: the model finishes — everything is resolved now. The TUI's
+				// stop-nudge follows the tool-free turn; acknowledge it with <done>.
+				{ stream: ["The command is stopped; the task is complete."] },
+				{ stream: ["<done>"] },
 			],
 		},
 		async (fixture, trace) => {
 			terminal.submit("Start a long command, then finish the task")
 
-			// While turn 2 is streaming, queue steering ahead of the completion
-			// reminder (the loop consumes steering before follow-ups).
+			// While turn 2 is streaming, queue steering (the loop consumes it at
+			// the next boundary; no reminder competes with it).
 			await waitForText(terminal, "I believe the work is complete", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.submit("Actually, stop the background command")
-			trace.step("steering queued ahead of the completion reminder")
+			trace.step("steering queued while the turn streams")
 
 			await waitForText(terminal, "The command is stopped; the task is complete", {
 				timeoutMs: STREAM_TIMEOUT_MS * 2,
 			})
 			trace.step("steering-driven turn stopped the process")
-			await waitForText(terminal, "Everything is finished", { timeoutMs: STREAM_TIMEOUT_MS * 3 })
-			trace.step("session settled")
 
 			await waitForTurnToSettle(fixture.fake.requests)
-			const lastConversation = JSON.stringify(
-				(
-					fixture.fake.requests
-						.filter((request) =>
-							(request.body as { messages?: Array<{ tool_call_id?: string }> } | undefined)?.messages?.some(
-								(message) => message.tool_call_id === "call_stop",
-							),
-						)
-						.at(-1)?.body as { messages?: unknown[] } | undefined
-				)?.messages ?? [],
-			)
 			const conversation = JSON.stringify(
 				fixture.fake.requests.flatMap((r) => (r.body as { messages?: unknown[] } | undefined)?.messages ?? []),
 			)
-			// The stale reminder never demanded a disposition from the provider…
+			// No forced reminder was ever queued: no disposition demand, and no
+			// suppression note either — the user-facing session never queues one.
 			expect(conversation).not.toContain("Task completion requires a disposition")
-			// …it was replaced at consumption with the suppression note, exactly
-			// once (counted in the final request — earlier requests repeat the
-			// same history), and the stop was delivered.
-			expect(lastConversation.match(/completion reminder was suppressed/g)?.length).toBe(1)
+			expect(conversation).not.toContain("completion reminder was suppressed")
 			expect(conversation).toContain("stopped on request")
-			trace.step("stale reminder replaced; no disposition demand reached the provider")
+			// The steering reached the model and the run settled on its own turns
+			// (at least five conversation requests: spawn, stop attempt, steering
+			// stop, final, stop-nudge acknowledgement; side traffic — e.g. the
+			// title request — also carries the prompt text, so this is a floor).
+			expect(
+				fixture.fake.requests.filter((r) =>
+					JSON.stringify((r.body as { messages?: unknown[] } | undefined)?.messages ?? []).includes(
+						"Start a long command, then finish the task",
+					),
+				).length,
+			).toBeGreaterThanOrEqual(5)
+			trace.step("no reminder ever queued; the steering stop resolved the work")
 		},
 	)
 })

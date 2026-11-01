@@ -4,12 +4,13 @@ import type { TurnArtifactBuffer } from "./artifact-links.js"
 import type { AcpSkillInfo } from "./skill-commands.js"
 
 /**
- * The session targeted by a turn-scoped ext method, plus whether a turn is
+ * The session targeted by a turn-scoped ext method, plus whether a run is
  * truly active. `turnActive` is `SessionRecord.turn` defined AND not
- * cancelled: a cancelled turn stays defined until the prompt settles, but
+ * cancelled (a cancelled turn stays defined until the prompt settles, but
  * cancel() has already resolved its outcome — it is not "a turn in
- * progress". Handlers gate on this instead of reaching into the agent's
- * private turn bookkeeping.
+ * progress"), OR an unsolicited run in flight (no prompt owns it — e.g. a
+ * completion-notification wake). Handlers gate on this instead of reaching
+ * into the agent's private turn bookkeeping.
  */
 export type SessionTurnTarget = {
 	session: AgentSession

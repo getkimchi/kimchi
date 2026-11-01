@@ -82,6 +82,7 @@ beforeEach(() => {
 		coordinator: createReviewCoordinator({ registry }),
 		delivery: createTerminalDelivery(),
 		limitSeconds: 60,
+		sessionKind: "unattended",
 		cwd,
 	}
 })

@@ -279,6 +279,30 @@ export interface RunAcpOptions {
 	mcpProbe?: McpProbe
 }
 
+/**
+ * Fresh turn bookkeeping (id maps, artifact buffer, usage accumulator).
+ * Prompt turns pass the resolve/reject pair that settles their PromptRequest;
+ * unsolicited runs pass no-ops — nothing awaits their outcome.
+ */
+function createTurnContext(
+	resolve: (res: PromptResponse) => void = () => {},
+	reject: (err: unknown) => void = () => {},
+): TurnContext {
+	return {
+		cancelled: false,
+		hiddenToolCallIds: new Set(),
+		announcedToolCallIds: new Set(),
+		lastStreamedContent: new Map(),
+		preWriteContents: new Map(),
+		pendingFileChanges: new Map(),
+		toolCallArgs: new Map(),
+		artifactBuffer: new TurnArtifactBuffer(),
+		usage: emptyTurnUsage(),
+		resolve,
+		reject,
+	}
+}
+
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
@@ -287,6 +311,17 @@ type SessionRecord = {
 	// paths (pre-write reads for per-turn diffs).
 	cwd: string
 	turn?: TurnContext
+	/**
+	 * Bookkeeping for an UNSOLICITED run — an agent run no prompt owns (a
+	 * background-bash completion notification waking an idle agent, or any
+	 * other extension-triggered run). Allocated at agent_start while no
+	 * prompt turn exists, cleared at agent_settled: while set, the session
+	 * counts as run-active (steering injects into it; a new prompt waits it
+	 * out) and the event forwarding uses it exactly like a prompt turn's
+	 * context, so the run's streamed text, tool calls, and usage reach the
+	 * client. Its resolve/reject are no-ops — nothing awaits its outcome.
+	 */
+	unsolicitedTurn?: TurnContext
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
 	 * content block (text or thinking) across every assistant message in
@@ -1087,25 +1122,26 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
+		// An unsolicited run (e.g. a completion-notification wake) may still be
+		// streaming: the client's previous prompt already resolved, so it
+		// legitimately believes the session is free — but pi rejects a prompt
+		// mid-run ("Agent is already processing"). Wait the run out, then start
+		// this prompt's own turn. The code between the await and
+		// session.prompt() is synchronous, so no new wake can interleave; the
+		// wait is bounded by the run itself.
+		if (entry.unsolicitedTurn) {
+			await entry.session.waitForIdle()
+			// Defensive reset: agent_settled already clears it after the full run
+			// chain — anything left here is stale state, never this prompt's turn.
+			entry.unsolicitedTurn = undefined
+		}
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
 			turnResolve = resolve
 			turnReject = reject
 		})
-		entry.turn = {
-			cancelled: false,
-			hiddenToolCallIds: new Set(),
-			announcedToolCallIds: new Set(),
-			lastStreamedContent: new Map(),
-			preWriteContents: new Map(),
-			pendingFileChanges: new Map(),
-			toolCallArgs: new Map(),
-			artifactBuffer: new TurnArtifactBuffer(),
-			usage: emptyTurnUsage(),
-			resolve: turnResolve,
-			reject: turnReject,
-		}
+		entry.turn = createTurnContext(turnResolve, turnReject)
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
@@ -1367,6 +1403,137 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * Forward one assistant text/thinking delta to the client.
+	 *
+	 * All bookkeeping here is ENTRY-level (block ids, streamed-text
+	 * tracking, emitted model meta), so the same path serves prompt-owned
+	 * turns and UNSOLICITED runs (no active turn): a background-bash
+	 * completion notification waking an idle agent streams its response
+	 * with no prompt attached, and the client still receives the message.
+	 * The optional `noteTextBlock` registers artifact links on the owning
+	 * turn's buffer — unsolicited runs pass none (their artifacts are not
+	 * attachable; the persisted history still carries the text).
+	 */
+	private forwardAssistantDelta(
+		sessionId: string,
+		entry: SessionRecord,
+		event: Extract<AgentSessionEvent, { type: "message_update" }>,
+		noteTextBlock?: (messageId: string, attribution: ModelAttribution | undefined) => void,
+	): void {
+		const ame = event.assistantMessageEvent
+		if ((ame.type !== "text_delta" && ame.type !== "thinking_delta") || !ame.delta) return
+		let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
+		if (messageId === undefined) {
+			messageId = `km.${entry.nextBlockId++}`
+			entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
+		}
+		// Artifact links attach to the turn's last text block id.
+		// Thinking ids are never registered: a chunk on one would
+		// render as an empty agent message on kind-keyed clients.
+		if (ame.type === "text_delta") {
+			noteTextBlock?.(messageId, event.message.role === "assistant" ? modelAttributionFrom(event.message) : undefined)
+		}
+		// modelAttributionFrom reads the partial assistant message — the
+		// same best-known tuple the auto-model extension learns from — so
+		// the first chunk of a block carries its attribution and a later
+		// chunk corrects it if `responseModel` lands mid-stream.
+		const modelMeta =
+			event.message.role === "assistant"
+				? modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(event.message))
+				: undefined
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
+				content: { type: "text", text: ame.delta },
+				messageId,
+				...spreadModelMeta(modelMeta),
+			},
+		})
+		// Track streamed text length only — thinking is not restored at
+		// message_end and must not be re-emitted from that path.
+		if (ame.type === "text_delta") {
+			const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
+			entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
+		}
+	}
+
+	/**
+	 * Emit text a message_end carries that streaming never sent — entry-level
+	 * bookkeeping only, so it also serves unsolicited runs (no active turn).
+	 * See forwardAssistantDelta for the entry-level guarantee.
+	 */
+	private forwardUnsentMessageText(
+		sessionId: string,
+		entry: SessionRecord,
+		msg: AssistantMessage,
+		noteTextBlock?: (messageId: string, attribution: ModelAttribution | undefined) => void,
+	): void {
+		if (!Array.isArray(msg.content)) return
+		msg.content.forEach((block, index) => {
+			if (block.type !== "text") return
+			const streamed = entry.streamedText.get(index) ?? ""
+			if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+			let messageId = entry.contentIndexToBlockId.get(index)
+			if (messageId === undefined) {
+				messageId = `km.${entry.nextBlockId++}`
+				entry.contentIndexToBlockId.set(index, messageId)
+			}
+			// Text blocks only reach here (filtered above).
+			noteTextBlock?.(messageId, modelAttributionFrom(msg))
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: block.text.slice(streamed.length) },
+					messageId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+			entry.streamedText.set(index, block.text)
+		})
+	}
+
+	/**
+	 * Land per-block model-attribution corrections after the final message —
+	 * entry-level only, so it also serves unsolicited runs (no active turn).
+	 */
+	private correctEmittedModelMeta(sessionId: string, entry: SessionRecord, msg: AssistantMessage): void {
+		// A provider may report the served model only on this final message,
+		// so every streamed chunk carried the requested-id fallback. When the
+		// authoritative attribution differs from what a block id already
+		// emitted — and the restore path sent no chunk for it — land the
+		// correction explicitly: a zero-length chunk on that id. Content-append
+		// is a no-op and the client's last-wins rule
+		// (docs/acp-model-attribution.md) applies the served ref.
+		const authoritativeAttribution = modelAttributionFrom(msg)
+		for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
+			// Correction only: ids that already carried an attribution. A block
+			// that streamed without one (malformed partial events) has nothing to
+			// correct, and the restore path above covers un-streamed text.
+			if (!entry.emittedModelMeta.has(blockId)) continue
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
+			if (modelMeta === undefined) continue
+			// Match the correction's update kind to the block's real chunks — a
+			// thinking block corrected as agent_message_chunk would render a
+			// spurious empty agent message on clients keyed by kind. The final
+			// message's content array is index-aligned with the streamed
+			// contentIndexes (the restore path above relies on the same pairing).
+			const blockKind = msg.content[contentIndex]?.type
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: blockKind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
+					content: { type: "text", text: "" },
+					messageId: blockId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+		}
+	}
+
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
@@ -1382,7 +1549,13 @@ export class KimchiAcpAgent implements Agent {
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
-		const turn = entry.turn
+		// The active run's bookkeeping: the prompt-owned turn, or — for an
+		// unsolicited run (no prompt in flight, e.g. a background-bash
+		// completion notification waking an idle agent) — its passive context.
+		// Handlers below stay uniform across both; paths that must only ever
+		// see a prompt-owned turn (finalizeTurn and friends) read entry.turn
+		// directly.
+		const turn = entry.turn ?? entry.unsolicitedTurn
 		// Stall/retry/compaction events have no schema session-update type —
 		// forward them as a kimchi.dev activity notification so the client can
 		// pin a running turn's pause to its cause. No-op for transcript/tool
@@ -1427,6 +1600,12 @@ export class KimchiAcpAgent implements Agent {
 				entry.streamedText.clear()
 				entry.emittedModelMeta.clear()
 				entry.toolCallIdMap.clear()
+				// An unsolicited run started (no prompt owns it): allocate its
+				// passive bookkeeping so its streamed text, tool calls, and usage
+				// forward exactly like a prompt turn's. agent_start fires per
+				// chained continue within the run, so an existing context is
+				// kept — only the run chain's first start allocates.
+				if (!entry.turn) entry.unsolicitedTurn ??= createTurnContext()
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
@@ -1436,9 +1615,22 @@ export class KimchiAcpAgent implements Agent {
 				// Held plan-review execution drained: pi-mono emits agent_settled
 				// exactly once, after the FULL run chain (chained continues, retries,
 				// compaction) completes — the deterministic end point for an internal
-				// turn that has no session.prompt() promise to await.
-				if (turn?.planReviewHeld && turn.planReviewExecuting) {
-					this.finalizeHeldPlanReviewTurn(entry, turn)
+				// turn that has no session.prompt() promise to await. Prompt-owned
+				// only: an unsolicited run has no prompt to hold open.
+				if (entry.turn?.planReviewHeld && entry.turn.planReviewExecuting) {
+					this.finalizeHeldPlanReviewTurn(entry, entry.turn)
+				}
+				// An unsolicited run finished its full chain: flush its buffered
+				// artifacts and final usage the way finalizeTurn does for prompts,
+				// then drop its bookkeeping — the session is idle again for
+				// turn-target gating and new prompts.
+				if (!entry.turn && entry.unsolicitedTurn) {
+					const unsolicited = entry.unsolicitedTurn
+					entry.unsolicitedTurn = undefined
+					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
+						this.send({ sessionId: entry.session.sessionId, update })
+					}
+					this.emitUsageUpdate(entry.session, unsolicited.usage)
 				}
 				return
 			}
@@ -1457,47 +1649,21 @@ export class KimchiAcpAgent implements Agent {
 				return
 			}
 			case "message_update": {
-				if (!turn) return
 				const ame = event.assistantMessageEvent
-				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
-					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
-					if (messageId === undefined) {
-						messageId = `km.${entry.nextBlockId++}`
-						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
-					}
-					// Artifact links attach to the turn's last text block id.
-					// Thinking ids are never registered: a chunk on one would
-					// render as an empty agent message on kind-keyed clients.
-					if (ame.type === "text_delta") {
-						turn.artifactBuffer.noteTextBlock(
-							messageId,
-							event.message.role === "assistant" ? modelAttributionFrom(event.message) : undefined,
-						)
-					}
-					// modelAttributionFrom reads the partial assistant message — the
-					// same best-known tuple the auto-model extension learns from — so
-					// the first chunk of a block carries its attribution and a later
-					// chunk corrects it if `responseModel` lands mid-stream.
-					const modelMeta =
-						event.message.role === "assistant"
-							? modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(event.message))
-							: undefined
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
-							content: { type: "text", text: ame.delta },
-							messageId,
-							...spreadModelMeta(modelMeta),
-						},
-					})
-					// Track streamed text length only — thinking is not restored at
-					// message_end and must not be re-emitted from that path.
-					if (ame.type === "text_delta") {
-						const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
-						entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
-					}
+				// Unsolicited run (no active prompt — e.g. a background-bash
+				// completion notification waking an idle agent): forward the
+				// assistant's streamed text and thinking so the client still
+				// receives the response. Tool-call streaming stays turn-scoped
+				// (its progress/result bookkeeping lives on the turn), so it is
+				// not forwarded for runs no prompt owns; the persisted history
+				// still carries those results for the next prompt to replay.
+				if (!turn) {
+					this.forwardAssistantDelta(sessionId, entry, event)
+					return
 				}
+				this.forwardAssistantDelta(sessionId, entry, event, (messageId, attribution) =>
+					turn.artifactBuffer.noteTextBlock(messageId, attribution),
+				)
 
 				// Tool call argument generation started — emit pending tool_call so
 				// the client can show progress while the model streams the arguments.
@@ -1596,9 +1762,20 @@ export class KimchiAcpAgent implements Agent {
 				return
 			}
 			case "message_end": {
-				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// Unsolicited run (no active prompt — see forwardAssistantDelta):
+				// publish the resolved model pick, flush any text streaming never
+				// sent, and land attribution corrections, so the client receives
+				// the wake run's response. Turn-scoped outcome tracking, artifacts,
+				// and usage accounting do not apply — no prompt owns the run, so
+				// there is no turn to finalize.
+				if (!turn) {
+					this.publishModelOptionIfChanged(sessionId, entry)
+					this.forwardUnsentMessageText(sessionId, entry, msg)
+					this.correctEmittedModelMeta(sessionId, entry, msg)
+					return
+				}
 				// The pick is learned from this message (responseModel), after
 				// message_start — push the resolved label here too. Idempotent: the
 				// lastModelOptionName seed makes this a no-op unless the label changed.
@@ -1631,62 +1808,10 @@ export class KimchiAcpAgent implements Agent {
 				// sent === block.text.length for every block, so nothing extra
 				// goes out here. Emitted before usage accounting so ordering
 				// relative to emitUsageUpdate is unchanged.
-				if (Array.isArray(msg.content)) {
-					msg.content.forEach((block, index) => {
-						if (block.type !== "text") return
-						const streamed = entry.streamedText.get(index) ?? ""
-						if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
-						let messageId = entry.contentIndexToBlockId.get(index)
-						if (messageId === undefined) {
-							messageId = `km.${entry.nextBlockId++}`
-							entry.contentIndexToBlockId.set(index, messageId)
-						}
-						// Text blocks only reach here (filtered above).
-						turn.artifactBuffer.noteTextBlock(messageId, modelAttributionFrom(msg))
-						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
-						this.send({
-							sessionId,
-							update: {
-								sessionUpdate: "agent_message_chunk",
-								content: { type: "text", text: block.text.slice(streamed.length) },
-								messageId,
-								...spreadModelMeta(modelMeta),
-							},
-						})
-						entry.streamedText.set(index, block.text)
-					})
-				}
-				// A provider may report the served model only on this final message,
-				// so every streamed chunk carried the requested-id fallback. When the
-				// authoritative attribution differs from what a block id already
-				// emitted — and the restore loop above sent no chunk for it — land the
-				// correction explicitly: a zero-length chunk on that id. Content-append
-				// is a no-op and the client's last-wins rule (docs/acp-model-attribution.md)
-				// applies the served ref.
-				const authoritativeAttribution = modelAttributionFrom(msg)
-				for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
-					// Correction only: ids that already carried an attribution. A block
-					// that streamed without one (malformed partial events) has nothing to
-					// correct, and the restore loop above covers un-streamed text.
-					if (!entry.emittedModelMeta.has(blockId)) continue
-					const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
-					if (modelMeta === undefined) continue
-					// Match the correction's update kind to the block's real chunks — a
-					// thinking block corrected as agent_message_chunk would render a
-					// spurious empty agent message on clients keyed by kind. The final
-					// message's content array is index-aligned with the streamed
-					// contentIndexes (the restore loop above relies on the same pairing).
-					const blockKind = msg.content[contentIndex]?.type
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: blockKind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
-							content: { type: "text", text: "" },
-							messageId: blockId,
-							...spreadModelMeta(modelMeta),
-						},
-					})
-				}
+				this.forwardUnsentMessageText(sessionId, entry, msg, (messageId, attribution) =>
+					turn.artifactBuffer.noteTextBlock(messageId, attribution),
+				)
+				this.correctEmittedModelMeta(sessionId, entry, msg)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -2541,14 +2666,17 @@ export class KimchiAcpAgent implements Agent {
 
 	/**
 	 * Session lookup for the ext-method gating that steering, feedback and
-	 * compact share: the session plus whether a turn is truly active. A
+	 * compact share: the session plus whether a run is truly active. A
 	 * cancelled turn stays defined until the prompt settles, but cancel() has
-	 * already resolved its outcome — it is not "no turn in progress".
+	 * already resolved its outcome — it is not "no turn in progress". An
+	 * UNSOLICITED run (no prompt owns it — e.g. a completion-notification
+	 * wake) also counts as active: steering must inject into it rather than
+	 * telling the client to send a prompt that pi would reject mid-run.
 	 */
 	private getSessionTurnTarget(sessionId: string): SessionTurnTarget | undefined {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return undefined
-		const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+		const turnActive = (entry.turn !== undefined && !entry.turn.cancelled) || entry.unsolicitedTurn !== undefined
 		return {
 			session: entry.session,
 			turnActive,

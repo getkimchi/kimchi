@@ -8,11 +8,13 @@
  * default and the 600s cap exactly).
  */
 
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createToolContext } from "../__mocks__/context.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBashControlToolDefinition } from "./bash-control-tool.js"
 import { createProcessRegistry, type ProcessRegistry } from "./process-registry.js"
-import { createReviewCoordinator, type ReviewCoordinator } from "./review-coordinator.js"
+import { createReviewCoordinator, type ReviewCoordinator, USER_INPUT_POLL_MS } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
@@ -28,7 +30,7 @@ beforeEach(() => {
 	ops = createFakeOps()
 	registry = createProcessRegistry()
 	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1 })
-	state = { registry, coordinator, delivery: createTerminalDelivery(), limitSeconds: 3600 }
+	state = { registry, coordinator, delivery: createTerminalDelivery(), limitSeconds: 3600, sessionKind: "unattended" }
 })
 
 afterEach(async () => {
@@ -51,8 +53,9 @@ async function callExecute(
 	tool: ReturnType<typeof createBashControlToolDefinition>,
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
+	ctx: Parameters<ToolDefinition["execute"]>[4] = createToolContext(),
 ) {
-	return tool.execute("call-1", params as never, signal, undefined, undefined as never)
+	return tool.execute("call-1", params as never, signal, undefined, ctx)
 }
 
 function textOf(result: { content: { type: string; text?: string }[] }): string {
@@ -91,6 +94,18 @@ describe("createBashControlToolDefinition — shape", () => {
 		expect(tool.description).toContain("Unknown handles are reported individually")
 		expect(tool.description).toContain("checkpoint")
 		expect(tool.description).not.toContain("no-op")
+	})
+
+	it("description branches on the session policy at registration", () => {
+		const userFacing = createBashControlToolDefinition(() => state, { sessionKind: "user-facing" })
+		expect(userFacing.description).toContain("human available")
+		expect(userFacing.description).toContain("releases the wait immediately")
+		expect(userFacing.description).toContain("let the turn settle")
+		const unattended = createBashControlToolDefinition(() => state, { sessionKind: "unattended" })
+		expect(unattended.description).not.toContain("human available")
+		// The base contract (strict unattended guidance) is retained in both.
+		expect(unattended.description).toContain("Use this ONLY when you have no independent work to do")
+		expect(userFacing.description).toContain("Use this ONLY when you have no independent work to do")
 	})
 })
 
@@ -904,6 +919,125 @@ describe("bash_control — wait", () => {
 		// The survivor's streak INCREMENTED (the event that ended the wait
 		// was the checkpoint), not reset by the stop's terminal delivery.
 		expect(coordinator.getCheckpointStreak(survivor)).toBe(1)
+	})
+})
+
+describe("bash_control — user-input wait release (user-facing sessions)", () => {
+	/** User-facing session state + a ctx whose pending-message flag is controllable. */
+	function setupUserFacing(initial = false): {
+		tool: ReturnType<typeof createBashControlToolDefinition>
+		ctx: Parameters<ToolDefinition["execute"]>[4]
+		setQueued: (queued: boolean) => void
+	} {
+		state.sessionKind = "user-facing"
+		let queued = initial
+		const ctx = createToolContext({ hasPendingMessages: () => queued })
+		const tool = createBashControlToolDefinition(() => state)
+		return { tool, ctx, setQueued: (v: boolean) => (queued = v) }
+	}
+
+	it("releases the wait immediately when a user message is already queued", async () => {
+		const { tool, ctx } = setupUserFacing(true)
+		const a = spawnRunning("alpha")
+		const b = spawnRunning("beta")
+		const execPromise = callExecute(tool, { wait: true }, undefined, ctx)
+		// No timer advance: the queued message releases the wait at once.
+		const result = await execPromise
+
+		const text = textOf(result)
+		expect(result.details.event).toBe("user-input")
+		expect(result.details.exitedHandles).toEqual([])
+		expect(result.details.runningHandles).toEqual([a, b])
+		expect(text).toContain("Wait released: a message from the user is waiting.")
+		expect(text).toContain("Handle the user's message now.")
+		expect(text).toContain("Still running (2):")
+		expect(text).toContain(`${a}: alpha`)
+		// Nothing was killed and the cohort stays intact.
+		expect(registry.getEntry(a)?.state).toBe("running")
+		expect(registry.getEntry(b)?.state).toBe("running")
+	})
+
+	it("releases the wait when a user message queues mid-wait", async () => {
+		const { tool, ctx, setQueued } = setupUserFacing(false)
+		spawnRunning("sleeper")
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 300 }, undefined, ctx)
+		await Promise.resolve()
+		// Still waiting: nothing settles before the message queues.
+		await vi.advanceTimersByTimeAsync(200)
+		let settled = false
+		void execPromise.then(() => {
+			settled = true
+		})
+		expect(settled).toBe(false)
+		setQueued(true)
+		await vi.advanceTimersByTimeAsync(USER_INPUT_POLL_MS)
+		const result = await execPromise
+		expect(result.details.event).toBe("user-input")
+	})
+
+	it("commits no checkpoint streak and emits no checkpoint guidance", async () => {
+		const { tool, ctx } = setupUserFacing(true)
+		const survivor = spawnRunning("survivor")
+		const result = await callExecute(tool, { wait: true }, undefined, ctx)
+		expect(result.details.event).toBe("user-input")
+		expect(textOf(result)).toContain("Consecutive wait checkpoints: 0")
+		expect(textOf(result)).not.toContain("Reassess the runtime")
+		// The observation response resets the survivor's streak (fresh
+		// evidence), never increments it.
+		expect(coordinator.getCheckpointStreak(survivor)).toBe(0)
+	})
+
+	it("unattended sessions ignore queued user input — the wait runs to its checkpoint", async () => {
+		const { tool } = setup() // default state: unattended
+		spawnRunning("sleeper")
+		const queued = true
+		const ctx = createToolContext({ hasPendingMessages: () => queued })
+		const execPromise = callExecute(tool, { wait: true, waitSeconds: 10 }, undefined, ctx)
+		await Promise.resolve()
+		await vi.advanceTimersByTimeAsync(10_000)
+		const result = await execPromise
+		expect(result.details.event).toBe("checkpoint")
+		expect(textOf(result)).toContain("Wait checkpoint: requested 10s")
+	})
+
+	it("a fresh subsequent wait after a user-input release is unaffected by the earlier message", async () => {
+		const { tool, ctx, setQueued } = setupUserFacing(true)
+		spawnRunning("sleeper")
+		const first = await callExecute(tool, { wait: true }, undefined, ctx)
+		expect(first.details.event).toBe("user-input")
+		// The user's message was handled; the next wait starts clean.
+		setQueued(false)
+		const second = callExecute(tool, { wait: true, waitSeconds: 10 }, undefined, ctx)
+		await Promise.resolve()
+		let settled = false
+		void second.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(9_000)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1_000)
+		const result = await second
+		expect(result.details.event).toBe("checkpoint")
+	})
+
+	it("delivers a racing exit's terminal result alongside the user-input release", async () => {
+		const { tool, ctx } = setupUserFacing(true)
+		const exiting = spawnRunning("exiting")
+		const staying = spawnRunning("staying")
+		await ops.exitMatching("exiting", 0)
+		const result = await callExecute(tool, { wait: true }, undefined, ctx)
+
+		const text = textOf(result)
+		// The response is a user-input release — but the exit's terminal
+		// result is still delivered exactly once through this result.
+		expect(result.details.event).toBe("user-input")
+		expect(result.details.exitedHandles).toEqual([exiting])
+		expect(result.details.runningHandles).toEqual([staying])
+		expect(text).toContain(` handle: ${exiting}`)
+		expect(text).toContain("exited (exit code 0)")
+		expect(text).toContain("Still running (1):")
+		expect(registry.getEntry(exiting)).toBeUndefined()
+		expect(registry.getEntry(staying)?.state).toBe("running")
 	})
 })
 

@@ -84,6 +84,9 @@ function fallbackState(
 		coordinator: createReviewCoordinator({ registry }),
 		delivery: createTerminalDelivery(),
 		limitSeconds,
+		// Isolated fallback (no session owning the state): default to the
+		// strictest policy — unattended keeps waits and the completion guard.
+		sessionKind: "unattended",
 		cwd,
 	}
 	return { state, registry }
@@ -239,7 +242,7 @@ export function createBackgroundBashToolDefinition(
 		}
 
 		return {
-			content: [{ type: "text", text: `${body}\n\n${handoffGuidanceText()}` }],
+			content: [{ type: "text", text: `${body}\n\n${handoffGuidanceText(state.sessionKind)}` }],
 			details: {
 				handle,
 				exited: false,

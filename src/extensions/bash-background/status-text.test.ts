@@ -13,6 +13,8 @@ import {
 	processEvidenceText,
 	terminalResultText,
 	unseenOutputText,
+	userInputGuidanceText,
+	userInputHeaderText,
 	waitCheckpointHeaderText,
 } from "./status-text.js"
 
@@ -169,6 +171,29 @@ describe("handoffGuidanceText", () => {
 		expect(text).toContain("wait: true")
 		expect(text).toContain("five minutes by default, ten at most")
 		expect(text).not.toContain("review")
+	})
+
+	it("user-facing sessions add the message-release contract", () => {
+		const text = handoffGuidanceText("user-facing")
+		expect(text).toContain("continues by default")
+		expect(text).toContain("A user message queued while you wait releases the wait immediately")
+		expect(text).toContain("let the turn settle while this process keeps running")
+		expect(text.endsWith("]")).toBe(true)
+	})
+
+	it("unattended sessions keep the base guidance unchanged", () => {
+		expect(handoffGuidanceText("unattended")).toBe(handoffGuidanceText())
+	})
+})
+
+describe("user-input wait release text", () => {
+	it("header and guidance state the release and the continuation contract", () => {
+		expect(userInputHeaderText()).toBe("Wait released: a message from the user is waiting.")
+		const guidance = userInputGuidanceText()
+		expect(guidance).toContain("Handle the user's message now")
+		expect(guidance).toContain("keeps running untouched")
+		expect(guidance).toContain("arrive on their own")
+		expect(guidance).not.toContain("wait again")
 	})
 })
 

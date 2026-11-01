@@ -14,6 +14,7 @@
 import { relative } from "node:path"
 import type { IncrementalSnapshot, ProcessEntry, ProcessState } from "./process-registry.js"
 import { elapsedSecondsSince, SAFETY_LIMIT_REASON } from "./process-registry.js"
+import type { BashSessionKind } from "./session-policy.js"
 
 /** Human-readable byte count for status lines (e.g. "18 KB"). */
 export function formatBytes(bytes: number): string {
@@ -168,6 +169,29 @@ export function checkpointGuidanceText(): string {
 	)
 }
 
+/**
+ * Header for a wait released by a queued user message (user-facing
+ * sessions): the wait ended, nothing else did.
+ */
+export function userInputHeaderText(): string {
+	return "Wait released: a message from the user is waiting."
+}
+
+/**
+ * Guidance appended to a user-input wait release: handle the user's
+ * message now; the cohort keeps running untouched and its exit results
+ * still arrive automatically, so settling to answer never needs a new
+ * wait or a stop.
+ */
+export function userInputGuidanceText(): string {
+	return (
+		"Handle the user's message now. Every process listed above keeps running untouched — " +
+		"their exit results arrive on their own, and a later completion notification wakes you " +
+		"when they end. Do not start another wait just to watch them, and do not stop them " +
+		"unless the user's request makes them unnecessary."
+	)
+}
+
 /** Terminal-state label shared by all terminal formatters. */
 export function terminalReasonText(state: ProcessState, exitCode: number | null, reason: string | null): string {
 	if (reason === SAFETY_LIMIT_REASON) return "killed by the harness safety limit"
@@ -235,10 +259,12 @@ export function terminalResultText(input: TerminalResultInput): string {
 
 /**
  * Guidance appended to a result that yields a live handle. States the
- * continuation contract once, without recommending polling.
+ * continuation contract once, without recommending polling. In
+ * user-facing sessions, adds that the human's messages release waits and
+ * that turns may settle while the process keeps running.
  */
-export function handoffGuidanceText(): string {
-	return (
+export function handoffGuidanceText(sessionKind?: BashSessionKind): string {
+	const base =
 		"[This process now continues by default. Its exit result will be delivered " +
 		"automatically — do not poll it. Do independent work with the other " +
 		"tools now, avoiding commands or edits that could conflict with it (same " +
@@ -250,5 +276,13 @@ export function handoffGuidanceText(): string {
 		"the first exit or a bounded checkpoint (five minutes by default, ten at " +
 		"most). Intentional servers/watchers that must outlive the session belong in " +
 		"daemon management.]"
-	)
+	if (sessionKind === "user-facing") {
+		return (
+			base.slice(0, -1) +
+			" A user message queued while you wait releases the wait immediately — answer it, " +
+			"and let the turn settle while this process keeps running: its exit result " +
+			"still arrives on its own.]"
+		)
+	}
+	return base
 }

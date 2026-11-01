@@ -28,11 +28,21 @@ This view covers managed Bash commands in the current session. Direct `!` shell 
 
 Compound command approval shows the original script, including quoting. **Allow all for this session** appears only when every required permission can be remembered. Scripts that cannot be safely represented by reusable rules explain that they need approval each time and offer **Run all (once)**.
 
+## Interactive sessions and user messages
+
+Interactive sessions — the TUI and ACP/IDE integrations — treat the user as present:
+
+- A user message queued while a `bash_control(wait: true)` call is waiting releases the wait immediately. The wait returns a distinct `user-input` result with the current cohort evidence — nothing is stopped and no checkpoint is counted — and the agent handles the message. Exit results still arrive on their own afterwards.
+- A chat turn may end while managed commands keep running. The harness does not force the agent back into a wait or a stop for them: their exit results arrive as automatic notifications, and each one wakes an idle agent.
+- The agent loop's own message semantics are untouched — the harness never dequeues, rewrites, or drops a queued user message, and steering and explicit follow-ups keep their existing ordering.
+
+Headless runs (`--print`, JSON output) and agent workers keep the stricter completion guard: a task cannot finish while managed work lacks a disposition, so a run that tries to end with live commands or undelivered outcomes receives a continuation reminder directing it to wait or stop. Cancellation behavior, the absolute process safety limit, per-session isolation, and session-shutdown cleanup are identical on both surfaces.
+
 ## For tool authors
 
 The Bash tool accepts an optional short `description` alongside `command`. The description states purpose; expand the card to see the command. No extra model call is used to generate labels.
 
-`bash_control` remains the model-facing tool name. `wait` is optional and defaults to an immediate inspection: use `wait: true` to wait for an exit or a bounded checkpoint, and omit it (or pass `wait: false`) to inspect. An optional `handles` list restricts an immediate inspection to the selected commands — only their new output and evidence is returned, unselected commands keep running with their output cursors untouched, and unknown handles are reported individually. `stop_handles` stops selected commands independently of the filter, and a stop-only call needs no `wait`. Commands continue by default, and while any command runs, conflicting write/execute calls receive one concurrency advisory per session. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
+`bash_control` remains the model-facing tool name. `wait` is optional and defaults to an immediate inspection: use `wait: true` to wait for an exit or a bounded checkpoint, and omit it (or pass `wait: false`) to inspect. In interactive sessions, a queued user message also releases an active wait — the result reports the release with current cohort evidence and the processes keep running. An optional `handles` list restricts an immediate inspection to the selected commands — only their new output and evidence is returned, unselected commands keep running with their output cursors untouched, and unknown handles are reported individually. `stop_handles` stops selected commands independently of the filter, and a stop-only call needs no `wait`. Commands continue by default, and while any command runs, conflicting write/execute calls receive one concurrency advisory per session. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
 
 Automatic exit results arrive as one compact notification per delivery boundary: exits landing within a short window of each other batch into a single message that carries every terminal result, error, and output. A notice reports only what ended — cohort status belongs to inspection — and an outcome reads as pending until its notification has been acknowledged in the conversation.
 

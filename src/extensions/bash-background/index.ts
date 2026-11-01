@@ -27,6 +27,7 @@ import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
+import { bashSessionKindFromContext } from "./session-policy.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
@@ -74,7 +75,10 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const limitSeconds = resolveBashProcessLimitSeconds() ?? DEFAULT_BASH_PROCESS_LIMIT_SECONDS
 		const coordinator = createReviewCoordinator({ registry })
 		const delivery = createTerminalDelivery()
-		const state = { registry, coordinator, delivery, limitSeconds, cwd: sessionCtx.cwd }
+		// Resolved once per session and stored as required state so the
+		// control tool (wait release) and the completion guard share it.
+		const sessionKind = bashSessionKindFromContext(sessionCtx)
+		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
 		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
 
 		// Re-register `bash` with the background execution definition.

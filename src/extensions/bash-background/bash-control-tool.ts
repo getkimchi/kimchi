@@ -46,6 +46,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
 import { elapsedSecondsSince } from "./process-registry.js"
 import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "./review-coordinator.js"
+import type { BashSessionKind } from "./session-policy.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
 import {
 	checkpointGuidanceText,
@@ -55,6 +56,8 @@ import {
 	processEvidenceText,
 	terminalResultText,
 	unseenOutputText,
+	userInputGuidanceText,
+	userInputHeaderText,
 	waitCheckpointHeaderText,
 } from "./status-text.js"
 
@@ -92,7 +95,7 @@ const bashControlSchema = Type.Object({
 export type BashControlInput = Static<typeof bashControlSchema>
 
 /** What kind of `bash_control` response this is / what ended a wait. */
-export type BashControlEvent = "inspection" | "exit" | "checkpoint" | "aborted" | "empty"
+export type BashControlEvent = "inspection" | "exit" | "checkpoint" | "aborted" | "empty" | "user-input"
 
 /** Details returned by bash_control (read by the bash-control extension). */
 export interface BashControlDetails {
@@ -116,7 +119,8 @@ export interface BashControlDetails {
 
 export const BASH_CONTROL_TOOL_NAME = "bash_control"
 
-export const BASH_CONTROL_TOOL_DESCRIPTION = `Control background bash processes started by the \`bash\` tool.
+/** Base (unattended) tool description; user-facing sessions append the interactive contract. */
+const BASH_CONTROL_TOOL_DESCRIPTION_BASE = `Control background bash processes started by the \`bash\` tool.
 
 Background processes continue by default: each process's final exit result is delivered to you automatically — it reaches the conversation at the next turn boundary while you keep working, or immediately when the agent is idle. You do NOT need to call this tool to keep a process alive or to collect its output.
 
@@ -126,6 +130,16 @@ Background processes continue by default: each process's final exit result is de
 - \`stop_handles\`: stop the named processes now and get their final results in one response. Every unlisted handle keeps running. Independent of \`handles\`; a stop-only call needs no \`wait\`.
 
 At a checkpoint, compare each process's runtime with its expected duration and decide: wait again, investigate, or stop. A checkpoint does not prove a hang — silence alone does not establish a stall.`
+
+/** User-facing tail: waits yield to the human, and turns may settle with live commands. */
+const BASH_CONTROL_TOOL_DESCRIPTION_USER_FACING = `This session has a human available. A message the user queues while a wait is active releases the wait immediately — answer the user, and let the turn settle there if that is the right response: background processes keep running, their exit results still arrive automatically, and a completion notification wakes you when they end. You never need to force a wait or stop processes just to end a turn.`
+
+/** Description for the registration: session-aware (see ./session-policy.ts). */
+export function bashControlToolDescription(sessionKind: BashSessionKind | undefined): string {
+	return sessionKind === "user-facing"
+		? `${BASH_CONTROL_TOOL_DESCRIPTION_BASE}\n\n${BASH_CONTROL_TOOL_DESCRIPTION_USER_FACING}`
+		: BASH_CONTROL_TOOL_DESCRIPTION_BASE
+}
 
 interface NormalizedParams {
 	stopHandles: string[]
@@ -297,6 +311,7 @@ type SnapshotMode =
 	| { kind: "inspection" }
 	| { kind: "exit"; handle: string }
 	| { kind: "checkpoint"; requestedSeconds: number; waitedSeconds: number }
+	| { kind: "user-input" }
 
 interface CohortSnapshot {
 	/** Terminal result blocks collected by this sweep. */
@@ -449,6 +464,8 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 		blocks.push(waitCheckpointHeaderText(mode.requestedSeconds, mode.waitedSeconds))
 	} else if (mode.kind === "exit") {
 		blocks.push(`Cohort event: process exited (${mode.handle}).`)
+	} else if (mode.kind === "user-input") {
+		blocks.push(userInputHeaderText())
 	}
 	blocks.push(...snapshot.terminalBlocks)
 	if (snapshot.pendingBlocks.length > 0) {
@@ -457,11 +474,15 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
 	blocks.push(...snapshot.unknownBlocks)
 	if (snapshot.runningHandles.length > 0) {
 		if (mode.kind === "inspection") blocks.push(inspectionHeaderText(snapshot.runningHandles.length))
-		else if (mode.kind === "exit") blocks.push(`Still running (${snapshot.runningHandles.length}):`)
+		else if (mode.kind === "exit" || mode.kind === "user-input")
+			blocks.push(`Still running (${snapshot.runningHandles.length}):`)
 		blocks.push(...snapshot.runningBlocks)
 	}
 	if (mode.kind === "checkpoint" && snapshot.runningHandles.length > 0) {
 		blocks.push(checkpointGuidanceText())
+	}
+	if (mode.kind === "user-input" && snapshot.runningHandles.length > 0) {
+		blocks.push(userInputGuidanceText())
 	}
 	if (
 		snapshot.exitedHandles.length === 0 &&
@@ -486,6 +507,7 @@ function snapshotBlocks(mode: SnapshotMode, snapshot: CohortSnapshot): string[] 
  */
 export function createBashControlToolDefinition(
 	getState?: () => BashSessionState | undefined,
+	options?: { sessionKind?: BashSessionKind },
 ): ToolDefinition<typeof bashControlSchema, BashControlDetails> {
 	async function execute(
 		toolCallId: string,
@@ -621,10 +643,22 @@ export function createBashControlToolDefinition(
 			return errorResult(claim.error, "wait-conflict")
 		}
 
+		// User-facing executions yield the wait to queued user input: supply
+		// the context's pending-user-message check (accepted queue state —
+		// never the earlier `input` interception hook). Unattended sessions
+		// get no check, and their waits are unaffected by input.
+		const pendingUserInput = state.sessionKind === "user-facing" ? () => ctx.hasPendingMessages() : undefined
+
 		let event: Awaited<ReturnType<typeof coordinator.awaitCohortEvent>>
 		const waitStartedAtMs = Date.now()
 		try {
-			event = await coordinator.awaitCohortEvent(toolCallId, signal, effectiveWaitSeconds, state.delivery)
+			event = await coordinator.awaitCohortEvent(
+				toolCallId,
+				signal,
+				effectiveWaitSeconds,
+				state.delivery,
+				pendingUserInput,
+			)
 		} finally {
 			coordinator.endCohortWait(toolCallId)
 		}
@@ -667,7 +701,9 @@ export function createBashControlToolDefinition(
 				? { kind: "checkpoint", requestedSeconds: effectiveWaitSeconds ?? 0, waitedSeconds }
 				: event.kind === "exit"
 					? { kind: "exit", handle: event.handle }
-					: { kind: "inspection" }
+					: event.kind === "user-input"
+						? { kind: "user-input" }
+						: { kind: "inspection" }
 		const snapshot = await collectCohortSnapshot(state, {
 			settlementCheckpoint: event.kind === "checkpoint",
 			toolCallId,
@@ -682,15 +718,21 @@ export function createBashControlToolDefinition(
 		// consecutive-checkpoint count increments), while a wait resolved by
 		// an exit is a terminal-event response (their streaks reset). A wait
 		// that settled because the cohort drained reports the exits its
-		// outcomes represent, never a genuinely empty session.
+		// outcomes represent, never a genuinely empty session. A wait
+		// released by a user message is ALWAYS a user-input response — even
+		// when a racing exit also delivered a terminal result here — and it
+		// commits as an observation: no timeout streak increments, no
+		// checkpoint guidance nudges another wait.
 		const responseEvent: BashControlEvent =
-			event.kind === "checkpoint"
-				? "checkpoint"
-				: event.kind === "exit" || snapshot.exitedHandles.length > 0
-					? "exit"
-					: snapshot.pendingHandles.length > 0 || event.kind === "pending-delivery"
-						? "inspection"
-						: "empty"
+			event.kind === "user-input"
+				? "user-input"
+				: event.kind === "checkpoint"
+					? "checkpoint"
+					: event.kind === "exit" || snapshot.exitedHandles.length > 0
+						? "exit"
+						: snapshot.pendingHandles.length > 0 || event.kind === "pending-delivery"
+							? "inspection"
+							: "empty"
 		if (responseEvent === "checkpoint") coordinator.commitWaitTimeout(snapshot.runningHandles)
 		else coordinator.commitObservation(snapshot.runningHandles)
 
@@ -710,7 +752,7 @@ export function createBashControlToolDefinition(
 	return {
 		name: BASH_CONTROL_TOOL_NAME,
 		label: "bash_control",
-		description: BASH_CONTROL_TOOL_DESCRIPTION,
+		description: bashControlToolDescription(options?.sessionKind),
 		parameters: bashControlSchema,
 		execute: execute as ToolDefinition<typeof bashControlSchema, BashControlDetails>["execute"],
 	}
