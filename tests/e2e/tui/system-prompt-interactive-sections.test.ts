@@ -29,6 +29,12 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("orients the user")
 			expect(prompt).toContain("## Phase Management")
 
+			// The replacement prompt keeps upstream tool guidance and explains
+			// when batching through codemode is preferable to direct calls.
+			expect(prompt).toContain("## Tool Guidelines")
+			expect(prompt).toContain("Use codemode to batch independent tool calls (Promise.allSettled)")
+			expect(prompt).toContain("Prefer `codemode` for batching independent tool calls")
+
 			// The headless replacement never appears in an interactive session.
 			expect(prompt).not.toContain("## Autonomous Session")
 		},

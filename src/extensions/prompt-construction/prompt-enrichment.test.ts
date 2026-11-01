@@ -3,6 +3,7 @@ import { arch, version as osVersion, platform, release, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
@@ -234,6 +235,31 @@ describe("stripEmptyToolCalls", () => {
 })
 
 describe("prompt enrichment tool visibility", () => {
+	it("preserves active tool guidelines and removes them when the tool becomes inactive", async () => {
+		const mock = createExtensionApi()
+		mock.api.getFlag = vi.fn(() => false)
+		mock.api.registerTool({
+			name: "codemode",
+			label: "Codemode",
+			description: "Run JavaScript",
+			parameters: Type.Object({}),
+			promptGuidelines: ["Use codemode to batch independent tool calls."],
+			execute: async () => ({ content: [], details: undefined }),
+		})
+		mock.api.setActiveTools(["codemode"])
+		promptEnrichmentExtension(() => [])(mock.api)
+		const handler = mock.getHandler<unknown, { systemPrompt: string }>("before_agent_start")
+		const ctx = createContext({ hasUI: false })
+		const active = await handler({}, ctx)
+		expect(active?.systemPrompt).toContain("- Use codemode to batch independent tool calls.")
+		expect(active?.systemPrompt).toContain("Prefer `codemode` for batching independent tool calls")
+
+		mock.api.setActiveTools([])
+		const inactive = await handler({}, ctx)
+		expect(inactive?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
+		expect(inactive?.systemPrompt).not.toContain("Prefer `codemode`")
+	})
+
 	it("omits hidden tools from the rendered available tools section", async () => {
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>()
 		const tools = [

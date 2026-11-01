@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
+import type { Skill, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "../../utils.js"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
@@ -36,15 +36,12 @@ export interface EnvironmentInfo {
 	gitRemote?: string
 }
 
-export interface ToolInfo {
-	name: string
-	description: string
-}
+type PromptTool = Pick<ToolInfo, "name" | "description" | "promptGuidelines">
 
 export type PromptMode = "orchestrator" | "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
-	tools: readonly ToolInfo[]
+	tools: readonly PromptTool[]
 	env: EnvironmentInfo
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
@@ -109,6 +106,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		mode,
 		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		toolsSection,
+		toolGuidelinesSection: formatToolGuidelinesSection(effectiveTools),
 		environmentSection,
 		projectContext,
 		skillsSection: formatSkillsSection(filteredSkills, effectiveTools, options.contextWindow),
@@ -130,6 +128,7 @@ interface PromptParts {
 	mode: PromptMode
 	toolNames: ReadonlySet<string>
 	toolsSection: string
+	toolGuidelinesSection: string
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
@@ -369,6 +368,11 @@ ${lines.join("\n")}`
 
 export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
 	const lines: string[] = []
+	if (toolNames?.has("codemode")) {
+		lines.push(
+			"- Prefer `codemode` for batching independent tool calls, chaining calls that need no model reasoning between them, and filtering or summarizing large tool results before returning them. Use direct tools for a single straightforward operation. Await every nested call and inspect failures before continuing.",
+		)
+	}
 	if (hasTool(toolNames, "read")) {
 		lines.push("- Reading a file → use `read` (not `cat`, `head`, `tail`, `sed -n`).")
 	}
@@ -490,6 +494,7 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
+	sections.push(parts.toolGuidelinesSection)
 	sections.push(
 		buildPhaseManagementSection(
 			parts.currentModelId,
@@ -530,7 +535,19 @@ function buildPrompt(parts: PromptParts): string {
 // Section formatters
 // ---------------------------------------------------------------------------
 
-function formatToolsSection(tools: readonly ToolInfo[]): string {
+function formatToolGuidelinesSection(tools: readonly PromptTool[]): string {
+	const guidelines = new Set<string>()
+	for (const tool of tools) {
+		for (const guideline of tool.promptGuidelines ?? []) {
+			const trimmed = guideline.trim()
+			if (trimmed) guidelines.add(trimmed)
+		}
+	}
+	if (guidelines.size === 0) return ""
+	return `## Tool Guidelines\n\n${[...guidelines].map((guideline) => `- ${guideline}`).join("\n")}`
+}
+
+function formatToolsSection(tools: readonly PromptTool[]): string {
 	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
 	// The API request already carries each
 	// tool's description in the function-calling payload, so embedding a second
@@ -628,7 +645,7 @@ function truncateDescription(description: string, max: number): string {
  *  of a pointer to an unregistered tool. Both variants render as markdown. */
 function formatSkillsSection(
 	skills: readonly Skill[] | undefined,
-	tools: readonly ToolInfo[],
+	tools: readonly PromptTool[],
 	contextWindow?: number,
 ): string {
 	if (!skills || skills.length === 0) return ""

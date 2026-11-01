@@ -111,6 +111,45 @@ describe("buildSystemPrompt", () => {
 		{ name: "steer_subagent", description: "Steer a running background agent" },
 	]
 
+	it.each([
+		"single",
+		"orchestrator",
+		"subagent",
+	] as const)("preserves and deduplicates active tool guidelines in %s mode", (mode) => {
+		const result = buildSystemPrompt({
+			tools: [
+				{ name: "codemode", description: "Run JavaScript", promptGuidelines: [" Batch independent calls. ", ""] },
+				{
+					name: "read",
+					description: "Read files",
+					promptGuidelines: ["Batch independent calls.", "Read relevant files."],
+				},
+			],
+			env: testEnv,
+			mode,
+		})
+
+		expect(result).toContain("## Tool Guidelines\n\n- Batch independent calls.\n- Read relevant files.")
+		expect(result.match(/Batch independent calls\./g)).toHaveLength(1)
+		expect(result).toContain("Prefer `codemode` for batching independent tool calls")
+		expect(result).toContain("Await every nested call and inspect failures before continuing.")
+	})
+
+	it("omits codemode advice and the tool-guidelines section when no active tool contributes guidelines", () => {
+		const result = buildSystemPrompt({ tools, env: testEnv, mode: "single" })
+		expect(result).not.toContain("## Tool Guidelines")
+		expect(result).not.toContain("Prefer `codemode`")
+	})
+
+	it("omits guidelines from delegation tools filtered out of subagent prompts", () => {
+		const result = buildSystemPrompt({
+			tools: [{ name: "Agent", description: "Delegate", promptGuidelines: ["Delegate all work."] }],
+			env: testEnv,
+			mode: "subagent",
+		})
+		expect(result).not.toContain("Delegate all work.")
+	})
+
 	it("scopes consent requirements without blocking requested local development work", () => {
 		const result = buildSystemPrompt({
 			tools,

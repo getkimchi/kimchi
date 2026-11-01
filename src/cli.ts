@@ -5,7 +5,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import {
+	AgentSession,
+	createCodemodeExtension,
+	type ExtensionAPI,
+	parseArgs as parsePiArgs,
+} from "@earendil-works/pi-coding-agent"
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
@@ -989,7 +994,9 @@ async function cliMain(): Promise<void> {
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
 				await runAcpMode({
-					extensionFactories,
+					// pi's CLI registers codemode for TUI/print; ACP creates SDK
+					// sessions directly and must supply the same built-in extension.
+					extensionFactories: [createCodemodeExtension(), ...extensionFactories],
 					agentDir,
 					...(mcpAdapterExtensions.length > 0
 						? {

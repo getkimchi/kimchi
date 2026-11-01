@@ -3,9 +3,9 @@ import type { Phase } from "../types.js"
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
-- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full. When you need to read multiple files, issue all \`read\` calls in the same turn — do not make a separate turn for each file.
+- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full. Batch independent reads with \`codemode\` when available; otherwise issue the calls together in the same turn.
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
-- Batch independent tool calls: issue multiple \`read\`, \`grep\`, or \`ls\` calls together when they don't depend on each other's results.
+- Batch independent tool calls: prefer \`codemode\` when available for independent \`read\`, \`grep\`, or \`ls\` calls; otherwise issue the calls together in the same turn.
 - **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
@@ -33,7 +33,7 @@ export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
 
 export const DEFAULT_BUILD_GUIDELINES = `During **build** phase:
 - Read each file BEFORE modifying it. Never edit blind.
-- **Batch tool calls**: Issue independent tool calls together in the same turn. If a call doesn't depend on the result of a previous one, it belongs in the same turn. Read files in parallel, run independent bash commands together, and pair todo updates with work tool calls. Every extra turn adds to the context window and wastes tokens.
+- **Batch tool calls**: Prefer \`codemode\` when available to batch independent calls, chain calls that need no model reasoning between them, and filter large results. Otherwise issue independent calls together in the same turn. Read files in parallel, run independent bash commands together, and pair todo updates with work tool calls. Every extra turn adds to the context window and wastes tokens.
 - Prefer \`edit\` over \`write\` for files >30 lines. Reserve \`write\` for new files or full rewrites.
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
