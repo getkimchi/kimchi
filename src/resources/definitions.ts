@@ -3,6 +3,7 @@ import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
+import { SIDE_CHAT_RESOURCE_ID } from "../extensions/side-chat/resource.js"
 import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
@@ -198,6 +199,16 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		experimental: true,
 		label: "Memory",
 		description: "Enable persistent personal memory (capture + recall across sessions; facts stored locally).",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: SIDE_CHAT_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Side chat",
+		description:
+			"Branch a side chat docked to the right of the session (/btw): quote transcript selections, then /wrap a steering prompt back to the main agent. Fullscreen TUI only.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

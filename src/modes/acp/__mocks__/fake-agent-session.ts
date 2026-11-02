@@ -47,6 +47,7 @@ export class BaseFakeAgentSession {
 	}
 
 	getToolDefinition = vi.fn((_name: string) => undefined)
+	getActiveToolNames = vi.fn(() => ["read", "bash"])
 	setActiveToolsByName = vi.fn()
 	subscribe = () => () => {}
 	async bindExtensions(): Promise<void> {}
@@ -73,7 +74,7 @@ export function makeAcpConn(): AgentSideConnection {
 		extNotification: vi.fn(async (_method: string, _params: unknown) => {}),
 		extMethod: vi.fn(),
 		requestPermission: vi.fn(),
-		unstable_createElicitation: vi.fn(),
+		createElicitation: vi.fn(),
 		closed: Promise.resolve(),
 	} as unknown as AgentSideConnection
 }

@@ -69,6 +69,7 @@ export async function handleFeedback(
 			sentiment,
 			reason: reason ?? "",
 			window: ratingWindow,
+			sessionId,
 		})
 		consumeRatingWindow(sessionId)
 		return result

@@ -7,16 +7,15 @@ import {
 	type AgentSessionEvent,
 	type CreateAgentSessionOptions,
 	createAgentSession,
-	DefaultResourceLoader,
 	type ExtensionAPI,
 	getAgentDir,
 	type InlineExtension,
-	type ModelRuntime,
 	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../../resources/store.js"
+import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
@@ -55,6 +54,7 @@ import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.j
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
@@ -261,10 +261,6 @@ export interface RunResult {
 	maxTurns?: number
 	/** Absolute path to the saved plan file, if the agent produced a plan. */
 	planPath?: string
-}
-
-type ModelRegistryWithRuntime = {
-	runtime?: ModelRuntime
 }
 
 function collectResponseText(session: AgentSession) {
@@ -524,7 +520,16 @@ ${skillLines}`
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
-	const loader = new DefaultResourceLoader({
+	// SubagentResourceLoader reads the system prompt live via the
+	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
+	// final active-tool list is known, reassigning `systemPrompt` and calling
+	// session.setActiveToolsByName() is enough for the session to rebuild its
+	// prompt options from the current value — NO second loader.reload(). That
+	// second reload used to exist only to re-evaluate systemPromptOverride, and
+	// it re-ran every inline extension factory against the loader's shared
+	// event bus, leaving orphaned duplicate copies whose bus subscriptions
+	// duplicated channel events (e.g. 2× subagent.bash_clamped telemetry).
+	const loader = new SubagentResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
 		noExtensions: effectiveExtensions === false,
@@ -532,7 +537,7 @@ ${skillLines}`
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		systemPromptOverride: () => systemPrompt,
+		readSystemPrompt: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
 		extensionFactories,
 	})
@@ -541,8 +546,7 @@ ${skillLines}`
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
-	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
-	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
+	const modelRuntime = requireModelRuntime(ctx.modelRegistry)
 
 	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
@@ -594,12 +598,14 @@ ${skillLines}`
 			activeTools.push(WORKER_REPORT_TOOL_NAME)
 		}
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
+		// No loader.reload() here: SubagentResourceLoader reads the prompt live
+		// on every getSystemPrompt() call, so reassigning `systemPrompt` above
+		// is all setActiveToolsByName needs to rebuild the session's prompt
+		// options from the final tool list.
 		session.setActiveToolsByName(activeTools)
 	} else {
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 

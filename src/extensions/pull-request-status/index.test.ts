@@ -5,6 +5,7 @@ import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { check } from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as statusLine from "../../config/status-line-config.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as supervisor from "../work-attribution/reconcile-supervisor.js"
@@ -24,6 +25,10 @@ vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 vi.mock("./branch-status.js", () => ({
 	currentBranch: vi.fn(),
 	lookupBranchPullRequest: vi.fn(),
+}))
+vi.mock("../../config/status-line-config.js", async (importOriginal) => ({
+	...(await importOriginal<typeof statusLine>()),
+	isStatusLineElementHidden: vi.fn(),
 }))
 
 let directory: string
@@ -93,6 +98,7 @@ beforeEach(() => {
 	vi.mocked(supervisor.subscribePullRequestReconciliation).mockReturnValue(async () => {})
 	vi.mocked(branches.currentBranch).mockResolvedValue("feature")
 	vi.mocked(branches.lookupBranchPullRequest).mockResolvedValue({ branch: "feature", pullRequest: pr })
+	vi.mocked(statusLine.isStatusLineElementHidden).mockReturnValue(false)
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
 afterEach(async () => {
@@ -861,5 +867,61 @@ describe("expected lookup failures", () => {
 		// A newer commit of the same work still waits.
 		update({ ...commit, sha: "d".repeat(40), prLookup: { status: "pending", checkedAt } })
 		expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "feature · PR #7 open")
+	})
+})
+
+describe("hidden Branch / PR element", () => {
+	it("does not warn about a failed branch lookup while Branch / PR is hidden", async () => {
+		vi.mocked(statusLine.isStatusLineElementHidden).mockReturnValue(true)
+		vi.mocked(branches.lookupBranchPullRequest).mockRejectedValue(new Error("Run gh auth login"))
+		await startStandalone()
+		await vi.waitFor(() => expect(branches.lookupBranchPullRequest).toHaveBeenCalledOnce())
+		await vi.waitFor(() => expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("work-pr", "feature"))
+		expect(statusLine.isStatusLineElementHidden).toHaveBeenCalledWith("work-pr")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+	it("does not warn about a failed commit lookup while hidden but still lists it in /work", async () => {
+		vi.mocked(statusLine.isStatusLineElementHidden).mockReturnValue(true)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		const error = "GitHub could not find this repository, commit or pull request. It may require authentication."
+		update({
+			...contribution(getWorkId(ctx)),
+			pullRequests: [],
+			prLookup: { status: "error", checkedAt: new Date().toISOString(), error },
+		})
+		await Promise.resolve()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		await api.getRegisteredCommand("work").handler("", textCommandContext())
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining(`PR/MR lookup: ${error}`), "info")
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning")
+	})
+	it("warns about a failure skipped while hidden once Branch / PR is shown again", async () => {
+		vi.mocked(statusLine.isStatusLineElementHidden).mockReturnValue(true)
+		const api = createExtensionApi()
+		createWorkAttributionExtension()(api.api)
+		const status = createExtensionApi()
+		pullRequestStatusExtension({ ...status.api, events: api.api.events })
+		await start(api)
+		await start(status)
+		const update = vi.mocked(supervisor.subscribePullRequestReconciliation).mock.calls[0][0].onPullRequest
+		const failed = { ...contribution(getWorkId(ctx)), pullRequests: [] }
+		update({
+			...failed,
+			prLookup: { status: "error", checkedAt: new Date().toISOString(), error: "Run gh auth login" },
+		})
+		await Promise.resolve()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		vi.mocked(statusLine.isStatusLineElementHidden).mockReturnValue(false)
+		const checkedAt = new Date(Date.now() + 1000).toISOString()
+		update({ ...failed, prLookup: { status: "error", checkedAt, error: "Run gh auth login" } })
+		await Promise.resolve()
+		expect(ctx.ui.notify).toHaveBeenCalledOnce()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("gh auth login"), "warning")
 	})
 })

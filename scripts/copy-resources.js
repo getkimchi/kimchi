@@ -27,6 +27,7 @@ import { createRequire } from "node:module"
 import { platform, tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { applyTemplateFixes, TEMPLATE_FIX_ANCHORS } from "./export-template-fixes.js"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 const piAgentDist = join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist")
@@ -59,6 +60,26 @@ cpSync(exportHtmlSrc, exportHtmlDest, {
 	recursive: true,
 	filter: (src) => !exportHtmlSkipSuffixes.some((suffix) => src.endsWith(suffix)),
 })
+
+// Post-process the staged export template: replace the three recursive tree
+// walkers (sortChildren, mapNodes, markActive) with iterative versions. Long
+// sessions form ~14k-deep parentId chains and the recursive walkers overflow
+// the browser call stack, leaving the export blank except for kimchi's
+// injected divs. Fail-soft (warn-and-skip on anchor drift so a pi-mono upgrade
+// never breaks the build); the vitest conformance test against the installed
+// upstream template is the drift tripwire that forces a human decision.
+const templateJsPath = join(exportHtmlDest, "template.js")
+const templateFixes = applyTemplateFixes(readFileSync(templateJsPath, "utf-8"))
+if (templateFixes.applied < TEMPLATE_FIX_ANCHORS.length || templateFixes.warnings.length > 0) {
+	console.warn(
+		`[copy-resources] export template fixes: applied ${templateFixes.applied}/${TEMPLATE_FIX_ANCHORS.length} — ` +
+			"recursive tree walkers may still overflow the browser stack on long sessions",
+	)
+	for (const warning of templateFixes.warnings) {
+		console.warn(`[copy-resources] ${warning}`)
+	}
+}
+writeFileSync(templateJsPath, templateFixes.js, "utf-8")
 
 // Post-process export HTML template to inject the kimchi version number.
 const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"))

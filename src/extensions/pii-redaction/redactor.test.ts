@@ -1,9 +1,39 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getRedactionConfig, resetRedactionConfigCache } from "./config.js"
-import { redactMessages, redactObjectStrings, redactText, resetRedactorEngine } from "./redactor.js"
+import {
+	redactMessages,
+	redactObjectStrings,
+	redactObjectStringsStrict,
+	redactText,
+	resetRedactorEngine,
+} from "./redactor.js"
+
+// Toggleable engine-scan override for the strict-variant failure tests. When
+// `scanImpl` is null (the default) createEngine returns the real engine, so
+// every other test in this file exercises the real redaction behavior; the
+// strict tests set a rejecting scan to simulate an engine failure.
+const engineScanOverride = vi.hoisted(() => ({
+	scanImpl: null as ((text: string) => Promise<unknown>) | null,
+}))
+
+vi.mock("@bulkhead-ai/core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bulkhead-ai/core")>()
+	return {
+		...actual,
+		createEngine: (...args: Parameters<typeof actual.createEngine>) => {
+			const engine = actual.createEngine(...args)
+			if (!engineScanOverride.scanImpl) return engine
+			// Delegate to the real engine but intercept `scan` — Object.create
+			// keeps the prototype (setExcludeEntities etc.) intact.
+			const overridden = Object.create(engine) as typeof engine
+			overridden.scan = engineScanOverride.scanImpl as typeof engine.scan
+			return overridden
+		},
+	}
+})
 
 // ─── Test PII / secret values ────────────────────────────────────────────────
 // SSNs use non-obvious numbers (not 000/666/9xx area, valid group & serial)
@@ -459,5 +489,59 @@ describe("getRedactionConfig — opt-out paths", () => {
 		writeConfig({ theme: "dark" })
 		const config = getRedactionConfig()
 		expect(config.enabled).toBe(false)
+	})
+})
+
+describe("redactObjectStringsStrict — fail-closed export variant", () => {
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+	afterEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+
+	it("throws on an engine failure while the lenient variant returns the original text", async () => {
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const secret = { nested: { content: "call me at john.doe@example.com" } }
+
+		await expect(redactObjectStringsStrict(secret)).rejects.toThrow("engine exploded")
+
+		// Lenient contract unchanged: a scan failure returns the original text.
+		const lenient = await redactObjectStrings(secret)
+		expect(lenient.nested.content).toBe("call me at john.doe@example.com")
+	})
+
+	it("walk parity with the lenient variant on a fixture object", async () => {
+		interface FixtureEntry {
+			id: string
+			type: string
+			message?: { role: string; content: string }
+			customType?: string
+			data?: { traceId: string; apiKey: string }
+		}
+		const fixture: { header: { id: string }; entries: FixtureEntry[]; systemPrompt: string } = {
+			header: { id: "s1" },
+			entries: [
+				{ id: "m1", type: "message", message: { role: "user", content: "email john.doe@example.com" } },
+				{ id: "m2", type: "custom", customType: "diagnostics", data: { traceId: "abc123", apiKey: "sk-abcdef123456" } },
+			],
+			systemPrompt: "You are helpful. Bearer sk-1234567890abcdef1234567890abcdef",
+		}
+
+		const lenient = await redactObjectStrings(structuredClone(fixture))
+		const strict = await redactObjectStringsStrict(structuredClone(fixture))
+
+		expect(strict).toEqual(lenient)
+		// Both variants actually redacted (sanity: the fixture contains PII).
+		expect(JSON.stringify(strict)).not.toContain("john.doe@example.com")
+		expect(JSON.stringify(strict)).toContain("[REDACTED-EMAIL_ADDRESS]")
+		// Sensitive-key force-redaction identical.
+		expect(strict.entries[1]?.data?.apiKey).toBe("[REDACTED-SECRET_FIELD]")
+		// Preserved keys identical.
+		expect(strict.entries[1]?.data?.traceId).toBe("abc123")
+		// Input never mutated by either variant.
+		expect(fixture.entries[0]?.message?.content).toContain("john.doe@example.com")
 	})
 })

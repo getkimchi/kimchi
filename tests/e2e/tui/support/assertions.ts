@@ -71,6 +71,32 @@ export async function findFermentArtifact(
 }
 
 /**
+ * Poll a recorded-request list (fixture.fake.requests) until a request matches
+ * the predicate — for assertions on traffic that races orchestrator UI events
+ * (e.g. a background subagent's first request can land AFTER the orchestrator's
+ * follow-up turn renders, so asserting immediately after a waitForText sees
+ * zero child requests). Throws with the URLs seen so far on timeout.
+ */
+export async function waitForRequest<T extends { url: string }>(
+	requests: T[],
+	predicate: (request: T) => boolean,
+	description: string,
+	timeoutMs = STREAM_TIMEOUT_MS,
+): Promise<T> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		const found = requests.find(predicate)
+		if (found) return found
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	const recent = requests.slice(-20).map((r) => r.url)
+	const seen = recent.join(", ") || "none"
+	const omitted = requests.length - recent.length
+	const suffix = omitted > 0 ? ` (…and ${omitted} earlier)` : ""
+	throw new Error(`Timed out waiting for ${description}.\n\nRequests seen: ${seen}${suffix}`)
+}
+
+/**
  * Waits for the harness to finish processing the main agent turn AND any
  * follow-up completions. Polls request count until stable for settleForMs.
  * Shared across TUI E2E tests that need to wait for the agent to fully settle.

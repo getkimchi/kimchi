@@ -221,11 +221,13 @@ test("thinking controls follow the routed pick when it does not reason", async (
 			await waitForText(terminal, "Thinking Level", { timeoutMs: INPUT_TIMEOUT_MS })
 
 			const thinkingList = viewText(terminal)
-			// The session synced to the non-reasoning pick exposes "off" only.
-			expect(thinkingList).toMatch(/✓ +off +No reasoning/)
-			expect(thinkingList).not.toMatch(
-				/Very brief reasoning|Light reasoning|Moderate reasoning|Deep reasoning|Maximum reasoning/,
-			)
+			// The session synced to the non-reasoning pick: nothing is selectable,
+			// every level greyed out, and the panel explains it with the escape
+			// affordance (the curated-aware selector treats non-reasoning models
+			// as "no levels" — see thinking-selector-levels.test.ts).
+			expect(thinkingList).toContain("This model does not support thinking, press ESC to return")
+			expect(thinkingList).not.toMatch(/✓/)
+			expect(thinkingList).toContain("to return")
 
 			terminal.keyEscape()
 			await waitForText(terminal, PROMPT_READY, { timeoutMs: INPUT_TIMEOUT_MS, full: false })

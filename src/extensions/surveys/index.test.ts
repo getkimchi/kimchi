@@ -19,6 +19,15 @@ vi.mock("../telemetry/index.js", () => ({
 	trackSurveyShown: (...args: unknown[]) => trackSurveyShown(...args),
 	trackSurveyAnswered: (...args: unknown[]) => trackSurveyAnswered(...args),
 	trackSurveyDismissed: (...args: unknown[]) => trackSurveyDismissed(...args),
+	// The survey ctx carries a sessionManager (see createSurveyCtx); the
+	// guarded read just unwraps it.
+	trySessionId: (ctx: { sessionManager?: { getSessionId(): string | undefined } }) => {
+		try {
+			return ctx.sessionManager?.getSessionId()
+		} catch {
+			return undefined
+		}
+	},
 }))
 
 type Handler = (...args: unknown[]) => Promise<void> | void
@@ -66,6 +75,8 @@ function createSurveyCtx(input = "\r", hasUI = true) {
 	return {
 		hasUI,
 		mode: hasUI ? "tui" : "rpc",
+		// Session-keyed telemetry attribution reads the id from the ctx.
+		sessionManager: { getSessionId: () => "survey-test-session" },
 		ui: {
 			custom,
 			notify: vi.fn(),
@@ -98,13 +109,17 @@ describe("surveysExtension", () => {
 			await Promise.resolve()
 
 			expect(extCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "third_coding_prompt" }))
+			expect(trackSurveyShown).toHaveBeenCalledWith(
+				expect.objectContaining({ trigger: "third_coding_prompt" }),
+				"survey-test-session",
+			)
 			expect(trackSurveyAnswered).toHaveBeenCalledWith(
 				expect.objectContaining({
 					answerId: "worked_great",
 					submissionId: expect.any(String),
 					trigger: "third_coding_prompt",
 				}),
+				"survey-test-session",
 			)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
@@ -155,12 +170,16 @@ describe("surveysExtension", () => {
 			await Promise.resolve()
 
 			expect(extCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "ferment_completed" }))
+			expect(trackSurveyShown).toHaveBeenCalledWith(
+				expect.objectContaining({ trigger: "ferment_completed" }),
+				"survey-test-session",
+			)
 			expect(trackSurveyDismissed).toHaveBeenCalledWith(
 				expect.objectContaining({
 					trigger: "ferment_completed",
 					reason: "ctrl_c",
 				}),
+				"survey-test-session",
 			)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
@@ -192,7 +211,10 @@ describe("surveysExtension", () => {
 
 			expect(noUiCtx.ui.custom).not.toHaveBeenCalled()
 			expect(uiCtx.ui.custom).toHaveBeenCalledTimes(1)
-			expect(trackSurveyShown).toHaveBeenCalledWith(expect.objectContaining({ trigger: "ferment_completed" }))
+			expect(trackSurveyShown).toHaveBeenCalledWith(
+				expect.objectContaining({ trigger: "ferment_completed" }),
+				"survey-test-session",
+			)
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}

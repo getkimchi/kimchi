@@ -92,6 +92,23 @@ describe("ACP integration — subagent foreground default", () => {
 		const continuation = chatBodies.find((b, i) => i !== subagentIdx && b.includes(SUBAGENT_MARKER))
 		expect(continuation, "orchestrator continuation carries subagent result").toBeDefined()
 
+		// Single-load regression (subagent-double-extension-load): the subagent's
+		// outgoing request must carry the FINAL system prompt — the one resolved
+		// AFTER binding, with its active tool list — not the pre-binding draft.
+		// The prompt is re-resolved without a second loader reload, so this
+		// asserts the live-prompt adapter delivered the final content.
+		const subagentRequest = fixture.fake.requests.filter(
+			(r) => r.url.endsWith("/chat/completions") && JSON.stringify(r.body ?? {}).includes("sub-agent"),
+		)[0]
+		const subagentBody = subagentRequest ? subagentRequest.body : undefined
+		const subagentMessages =
+			(subagentBody as { messages?: Array<{ role: string; content: unknown }> } | undefined)?.messages ?? []
+		const subagentSystemMessage = subagentMessages.find((m) => m.role === "system")
+		const subagentSystem = subagentSystemMessage ? subagentSystemMessage.content : undefined
+		const systemText = typeof subagentSystem === "string" ? subagentSystem : JSON.stringify(subagentSystem ?? "")
+		expect(systemText).toContain("## Available Tools")
+		expect(systemText).toContain("- read")
+
 		// Turn completes with the orchestrator's scripted wrap-up.
 		expect(result.chunks).toContain("Orchestrator wrapping up.")
 	})

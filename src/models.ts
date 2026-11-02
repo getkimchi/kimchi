@@ -319,12 +319,33 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
 	const responsesApi = supportsResponsesApi(m.provider, m.slug)
-	const thinkingLevelMap =
+	let thinkingLevelMap =
 		m.provider === "ai-enabler"
 			? { off: "none", max: "max" }
 			: responsesApi && m.reasoning
 				? responsesThinkingLevelMap(m.slug)
 				: upstream?.thinkingLevelMap
+	// Curated-none (`thinking_levels: []`): the model reasons at the provider
+	// default — no level controls and no explicit effort on the wire. Native
+	// anthropic and Responses-API models stamp `off: null` so the no-effort
+	// request path skips the map's disable fallback (`off: "none"` would
+	// otherwise disable thinking), and anthropic also drops the
+	// mid-conversation effort messages, leaving no thinking parameter at all.
+	// The openai-completions family drops `supportsReasoningEffort`, removing
+	// reasoning_effort from requests entirely. The session clamps to "off"
+	// (src/thinking-selection.ts), so no effort is derived anywhere.
+	const curatedNone = Array.isArray(m.thinking_levels) && m.thinking_levels.length === 0
+	let effectiveCompat: OpenAICompletionsCompat | AnthropicMessagesCompat | undefined = compat
+	if (curatedNone) {
+		if (upstream) {
+			thinkingLevelMap = { ...(upstream.thinkingLevelMap ?? {}), off: null }
+			effectiveCompat = { ...upstream.compat, supportsMidConvoEffort: false }
+		} else if (responsesApi && m.reasoning) {
+			thinkingLevelMap = { ...responsesThinkingLevelMap(m.slug), off: null }
+		} else {
+			effectiveCompat = { ...compat, supportsReasoningEffort: false }
+		}
+	}
 	return {
 		id: m.slug,
 		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
@@ -338,7 +359,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
 		...(Array.isArray(m.thinking_levels) && { thinkingLevels: normalizeThinkingLevels(m.thinking_levels) }),
-		...(compat && { compat }),
+		...(effectiveCompat && { compat: effectiveCompat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
 }

@@ -19,6 +19,7 @@ import {
 	McpKeychainDeniedError,
 } from "./keyring-require-bridge.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 type SdkTool = ListToolsResult["tools"][number]
@@ -458,6 +459,8 @@ export class UpstreamMcpProbe implements McpProbe {
 			signal.throwIfAborted()
 			// Same host-managed trust flag as index.ts: project trust is Kimchi's gate.
 			process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
+			// `mcp probe` opens the same authorize URLs; see oauth-offline-access.ts.
+			installOfflineAccessAuthorizationUrlTransform()
 			createMcpAdapter({ config })(host.api)
 			await Promise.race([emitHandlers(host, "session_start"), aborted])
 			signal.throwIfAborted()

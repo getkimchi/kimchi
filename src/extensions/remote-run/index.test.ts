@@ -58,21 +58,21 @@ describe("remoteRunExtension", () => {
 		expect(handlers.size).toBe(0)
 	})
 
-	it("registers the dispatch tool, /remote-run command, and shutdown handler when enabled", () => {
+	it("registers the dispatch tool and /remote-run command when enabled", () => {
 		const { pi, tools, commands, handlers } = makePi()
 		remoteRunExtension(pi)
 		expect(tools.map((t) => t.name)).toEqual([DISPATCH_TO_CLOUD_AGENT_TOOL])
 		expect([...commands.keys()]).toEqual(["remote-run"])
-		expect(handlers.get("session_shutdown")).toHaveLength(1)
+		expect(handlers.has("session_shutdown")).toBe(false)
 	})
 
-	it("does not register the dispatch tool in --print runs, but keeps the command and shutdown handler", async () => {
+	it("does not register the dispatch tool in --print runs, but keeps the command", async () => {
 		await withPrintGate({ print: true }, () => {
 			const { pi, tools, commands, handlers } = makePi()
 			remoteRunExtension(pi)
 			expect(tools).toEqual([])
 			expect([...commands.keys()]).toEqual(["remote-run"])
-			expect(handlers.get("session_shutdown")).toHaveLength(1)
+			expect(handlers.has("session_shutdown")).toBe(false)
 		})
 	})
 

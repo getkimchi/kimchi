@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	type AcpSessionCallbacks,
 	AcpSessionClient,
+	AcpSessionDetachedError,
 	extractFinalAssistantText,
 	RemoteConnectionError,
 	STEERING_UNSUPPORTED_MESSAGE,
@@ -1955,6 +1956,50 @@ describe("AcpSessionClient", () => {
 			}
 
 			client.close()
+		})
+
+		it("detaches a pending prompt without sending session/cancel", async () => {
+			const controller = new AbortController()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				signal: controller.signal,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+			const pending = client.prompt("keep working remotely")
+			await vi.waitFor(() =>
+				expect(getSentMessages(socket).some((message) => message.method === "session/prompt")).toBe(true),
+			)
+			const rejected = expect(pending).rejects.toBeInstanceOf(AcpSessionDetachedError)
+			controller.abort(new AcpSessionDetachedError())
+			await rejected
+			expect(client.isClosed).toBe(true)
+			expect(getSentMessages(socket).some((message) => message.method === "session/cancel")).toBe(false)
+		})
+
+		it("moves disconnect ownership to a reused connection's current run", async () => {
+			const original = new AbortController()
+			const current = new AbortController()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				signal: original.signal,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+			client.setSignal(current.signal)
+			original.abort(new AcpSessionDetachedError())
+			expect(client.isClosed).toBe(false)
+			const pending = client.prompt("follow up")
+			await vi.waitFor(() =>
+				expect(getSentMessages(socket).some((message) => message.method === "session/prompt")).toBe(true),
+			)
+			const rejected = expect(pending).rejects.toBeInstanceOf(AcpSessionDetachedError)
+			current.abort(new AcpSessionDetachedError())
+			await rejected
+			expect(client.isClosed).toBe(true)
+			expect(getSentMessages(socket).some((message) => message.method === "session/cancel")).toBe(false)
 		})
 
 		it("throws RemoteConnectionError when WS closes mid-prompt", async () => {

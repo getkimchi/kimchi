@@ -107,6 +107,45 @@
 #     description column truncates first, then the provider column, the model
 #     id last. The shared renderer lives in src/model-selector-table.ts;
 #     removal criteria for this hunk are in the Removal note below.
+#   - /thinking selector is curated-aware: ThinkingSelectorComponent renders
+#     every canonical level, greying out (dim label) the ones not selectable
+#     for the current model; arrow navigation jumps over greyed-out levels
+#     so they are never selectable, confirm / save-as-default on them is
+#     ignored. Models with nothing selectable still open the selector — every
+#     level greyed out, an actionable warning info line ("...press ESC to
+#     return"; the help line keeps the keybinding-accurate binding), the
+#     cycle hint hidden; /thinking <level> errors with the fuller
+#     explanation (provider default / no reasoning). Selectability is computed by kimchi
+#     (src/thinking-selection.ts: curated levels ∩ pi's map-supported set;
+#     uncurated models keep pi's set; curated-none / no-reasoning / empty
+#     intersection select nothing) and crosses the dist boundary through the
+#     process.__kimchiThinkingLevelAdvisor hook installed by src/cli.ts (the
+#     dist cannot import harness source — the same channel as
+#     __kimchiRenderModelTable). AgentSession.getAvailableThinkingLevels
+#     narrows to the curated set when non-empty (an empty result keeps pi's
+#     set so clamping/cycling keep their non-empty contract); setThinkingLevel
+#     applies the advisor clamp on EVERY assignment (model switches and RPC
+#     calls included — a pi-supported level must not slip past the curated
+#     clamp, and curated-none settles on "off"); cycleThinkingLevel returns
+#     undefined for nothing-selectable models (the existing non-reasoning
+#     contract). handleThinkingCommand and the
+#     /thinking argument completions consult the advisor directly so the
+#     typed path validates against the same set. Session creation
+#     (dist/core/sdk.js createAgentSession) applies the curated clamp too, so
+#     every mode — TUI, ACP, SDK — starts aligned instead of only the
+#     interactive CLI path. Curated-none ("on" at the provider default) is
+#     also wire-aligned in src/models.ts: compat stamps keep reasoning_effort
+#     (openai-completions) and thinking parameters (anthropic / responses)
+#     off the request entirely, while the session clamps to "off" so no
+#     effort is derived anywhere. Without the advisor, every entry point
+#     keeps upstream behavior. Tests: src/thinking-selection.test.ts,
+#     src/models.test.ts, src/components/status-line.test.ts, tests/e2e/tui
+#     and tests/e2e/acp (selector rendering and first-request effort).
+#     Removal: when upstream gains per-model thinking-level curation
+#     (thinking_levels tri-state) or a provider-default request mode —
+#     file/link an upstream issue here, then drop the hunks. (Upstream
+#     candidate — publication pending, same bucket as the /model selector
+#     hunks.)
 #   - /settings omits the "Install telemetry" toggle: the settings item and
 #     its onEnableInstallTelemetryChange switch case are dropped from
 #     dist/modes/interactive/components/settings-selector.js. kimchi
@@ -213,7 +252,7 @@ index ec17d54377ea8ff8d27a338069809cc9f91e46d2..e97f50e3af153f66a5a37cf59989f0c5
    ANTHROPIC_API_KEY                - Anthropic Claude API key
    ANTHROPIC_OAUTH_TOKEN            - Anthropic OAuth token (alternative to API key)
 diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
-index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b22b628bf 100644
+index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..0a1cf183ccdb35aa698cd4436f9779a862d09cf7 100644
 --- a/dist/core/agent-session.js
 +++ b/dist/core/agent-session.js
 @@ -821,6 +821,23 @@ export class AgentSession {
@@ -240,7 +279,83 @@ index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b
          const messageIndex = this.agent.state.messages.indexOf(message);
          if (messageIndex < 0)
              return undefined;
-@@ -2198,7 +2215,7 @@ export class AgentSession {
+@@ -2083,8 +2100,24 @@ export class AgentSession {
+      * Persists the requested level to global defaults only when options.persist is true.
+      */
+     setThinkingLevel(level, options = {}) {
++        // kimchi: the advisor clamp runs on EVERY level assignment — curated
++        // models rank-clamp into the curated set, curated-none (and empty
++        // intersection) models settle on "off" so no explicit effort is
++        // derived. getAvailableThinkingLevels keeps pi's set for none-mode
++        // models (non-empty contract), so the includes() check below would
++        // otherwise let a pi-supported level through unclamped on model
++        // switches and RPC assignments.
++        const kimchiAdvisor = process.__kimchiThinkingLevelAdvisor;
++        let kimchiClamped;
++        if (typeof kimchiAdvisor === "function") {
++            try {
++                const kimchiInfo = kimchiAdvisor(this.model);
++                kimchiClamped = kimchiInfo && typeof kimchiInfo.clamp === "function" ? kimchiInfo.clamp(level) : null;
++            }
++            catch { }
++        }
+         const availableLevels = this.getAvailableThinkingLevels();
+-        const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
++        const effectiveLevel = kimchiClamped ?? (availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels));
+         // Only persist if actually changing
+         const previousLevel = this.agent.state.thinkingLevel;
+         const isChanging = effectiveLevel !== previousLevel;
+@@ -2109,6 +2142,14 @@ export class AgentSession {
+     cycleThinkingLevel(options = {}) {
+         if (!this.supportsThinking())
+             return undefined;
++        // kimchi: nothing selectable (curated-none / empty intersection) — the
++        // same contract as a non-reasoning model: no cycle.
++        const kimchiAdvisor = process.__kimchiThinkingLevelAdvisor;
++        if (typeof kimchiAdvisor === "function") {
++            const kimchiInfo = kimchiAdvisor(this.model);
++            if (kimchiInfo && kimchiInfo.noneReason)
++                return undefined;
++        }
+         const levels = this.getAvailableThinkingLevels();
+         const currentIndex = levels.indexOf(this.thinkingLevel);
+         const nextIndex = (currentIndex + 1) % levels.length;
+@@ -2123,7 +2164,17 @@ export class AgentSession {
+     getAvailableThinkingLevels() {
+         if (!this.model)
+             return [...THINKING_LEVEL_OPTIONS];
+-        return getSupportedThinkingLevels(this.model);
++        const piLevels = getSupportedThinkingLevels(this.model);
++        // kimchi: curated levels narrow the set. An empty curated result
++        // (curated-none, no reasoning) keeps pi's set so clamping and cycling
++        // keep their non-empty contract — the selector greys out instead.
++        const kimchiAdvisor = process.__kimchiThinkingLevelAdvisor;
++        if (typeof kimchiAdvisor === "function") {
++            const kimchiInfo = kimchiAdvisor(this.model);
++            if (kimchiInfo && Array.isArray(kimchiInfo.selectable) && kimchiInfo.selectable.length > 0)
++                return kimchiInfo.selectable;
++        }
++        return piLevels;
+     }
+     /**
+      * Check if current model supports thinking/reasoning.
+@@ -2145,6 +2196,15 @@ export class AgentSession {
+         return this.settingsManager.getDefaultThinkingLevel() ?? this.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+     }
+     _clampThinkingLevel(level, _availableLevels) {
++        // kimchi: rank-nearest curated clamp; falls back to pi's map-based
++        // clamp when nothing is selectable or no advisor is installed.
++        const kimchiAdvisor = process.__kimchiThinkingLevelAdvisor;
++        if (typeof kimchiAdvisor === "function") {
++            const kimchiInfo = kimchiAdvisor(this.model);
++            const kimchiClamped = kimchiInfo && typeof kimchiInfo.clamp === "function" ? kimchiInfo.clamp(level) : null;
++            if (kimchiClamped)
++                return kimchiClamped;
++        }
+         return this.model ? clampThinkingLevel(this.model, level) : "off";
+     }
+     // =========================================================================
+@@ -2198,7 +2258,7 @@ export class AgentSession {
       *
       * @param customInstructions Optional instructions for the compaction summary
       */
@@ -249,7 +364,7 @@ index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b
          await this.abort();
          this._compactionAbortController = new AbortController();
          this._emit({ type: "compaction_start", reason: "manual" });
-@@ -2211,14 +2228,21 @@ export class AgentSession {
+@@ -2211,14 +2271,21 @@ export class AgentSession {
              }
              const settings = this.settingsManager.getCompactionSettings(model);
              const pathEntries = this.sessionManager.getBranch();
@@ -273,7 +388,7 @@ index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b
              }
              let extensionCompaction;
              if (this._extensionRunner.hasHandlers("session_before_compact")) {
-@@ -2773,10 +2797,10 @@ export class AgentSession {
+@@ -2773,10 +2840,10 @@ export class AgentSession {
              setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
              refreshTools: () => this._refreshToolRegistry(),
              getCommands,
@@ -286,7 +401,7 @@ index 11ab140cd4a227d03bf247de3b0d6a7197e892e0..490f849b30fe396d53236faf4862026b
                  return true;
              },
              getThinkingLevel: () => this.thinkingLevel,
-@@ -2802,7 +2826,7 @@ export class AgentSession {
+@@ -2802,7 +2869,7 @@ export class AgentSession {
              compact: (options) => {
                  void (async () => {
                      try {
@@ -582,6 +697,32 @@ index 563d7d5ff8b514bd276e16c0243f373769ca8de2..ed0c6233112b57dc53a7c8639fc12c47
                  }
              }
          }
+diff --git a/dist/core/sdk.js b/dist/core/sdk.js
+index b1d632f79734053eed23b059c72f351da3eb44a4..7bb3b512375a2d1ac9a504b89207ddec0df33a24 100644
+--- a/dist/core/sdk.js
++++ b/dist/core/sdk.js
+@@ -141,6 +141,21 @@ export async function createAgentSession(options = {}) {
+     }
+     else {
+         thinkingLevel = clampThinkingLevel(model, thinkingLevel);
++        // kimchi: curated levels narrow the clamp further (rank-nearest), and
++        // curated-none models settle on "off" so requests carry no explicit
++        // effort — every mode (TUI, ACP, SDK) starts aligned with the model's
++        // curation, not just the interactive CLI path. Idempotent when the
++        // level is already selectable.
++        const kimchiAdvisor = process.__kimchiThinkingLevelAdvisor;
++        if (typeof kimchiAdvisor === "function") {
++            try {
++                const kimchiInfo = kimchiAdvisor(model);
++                const kimchiClamped = kimchiInfo && typeof kimchiInfo.clamp === "function" ? kimchiInfo.clamp(thinkingLevel) : null;
++                if (kimchiClamped)
++                    thinkingLevel = kimchiClamped;
++            }
++            catch { }
++        }
+     }
+     const toolListError = options.tools ? getToolListError(options.tools) : undefined;
+     if (toolListError)
 diff --git a/dist/core/session-manager.js b/dist/core/session-manager.js
 index 62b469b5dc3fcea2aa8f52218cbdfe892d9abed4..c34fb4ea381311f7e8e9cc380b24f1bf10ea255d 100644
 --- a/dist/core/session-manager.js
@@ -1562,6 +1703,182 @@ index 39514bbcb15ce424b389374980a33e07bcacabe3..15c123c7f01eab190e2929f6ff743179
          this.skillBlock = skillBlock;
          this.markdownTheme = markdownTheme;
          this.updateDisplay();
+diff --git a/dist/modes/interactive/components/thinking-selector.d.ts b/dist/modes/interactive/components/thinking-selector.d.ts
+index b4a337007b2258a1652e5a53ad7617da703e96bc..f4cf7288761bbca9100227c5095688cd3f0ce074 100644
+--- a/dist/modes/interactive/components/thinking-selector.d.ts
++++ b/dist/modes/interactive/components/thinking-selector.d.ts
+@@ -1,5 +1,11 @@
+ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import { Container, type Focusable, SelectList } from "@earendil-works/pi-tui";
++/** kimchi: a selectable level row — disabled entries render greyed out and
++ *  cannot be confirmed; plain strings remain all-selectable. */
++export declare interface ThinkingSelectorItem {
++    value: ThinkingLevel;
++    disabled?: boolean;
++}
+ /**
+  * Component that renders a thinking level selector with borders
+  */
+@@ -8,13 +14,14 @@ export declare class ThinkingSelectorComponent extends Container implements Focu
+     private selectList;
+     private selectListChildIndex;
+     private allItems;
++    private disabledValues;
+     private onSelect;
+     private onCancel;
+     private onSelectAsDefault?;
+     private _focused;
+     get focused(): boolean;
+     set focused(value: boolean);
+-    constructor(currentLevel: ThinkingLevel, availableLevels: ThinkingLevel[], onSelect: (level: ThinkingLevel) => void, onCancel: () => void, onSelectAsDefault?: (level: ThinkingLevel) => void, defaultThinkingLevel?: ThinkingLevel);
++    constructor(currentLevel: ThinkingLevel, items: Array<ThinkingSelectorItem | ThinkingLevel>, onSelect: (level: ThinkingLevel) => void, onCancel: () => void, onSelectAsDefault?: (level: ThinkingLevel) => void, defaultThinkingLevel?: ThinkingLevel, infoText?: string);
+     private buildSelectList;
+     private applyFilter;
+     handleInput(keyData: string): void;
+diff --git a/dist/modes/interactive/components/thinking-selector.js b/dist/modes/interactive/components/thinking-selector.js
+index d0b11ac65857fce038d0bdff43dccf623df5897d..7f26d7601a24fd34f6ecd40a955940eb75c21aa0 100644
+--- a/dist/modes/interactive/components/thinking-selector.js
++++ b/dist/modes/interactive/components/thinking-selector.js
+@@ -16,13 +16,14 @@ const LEVEL_DESCRIPTIONS = {
+     max: "Maximum reasoning",
+ };
+ /**
+- * Component that renders a thinking level selector with borders
++ * Component that renders a thinking level selector with borders.
+  */
+ export class ThinkingSelectorComponent extends Container {
+     searchInput;
+     selectList;
+     selectListChildIndex;
+     allItems;
++    disabledValues;
+     onSelect;
+     onCancel;
+     onSelectAsDefault;
+@@ -34,22 +35,46 @@ export class ThinkingSelectorComponent extends Container {
+         this._focused = value;
+         this.searchInput.focused = value;
+     }
+-    constructor(currentLevel, availableLevels, onSelect, onCancel, onSelectAsDefault, defaultThinkingLevel) {
++    constructor(currentLevel, items, onSelect, onCancel, onSelectAsDefault, defaultThinkingLevel, infoText) {
+         super();
+         this.onSelect = onSelect;
+         this.onCancel = onCancel;
+         this.onSelectAsDefault = onSelectAsDefault;
+-        this.allItems = availableLevels.map((level) => ({
+-            value: level,
+-            label: `${level === currentLevel ? "✓ " : "  "}${level}`,
+-            description: level === defaultThinkingLevel ? `${LEVEL_DESCRIPTIONS[level]} · default` : LEVEL_DESCRIPTIONS[level],
+-        }));
++        // kimchi: items are { value, disabled? } — all canonical levels are
++        // shown, disabled ones greyed out and unselectable. Plain strings
++        // (no advisor installed) behave as before: all selectable.
++        const normalized = (items.length > 0 && typeof items[0] === "string"
++            ? items.map((level) => ({ value: level }))
++            : items);
++        this.disabledValues = new Set(normalized.filter((item) => item.disabled).map((item) => item.value));
++        this.allItems = normalized.map((item) => {
++            // With an infoText nothing is selectable, so no level is "current".
++            const isCurrent = !infoText && item.value === currentLevel;
++            const label = `${isCurrent ? "✓ " : "  "}${item.value}`;
++            const description = LEVEL_DESCRIPTIONS[item.value] ?? "";
++            return {
++                value: item.value,
++                // kimchi: the dimmed label is the only signal — no extra
++                // markers or suffixes.
++                label: item.disabled ? theme.fg("dim", label) : label,
++                description: item.value === defaultThinkingLevel ? `${description} · default` : description,
++            };
++        });
+         // Add top border
+         this.addChild(new DynamicBorder());
+         this.addChild(new Spacer(1));
+         this.addChild(new Text("Thinking Level", 0, 0));
+-        this.addChild(new Spacer(1));
+-        this.addChild(new Text(`${keyDisplayText("app.thinking.cycle")} cycles thinking levels in-session`, 0, 0));
++        // kimchi: model-level explanation when nothing is selectable (no
++        // reasoning, curated-none, or empty curation∩support). The cycle hint
++        // is misleading there — cycling no-ops.
++        if (infoText) {
++            this.addChild(new Spacer(1));
++            this.addChild(new Text(theme.fg("warning", infoText), 0, 0));
++        }
++        else {
++            this.addChild(new Spacer(1));
++            this.addChild(new Text(`${keyDisplayText("app.thinking.cycle")} cycles thinking levels in-session`, 0, 0));
++        }
+         this.addChild(new Spacer(1));
+         this.searchInput = new Input();
+         this.searchInput.onSubmit = () => this.selectList.handleInput("\r");
+@@ -59,8 +84,13 @@ export class ThinkingSelectorComponent extends Container {
+         this.selectList = this.buildSelectList(this.allItems, currentLevel);
+         this.selectListChildIndex = this.children.length;
+         this.addChild(this.selectList);
++        // kimchi: never start the cursor on a greyed-out level.
++        this.skipDisabledSelection(1);
+         this.addChild(new Spacer(1));
+-        this.addChild(new Text(theme.fg("dim", `  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("app.thinking.save")} to set as default · ${keyDisplayText("tui.select.cancel")} to cancel`), 0, 0));
++        // kimchi: with nothing selectable, the only action is leaving.
++        this.addChild(new Text(theme.fg("dim", infoText
++            ? `  ${keyDisplayText("tui.select.cancel")} to return`
++            : `  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("app.thinking.save")} to set as default · ${keyDisplayText("tui.select.cancel")} to cancel`), 0, 0));
+         // Add bottom border
+         this.addChild(new DynamicBorder());
+     }
+@@ -82,12 +112,32 @@ export class ThinkingSelectorComponent extends Container {
+         const newList = this.buildSelectList(filtered, selectedValue);
+         this.children[this.selectListChildIndex] = newList;
+         this.selectList = newList;
++        // kimchi: the rebuilt selection must not rest on a greyed-out level.
++        this.skipDisabledSelection(1);
++    }
++    // kimchi: advance the selection (wrapping) to the next selectable level
++    // in `direction`. A no-op when every level is greyed out — the info
++    // line covers that case.
++    skipDisabledSelection(direction) {
++        const items = this.selectList.filteredItems;
++        const count = items.length;
++        if (count === 0)
++            return;
++        let index = this.selectList.selectedIndex;
++        for (let i = 0; i < count; i++) {
++            const item = items[index];
++            if (item && !this.disabledValues.has(item.value))
++                break;
++            index = (index + direction + count) % count;
++        }
++        this.selectList.setSelectedIndex(index);
+     }
+     handleInput(keyData) {
+         const kb = getKeybindings();
+         if (kb.matches(keyData, "app.thinking.save") && this.onSelectAsDefault) {
+             const item = this.selectList.getSelectedItem();
+-            if (item)
++            // kimchi: "set as default" is ignored on greyed-out levels.
++            if (item && !this.disabledValues.has(item.value))
+                 this.onSelectAsDefault(item.value);
+             return;
+         }
+@@ -96,7 +146,19 @@ export class ThinkingSelectorComponent extends Container {
+             kb.matches(keyData, "tui.select.confirm") ||
+             kb.matches(keyData, "tui.select.cancel");
+         if (isNav) {
++            // kimchi: Enter on a greyed-out level is ignored (defense in
++            // depth — navigation already jumps over them).
++            if (kb.matches(keyData, "tui.select.confirm")) {
++                const item = this.selectList.getSelectedItem();
++                if (item && this.disabledValues.has(item.value))
++                    return;
++            }
+             this.selectList.handleInput(keyData);
++            // kimchi: arrow navigation jumps over greyed-out levels, so
++            // they are never selectable.
++            if (kb.matches(keyData, "tui.select.up") || kb.matches(keyData, "tui.select.down")) {
++                this.skipDisabledSelection(kb.matches(keyData, "tui.select.down") ? 1 : -1);
++            }
+             return;
+         }
+         this.searchInput.handleInput(keyData);
 diff --git a/dist/modes/interactive/components/tool-execution.js b/dist/modes/interactive/components/tool-execution.js
 index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587de058723 100644
 --- a/dist/modes/interactive/components/tool-execution.js
@@ -1592,10 +1909,23 @@ index d447db5ade5e37d6bc91cb91006ea0c711821b29..57bea7e26013ce97db801e80111f0587
          this.hideComponent = false;
          if (this.hasRendererDefinition()) {
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd5e089725 100644
+index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..8dc816efd668ad2b31c21cbf7750a1bc3e4313bd 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -1432,8 +1432,64 @@ export class InteractiveMode {
+@@ -494,7 +494,11 @@ export class InteractiveMode {
+         const thinkingCommand = slashCommands.find((command) => command.name === "thinking");
+         if (thinkingCommand) {
+             thinkingCommand.getArgumentCompletions = (prefix) => {
+-                return createFuzzyAutocompleteItems(this.session.getAvailableThinkingLevels(), prefix, (level) => level, (level) => ({
++                // kimchi: complete only levels selectable for the current model
++                // (curated-aware); fall back to pi's set when no advisor.
++                const info = this.__kimchiThinkingInfo();
++                const levels = info ? info.selectable : this.session.getAvailableThinkingLevels();
++                return createFuzzyAutocompleteItems(levels, prefix, (level) => level, (level) => ({
+                     value: level,
+                     label: level,
+                 }));
+@@ -1432,8 +1436,64 @@ export class InteractiveMode {
          if (showDiagnostics) {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
@@ -1662,7 +1992,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
                  this.loadedResourcesContainer.addChild(new Spacer(1));
              }
              const promptDiagnostics = promptsResult.diagnostics;
-@@ -2056,6 +2112,7 @@ export class InteractiveMode {
+@@ -2056,6 +2116,7 @@ export class InteractiveMode {
              confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
              input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
              notify: (message, type) => this.showExtensionNotify(message, type),
@@ -1670,7 +2000,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
              onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
              setStatus: (key, text) => this.setExtensionStatus(key, text),
              setWorkingMessage: (message) => {
-@@ -2101,6 +2158,16 @@ export class InteractiveMode {
+@@ -2101,6 +2162,16 @@ export class InteractiveMode {
              },
              getToolsExpanded: () => this.toolOutputExpanded,
              setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
@@ -1687,7 +2017,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
          };
      }
      /**
-@@ -2791,14 +2858,24 @@ export class InteractiveMode {
+@@ -2791,14 +2862,24 @@ export class InteractiveMode {
                      this.ui.requestRender();
                  }
                  else if (event.entry.type === "compaction") {
@@ -1715,7 +2045,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
                      this.renderSessionEntries(retainedEntries.filter((entry) => !entriesAfterCompaction.has(entry.id)));
                      this.addMessageToChat(createCompactionSummaryMessage(event.entry.summary, event.entry.tokensBefore, event.entry.timestamp));
                      if (event.entry.usage) {
-@@ -3007,15 +3084,24 @@ export class InteractiveMode {
+@@ -3007,15 +3088,24 @@ export class InteractiveMode {
                          throw new Error("Completed compaction is missing from the session context");
                      }
                      this.chatContainer.clear();
@@ -1749,7 +2079,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
                      }
                      this.footer.invalidate();
                  }
-@@ -3420,7 +3506,9 @@ export class InteractiveMode {
+@@ -3420,7 +3510,9 @@ export class InteractiveMode {
          this.chatContainer.addChild(new ThemedText(() => theme.fg("warning", `${label}: ${reBilled}`), 1, 0));
      }
      renderInitialMessages() {
@@ -1760,7 +2090,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
          this.renderSessionEntries(entries, {
              updateFooter: true,
              populateHistory: true,
-@@ -3441,7 +3529,7 @@ export class InteractiveMode {
+@@ -3441,7 +3533,7 @@ export class InteractiveMode {
          if (this.chatContainer.children.length > 0) {
              this.chatContainer.addChild(new Spacer(1));
          }
@@ -1769,7 +2099,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
      }
      async getUserInput() {
          const queuedInput = this.pendingUserInputs.shift();
-@@ -3457,7 +3545,8 @@ export class InteractiveMode {
+@@ -3457,7 +3549,8 @@ export class InteractiveMode {
      }
      rebuildChatFromMessages() {
          this.chatContainer.clear();
@@ -1779,7 +2109,83 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
      }
      // =========================================================================
      // Key handlers
-@@ -4322,6 +4411,34 @@ export class InteractiveMode {
+@@ -4279,16 +4372,53 @@ export class InteractiveMode {
+             return { component: selector, focus: selector.getSettingsList() };
+         });
+     }
++    // kimchi: curated-aware thinking-level selection. The advisor is
++    // installed by the kimchi CLI (process.__kimchiThinkingLevelAdvisor);
++    // a null return keeps upstream behavior everywhere it is consumed.
++    __kimchiThinkingInfo() {
++        const advisor = process.__kimchiThinkingLevelAdvisor;
++        if (typeof advisor !== "function")
++            return null;
++        try {
++            return advisor(this.session.model);
++        }
++        catch {
++            return null;
++        }
++    }
++    __kimchiThinkingNoneText(reason) {
++        if (reason === "no-reasoning")
++            return "This model does not support thinking — no levels to select.";
++        if (reason === "curated-none")
++            return "This model always reasons at the provider default — no thinking levels to select.";
++        return "No thinking levels are selectable for this model.";
++    }
++    // kimchi: the selector's info line is the actionable form — the escape
++    // affordance lives in the text (the help line below shows the
++    // keybinding-accurate binding).
++    __kimchiThinkingSelectorInfo(reason) {
++        if (reason === "no-reasoning")
++            return "This model does not support thinking, press ESC to return.";
++        return "This model does not support selecting thinking levels, press ESC to return.";
++    }
+     handleThinkingCommand(searchTerm) {
+-        const availableLevels = this.session.getAvailableThinkingLevels();
++        const info = this.__kimchiThinkingInfo();
+         if (!searchTerm) {
+             this.showThinkingSelector();
+             return;
+         }
++        if (info && info.noneReason) {
++            this.showError(`Thinking level not selectable: ${this.__kimchiThinkingNoneText(info.noneReason)}`);
++            return;
++        }
++        const availableLevels = info ? info.selectable : this.session.getAvailableThinkingLevels();
+         const normalized = searchTerm.trim().toLowerCase();
+         const level = availableLevels.find((candidate) => candidate.toLowerCase() === normalized);
+         if (!level) {
+-            this.showError(`Unknown thinking level "${searchTerm}". Available levels: ${availableLevels.join(", ")}.`);
++            const known = ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(normalized);
++            this.showError(known
++                ? `Thinking level "${searchTerm}" is not available for this model. Available levels: ${availableLevels.join(", ")}.`
++                : `Unknown thinking level "${searchTerm}". Available levels: ${availableLevels.join(", ")}.`);
+             return;
+         }
+         this.selectThinkingLevel(level, false);
+@@ -4310,10 +4440,17 @@ export class InteractiveMode {
+                 this.selectThinkingLevel(level, persist);
+                 done();
+             };
+-            const selector = new ThinkingSelectorComponent(this.session.thinkingLevel ?? DEFAULT_THINKING_LEVEL, this.session.getAvailableThinkingLevels(), (level) => selectLevel(level, false), () => {
++            // kimchi: show every canonical level — the advisor flags the
++            // non-selectable ones (curated-aware) for grey-out; without an
++            // advisor the pi-available list stays all-selectable.
++            const info = this.__kimchiThinkingInfo();
++            const items = info
++                ? info.levels.map((entry) => ({ value: entry.level, disabled: !entry.selectable }))
++                : this.session.getAvailableThinkingLevels().map((level) => ({ value: level }));
++            const selector = new ThinkingSelectorComponent(this.session.thinkingLevel ?? DEFAULT_THINKING_LEVEL, items, (level) => selectLevel(level, false), () => {
+                 done();
+                 this.ui.requestRender();
+-            }, (level) => selectLevel(level, true), this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL);
++            }, (level) => selectLevel(level, true), this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL, info && info.noneReason ? this.__kimchiThinkingSelectorInfo(info.noneReason) : undefined);
+             return { component: selector, focus: selector };
+         });
+     }
+@@ -4322,6 +4459,34 @@ export class InteractiveMode {
              this.showModelSelector();
              return;
          }
@@ -1814,7 +2220,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
          const model = await this.findExactModelMatch(searchTerm);
          if (model) {
              try {
-@@ -4453,6 +4570,8 @@ export class InteractiveMode {
+@@ -4453,6 +4618,8 @@ export class InteractiveMode {
      }
      showModelSelector(initialSearchInput) {
          this.showSelector((done) => {
@@ -1823,7 +2229,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
              const selectModel = async (model, persist) => {
                  try {
                      await this.session.setModel(model, { persist });
-@@ -4470,10 +4589,13 @@ export class InteractiveMode {
+@@ -4470,10 +4637,13 @@ export class InteractiveMode {
              };
              const defaultProvider = this.settingsManager.getDefaultProvider();
              const defaultModel = this.settingsManager.getDefaultModel();
@@ -1839,7 +2245,7 @@ index d2343a5bb53c9d9ab8060e0a242f561da2cbfd3a..33f399f45e2c48e1a47e1ca56f648bbd
              return { component: selector, focus: selector, dispose: () => selector.dispose() };
          });
      }
-@@ -5446,7 +5568,12 @@ export class InteractiveMode {
+@@ -5446,7 +5616,12 @@ export class InteractiveMode {
          const outputPath = this.getPathCommandArgument(text, "/export");
          try {
              if (outputPath?.endsWith(".jsonl")) {

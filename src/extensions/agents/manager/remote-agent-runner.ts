@@ -36,6 +36,7 @@ import type { WorkspaceCredentials, WorkspaceSpecConfig } from "../../../sandbox
 import {
 	type AcpSessionCallbacks,
 	AcpSessionClient,
+	AcpSessionDetachedError,
 	extractFinalAssistantText,
 	RemoteConnectionError,
 } from "../../../sandbox/worker/acp-client.js"
@@ -62,7 +63,7 @@ export interface RemoteRunOptions {
 	apiKey: string
 	/** Override the cloud API endpoint (used by tests). */
 	endpoint?: string
-	/** Abort signal — aborts the remote session. */
+	/** User cancellation aborts the worker; AcpSessionDetachedError only disconnects local observation. */
 	signal?: AbortSignal
 	/** Event callbacks — same shape as RunOptions callbacks from agent-runner.ts. */
 	callbacks?: AcpSessionCallbacks
@@ -224,8 +225,8 @@ export function getLiveKeptAcpClient(
 	return client
 }
 
-/** Close and forget the kept client for this remote session (terminal actions). */
-function discardLiveKeptAcpClient(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): void {
+/** Close local ownership without cancelling or deleting the worker session. */
+export function discardLiveKeptAcpClient(meta: Pick<RemoteSessionMeta, "workspaceId" | "sessionName">): void {
 	const key = keptAcpClientKey(meta)
 	const client = liveKeptAcpClients.get(key)
 	liveKeptAcpClients.delete(key)
@@ -713,7 +714,7 @@ async function runRecovery(st: RemoteRecoveryState, config: RecoveryConfig): Pro
 	try {
 		return await recoverFromDisconnectInner(st, config)
 	} catch (err) {
-		if (config.signal?.aborted) {
+		if (config.signal?.aborted && !(config.signal.reason instanceof AcpSessionDetachedError)) {
 			await deleteSession(st.client, config.sessionName).catch(() => {})
 			throw makeAbortError()
 		}
@@ -787,8 +788,10 @@ async function runPromptWithPolling(
 	try {
 		if (!st.acpClient) throw new Error("runPromptWithPolling requires an initialized ACP client")
 		try {
+			signal?.throwIfAborted()
 			return await st.acpClient.prompt(promptText)
 		} catch (err) {
+			if (signal?.reason instanceof AcpSessionDetachedError) throw signal.reason
 			if (err instanceof RemoteConnectionError) {
 				// Mid-run disconnect: the recovery loop becomes the sole poller.
 				// (runRecovery owns the abort-time best-effort delete itself.)
@@ -1004,6 +1007,8 @@ export async function runRemoteAgent(
 		stopReason = promptResult.stopReason
 		usage = promptResult.usage
 
+		signal?.throwIfAborted()
+
 		// Success — the run is confirmed done; clean up the remote session
 		// unless the caller keeps it alive for the PR review/steer loop
 		// (git-intent runs — deleted only on terminal actions or server TTL).
@@ -1153,6 +1158,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 
 	try {
 		const outcome = await runRecovery(st, config)
+		signal?.throwIfAborted()
 		// The run is confirmed done (or its outcome is definitively unknown) —
 		// clean up the remote session unless kept alive for the PR steer loop.
 		// Same deferred-deletion contract as the main flow: only a resolved
@@ -1277,6 +1283,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 			// into the stale run-1 state (completion then never fires for the
 			// new record).
 			reusedAcpClient.setCallbacks(wrappedCallbacks)
+			reusedAcpClient.setSignal(signal)
 			client = reusedAcpClient
 		} else {
 			// session/load via the persisted id — the only way to keep the
@@ -1336,6 +1343,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 		}
 
 		const outcome = await runPromptWithPolling(st, config, prompt)
+		signal?.throwIfAborted()
 		completed = true
 		return {
 			responseText: st.responseText,
