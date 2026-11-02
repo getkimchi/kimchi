@@ -3,6 +3,7 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
+import { stableExecutablePath } from "../update/paths.js"
 
 /**
  * `kimchi bridge setup|disable|remove|status` — manage the work-reporting
@@ -52,7 +53,8 @@ function runInstaller(action: string, client = "both"): boolean {
 	// without the executable bit, and a direct spawn fails with EACCES there.
 	const result = spawnSync("bash", [installer, action, client], {
 		encoding: "utf8",
-		env: { ...process.env, KIMCHI_BIN: process.execPath },
+		// The plugins link to this path; a Homebrew upgrade removes the real one.
+		env: { ...process.env, KIMCHI_BIN: stableExecutablePath() },
 		stdio: "inherit",
 	})
 	// Bun's spawnSync leaves status undefined (not null) when the child never

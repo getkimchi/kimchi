@@ -201,6 +201,8 @@ describe("account-fenced reporting delivery", () => {
 		if (mode === "explicit resume") await setReportingEnabled(directory, true)
 		if (mode === "another eligible account")
 			backend.insertOutboxBatch({ ...batch, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", accountKey: "other-account" })
+		// Only the schedule matters here: no batch is sent after authentication.
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(undefined)
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).toHaveBeenCalledTimes(mode === "backoff" ? 0 : 1)
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
@@ -310,9 +312,31 @@ describe("account-fenced reporting delivery", () => {
 		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
 	})
 
-	it("keeps an event batch without an error when the credential changes during its upload", async () => {
-		// Events wait until the legacy snapshot queued for this account drains.
+	it("sends events while the account's legacy snapshot keeps failing with HTTP 413", async () => {
+		// nginx in front of the API refuses a body above 1 MiB, so this snapshot never drains.
+		const batch = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountKey(content.account),
+			body: new TextEncoder().encode("{}"),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		http.mockImplementation(async (input) => {
+			const url = String(input)
+			if (url.endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (url.endsWith("/pr-cost-snapshots")) return new Response("Request Entity Too Large", { status: 413 })
+			return Response.json({ batchId: batch.id, receipts: [] })
+		})
 		await deliver()
+		backendFor(directory).insertOutboxBatch(batch)
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(batch)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(posts()).toHaveLength(1)
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
+	it("keeps an event batch without an error when the credential changes during its upload", async () => {
 		const batch = {
 			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			accountKey: accountKey(content.account),
@@ -337,8 +361,6 @@ describe("account-fenced reporting delivery", () => {
 	})
 
 	it("sends a batch's events under a new ID after the server answers 409 for its ID", async () => {
-		// Events wait until the legacy snapshot queued for this account drains.
-		await deliver()
 		const batch = {
 			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			accountKey: accountKey(content.account),

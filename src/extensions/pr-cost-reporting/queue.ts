@@ -822,39 +822,20 @@ export function freezeSnapshots(agentDir: string, assertCurrent: () => void): Pr
 }
 
 /**
- * A page of due uploads cannot prove drainage: delayed and old-writer bodies still own legacy claims. A held body is
- * never sent, and only an older writer that sees its evidence again releases it, so it does not hold events back.
+ * Rereads consent before an event batch is frozen, sent or acknowledged. The action runs under the state lock, so
+ * turning reporting off cannot interleave with it. Events do not wait for legacy snapshots: one the server never
+ * accepts, such as a body above the 1 MiB limit in front of the API, would hold its account's events for good.
  */
-export async function withDrainedLegacyAccount(
+export async function withReportingConsent(
 	agentDir: string,
-	account: WorkAccount,
 	action: (check: () => void) => void,
 	assertCurrent: () => void,
 ): Promise<boolean> {
 	let ready = false
 	await update(
 		agentDir,
-		async (state, check) => {
-			freezeState(agentDir, state, check)
+		(state, check) => {
 			if (!state.enabled) return
-			const key = accountKey(account)
-			const owns = (entry: PendingRepository) => !entry.held && accountKey(entry.account) === key
-			if (Object.values(state.entries).some((entry) => entry.pending && owns(entry))) return
-			const backend = backendFor(agentDir)
-			let after = ""
-			for (;;) {
-				check()
-				const page = backend.readNotePage(FROZEN_SNAPSHOTS, after, 16)
-				if (!page.length) break
-				for (const row of page) {
-					check()
-					const frozen = storedFrozen(agentDir, row.name)
-					if (!frozen || frozen.ack) throw new Error("Invalid pending frozen PR snapshot ownership")
-					if (owns(state.entries[frozen.key] ?? frozen.entry)) return
-				}
-				after = page[page.length - 1].name
-				await setImmediate()
-			}
 			check()
 			if (state.followsTelemetry && !isTelemetryEnabled()) return
 			const consent = () => {
