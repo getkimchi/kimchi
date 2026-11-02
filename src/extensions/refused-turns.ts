@@ -11,7 +11,9 @@
  *
  * On `message_end` the refused assistant message is replaced: the canned
  * refusal text is dropped and `errorMessage` becomes REFUSAL_MESSAGE, which is
- * what the user sees and what the session log keeps.
+ * what the user sees and what the session log keeps. ACP chunks are append-only,
+ * so text streamed before the refusal event stays visible there, followed by
+ * REFUSAL_MESSAGE.
  *
  * The provider contract is that clients remove the refused turn from history,
  * otherwise every later request re-sends the prompt and is refused again.

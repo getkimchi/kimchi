@@ -1694,7 +1694,9 @@ export class KimchiAcpAgent implements Agent {
 				turn.refused = isRefusal(msg)
 				if (turn.refused) {
 					// A refusal is a turn outcome, not a failure: report it as
-					// stopReason "refusal" with the reason the user can act on.
+					// stopReason "refusal" with the reason the user can act on. The
+					// canned text may already be streamed and can't be retracted, so
+					// the reason goes out as a separate message.
 					turn.lastAssistantError = undefined
 					this.send({
 						sessionId,

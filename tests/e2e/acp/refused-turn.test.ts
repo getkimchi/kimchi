@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	FOLLOW_UP_REPLY,
 	REFUSAL_REASON,
+	REFUSAL_TEXT,
 	REFUSED_PROMPT,
 	REFUSED_TURN_RESPONSES,
 	sendsRefusedPrompt,
@@ -30,6 +31,9 @@ describe("ACP integration — refused turn", () => {
 		const refused = await prompt(fixture, sessionId, REFUSED_PROMPT)
 		expect(refused.stopReason).toBe("refusal")
 		expect(refused.chunks).toContain(REFUSAL_REASON)
+		// Unlike the TUI, ACP chunks are append-only: the canned text streamed before
+		// the refusal was detected stays visible, and the reason follows it.
+		expect(refused.chunks).toContain(REFUSAL_TEXT)
 		const followUp = await prompt(fixture, sessionId, "hi")
 
 		expect(followUp.stopReason).toBe("end_turn")
