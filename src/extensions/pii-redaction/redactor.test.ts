@@ -13,6 +13,7 @@ import {
 	getRedactionConfigError,
 	redactMessages,
 	redactObjectStrings,
+	redactObjectStringsMeasured,
 	redactObjectStringsStrict,
 	redactText,
 	redactTextOrThrow,
@@ -878,4 +879,114 @@ vi.mock("@bulkhead-ai/core", async (importOriginal) => {
 			return overridden
 		},
 	}
+})
+describe("redactObjectStringsMeasured — redaction + privacy-safe report", () => {
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+	afterEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+
+	it("redaction output matches the unmeasured variant and tallies entity types", async () => {
+		const input = {
+			note: "Contact john.doe@example.com or jane.doe@example.com",
+			cicdEnv: "GITHUB_TOKEN=ghp_1234567890abcdef1234567890abcdef12",
+		}
+		const [{ redacted, report }, unmeasured] = await Promise.all([
+			redactObjectStringsMeasured(structuredClone(input)),
+			redactObjectStrings(structuredClone(input)),
+		])
+
+		expect(redacted).toEqual(unmeasured)
+		// Since #1626 the engine labels ghp_ tokens as GITHUB_TOKEN directly
+		// (previously the generic CRYPTO high-entropy marker) — the tally
+		// reflects the markers in the redacted output, not the producer.
+		expect(report.entities).toEqual({ EMAIL_ADDRESS: 2, GITHUB_TOKEN: 1 })
+		expect(report.stringsScanned).toBe(2)
+		expect(report.engineFailures).toBe(0)
+		// The report is tallied from the redacted output — it can never
+		// contain the raw values.
+		const serialized = JSON.stringify(report)
+		expect(serialized).not.toContain("john.doe@example.com")
+		expect(serialized).not.toContain("ghp_")
+	})
+
+	it("counts sensitive-key force-redactions as SECRET_FIELD without scanning them", async () => {
+		const { report, redacted } = await redactObjectStringsMeasured({
+			data: { apiKey: "sk-abcdef123456", note: "email john.doe@example.com" },
+		})
+		expect(redacted.data.apiKey).toBe("[REDACTED-SECRET_FIELD]")
+		expect(report.entities).toEqual({ SECRET_FIELD: 1, EMAIL_ADDRESS: 1 })
+		// Force-redacted values bypass the engine scan; only the note was scanned.
+		expect(report.stringsScanned).toBe(1)
+	})
+
+	it("preserved keys (trace IDs) survive and are neither scanned nor tallied", async () => {
+		const { report, redacted } = await redactObjectStringsMeasured({
+			data: { traceIds: ["abc123", "def456"], email: "john.doe@example.com" },
+		})
+		expect(redacted.data.traceIds).toEqual(["abc123", "def456"])
+		expect(report.entities).toEqual({ EMAIL_ADDRESS: 1 })
+	})
+
+	it("fail-open still returns the original text and counts the engine failure", async () => {
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		const input = { nested: { content: "call me at john.doe@example.com" } }
+		const { redacted, report } = await redactObjectStringsMeasured(input)
+		expect(redacted.nested.content).toBe("call me at john.doe@example.com")
+		expect(report.engineFailures).toBe(1)
+		expect(report.stringsScanned).toBe(1)
+		expect(report.entities).toEqual({})
+		errSpy.mockRestore()
+	})
+
+	// A persistently degraded engine must not flood stderr with one stack
+	// trace per scanned string — the report's failure count is the signal,
+	// the log is once per invocation.
+	it("logs the first engine failure per invocation, however many strings fail", async () => {
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		const { report } = await redactObjectStringsMeasured({ a: "one longer string", b: "two", c: "three and more" })
+		expect(report.engineFailures).toBe(3)
+		expect(errSpy).toHaveBeenCalledTimes(1)
+		errSpy.mockRestore()
+	})
+
+	it("empty report for clean input — no markers, no scans beyond the walk", async () => {
+		const { report } = await redactObjectStringsMeasured({ plain: "nothing sensitive here" })
+		expect(report.entities).toEqual({})
+		expect(report.engineFailures).toBe(0)
+		expect(report.stringsScanned).toBe(1)
+	})
+
+	// Regression: real messages carry content as an ARRAY of blocks
+	// ({role, content: [{type:"text",text}]}) — the observer that tallies
+	// markers must be forwarded through the array branch of the walker, or
+	// redactions deep in real message trees are applied but never counted.
+	it("tallies entity types inside array-shaped message content", async () => {
+		const card = ["4532", "0151", "1283", "0366"].join("") // Luhn-valid
+		const message = {
+			role: "user",
+			content: [{ type: "text", text: `Contact john.doe@example.com about invoice CC: ${card}` }],
+		}
+		const { redacted, report } = await redactObjectStringsMeasured(structuredClone(message))
+		expect(redacted.content[0]?.text).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(report.entities).toEqual({ EMAIL_ADDRESS: 1, CREDIT_CARD: 1 })
+	})
+
+	// Regression for the double-report failure mode: message_end scrubs the
+	// user message before before_provider_request re-scans it — the second
+	// pass must not tally the markers it did not introduce.
+	it("a re-scan of previously redacted text tallies no new redactions", async () => {
+		const first = await redactObjectStringsMeasured({ content: "Contact john.doe@example.com" })
+		expect(first.report.entities).toEqual({ EMAIL_ADDRESS: 1 })
+
+		const second = await redactObjectStringsMeasured(structuredClone(first.redacted))
+		expect(second.report.entities).toEqual({})
+		expect(second.redacted).toEqual(first.redacted)
+	})
 })

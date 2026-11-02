@@ -458,13 +458,25 @@ export async function redactTextOrThrow(text: string): Promise<string> {
 	return redactTextWithSnapshot(text, resolveSnapshot())
 }
 
-export async function redactText(text: string): Promise<string> {
+/**
+ * Shared fail-open core behind `redactText` and the measured variant: scan,
+ * and on engine failure return the original text unchanged. `onFailure` is
+ * called with the thrown error so callers can count failures; whether (and
+ * how often) to log is the caller's decision — the measured variant logs
+ * once per invocation, not once per string, so a degraded engine cannot
+ * flood stderr with a stack trace per scanned string in a large context.
+ */
+async function redactTextCounted(text: string, onFailure?: (err: unknown) => void): Promise<string> {
 	try {
 		return await redactTextWithSnapshot(text, resolveSnapshot())
 	} catch (err) {
-		console.error("PII redaction scan failed, returning original text:", err)
+		onFailure?.(err)
 		return text
 	}
+}
+
+export async function redactText(text: string): Promise<string> {
+	return redactTextCounted(text, (err) => console.error("PII redaction scan failed, returning original text:", err))
 }
 
 /**
@@ -479,12 +491,15 @@ async function redactObjectStringsWith<T>(
 	obj: T,
 	redactString: (text: string) => Promise<string>,
 	snapshot: EngineSnapshot,
+	onScannedPair?: (input: string, output: string) => void,
 ): Promise<T> {
 	if (typeof obj === "string") {
-		return (await redactString(obj)) as T
+		const out = await redactString(obj)
+		onScannedPair?.(obj, out)
+		return out as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString, snapshot))) as Promise<T>
+		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		// The snapshot was resolved once at the pass entry — the sensitive-key
@@ -506,9 +521,10 @@ async function redactObjectStringsWith<T>(
 				}
 				// Redact any string value stored under a sensitive key name.
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
+					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStringsWith(value, redactString, snapshot)
+				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}
@@ -555,6 +571,116 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 			}),
 		snapshot,
 	)
+}
+
+// ---------------------------------------------------------------------------
+// Measured variant — redaction + a privacy-safe report stub
+// ---------------------------------------------------------------------------
+
+/** Marker every redaction pass converges on: `[REDACTED-<ENTITY_TYPE>]`. */
+const REDACTION_MARKER_RE = /\[REDACTED-([A-Z0-9_]+)\]/g
+
+/**
+ * Tally markers INTRODUCED by a single string's redaction pass. Markers
+ * already present in the input (e.g. text redacted by an earlier hook —
+ * message_end scrubs messages before before_provider_request re-scans them)
+ * must not be counted again, or every repeat pass double-reports the same
+ * redaction. Input and output are matched as multisets: only output markers
+ * with no matching input marker increment the tally.
+ */
+function tallyMarkersNet(input: string, output: string, entities: Record<string, number>): void {
+	// Cheap path first: most strings contain no markers at all — one output
+	// sweep, and only when markers exist do we pay for the input multiset.
+	const outMarkers = [...output.matchAll(REDACTION_MARKER_RE)]
+	if (outMarkers.length === 0) return
+	const available = new Map<string, number>()
+	for (const match of input.matchAll(REDACTION_MARKER_RE)) {
+		available.set(match[1], (available.get(match[1]) ?? 0) + 1)
+	}
+	for (const match of outMarkers) {
+		const entityType = match[1]
+		const preExisting = available.get(entityType) ?? 0
+		if (preExisting > 0) {
+			available.set(entityType, preExisting - 1)
+			continue
+		}
+		entities[entityType] = (entities[entityType] ?? 0) + 1
+	}
+}
+
+export interface RedactionReport {
+	/**
+	 * Entity-type tally: marker name (EMAIL_ADDRESS, GITHUB_TOKEN,
+	 * SECRET_FIELD, ...) → occurrences redacted across all scanned strings.
+	 * Privacy-safe by construction — it is tallied from redacted output only,
+	 * so only `[REDACTED-TYPE]` marker names can ever land in the map. Markers
+	 * already present in the input are netted out, so a re-scan of previously
+	 * redacted text reports no new redactions.
+	 */
+	entities: Record<string, number>
+	/** Non-empty strings scanned (values force-redacted via a sensitive key name are not scanned). */
+	stringsScanned: number
+	/** Engine scans that failed open (original text returned). */
+	engineFailures: number
+}
+
+export interface RedactionMeasurement<T> {
+	redacted: T
+	report: RedactionReport
+}
+
+/**
+ * Measured variant of `redactObjectStrings`: identical redaction semantics
+ * (lenient fail-open, sensitive-key force-redaction, preserved trace IDs),
+ * plus a tally of which entity types were redacted and how many engine
+ * scans failed. Emitted by the hooks as `pii_redaction:redacted` events.
+ *
+ * The tally counts markers newly introduced in the redacted output —
+ * uniform across the bulkhead engine's findings and the custom-pattern
+ * second pass, so no engine API coupling is introduced, and repeat passes
+ * over already-redacted text (message_end → before_provider_request) do
+ * not double-count.
+ */
+export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionMeasurement<T>> {
+	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
+	let failureLogged = false
+	// One snapshot per measured pass — the SECRET_FIELD gate and every string
+	// scan see the same atomic policy view, exactly like the lenient variant.
+	const snapshot = resolveSnapshot()
+	const redactStringMeasured = async (text: string): Promise<string> => {
+		if (text.length === 0) return text
+		report.stringsScanned += 1
+		try {
+			return await redactTextWithSnapshot(text, snapshot)
+		} catch (err) {
+			report.engineFailures += 1
+			// One log per invocation: a persistently degraded engine would
+				// otherwise print a stack trace per scanned string per hook.
+			if (!failureLogged) {
+				failureLogged = true
+				console.error("PII redaction scan failed, returning original text:", err)
+			}
+			return text
+		}
+	}
+	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
+		tallyMarkersNet(input, output, report.entities),
+	)
+	return { redacted, report }
+}
+
+/** An empty report — the starting point for cross-invocation aggregation. */
+export function emptyRedactionReport(): RedactionReport {
+	return { entities: {}, stringsScanned: 0, engineFailures: 0 }
+}
+
+/** Merge `source` into `target` in place (both shaped as {@link RedactionReport}). */
+export function mergeReports(target: RedactionReport, source: RedactionReport): void {
+	target.stringsScanned += source.stringsScanned
+	target.engineFailures += source.engineFailures
+	for (const [entity, count] of Object.entries(source.entities)) {
+		target.entities[entity] = (target.entities[entity] ?? 0) + count
+	}
 }
 
 /**
