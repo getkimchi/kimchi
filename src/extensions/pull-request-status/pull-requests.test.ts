@@ -2127,3 +2127,95 @@ describe("discovery order", () => {
 		expect(commitCalls().map((url) => url.pathname.split("/").at(-2))).toContain(pushed)
 	})
 })
+
+describe("discovery starvation", () => {
+	// An earlier rate-limit case pauses github.com for an hour; use a host no other case touches.
+	beforeEach(() => {
+		remote("https://starve.example/team/repo.git")
+		vi.stubEnv("GH_HOST", "starve.example")
+	})
+	it("eventually refreshes a known link while pending pushes keep consuming the pass budget", async () => {
+		const known = "b".repeat(40)
+		const first = "c".repeat(40)
+		const second = "d".repeat(40)
+		vi.useFakeTimers({ toFake: ["Date"] })
+		const seconds = (value: number) => new Date(Date.now() - value * 1000).toISOString()
+		seed({
+			sha: known,
+			recordedAt: "2026-10-01T12:00:00Z",
+			prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+			pullRequests: [stored()],
+		})
+		seed({ sha: first, recordedAt: seconds(63), prLookup: { status: "pending", checkedAt: seconds(60) } })
+		seed({ sha: second, recordedAt: seconds(63), prLookup: { status: "pending", checkedAt: seconds(60) } })
+		replies((url) => {
+			// Every pending-push lookup burns the whole pass budget.
+			if (url.pathname.includes(first) || url.pathname.includes(second)) vi.setSystemTime(Date.now() + 11_000)
+			return [pull()]
+		})
+		await lookup()
+		later()
+		await lookup()
+		const calls = commitCalls().map((url) => url.pathname.split("/").at(-2))
+		// The pending pushes are being served across passes...
+		expect(calls).toContain(first)
+		// ...but the known link must eventually get its turn too.
+		expect(calls).toContain(known)
+	})
+
+	it("notices merges of multiple known PRs while slow pending pushes keep arriving", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] })
+		const known = ["d".repeat(40), "e".repeat(40)]
+		for (const [index, sha] of known.entries())
+			seed({
+				sha,
+				recordedAt: "2026-10-01T12:00:00Z",
+				prLookup: { status: "linked", checkedAt: "2026-10-01T12:00:00Z" },
+				pullRequests: [
+					stored("github", {
+						number: index + 7,
+						host: "starve.example",
+						url: `https://starve.example/team/repo/pull/${index + 7}`,
+					}),
+				],
+			})
+		let deadline = 0
+		const advance = () => {
+			const duration = Math.min(4900, deadline - Date.now())
+			vi.setSystemTime(Date.now() + duration)
+			if (duration < 4900) throw new Error("Simulated request timeout")
+		}
+		replies((url) => {
+			advance()
+			const index = known.findIndex((sha) => url.pathname.includes(sha))
+			return index < 0
+				? []
+				: [
+						pull(index + 7, {
+							html_url: `https://starve.example/team/repo/pull/${index + 7}`,
+							state: "closed",
+							merged_at: new Date(Date.now() - 1000).toISOString(),
+						}),
+					]
+		})
+		const respond = http.getMockImplementation()
+		if (!respond) throw new Error("Missing provider fixture")
+		http.mockImplementation(async (url, options) => {
+			if (!url.pathname.includes("/commits/")) advance()
+			return respond(url, options)
+		})
+		for (let pass = 0; pass < 4; pass++) {
+			for (let index = 0; index < 2; index++)
+				seed({
+					sha: (pass * 2 + index + 1).toString(16).padStart(40, "0"),
+					recordedAt: new Date(Date.now() - 63_000).toISOString(),
+					prLookup: { status: "pending", checkedAt: new Date(Date.now() - 60_000).toISOString() },
+				})
+			deadline = Date.now() + 10_000
+			await lookup()
+			later()
+		}
+		for (const sha of known)
+			expect(readWorkPullRequestUpdates(agentDir).find((row) => row.sha === sha)?.pullRequests[0].state).toBe("merged")
+	})
+})

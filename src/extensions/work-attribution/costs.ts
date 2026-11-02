@@ -734,7 +734,8 @@ export function calculatePullRequestCosts(
 	}
 	for (const [commitKey, links] of commitLinks) {
 		const keys = commitPulls.get(commitKey) ?? new Set<string>()
-		const recordedAt = firstRecorded(JSON.stringify([links.workId, links.repository, links.sha]))
+		const commit = JSON.stringify([links.workId, links.repository, links.sha])
+		const recordedAt = firstRecorded(commit)
 		for (const key of keys) {
 			add(workPulls, links.workId, key)
 			add(pullWorks, key, links.workId)
@@ -743,7 +744,8 @@ export function calculatePullRequestCosts(
 		}
 		const commits = workCommits.get(links.workId) ?? []
 		commits.push({
-			at: recordedAt,
+			// A rewrite adds a later split boundary; its ancestry must not clip an earlier PR's stretch.
+			at: commitRecorded.get(commit) ?? Number.POSITIVE_INFINITY,
 			sha: links.sha,
 			// A commit still in several PRs keeps its stretch of the work shared.
 			key: keys.size === 1 ? [...keys][0] : undefined,

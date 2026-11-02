@@ -80,6 +80,8 @@ interface DiscoveryState {
 	readThrough?: number
 	journalFingerprint?: string
 	nextCommit?: string
+	/** Give known links first turn after pending lookups exhaust a pass, and vice versa. */
+	refreshFirst?: boolean
 	running?: Promise<void>
 }
 
@@ -272,13 +274,20 @@ async function scan(
 		0,
 		jobs.findIndex(([key]) => key === state.nextCommit),
 	)
-	// New pushes link on the next pass: commits still waiting for a PR go before known links refresh in their turn.
+	// Pending pushes normally go first. If they exhaust the budget, known links get the next pass's first turn.
 	const order = jobs.map((_, offset) => (start + offset) % jobs.length)
-	order.sort(
-		(a, b) =>
-			Number(jobs[a][1].some((commit) => commit.pullRequests.length)) -
-			Number(jobs[b][1].some((commit) => commit.pullRequests.length)),
-	)
+	const hasKnown = (index: number) => jobs[index][1].some((commit) => commit.pullRequests.length)
+	const lastChecked = (index: number) =>
+		Math.max(
+			checks.checkedAt.get(jobs[index][0]) ?? 0,
+			...jobs[index][1].map((commit) => Date.parse(commit.prLookup?.checkedAt ?? "") || 0),
+		)
+	order.sort((a, b) => {
+		const priority = Number(hasKnown(a)) - Number(hasKnown(b))
+		if (priority) return state.refreshFirst ? -priority : priority
+		// Refresh the oldest checks first so one slow known link cannot starve the other known links.
+		return hasKnown(a) ? lastChecked(a) - lastChecked(b) : 0
+	})
 
 	const repositories = new Map<string, Promise<Repository>>()
 	const tokens = new Map<string, Promise<string | undefined>>()
@@ -300,6 +309,7 @@ async function scan(
 		)
 			continue
 		if (!lookupDue(commits, checks.checkedAt.get(key))) continue
+		state.refreshFirst = known.length === 0
 		const first = commits[0]
 		let found: WorkPullRequest[] = []
 		let failure: LookupError | undefined

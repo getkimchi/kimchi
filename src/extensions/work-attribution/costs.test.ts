@@ -1886,6 +1886,45 @@ describe("time split across a work's PRs", () => {
 	const open = { state: "open" as const, mergeCommitSha: null, mergedAt: null, closedAt: null }
 	const one = "github:github.com/example/repository#1"
 	const two = "github:github.com/example/repository#2"
+
+	it.each([
+		["0", false],
+		["f", false],
+		["0", true],
+		["f", true],
+	])("keeps historical requests on their PR through a rewrite (%s, chained: %s)", (prefix, chained) => {
+		const first = pullRequest({ mergedAt: time(40), closedAt: time(40), checkedAt: time(45) })
+		const second = { ...secondPull(), ...open, checkedAt: time(36) }
+		const rows = [
+			request("early", "work-a", "session-a", time(5)),
+			request("before-listing", "work-a", "session-a", time(25)),
+			request("later", "work-a", "session-a", time(56)),
+			commit("work-a", [first], "session-a", { prLookup: { status: "linked", checkedAt: time(26) } }),
+			commit("work-a", [second], "session-a", { sha: "b".repeat(40), recordedAt: time(30) }),
+		]
+		const prices = [charge("early", "1"), charge("before-listing", "2"), charge("later", "4")]
+		const before = calculatePullRequestCosts(rows, prices)
+		if (chained)
+			rows.push(
+				commit("work-a", [{ ...second, checkedAt: time(48) }], "session-a", {
+					sha: "c".repeat(40),
+					recordedAt: time(45),
+					rewrittenFrom: "a".repeat(40),
+				}),
+			)
+		rows.push(
+			commit("work-a", [{ ...second, checkedAt: time(55) }], "session-a", {
+				sha: prefix.repeat(40),
+				recordedAt: time(50),
+				rewrittenFrom: (chained ? "c" : "a").repeat(40),
+			}),
+		)
+		const after = calculatePullRequestCosts(rows, prices)
+		expect(after.requests).toEqual(before.requests)
+		expect(after.requests.map((row) => row.pullRequestIds)).toEqual([[one], [one], [two]])
+		expect(after.pullRequests.find((row) => row.key === one)?.totalCostUsd).toBe("3.000000000")
+		expect(calculatePullRequestCosts(rows.toReversed(), prices)).toEqual(after)
+	})
 	const records = (firstListed: number) => [
 		...[5, 25, 28, 35, 50].map((minute) =>
 			request(`r${String(minute).padStart(2, "0")}`, "work-a", "session-a", time(minute)),
