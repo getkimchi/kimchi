@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -96,11 +97,37 @@ describe("refreshGitBranch", () => {
 	it("falls back to git outside a work tree", async () => {
 		const { refreshGitBranch } = await import("./utils.js")
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-nogit-"))
+		const empty = mkdtempSync(join(tmpdir(), "kimchi-nogit-env-"))
 		try {
+			// Point GIT_DIR at a non-repository so ancestor .git directories of the temp dir
+			// (e.g. a custom TMPDIR inside a checkout) cannot leak their branch into the walk-up.
+			vi.stubEnv("GIT_DIR", join(empty, ".git"))
 			const branch = await new Promise<string | undefined>((resolve) => refreshGitBranch(resolve, dir))
 			expect(branch).toBeUndefined()
 		} finally {
+			vi.unstubAllEnvs()
 			rmSync(dir, { recursive: true, force: true })
+			rmSync(empty, { recursive: true, force: true })
+		}
+	})
+
+	it("defers to git when GIT_DIR redirects the repository", async () => {
+		const { refreshGitBranch } = await import("./utils.js")
+		const a = mkdtempSync(join(tmpdir(), "kimchi-gitdir-a-"))
+		const b = mkdtempSync(join(tmpdir(), "kimchi-gitdir-b-"))
+		try {
+			execFileSync("git", ["init", "-q"], { cwd: a })
+			execFileSync("git", ["checkout", "-q", "-b", "branch-aaa"], { cwd: a })
+			execFileSync("git", ["init", "-q"], { cwd: b })
+			execFileSync("git", ["checkout", "-q", "-b", "branch-bbb"], { cwd: b })
+			vi.stubEnv("GIT_DIR", join(b, ".git"))
+			// git symbolic-ref --short HEAD answers from $GIT_DIR; the direct .git walk must not win.
+			const branch = await new Promise<string | undefined>((resolve) => refreshGitBranch(resolve, a))
+			expect(branch).toBe("branch-bbb")
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(a, { recursive: true, force: true })
+			rmSync(b, { recursive: true, force: true })
 		}
 	})
 })

@@ -49,7 +49,15 @@ function readHeadBranch(cwd: string): HeadBranch | { confident: false } {
 
 export function refreshGitBranch(onResult: (branch: string | undefined) => void, cwd?: string): void {
 	const directory = cwd ?? process.cwd()
-	const direct = readHeadBranch(directory)
+	// Variables that redirect or constrain repository discovery keep Git as the authority:
+	// the direct walk-up cannot see them, so its confident answer could diverge from git's.
+	const redirected =
+		process.env.GIT_DIR ||
+		process.env.GIT_WORK_TREE ||
+		process.env.GIT_COMMON_DIR ||
+		process.env.GIT_CEILING_DIRECTORIES ||
+		process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM
+	const direct = redirected ? ({ confident: false } as const) : readHeadBranch(directory)
 	if (direct.confident) {
 		onResult(direct.branch)
 		return

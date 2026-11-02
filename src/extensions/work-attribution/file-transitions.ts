@@ -496,7 +496,7 @@ async function journalOwner(path: string): Promise<FileTransition | undefined> {
 		await file.close()
 	}
 }
-/** Whole-type ledger reads shared by one supervisor pass, so the table is parsed once, not once per repository. */
+/** Whole-type ledger reads shared by one supervisor pass, so the table is parsed once, not once per repository. Rows written mid-pass wait for the next pass. */
 export interface SharedTypeReads {
 	fileTransitions?: WorkRecord[]
 	commits?: WorkRecord[]
@@ -537,7 +537,13 @@ async function readJournals(
 	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
 	let ledgerTransitions: Transition[] = []
 	try {
-		const rows = shared?.fileTransitions ?? readWorkRecordsOfType(getAgentDir(), "file_transition")
+		// Cache on first read like knownTransitionRepositories does, so every entry point
+		// into a pass shares the single read.
+		let rows = shared?.fileTransitions
+		if (rows === undefined) {
+			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
+			if (shared !== undefined) shared.fileTransitions = rows
+		}
 		ledgerTransitions = rows.filter(
 			(row): row is WorkRecord & Transition => isTransition(row) && row.repository === repository,
 		)
