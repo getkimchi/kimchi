@@ -21,6 +21,7 @@ import {
 	SAFETY_LIMIT_REASON,
 	summarizeCommand,
 	type TailSnapshot,
+	tailLinesStart,
 } from "./process-registry.js"
 
 const OPTS = { limitSeconds: 60 }
@@ -268,6 +269,25 @@ describe("createProcessRegistry — snapshotTail", () => {
 		if (!logPath) throw new Error("expected log path")
 		await registry.remove(handle)
 		expect(readFileSync(logPath, "utf-8")).toBe(`${lines.join("\n")}\n`)
+		await registry.shutdown()
+	})
+
+	it("incremental snapshots apply the line budget, counting dropped lines as omitted", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "seq 1 1000", "/tmp", undefined, OPTS)
+		const lines = Array.from({ length: 1000 }, (_, i) => `${i + 1}`)
+		const all = `${lines.join("\n")}\n`
+		ops.emit(Buffer.from(all)) // ~3.9 KB: well inside the byte cap
+
+		const snap = registry.snapshotSince(handle)
+		const shown = snap.text.trimEnd().split("\n")
+		expect(shown).toHaveLength(INLINE_OUTPUT_MAX_LINES)
+		expect(shown[0]).toBe("801")
+		expect(shown.at(-1)).toBe("1000")
+		const firstHidden = `${lines.slice(0, 800).join("\n")}\n`
+		expect(snap.omittedBytes).toBe(Buffer.byteLength(firstHidden))
+		expect(snap.newBytes).toBe(Buffer.byteLength(all))
 		await registry.shutdown()
 	})
 
@@ -765,5 +785,19 @@ describe("display snapshots", () => {
 		expect(registry.listDisplaySnapshots()).toEqual([])
 		off()
 		await registry.shutdown()
+	})
+})
+
+describe("tailLinesStart", () => {
+	it("returns 0 when the text fits", () => {
+		expect(tailLinesStart("a\nb\n", 2)).toBe(0)
+		expect(tailLinesStart("a\nb", 2)).toBe(0)
+		expect(tailLinesStart("", 2)).toBe(0)
+	})
+
+	it("keeps the last N lines, with or without a trailing newline", () => {
+		expect("a\nb\nc\n".slice(tailLinesStart("a\nb\nc\n", 2))).toBe("b\nc\n")
+		expect("a\nb\nc".slice(tailLinesStart("a\nb\nc", 2))).toBe("b\nc")
+		expect("a\nb\nc".slice(tailLinesStart("a\nb\nc", 1))).toBe("c")
 	})
 })

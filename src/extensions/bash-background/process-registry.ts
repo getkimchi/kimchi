@@ -191,6 +191,19 @@ function byteLength(text: string): number {
 }
 
 /**
+ * Index where the last `maxLines` lines of `text` begin (0 when it already
+ * fits). A trailing newline terminates the last line; it does not start one.
+ */
+export function tailLinesStart(text: string, maxLines: number): number {
+	let newlines = 0
+	const end = text.endsWith("\n") ? text.length - 1 : text.length
+	for (let i = end - 1; i >= 0; i--) {
+		if (text[i] === "\n" && ++newlines === maxLines) return i + 1
+	}
+	return 0
+}
+
+/**
  * Drop the first `byteCount` bytes of `text`, advancing past any split
  * UTF-8 continuation bytes so the result never starts mid-character.
  */
@@ -537,11 +550,12 @@ export interface ProcessRegistry {
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
 	/**
 	 * Incremental snapshot of unseen output since the entry's delivered
-	 * cursor, capped at `maxBytes` of retained text. Pure: does NOT advance
+	 * cursor, capped at `maxBytes` of retained text and its last `maxLines`
+	 * lines (both default to the inline output budget). Pure: does NOT advance
 	 * the cursor — call `markDelivered` once the snapshot is part of an
 	 * authoritative result or message.
 	 */
-	snapshotSince(handle: string, maxBytes?: number): IncrementalSnapshot
+	snapshotSince(handle: string, maxBytes?: number, maxLines?: number): IncrementalSnapshot
 	/** Advance the entry's delivered cursor after an authoritative delivery. */
 	markDelivered(handle: string, cursor: number): void
 	displaySnapshot(handle: string, maxBytes?: number): ProcessDisplaySnapshot | undefined
@@ -802,7 +816,11 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
-	function snapshotSince(handle: string, maxBytes: number = DEFAULT_TAIL_BYTES): IncrementalSnapshot {
+	function snapshotSince(
+		handle: string,
+		maxBytes: number = DEFAULT_TAIL_BYTES,
+		maxLines: number = INLINE_OUTPUT_MAX_LINES,
+	): IncrementalSnapshot {
 		const entry = entries.get(handle)
 		if (!entry) {
 			return {
@@ -865,7 +883,15 @@ export function createProcessRegistry(): ProcessRegistry {
 				textByteLength -= dropped
 			}
 		}
-		const { text } = entry.buffer.snapshotRange(textStart, textByteLength)
+		let { text } = entry.buffer.snapshotRange(textStart, textByteLength)
+		// Apply the inline line budget too: thousands of short lines fit the
+		// byte cap but not the documented 200-line budget. Dropped leading
+		// lines count as omitted, so the model is pointed at the log.
+		const keepFrom = tailLinesStart(text, maxLines)
+		if (keepFrom > 0) {
+			textStart += byteLength(text.slice(0, keepFrom))
+			text = text.slice(keepFrom)
+		}
 		const skippedUnseen = Math.max(0, textStart - unseenStart)
 		return {
 			text,

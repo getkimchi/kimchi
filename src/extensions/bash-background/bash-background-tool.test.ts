@@ -237,6 +237,24 @@ describe("createBackgroundBashToolDefinition — handoff", () => {
 		await state.registry.shutdown()
 	})
 
+	it("bounds the handoff output to the line budget and points at the log", async () => {
+		vi.useFakeTimers()
+		const state = makeState(1)
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "seq 1 1000; sleep 60" })
+		await Promise.resolve()
+		ops.emit(`${Array.from({ length: 1000 }, (_, i) => `row ${i + 1}`).join("\n")}\n`)
+		await vi.advanceTimersByTimeAsync(1000)
+		const result = await execPromise
+		const text = (result.content[0] as { text: string }).text
+		expect(text).toContain("row 1000")
+		expect(text).toContain("row 801\n")
+		expect(text).not.toContain("row 800\n")
+		expect(text).toMatch(/omitted from this snapshot; the full log \S+ retains everything — grep it/)
+		await state.registry.shutdown()
+	})
+
 	it("hands off early in a user-facing session when the user queues a message", async () => {
 		vi.useFakeTimers()
 		const state: BashSessionState = { ...makeState(60), sessionKind: "user-facing" }
