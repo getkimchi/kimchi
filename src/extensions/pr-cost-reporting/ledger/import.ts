@@ -41,6 +41,7 @@ export interface ImportResult {
 const EMPTY_HASH = createHash("sha256").digest("hex")
 const COVERAGE_NOTES = "journal-coverage"
 const TAIL_NOTES = "journal-tail"
+const REVERIFY_NOTES = "journal-reverify"
 const WINDOW_BYTES = 512 * 1024
 const READ_BYTES = 64 * 1024
 
@@ -73,6 +74,34 @@ function putProblems(backend: RecordBackend, path: string, category: string, pro
 
 function saveCoverage(backend: RecordBackend, path: string, problems: WorkRecordProblem[]): void {
 	putProblems(backend, path, COVERAGE_NOTES, [...coverageProblems(backend, path), ...problems])
+}
+
+/** The re-verification of a flagged journal, saved so later windows continue the from-start read. */
+function reverifyProgress(backend: RecordBackend, path: string): { offset: number; boundaryHash: string } | undefined {
+	const body = backend.getNote(REVERIFY_NOTES, path)
+	if (body === undefined) return undefined
+	try {
+		const value: unknown = JSON.parse(body)
+		if (
+			object(value) &&
+			typeof value.offset === "number" &&
+			Number.isSafeInteger(value.offset) &&
+			value.offset >= 0 &&
+			typeof value.boundaryHash === "string" &&
+			/^[0-9a-f]{64}$/.test(value.boundaryHash)
+		)
+			return { offset: value.offset, boundaryHash: value.boundaryHash }
+	} catch {}
+	return undefined
+}
+
+/** A journal verified clean to the end no longer needs its from-start re-verification. */
+function clearReverify(backend: RecordBackend, path: string): void {
+	backend.deleteNote(REVERIFY_NOTES, path)
+}
+
+function saveReverify(backend: RecordBackend, path: string, offset: number, boundaryHash: string): void {
+	backend.putNote(REVERIFY_NOTES, path, JSON.stringify({ offset, boundaryHash }))
 }
 
 /** Consuming damaged input cannot make subsequent readers believe history is complete. */
@@ -279,11 +308,14 @@ function importJournalFiles(
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
 			if (decision.offset === 0 && decision.offset + data.length >= size) {
-				// An emptied or truncated-to-nothing journal retires its stale note instead of
-				// wedging capture forever: its records stay in the store from earlier imports.
+				// An emptied or truncated-to-nothing journal retires its stale notes instead of
+				// wedging capture forever: its records stay in the store from earlier imports. Both
+				// note kinds are reported, so the tail note of an interrupted append goes as well.
 				checkBudget?.()
 				backend.tx(() => {
 					putProblems(backend, path, COVERAGE_NOTES, [])
+					putProblems(backend, path, TAIL_NOTES, [])
+					clearReverify(backend, path)
 					backend.putJournalCursor({
 						path,
 						dev,
@@ -306,6 +338,17 @@ function importJournalFiles(
 				backend.putJournalCursor({ ...cursor, updatedAt: Date.now() })
 			continue
 		}
+		// A from-start re-verification continues across passes: the saved progress matches the cursor's
+		// consumed prefix, so later windows extend the replay and only an end-reaching clean read
+		// retires the note. Journals larger than one window settle between slices, not within it.
+		const reverify = reverifyProgress(backend, path)
+		const reverifying =
+			reverify !== undefined &&
+			savedProblems.length > 0 &&
+			!recheck &&
+			decision.mode === "clean-append" &&
+			decision.offset === reverify.offset &&
+			cursor?.boundaryHash === reverify.boundaryHash
 		const parsed: WorkRecord[] = []
 		const entries: ImportEntry[] = []
 		// A mutated prefix does not itself mark a healthy journal incomplete: every line is
@@ -348,18 +391,26 @@ function importJournalFiles(
 		parser("", true)
 		const consumed = lines[lines.length - 1].end
 		const consumedEnd = decision.offset + consumed
+		const endReached = consumedEnd >= size
 		checkBudget?.()
 		prefix.update(data.subarray(0, consumed))
 		const hash = prefix.copy()
 		const boundaryHash = prefix.digest("hex")
 		let imported = 0
 		backend.tx(() => {
-			// A read from the start that reached the end without a problem retires problems saved
-			// against older content; every other window keeps the clean marker fresh as before.
-			if (!problems.length && savedProblems.length > 0 && decision.offset === 0 && consumedEnd >= size)
+			// A read from the start, or a continuing re-verification, that reached the end without a
+			// problem retires problems saved against older content; every other window keeps the
+			// clean marker fresh as before.
+			if (!problems.length && savedProblems.length > 0 && endReached && (decision.offset === 0 || reverifying))
 				putProblems(backend, path, COVERAGE_NOTES, [])
 			else saveCoverage(backend, path, problems)
 			putProblems(backend, path, TAIL_NOTES, tail)
+			// Progress of the from-start re-verification persists across windows and passes. Damage
+			// found along the way ends it: the note then describes the current file again.
+			if (savedProblems.length > 0 && (recheck || reverifying)) {
+				if (!endReached && !problems.length) saveReverify(backend, path, consumedEnd, boundaryHash)
+				else clearReverify(backend, path)
+			} else if (reverify !== undefined && !recheck && !reverifying) clearReverify(backend, path)
 			if (entries.length) {
 				imported = importBatchInTx(backend, entries)
 			}
@@ -418,6 +469,7 @@ function forgetJournal(agentDir: string, backend: RecordBackend, path: string, r
 		backend.deleteJournalCursor(path)
 		backend.deleteNote(COVERAGE_NOTES, path)
 		backend.deleteNote(TAIL_NOTES, path)
+		backend.deleteNote(REVERIFY_NOTES, path)
 	})
 	continued.delete(path)
 	diagnostic(agentDir, "journal-removed")

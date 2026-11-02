@@ -845,6 +845,46 @@ describe("account-fenced reporting delivery", () => {
 		expect(frozenBody().requests.length).toBe(16)
 	})
 
+	it("does not trim a queued body when the verify call itself rejects with 413", async () => {
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+				},
+			},
+		])
+		// A misbehaving proxy rejects the verification itself; the upload was never attempted.
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? new Response(null, { status: 413 })
+				: new Response(null, { status: 200 }),
+		)
+		await deliver()
+		const rows = backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
+		expect(rows).toHaveLength(1)
+		const frozen = JSON.parse(rows[0].body) as { body: string }
+		const parsed = JSON.parse(frozen.body) as { requests: unknown[]; coverage: { historyComplete: boolean } }
+		// Trimming is the remedy for a rejected body, so the verify rejection leaves it intact.
+		expect(parsed.requests.length).toBe(40)
+		expect(parsed.coverage.historyComplete).toBe(true)
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.lastError).toContain("413")
+		expect(entry.retryAt).toBeGreaterThan(Date.now() + 30 * 60_000)
+	})
+
 	it("delivers the trimmed replacement after a 413 once the server accepts it", async () => {
 		// The replacement carries the queued snapshot's request, or the queue holds the old body.
 		const requests = [

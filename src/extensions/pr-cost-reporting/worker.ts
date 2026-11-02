@@ -238,6 +238,8 @@ export function deliverSnapshots(
 			let retryAfterMs: number | null = null
 			let limit: ServerLimit | undefined
 			let errorMessage = "PR reporting request unavailable"
+			/** Only the upload's rejection may trim the body; a verify rejection cannot. */
+			let uploadAttempted = false
 			const assertOwnership = () => {
 				assertLease()
 				if (configuredCredentials().token !== key || platformApiUrl(cwd) !== apiUrl)
@@ -290,6 +292,7 @@ export function deliverSnapshots(
 					throw new Error(errorMessage)
 				}
 
+				uploadAttempted = true
 				const response = await fetchBounded(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
@@ -337,7 +340,7 @@ export function deliverSnapshots(
 							// retry carries a body the server can accept instead of resending it for hours.
 							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
 						}
-					} else if (status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
+					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
 						// The server rejected this body for its size; the next pass retries the halved one.
 					} else
 						await deferFrozenSnapshot(

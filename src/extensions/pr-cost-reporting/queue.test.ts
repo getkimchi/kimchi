@@ -160,6 +160,40 @@ describe("durable reporting queue", () => {
 		expect(trimLegacySnapshot(trimmed)).toBe(trimmed)
 	})
 
+	it("keeps windowedPullRequestIds in the unfittable fallback", async () => {
+		await setReportingEnabled(directory, true)
+		// Correction receipts are never left out, so corrections alone can make the body
+		// unfittable; the emptied fallback must still name the windowed PRs, or the server
+		// would withdraw their uploaded claims.
+		const requests = Array.from({ length: 33_000 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			startedAt: "2026-10-04T12:00:00Z",
+			billingRecordIds: [billing],
+			correction: {
+				id: "44444444-4444-4444-8444-444444444444",
+				revision: 1,
+				recordedAt: "2026-10-04T12:00:00Z",
+				source: "work-command" as const,
+			},
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+		}))
+		const pending: WireSnapshot = {
+			schemaVersion: 1,
+			producerId: "55555555-5555-4555-8555-555555555555",
+			revision: "1",
+			generatedAt: "2026-10-04T12:00:00Z",
+			repository: contentRepo,
+			pullRequests: [],
+			requests,
+			windowedPullRequestIds: ["101", "102"],
+			coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+		}
+		const trimmed = trimLegacySnapshot(pending)
+		expect(trimmed.windowedPullRequestIds).toEqual(["101", "102"])
+		expect(trimmed.requests.length).toBeLessThanOrEqual(SNAPSHOT_LIMITS.requests)
+		validateSnapshot(trimmed)
+	})
+
 	it("bounds one key's pending frozen queue by bytes, dropping oldest first", async () => {
 		await setReportingEnabled(directory, true)
 		__setFrozenQueueCapForTest(10_000)

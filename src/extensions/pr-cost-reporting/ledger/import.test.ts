@@ -357,6 +357,54 @@ describe("import loop over the memory backend", () => {
 		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
 	})
 
+	it("an emptied journal retires its stale tail note instead of wedging capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// An interrupted append left its tail note; the note is reported like a coverage note.
+		backendFor(dir).putNote("journal-tail", file, JSON.stringify([{ kind: "invalid", path: file, line: 2 }]))
+		const flagged: unknown[] = []
+		reportJournalProblems(dir, (problem) => flagged.push(problem))
+		expect(flagged).toHaveLength(1)
+		// The journal is emptied in place, the way copytruncate-style rotation does.
+		writeFileSync(file, "")
+		await importJournals(dir)
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-tail", file) ?? "null")).toEqual([])
+	})
+
+	it("retires a stale coverage note across windows once the re-read reaches the end", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		// A journal well beyond one re-read window: only persisted re-verification progress can
+		// carry the from-start replay to the end, or the stale note would wedge capture forever.
+		writeFileSync(file, Array.from({ length: 6 }, (_, index) => line(request(`req-${index}`))).join(""))
+		await importJournals(dir)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		// The first window cannot reach the end, so the note must survive it.
+		const first = await importJournals(dir, { maxBytes: 120 })
+		expect(first.pending).toBe(true)
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).not.toEqual([])
+		// Later windows continue the re-read and retire the note only at the end.
+		for (let pass = 0; pass < 32; pass++) {
+			const result = await importJournals(dir, { maxBytes: 120 })
+			if (!result.pending) break
+		}
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
 	it("keeps a flagged journal's note until the re-read reaches its damage", async () => {
 		const dir = agentDir()
 		dirs.push(dir)

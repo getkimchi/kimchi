@@ -844,6 +844,11 @@ export function trimLegacySnapshot(pending: WireSnapshot): WireSnapshot {
 				repository: content.repository,
 				pullRequests: [],
 				requests: [],
+				// Omission without a name withdraws an earlier upload's claims, so the emptied body
+				// still names the PRs the original body held as windowed.
+				...(content.windowedPullRequestIds === undefined
+					? {}
+					: { windowedPullRequestIds: content.windowedPullRequestIds }),
 				coverage: {
 					observedRequests: 0,
 					unpricedRequests: 0,
