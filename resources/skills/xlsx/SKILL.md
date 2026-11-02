@@ -3,6 +3,10 @@ name: xlsx
 description: Read, create, and edit local .xlsx/.xlsm/.csv spreadsheets — windowed row reads, build workbooks from a spec, set cells, append rows, fill formulas. Use whenever the user mentions a spreadsheet or an .xlsx file.
 requires-resource: skills.xlsx
 disables-skills: xlsx
+triggers:
+  prompt:
+    extensions: [xlsx, xlsm]
+    keywords: [xlsx, xlsm, spreadsheet, excel, workbook]
 ---
 
 # xlsx

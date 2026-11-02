@@ -3,6 +3,10 @@ name: pdf
 description: Read, create, transform, and edit PDFs locally — extract, write from Markdown, merge, split, rotate, fill forms, replace text in place (needs LibreOffice). Use whenever the user mentions a .pdf file.
 requires-resource: skills.pdf
 disables-skills: pdf
+triggers:
+  prompt:
+    extensions: [pdf]
+    keywords: [pdf]
 ---
 
 # pdf
