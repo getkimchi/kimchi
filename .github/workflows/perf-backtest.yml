@@ -1,0 +1,94 @@
+# TEMPORARY — pre-merge noise validation for the perf gate. Replays the gate
+# against sampled master commits ("innocent" code that merged) to look for
+# false positives. Not part of the merged tree; removed before merge.
+name: Perf gate backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      shas:
+        description: Comma-separated commit SHAs to replay the gate against
+        required: true
+      gate_sha:
+        description: Commit that supplies tools/perf, budgets, and the build files
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-backtest
+  cancel-in-progress: false
+
+jobs:
+  shas:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      list: ${{ steps.split.outputs.list }}
+    steps:
+      - id: split
+        run: |
+          LIST=$(printf '%s' "$SHAS" | tr ',' '\n' | sed 's/ //g' | grep -v '^$' | jq -R . | jq -cs .)
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+        env:
+          SHAS: ${{ inputs.shas }}
+
+  backtest:
+    needs: shas
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sha: ${{ fromJSON(needs.shas.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          fetch-depth: 0
+
+      - name: Overlay the gate from ${{ inputs.gate_sha }}
+        # The measured tree is the sampled commit; the gate harness, budgets,
+        # and build inputs come from the calibration commit, exactly as the
+        # merged gate would see this code as a PR diff.
+        run: |
+          git fetch --depth=1 origin "${{ inputs.gate_sha }}"
+          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper
+          git status --short | head -20
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make copy-for-dev
+        working-directory: tools/proxy-helper
+
+      - name: Enable hardware counters
+        run: |
+          sudo sysctl -w kernel.perf_event_paranoid=0
+          cat /proc/sys/kernel/perf_event_paranoid
+
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Gate classifier selfcheck
+        run: python3 tools/perf/gate.py --selfcheck
+
+      - name: Run perf gate
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          pnpm run perf:gate --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
+
+      - name: Upload run records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ matrix.sha }}
+          path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
+          if-no-files-found: ignore
