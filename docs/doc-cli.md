@@ -39,6 +39,31 @@ resolve, since the deny is inactive in that state.
   file writes inside the dir — like every other bash file write in auto
   mode — stay behind the classifier.
 
+## Intake guard (read tool and `@file`)
+
+A separate extension (`src/extensions/documents/intake.ts`) keeps binary
+documents out of the model's context so the redirect above has something
+to redirect from:
+
+- **`read` tool:** a `read` call on a file whose extension routes to a
+  skill and whose first bytes match the container magic (`%PDF-` or a zip
+  head) is blocked in every permission mode; the block reason names the
+  `kimchi doc-cli <skill> read <path>` command (shell-quoted). Detection is
+  an 8-byte head read, never extraction.
+- **`@file` inlining:** upstream inlines non-image files as lossy UTF-8
+  text with no size cap, so `kimchi @deck.pptx …` puts the whole binary into
+  the first prompt. The input transform replaces such a block — only when
+  it still byte-matches its file's UTF-8 decode, which is exactly what
+  upstream produced for that path — with a one-line stub carrying the
+  size and the `kimchi doc-cli` command. Within the size cap
+  (`maxFileBytes()`), user-typed look-alikes never match and are left
+  untouched; over the cap, the magic + length checks alone justify the
+  stub. The stub keeps the file name, so prompt-triggered skill auto-load
+  still fires.
+
+Both fail open: unreadable files, non-binary content, and unrecognized
+formats keep their previous behaviour.
+
 ## Cross-version note
 
 Bundled SKILL.md files teach the route as the primary form, with a

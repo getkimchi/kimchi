@@ -85,6 +85,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
@@ -940,6 +941,9 @@ async function cliMain(): Promise<void> {
 				thinkingStepsExtension,
 				assistantPrefixExtension,
 				clipboardImageExtension,
+				// Binary document intake: read-tool redirect + @file stubbing. Runs in
+				// every permission mode — correctness, not permission.
+				documentIntakeExtension,
 				sessionModeOnboarding,
 				tipsExtension(),
 				...enabledExtensionFactories([
