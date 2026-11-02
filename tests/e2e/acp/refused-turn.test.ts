@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	FOLLOW_UP_REPLY,
+	REFUSAL_REASON,
 	REFUSED_PROMPT,
 	REFUSED_TURN_RESPONSES,
 	sendsRefusedPrompt,
@@ -23,10 +24,12 @@ describe("ACP integration — refused turn", () => {
 		await fixture.stop()
 	})
 
-	it("answers the next prompt after a content-filter refusal", async () => {
+	it("ends a refused turn with stopReason refusal and answers the next prompt", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
-		await prompt(fixture, sessionId, REFUSED_PROMPT)
+		const refused = await prompt(fixture, sessionId, REFUSED_PROMPT)
+		expect(refused.stopReason).toBe("refusal")
+		expect(refused.chunks).toContain(REFUSAL_REASON)
 		const followUp = await prompt(fixture, sessionId, "hi")
 
 		expect(followUp.stopReason).toBe("end_turn")
