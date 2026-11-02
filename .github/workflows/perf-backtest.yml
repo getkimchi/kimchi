@@ -52,7 +52,7 @@ jobs:
           GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git fetch --depth=1 origin "$GATE_SHA"
-          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper pnpm-workspace.yaml patches/ .github/actions
+          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper patches/ .github/actions
           git status --short | head -20
 
       - uses: ./.github/actions/setup
