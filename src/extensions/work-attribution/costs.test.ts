@@ -938,7 +938,7 @@ describe("calculatePullRequestCosts", () => {
 				request("b", "work-b"),
 				request("unrelated", "work-c"),
 				commit(),
-				commit("work-b", [secondPull()]),
+				commit("work-b", [secondPull()], "session-a", { sha: "b".repeat(40) }),
 			],
 			[charge("a", "1"), charge("b", "2"), charge("unrelated", "4")],
 		)
@@ -957,7 +957,7 @@ describe("calculatePullRequestCosts", () => {
 				request("shared"),
 				request("exclusive", "work-b"),
 				commit("work-a", [pullRequest(), secondPull()]),
-				commit("work-b", [secondPull()]),
+				commit("work-b", [secondPull()], "session-a", { sha: "b".repeat(40) }),
 			],
 			[charge("shared", "1"), charge("exclusive", "2")],
 		)
@@ -973,7 +973,12 @@ describe("calculatePullRequestCosts", () => {
 
 	it("does not make separate sessions for separate PRs shared", () => {
 		const report = calculatePullRequestCosts(
-			[request("a"), request("b", "work-b", "session-b"), commit(), commit("work-b", [secondPull()], "session-b")],
+			[
+				request("a"),
+				request("b", "work-b", "session-b"),
+				commit(),
+				commit("work-b", [secondPull()], "session-b", { sha: "b".repeat(40) }),
+			],
 			[charge("a", "1"), charge("b", "2")],
 		)
 		expect(report.pullRequests.map((row) => row.totalCostUsd)).toEqual(["1.000000000", "2.000000000"])
@@ -1751,6 +1756,45 @@ describe("first-linked narrowing", () => {
 	const featureKey = "github:github.com/lumbrook/platform#11"
 	const integrationKey = "github:github.com/lumbrook/platform#22"
 	const lookup = (minutes: number) => ({ status: "linked", checkedAt: time(minutes) })
+
+	it("keeps listing history separate for equal SHAs in different repositories", () => {
+		const report = calculatePullRequestCosts(
+			[
+				request("a"),
+				request("b", "work-b", "session-b"),
+				commit("work-a", [feature()], "session-a", { prLookup: lookup(21) }),
+				commit("work-b", [integration()], "session-b", {
+					repository: "/other/.git",
+					worktree: "/other",
+					prLookup: lookup(45),
+				}),
+			],
+			[],
+		)
+		expect(report.requests.map((row) => row.pullRequestIds)).toEqual([[featureKey], [integrationKey]])
+	})
+
+	it.each([
+		["another session", "work-a", "session-b", "/repo"],
+		["another worktree", "work-a", "session-a", "/other-worktree"],
+		["another work", "work-b", "session-b", "/other-worktree"],
+	])("shares a commit's first listing with a contribution from %s", (_case, workId, sessionId, worktree) => {
+		const rows = [
+			request("a"),
+			request("b", workId, sessionId),
+			commit("work-a", [feature({ checkedAt: time(21) })], "session-a", { prLookup: lookup(21) }),
+			commit(workId, [feature({ checkedAt: time(45) }), integration({ checkedAt: time(45) })], sessionId, {
+				worktree,
+				prLookup: lookup(45),
+			}),
+		]
+		const report = calculatePullRequestCosts(rows, [charge("a", "1"), charge("b", "2")])
+		expect(report.requests.map(({ allocation, pullRequestIds }) => ({ allocation, pullRequestIds }))).toEqual([
+			{ allocation: "inferred", pullRequestIds: [featureKey] },
+			{ allocation: "inferred", pullRequestIds: [featureKey] },
+		])
+		expect(calculatePullRequestCosts(rows.toReversed(), [charge("b", "2"), charge("a", "1")])).toEqual(report)
+	})
 
 	it("keeps only the first-listed PR when a later row lists the commit in a second PR", () => {
 		const report = calculatePullRequestCosts(

@@ -50,7 +50,7 @@ function sideChatPrompt(fresh: boolean): string {
 
 export interface SideChatSession {
 	session: AgentSession
-	/** Count of inherited main-session messages at the head of `session.messages`. */
+	/** Count of inherited main-session message entries at the head of the child's journal. */
 	contextLength: number
 }
 
@@ -185,7 +185,11 @@ export function draftSteeringPrompt(
 }
 
 export function sideThreadMessages(side: SideChatSession): SideThread {
-	return side.session.messages.slice(side.contextLength)
+	// Compaction shortens session.messages, while the journal retains the original messages for saving and /wrap.
+	return side.session.sessionManager
+		.getBranch()
+		.flatMap((entry) => (entry.type === "message" ? [entry.message] : []))
+		.slice(side.contextLength)
 }
 
 function lastAssistantMessage(session: AgentSession): AssistantMessage | undefined {
