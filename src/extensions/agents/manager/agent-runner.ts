@@ -48,6 +48,7 @@ import {
 	type SubagentType,
 	type ThinkingLevel,
 } from "../personas/types.js"
+import { matchBriefSkills, renderBriefSkillBlock } from "../prompt/brief-skill-loader.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
 import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
@@ -261,6 +262,9 @@ export interface RunResult {
 	maxTurns?: number
 	/** Absolute path to the saved plan file, if the agent produced a plan. */
 	planPath?: string
+	/** Skills auto-loaded into the system prompt because the task brief
+	 *  matched their declared triggers. */
+	autoLoadedSkills?: { name: string; matched: string }[]
 }
 
 function collectResponseText(session: AgentSession) {
@@ -414,6 +418,20 @@ ${skillLines}`
 			if (!toolNames.includes("Skill") && !disallowed?.has("Skill")) {
 				toolNames = [...toolNames, "Skill"]
 			}
+		}
+	}
+
+	// Deterministic auto-load for subagents: match the orchestrator's task
+	// brief against the same trigger grammar the parent session's auto-load
+	// uses and preload matched skills into the system prompt. Skills-enabled
+	// agents only; inherit_context forks the parent conversation, which
+	// already carries the parent's loaded skills.
+	let autoLoadedSkills: { name: string; matched: string }[] | undefined
+	if (skills === true && !options.inheritContext) {
+		const matched = await matchBriefSkills(prompt, effectiveCwd)
+		if (matched.length > 0) {
+			extras.skillBlocks = matched.map((m) => ({ name: m.name, content: renderBriefSkillBlock(m) }))
+			autoLoadedSkills = matched.map((m) => ({ name: m.name, matched: m.matched }))
 		}
 	}
 
@@ -865,6 +883,7 @@ ${skillLines}`
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
 		planPath,
+		autoLoadedSkills,
 	}
 }
 

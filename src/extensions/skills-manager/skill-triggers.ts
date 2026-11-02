@@ -61,6 +61,11 @@ export type TriggerRegistry = Map<string, RegistryEntry>
 const MAX_TRIGGER_ENTRIES = 16
 const MAX_KEYWORD_LENGTH = 64
 
+/** Max skills auto-loaded per matching text (a parent prompt or a subagent
+ *  task brief) — shared by the parent steer path and the subagent preload
+ *  path so the two cannot drift. */
+export const MAX_AUTOLOAD_PER_PROMPT = 2
+
 interface TriggerFrontmatter {
 	[key: string]: unknown
 	triggers?: unknown

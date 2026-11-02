@@ -392,27 +392,47 @@ export class AgentManager {
 		const promise = record.remote
 			? this.wireRemoteCompletion(record, runPromise, { detach, maxTurns: options.maxTurns })
 			: runPromise
-					.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
-						if (record.status !== "stopped") {
-							record.status = aborted ? "aborted" : steered ? "steered" : "completed"
-						}
-						record.abortReason = abortReason
-						const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
-						record.result = finalText
-						record.session = session
-						record.lastTurnCount = turnsUsed
-						// Preserve the effective, normalized turn cap returned by the runner.
-						record.maxTurns = maxTurns ?? options.maxTurns
-						record.completedAt ??= Date.now()
-						record.latestOutcome = buildAgentOutcome(record)
+					.then(
+						({
+							responseText,
+							session,
+							aborted,
+							abortReason,
+							steered,
+							turnsUsed,
+							maxTurns,
+							planPath,
+							autoLoadedSkills,
+						}) => {
+							if (record.status !== "stopped") {
+								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
+							}
+							record.abortReason = abortReason
+							// Surface brief-triggered skill preloads in the tool result so the
+							// orchestrator and the user transcript (both surfaces) see what was
+							// injected into the child's context.
+							const autoLoadNote = autoLoadedSkills?.length
+								? `\n\nSkills auto-loaded from task brief: ${autoLoadedSkills.map((s) => `${s.name} (${s.matched})`).join(", ")}`
+								: ""
+							const finalText = planPath
+								? `${responseText}\n\nPlan saved to: ${planPath}${autoLoadNote}`
+								: `${responseText}${autoLoadNote}`
+							record.result = finalText
+							record.session = session
+							record.lastTurnCount = turnsUsed
+							// Preserve the effective, normalized turn cap returned by the runner.
+							record.maxTurns = maxTurns ?? options.maxTurns
+							record.completedAt ??= Date.now()
+							record.latestOutcome = buildAgentOutcome(record)
 
-						if (record.isBackground) {
-							this.runningBackground--
-							if (!this.disposed) this.onComplete?.(record)
-							this.drainQueue()
-						}
-						return finalText
-					})
+							if (record.isBackground) {
+								this.runningBackground--
+								if (!this.disposed) this.onComplete?.(record)
+								this.drainQueue()
+							}
+							return finalText
+						},
+					)
 					.catch((err) => {
 						if (record.status !== "stopped") {
 							record.status = "error"

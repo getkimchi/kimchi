@@ -47,6 +47,7 @@ import type { SkillManager } from "./skill-manager.js"
 import {
 	buildTriggerRegistry,
 	isModelInvocationDisabled,
+	MAX_AUTOLOAD_PER_PROMPT,
 	matchPrompt,
 	parseSkillCommand,
 	type RegistryEntry,
@@ -58,7 +59,6 @@ import {
 import { formatSkillViewResult } from "./tool.js"
 import type { UsageTracker } from "./usage.js"
 
-const MAX_AUTOLOAD_PER_PROMPT = 2
 /** Registry reads run with bounded concurrency inside the input handler. */
 const REGISTRY_READ_CONCURRENCY = 8
 

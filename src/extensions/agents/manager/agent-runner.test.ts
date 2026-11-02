@@ -54,7 +54,13 @@ vi.mock("../prompt/prompts.js", () => ({
 }))
 
 vi.mock("../prompt/skill-loader.js", () => ({
+	listAvailableSkillNames: vi.fn().mockReturnValue([]),
 	preloadSkills: vi.fn().mockReturnValue([]),
+}))
+
+vi.mock("../prompt/brief-skill-loader.js", () => ({
+	matchBriefSkills: vi.fn().mockResolvedValue([]),
+	renderBriefSkillBlock: vi.fn().mockImplementation((m: { name: string }) => `AUTOLOAD-${m.name.toUpperCase()}`),
 }))
 
 vi.mock("../prompt/context.js", () => ({
@@ -150,6 +156,7 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
+import { matchBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
@@ -160,6 +167,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
+const mockMatchBriefSkills = vi.mocked(matchBriefSkills)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
@@ -612,6 +620,106 @@ describe("runAgent — telemetry extension", () => {
 		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(5)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
+	})
+
+	it("preloads trigger-matched skills from the task brief", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: true }))
+		mockMatchBriefSkills.mockResolvedValueOnce([{ name: "pdf", content: "PDF SKILL", matched: "ext:.pdf" }])
+
+		const result = await runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"analyze report.pdf",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+			},
+		)
+
+		expect(mockMatchBriefSkills).toHaveBeenCalledWith("analyze report.pdf", ctx.cwd)
+		const blockCalls = mockBuildAgentPrompt.mock.calls.filter(
+			(c) => (c[4] as { skillBlocks?: { name: string; content: string }[] } | undefined)?.skillBlocks?.length,
+		)
+		expect(blockCalls.length).toBeGreaterThan(0)
+		expect(blockCalls[0]?.[4]).toMatchObject({
+			skillBlocks: [{ name: "pdf", content: "AUTOLOAD-PDF" }],
+		})
+		expect(result.autoLoadedSkills).toEqual([{ name: "pdf", matched: "ext:.pdf" }])
+	})
+
+	it("does not auto-load brief skills for a skills-disabled persona", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "analyze report.pdf", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-load brief skills when the persona preloads an explicit skill list", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: ["pdf"] }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "analyze report.pdf", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-load brief skills with inherit_context", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: true }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "analyze report.pdf", {
+			pi: pi as unknown as RunOptions["pi"],
+			inheritContext: true,
+		})
+
+		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+	})
+
+	it("does not auto-load brief skills for isolated agents", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: true }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "analyze report.pdf", {
+			pi: pi as unknown as RunOptions["pi"],
+			isolated: true,
+		})
+
+		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
 	})
 
 	it("stops a linked worker immediately after its host accepts the report", async () => {
