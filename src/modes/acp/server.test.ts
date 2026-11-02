@@ -309,6 +309,7 @@ class FakeAgentSession {
 	}
 	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	waitForIdleImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	// Captures tool registration and activation state for parity assertions.
 	registeredTools: Map<string, unknown> = new Map()
@@ -412,6 +413,10 @@ class FakeAgentSession {
 		this.aborted = true
 		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async waitForIdle(): Promise<void> {
+		await this.waitForIdleImpl()
 	}
 
 	async steer(text: string, _images?: unknown[]): Promise<void> {
@@ -1704,6 +1709,35 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	// because session.prompt was still running the chained continues.
 	// Now: end_turn is sent exactly once, only after session.prompt()
 	// resolves (i.e. after ALL chained calls complete).
+	// Regression: a prompt waiting out an unsolicited run (e.g. a background
+	// bash completion waking the agent) has no TurnContext yet. cancel()
+	// aborts the unsolicited run, which released the wait and started the
+	// cancelled prompt anyway.
+	it("a prompt cancelled while waiting out an unsolicited run never starts", async () => {
+		let releaseIdle!: () => void
+		fake.waitForIdleImpl = () =>
+			new Promise<void>((resolve) => {
+				releaseIdle = resolve
+			})
+		fake.abortImpl = async () => releaseIdle()
+		// No prompt owns this run: the server allocates unsolicited bookkeeping.
+		fake.emit({ type: "agent_start" })
+
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+		await delay(0)
+		await agent.cancel({ sessionId })
+
+		await expect(pending).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.promptCalls).toHaveLength(0)
+
+		// The session stays usable: the next prompt runs normally.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "again" }] })).resolves.toEqual({
+			stopReason: "end_turn",
+		})
+		expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["again"])
+	})
+
 	it("sends exactly one end_turn after chained agent.continue() cycles complete", async () => {
 		const { conn: recordingConn, updates } = makeRecordingConn()
 		const localAgent = new KimchiAcpAgent(recordingConn, {

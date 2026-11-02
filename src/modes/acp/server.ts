@@ -303,6 +303,9 @@ function createTurnContext(
 	}
 }
 
+/** Cancellation token for a prompt that has no TurnContext yet. */
+type PendingPrompt = { cancelled: boolean }
+
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
@@ -322,6 +325,12 @@ type SessionRecord = {
 	 * client. Its resolve/reject are no-ops — nothing awaits its outcome.
 	 */
 	unsolicitedTurn?: TurnContext
+	/**
+	 * Prompts accepted but not yet started (no TurnContext of their own):
+	 * e.g. waiting out an unsolicited run. `cancel` marks every entry so a
+	 * cancelled prompt resolves "cancelled" instead of starting its turn.
+	 */
+	pendingPrompts?: Set<PendingPrompt>
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
 	 * content block (text or thinking) across every assistant message in
@@ -1065,6 +1074,26 @@ export class KimchiAcpAgent implements Agent {
 				"compaction is in progress for this session — wait for the compaction_end activity notification and retry",
 			)
 		}
+		// Own cancellation from acceptance: until this prompt creates its
+		// TurnContext (which cancel() marks directly), a cancel arriving during
+		// its awaits — skill parsing, or waiting out an unsolicited run — must
+		// still stop it from starting.
+		const pending: PendingPrompt = { cancelled: false }
+		entry.pendingPrompts ??= new Set()
+		const pendingPrompts = entry.pendingPrompts
+		pendingPrompts.add(pending)
+		try {
+			return await this.runPrompt(entry, params, pending)
+		} finally {
+			pendingPrompts.delete(pending)
+		}
+	}
+
+	private async runPrompt(
+		entry: SessionRecord,
+		params: PromptRequest,
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
 		// type. Dropped images do NOT join this dedupe — they additionally surface
@@ -1135,6 +1164,8 @@ export class KimchiAcpAgent implements Agent {
 			// chain — anything left here is stale state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
 		}
+		// Cancelled before its turn existed: never start it.
+		if (pending.cancelled) return { stopReason: "cancelled" }
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
@@ -1207,6 +1238,7 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
+		for (const pending of entry.pendingPrompts ?? []) pending.cancelled = true
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —
 		// session.prompt() resolves only after all chained calls — so awaiting
