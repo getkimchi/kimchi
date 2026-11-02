@@ -10,7 +10,11 @@ import {
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { reconcileWorkCosts } from "./cost-sync.js"
 import { debugWorkAttribution as debug } from "./diagnostics.js"
-import { knownTransitionRepositories, reconcileRepositoryTransitions } from "./file-transitions.js"
+import {
+	knownTransitionRepositories,
+	reconcileRepositoryTransitions,
+	type SharedTypeReads,
+} from "./file-transitions.js"
 import { type ContinuationProgress, reconcileWorkContinuations } from "./links.js"
 
 export const RECONCILIATION_INTERVAL_MS = 30_000
@@ -98,7 +102,9 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 	try {
 		if ([...owner.subscribers].some((subscriber) => subscriber.kind === "files")) {
 			try {
-				const repositories = await knownTransitionRepositories(checkBudget)
+				// One whole-type read serves every repository of the pass, not one full table scan each.
+				const shared: SharedTypeReads = {}
+				const repositories = await knownTransitionRepositories(checkBudget, shared)
 				const start = Math.max(0, repositories.indexOf(owner.nextRepository ?? ""))
 				for (let offset = 0; offset < repositories.length; offset++) {
 					checkBudget()
@@ -106,7 +112,7 @@ async function scan(agentDir: string, owner: Supervisor): Promise<void> {
 					// Move on after a slow/broken repository; its own checkpoints preserve partial progress.
 					owner.nextRepository = repositories[(index + 1) % repositories.length]
 					try {
-						await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease)
+						await reconcileRepositoryTransitions(repositories[index], signal, checkBudget, assertLease, shared)
 					} catch (error) {
 						if (error === exhausted || signal.aborted) throw error
 						debug("Could not reconcile repository %s: %o", repositories[index], error)

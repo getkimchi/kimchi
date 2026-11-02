@@ -1,15 +1,73 @@
 import { execFile, execSync } from "node:child_process"
-import { readFileSync } from "node:fs"
+import { lstatSync, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, resolve, sep } from "node:path"
+import { dirname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
+/** The working tree's answer, read from .git/HEAD without spawning Git. */
+interface HeadBranch {
+	/** True when the branch is known exactly; false when Git itself must be asked. */
+	confident: true
+	branch: string | undefined
+}
+
+/**
+ * Reads the branch name from the nearest .git/HEAD. Spawning Git from a large process
+ * blocks the event loop that renders the TUI, so the common case — a .git directory or
+ * worktree pointer with a symbolic HEAD — must not launch a child process. Unusual
+ * layouts return `{ confident: false }` so the caller can fall back to Git.
+ */
+function readHeadBranch(cwd: string): HeadBranch | { confident: false } {
+	try {
+		let directory = realpathSync(resolve(cwd))
+		for (;;) {
+			const gitPath = join(directory, ".git")
+			const stats = lstatSync(gitPath, { throwIfNoEntry: false })
+			if (stats) {
+				let gitDirectory = gitPath
+				if (stats.isFile()) {
+					// A linked worktree keeps a `gitdir: <path>` pointer instead of the directory.
+					const pointer = readFileSync(gitPath, "utf8").trim()
+					if (!pointer.startsWith("gitdir:")) return { confident: false }
+					gitDirectory = resolve(directory, pointer.slice("gitdir:".length).trim())
+				}
+				const head = readFileSync(join(gitDirectory, "HEAD"), "utf8").trim()
+				const ref = /^ref: (.+)$/.exec(head)
+				// A ref outside refs/heads/ has no short form worth guessing; ask Git.
+				if (!ref) return { confident: true, branch: undefined }
+				if (!ref[1].startsWith("refs/heads/")) return { confident: false }
+				return { confident: true, branch: ref[1].slice("refs/heads/".length) || undefined }
+			}
+			const parent = dirname(directory)
+			if (parent === directory) return { confident: false }
+			directory = parent
+		}
+	} catch {
+		return { confident: false }
+	}
+}
+
 export function refreshGitBranch(onResult: (branch: string | undefined) => void, cwd?: string): void {
+	const directory = cwd ?? process.cwd()
+	// Variables that redirect or constrain repository discovery keep Git as the authority:
+	// the direct walk-up cannot see them, so its confident answer could diverge from git's.
+	const redirected =
+		process.env.GIT_DIR ||
+		process.env.GIT_WORK_TREE ||
+		process.env.GIT_COMMON_DIR ||
+		process.env.GIT_CEILING_DIRECTORIES ||
+		process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM
+	const direct = redirected ? ({ confident: false } as const) : readHeadBranch(directory)
+	if (direct.confident) {
+		onResult(direct.branch)
+		return
+	}
+	// Detached layouts and environments like GIT_DIR keep Git as the authority.
 	execFile(
 		"git",
 		["symbolic-ref", "--short", "HEAD"],
 		{
-			cwd: cwd ?? process.cwd(),
+			cwd: directory,
 			encoding: "utf8",
 			timeout: 500,
 		},
