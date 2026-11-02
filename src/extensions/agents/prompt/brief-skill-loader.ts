@@ -97,8 +97,11 @@ export interface ScanBriefSkillsOptions {
  *  so a name can carry newlines or control characters that would forge
  *  system-prompt structure or tool-result lines. Exported for tests. */
 export function sanitizeLine(text: string): string {
+	// \p{C} covers control/format characters (Cc, Cf, Co, Cn) — the same
+	// set as the C0 range plus DEL — without literal control characters in
+	// the regex source (noControlCharactersInRegex).
 	return text
-		.replace(/[\s\u0000-\u001f\u007f]+/g, " ")
+		.replace(/[\s\p{C}]+/gu, " ")
 		.trim()
 		.slice(0, 200)
 }
