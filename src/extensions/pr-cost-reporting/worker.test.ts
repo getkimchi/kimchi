@@ -260,6 +260,19 @@ describe("account-fenced reporting delivery", () => {
 		expect(backendFor(directory).getNote("pr-cost-delivery", accountId)).toBeUndefined()
 	})
 
+	it("still delivers a snapshot queued under the legacy console platform API base", async () => {
+		// Snapshots queued before the platform API moved to the region's API origin
+		// hold webAppUrl + "/api" as their account base. The delivery pass must not
+		// skip them as another account's reports — with no TTL, that skip would be
+		// permanent.
+		config.endpoint = "https://api.cast.ai"
+		await queueSnapshots(directory, [
+			{ ...content, account: { ...content.account, apiUrl: "https://app.kimchi.dev/api" } },
+		])
+		await deliver()
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-snapshots"))).toBe(true)
+	})
+
 	it("uploads snapshots and events with the SSO credential when no API key is configured", async () => {
 		config.key = ""
 		const agentDir = join(directory, "agent")
