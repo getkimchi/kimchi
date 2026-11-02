@@ -118,6 +118,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -1205,7 +1206,7 @@ export class KimchiAcpAgent implements Agent {
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
-					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
+					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : entry.turn.refused ? "refusal" : "end_turn")
 				}
 			},
 			(err) => {
@@ -1694,7 +1695,22 @@ export class KimchiAcpAgent implements Agent {
 				// toolUse, deferred) → a completed message, clear. A failed attempt
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
-				if (msg.stopReason === "error") {
+				turn.refused = isRefusal(msg)
+				if (turn.refused) {
+					// A refusal is a turn outcome, not a failure: report it as
+					// stopReason "refusal" with the reason the user can act on. The
+					// canned text may already be streamed and can't be retracted, so
+					// the reason goes out as a separate message.
+					turn.lastAssistantError = undefined
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							messageId: `km.${randomUUID()}`,
+							content: { type: "text", text: REFUSAL_MESSAGE },
+						},
+					})
+				} else if (msg.stopReason === "error") {
 					// Capture the preserved raw text, not the display placeholder: the
 					// interactive-error-surface extension may have mutated errorMessage
 					// to "Retrying…" in an earlier message_end handler. The placeholder
@@ -2665,7 +2681,7 @@ export class KimchiAcpAgent implements Agent {
 		} else if (turn.lastAssistantError) {
 			this.failTurn(entry, toTurnError(turn.lastAssistantError))
 		} else {
-			this.finalizeTurn(entry, "end_turn")
+			this.finalizeTurn(entry, turn.refused ? "refusal" : "end_turn")
 		}
 	}
 
