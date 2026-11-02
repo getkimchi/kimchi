@@ -22,6 +22,7 @@
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
+import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -92,6 +93,14 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		const sessionKind = bashSessionKindFromContext(sessionCtx)
 		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
 		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
+
+		// Footer indicator: publish the running-command count while any run,
+		// cleared at zero (the footer hides the segment then). Reset first so a
+		// previous session's count never lingers.
+		sessionCtx.ui.setStatus(SHELLS_STATUS_KEY, undefined)
+		registry.onRunningCountChange((count) => {
+			sessionCtx.ui.setStatus(SHELLS_STATUS_KEY, count > 0 ? String(count) : undefined)
+		})
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the

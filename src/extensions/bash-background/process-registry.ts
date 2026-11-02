@@ -592,6 +592,13 @@ export interface ProcessRegistry {
 	releaseTerminal(handle: string): void
 	/** Remove an entry, keeping any reported spill file readable until shutdown. */
 	remove(handle: string): Promise<void>
+	/** Number of tracked processes still running. */
+	runningCount(): number
+	/**
+	 * Observe the running-process count: `listener` fires with the new count
+	 * whenever a spawn, kill, or exit changes it. Returns an unsubscribe.
+	 */
+	onRunningCountChange(listener: (count: number) => void): () => void
 	/** Kill every still-running entry and clear the registry. */
 	shutdown(): Promise<void>
 	/** Number of entries currently tracked. */
@@ -627,11 +634,39 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	const runningCountListeners = new Set<(count: number) => void>()
+	let lastRunningCount = 0
+
+	function runningCount(): number {
+		let count = 0
+		for (const entry of entries.values()) if (entry.state === "running") count++
+		return count
+	}
+
+	function notifyRunningCount(): void {
+		const count = runningCount()
+		if (count === lastRunningCount) return
+		lastRunningCount = count
+		for (const listener of [...runningCountListeners]) {
+			try {
+				listener(count)
+			} catch {
+				// A broken observer must never affect process lifecycle.
+			}
+		}
+	}
+
+	function onRunningCountChange(listener: (count: number) => void): () => void {
+		runningCountListeners.add(listener)
+		return () => runningCountListeners.delete(listener)
+	}
+
 	function killInternal(entry: ProcessEntry, reason: string): void {
 		if (entry.state !== "running") return
 		entry.state = "stopped"
 		entry.reason = reason
 		clearDeadlineTimer(entry)
+		notifyRunningCount()
 		// Aborting triggers upstream `killProcessTree` inside `exec`.
 		try {
 			entry.controller.abort()
@@ -711,6 +746,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				accumulator.finish()
 				entry.finishedAt = Date.now()
 				notifyDisplay(handle)
+				notifyRunningCount()
 			})
 
 		entry = {
@@ -737,6 +773,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 		entries.set(handle, entry)
 		armDeadline(entry)
+		notifyRunningCount()
 		return handle
 	}
 
@@ -999,6 +1036,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		displayObservers.clear()
 		entries.clear()
 		completed.clear()
+		notifyRunningCount()
+		runningCountListeners.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
 	}
@@ -1020,6 +1059,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		releaseTerminal,
 		getEntry,
 		remove,
+		runningCount,
+		onRunningCountChange,
 		shutdown,
 		get size() {
 			return entries.size

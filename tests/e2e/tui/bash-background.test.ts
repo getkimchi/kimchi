@@ -1,5 +1,5 @@
 import { expect, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import { STREAM_TIMEOUT_MS, viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
 
@@ -177,3 +177,57 @@ test("background bash: an unresolved stop settles the run without a forced remin
 
 // Cohort workflows (multi-command staggering, streaming-safe exit delivery,
 // bounded checkpoints, wait cancellation) live in ./bash-background-cohort.test.ts.
+
+// Workflow: the footer shows a running-shell count while a managed command
+// runs in the background, and the segment disappears once it is stopped.
+test("background bash: the footer shows '1 shell' while a command runs and hides it once stopped", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-footer-shell-count",
+			responses: [
+				// Turn 1: start a long command; the turn settles while it runs.
+				{
+					stream: ["Started the command."],
+					toolCalls: [
+						{
+							id: "call_bash",
+							function: { name: "bash", arguments: JSON.stringify({ command: "echo alive && sleep 90" }) },
+						},
+					],
+				},
+				{ stream: ["It keeps running in the background."] },
+				// Turn 2 (user asks to stop): stop it.
+				{
+					stream: ["Stopping it."],
+					toolCalls: [
+						{
+							id: "call_stop",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({ stop_handles: ["__BASH_HANDLE__"] }),
+							},
+						},
+					],
+				},
+				{ stream: ["The command is stopped."] },
+			],
+		},
+		async (_fixture, trace) => {
+			// The footer is the bottom of the visible screen.
+			const footer = () => viewText(terminal).trimEnd().split("\n").slice(-2).join("\n")
+
+			terminal.submit("Start a long command in the background")
+			await waitForText(terminal, "It keeps running in the background", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, () => /\b1 shell\b/.test(footer()), { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("footer shows the running shell")
+
+			terminal.submit("Stop the command")
+			await waitForText(terminal, "The command is stopped", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, () => !/\bshells?\b/.test(footer()), { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("footer segment hidden once no command runs")
+		},
+	)
+})

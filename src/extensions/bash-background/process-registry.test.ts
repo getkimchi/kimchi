@@ -291,6 +291,34 @@ describe("createProcessRegistry — snapshotTail", () => {
 		await registry.shutdown()
 	})
 
+	it("reports running-count changes on spawn, kill, exit and shutdown", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const counts: number[] = []
+		registry.onRunningCountChange((count) => counts.push(count))
+
+		const a = registry.spawn(ops, "sleep 60", "/tmp", undefined, OPTS)
+		registry.spawn(createFakeOps(0), "sleep 60", "/tmp", undefined, OPTS)
+		expect(registry.runningCount()).toBe(2)
+		await registry.kill(a)
+		expect(counts).toEqual([1, 2, 1])
+
+		await registry.shutdown()
+		expect(counts).toEqual([1, 2, 1, 0])
+		expect(registry.runningCount()).toBe(0)
+	})
+
+	it("a throwing count observer never breaks spawning", async () => {
+		const registry = createProcessRegistry()
+		registry.onRunningCountChange(() => {
+			throw new Error("broken footer")
+		})
+		const unsubscribe = registry.onRunningCountChange(() => {})
+		expect(() => registry.spawn(createFakeOps(0), "true", "/tmp", undefined, OPTS)).not.toThrow()
+		unsubscribe()
+		await registry.shutdown()
+	})
+
 	it("creates no log file for small output that never reached handoff", async () => {
 		const ops = createFakeOps(0)
 		const registry = createProcessRegistry()

@@ -1,5 +1,7 @@
 # Inspect running Bash commands
 
+While managed Bash commands run, the footer shows `1 shell` / `N shells` at the right end of the status line, after the agent count; it disappears when none run. Hide it in **/customize-status-line**. The active-agent count follows the same rule: it shows only while agents run.
+
 Run **`/processes`** while Kimchi is executing a managed Bash command. It replaces the input with a full-width menu, with the conversation visible above. Select a command and press **Enter** to inspect it. Closing restores the input without replaying conversation history.
 
 The list shows one row per process: its purpose (or command when no purpose was provided), status and elapsed time. It grows as processes start, up to half the terminal height. In fullscreen mode, click a row to inspect it, then click **Script** or **Output** to switch views. The text cursor stays hidden while inspecting.
