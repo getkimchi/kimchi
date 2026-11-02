@@ -44,6 +44,7 @@ import {
 	reportingStatePath,
 	type ServerLimit,
 	type SnapshotAck,
+	trimFrozenSnapshot,
 	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
@@ -237,6 +238,8 @@ export function deliverSnapshots(
 			let retryAfterMs: number | null = null
 			let limit: ServerLimit | undefined
 			let errorMessage = "PR reporting request unavailable"
+			/** Only the upload's rejection may trim the body; a verify rejection cannot. */
+			let uploadAttempted = false
 			const assertOwnership = () => {
 				assertLease()
 				if (configuredCredentials().token !== key || platformApiUrl(cwd) !== apiUrl)
@@ -289,6 +292,7 @@ export function deliverSnapshots(
 					throw new Error(errorMessage)
 				}
 
+				uploadAttempted = true
 				const response = await fetchBounded(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
@@ -317,17 +321,39 @@ export function deliverSnapshots(
 				} catch {
 					return
 				}
-				if (limit) {
-					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
-				} else
-					await deferFrozenSnapshot(
-						agentDir,
-						job,
-						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-						errorMessage,
-						assertOwnership,
-					)
+				// Another process replaced or capped this body away while the upload was in flight; its
+				// claims moved with it, so this job is settled and the pass moves on to the next one.
+				const gone = () => {
+					try {
+						return !frozenSnapshotPending(agentDir, job)
+					} catch {
+						return true
+					}
+				}
+				if (gone()) continue
+				try {
+					if (limit) {
+						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
+						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+						else if (limit.scope === "snapshot" && limit.limit === "bytes") {
+							// The server's own byte cap rejected this body; trim it to the cap it stated, so the
+							// retry carries a body the server can accept instead of resending it for hours.
+							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
+						}
+					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
+						// The server rejected this body for its size; the next pass retries the halved one.
+					} else
+						await deferFrozenSnapshot(
+							agentDir,
+							job,
+							Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
+							errorMessage,
+							assertOwnership,
+						)
+				} catch (error) {
+					if (gone()) continue
+					throw error
+				}
 			}
 		}
 	})
