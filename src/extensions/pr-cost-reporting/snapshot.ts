@@ -138,6 +138,13 @@ export function repositoryKey(repository: ReportingRepository): string {
 }
 
 export function accountKey(account: WorkAccount): string {
+	// Deliberately the raw apiUrl, not the canonical form: these keys persist
+	// in state files, and validateEntry recomputes them on load — a canonical
+	// derivation would reject every state file written before the platform API
+	// moved to the region's API origin. Cross-form equality is handled at the
+	// comparison boundaries instead (sameWorkAccount, sameBillingSource, and
+	// the endpoint checks in worker.ts), so legacy-keyed entries stay valid and
+	// deliver; fresh captures simply queue under the current base.
 	return JSON.stringify([account.apiUrl, account.organizationId, account.userId])
 }
 

@@ -200,6 +200,30 @@ export function platformApiUrl(r: KimchiRegion): string {
 	return r.castApiUrl
 }
 
+/**
+ * Canonicalize a stored platform API base for equality comparison.
+ *
+ * platformApiUrl used to derive as `webAppUrl + "/api"` (the console's
+ * /api proxy) before it moved to the region's API origin. Durable records
+ * captured before that change — work-attribution billing sources, work
+ * accounts, PR-cost snapshot queues — still hold the legacy form, and
+ * comparing them against a freshly derived base by exact string equality
+ * would false-mismatch across the migration in both directions (upgrade
+ * and rollback). This maps every region's legacy console-proxy base onto
+ * its API origin; anything else (already-canonical bases, self-hosted or
+ * custom `KIMCHI_REMOTE_ENDPOINT` overrides) passes through with only
+ * trailing slashes stripped. Never conflates regions: the us legacy base
+ * maps to the us API origin only.
+ */
+export function canonicalPlatformApiUrl(url: string): string {
+	const trimmed = url.replace(/\/+$/, "")
+	for (const region of Object.values(REGIONS)) {
+		if (!region.webAppUrl) continue // self-hosted placeholder has no fixed URLs
+		if (trimmed === `${region.webAppUrl}/api`) return region.castApiUrl
+	}
+	return trimmed
+}
+
 /** Main chat/completions base. */
 export function openAiBaseUrl(r: KimchiRegion): string {
 	return `${r.llmBaseUrl}/openai/v1`

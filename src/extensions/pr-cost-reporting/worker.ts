@@ -3,6 +3,7 @@ import { setImmediate } from "node:timers/promises"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
+import { canonicalPlatformApiUrl } from "../../regions.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
@@ -178,7 +179,16 @@ export function deliverSnapshots(
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
 		const configuredEndpoint = platformApiUrl(cwd)
-		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
+		// Compare endpoints canonically: snapshots queued before the platform API
+		// moved to the region's API origin hold the legacy console-proxy base and
+		// must not be treated as another account's reports.
+		if (
+			frozen.some(
+				({ entry }) =>
+					!configuredKey ||
+					canonicalPlatformApiUrl(entry.account.apiUrl) !== canonicalPlatformApiUrl(configuredEndpoint),
+			)
+		)
 			await recordReportingError(
 				agentDir,
 				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
@@ -216,7 +226,12 @@ export function deliverSnapshots(
 			if (combined.aborted || attempts >= 3) break
 			const { token: key, organizationId } = configuredCredentials()
 			const apiUrl = platformApiUrl(cwd)
-			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
+			if (
+				!key ||
+				!safeEndpoint(apiUrl) ||
+				canonicalPlatformApiUrl(apiUrl) !== canonicalPlatformApiUrl(entry.account.apiUrl)
+			)
+				continue
 			attempts++
 			let status: number | undefined
 			let retryAfterMs: number | null = null

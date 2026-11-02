@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { withExperimentalFeatures } from "./extensions/experimental.js"
 import {
 	anthropicBaseUrl,
+	canonicalPlatformApiUrl,
 	discoveredSelfHostedRegion,
 	experimentalOpenAiBaseUrl,
 	isRegionId,
@@ -137,6 +138,24 @@ describe("derivation helpers — self-hosted golden URLs", () => {
 		expect(trailing.llmBaseUrl).toBe("https://kimchi.example.com/llm")
 		expect(trailing.castApiUrl).toBe("https://kimchi.example.com/api")
 		expect(trailing.webAppUrl).toBe("https://kimchi.example.com")
+	})
+})
+
+describe("canonicalPlatformApiUrl", () => {
+	it("maps each region's legacy console-proxy base onto its API origin", () => {
+		expect(canonicalPlatformApiUrl("https://app.kimchi.dev/api")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://app.eu.kimchi.dev/api")).toBe("https://api.eu.cast.ai")
+	})
+
+	it("is idempotent for current bases and strips trailing slashes", () => {
+		expect(canonicalPlatformApiUrl("https://api.cast.ai")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://api.cast.ai/")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://app.kimchi.dev/api/")).toBe("https://api.cast.ai")
+	})
+
+	it("leaves unknown and self-hosted bases untouched", () => {
+		expect(canonicalPlatformApiUrl("https://kimchi.example.com/api")).toBe("https://kimchi.example.com/api")
+		expect(canonicalPlatformApiUrl("https://from-env.example.com")).toBe("https://from-env.example.com")
 	})
 })
 
