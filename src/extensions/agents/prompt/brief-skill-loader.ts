@@ -31,7 +31,7 @@
  */
 
 import { readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { dirname } from "node:path"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../../resources/store.js"
 import {
@@ -41,6 +41,8 @@ import {
 } from "../../../shared/skill-discovery/resolve-skill-roots.js"
 import {
 	buildTriggerRegistry,
+	HARNESS_SKILL_LABEL,
+	isAgentCreatedSkillDir,
 	isModelInvocationDisabled,
 	MAX_AUTOLOAD_PER_PROMPT,
 	matchPrompt,
@@ -56,8 +58,8 @@ import type { SkillListEntry } from "./skill-loader.js"
  *  labels), so adding a root kind means touching one place. */
 const KIND_META: Record<SkillRootKind, { origin: TriggerOrigin; label?: string }> = {
 	bundled: { origin: "bundled" },
-	harness: { origin: "harness", label: "a user skill in your harness skills directory" },
-	agent: { origin: "harness", label: "a user skill in your harness skills directory" },
+	harness: { origin: "harness", label: HARNESS_SKILL_LABEL },
+	agent: { origin: "harness", label: HARNESS_SKILL_LABEL },
 	config: { origin: "discovered", label: "a user skill from your configured skill paths" },
 	project: { origin: "discovered", label: "a project skill" },
 }
@@ -101,16 +103,9 @@ export function sanitizeLine(text: string): string {
 		.slice(0, 200)
 }
 
-/** True when the skill dir's `.usage.json` sidecar marks it agent-created.
- *  Best-effort: a missing or unreadable sidecar means user-authored. */
-function isAgentCreated(skillDir: string): boolean {
-	try {
-		const usage = JSON.parse(readFileSync(join(skillDir, ".usage.json"), "utf-8"))
-		return usage.agent_created === true
-	} catch {
-		return false
-	}
-}
+/** True when the skill dir's `.usage.json` sidecar marks it agent-created
+ *  (shared probe — see skill-triggers.ts `isAgentCreatedSkillDir`). */
+const isAgentCreated = isAgentCreatedSkillDir
 
 /**
  * Scan the skill roots once for a subagent spawn: produce the Available

@@ -46,6 +46,7 @@ import { survivingSteerNames } from "../steer-survival.js"
 import type { SkillManager } from "./skill-manager.js"
 import {
 	buildTriggerRegistry,
+	HARNESS_SKILL_LABEL,
 	isModelInvocationDisabled,
 	MAX_AUTOLOAD_PER_PROMPT,
 	matchPrompt,
@@ -194,7 +195,7 @@ export function createSkillAutoLoader(
 			candidates.push({
 				name: entry.name,
 				origin: entry.origin,
-				...(entry.origin === "harness" ? { label: "a user skill in your harness skills directory" } : {}),
+				...(entry.origin === "harness" ? { label: HARNESS_SKILL_LABEL } : {}),
 			})
 		}
 		// Discovered tier: everything pi resolves outside the manager's own
