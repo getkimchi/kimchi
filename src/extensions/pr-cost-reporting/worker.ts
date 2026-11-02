@@ -10,11 +10,25 @@ import { pullRequestKey } from "../pull-request-status/links.js"
 import { lookupRepositoryIdentity } from "../pull-request-status/provider-api.js"
 import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
-import { readWorkCostReport } from "../work-attribution/cost-sync.js"
+import { mapInChunks, runCooperatively } from "../work-attribution/cooperative.js"
+import { readWorkCostReport, readWorkCostReportSteps } from "../work-attribution/cost-sync.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
-import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
+import { isWorkAccount, isWorkScope, platformApiUrl } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
-import { buildEvents } from "./events.js"
+import { buildEvents, buildEventsSteps } from "./events.js"
+import {
+	advanceGroupCache,
+	groupKey,
+	mergeSharedFacts,
+	observationUnits,
+	prepareGroupCache,
+	readChangedGroup,
+	requestIndexEntries,
+	sameCachedRepositories,
+	saveGroupCache,
+	verifySharedHeads,
+} from "./incremental.js"
+import { clearTranslatedMarkers } from "./ledger/marker-cleanup.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
@@ -22,32 +36,28 @@ import {
 	type Fact,
 	observeEvents,
 	pendingBatch,
-	readOutboxStatus,
+	readDeliveryStatus,
 } from "./ledger/outbox.js"
-import { backendFor, type OutboxBatch, type RecordBackend } from "./ledger/records.js"
+import {
+	backendFor,
+	type OutboxBatch,
+	type RecordBackend,
+	readGroupRequestRecordsAsync,
+	readGroupStoredRecordsAsync,
+} from "./ledger/records.js"
 import type { Acknowledgement } from "./protocol.js"
 import {
-	ACCOUNT_SCOPES,
-	acknowledgeFrozenSnapshot,
-	deferFrozenSnapshot,
-	freezeSnapshots,
-	frozenSnapshotPending,
-	inUploadWindow,
-	LIMIT_NAMES,
-	LIMIT_SCOPES,
-	limitFrozenSnapshot,
-	pendingFrozenSnapshots,
 	readReportingState,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
-	type ServerLimit,
-	type SnapshotAck,
-	withDrainedLegacyAccount,
+	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
+/** Time a delivery pass keeps for finishing one more batch upload and its acknowledgement. */
+const DELIVERY_RESERVE_MS = 500
 const RESPONSE_BYTES = 64 * 1024
 /** How often the reporting state file is stat-polled for a mid-pass opt-out. */
 const OPT_OUT_POLL_MS = 250
@@ -55,12 +65,12 @@ const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
 /** Provider repository IDs are stable, so a found identity, or the lack of a supported remote, is kept a day. */
 const REPOSITORY_CACHE_MS = 24 * HOUR_MS
-/** A limit rejection waits about six hours; the server frees space on its own schedule. */
+/** The longest wait between attempts: about six hours. */
 export const LIMIT_RETRY_MS = 6 * HOUR_MS
 /** ±20%, so that clients rejected together do not come back together. */
 const jitter = (ms: number) => Math.round(ms * (0.8 + 0.4 * Math.random()))
 /**
- * Transient failures (timeouts, 408, 5xx and 429 without a limit) honor a bounded Retry-After, or back
+ * Transient failures (timeouts, 408, 429 and 5xx) honor a bounded Retry-After, or back
  * off from 30 seconds to 30 minutes. Other 4xx responses, such as an endpoint not deployed yet, cannot
  * be fixed by retrying and wait one to six hours.
  */
@@ -71,33 +81,6 @@ export function retryDelay(status: number | undefined, attempts: number, retryAf
 	return jitter(Math.min(30 * MINUTE_MS, 30_000 * 2 ** attempts))
 }
 
-/** Reads the PR_COST_LIMIT ErrorInfo of a 429 body; anything else is not a limit. */
-export function serverLimit(body: unknown, at = Date.now()): ServerLimit | undefined {
-	if (!object(body) || !Array.isArray(body.details)) return undefined
-	const info = body.details.find(
-		(detail) =>
-			object(detail) &&
-			detail["@type"] === "type.googleapis.com/google.rpc.ErrorInfo" &&
-			detail.reason === "PR_COST_LIMIT" &&
-			detail.domain === "ai-optimizer",
-	)
-	if (!object(info)) return undefined
-	const metadata = object(info.metadata) ? info.metadata : {}
-	const number = (value: unknown) =>
-		typeof value === "string" && /^\d{1,15}$/.test(value) ? { value: Number(value) } : undefined
-	const scope = LIMIT_SCOPES.find((value) => value === metadata.scope)
-	const limit = LIMIT_NAMES.find((value) => value === metadata.limit)
-	const current = number(metadata.current)
-	const maximum = number(metadata.maximum)
-	return {
-		...(scope ? { scope } : {}),
-		...(limit ? { limit } : {}),
-		...(current ? { current: current.value } : {}),
-		...(maximum ? { maximum: maximum.value } : {}),
-		at,
-	}
-}
-
 /** A failed lookup keeps its kind: a repository without a GitHub or GitLab identity is not missing evidence. */
 const repositoryCache = new Map<string, { checkedAt: number; value?: ReportingRepository; unsupported?: true }>()
 
@@ -106,7 +89,7 @@ function safeEndpoint(value: string): boolean {
 	return url?.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(url?.hostname ?? "")
 }
 
-/** Both transports share the same cancellation, opt-out polling and lease boundary. */
+/** Delivery shares one cancellation, opt-out polling and lease boundary per pass. */
 async function reportingDelivery(
 	agentDir: string,
 	signal: AbortSignal,
@@ -162,162 +145,6 @@ async function reportingDelivery(
 	}
 }
 
-/** Preserve the old route and each frozen body's exact bytes until its original account acknowledges it. */
-export function deliverSnapshots(
-	agentDir: string,
-	cwd: string,
-	signal: AbortSignal,
-	assertLease: () => void,
-	deadline = Date.now() + PASS_MS,
-): Promise<void> {
-	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
-		const state = await freezeSnapshots(agentDir, check)
-		if (!state.enabled) return
-		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
-		/** The configured credential: API key, or the SSO token from auth.json. */
-		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
-		const configuredKey = configuredCredentials().token
-		const configuredEndpoint = platformApiUrl(cwd)
-		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
-			await recordReportingError(
-				agentDir,
-				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
-			)
-		const now = Date.now()
-		// Withdrawals free space, so an account-wide limit only holds snapshots that add claims.
-		const paused = new Set(
-			Object.entries(state.paused ?? {})
-				.filter(([, pause]) => pause.retryAt > now)
-				.map(([account]) => account),
-		)
-
-		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
-		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
-		const due = frozen
-			.filter(
-				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
-			)
-			.sort((a, b) => {
-				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
-				if (priority) return priority
-				const position =
-					(positions.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (positions.get(b.key) ?? Number.MAX_SAFE_INTEGER)
-				if (position) return position
-				if (a.key !== b.key) return a.key < b.key ? -1 : 1
-				const revision = BigInt(a.entry.revision) - BigInt(b.entry.revision)
-				return revision < 0n ? -1 : revision > 0n ? 1 : a.entry.retryAt - b.entry.retryAt
-			})
-		let attempts = 0
-		for (const job of due) {
-			const entry = job.entry
-			const snapshot = entry.pending
-			if (!snapshot) continue
-			if (paused.has(accountKey(entry.account)) && (snapshot.requests.length || snapshot.pullRequests.length)) continue
-			if (combined.aborted || attempts >= 3) break
-			const { token: key, organizationId } = configuredCredentials()
-			const apiUrl = platformApiUrl(cwd)
-			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
-			attempts++
-			let status: number | undefined
-			let retryAfterMs: number | null = null
-			let limit: ServerLimit | undefined
-			let errorMessage = "PR reporting request unavailable"
-			const assertOwnership = () => {
-				assertLease()
-				if (configuredCredentials().token !== key || platformApiUrl(cwd) !== apiUrl)
-					throw new Error("PR reporting credentials changed")
-			}
-			const assertCurrent = () => {
-				assertOwnership()
-				combined.throwIfAborted()
-			}
-
-			const fetchBounded: typeof fetch = async (input, init) => {
-				assertCurrent()
-				const current = await readReportingState(agentDir)
-				assertCurrent()
-				if (!current.enabled || current.entries[job.key]?.held || !frozenSnapshotPending(agentDir, job))
-					throw new Error("PR reporting snapshot changed")
-				const response = await fetch(input, { ...init, redirect: "error", signal: combined })
-				assertCurrent()
-				status = response.status
-				retryAfterMs = parseRetryAfterMs(response)
-				if (!response.ok)
-					errorMessage =
-						response.status === 403
-							? "PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
-							: `PR reporting returned HTTP ${response.status}`
-				// Verify, acknowledgement and error bodies are small; neither response text nor headers enter durable state.
-				const bounded = await boundedResponse(
-					response,
-					RESPONSE_BYTES,
-					combined,
-					"PR reporting response exceeds the size limit",
-				)
-				assertCurrent()
-				return bounded
-			}
-			try {
-				const verified = {
-					apiUrl,
-					...(await verifyApiKey(key, {
-						endpoint: apiUrl,
-						organizationId,
-						fetch: fetchBounded,
-						signal: combined,
-						retry: { maxRetries: 0 },
-					})),
-				}
-				assertCurrent()
-				if (!isWorkAccount(verified) || !sameWorkAccount(entry.account, verified)) {
-					errorMessage = "PR reporting is waiting for the original account"
-					throw new Error(errorMessage)
-				}
-
-				const response = await fetchBounded(
-					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
-					{
-						method: "POST",
-						headers: {
-							Authorization: `Bearer ${key}`,
-							...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
-							"Content-Type": "application/json",
-							Accept: "application/json",
-						},
-						body: job.body,
-					},
-				)
-				assertCurrent()
-				if (response.status === 429) limit = serverLimit(await response.json().catch(() => undefined))
-				if (!response.ok) throw new Error(errorMessage)
-				const ack: SnapshotAck = await response.json()
-				assertCurrent()
-				await acknowledgeFrozenSnapshot(agentDir, job, ack, assertCurrent)
-				trackPRCostMetric({ kind: "delivery", outcome: "success" })
-			} catch {
-				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
-				if (signal.aborted) return
-				try {
-					assertOwnership()
-				} catch {
-					return
-				}
-				if (limit) {
-					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
-				} else
-					await deferFrozenSnapshot(
-						agentDir,
-						job,
-						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-						errorMessage,
-						assertOwnership,
-					)
-			}
-		}
-	})
-}
-
 /** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */
 export function deliverEvents(
 	agentDir: string,
@@ -328,11 +155,13 @@ export function deliverEvents(
 ): Promise<void> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const backend = backendFor(agentDir)
-		for (let attempt = 0; attempt < 3; attempt++) {
+		/** The credential is verified once for the whole pass, not before every batch. */
+		let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
+		let verifiedKey: string | undefined
+		// Keep sending while the pass has time left: one iteration sends one frozen batch.
+		while (Date.now() < deadline - DELIVERY_RESERVE_MS) {
 			check()
-			const due = readOutboxStatus(agentDir).filter(
-				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
-			)
+			const due = readDeliveryStatus(agentDir).filter((status) => (status.retry?.retryAt ?? 0) <= Date.now())
 			if (!due.length) return
 			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
 			const apiUrl = platformApiUrl(cwd)
@@ -356,7 +185,7 @@ export function deliverEvents(
 				if (!response.ok)
 					errorMessage =
 						response.status === 403
-							? "PR reporting is not allowed for this API key (HTTP 403)"
+							? "PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)"
 							: `PR cost event upload returned HTTP ${response.status}`
 				const bounded = await boundedResponse(
 					response,
@@ -375,7 +204,7 @@ export function deliverEvents(
 				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
 			}
 			const resume = backend.getNote("agent", "legacy-snapshot-resume")
-			/** Each waiting account backs off on its own schedule, as each legacy snapshot did. */
+			/** Each waiting account backs off on its own schedule. */
 			const defer = (accounts: typeof due, error: string) =>
 				backend.tx(() => {
 					assertOwnership()
@@ -386,16 +215,19 @@ export function deliverEvents(
 						backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
 					}
 				})
-			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
-			try {
-				verified = await verifyApiKey(key, {
-					endpoint: apiUrl,
-					organizationId,
-					fetch: fetchBounded,
-					signal: combined,
-					retry: { maxRetries: 0 },
-				})
-			} catch {}
+			if (verifiedKey !== key) {
+				verifiedKey = key
+				verified = undefined
+				try {
+					verified = await verifyApiKey(key, {
+						endpoint: apiUrl,
+						organizationId,
+						fetch: fetchBounded,
+						signal: combined,
+						retry: { maxRetries: 0 },
+					})
+				} catch {}
+			}
 			// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
 			assertCurrent()
 			const account = verified && { apiUrl, ...verified }
@@ -412,15 +244,13 @@ export function deliverEvents(
 			const own = due.filter((status) => status.accountKey === accountId)
 			if (!own.length) return
 			let batch: OutboxBatch | undefined
-			const ready = await withDrainedLegacyAccount(
+			const ready = await withReportingConsent(
 				agentDir,
-				account,
 				(fence) => {
 					batch = pendingBatch(agentDir, accountId, fence)
 				},
 				assertCurrent,
 			)
-			if (!ready) defer(own, "PR cost events are waiting for queued snapshots to upload")
 			if (!ready || !batch) return
 			const sent = batch
 			const schedule = deliveryRetry(backend, accountId, sent.id)
@@ -430,15 +260,14 @@ export function deliverEvents(
 			try {
 				let dispatched: Promise<Response> | undefined
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							const current = pendingBatch(agentDir, accountId, fence)
 							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
 								throw new Error("PR cost event batch changed")
 							fence()
-							// Launch under the old-writer lock; await network and body reads after releasing it.
+							// Launch right after the consent check; await network and body reads outside it.
 							dispatched = fetch(
 								`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
 								{
@@ -468,9 +297,8 @@ export function deliverEvents(
 				assertCurrent()
 				let acknowledged = false
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							backend.tx(() => {
 								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
@@ -527,21 +355,20 @@ export async function reconcileReporting(
 	cwd: string,
 	signal: AbortSignal,
 	assertLease: () => void,
+	forceFull = false,
 ): Promise<void> {
-	const state = await freezeSnapshots(agentDir, () => {
-		assertLease()
-		signal.throwIfAborted()
-	})
+	const state = await readReportingState(agentDir)
+	assertLease()
+	signal.throwIfAborted()
 	if (!state.enabled) return
 	try {
-		await captureEvents(agentDir, signal, assertLease)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
+		await captureEvents(agentDir, signal, assertLease, forceFull)
+	} catch (error) {
+		if (!signal.aborted) await recordReportingError(agentDir, captureFailure(error))
 	}
-	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
+	// Batches already queued go out even when this pass could not capture new evidence.
 	if (signal.aborted) return
 	try {
-		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 	} catch {
 		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
@@ -550,28 +377,78 @@ export async function reconcileReporting(
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
 const CHUNK_UNITS = 100
+/** Large groups use a longer local build, but yield and keep the original lease and cancellation. */
+const COOPERATIVE_RECORDS = 1000
+/** Auxiliary evidence alone should not trigger request-only repository preflight. */
+const PREFLIGHT_REQUESTS = 1000
+const GROUP_BUILD_MS = 3 * 60_000
+const GROUP_BUILD_BACKOFF_MS = 5 * MINUTE_MS
+const GROUP_BUILD_BACKOFF_NOTE = "translation-build-backoff-v1:"
+const GROUP_FAILURE_NOTE = "translation-group-failure-v1:"
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
-/** The group translation in progress: units committed while its marked records stay unchanged. */
-const PROGRESS_NOTE = "translation-progress"
+/** Each group's committed units survive later groups running before it resumes. */
+const PROGRESS_NOTE = "translation-progress-v2:"
+/** Next group to try after one used the rest of a pass. */
+const NEXT_GROUP_NOTE = "translation-next-group"
+class CaptureTimeLimit extends Error {}
+class GroupBuildTimeLimit extends CaptureTimeLimit {}
+
+function captureFailure(error: unknown): string {
+	let reason: string
+	if (error instanceof CaptureTimeLimit) reason = "local capture time limit exceeded"
+	else if (error instanceof Error && error.message === "PR reporting is waiting for readable source records")
+		reason = "source records are unreadable"
+	else {
+		const code = object(error) ? error.code : undefined
+		switch (code) {
+			case "EACCES":
+			case "EPERM":
+				reason = "source access denied"
+				break
+			case "ENOSPC":
+				reason = "disk is full"
+				break
+			case "ENOENT":
+				reason = "source changed while reading"
+				break
+			case "SQLITE_BUSY":
+				reason = "ledger is busy"
+				break
+			default:
+				reason = "unexpected capture error"
+		}
+	}
+	return `${CAPTURE_FAILED}: ${reason}`
+}
 
 /**
- * Translates the works whose records changed since their last translation, one connected group at a time, without
- * creating any new legacy snapshot inventory. A pass that runs out of time resumes where it stopped.
+ * Translates the works whose records changed since their last translation into events, one connected group at a
+ * time. A pass that runs out of time resumes where it stopped.
  */
-async function captureEvents(agentDir: string, signal: AbortSignal, assertLease: () => void): Promise<void> {
+async function captureEvents(
+	agentDir: string,
+	signal: AbortSignal,
+	assertLease: () => void,
+	forceFull: boolean,
+): Promise<void> {
 	const deadline = Date.now() + PASS_MS
 	const bounded = AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)])
 	const check = () => {
 		assertLease()
-		bounded.throwIfAborted()
-		if (Date.now() >= deadline) throw new Error("PR reporting pass time limit exceeded")
+		signal.throwIfAborted()
+		if (bounded.aborted || Date.now() >= deadline) throw new CaptureTimeLimit("PR reporting pass time limit exceeded")
 	}
 	check()
 	let historyComplete = true
-	await importWorkRecordsAsync(agentDir, check, () => {
-		historyComplete = false
-	})
+	await importWorkRecordsAsync(
+		agentDir,
+		check,
+		() => {
+			historyComplete = false
+		},
+		true,
+	)
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const backend = backendFor(agentDir)
 	const marked = new Map<string, Map<string, string>>()
@@ -582,21 +459,85 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	if (!marked.size) {
 		// Nothing changed since the last translation; only a failure an earlier pass recorded is out of date.
-		if ((await readReportingState(agentDir)).error === CAPTURE_FAILED) await recordReportingError(agentDir, undefined)
+		if ((await readReportingState(agentDir)).error?.startsWith(CAPTURE_FAILED))
+			await recordReportingError(agentDir, undefined)
 		return
 	}
 	const producer = await reportingProducer(agentDir, check)
 	let waiting = false
-	for (const works of changedWorkGroups(backend, new Set(marked.keys()))) {
-		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return
+	const groups = changedWorkGroups(backend, new Set(marked.keys()))
+	const next = backend.getNote("agent", NEXT_GROUP_NOTE)
+	const start = next
+		? Math.max(
+				0,
+				groups.findIndex((group) => group[0] >= next),
+			)
+		: 0
+	const ordered = [...groups.slice(start), ...groups.slice(0, start)]
+	for (const [index, works] of ordered.entries()) {
+		if (Date.now() >= deadline - CHUNK_RESERVE_MS) {
+			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, works[0])
+			return
+		}
+		const group = groupKey(works)
+		const backoffName = `${GROUP_BUILD_BACKOFF_NOTE}${group}`
+		const failureName = `${GROUP_FAILURE_NOTE}${group}`
+		const backoff = backend.getNote("agent", backoffName)
+		if (backoff && Date.now() < Number(backoff)) {
+			waiting = true
+			continue
+		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
-		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
-		if (translated === undefined) return
+		let translated: boolean | undefined
+		let buildTimedOut = false
+		try {
+			translated = await translateGroup(
+				agentDir,
+				works,
+				changed,
+				producer,
+				deadline,
+				bounded,
+				check,
+				signal,
+				assertLease,
+				forceFull,
+			)
+		} catch (error) {
+			if (error instanceof GroupBuildTimeLimit) {
+				backend.putNote("agent", backoffName, String(Date.now() + GROUP_BUILD_BACKOFF_MS))
+				buildTimedOut = true
+				translated = true
+			} else if (!(error instanceof CaptureTimeLimit)) {
+				assertLease()
+				signal.throwIfAborted()
+				backend.tx(() => {
+					assertLease()
+					backend.putNote("agent", backoffName, String(Date.now() + GROUP_BUILD_BACKOFF_MS))
+					backend.putNote("agent", failureName, captureFailure(error))
+					assertLease()
+				})
+				buildTimedOut = true
+				translated = true
+			}
+		}
+		if (translated !== undefined && !buildTimedOut) {
+			if (backoff) backend.deleteNote("agent", backoffName)
+			backend.deleteNote("agent", failureName)
+		}
+		if (translated === undefined) {
+			if (ordered.length > 1) backend.putNote("agent", NEXT_GROUP_NOTE, ordered[(index + 1) % ordered.length][0])
+			return
+		}
 		waiting ||= translated
 	}
+	if (next) backend.deleteNote("agent", NEXT_GROUP_NOTE)
+	const failure = groups
+		.map((works) => backend.getNote("agent", `${GROUP_FAILURE_NOTE}${groupKey(works)}`))
+		.find((reason) => reason !== undefined)
 	await recordReportingError(
 		agentDir,
-		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
+		failure ?? (waiting ? "Some PR cost events are waiting for complete original evidence" : undefined),
 	)
 }
 
@@ -642,6 +583,19 @@ function changedWorkGroups(backend: RecordBackend, changed: ReadonlySet<string>)
 	return [...groups.values()].filter((group) => group.some((workId) => changed.has(workId)))
 }
 
+function groupExceedsCount(
+	works: readonly string[],
+	threshold: number,
+	count: (workId: string, limit: number) => number,
+): boolean {
+	let remaining = threshold
+	for (const workId of works) {
+		remaining -= count(workId, remaining + 1)
+		if (remaining < 0) return true
+	}
+	return false
+}
+
 /**
  * Rebuilds one group from all of its records and observes the units its changed records touch, in bounded
  * transactions. Returns whether any touched request still waits for evidence, or undefined when time ran out.
@@ -654,50 +608,145 @@ async function translateGroup(
 	deadline: number,
 	bounded: AbortSignal,
 	check: () => void,
+	signal: AbortSignal,
+	assertLease: () => void,
+	forceFull = false,
 ): Promise<boolean | undefined> {
 	const backend = backendFor(agentDir)
-	const stored = works.flatMap((workId) => backend.readRecords({ workId }, check))
-	const records = stored.map((row) => {
-		check()
-		return JSON.parse(row.body) as WorkRecord
-	})
-	const { report } = readWorkCostReport(agentDir, records)
-	const { repositories, settled } = await repositoryIdentities(agentDir, records, report, deadline, bounded, check)
-	// A commit or work link can move any request of the group; other records touch only their own request.
-	const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
-	const touched = structural
-		? undefined
-		: {
-				requests: new Set(
-					records.flatMap((row, index) =>
-						changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
-					),
-				),
-				records: new Set(changed.keys()),
-			}
-	const built = buildEvents(
-		stored,
+	const fast = forceFull ? undefined : readChangedGroup(backend, works, producer, changed, check)
+	const cooperative =
+		fast !== undefined ||
+		groupExceedsCount(works, COOPERATIVE_RECORDS, (workId, limit) => backend.recordCount(workId, limit))
+	const groupDeadline = cooperative ? Date.now() + GROUP_BUILD_MS : deadline
+	const groupCheck = () => {
+		if (!cooperative) return check()
+		assertLease()
+		signal.throwIfAborted()
+		if (Date.now() >= groupDeadline) throw new GroupBuildTimeLimit("PR reporting group build time limit exceeded")
+	}
+	const through = fast?.through ?? backend.recordWatermark()
+	if (
+		cooperative &&
+		!fast &&
+		groupExceedsCount(works, PREFLIGHT_REQUESTS, (workId, limit) => backend.requestCount(workId, limit))
+	) {
+		const requests = await readGroupRequestRecordsAsync(agentDir, works, groupCheck)
+		const lookup = await repositoryIdentities(
+			agentDir,
+			requests,
+			undefined,
+			Date.now() + PASS_MS,
+			AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)]),
+			groupCheck,
+		)
+		if (!lookup.settled) return true
+	}
+	const stored = fast
+		? works.flatMap((workId) => [
+				...fast.cache.context.filter((row) => row.workId === workId),
+				...fast.stored.filter((row) => row.workId === workId),
+			])
+		: cooperative
+			? await readGroupStoredRecordsAsync(agentDir, works, groupCheck)
+			: works.flatMap((workId) => backend.readRecords({ workId }, check))
+	const records = fast
+		? stored.map((row) => JSON.parse(row.body) as WorkRecord)
+		: cooperative
+			? await runCooperatively(
+					mapInChunks(stored, 128, (row) => JSON.parse(row.body) as WorkRecord),
+					groupCheck,
+				)
+			: stored.map((row) => {
+					check()
+					return JSON.parse(row.body) as WorkRecord
+				})
+	const { report } = cooperative
+		? await runCooperatively(readWorkCostReportSteps(agentDir, records), groupCheck)
+		: readWorkCostReport(agentDir, records)
+	if (fast)
+		for (const [requestId, prior] of fast.replayed)
+			if (JSON.stringify(report.requests.find((row) => row.requestId === requestId)) !== JSON.stringify(prior.result))
+				return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
+	const { repositories, settled } = await repositoryIdentities(
+		agentDir,
+		records,
 		report,
-		repositories,
-		producer,
-		check,
-		(account, entity) => effectiveClaim(backend, account, entity),
-		touched,
+		cooperative ? Date.now() + PASS_MS : deadline,
+		cooperative ? AbortSignal.any([signal, AbortSignal.timeout(PASS_MS)]) : bounded,
+		groupCheck,
 	)
-	check()
+	if (fast && !sameCachedRepositories(fast.cache, repositories))
+		return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
+	// The complete build keeps shared facts and the group projection; touched only narrows the cached path.
+	const touchedRequests = new Set(
+		records.flatMap((row, index) =>
+			changed.has(stored[index].recordHash) && typeof row.requestId === "string" ? [row.requestId] : [],
+		),
+	)
+	const touched = fast ? { requests: touchedRequests, records: new Set(changed.keys()) } : undefined
+	const claim = (account: string, entity: string) => effectiveClaim(backend, account, entity)
+	const partial = cooperative
+		? await runCooperatively(
+				buildEventsSteps(stored, report, repositories, producer, groupCheck, claim, touched, records),
+				groupCheck,
+			)
+		: buildEvents(stored, report, repositories, producer, check, claim, touched)
+	if (fast && partial.unresolved.some(({ requestId }) => fast.replayed.has(requestId)))
+		return translateGroup(agentDir, works, changed, producer, deadline, bounded, check, signal, assertLease, true)
+	const built = fast ? mergeSharedFacts(fast.cache, partial) : partial
+	groupCheck()
+	const cache = settled
+		? fast
+			? advanceGroupCache(backend, fast.cache, through, fast.rows, repositories, built)
+			: prepareGroupCache(backend, works, producer, through, stored, records, repositories, built)
+		: undefined
+	if (cache && !fast) {
+		const index = requestIndexEntries(stored, records, report, { kind: "complete" })
+		for (let offset = 0; offset < index.length; offset += 100) {
+			groupCheck()
+			backend.tx(() => {
+				for (const entry of index.slice(offset, offset + 100)) backend.putNote(entry.owner, entry.name, entry.body)
+			})
+			await setImmediate()
+		}
+	}
 	const facts = new Map(
 		built.accounts.map((group) => [
 			accountKey(group.account),
 			new Map(group.facts.map((fact) => [fact.entityId, fact])),
 		]),
 	)
+	// A cold rebuild can prune response/tool updates, but a new request may give older work or plan rows an owner.
+	// A structural change, invalidated cache or forced fallback can alter old allocations, so those observe all units.
+	// A new billing source can also invalidate one request's bill and reprice another request sharing that bill.
+	const pruneUnchanged =
+		!fast &&
+		!forceFull &&
+		!backend.hasNote("agent", groupKey(works)) &&
+		!records.some(
+			(row, index) =>
+				row.type === "request_response" && row.billingSource !== undefined && changed.has(stored[index].recordHash),
+		) &&
+		[...changed.values()].every((type) => type === "request_response" || type === "tool_execution")
+	const units = fast
+		? observationUnits(fast.cache, built)
+		: pruneUnchanged
+			? built.units.flatMap((unit) => {
+					if (unit.requestId === undefined)
+						return unit.recordHashes.some((recordHash) => changed.has(recordHash)) ? [unit] : []
+					if (touchedRequests.has(unit.requestId)) return [unit]
+					const shared = unit.entities.slice(1)
+					return shared.length ? [{ ...unit, entities: shared }] : []
+				})
+			: built.units
 	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
 	const progress = {
 		group: hash(works),
 		markers: changed.size,
-		plan: hash(built.units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+		plan: hash(units.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
-	const saved: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+	const progressNote = `${PROGRESS_NOTE}${progress.group}`
+	const saved: unknown = JSON.parse(backend.getNote("agent", progressNote) ?? "null")
 	let done =
 		object(saved) &&
 		saved.group === progress.group &&
@@ -707,9 +756,12 @@ async function translateGroup(
 			? Number(saved.units)
 			: 0
 	const observed = new Set<string>()
-	while (done < built.units.length) {
-		if (Date.now() >= deadline - CHUNK_RESERVE_MS) return undefined
-		const chunk = built.units.slice(done, done + CHUNK_UNITS)
+	while (done < units.length) {
+		if (Date.now() >= groupDeadline - CHUNK_RESERVE_MS) {
+			if (cooperative && done === 0) throw new GroupBuildTimeLimit("PR reporting group build time limit exceeded")
+			return undefined
+		}
+		const chunk = units.slice(done, done + CHUNK_UNITS)
 		const byAccount = new Map<string, Fact[]>()
 		for (const unit of chunk)
 			for (const entity of unit.entities) {
@@ -723,17 +775,60 @@ async function translateGroup(
 			}
 		done += chunk.length
 		backend.tx(() => {
-			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], check)
-			backend.putNote("agent", PROGRESS_NOTE, JSON.stringify({ ...progress, units: done }))
+			if (fast && done === chunk.length && !verifySharedHeads(backend, fast.cache))
+				throw new Error("PR reporting shared facts changed during incremental capture")
+			for (const [account, list] of byAccount) observeEvents(agentDir, account, list, [], groupCheck, "set-aside")
+			if (done === units.length) {
+				// A repository lookup that failed retries the group with a later pass.
+				if (settled) {
+					if (cache) {
+						if (fast)
+							for (const entry of requestIndexEntries(
+								fast.stored,
+								fast.rows,
+								report,
+								{ kind: "partial", backend },
+								fast.replayed,
+							))
+								backend.putNote(entry.owner, entry.name, entry.body)
+						saveGroupCache(backend, {
+							...cache,
+							shared: cache.shared.map((entry) => {
+								const head = backend.latestOutboxEvent(entry.account, entry.entityId)
+								return { ...entry, headId: head?.id ?? null, headHash: head?.hash ?? null }
+							}),
+						})
+					} else backend.deleteNote("agent", groupKey(works))
+				}
+				backend.deleteNote("agent", progressNote)
+			} else backend.putNote("agent", progressNote, JSON.stringify({ ...progress, units: done }))
 		})
 		await setImmediate()
 	}
-	backend.tx(() => {
-		check()
-		// A repository lookup that failed or ran out of time retries the group with a later pass.
-		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
-		backend.deleteNote("agent", PROGRESS_NOTE)
-	})
+	if (units.length === 0)
+		backend.tx(() => {
+			groupCheck()
+			if (settled) {
+				if (cache) {
+					if (fast)
+						for (const entry of requestIndexEntries(
+							fast.stored,
+							fast.rows,
+							report,
+							{ kind: "partial", backend },
+							fast.replayed,
+						))
+							backend.putNote(entry.owner, entry.name, entry.body)
+					saveGroupCache(backend, cache)
+				} else backend.deleteNote("agent", groupKey(works))
+			}
+			backend.deleteNote("agent", progressNote)
+		})
+	if (settled)
+		await clearTranslatedMarkers(backend, changed.keys(), () => {
+			assertLease()
+			signal.throwIfAborted()
+		})
 	return built.unresolved.length > 0
 }
 
@@ -744,7 +839,7 @@ async function translateGroup(
 async function repositoryIdentities(
 	agentDir: string,
 	records: WorkRecord[],
-	report: PullRequestCostReport,
+	report: PullRequestCostReport | undefined,
 	deadline: number,
 	bounded: AbortSignal,
 	check: () => void,
@@ -753,15 +848,21 @@ async function repositoryIdentities(
 	const needed = new Set<string>()
 	const requestRepositories = new Map<string, Set<string>>()
 	for (const row of records)
-		if (row.type === "request" && typeof row.requestId === "string" && isWorkScope(row.scope)) {
+		if (row.type === "request" && typeof row.requestId === "string" && row.requestId && isWorkScope(row.scope)) {
 			const values = requestRepositories.get(row.requestId) ?? new Set<string>()
 			values.add(row.scope.repository)
 			requestRepositories.set(row.requestId, values)
 		}
-	for (const request of report.requests) {
-		check()
-		for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
-	}
+	if (report)
+		for (const request of report.requests) {
+			check()
+			for (const repository of requestRepositories.get(request.requestId) ?? []) needed.add(repository)
+		}
+	else
+		for (const values of requestRepositories.values()) {
+			check()
+			for (const repository of values) needed.add(repository)
+		}
 	for (const [key, cached] of repositoryCache)
 		if (Date.now() - cached.checkedAt >= REPOSITORY_CACHE_MS) repositoryCache.delete(key)
 	const cacheKey = (repository: string) => JSON.stringify([agentDir, repository])

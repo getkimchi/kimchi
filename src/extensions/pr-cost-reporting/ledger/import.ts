@@ -1,6 +1,7 @@
 import { createHash, type Hash } from "node:crypto"
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { setImmediate } from "node:timers/promises"
 import {
 	journalParser,
 	object,
@@ -43,6 +44,7 @@ const COVERAGE_NOTES = "journal-coverage"
 const TAIL_NOTES = "journal-tail"
 const WINDOW_BYTES = 512 * 1024
 const READ_BYTES = 64 * 1024
+const PREFIX_CHUNK_BYTES = 8 * 1024 * 1024
 
 function savedProblem(value: unknown, path: string): value is WorkRecordProblem {
 	return (
@@ -140,10 +142,98 @@ export function completeLines(file: Buffer, from: number, to: number): Line[] {
 
 /** Coarse filesystem clocks can stamp a write a little before the cursor written after it. */
 const MTIME_SLACK_MS = 2000
-/** The prefix hash behind each cursor this process wrote mid-file, so its next window skips rereading the prefix. */
-const continued = new Map<string, { boundaryHash: string; hash: Hash; lines: number }>()
+/** Committed cursor state kept across both window boundaries and completed appends. */
+const continued = new Map<
+	string,
+	{
+		dev: number
+		ino: number
+		size: number
+		offset: number
+		mtimeMs: number
+		ctimeMs: number
+		boundaryHash: string
+		hash: Hash
+		lines: number
+	}
+>()
 /** The journal each agent directory's last timed slice stopped at; the next slice starts there instead of rewalking. */
 const stopped = new Map<string, string>()
+/** Capture-only preflight: verify every old byte before the synchronous importer can reuse its running hash. */
+async function verifyCapturePrefix(
+	path: string,
+	cursor: JournalCursor,
+	replay: boolean,
+	checkBudget?: () => void,
+): Promise<void> {
+	if (!cursor.offset) return
+	checkBudget?.()
+	const fd = openSync(path, "r")
+	try {
+		const before = fstatSync(fd)
+		if (before.dev !== cursor.dev || before.ino !== cursor.ino || before.size < cursor.offset) return
+		const known = continued.get(path)
+		const samePrefix =
+			known?.dev === cursor.dev &&
+			known.ino === cursor.ino &&
+			known.offset === cursor.offset &&
+			known.boundaryHash === cursor.boundaryHash
+		const sameStat =
+			samePrefix && known.size === before.size && known.mtimeMs === before.mtimeMs && known.ctimeMs === before.ctimeMs
+		if (
+			sameStat ||
+			(!replay &&
+				before.size === cursor.offset &&
+				before.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS &&
+				before.ctimeMs < cursor.updatedAt - MTIME_SLACK_MS)
+		)
+			return
+		const prefix = createHash("sha256")
+		let lines = samePrefix ? known.lines : 0
+		const buffer = Buffer.allocUnsafe(Math.min(PREFIX_CHUNK_BYTES, cursor.offset))
+		for (let position = 0; position < cursor.offset; ) {
+			checkBudget?.()
+			const length = Math.min(buffer.length, cursor.offset - position)
+			let read = 0
+			while (read < length) {
+				checkBudget?.()
+				const count = readSync(fd, buffer, read, length - read, position + read)
+				if (!count) throw new Error("Legacy journal changed during prefix verification")
+				read += count
+			}
+			const chunk = buffer.subarray(0, length)
+			prefix.update(chunk)
+			if (!samePrefix) for (let lf = chunk.indexOf(0x0a); lf !== -1; lf = chunk.indexOf(0x0a, lf + 1)) lines++
+			position += length
+			checkBudget?.()
+			await setImmediate()
+		}
+		const after = fstatSync(fd)
+		if (
+			after.dev !== before.dev ||
+			after.ino !== before.ino ||
+			after.size !== before.size ||
+			after.mtimeMs !== before.mtimeMs ||
+			after.ctimeMs !== before.ctimeMs
+		) {
+			continued.delete(path)
+			return
+		}
+		continued.set(path, {
+			dev: after.dev,
+			ino: after.ino,
+			size: after.size,
+			offset: cursor.offset,
+			mtimeMs: after.mtimeMs,
+			ctimeMs: after.ctimeMs,
+			boundaryHash: cursor.boundaryHash,
+			hash: prefix,
+			lines,
+		})
+	} finally {
+		closeSync(fd)
+	}
+}
 
 /** Prefix verification and body reads both yield to the synchronous deadline between fixed-size reads. */
 function prepareJournal(
@@ -151,16 +241,18 @@ function prepareJournal(
 	cursor: JournalCursor | undefined,
 	replay: boolean,
 	maxBytes: number,
+	verifiedPrefix: boolean,
 	checkBudget?: () => void,
 ) {
 	checkBudget?.()
 	// A journal last modified well before its cursor was written still holds the prefix that cursor hashed.
-	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number }) =>
+	const untouched = (stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }) =>
 		!replay &&
 		cursor?.dev === stat.dev &&
 		cursor.ino === stat.ino &&
 		stat.size >= cursor.offset &&
-		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS
+		stat.mtimeMs < cursor.updatedAt - MTIME_SLACK_MS &&
+		stat.ctimeMs < cursor.updatedAt - MTIME_SLACK_MS
 	const seen = statSync(path)
 	if (untouched(seen) && seen.size === cursor?.offset) return undefined
 	const fd = openSync(path, "r")
@@ -169,12 +261,18 @@ function prepareJournal(
 		const { dev, ino, size } = stat
 		const buffer = Buffer.allocUnsafe(READ_BYTES)
 		let prefix: Hash = createHash("sha256")
-		let lineOffset = 0
-		const known = cursor && untouched(stat) ? continued.get(path) : undefined
-		if (cursor && known?.boundaryHash === cursor.boundaryHash) {
+		const known = cursor && continued.get(path)
+		const samePrefix =
+			cursor &&
+			known?.boundaryHash === cursor.boundaryHash &&
+			known.dev === dev &&
+			known.ino === ino &&
+			known.offset === cursor.offset
+		let lineOffset = samePrefix ? known.lines : 0
+		if (samePrefix && known.size === size && stat.mtimeMs === known.mtimeMs && stat.ctimeMs === known.ctimeMs) {
 			prefix = known.hash.copy()
-			lineOffset = known.lines
 		} else if (cursor && cursor.dev === dev && cursor.ino === ino && size >= cursor.offset) {
+			if (verifiedPrefix && cursor.offset > 0) return "pending" as const
 			let position = 0
 			while (position < cursor.offset) {
 				checkBudget?.()
@@ -183,7 +281,8 @@ function prepareJournal(
 				if (!count) throw new Error("Legacy journal changed during prefix verification")
 				const chunk = buffer.subarray(0, count)
 				prefix.update(chunk)
-				for (const byte of chunk) if (byte === 0x0a) lineOffset++
+				// Recheck the full prefix hash on append, but its verified line count cannot change without a hash mismatch.
+				if (!samePrefix) for (let lf = chunk.indexOf(0x0a); lf !== -1; lf = chunk.indexOf(0x0a, lf + 1)) lineOffset++
 				position += count
 			}
 		}
@@ -214,7 +313,17 @@ function prepareJournal(
 			bytes += count
 		}
 		checkBudget?.()
-		return { dev, ino, size, mtimeMs: stat.mtimeMs, decision, prefix, lineOffset, data: Buffer.concat(chunks, bytes) }
+		return {
+			dev,
+			ino,
+			size,
+			mtimeMs: stat.mtimeMs,
+			ctimeMs: stat.ctimeMs,
+			decision,
+			prefix,
+			lineOffset,
+			data: Buffer.concat(chunks, bytes),
+		}
 	} finally {
 		closeSync(fd)
 	}
@@ -236,7 +345,13 @@ function syncWorkJournals(agentDir: string): string[] {
 function importJournalFiles(
 	agentDir: string,
 	journals: string[],
-	{ maxBytes = WINDOW_BYTES, onRecordProblem: onProblem, checkBudget, until }: ImportOptions,
+	{
+		maxBytes = WINDOW_BYTES,
+		onRecordProblem: onProblem,
+		checkBudget,
+		until,
+		verifyCapturePrefix = false,
+	}: ImportOptions,
 	/** Report cursors of journals missing from this listing; only a full listing can tell. */
 	sweep: boolean,
 ): ImportResult {
@@ -254,6 +369,7 @@ function importJournalFiles(
 				cursor,
 				!!cursor && backend.getNote(COVERAGE_NOTES, path) === undefined,
 				maxBytes,
+				verifyCapturePrefix,
 				checkBudget,
 			)
 		} catch (error) {
@@ -261,11 +377,28 @@ function importJournalFiles(
 			if (cursor) forgetJournal(agentDir, backend, path, result)
 			continue
 		}
+		if (prepared === "pending") {
+			result.pending = true
+			stopped.set(agentDir, path)
+			break
+		}
 		if (!prepared) continue
-		const { dev, ino, size, mtimeMs, decision, prefix, lineOffset, data } = prepared
+		const { dev, ino, size, mtimeMs, ctimeMs, decision, prefix, lineOffset, data } = prepared
 		if (decision.mode === "mutation") result.anomalies.push({ path, code: "journal-mutation" })
 		const lines = completeLines(data, 0, data.length)
 		if (!lines.length) {
+			if (cursor && decision.mode === "clean-append")
+				continued.set(path, {
+					dev,
+					ino,
+					size,
+					offset: cursor.offset,
+					mtimeMs,
+					ctimeMs,
+					boundaryHash: cursor.boundaryHash,
+					hash: prefix.copy(),
+					lines: lineOffset,
+				})
 			if (decision.mode === "mutation") {
 				checkBudget?.()
 				backend.tx(() => saveCoverage(backend, path, [{ kind: "invalid", path, line: 1 }]))
@@ -274,7 +407,7 @@ function importJournalFiles(
 			if (decision.offset < size)
 				result.files.push({ path, mode: decision.mode, generation: decision.generation, imported: 0, skipped: 0 })
 			// A verified journal that settled since its cursor skips verification from now on.
-			else if (cursor && decision.mode === "clean-append" && Date.now() - mtimeMs > MTIME_SLACK_MS)
+			else if (cursor && decision.mode === "clean-append" && Date.now() - Math.max(mtimeMs, ctimeMs) > MTIME_SLACK_MS)
 				backend.putJournalCursor({ ...cursor, updatedAt: Date.now() })
 			continue
 		}
@@ -337,8 +470,17 @@ function importJournalFiles(
 				updatedAt: Date.now(),
 			})
 		})
-		if (consumedEnd < size) continued.set(path, { boundaryHash, hash, lines: lineOffset + lines.length })
-		else continued.delete(path)
+		continued.set(path, {
+			dev,
+			ino,
+			size,
+			offset: consumedEnd,
+			mtimeMs,
+			ctimeMs,
+			boundaryHash,
+			hash,
+			lines: lineOffset + lines.length,
+		})
 		if (decision.mode === "mutation") diagnostic(agentDir, "journal-mutation")
 		if (decision.offset + data.length < size) result.pending = true
 		result.imported += imported
@@ -391,6 +533,8 @@ interface ImportOptions {
 	maxBytes?: number
 	onRecordProblem?: (problem: WorkRecordProblem) => void
 	checkBudget?: () => void
+	/** Only background capture verifies the old prefix before reusing a process-local running hash. */
+	verifyCapturePrefix?: boolean
 	/** After a journal that imported something, stop once this time has passed; the result is then pending. */
 	until?: number
 }
@@ -399,7 +543,36 @@ interface ImportOptions {
 export const IMPORT_SLICE_MS = 50
 
 export async function importJournals(agentDir: string, options: ImportOptions = {}): Promise<ImportResult> {
-	return importJournalFiles(agentDir, await workJournals(agentDir), options, true)
+	const journals = await workJournals(agentDir)
+	if (options.verifyCapturePrefix) {
+		const backend = backendFor(agentDir)
+		for (const path of journals) {
+			options.checkBudget?.()
+			const cursor = backend.getJournalCursor(path)
+			if (!cursor) continue
+			const replay = backend.getNote(COVERAGE_NOTES, path) === undefined
+			try {
+				await verifyCapturePrefix(path, cursor, replay, options.checkBudget)
+			} catch (error) {
+				if (!object(error) || error.code !== "ENOENT") throw error
+			}
+		}
+	}
+	const result = importJournalFiles(agentDir, journals, options, true)
+	if (options.verifyCapturePrefix) {
+		const backend = backendFor(agentDir)
+		for (const file of result.files) {
+			options.checkBudget?.()
+			const cursor = backend.getJournalCursor(file.path)
+			if (cursor && file.mode !== "mutation")
+				try {
+					await verifyCapturePrefix(file.path, cursor, false, options.checkBudget)
+				} catch (error) {
+					if (!object(error) || error.code !== "ENOENT") throw error
+				}
+		}
+	}
+	return result
 }
 
 /** One synchronous slice over every journal; true while more input remains for a later slice. */

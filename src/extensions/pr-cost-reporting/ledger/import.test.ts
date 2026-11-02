@@ -437,6 +437,261 @@ describe("import loop over the memory backend", () => {
 		reads.mockRestore()
 	})
 
+	it("checks the prefix once per append and not again on an unchanged pass", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		while ((await importJournals(dir)).pending) {}
+		const reads = vi.spyOn(fs, "readSync")
+		for (const id of ["req-1", "req-2"]) {
+			reads.mockClear()
+			appendFileSync(file, line(request(id)))
+			const result = await importJournals(dir)
+			expect(result.imported).toBe(1)
+			expect(reads.mock.calls.filter((call) => call.at(4) === 0)).toHaveLength(1)
+			reads.mockClear()
+			expect((await importJournals(dir)).imported).toBe(0)
+			expect(reads).not.toHaveBeenCalled()
+		}
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual([undefined, "req-1", "req-2"])
+		reads.mockRestore()
+	})
+
+	it("skips settled capture journals without a process-local prefix cache", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const body = Buffer.from(`${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		writeFileSync(file, body)
+		const settled = new Date(Date.now() - 60_000)
+		utimesSync(file, settled, settled)
+		const stat = fs.statSync(file)
+		backend.putJournalCursor({
+			path: file,
+			dev: stat.dev,
+			ino: stat.ino,
+			generation: 1,
+			offset: body.length,
+			boundaryHash: boundaryHashOf(body, body.length),
+			updatedAt: Date.now() + 10_000,
+		})
+		backend.putNote("journal-coverage", file, "[]")
+		const reads = vi.spyOn(fs, "readSync")
+		try {
+			expect((await importJournals(dir, { verifyCapturePrefix: true })).files).toEqual([])
+			expect(reads).not.toHaveBeenCalled()
+		} finally {
+			reads.mockRestore()
+		}
+	})
+
+	it("keeps an unchanged cursor stable until both modification and change times settle", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()))
+		const past = new Date(Date.now() - 60_000)
+		utimesSync(file, past, past)
+		expect((await importJournals(dir)).imported).toBe(1)
+		const cursor = backend.getJournalCursor(file)
+		if (!cursor) throw new Error("Expected journal cursor")
+		const clock = vi.spyOn(Date, "now").mockReturnValue(cursor.updatedAt + 100)
+		try {
+			expect((await importJournals(dir)).files).toEqual([])
+			expect(backend.getJournalCursor(file)).toEqual(cursor)
+		} finally {
+			clock.mockRestore()
+		}
+	})
+
+	it("ignores a journal removed after its cursor commits during capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, line(work()))
+		let removed = false
+		const result = await importJournals(dir, {
+			verifyCapturePrefix: true,
+			checkBudget: () => {
+				if (removed || !backend.getJournalCursor(file)?.offset) return
+				unlinkSync(file)
+				removed = true
+			},
+		})
+		expect(removed).toBe(true)
+		expect(result.imported).toBe(1)
+		expect(readRecords(dir)).toHaveLength(1)
+		expect((await importJournals(dir)).anomalies).toEqual([{ path: file, code: "journal-removed" }])
+	})
+
+	it("hashes the old capture prefix only once per append", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		writeFileSync(file, `${" ".repeat(2 * 1024 * 1024)}\n${line(work())}`)
+		while ((await importJournals(dir)).pending) {}
+		await importJournals(dir, { verifyCapturePrefix: true })
+		appendFileSync(file, line(request("req-1")))
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
+		const update = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update")
+		try {
+			appendFileSync(file, line(request("req-2")))
+			expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
+			expect(update.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.length >= 1024 * 1024)).toHaveLength(
+				1,
+			)
+		} finally {
+			update.mockRestore()
+		}
+	})
+
+	it("verifies capture-only appends with serial SHA-256 and rejects same-inode prefix rewrites", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = `${" ".repeat(2 * 1024 * 1024)}\n${line(request("req-1"))}`
+		writeFileSync(file, original)
+		while ((await importJournals(dir)).pending) {}
+		const digest = vi.spyOn(crypto.subtle, "digest")
+		try {
+			await importJournals(dir, { verifyCapturePrefix: true })
+			appendFileSync(file, line(request("req-2")))
+			const appended = await importJournals(dir, { verifyCapturePrefix: true })
+			expect(appended.imported).toBe(1)
+			expect(digest).not.toHaveBeenCalled()
+			writeFileSync(file, original.replace("req-1", "req-X") + line(request("req-3")))
+			const changedTime = new Date(Date.now() + 10_000)
+			utimesSync(file, changedTime, changedTime)
+			const hashUpdate = vi.spyOn(Object.getPrototypeOf(createHash("sha256")), "update")
+			let rewritten: Awaited<ReturnType<typeof importJournals>>
+			try {
+				rewritten = await importJournals(dir, { verifyCapturePrefix: true })
+				expect(
+					hashUpdate.mock.calls.filter(([chunk]) => Buffer.isBuffer(chunk) && chunk.byteLength === 64 * 1024),
+				).toHaveLength(0)
+			} finally {
+				hashUpdate.mockRestore()
+			}
+			expect(rewritten.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+			while (rewritten.pending) rewritten = await importJournals(dir, { verifyCapturePrefix: true })
+			expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-2", "req-X", "req-3"])
+		} finally {
+			digest.mockRestore()
+		}
+	})
+
+	it("defers a rewrite between capture prefix verification and import", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
+		const getCursor = backend.getJournalCursor.bind(backend)
+		let reads = 0
+		backend.getJournalCursor = (path) => {
+			const cursor = getCursor(path)
+			if (++reads === 2) {
+				writeFileSync(file, original.replace("req-1", "req-X"))
+				const changedTime = new Date(Date.now() + 10_000)
+				utimesSync(file, changedTime, changedTime)
+			}
+			return cursor
+		}
+		let pending: Awaited<ReturnType<typeof importJournals>>
+		try {
+			pending = await importJournals(dir, { verifyCapturePrefix: true })
+		} finally {
+			backend.getJournalCursor = getCursor
+		}
+		expect(pending.pending).toBe(true)
+		expect(pending.imported).toBe(0)
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1"])
+		let replayed = await importJournals(dir, { verifyCapturePrefix: true })
+		while (replayed.pending) replayed = await importJournals(dir, { verifyCapturePrefix: true })
+		expect(replayed.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X"])
+	})
+
+	it("detects a same-size capture rewrite even when its old mtime is restored", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(request("req-1"))
+		const rewritten = original.replace("req-1", "req-X")
+		expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
+		writeFileSync(file, original)
+		expect((await importJournals(dir, { verifyCapturePrefix: true })).imported).toBe(1)
+		const cursor = backend.getJournalCursor(file)
+		if (!cursor) throw new Error("Expected journal cursor")
+		backend.putJournalCursor({ ...cursor, updatedAt: Date.now() - 10_000 })
+		writeFileSync(file, rewritten)
+		expect(fs.statSync(file).ino).toBe(cursor.ino)
+		const restored = new Date(Date.now() - 60_000)
+		utimesSync(file, restored, restored)
+		let result = await importJournals(dir, { verifyCapturePrefix: true })
+		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		while (result.pending) result = await importJournals(dir, { verifyCapturePrefix: true })
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual(["req-1", "req-X"])
+	})
+
+	it("reuses verified prefix line counts after an idle pass without shifting diagnostics", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(work()) + line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir)).imported).toBe(2)
+		const changedTime = new Date(Date.now() + 10_000)
+		utimesSync(file, changedTime, changedTime)
+		expect((await importJournals(dir)).files).toEqual([])
+		const scan = vi.spyOn(Buffer.prototype, "indexOf")
+		try {
+			appendFileSync(file, "not json\n")
+			const result = await importJournals(dir)
+			expect(result.problems).toMatchObject([{ kind: "invalid", path: file, line: 3 }])
+			const prefixScans = scan.mock.calls.filter(
+				([needle], index) =>
+					needle === 0x0a && (scan.mock.contexts[index] as Buffer).length === Buffer.byteLength(original),
+			)
+			expect(prefixScans).toHaveLength(0)
+		} finally {
+			scan.mockRestore()
+		}
+	})
+
+	it("detects a consumed-prefix rewrite even when a new record is appended", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const file = join(journal(dir), "parent.jsonl")
+		const original = line(work()) + line(request("req-1"))
+		writeFileSync(file, original)
+		expect((await importJournals(dir)).imported).toBe(2)
+		const rewritten = line(work()) + line(request("req-2"))
+		expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
+		writeFileSync(file, rewritten + line(request("req-3")))
+		const result = await importJournals(dir)
+		expect(result.anomalies).toEqual([{ path: file, code: "journal-mutation" }])
+		expect(result.files[0]).toMatchObject({ mode: "mutation", generation: 2, imported: 2 })
+		expect(readRecords(dir).map((row) => row.requestId)).toEqual([undefined, "req-1", "req-2", "req-3"])
+	})
+
 	it("starts each timed slice at the journal where the last one stopped", async () => {
 		const dir = agentDir()
 		dirs.push(dir)

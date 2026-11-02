@@ -5,6 +5,93 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 
+it.each(["memory", "sqlite"])("reuses a verified claim projection and rebuilds after a foreign head or conflict (%s)", {
+	timeout: 30_000,
+}, (mode) => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-claim-projection-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "claim-projection", dir, mode], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			unchangedReads: 0,
+			cachedParses: 2,
+			foreignReads: 1,
+			blockedReads: 1,
+			readFailurePreservesClaim: true,
+			nonHeadFoldMatches: true,
+			currentMatches: true,
+			restoredMatches: true,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
+it("sets aside a conflicting correction receipt during capture without changing its head or sibling fact", {
+	timeout: 30_000,
+}, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-capture-receipt-conflict-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "capture-receipt-conflict", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			strictRejected: true,
+			strictRolledBack: true,
+			headUnchanged: true,
+			siblingRecorded: true,
+			diagnosticCount: 1,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
+it("indexes sendable events in rowid order after reopening a v1 ledger", { timeout: 30_000 }, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-outbox-sendable-index-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "outbox-sendable-index", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			version: 1,
+			indexPresent: true,
+			indexUsed: true,
+			tempSort: false,
+			ids: ["testOrg-event-020", "testOrg-event-022", "testOrg-event-023"],
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
+it("replays committed events after interrupted marker cleanup without clearing later markers", {
+	timeout: 30_000,
+}, () => {
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-marker-cleanup-"))
+	try {
+		const driver = fileURLToPath(new URL("../../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
+		const result = JSON.parse(
+			execFileSync("bun", [driver, "marker-cleanup-recovery", dir], { encoding: "utf8", timeout: 30_000 }),
+		)
+		expect(result).toEqual({
+			interrupted: true,
+			completedBatches: 1,
+			firstBatchCleared: true,
+			committedBeforeRestart: true,
+			eventRetained: true,
+			unchangedReplay: true,
+			lateMarkerRetained: true,
+		})
+	} finally {
+		rmSync(dir, { recursive: true, force: true })
+	}
+})
+
 it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and atomic rollback (%s)", {
 	timeout: 30_000,
 }, (mode) => {
@@ -19,6 +106,7 @@ it.each(["memory", "sqlite"])("preserves per-account CAS, frozen batches and ato
 			byteIsolation: true,
 			binaryBatchOrder: true,
 			readOnlyStatus: true,
+			deliveryAccountsMatch: true,
 			retryStatus: true,
 			resumedStatus: true,
 			invalidRetryRetained: true,

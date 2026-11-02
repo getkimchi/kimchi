@@ -8,14 +8,8 @@ import {
 import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
 import { uploadSkipReason } from "./automation.js"
 import { readOutboxStatus } from "./ledger/outbox.js"
-import {
-	dueLimitNotices,
-	readReportingState,
-	setReportingEnabled,
-	takeLimitNotices,
-	takeReportingNotice,
-} from "./queue.js"
-import { limitNoticeTexts, statusText } from "./status.js"
+import { readReportingState, setReportingEnabled, takeReportingNotice } from "./queue.js"
+import { statusText } from "./status.js"
 import { reconcileReporting } from "./worker.js"
 
 const ARGUMENT_COMPLETIONS = [
@@ -50,9 +44,6 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 					if (IS_ACP_MODE) ctx.ui.notify(text, "info")
 					else pi.appendEntry("pr-cost-reporting-notice", text)
 				}
-			const due = dueLimitNotices(state)
-			if (ctx?.hasUI && (due.repositories.length || due.pauses.length))
-				for (const text of limitNoticeTexts(await takeLimitNotices(getAgentDir()))) ctx.ui.notify(text, "warning")
 			return state.enabled
 		} catch {
 			return false

@@ -18,11 +18,13 @@
  */
 
 import { Database } from "bun:sqlite"
+import { createHash } from "node:crypto"
 import { mkdirSync, readdirSync, readSync, statSync, writeSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline"
 import { importJournals } from "../../../../src/extensions/pr-cost-reporting/ledger/import.js"
 import {
+	backendFor,
 	capture,
 	fingerprint,
 	getNote,
@@ -51,6 +53,7 @@ function sleep(ms: number): Promise<void> {
 async function probe(agent: string): Promise<void> {
 	const store = openStore(agent)
 	const version = store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
+	const cacheKiB = store.db.query<{ cache_size: number }, []>("PRAGMA cache_size").get()?.cache_size
 	const tables = store.db
 		.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 		.all()
@@ -58,6 +61,7 @@ async function probe(agent: string): Promise<void> {
 	const path = ledgerDbPath(agent)
 	out({
 		version,
+		cacheKiB,
 		tables,
 		dirMode: statSync(dirname(path)).mode & 0o777,
 		fileMode: statSync(path).mode & 0o777,
@@ -382,16 +386,12 @@ async function nativeDelivery(agent: string): Promise<void> {
 	const { deliverEvents, reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
 	const { pendingBatch, observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
-	const { queueSnapshots, readReportingState, setReportingEnabled } = await import(
-		"../../../../src/extensions/pr-cost-reporting/queue.js"
-	)
+	const { setReportingEnabled } = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
 	const key = accountKey(account)
 	const check = () => {}
 	const posts: { url: string; body: string }[] = []
 	let mode = "success"
 	let redirected = false
-	let legacyInterleaved = false
-	let racedLegacy = false
 	let abandonedSignal: AbortSignal | null | undefined
 	let verifications = 0
 	globalThis.fetch = async (input, init) => {
@@ -410,8 +410,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		const body = String(init?.body)
 		posts.push({ url, body })
 		const parsed = JSON.parse(body)
-		if (url.endsWith("pr-cost-snapshots"))
-			return Response.json({ status: "accepted", revision: parsed.revision, receivedAt: new Date().toISOString() })
 		if (!url.endsWith("pr-cost-events:batchIngest")) throw new Error("Unexpected reporting route")
 		if (mode === "lease-loss") {
 			abandonedSignal = init?.signal
@@ -419,7 +417,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 				abandonedSignal?.addEventListener("abort", () => reject(new Error("aborted held upload")), { once: true })
 			})
 		}
-		if (mode === "interleave" && legacyInterleaved) racedLegacy = true
 		if (mode === "lost") throw new Error("ACK lost")
 		if (mode === "invalid") return Response.json({ batchId: "wrong", receipts: [] })
 		if (mode === "off") await setReportingEnabled(agent, false)
@@ -435,29 +432,9 @@ async function nativeDelivery(agent: string): Promise<void> {
 		})
 	}
 	await setReportingEnabled(agent, true)
-	await queueSnapshots(agent, [
-		{
-			account,
-			content: {
-				repository: { provider: "github", host: "github.com", id: "999" },
-				pullRequests: [],
-				requests: [
-					{
-						requestId: request.requestId,
-						startedAt: request.startedAt,
-						billingRecordIds: [],
-						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-					},
-				],
-				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
-			},
-		},
-	])
-	const originalLegacy = JSON.stringify(Object.values((await readReportingState(agent)).entries)[0].pending)
 	await reconcileReporting(agent, agent, new AbortController().signal, check)
 	const initial = posts.filter((post) => post.url.endsWith("pr-cost-events:batchIngest"))
 	const initialEvents = initial.flatMap((post) => JSON.parse(post.body).batch.events)
-	const after = await readReportingState(agent)
 	const initialPending = backendFor(agent).pendingOutboxEvents(key, 1000).length
 	const capturedByWorker = initialEvents.filter((event: { usage?: object }) => event.usage)
 	const run = () => deliverEvents(agent, agent, new AbortController().signal, check)
@@ -549,60 +526,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 	process.env.KIMCHI_API_KEY = "fake-reporting"
 	mode = "success"
 	await run()
-	const { readFileSync, writeFileSync, existsSync } = await import("node:fs")
-	const { lockSync } = await import("proper-lockfile")
-	const queueDirectory = join(agent, "pr-cost-reporting")
-	const statePath = join(queueDirectory, "state.json")
-	const drainedState = readFileSync(statePath)
-	await queueSnapshots(agent, [
-		{
-			account,
-			content: {
-				repository: { provider: "github", host: "github.com", id: "999" },
-				pullRequests: [],
-				requests: [
-					{
-						requestId: crypto.randomUUID(),
-						startedAt: new Date().toISOString(),
-						billingRecordIds: [],
-						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
-					},
-				],
-				coverage: { observedRequests: 1, unpricedRequests: 1, historyComplete: true },
-			},
-		},
-	])
-	const oldWriterState = readFileSync(statePath)
-	writeFileSync(statePath, drainedState)
-	seed()
-	const backend = backendFor(agent)
-	const readPage = backend.readNotePage.bind(backend)
-	let scans = 0
-	let armed = false
-	backend.readNotePage = (...args) => {
-		const page = readPage(...args)
-		if (args[0] === "legacy-pr-cost-snapshots" && !page.length && ++scans === 2) armed = true
-		return page
-	}
-	mode = "interleave"
-	try {
-		await deliverEvents(agent, agent, new AbortController().signal, () => {
-			if (!armed || legacyInterleaved || existsSync(`${queueDirectory}.lock`)) return
-			const release = lockSync(queueDirectory)
-			try {
-				writeFileSync(statePath, oldWriterState)
-			} finally {
-				release()
-			}
-			legacyInterleaved = true
-		})
-	} finally {
-		backend.readNotePage = readPage
-	}
-	mode = "success"
-	const { deliverSnapshots } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
-	await deliverSnapshots(agent, agent, new AbortController().signal, check)
-	await run()
 	seed()
 	const abandonedBody = body()
 	mode = "lease-loss"
@@ -619,9 +542,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		capturedByWorker,
 		initialBody: initial[0]?.body,
 		initialPending,
-		legacyExact: posts[0]?.body === originalLegacy,
-		legacyFirst: posts[0]?.url.endsWith("pr-cost-snapshots"),
-		noNewLegacy: Object.values(after.entries).every((entry) => entry.revision === "1" && !entry.pending),
 		reopened,
 		backoff,
 		idle,
@@ -632,7 +552,6 @@ async function nativeDelivery(agent: string): Promise<void> {
 		otherBackoff,
 		rejectedBackoff,
 		keyFenced,
-		legacyBoundary: legacyInterleaved && !racedLegacy,
 		failedPassAborted,
 		abandonedRetained,
 		redirectsRejected: !redirected,
@@ -645,144 +564,6 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 	out(readWorkRecords(agent))
 }
 
-async function legacyFreezeScenario(agent: string): Promise<void> {
-	const { readFileSync, writeFileSync } = await import("node:fs")
-	const {
-		acknowledgeFrozenSnapshot,
-		freezeSnapshots,
-		pendingFrozenSnapshots,
-		queueSnapshots,
-		readReportingState,
-		reportingStatePath,
-		setReportingEnabled,
-	} = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
-	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
-	const check = () => {}
-	const path = reportingStatePath(agent)
-	const originalState = readFileSync(path)
-	const initial = Object.values((await readReportingState(agent)).entries)[0]
-	if (!initial.pending) throw new Error("Missing original legacy fixture")
-	const originalBody = JSON.stringify(initial.pending)
-	const all = () => pendingFrozenSnapshots(agent, check, Date.now() + 30_000)
-	await freezeSnapshots(agent, check)
-	const [first] = await all()
-	if (!first || first.body !== originalBody) throw new Error("Legacy bytes changed during freeze")
-	const backend = backendFor(agent)
-	const remove = backend.deleteNote.bind(backend)
-	let removed = false
-	backend.deleteNote = (workId, name) => {
-		remove(workId, name)
-		removed = true
-		throw new Error("after actual pending deletion")
-	}
-	let rejected = false
-	try {
-		await acknowledgeFrozenSnapshot(
-			agent,
-			first,
-			{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
-			check,
-		)
-	} catch (error) {
-		rejected = error instanceof Error && error.message === "after actual pending deletion"
-	} finally {
-		backend.deleteNote = remove
-	}
-	const ackRollback =
-		removed &&
-		rejected &&
-		(await all())[0]?.body === originalBody &&
-		backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 64).length === 0
-	if (!ackRollback) throw new Error("Frozen ACK did not roll back")
-	await acknowledgeFrozenSnapshot(
-		agent,
-		first,
-		{ status: "accepted", revision: "1", receivedAt: new Date().toISOString() },
-		check,
-	)
-	const receipt = backend.getNote("legacy-pr-cost-snapshot-receipts", first.id)
-	if (receipt === undefined) throw new Error("Missing completed legacy receipt")
-	const { ack: _ack, ...invalidReceipt } = JSON.parse(receipt)
-	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, JSON.stringify(invalidReceipt))
-	writeFileSync(path, originalState)
-	let receiptCorruptionRejected = false
-	try {
-		await freezeSnapshots(agent, check)
-	} catch {
-		receiptCorruptionRejected = readFileSync(path).equals(originalState)
-	}
-	backend.putNote("legacy-pr-cost-snapshot-receipts", first.id, receipt)
-	await freezeSnapshots(agent, check)
-	const cleanupReplay =
-		(await all()).length === 0 && !Object.values((await readReportingState(agent)).entries)[0].pending
-	for (let index = 0; index < 20; index++) {
-		await queueSnapshots(agent, [
-			{
-				account: initial.account,
-				content: {
-					repository: initial.pending.repository,
-					pullRequests: initial.pending.pullRequests,
-					coverage: initial.pending.coverage,
-					requests: initial.pending.requests.map((request) => ({
-						...request,
-						allocation: { ...request.allocation, kind: index % 2 ? "unlinked" : "unknown" },
-					})),
-				},
-			},
-		])
-		await freezeSnapshots(agent, check)
-	}
-	const [partial] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
-	closeBackends()
-	const [next] = await pendingFrozenSnapshots(agent, check, Date.now() - 1)
-	const partialScanProgress = !!partial && !!next && partial.id !== next.id
-	const pending = await all()
-	if (pending.length !== 20) throw new Error(`Expected twenty frozen versions, got ${pending.length}`)
-	const latest = pending.reduce((a, b) => (BigInt(a.entry.revision) > BigInt(b.entry.revision) ? a : b))
-	for (const frozen of pending) {
-		if (frozen.id === latest.id) continue
-		await acknowledgeFrozenSnapshot(
-			agent,
-			frozen,
-			{
-				status: "accepted",
-				revision: frozen.entry.revision,
-				receivedAt: new Date().toISOString(),
-			},
-			check,
-		)
-	}
-	const reopened = backendFor(agent)
-	const page = reopened.readNotePage.bind(reopened)
-	const namespaces: string[] = []
-	reopened.readNotePage = (workId, after, limit) => {
-		namespaces.push(workId)
-		return page(workId, after, limit)
-	}
-	await setReportingEnabled(agent, true)
-	const resumeScans = namespaces.length
-	const remaining = await all()
-	const receiptScan = namespaces.some((name) => name === "legacy-pr-cost-snapshot-receipts")
-	reopened.readNotePage = page
-	const receipts = page("legacy-pr-cost-snapshot-receipts", "", 64)
-	const archived = receipts.map((row) => JSON.parse(row.body))
-	out({
-		initialBytes: first.body === originalBody,
-		ackRollback,
-		receiptCorruptionRejected,
-		cleanupReplay,
-		partialScanProgress,
-		retainedReceipts: receipts.length,
-		archivedOriginalBytes: archived.some((row) => row.body === originalBody),
-		pendingAfterArchive: remaining.length,
-		latestRetained: remaining[0]?.body === latest.body,
-		receiptScan,
-		resumeScans,
-		reopened: true,
-	})
-	closeBackends()
-}
-
 async function producerScenario(agent: string): Promise<void> {
 	const { readReportingState, reportingProducer } = await import(
 		"../../../../src/extensions/pr-cost-reporting/queue.js"
@@ -792,9 +573,11 @@ async function producerScenario(agent: string): Promise<void> {
 	const { machineFingerprint } = await import("../../../../src/extensions/pr-cost-reporting/machine.js")
 	const { accountKey } = await import("../../../../src/extensions/pr-cost-reporting/snapshot.js")
 	const state = await readReportingState(agent)
-	const entry = Object.values(state.entries)[0]
-	if (!entry?.pending) throw new Error("Missing legacy pending producer fixture")
-	const account = accountKey(entry.account)
+	const account = accountKey({
+		apiUrl: "https://api.example",
+		organizationId: "11111111-1111-4111-8111-111111111111",
+		userId: "22222222-2222-4222-8222-222222222222",
+	})
 	const current = () => {}
 	observeEvents(
 		agent,
@@ -820,11 +603,235 @@ async function producerScenario(agent: string): Promise<void> {
 		producerId,
 		machineKnown: !!(await machineFingerprint()),
 		note: JSON.parse(backendFor(agent).getNote("agent", "reporting-producer") ?? "null"),
-		legacyRetained: JSON.stringify(await readReportingState(agent)) === JSON.stringify(state),
+		stateRetained: JSON.stringify(await readReportingState(agent)) === JSON.stringify(state),
 		batchRetained: pending?.id === frozen.id && sameBytes(pending.body, frozen.body),
 		frozenProducer: JSON.parse(Buffer.from(frozen.body).toString("utf8")).batch.events[0].deviceId,
 	})
 	closeBackends()
+}
+
+async function claimProjectionScenario(agent: string, mode: string): Promise<void> {
+	const { acknowledgeBatch, effectiveClaim, observeEvents, pendingBatch } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/outbox.js"
+	)
+	const { backendFor, closeBackends, useBackendFactory } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
+	)
+	const { createMemoryRecords } = await import("../../../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	if (mode === "memory") useBackendFactory(() => createMemoryRecords())
+	const backend = backendFor(agent)
+	const account = "testOrg-account"
+	const fact = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-23T10:00:00Z",
+		repository: { provider: "github", host: "github.com", id: "testOrg-repo" },
+		usage: {
+			channel: "native",
+			counterScope: "request",
+			observedRoute: "unknown",
+			schema: "unknown",
+			billingBasis: "unknown",
+			correlation: "exact",
+			raw: {},
+			attemptsComplete: true,
+			requestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		},
+		allocation: { kind: "unlinked", method: "native" },
+	}
+	const fence = () => {}
+	try {
+		observeEvents(agent, account, [fact], [], fence)
+		observeEvents(agent, account, [{ ...fact, usage: { ...fact.usage, actualModel: "second" } }], [], fence)
+		let reads = 0
+		const history = backend.outboxEntityEvents.bind(backend)
+		backend.outboxEntityEvents = (key, entity) => {
+			reads++
+			return history(key, entity)
+		}
+		const warm = effectiveClaim(backend, account, fact.entityId)
+		reads = 0
+		let cachedParses = 0
+		const repeated = (() => {
+			const parse = JSON.parse
+			JSON.parse = (...args) => {
+				cachedParses++
+				return parse(...args)
+			}
+			try {
+				return [effectiveClaim(backend, account, fact.entityId), effectiveClaim(backend, account, fact.entityId)]
+			} finally {
+				JSON.parse = parse
+			}
+		})()
+		const unchangedReads = reads
+		const putNote = backend.putNote.bind(backend)
+		backend.putNote = () => {}
+		try {
+			observeEvents(agent, account, [{ ...fact, usage: { ...fact.usage, actualModel: "third" } }], [], fence)
+		} finally {
+			backend.putNote = putNote
+		}
+		reads = 0
+		const foreign = effectiveClaim(backend, account, fact.entityId)
+		const foreignReads = reads
+		const projectionName = JSON.stringify([account, fact.entityId])
+		backend.deleteNote("pr-cost-effective-claims-v1", projectionName)
+		const originalPutNote = backend.putNote.bind(backend)
+		backend.putNote = (owner, name, body) => {
+			if (owner === "pr-cost-effective-claims-v1") throw new Error("derived note unavailable")
+			originalPutNote(owner, name, body)
+		}
+		let readFailurePreservesClaim: boolean
+		try {
+			readFailurePreservesClaim =
+				JSON.stringify(effectiveClaim(backend, account, fact.entityId)) === JSON.stringify(foreign) &&
+				backend.getNote("pr-cost-effective-claims-v1", projectionName) === undefined
+		} finally {
+			backend.putNote = originalPutNote
+		}
+		const latest = backend.latestOutboxEvent(account, fact.entityId)
+		if (!latest) throw new Error("Missing foreign-write fixture")
+		const pending = pendingBatch(agent, account, fence)
+		if (!pending) throw new Error("Missing conflict fixture")
+		const batch = JSON.parse(Buffer.from(pending.body).toString("utf8")).batch
+		acknowledgeBatch(
+			agent,
+			account,
+			pending,
+			{
+				batchId: pending.id,
+				receipts: batch.events.map((event: { id: string; revision: string }) => ({
+					id: event.id,
+					revision: event.revision,
+					status: event.id === latest.id ? "conflict" : "accepted",
+				})),
+			},
+			fence,
+		)
+		reads = 0
+		const restored = effectiveClaim(backend, account, fact.entityId)
+		const blockedReads = reads
+		const nonHeadAccount = "testOrg-non-head"
+		observeEvents(agent, nonHeadAccount, [fact], [], fence)
+		observeEvents(
+			agent,
+			nonHeadAccount,
+			[{ ...fact, claimState: "active", usage: { ...fact.usage, actualModel: "middle" } }],
+			[],
+			fence,
+		)
+		const middle = backend.latestOutboxEvent(nonHeadAccount, fact.entityId)
+		if (!middle) throw new Error("Missing middle claim fixture")
+		observeEvents(agent, nonHeadAccount, [{ ...fact, usage: { ...fact.usage, actualModel: "last" } }], [], fence)
+		const head = backend.latestOutboxEvent(nonHeadAccount, fact.entityId)
+		const beforeBlock = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		const blocked = backend.blockOutboxEvent(nonHeadAccount, middle.id, middle.hash, "test conflict")
+		const afterBlock = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		backend.deleteNote("pr-cost-effective-claims-v1", JSON.stringify([nonHeadAccount, fact.entityId]))
+		const freshFold = effectiveClaim(backend, nonHeadAccount, fact.entityId)
+		const nonHeadFoldMatches =
+			blocked &&
+			beforeBlock?.claimState === "active" &&
+			afterBlock?.claimState === undefined &&
+			head?.id === afterBlock?.id &&
+			JSON.stringify(afterBlock) === JSON.stringify(freshFold)
+		out({
+			unchangedReads,
+			cachedParses,
+			foreignReads,
+			blockedReads,
+			readFailurePreservesClaim,
+			nonHeadFoldMatches,
+			currentMatches:
+				warm?.usage?.actualModel === "second" &&
+				repeated.every((event) => JSON.stringify(event) === JSON.stringify(warm)) &&
+				foreign?.usage?.actualModel === "third",
+			restoredMatches: restored?.usage?.actualModel === "second",
+		})
+	} finally {
+		closeBackends()
+		useBackendFactory(null)
+	}
+}
+
+async function captureReceiptConflictScenario(agent: string): Promise<void> {
+	const { observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const backend = backendFor(agent)
+	const account = "testOrg-account"
+	const claim = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T00:00:00Z",
+		repository: { provider: "github", host: "github.com", id: "testOrg-repo" },
+		usage: {
+			channel: "native",
+			counterScope: "request",
+			observedRoute: "unknown",
+			schema: "unknown",
+			billingBasis: "unknown",
+			correlation: "exact",
+			raw: {},
+			attemptsComplete: true,
+			requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		},
+		allocation: { kind: "unlinked", method: "user-correction" },
+		correction: {
+			id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+			revision: 1,
+			recordedAt: "2026-10-23T12:00:00Z",
+			source: "work-command",
+		},
+		claimState: "active",
+	}
+	const sibling = {
+		entityId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: claim.deviceId,
+		observeTime: claim.observeTime,
+		coverage: { code: "observed", count: "1" },
+	}
+	const conflict = {
+		...claim,
+		observeTime: "2026-10-24T01:00:00Z",
+		allocation: { kind: "unmerged", pullRequestIds: ["testOrg-pr-one"], method: "user-correction" },
+	}
+	observeEvents(agent, account, [claim], [], () => {})
+	const before = backend.latestOutboxEvent(account, claim.entityId)
+	if (!before) throw new Error("Expected an initial testOrg claim")
+	let strictRejected = false
+	try {
+		observeEvents(agent, account, [conflict, sibling], [], () => {})
+	} catch (error) {
+		strictRejected = error instanceof Error && error.message === "Conflicting contents for one correction receipt"
+	}
+	const strictRolledBack = backend.latestOutboxEvent(account, sibling.entityId) === undefined
+	observeEvents(agent, account, [conflict, sibling], [], () => {}, "set-aside")
+	const after = backend.latestOutboxEvent(account, claim.entityId)
+	const headUnchanged = Boolean(
+		after &&
+			after.id === before.id &&
+			after.hash === before.hash &&
+			Buffer.from(after.body).equals(Buffer.from(before.body)) &&
+			JSON.parse(Buffer.from(after.body).toString("utf8")).revision === "1",
+	)
+	const siblingRecorded = backend.latestOutboxEvent(account, sibling.entityId) !== undefined
+	const store = openStore(agent)
+	let diagnosticCount: number
+	try {
+		diagnosticCount =
+			store.db
+				.query<{ count: number }, [string]>("SELECT count FROM diagnostics WHERE code = ?")
+				.get("claim-correction-conflict")?.count ?? 0
+	} finally {
+		store.close()
+	}
+	out({ strictRejected, strictRolledBack, headUnchanged, siblingRecorded, diagnosticCount })
 }
 
 async function outboxScenario(agent: string, mode: string): Promise<void> {
@@ -889,6 +896,18 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 	backend.insertOutboxEvent({ ...other, id: "status-blocked", accountKey: "status-blocked", blocked: "fixture" })
 	backend.insertOutboxEvent({ ...other, id: "status-acked", accountKey: "status-acked", ackedAt: 1234 })
 	const statuses = readOutboxStatus(agent)
+	const deliveryAccountsMatch =
+		JSON.stringify(backend.outboxDeliveryStatus()) ===
+		JSON.stringify(
+			statuses
+				.filter((status) => status.sendable > 0 || status.batches > 0)
+				.map(({ accountKey, sendable, batches, firstBatchId }) => ({
+					accountKey,
+					sendable: Number(sendable > 0),
+					batches: Number(batches > 0),
+					firstBatchId,
+				})),
+		)
 	const statusA = statuses.find((status) => status.accountKey === "account-a")
 	const statusOnlyBatch = statuses.find((status) => status.accountKey === "ordering")
 	const readOnlyStatus =
@@ -1388,6 +1407,7 @@ async function outboxScenario(agent: string, mode: string): Promise<void> {
 		byteIsolation,
 		binaryBatchOrder,
 		readOnlyStatus,
+		deliveryAccountsMatch,
 		retryStatus,
 		resumedStatus,
 		invalidRetryRetained,
@@ -1515,9 +1535,15 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 async function knownAsyncReadRegressions(agent: string, recordJson: string, stored = false): Promise<void> {
-	const { backendFor, closeBackends, recordHashOf, readStoredRecordsAsync, rebuildWork } = await import(
-		"../../../../src/extensions/pr-cost-reporting/ledger/records.js"
-	)
+	const {
+		backendFor,
+		closeBackends,
+		recordHashOf,
+		readGroupRequestRecordsAsync,
+		readGroupStoredRecordsAsync,
+		readStoredRecordsAsync,
+		rebuildWork,
+	} = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
 	const readAsync = stored
 		? async (signal: AbortSignal): Promise<WorkRecord[]> =>
 				(await readStoredRecordsAsync(agent, () => signal.throwIfAborted())).map((row) => JSON.parse(row.body))
@@ -1601,10 +1627,59 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string, stor
 	const snapshot = await readAsync(new AbortController().signal)
 	backend.readRecordPage = page
 	const next = await readAsync(new AbortController().signal)
-	const afterCapture = read({})
+	const other: WorkRecord = {
+		...base,
+		type: "request",
+		workId: `${base.workId}-other`,
+		requestId: "native-other-work",
+		scope: null,
+	}
+	capture(agent, other, sourcePath)
+	const groupedBefore = [...read({ workId: other.workId }), ...read({ workId: base.workId })]
+	const late: WorkRecord = { ...base, type: "request", requestId: "native-after-work-page", scope: null }
+	let workPages = 0
+	let typePages = 0
+	let insertedBetweenPages = false
+	backend.readRecordPage = (after, through, limit, checkBudget, workId, type) => {
+		const rows = page(after, through, limit, checkBudget, workId, type)
+		if (workId === base.workId && type === undefined) {
+			workPages++
+			if (!insertedBetweenPages) {
+				insertedBetweenPages = true
+				setImmediate(() => capture(agent, late, sourcePath))
+			}
+		}
+		if (workId === base.workId && type === "request") typePages++
+		return rows
+	}
+	let grouped: Awaited<ReturnType<typeof readGroupStoredRecordsAsync>>
+	let requestRows: Awaited<ReturnType<typeof readGroupRequestRecordsAsync>>
+	let nextGrouped: Awaited<ReturnType<typeof readGroupStoredRecordsAsync>>
+	try {
+		grouped = await readGroupStoredRecordsAsync(agent, [other.workId, base.workId], () => {})
+		requestRows = await readGroupRequestRecordsAsync(agent, [other.workId, base.workId], () => {})
+		nextGrouped = await readGroupStoredRecordsAsync(agent, [other.workId, base.workId], () => {})
+	} finally {
+		backend.readRecordPage = page
+	}
+	const groupedRequests = grouped.map((row) => JSON.parse(row.body) as WorkRecord)
+	const expectedRequests = nextGrouped
+		.map((row) => JSON.parse(row.body) as WorkRecord)
+		.filter((row) => row.type === "request")
+	const finalRows = read({})
 	closeBackends()
 	const reopened = backendFor(agent).readRecords({})
 	out({
+		workPagePinned:
+			JSON.stringify(grouped.map((row) => row.recordHash)) ===
+				JSON.stringify(groupedBefore.map((row) => row.recordHash)) && insertedBetweenPages,
+		workPageNextRead: nextGrouped.length === grouped.length + 1 && nextGrouped.at(-1)?.body === JSON.stringify(late),
+		workPageFiltered:
+			workPages > 1 &&
+			typePages > 1 &&
+			groupedRequests[0]?.workId === other.workId &&
+			groupedRequests.slice(1).every((row) => row.workId === base.workId) &&
+			JSON.stringify(requestRows) === JSON.stringify(expectedRequests),
 		observerEntered: visited > 0,
 		callbackRan,
 		cancelled,
@@ -1614,7 +1689,7 @@ async function knownAsyncReadRegressions(agent: string, recordJson: string, stor
 		captureCommitted: committed.length === before.length + 1,
 		snapshotComplete: JSON.stringify(snapshot) === JSON.stringify(committed.map((row) => JSON.parse(row.body))),
 		nextReadSeesCapture: next.length === snapshot.length + 1 && next.at(-1)?.requestId === "native-during-page",
-		reopenedComplete: JSON.stringify(reopened) === JSON.stringify(afterCapture),
+		reopenedComplete: JSON.stringify(reopened) === JSON.stringify(finalRows),
 		noLegacyJournal: !readdirSync(agent).includes("work-attribution"),
 	})
 	closeBackends()
@@ -2002,7 +2077,615 @@ async function knownSchemaRace(agent: string): Promise<void> {
 	}
 }
 
+async function incrementalParity(agent: string, scenario?: string): Promise<void> {
+	const paired = scenario?.startsWith("paired:") === true
+	const ownerless = scenario === "ownerless-new-request"
+	const planFirst = scenario === "plan-then-request-only"
+	const newUnitless = scenario === "new-request-then-dispatch"
+	const sameInput = scenario === "same-input-next-request"
+	const cold = scenario === "cold-request" || scenario === "cold-response" || scenario === "cold-tool"
+	const split =
+		scenario === "response-row" ||
+		scenario === "tool-row" ||
+		scenario === "cold-response" ||
+		scenario === "cold-tool" ||
+		scenario === "response-then-tool" ||
+		scenario === "unitless-response"
+	const linked =
+		scenario && (scenario.startsWith("linked:") || paired)
+			? Number(scenario.slice(scenario.indexOf(":") + 1))
+			: undefined
+	if (linked !== undefined && (!Number.isSafeInteger(linked) || linked < 1)) throw new Error("Invalid parity seed")
+	const { backendFor, closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { groupKey } = await import("../../../../src/extensions/pr-cost-reporting/incremental.js")
+	const { reconcileReporting } = await import("../../../../src/extensions/pr-cost-reporting/worker.js")
+	const { setReportingEnabled } = await import("../../../../src/extensions/pr-cost-reporting/queue.js")
+	const account = {
+		apiUrl: "https://api.testOrg.invalid",
+		organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}
+	const workId = "22222222-2222-4222-8222-222222222222"
+	const otherWorkId = "44444444-4444-4444-8444-444444444444"
+	const works = linked === undefined ? [workId] : [workId, otherWorkId]
+	const producerId = "33333333-3333-4333-8333-333333333333"
+	const incremental = join(agent, "incremental")
+	const reference = join(agent, "reference")
+	const reconcile = (directory: string) =>
+		reconcileReporting(directory, directory, new AbortController().signal, () => {}, directory === reference)
+	const oldKey = process.env.KIMCHI_API_KEY
+	process.env.KIMCHI_API_KEY = "testOrg-test-key"
+	globalThis.fetch = async () => new Response("{}", { status: 503 })
+	const pairedRequests = (seed: number): number[] => {
+		let state = seed
+		const next = () => (state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0)
+		const high = 7 + (next() % 20)
+		return seed % 2 ? [next() % 2, high] : [high, 27 + (next() % 20)]
+	}
+	const seed = (directory: string, index: number) => {
+		const requestId = `11111111-1111-4111-8111-${index.toString(16).padStart(12, "0")}`
+		const startedAt = new Date(Date.UTC(2026, 9, 24, 8, 0, index)).toISOString()
+		const owner = linked !== undefined && (index + linked) % 2 ? otherWorkId : workId
+		const common = {
+			version: 1 as const,
+			workId: owner,
+			sessionId:
+				ownerless && index === 4
+					? "testOrg-session-new"
+					: paired && index !== 2 && index !== 3
+						? `testOrg-session-${index}`
+						: "testOrg-session",
+			requestId,
+		}
+		capture(
+			directory,
+			{
+				...common,
+				type: "request",
+				startedAt,
+				recordedAt: startedAt,
+				scope: { account, repository: "/testOrg/widgets/.git" },
+				...(sameInput && (index === 0 || index === 4)
+					? {
+							segment: {
+								id: "99999999-9999-4999-8999-000000000003",
+								attribution: "session",
+								reason: "matching-disabled",
+							},
+						}
+					: {}),
+			},
+			"testOrg-parity",
+		)
+		if (scenario === "unitless-response" || ((planFirst || newUnitless) && index === 4)) return
+		capture(
+			directory,
+			{ ...common, type: "request_dispatch", startedAt, dispatchedAt: startedAt, recordedAt: startedAt },
+			"testOrg-parity",
+		)
+	}
+	const connectWorks = (directory: string) => {
+		for (const [index, owner] of works.entries())
+			capture(
+				directory,
+				{
+					version: 1,
+					type: "commit",
+					workId: owner,
+					sessionId: "testOrg-session",
+					recordedAt: "2026-10-24T07:00:00.000Z",
+					repository: "/testOrg/widgets/.git",
+					worktree: "/testOrg/widgets",
+					sha: (index + 1).toString(16).repeat(40),
+					pullRequests: [
+						{
+							provider: "github",
+							id: "42424242",
+							repositoryId: "4242",
+							host: "github.com",
+							repository: "testOrg/widgets",
+							number: 42424242,
+							url: "https://github.com/testOrg/widgets/pull/42424242",
+							state: "merged",
+							mergedAt: "2026-10-24T07:00:00.000Z",
+							closedAt: null,
+							checkedAt: "2026-10-24T07:00:00.000Z",
+							headSha: (index + 1).toString(16).repeat(40),
+							mergeCommitSha: null,
+						},
+					],
+				},
+				"testOrg-parity",
+			)
+	}
+	const events = (directory: string) => {
+		const store = openStore(directory)
+		try {
+			return store.db
+				.query<{ id: string; entity_id: string; body: Uint8Array; hash: string }, []>(
+					"SELECT id, entity_id, body, hash FROM outbox_events ORDER BY rowid",
+				)
+				.all()
+				.map((row) => ({
+					id: row.id,
+					entityId: row.entity_id,
+					body: Buffer.from(row.body).toString("utf8"),
+					hash: row.hash,
+				}))
+		} finally {
+			store.close()
+		}
+	}
+	try {
+		for (const directory of [incremental, reference]) {
+			await setReportingEnabled(directory, true)
+			backendFor(directory).putNote("agent", "reporting-producer", JSON.stringify({ version: 1, producerId }))
+			if (linked !== undefined) connectWorks(directory)
+			const initial = paired
+				? [2, 3, 4, 6]
+				: Array.from(
+						{ length: split ? 64 : linked === undefined ? 4 : 8 },
+						(_, index) => index + (linked === undefined ? 0 : 10),
+					)
+			if (!planFirst) for (const index of initial) seed(directory, index)
+			if (ownerless)
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "work",
+						workId,
+						sessionId: "testOrg-session-new",
+						recordedAt: "2026-10-24T08:00:02.849Z",
+						title: "testOrg rollout",
+					},
+					"testOrg-parity",
+				)
+			if (planFirst)
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "plan",
+						workId,
+						sessionId: "testOrg-session",
+						recordedAt: "2026-10-24T08:00:02.850Z",
+						path: ".kimchi/plans/testOrg-rollout.md",
+						contentHash: "b".repeat(64),
+					},
+					"testOrg-parity",
+				)
+			await reconcile(directory)
+			if (backendFor(directory).markedRecords().length) throw new Error("Initial capture did not settle")
+			if (!planFirst && !backendFor(directory).getNote("agent", groupKey(works)))
+				throw new Error("Initial group cache is absent")
+		}
+		const requestless = scenario === "work-row" || scenario === "plan-row"
+		let appended = requestless || split ? [] : [linked === undefined ? 4 : linked % 2 ? 1 : 20]
+		if (paired && linked !== undefined) appended = pairedRequests(linked)
+		for (const directory of [incremental, reference]) {
+			for (const index of appended) seed(directory, index)
+			if (split) {
+				const base = {
+					version: 1,
+					workId,
+					sessionId: "testOrg-session",
+					requestId: "11111111-1111-4111-8111-000000000000",
+					recordedAt: "2026-10-24T08:00:20.000Z",
+					repository: "/testOrg/widgets/.git",
+				}
+				if (scenario === "unitless-response")
+					capture(
+						directory,
+						{
+							...base,
+							type: "request_dispatch",
+							startedAt: "2026-10-24T08:00:00.000Z",
+							dispatchedAt: base.recordedAt,
+						},
+						"testOrg-parity",
+					)
+				if (
+					scenario === "response-row" ||
+					scenario === "cold-response" ||
+					scenario === "response-then-tool" ||
+					scenario === "unitless-response"
+				)
+					capture(
+						directory,
+						{
+							...base,
+							type: "request_response",
+							responseId: "testOrg-response-0",
+							nativeUsage: {
+								harness: "kimchi",
+								sourceVersion: "1.22",
+								api: "anthropic-messages",
+								schema: "anthropic-messages-v1",
+								provider: "anthropic",
+								reportedModel: "testOrg-requested",
+								actualModel: "testOrg-serving",
+								dispatchObserved: true,
+								finalized: true,
+								finalUsageObserved: true,
+								raw: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
+							},
+						},
+						"testOrg-parity",
+					)
+				else
+					capture(
+						directory,
+						{
+							...base,
+							type: "tool_execution",
+							toolCallId: "read-one",
+							toolName: "read",
+							outcome: "completed",
+							durationMs: 7,
+						},
+						"testOrg-parity",
+					)
+			}
+			if (scenario === "work-row")
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "work",
+						workId,
+						sessionId: "testOrg-session",
+						recordedAt: "2026-10-24T09:00:00.000Z",
+						title: "testOrg rollout",
+					},
+					"testOrg-parity",
+				)
+			if (scenario === "plan-row")
+				capture(
+					directory,
+					{
+						version: 1,
+						type: "plan",
+						workId,
+						sessionId: "testOrg-session",
+						recordedAt: "2026-10-24T09:00:00.000Z",
+						path: ".kimchi/plans/rollout.md",
+						contentHash: "a".repeat(64),
+					},
+					"testOrg-parity",
+				)
+		}
+		if (cold)
+			for (const directory of [incremental, reference]) backendFor(directory).deleteNote("agent", groupKey(works))
+		let scanned = 0
+		for (const directory of [incremental, reference]) {
+			const backend = backendFor(directory)
+			const readRecords = backend.readRecords
+			if ((split || ownerless || sameInput) && directory === incremental)
+				backend.readRecords = (filter, check) => {
+					const rows = readRecords(filter, check)
+					if (filter?.workId === workId) scanned += rows.length
+					return rows
+				}
+			await reconcile(directory)
+			if (backend.markedRecords().length) throw new Error("Appended request did not settle")
+			if ((split || ownerless || sameInput) && directory === incremental) backend.readRecords = readRecords
+		}
+		if (scenario === "response-then-tool" || newUnitless) {
+			if (newUnitless) scanned = 0
+			for (const directory of [incremental, reference]) {
+				if (newUnitless)
+					capture(
+						directory,
+						{
+							version: 1,
+							type: "request_dispatch",
+							workId,
+							sessionId: "testOrg-session",
+							requestId: "11111111-1111-4111-8111-000000000004",
+							startedAt: "2026-10-24T08:00:04.000Z",
+							dispatchedAt: "2026-10-24T08:00:21.000Z",
+							recordedAt: "2026-10-24T08:00:21.000Z",
+						},
+						"testOrg-parity",
+					)
+				else
+					capture(
+						directory,
+						{
+							version: 1,
+							type: "tool_execution",
+							workId,
+							sessionId: "testOrg-session",
+							requestId: "11111111-1111-4111-8111-000000000000",
+							recordedAt: "2026-10-24T08:00:21.000Z",
+							repository: "/testOrg/widgets/.git",
+							toolCallId: "read-two",
+							toolName: "read",
+							outcome: "completed",
+							durationMs: 8,
+						},
+						"testOrg-parity",
+					)
+			}
+			for (const directory of [incremental, reference]) {
+				const backend = backendFor(directory)
+				const readRecords = backend.readRecords
+				if (directory === incremental)
+					backend.readRecords = (filter, check) => {
+						const rows = readRecords(filter, check)
+						if (filter?.workId === workId) scanned += rows.length
+						return rows
+					}
+				await reconcile(directory)
+				if (backend.markedRecords().length) throw new Error("Second split row did not settle")
+				if (directory === incremental) backend.readRecords = readRecords
+			}
+		}
+		if (linked !== undefined && !paired) {
+			for (const directory of [incremental, reference]) seed(directory, linked % 2 ? 21 : 2)
+			for (const directory of [incremental, reference]) {
+				await reconcile(directory)
+				if (backendFor(directory).markedRecords().length) throw new Error("Second request did not settle")
+			}
+		}
+		out({
+			incremental: events(incremental),
+			reference: events(reference),
+			...(split || ownerless || newUnitless || sameInput ? { scanned } : {}),
+		})
+	} finally {
+		closeBackends()
+		if (oldKey === undefined) delete process.env.KIMCHI_API_KEY
+		else process.env.KIMCHI_API_KEY = oldKey
+	}
+}
+
+function outboxSendableIndexScenario(agent: string): void {
+	const account = "testOrg-account"
+	const body = Buffer.from('{"source":"testOrg"}')
+	const hash = createHash("sha256").update(body).digest("hex")
+	const original = openStore(agent)
+	try {
+		// Reopen a schema-v1 ledger created without the compatible optional index.
+		original.db.exec("DROP INDEX IF EXISTS outbox_sendable")
+		const insert = original.db.query(
+			"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		)
+		original.tx(() => {
+			for (let index = 0; index < 300; index++) {
+				const id = `testOrg-event-${index.toString().padStart(3, "0")}`
+				insert.run(
+					id,
+					account,
+					id,
+					"coverage",
+					body,
+					hash,
+					10_000 - index,
+					index < 20 ? 1 : null,
+					index === 21 ? "fixture" : "",
+				)
+			}
+		})
+	} finally {
+		original.close()
+	}
+	const reopened = openStore(agent)
+	try {
+		const db = reopened.db
+		const sql =
+			"SELECT * FROM outbox_events WHERE account_key = ? AND acked_at IS NULL AND blocked = '' ORDER BY rowid LIMIT ?"
+		const plan = db.query<{ detail: string }, [string, number]>(`EXPLAIN QUERY PLAN ${sql}`).all(account, 100)
+		out({
+			version: db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+			indexPresent: Boolean(
+				db.query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'outbox_sendable'").get(),
+			),
+			indexUsed: plan.some((row) => row.detail.includes("USING INDEX outbox_sendable")),
+			tempSort: plan.some((row) => row.detail.includes("USE TEMP B-TREE")),
+			ids: db
+				.query<{ id: string }, [string, number]>(sql)
+				.all(account, 3)
+				.map((row) => row.id),
+		})
+	} finally {
+		reopened.close()
+	}
+}
+
+function outboxSendableIndexLockScenario(agent: string): void {
+	openStore(agent).close()
+	const writer = new Database(ledgerDbPath(agent), { strict: true })
+	let writing = false
+	let openedWhileLocked = false
+	let indexDeferred = false
+	let elapsedMs = 0
+	let openError: string | null = null
+	let installedAfterRelease = false
+	let version = 0
+	try {
+		writer.exec("DROP INDEX IF EXISTS outbox_sendable")
+		writer.exec("BEGIN IMMEDIATE")
+		writing = true
+		const started = performance.now()
+		try {
+			const reader = openStore(agent)
+			try {
+				openedWhileLocked = true
+				indexDeferred = !reader.db
+					.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'")
+					.get()
+			} finally {
+				reader.close()
+			}
+		} catch (error) {
+			openError = error instanceof Error ? error.message : String(error)
+		}
+		elapsedMs = Math.round(performance.now() - started)
+		writer.exec("COMMIT")
+		writing = false
+		const reopened = openStore(agent)
+		try {
+			installedAfterRelease = Boolean(
+				reopened.db.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'").get(),
+			)
+			version = reopened.db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0
+		} finally {
+			reopened.close()
+		}
+	} finally {
+		if (writing) writer.exec("ROLLBACK")
+		writer.close()
+	}
+	out({ openedWhileLocked, indexDeferred, elapsedMs, openError, installedAfterRelease, version })
+}
+
+function countLimitsScenario(agent: string): void {
+	const backend = backendFor(agent)
+	const workId = "11111111-1111-4111-8111-111111111111"
+	const rows = [
+		{ workId, type: "request", requestId: "testOrg-request-1" },
+		{ workId, type: "request_response", requestId: "testOrg-request-1" },
+		{ workId, type: "request", requestId: "testOrg-request-2" },
+		{ workId: "22222222-2222-4222-8222-222222222222", type: "request", requestId: "testOrg-other" },
+	]
+	backend.tx(() => {
+		for (const row of rows) {
+			const body = JSON.stringify({ version: 1, ...row, sessionId: "testOrg-session" })
+			backend.insertRecord({
+				recordHash: createHash("sha256").update(body).digest("hex"),
+				type: row.type,
+				workId: row.workId,
+				sessionId: "testOrg-session",
+				body,
+				sourcePath: join(agent, "work-attribution", "testOrg-count-limits.jsonl"),
+				sourceGeneration: 0,
+				sourceOffset: null,
+				importedAt: 1,
+			})
+		}
+	})
+	out({
+		recordCapNegative: backend.recordCount(workId, -1),
+		recordCap0: backend.recordCount(workId, 0),
+		recordCap1: backend.recordCount(workId, 1),
+		recordCap2: backend.recordCount(workId, 2),
+		recordCap4: backend.recordCount(workId, 4),
+		requestCapNegative: backend.requestCount(workId, -1),
+		requestCap0: backend.requestCount(workId, 0),
+		requestCap1: backend.requestCount(workId, 1),
+		requestCap2: backend.requestCount(workId, 2),
+		requestCap4: backend.requestCount(workId, 4),
+		exactRecords: backend.recordCount(workId),
+		exactRequests: backend.requestCount(workId),
+		globalCapNegative: backend.recordCount(undefined, -1),
+		globalCap2: backend.recordCount(undefined, 2),
+		globalExact: backend.recordCount(),
+	})
+}
+
+function markerClearScenario(agent: string): void {
+	const backend = backendFor(agent)
+	const hashes = Array.from({ length: 10_001 }, (_, index) => index.toString(16).padStart(64, "0"))
+	const captured = new Set(hashes)
+	const replacement = "f".repeat(64)
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
+	})
+	let rolledBack = false
+	try {
+		backend.tx(() => {
+			backend.clearTranslations(captured)
+			throw new Error("rollback")
+		})
+	} catch (error) {
+		rolledBack = error instanceof Error && error.message === "rollback"
+	}
+	const afterRollback = backend.markedRecords().length
+	backend.tx(() => backend.clearTranslations(captured))
+	const afterClear = backend.markedRecords().length
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
+		backend.clearTranslation(hashes[0])
+		backend.upsertMarker(replacement, "testOrg-work", "request")
+		backend.clearTranslations(captured)
+	})
+	out({ rolledBack, afterRollback, afterClear, remaining: backend.markedRecords().map((row) => row.recordHash) })
+}
+
+async function markerCleanupRecoveryScenario(agent: string): Promise<void> {
+	const { clearTranslatedMarkers } = await import(
+		"../../../../src/extensions/pr-cost-reporting/ledger/marker-cleanup.js"
+	)
+	const { closeBackends } = await import("../../../../src/extensions/pr-cost-reporting/ledger/records.js")
+	const { observeEvents } = await import("../../../../src/extensions/pr-cost-reporting/ledger/outbox.js")
+	const backend = backendFor(agent)
+	const hashes = Array.from({ length: 1_025 }, (_, index) => index.toString(16).padStart(64, "0"))
+	const lateHash = "f".repeat(64)
+	const fact = {
+		entityId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		source: "kimchi",
+		sourceVersion: "test",
+		deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		observeTime: "2026-10-24T00:00:00Z",
+		coverage: { code: "observed", count: "1" },
+	}
+	backend.tx(() => {
+		for (const hash of hashes) backend.upsertMarker(hash, "testOrg-work", "request")
+	})
+	observeEvents(agent, "testOrg-account", [fact], [], () => {})
+	const before = backend.latestOutboxEvent("testOrg-account", fact.entityId)
+	if (!before) throw new Error("Expected a committed testOrg fact before marker cleanup")
+	const transaction = backend.tx
+	let completedBatches = 0
+	backend.tx = (fn) => {
+		const result = transaction(fn)
+		if (++completedBatches === 1) backend.upsertMarker(lateHash, "testOrg-work", "request")
+		return result
+	}
+	let interrupted = false
+	try {
+		await clearTranslatedMarkers(backend, hashes, () => {
+			if (completedBatches === 1) throw new Error("simulated interruption between marker batches")
+		})
+	} catch (error) {
+		interrupted = error instanceof Error && error.message === "simulated interruption between marker batches"
+	}
+	const midway = backend.markedRecords().map(({ recordHash }) => recordHash)
+	const beforeRestart = backend.latestOutboxEvent("testOrg-account", fact.entityId)
+	closeBackends()
+	const reopened = backendFor(agent)
+	const afterRestart = reopened.latestOutboxEvent("testOrg-account", fact.entityId)
+	observeEvents(agent, "testOrg-account", [fact], [], () => {})
+	const replayed = reopened.outboxEntityEvents("testOrg-account", fact.entityId)
+	await clearTranslatedMarkers(reopened, hashes, () => {})
+	out({
+		interrupted,
+		completedBatches,
+		firstBatchCleared: midway.length === 2 && midway.includes(hashes[1_024]) && midway.includes(lateHash),
+		committedBeforeRestart: beforeRestart?.id === before.id,
+		eventRetained:
+			afterRestart?.id === before.id &&
+			afterRestart.hash === before.hash &&
+			Buffer.from(afterRestart.body).equals(Buffer.from(before.body)),
+		unchangedReplay:
+			replayed.length === 1 &&
+			replayed[0]?.id === before.id &&
+			Buffer.from(replayed[0].body).equals(Buffer.from(before.body)),
+		lateMarkerRetained:
+			JSON.stringify(reopened.markedRecords().map(({ recordHash }) => recordHash)) === JSON.stringify([lateHash]),
+	})
+}
+
 const commands: Record<string, (agent: string, arg?: string) => Promise<void>> = {
+	"incremental-parity": (agent, scenario) => incrementalParity(agent, scenario),
+	"marker-clear": (agent) => markerClearScenario(agent),
+	"count-limits": (agent) => countLimitsScenario(agent),
+	"marker-cleanup-recovery": (agent) => markerCleanupRecoveryScenario(agent),
+	"capture-receipt-conflict": (agent) => captureReceiptConflictScenario(agent),
+	"outbox-sendable-index": (agent) => outboxSendableIndexScenario(agent),
+	"outbox-sendable-index-lock": (agent) => outboxSendableIndexLockScenario(agent),
 	probe: (agent) => probe(agent),
 	"foreign-check": (agent) => foreignCheck(agent),
 	"hold-writer": (agent, ms) => holdWriter(agent, ms === "release" ? ms : Number(ms ?? "0")),
@@ -2040,8 +2723,8 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 	"native-common-events": (agent) => nativeUsage(agent, true, true),
 	"native-common-delivery": (agent) => nativeUsage(agent, true, true, true),
 	producer: (agent) => producerScenario(agent),
-	"legacy-freeze": (agent) => legacyFreezeScenario(agent),
 	outbox: (agent, mode) => outboxScenario(agent, mode ?? "sqlite"),
+	"claim-projection": (agent, mode) => claimProjectionScenario(agent, mode ?? "sqlite"),
 	"outbox-transport": (agent) => outboxTransport(agent),
 	"read-work-records": (agent) => readWorkRecordsCommand(agent),
 	"read-history": async (agent) => {

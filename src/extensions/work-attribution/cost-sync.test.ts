@@ -19,8 +19,9 @@ import {
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
+import { runCooperatively } from "./cooperative.js"
 import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
-import { readWorkCostReport, reconcileWorkCosts } from "./cost-sync.js"
+import { readWorkCostReport, readWorkCostReportSteps, reconcileWorkCosts } from "./cost-sync.js"
 import * as costs from "./costs.js"
 import { calculatePullRequestCosts, decimalNanos, roundedUsd } from "./costs.js"
 import { PRICED_TAG_LIMIT } from "./request-tags.js"
@@ -282,6 +283,18 @@ function billOneThenTwo(requestId: string) {
 }
 
 describe("automatic exact work cost lookup", () => {
+	it("cooperatively calculates the same full report as the synchronous work path", async () => {
+		tracked("first", randomUUID(), {}, [1, 2])
+		tracked("second", randomUUID(), {}, [2])
+		const records = readWorkRecords(dir)
+		const synchronous = readWorkCostReport(dir, records)
+		let turns = 0
+		setImmediate(() => turns++)
+		const cooperative = await runCooperatively(readWorkCostReportSteps(dir, records), () => {}, 0)
+		expect(cooperative).toEqual(synchronous)
+		expect(turns).toBeGreaterThan(0)
+	})
+
 	it("saves every request contributing to a PR total across works", async () => {
 		const first = tagged("first")
 		const second = tagged("second")
@@ -1839,7 +1852,7 @@ describe("automatic exact work cost lookup", () => {
 	})
 	it("stops reading the journals once aborted instead of finishing the calculation", async () => {
 		tagged()
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsSteps")
 		const controller = new AbortController()
 		const running = reconcileWorkCosts(dir, controller.signal)
 		// Closing a session aborts the pass while the journals are still being read.
@@ -2212,7 +2225,7 @@ describe("idle cost passes", () => {
 		await flushWorkSummaries()
 		const saved = report(workId)
 		const read = vi.spyOn(summary, "readWorkRecordsAsync")
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
+		const calculate = vi.spyOn(costs, "calculatePullRequestCostsSteps")
 		const write = vi.mocked(notes.putNote)
 		write.mockClear()
 		const readFile = vi.spyOn(fs, "readFileSync")

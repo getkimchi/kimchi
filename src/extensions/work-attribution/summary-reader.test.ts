@@ -275,6 +275,9 @@ it.each([
 		noLegacyJournal: true,
 		snapshotComplete: true,
 		nextReadSeesCapture: true,
+		workPagePinned: true,
+		workPageNextRead: true,
+		workPageFiltered: true,
 	})
 	expect(result.rowsAtAbort).toBeGreaterThan(0)
 	expect(result.rowsAtAbort).toBeLessThan(result.nativeRows)
@@ -322,11 +325,13 @@ it("repairs a truncated EOF diagnostic after a later complete line without clear
 	).toThrow("Work history contains unknown record types")
 })
 
-it("interrupts preparation of an unchanged large prefix without advancing its cursor", () => {
+it("interrupts revalidation of an unchanged large prefix after its mtime changes", () => {
 	const { agentDir, path } = journal([{ ...work, padding: "x".repeat(160 * 1024) }])
 	readWorkRecords(agentDir)
 	const backend = backendFor(agentDir)
 	const cursor = backend.getJournalCursor(path)
+	const changedTime = new Date(Date.now() + 10_000)
+	fs.utimesSync(path, changedTime, changedTime)
 	let chunks = 0
 	const read = fs.readSync
 	const chunk = vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {

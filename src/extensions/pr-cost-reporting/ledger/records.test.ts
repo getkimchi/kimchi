@@ -12,6 +12,7 @@ import {
 	closeBackends,
 	ledgerHasWorkOutput,
 	ledgerSessionInfo,
+	readGroupStoredRecordsAsync,
 	readRecordsAsync,
 	readStoredRecordsAsync,
 	readWorkHead,
@@ -141,6 +142,36 @@ describe("records conformance (memory backend)", () => {
 		expect(await readRecordsAsync(dir, () => {})).toEqual([records[0]])
 	})
 
+	it("pages a group in work order from one watermark without including later appends", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		const backend = createMemoryRecords()
+		useBackendFactory(() => backend)
+		const first = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		const other = { ...first, recordHash: "b".repeat(64), workId: "other" }
+		const second = { ...first, recordHash: "c".repeat(64) }
+		backend.insertRecord(first)
+		backend.insertRecord(other)
+		backend.insertRecord(second)
+		const reading = readGroupStoredRecordsAsync(dir, [WORK, "other"], () => {})
+		backend.insertRecord({ ...first, recordHash: "d".repeat(64) })
+		expect((await reading).map((row) => row.recordHash)).toEqual([
+			first.recordHash,
+			second.recordHash,
+			other.recordHash,
+		])
+	})
+
 	it("capture folds records into the projection exactly like the legacy summary did", () => {
 		const dir = agentDir()
 		dirs.push(dir)
@@ -188,6 +219,75 @@ describe("records conformance (memory backend)", () => {
 		capture(dir, records[0], "/a")
 		capture(dir, records[0], "/b")
 		expect(ledgerSessionInfo(dir, SESSION).recordCount).toBe(1)
+	})
+
+	it("looks up immutable authority by hash without scanning a work", () => {
+		const backend = createMemoryRecords()
+		const record = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		expect(backend.insertRecord(record)).toBe(true)
+		expect(backend.getRecord(record.recordHash)).toEqual(record)
+		expect(backend.getRecord("b".repeat(64))).toBeUndefined()
+	})
+
+	it("caps per-work counts without changing exact counts", () => {
+		const backend = createMemoryRecords()
+		const first = {
+			recordHash: "a".repeat(64),
+			type: "request",
+			workId: WORK,
+			sessionId: SESSION,
+			body: JSON.stringify(records[1]),
+			sourcePath: null,
+			sourceGeneration: 0,
+			sourceOffset: null,
+			importedAt: 1,
+		}
+		backend.insertRecord(first)
+		backend.insertRecord({ ...first, recordHash: "b".repeat(64), type: "request_response" })
+		backend.insertRecord({ ...first, recordHash: "c".repeat(64) })
+		backend.insertRecord({ ...first, recordHash: "d".repeat(64), workId: "other" })
+		expect(backend.recordCount(WORK, -1)).toBe(0)
+		expect(backend.requestCount(WORK, -1)).toBe(0)
+		expect(backend.recordCount(undefined, -1)).toBe(0)
+		expect(backend.recordCount(WORK, 1)).toBe(1)
+		expect(backend.recordCount(WORK, 2)).toBe(2)
+		expect(backend.recordCount(WORK, 4)).toBe(3)
+		expect(backend.requestCount(WORK, 1)).toBe(1)
+		expect(backend.requestCount(WORK, 2)).toBe(2)
+		expect(backend.recordCount(WORK)).toBe(3)
+		expect(backend.requestCount(WORK)).toBe(2)
+		expect(backend.recordCount()).toBe(4)
+	})
+
+	it("bulk marker clearing preserves a replacement and rolls back atomically in memory", () => {
+		const backend = createMemoryRecords()
+		const first = "a".repeat(64)
+		const second = "b".repeat(64)
+		const replacement = "c".repeat(64)
+		backend.upsertMarker(first, WORK, "request")
+		backend.upsertMarker(second, WORK, "request")
+		const captured = new Set([first, second])
+		expect(() =>
+			backend.tx(() => {
+				backend.clearTranslations(captured)
+				throw new Error("rollback")
+			}),
+		).toThrow("rollback")
+		expect(backend.markedRecords().map((row) => row.recordHash)).toEqual([first, second])
+		backend.clearTranslation(first)
+		backend.upsertMarker(replacement, WORK, "request")
+		backend.tx(() => backend.clearTranslations(captured))
+		expect(backend.markedRecords().map((row) => row.recordHash)).toEqual([replacement])
 	})
 
 	it("recovery rolls back marker clearing with the projection and only clears the rebuilt work", () => {
@@ -311,6 +411,45 @@ describe("records conformance (SQLite via Bun driver)", { skip: isBun, timeout: 
 			const head = driver("head", dir, WORK) as ReturnType<typeof readWorkHead> | null
 			expect(head?.workId).toBe(WORK)
 			expect(again.records).toBe("1")
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("caps SQLite counts without changing exact totals", () => {
+		const dir = agentDir()
+		try {
+			expect(driver("count-limits", dir)).toEqual({
+				recordCapNegative: 0,
+				recordCap0: 0,
+				recordCap1: 1,
+				recordCap2: 2,
+				recordCap4: 3,
+				requestCapNegative: 0,
+				requestCap0: 0,
+				requestCap1: 1,
+				requestCap2: 2,
+				requestCap4: 2,
+				exactRecords: 3,
+				exactRequests: 2,
+				globalCapNegative: 0,
+				globalCap2: 2,
+				globalExact: 4,
+			})
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	it("bulk marker clearing preserves a replacement and rolls back atomically in SQLite", () => {
+		const dir = agentDir()
+		try {
+			expect(driver("marker-clear", dir)).toEqual({
+				rolledBack: true,
+				afterRollback: 10_001,
+				afterClear: 0,
+				remaining: ["f".repeat(64)],
+			})
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}

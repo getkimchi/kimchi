@@ -3,9 +3,9 @@
  * any runtime (Node/vitest included); nothing here opens a database.
  *
  * The ledger is the authority for captured work records, the derived summary
- * projection and the durable delta outbox. Schema changes are additive and advance
- * SCHEMA_VERSION; a foreign user_version refuses to open (store.ts) so a newer
- * build never silently writes a schema an older build cannot read, and vice versa.
+ * projection and the durable delta outbox. Table and column changes advance
+ * SCHEMA_VERSION; an optional physical index can stay at v1 because older builds
+ * ignore it. A foreign user_version refuses to open (store.ts).
  *
  * Provenance/ownership conventions:
  * - `work_records` rows are immutable facts. Import anomalies (journal replaced,
@@ -18,6 +18,10 @@
  *   between the two never loses the intent and an unchanged work is never rebuilt.
  */
 export const SCHEMA_VERSION = 1
+
+/** Rowid is the implicit suffix, so a sendable account page needs no global sort. */
+export const OUTBOX_SENDABLE_INDEX =
+	"CREATE INDEX IF NOT EXISTS outbox_sendable ON outbox_events(account_key) WHERE acked_at IS NULL AND blocked = ''"
 
 export const LEDGER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -79,6 +83,7 @@ CREATE TABLE IF NOT EXISTS outbox_events (
 	blocked TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS outbox_pending ON outbox_events(account_key, acked_at, created_at);
+${OUTBOX_SENDABLE_INDEX};
 CREATE INDEX IF NOT EXISTS outbox_entity ON outbox_events(entity_id);
 CREATE TABLE IF NOT EXISTS outbox_batches (
 	id TEXT PRIMARY KEY,

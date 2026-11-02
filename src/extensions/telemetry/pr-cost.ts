@@ -6,8 +6,7 @@ import { _getTelemetryCtx } from "./index.js"
 export type PRCostMetric =
 	| { kind: "matching"; outcome: WorkSegment["attribution"] | "failed" | "limited" }
 	| { kind: "delivery"; outcome: "success" | "failed" | "canceled" }
-	/** snapshotRequests and snapshotBytes describe the largest snapshot queued in a reporting pass. */
-	| { kind: "unpriced" | "queueDepth" | "snapshotRequests" | "snapshotBytes"; value: number }
+	| { kind: "unpriced"; value: number }
 	| { kind: "reconciliation" }
 
 /** Accept counts and fixed outcomes only; identifiers and error text never enter metric labels. */

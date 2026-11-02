@@ -5,6 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { isWorkId } from "../../shared/work-id.js"
 import { appendWorkRecord, getWorkId, isWorkSegment, type WorkContext } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
+import { runSynchronously } from "./cooperative.js"
 import {
 	captureWorkScope,
 	isWorkAccount,
@@ -37,11 +38,12 @@ const MTIME_SLACK_MS = 2000
 const BUDGET_CHECK_ROWS = 1024
 
 /** Direct request corrections only: never merge sessions or follow transitive work links. */
-export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, RequestLink> {
+export function* requestWorkLinksSteps(records: readonly WorkRecord[]): Generator<void, Map<string, RequestLink>> {
 	const groups = new Map<string, WorkRecord[]>()
 	const requests = new Map<string, WorkRecord[]>()
 	const workRequests = new Map<string, WorkRecord[]>()
 	for (const row of records) {
+		yield
 		if (row.type === "request" && typeof row.requestId === "string") {
 			const copies = requests.get(row.requestId) ?? []
 			copies.push(row)
@@ -58,6 +60,7 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 	}
 	const result = new Map<string, RequestLink>()
 	for (const [linkId, rows] of groups) {
+		yield
 		const revision = Math.max(...rows.map((row) => (typeof row.revision === "number" ? row.revision : 0)))
 		const latest = rows.filter((row) => row.revision === revision)
 		const selected = latest[0]
@@ -122,6 +125,7 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 			targetRequests.some((row) => isWorkScope(row.scope)) &&
 			targetRequests.every((row) => !isWorkScope(row.scope) || sameWorkScope(row.scope, scope))
 		for (const requestId of ids) {
+			yield
 			const value = result.get(requestId) ?? { workIds: new Set(), linkIds: new Set(), unresolved: false }
 			for (const row of valid ? latest : rows)
 				if (typeof row.targetWorkId === "string") value.workIds.add(row.targetWorkId)
@@ -142,8 +146,15 @@ export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, Re
 			result.set(requestId, value)
 		}
 	}
-	for (const value of result.values()) value.unresolved ||= value.workIds.size !== 1
+	for (const value of result.values()) {
+		yield
+		value.unresolved ||= value.workIds.size !== 1
+	}
 	return result
+}
+
+export function requestWorkLinks(records: readonly WorkRecord[]): Map<string, RequestLink> {
+	return runSynchronously(requestWorkLinksSteps(records))
 }
 
 /** Lookups over one journal snapshot, so checking a receipt never rescans the whole history. */

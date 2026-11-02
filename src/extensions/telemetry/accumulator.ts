@@ -22,9 +22,6 @@ export interface CumulativeState {
 		matching: Partial<Record<Extract<PRCostMetric, { kind: "matching" }>["outcome"], number>>
 		delivery: Partial<Record<Extract<PRCostMetric, { kind: "delivery" }>["outcome"], number>>
 		unpriced?: number
-		queueDepth?: number
-		snapshotRequests?: number
-		snapshotBytes?: number
 		reconciliationStartedAt?: number
 	}
 }
@@ -98,9 +95,6 @@ export function collectMetrics(state: CumulativeState): MetricData[] {
 				out.push({ name: `kimchi.pr_cost.${kind}.count`, type: "Sum", value, attrs: { decision }, ...common })
 		for (const [name, value] of Object.entries({
 			"pricing.unpriced": state.prCost.unpriced,
-			"queue.depth": state.prCost.queueDepth,
-			"snapshot.requests": state.prCost.snapshotRequests,
-			"snapshot.bytes": state.prCost.snapshotBytes,
 			"reconciliation.age":
 				state.prCost.reconciliationStartedAt === undefined
 					? undefined

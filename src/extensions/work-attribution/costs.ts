@@ -10,7 +10,8 @@ import {
 } from "../pull-request-status/provider-records.js"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
-import { requestWorkLinks } from "./links.js"
+import { mapInChunks, runSynchronously } from "./cooperative.js"
+import { requestWorkLinksSteps } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
 
@@ -283,11 +284,11 @@ function transitionFingerprint(row: WorkRecord): string | undefined {
 	])
 }
 
-function exclusiveRequestPulls(
+function* exclusiveRequestPullsSteps(
 	records: readonly WorkRecord[],
 	ownership: Map<string, RequestOwnership>,
 	commitPulls: Map<string, Set<string>>,
-): Map<string, string> {
+): Generator<void, Map<string, string>> {
 	const transitions = new Map<
 		string,
 		{
@@ -306,6 +307,7 @@ function exclusiveRequestPulls(
 	const rewritten = new Set<string>()
 	const observations: { requestId: string; row: WorkRecord }[] = []
 	for (const row of records) {
+		yield
 		if (row.type === "file_observation" && typeof row.requestId === "string")
 			observations.push({ requestId: row.requestId, row })
 		if (row.type === "commit" && typeof row.rewrittenFrom === "string")
@@ -338,6 +340,7 @@ function exclusiveRequestPulls(
 		[...transitions.values()].map(({ row }) => JSON.stringify([row.workId, row.worktree, row.path])),
 	)
 	for (const { requestId, row } of observations) {
+		yield
 		const files = Array.isArray(row.files) ? row.files : []
 		if (
 			row.complete !== true ||
@@ -352,6 +355,7 @@ function exclusiveRequestPulls(
 			unresolvedRequests.add(requestId)
 	}
 	for (const row of records) {
+		yield
 		if (row.type !== "commit") continue
 		const key = commitIdentity(row)
 		if (typeof row.requestId === "string" && !rewritten.has(JSON.stringify([row.workId, row.repository, row.sha]))) {
@@ -411,6 +415,7 @@ function exclusiveRequestPulls(
 	// commit of its work is unmatched, the edit could be in it, so it still blocks.
 	const neutral = new Set<string>()
 	for (const [requestId, ids] of requestTransitions) {
+		yield
 		const owner = ownership.get(requestId)
 		if (!owner || unresolvedRequests.has(requestId) || owner.workIds.size !== 1 || owner.sessionIds.size !== 1) continue
 		const pulls = new Set<string>()
@@ -451,6 +456,7 @@ function exclusiveRequestPulls(
 	// One input can require several requests or local children before producing its edits.
 	const inputs = new Map<string, { requests: string[]; pulls: Set<string>; complete: boolean }>()
 	for (const [requestId, owner] of ownership) {
+		yield
 		if (!owner.segment || owner.workIds.size !== 1) continue
 		const key = JSON.stringify([
 			[...owner.workIds][0],
@@ -471,8 +477,10 @@ function exclusiveRequestPulls(
 		inputs.set(key, input)
 	}
 	for (const input of inputs.values()) {
+		yield
 		const nativeEvidence = input.requests.some((requestId) => exclusive.has(requestId))
 		for (const requestId of input.requests) {
+			yield
 			exclusive.delete(requestId)
 			if (nativeEvidence && input.complete && input.pulls.size === 1)
 				for (const pull of input.pulls) exclusive.set(requestId, pull)
@@ -487,11 +495,15 @@ interface BillingRow {
 	invalid: boolean
 }
 
-function requestPrices(observations: readonly RequestCostObservation[], noCharge: ReadonlyMap<string, WorkAccount>) {
+function* requestPricesSteps(
+	observations: readonly RequestCostObservation[],
+	noCharge: ReadonlyMap<string, WorkAccount>,
+) {
 	const billing = new Map<string, BillingRow>()
 	const requestBilling = new Map<string, Set<string>>()
 	const invalidRequests = new Set<string>()
 	for (const row of observations) {
+		yield
 		if (typeof row.requestId !== "string" || !row.requestId) continue
 		if (
 			typeof row.billingRecordId !== "string" ||
@@ -561,12 +573,12 @@ function allocation(
 }
 
 /** Recompute from durable evidence so repeated syncs and late prices cannot accumulate twice. */
-export function calculatePullRequestCosts(
+export function* calculatePullRequestCostsSteps(
 	records: readonly WorkRecord[],
 	observations: readonly RequestCostObservation[],
 	incompleteRequestIds: ReadonlySet<string> = new Set(),
 	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
-): PullRequestCostReport {
+): Generator<void, PullRequestCostReport> {
 	const ownership = new Map<string, RequestOwnership>()
 	const workPulls = new Map<string, Set<string>>()
 	const pullWorks = new Map<string, Set<string>>()
@@ -578,6 +590,7 @@ export function calculatePullRequestCosts(
 	const commitRecorded = new Map<string, number>()
 	const commitOrigins = new Map<string, string>()
 	for (const row of records) {
+		yield
 		if (row.type !== "commit") continue
 		const commit = JSON.stringify([row.workId, row.repository, row.sha])
 		const recordedAt = time(row.recordedAt)
@@ -605,6 +618,7 @@ export function calculatePullRequestCosts(
 	/** Keyed by work and PR: when that work first recorded a commit linked to the PR. */
 	const firstLinked = new Map<string, number>()
 	for (const row of records) {
+		yield
 		if (row.type === "request" && typeof row.requestId === "string" && row.requestId) {
 			const owner: RequestOwnership = ownership.get(row.requestId) ?? {
 				workIds: new Set<string>(),
@@ -698,20 +712,25 @@ export function calculatePullRequestCosts(
 		return followUps
 	}
 
-	const exclusivePulls = exclusiveRequestPulls(records, ownership, commitPulls)
-	const links = requestWorkLinks(records)
-	const priceFor = requestPrices(observations, noCharge)
+	const exclusivePulls = yield* exclusiveRequestPullsSteps(records, ownership, commitPulls)
+	const links = yield* requestWorkLinksSteps(records)
+	const priceFor = yield* requestPricesSteps(observations, noCharge)
 	const billingAccounts = new Map<string, (WorkAccount | undefined)[]>()
-	for (const [requestId, account] of noCharge) billingAccounts.set(requestId, [account])
+	for (const [requestId, account] of noCharge) {
+		yield
+		billingAccounts.set(requestId, [account])
+	}
 	for (const row of observations) {
+		yield
 		const accounts = billingAccounts.get(row.requestId) ?? []
 		accounts.push(row.account)
 		billingAccounts.set(row.requestId, accounts)
 	}
 
-	const requests: RequestCostAllocation[] = [...ownership]
-		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-		.map(([requestId, owner]) => {
+	const requests: RequestCostAllocation[] = yield* mapInChunks(
+		[...ownership].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+		128,
+		([requestId, owner]) => {
 			const workIds = [...owner.workIds].sort()
 			const link = links.get(requestId)
 			const linkedWorkIds = link ? [...link.workIds].sort() : []
@@ -791,12 +810,14 @@ export function calculatePullRequestCosts(
 				knownCostUsd: usd(nanos),
 				totalCostUsd: price.priceStatus === "priced" ? usd(nanos) : null,
 			}
-		})
+		},
+	)
 	const requestsByPull = new Map<string, RequestCostAllocation[]>()
 	const accountsByWork = new Map<string, Map<string, WorkAccount | null>>()
 	const accountKey = (account: WorkAccount | null) =>
 		JSON.stringify(account && [account.apiUrl, account.organizationId, account.userId])
 	for (const row of requests) {
+		yield
 		for (const workId of [...row.workIds, ...(row.linkedWorkIds ?? [])]) {
 			const accounts = accountsByWork.get(workId) ?? new Map<string, WorkAccount | null>()
 			accounts.set(accountKey(row.account), row.account)
@@ -871,4 +892,13 @@ export function calculatePullRequestCosts(
 			unknown: bucket("unknown"),
 		},
 	}
+}
+
+export function calculatePullRequestCosts(
+	records: readonly WorkRecord[],
+	observations: readonly RequestCostObservation[],
+	incompleteRequestIds: ReadonlySet<string> = new Set(),
+	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
+): PullRequestCostReport {
+	return runSynchronously(calculatePullRequestCostsSteps(records, observations, incompleteRequestIds, noCharge))
 }

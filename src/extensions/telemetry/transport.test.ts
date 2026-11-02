@@ -215,7 +215,7 @@ describe("sendMetrics", () => {
 	it("omits session identity from aggregate health metrics", async () => {
 		const config = makeConfig()
 		const health = {
-			name: "kimchi.pr_cost.queue.depth",
+			name: "kimchi.pr_cost.pricing.unpriced",
 			type: "Gauge" as const,
 			value: 2,
 			attrs: {},
@@ -233,7 +233,7 @@ describe("sendMetrics", () => {
 		await setOrgPolicyForTests({ usageReporting: "FORCE_OFF" })
 		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig())
 		const metrics: MetricData[] = [
-			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
+			{ name: "kimchi.pr_cost.pricing.unpriced", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
 		]
 
 		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)
@@ -245,7 +245,7 @@ describe("sendMetrics", () => {
 		await setOrgPolicyForTests({ usageReporting: "FORCE_ON" })
 		vi.spyOn(config, "readTelemetryConfig").mockReturnValue(makeConfig({ enabled: false }))
 		const metrics: MetricData[] = [
-			{ name: "kimchi.pr_cost.queue.depth", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
+			{ name: "kimchi.pr_cost.pricing.unpriced", type: "Gauge", value: 1, attrs: {}, scope: "aggregate" },
 		]
 
 		await sendMetrics(makeConfig(), "session-abc", metrics, BASE_NS)

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 import type { CommonEvents } from "./events.js"
 
-it("uploads real SDK capture through the worker with exact legacy drainage and account/consent-safe retries", {
+it("uploads real SDK capture through the worker with account/consent-safe retries", {
 	timeout: 30_000,
 }, () => {
 	const directory = mkdtempSync(join(tmpdir(), "kimchi-worker-events-"))
@@ -19,9 +19,6 @@ it("uploads real SDK capture through the worker with exact legacy drainage and a
 		expect(result).toMatchObject({
 			initialPending: 0,
 			finalPending: 0,
-			legacyExact: true,
-			legacyFirst: true,
-			noNewLegacy: true,
 			reopened: true,
 			backoff: true,
 			idle: true,
@@ -33,7 +30,6 @@ it("uploads real SDK capture through the worker with exact legacy drainage and a
 			rejectedBackoff: true,
 			keyFenced: true,
 			redirectsRejected: true,
-			legacyBoundary: true,
 			failedPassAborted: true,
 			abandonedRetained: true,
 		})

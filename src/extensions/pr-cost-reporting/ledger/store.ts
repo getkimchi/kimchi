@@ -21,7 +21,13 @@ import { closeSync, mkdirSync, openSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join } from "node:path"
 import { reportingDirectory } from "../queue.js"
-import { LEDGER_SCHEMA, META_PROJECTION_VERSION, PROJECTION_VERSION, SCHEMA_VERSION } from "./schema.js"
+import {
+	LEDGER_SCHEMA,
+	META_PROJECTION_VERSION,
+	OUTBOX_SENDABLE_INDEX,
+	PROJECTION_VERSION,
+	SCHEMA_VERSION,
+} from "./schema.js"
 
 /** Thrown when the database cannot be opened in this runtime (no bun:sqlite). */
 export class LedgerUnavailableError extends Error {
@@ -53,7 +59,7 @@ function bunSqlite(): typeof Sqlite {
 	return sqlite
 }
 
-/** The ledger lives beside the legacy state.json queue, inheriting its directory's lock discipline. */
+/** The ledger lives beside the reporting state.json, in the same private directory. */
 export function ledgerDbPath(agentDir: string): string {
 	return join(reportingDirectory(agentDir), "ledger.db")
 }
@@ -138,6 +144,8 @@ export function openStore(agentDir: string): LedgerStore {
 			const decision = classifyUserVersion(version)
 			if (decision === "foreign") throw new LedgerSchemaError(version)
 			ledger.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON")
+			// Large journal imports repeatedly touch the record and marker indexes; this connection-local cache is allocated on demand.
+			ledger.exec("PRAGMA cache_size=-131072")
 			if (decision === "create") {
 				ledger
 					.transaction(() => {
@@ -150,6 +158,18 @@ export function openStore(agentDir: string): LedgerStore {
 						ledger.exec(`PRAGMA user_version=${SCHEMA_VERSION}`)
 					})
 					.immediate()
+			}
+			// The optional index upgrades v1 ledgers without changing the version older builds read. Defer its
+			// installation if another process holds the writer lock rather than blocking startup for five seconds.
+			if (!ledger.query("SELECT 1 FROM sqlite_master WHERE type='index' AND name='outbox_sendable'").get()) {
+				ledger.exec("PRAGMA busy_timeout=50")
+				try {
+					ledger.exec(OUTBOX_SENDABLE_INDEX)
+				} catch (error) {
+					if (!(error instanceof Error && "code" in error && error.code === "SQLITE_BUSY")) throw error
+				} finally {
+					ledger.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`)
+				}
 			}
 			return {
 				db: ledger,

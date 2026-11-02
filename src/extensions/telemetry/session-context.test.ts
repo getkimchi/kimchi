@@ -62,7 +62,7 @@ describe("SessionContext", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		ctx.setPiSessionId("private-session")
 		ctx.userId = "private-user"
-		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, queueDepth: 0, startTimeUnixNano: "1000000000" }
+		ctx.cumulative.prCost = { matching: { explicit: 1 }, delivery: {}, unpriced: 0, startTimeUnixNano: "1000000000" }
 		ctx.flushMetrics()
 		await Promise.allSettled([...ctx.inFlight])
 		const [, options] = vi.mocked(globalThis.fetch).mock.calls[0]

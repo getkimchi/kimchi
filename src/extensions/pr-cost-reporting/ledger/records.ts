@@ -89,18 +89,25 @@ export interface RecordBackend {
 	tx<T>(fn: () => T): T
 	/** True when a NEW row was inserted; false when the record hash already exists (import dedup). */
 	insertRecord(row: StoredRecord): boolean
+	/** Read one immutable authority row without scanning its work. */
+	getRecord(recordHash: string): StoredRecord | undefined
 	upsertMarker(recordHash: string, workId: string, type: string): void
 	pendingTranslations(after: number, through: number, limit: number): PositionedRecord[]
 	/** Every record not yet translated into events, by work. */
 	markedRecords(): { recordHash: string; workId: string; type: string }[]
 	clearTranslation(recordHash: string): void
+	/** Clear exactly these markers in the caller's transaction, preserving any markers added later. */
+	clearTranslations(recordHashes: ReadonlySet<string>): void
 	/** The entity's newest event that was not set aside. */
 	latestOutboxEvent(accountKey: string, entityId: string): OutboxEvent | undefined
 	getOutboxEvent(accountKey: string, id: string): OutboxEvent | undefined
 	outboxEntityEvents(accountKey: string, entityId: string): OutboxEvent[]
+	unblockedOutboxEventCount(accountKey: string, entityId: string): number
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
+	/** Delivery needs only accounts with sendable events or frozen batches, not historical totals. */
+	outboxDeliveryStatus(): Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">[]
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
@@ -125,13 +132,22 @@ export interface RecordBackend {
 	): StoredRecord[]
 	/** Pins an async read to the records committed when it started. */
 	recordWatermark(): number
-	readRecordPage(after: number, through: number, limit: number, checkBudget?: () => void): PositionedRecord[]
-	recordCount(workId?: string): number
+	readRecordPage(
+		after: number,
+		through: number,
+		limit: number,
+		checkBudget?: () => void,
+		workId?: string,
+		type?: string,
+	): PositionedRecord[]
+	/** Exact by default; a limit stops a threshold check without scanning the whole work. */
+	recordCount(workId?: string, limit?: number): number
+	/** Counts request evidence without materializing records; an optional limit bounds the scan. */
+	requestCount(workId: string, limit?: number): number
 	/** Whether the projection has any plan or commit rows for the work. */
 	hasProjectionOutput(workId: string): boolean
 	hasNote(workId: string, name: string): boolean
 	getNote(workId: string, name: string): string | undefined
-	readNotePage(workId: string, after: string, limit: number): { name: string; body: string }[]
 	putNote(workId: string, name: string, body: string): void
 	deleteNote(workId: string, name: string): void
 	diagnostic(code: string): void
@@ -280,23 +296,27 @@ async function readRecordPrefixAsync<T>(
 	agentDir: string,
 	checkBudget: () => void,
 	project: (row: StoredRecord) => T | undefined,
+	workIds?: readonly string[],
+	type?: string,
 ): Promise<T[]> {
 	checkBudget()
 	const backend = backendFor(agentDir)
 	const through = backend.recordWatermark()
 	const records: T[] = []
-	let after = 0
-	while (after < through) {
-		await setImmediate()
-		checkBudget()
-		const page = backend.readRecordPage(after, through, 128, checkBudget)
-		if (!page.length) break
-		for (const row of page) {
+	for (const workId of workIds ?? [undefined]) {
+		let after = 0
+		while (after < through) {
+			await setImmediate()
 			checkBudget()
-			const value = project(row)
-			if (value !== undefined) records.push(value)
+			const page = backend.readRecordPage(after, through, 128, checkBudget, workId, type)
+			if (!page.length) break
+			for (const row of page) {
+				checkBudget()
+				const value = project(row)
+				if (value !== undefined) records.push(value)
+			}
+			after = page[page.length - 1].position
 		}
-		after = page[page.length - 1].position
 	}
 	checkBudget()
 	return records
@@ -305,6 +325,35 @@ async function readRecordPrefixAsync<T>(
 /** Retain original capture/import hashes for atomic translation; never hash the reserialized body instead. */
 export function readStoredRecordsAsync(agentDir: string, checkBudget: () => void): Promise<StoredRecord[]> {
 	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row)
+}
+
+/** Preserve work-group order while reading each work from the same pinned authority prefix. */
+export function readGroupStoredRecordsAsync(
+	agentDir: string,
+	workIds: readonly string[],
+	checkBudget: () => void,
+): Promise<StoredRecord[]> {
+	return readRecordPrefixAsync(agentDir, checkBudget, (row) => row, workIds)
+}
+
+export function readGroupRequestRecordsAsync(
+	agentDir: string,
+	workIds: readonly string[],
+	checkBudget: () => void,
+): Promise<WorkRecord[]> {
+	return readRecordPrefixAsync(
+		agentDir,
+		checkBudget,
+		(row) => {
+			try {
+				return JSON.parse(row.body) as WorkRecord
+			} catch {
+				return undefined
+			}
+		},
+		workIds,
+		"request",
+	)
 }
 
 export function readRecordsAsync(agentDir: string, checkBudget: () => void): Promise<WorkRecord[]> {
@@ -532,6 +581,8 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		"SELECT w.rowid AS position, w.record_hash AS recordHash, w.type, w.work_id AS workId, w.session_id AS sessionId, w.body, w.source_path AS sourcePath, w.source_generation AS sourceGeneration, w.source_offset AS sourceOffset, w.imported_at AS importedAt FROM pending_translation p JOIN work_records w ON w.record_hash = p.record_hash WHERE w.rowid > ? AND w.rowid <= ? ORDER BY w.rowid LIMIT ?",
 	)
 	const clearTranslation = db.query("DELETE FROM pending_translation WHERE record_hash = ?")
+	const clearAllTranslations = db.query("DELETE FROM pending_translation")
+	const markedHashes = db.query<{ recordHash: string }, []>("SELECT record_hash AS recordHash FROM pending_translation")
 	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
 		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
 	)
@@ -545,6 +596,9 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const entityEvents = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? ORDER BY rowid`,
+	)
+	const unblockedEventCount = db.query<{ count: number }, [string, string]>(
+		"SELECT COUNT(*) AS count FROM outbox_events WHERE account_key = ? AND entity_id = ? AND blocked = ''",
 	)
 	const insertEvent = db.query(
 		"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -582,6 +636,29 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			USING (account_key)
 		ORDER BY a.account_key
 	`)
+	const outboxDeliveryStatus = db.query<
+		Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">,
+		[]
+	>(`
+		WITH RECURSIVE event_accounts(account_key) AS (
+			SELECT MIN(account_key) FROM outbox_events
+			UNION ALL
+			SELECT (SELECT MIN(account_key) FROM outbox_events WHERE account_key > event_accounts.account_key)
+			FROM event_accounts WHERE event_accounts.account_key IS NOT NULL
+		), accounts AS (
+			SELECT account_key FROM event_accounts WHERE account_key IS NOT NULL
+			UNION SELECT account_key FROM outbox_batches
+		), delivery AS (
+			SELECT a.account_key AS accountKey,
+				EXISTS(SELECT 1 FROM outbox_events e INDEXED BY outbox_pending
+					WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '' LIMIT 1) AS sendable,
+				EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key LIMIT 1) AS batches,
+				(SELECT id FROM outbox_batches b WHERE b.account_key = a.account_key
+					ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+			FROM accounts a
+		)
+		SELECT * FROM delivery WHERE sendable > 0 OR batches > 0 ORDER BY accountKey
+	`)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
@@ -598,6 +675,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const clearHead = db.query("DELETE FROM work_projection_head WHERE work_id = ?")
 	const recordColumns =
 		"record_hash AS recordHash, type, work_id AS workId, session_id AS sessionId, body, source_path AS sourcePath, source_generation AS sourceGeneration, source_offset AS sourceOffset, imported_at AS importedAt"
+	const getRecord = db.query<StoredRecord, [string]>(`SELECT ${recordColumns} FROM work_records WHERE record_hash = ?`)
 	const readRecordsAll = db.query<StoredRecord, []>(`SELECT ${recordColumns} FROM work_records ORDER BY rowid`)
 	const readRecordsWork = db.query<StoredRecord, [string]>(
 		`SELECT ${recordColumns} FROM work_records WHERE work_id = ? ORDER BY rowid`,
@@ -615,9 +693,30 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const recordPage = db.query<PositionedRecord, [number, number, number]>(
 		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
 	)
+	const recordPageWork = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE work_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
+	const recordPageType = db.query<PositionedRecord, [string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records WHERE type = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
+	const recordPageWorkType = db.query<PositionedRecord, [string, string, number, number, number]>(
+		`SELECT rowid AS position, ${recordColumns} FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+	)
 	const recordCountAll = db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_records")
 	const recordCountWork = db.query<{ count: number }, [string]>(
 		"SELECT COUNT(*) AS count FROM work_records WHERE work_id = ?",
+	)
+	const requestCountWork = db.query<{ count: number }, [string]>(
+		"SELECT COUNT(*) AS count FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = 'request'",
+	)
+	const recordCountAllUpTo = db.query<{ count: number }, [number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records LIMIT ?)",
+	)
+	const recordCountWorkUpTo = db.query<{ count: number }, [string, number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records WHERE work_id = ? LIMIT ?)",
+	)
+	const requestCountWorkUpTo = db.query<{ count: number }, [string, number]>(
+		"SELECT COUNT(*) AS count FROM (SELECT 1 FROM work_records INDEXED BY work_records_work WHERE work_id = ? AND type = 'request' LIMIT ?)",
 	)
 	const dirty = db.query<{ work_id: string }, []>("SELECT work_id FROM work_dirty")
 	const markDirty = db.query("INSERT OR IGNORE INTO work_dirty (work_id) VALUES (?)")
@@ -630,9 +729,6 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	)
 	const putNote = db.query("INSERT OR REPLACE INTO bookkeeping (work_id, name, body, updated_at) VALUES (?, ?, ?, ?)")
 	const deleteNote = db.query("DELETE FROM bookkeeping WHERE work_id = ? AND name = ?")
-	const notePage = db.query<{ name: string; body: string }, [string, string, number]>(
-		"SELECT name, body FROM bookkeeping WHERE work_id = ? AND name > ? ORDER BY name LIMIT ?",
-	)
 	const getCursor = db.query<JournalCursor, [string]>(
 		"SELECT path, dev, ino, generation, offset, boundary_hash AS boundaryHash, updated_at AS updatedAt FROM journal_cursor WHERE path = ?",
 	)
@@ -666,9 +762,21 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		pendingTranslations: (after, through, limit) => translations.all(after, through, limit),
 		markedRecords: () => marked.all(),
 		clearTranslation: (recordHash) => clearTranslation.run(recordHash),
+		clearTranslations: (recordHashes) => {
+			// Avoid scanning every group for B's many small works; large all-marker groups can clear in one statement.
+			if (recordHashes.size >= 10_000) {
+				const pending = markedHashes.all()
+				if (pending.length === recordHashes.size && pending.every(({ recordHash }) => recordHashes.has(recordHash))) {
+					clearAllTranslations.run()
+					return
+				}
+			}
+			for (const recordHash of recordHashes) clearTranslation.run(recordHash)
+		},
 		latestOutboxEvent: (accountKey, entityId) => latestEvent.get(accountKey, entityId) ?? undefined,
 		getOutboxEvent: (accountKey, id) => getEvent.get(accountKey, id) ?? undefined,
 		outboxEntityEvents: (accountKey, entityId) => entityEvents.all(accountKey, entityId),
+		unblockedOutboxEventCount: (accountKey, entityId) => unblockedEventCount.get(accountKey, entityId)?.count ?? 0,
 		insertOutboxEvent: (event) =>
 			insertEvent.run(
 				event.id,
@@ -683,6 +791,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			),
 		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
 		outboxStatus: () => outboxStatus.all(),
+		outboxDeliveryStatus: () => outboxDeliveryStatus.all(),
 		getOutboxBatch: (accountKey) => {
 			const batch = pendingBatch.get(accountKey)
 			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined
@@ -718,6 +827,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 		},
 		putHead: (head) => putHead.run(head.workId, JSON.stringify(head), Date.now()),
 		allHeads: () => allHeads.all().map((row) => JSON.parse(row.body) as WorkHead),
+		getRecord: (recordHash) => getRecord.get(recordHash) ?? undefined,
 		readRecords: (opts, checkBudget) => {
 			checkBudget?.()
 			// An index narrows the read; any other option filters its rows.
@@ -755,27 +865,52 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			return rows
 		},
 		recordWatermark: () => watermark.get()?.position ?? 0,
-		readRecordPage: (after, through, limit, checkBudget) => {
+		readRecordPage: (after, through, limit, checkBudget, workId, type) => {
 			checkBudget?.()
 			const rows: PositionedRecord[] = []
 			try {
-				for (const row of recordPage.iterate(after, through, limit)) {
+				const source =
+					workId === undefined
+						? type === undefined
+							? recordPage.iterate(after, through, limit)
+							: recordPageType.iterate(type, after, through, limit)
+						: type === undefined
+							? recordPageWork.iterate(workId, after, through, limit)
+							: recordPageWorkType.iterate(workId, type, after, through, limit)
+				for (const row of source) {
 					checkBudget?.()
 					rows.push(row)
 				}
 			} catch (error) {
 				// The same Bun cursor-reset rule as the synchronous replay above.
-				recordPage.get(after, through, limit)
+				if (workId === undefined) {
+					if (type === undefined) recordPage.get(after, through, limit)
+					else recordPageType.get(type, after, through, limit)
+				} else if (type === undefined) recordPageWork.get(workId, after, through, limit)
+				else recordPageWorkType.get(workId, type, after, through, limit)
 				throw error
 			}
 			return rows
 		},
 		hasProjectionOutput: (workId) =>
 			readLog.all(workId, "plans").length > 0 || readLog.all(workId, "commits").length > 0,
-		recordCount: (workId) => (workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)),
+		recordCount: (workId, limit) => {
+			if (limit !== undefined) {
+				if (limit <= 0) return 0
+				return workId
+					? (recordCountWorkUpTo.get(workId, limit)?.count ?? 0)
+					: (recordCountAllUpTo.get(limit)?.count ?? 0)
+			}
+			return workId ? (recordCountWork.get(workId)?.count ?? 0) : (recordCountAll.get()?.count ?? 0)
+		},
+		requestCount: (workId, limit) => {
+			if (limit !== undefined && limit <= 0) return 0
+			return limit === undefined
+				? (requestCountWork.get(workId)?.count ?? 0)
+				: (requestCountWorkUpTo.get(workId, limit)?.count ?? 0)
+		},
 		hasNote: (workId, name) => hasNote.get(workId, name) != null,
 		getNote: (workId, name) => getNote.get(workId, name)?.body,
-		readNotePage: (workId, after, limit) => notePage.all(workId, after, limit),
 		putNote: (workId, name, body) => putNote.run(workId, name, body, Date.now()),
 		deleteNote: (workId, name) => {
 			deleteNote.run(workId, name)

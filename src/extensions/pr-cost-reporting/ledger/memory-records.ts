@@ -71,6 +71,17 @@ export function createMemoryRecords(): RecordBackend {
 		for (const [key, value] of backup.batches) batches.set(key, value)
 	}
 
+	const countMatching = (workId: string, type: string | undefined, limit?: number): number => {
+		if (limit !== undefined && limit <= 0) return 0
+		let count = 0
+		for (const row of order) {
+			if (row.workId !== workId || (type !== undefined && row.type !== type)) continue
+			count++
+			if (limit !== undefined && count >= limit) break
+		}
+		return count
+	}
+
 	return {
 		/**
 		 * In-memory transaction: attach a deep snapshot at entry and restore it on throw so mixed
@@ -108,6 +119,7 @@ export function createMemoryRecords(): RecordBackend {
 			order.push(row)
 			return true
 		},
+		getRecord: (recordHash) => records.get(recordHash),
 		upsertMarker: (recordHash, workId, type) => markers.set(recordHash, { workId, type }),
 		pendingTranslations: (after, through, limit) =>
 			order
@@ -116,6 +128,9 @@ export function createMemoryRecords(): RecordBackend {
 				.filter((row) => markers.has(row.recordHash))
 				.slice(0, limit),
 		clearTranslation: (recordHash) => markers.delete(recordHash),
+		clearTranslations: (recordHashes) => {
+			for (const recordHash of recordHashes) markers.delete(recordHash)
+		},
 		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
@@ -131,6 +146,10 @@ export function createMemoryRecords(): RecordBackend {
 			structuredClone(
 				[...events.values()].filter((event) => event.accountKey === accountKey && event.entityId === entityId),
 			),
+		unblockedOutboxEventCount: (accountKey, entityId) =>
+			[...events.values()].filter(
+				(event) => event.accountKey === accountKey && event.entityId === entityId && event.blocked === "",
+			).length,
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
 			events.set(event.id, structuredClone(event))
@@ -176,6 +195,31 @@ export function createMemoryRecords(): RecordBackend {
 			)) {
 				const status = account(batch.accountKey)
 				status.batches++
+				status.firstBatchId ??= batch.id
+			}
+			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))
+		},
+		outboxDeliveryStatus: () => {
+			const accounts = new Map<
+				string,
+				Pick<OutboxAccountStatus, "accountKey" | "sendable" | "batches" | "firstBatchId">
+			>()
+			const account = (accountKey: string) => {
+				let status = accounts.get(accountKey)
+				if (!status) {
+					status = { accountKey, sendable: 0, batches: 0, firstBatchId: null }
+					accounts.set(accountKey, status)
+				}
+				return status
+			}
+			for (const event of events.values()) {
+				if (event.ackedAt === null && event.blocked === "") account(event.accountKey).sendable = 1
+			}
+			for (const batch of [...batches.values()].sort(
+				(a, b) => Buffer.compare(Buffer.from(a.orderKey), Buffer.from(b.orderKey)) || a.createdAt - b.createdAt,
+			)) {
+				const status = account(batch.accountKey)
+				status.batches = 1
 				status.firstBatchId ??= batch.id
 			}
 			return [...accounts.values()].sort((a, b) => Buffer.compare(Buffer.from(a.accountKey), Buffer.from(b.accountKey)))
@@ -243,29 +287,29 @@ export function createMemoryRecords(): RecordBackend {
 				)
 			}),
 		recordWatermark: () => order.length,
-		readRecordPage: (after, through, limit, checkBudget) =>
-			order.slice(after, Math.min(through, after + limit)).map((row, index) => {
+		readRecordPage: (after, through, limit, checkBudget, workId, type) => {
+			const page: ReturnType<RecordBackend["readRecordPage"]> = []
+			for (let index = after; index < Math.min(through, order.length) && page.length < limit; index++) {
 				checkBudget?.()
-				return { ...row, position: after + index + 1 }
-			}),
-		recordCount: (workId) => (workId ? order.filter((row) => row.workId === workId).length : order.length),
+				const row = order[index]
+				if ((workId === undefined || row.workId === workId) && (type === undefined || row.type === type))
+					page.push({ ...row, position: index + 1 })
+			}
+			return page
+		},
+		recordCount: (workId, limit) =>
+			workId === undefined
+				? limit === undefined
+					? order.length
+					: Math.min(order.length, Math.max(0, limit))
+				: countMatching(workId, undefined, limit),
+		requestCount: (workId, limit) => countMatching(workId, "request", limit),
 		hasProjectionOutput: (workId) => {
 			const byLog = logs.get(workId)
 			return (byLog?.get("plans")?.size ?? 0) > 0 || (byLog?.get("commits")?.size ?? 0) > 0
 		},
 		hasNote: (workId, name) => notes.has(noteKey(workId, name)),
 		getNote: (workId, name) => notes.get(noteKey(workId, name)),
-		readNotePage: (workId, after, limit) => {
-			const prefix = noteKey(workId, "")
-			return [...notes]
-				.filter(
-					([key]) =>
-						key.startsWith(prefix) && Buffer.compare(Buffer.from(key.slice(prefix.length)), Buffer.from(after)) > 0,
-				)
-				.sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
-				.slice(0, limit)
-				.map(([key, body]) => ({ name: key.slice(prefix.length), body }))
-		},
 		putNote: (workId, name, body) => notes.set(noteKey(workId, name), body),
 		deleteNote: (workId, name) => {
 			notes.delete(noteKey(workId, name))
