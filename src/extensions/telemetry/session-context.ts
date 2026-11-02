@@ -421,7 +421,9 @@ export class TelemetryContext {
 									// Process-level client identity, mirroring the log-record
 									// common attributes so metric aggregations can split by
 									// harness path (cli) or ACP client (acp_client_name).
-									source: IS_ACP_MODE ? "acp" : "cli",
+									// Skipped when the metric defines its own `source`
+									// (code_edit_tool.decision uses it for the decision origin).
+									...(!("source" in m.attrs) ? { source: IS_ACP_MODE ? "acp" : "cli" } : {}),
 									...getAcpAttributes(),
 									...(m.scope === "aggregate" ? {} : { "user.account_uuid": this.userId ?? "" }),
 								},

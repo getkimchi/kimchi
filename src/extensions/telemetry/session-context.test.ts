@@ -10,7 +10,9 @@ import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { recordEditDecision } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
+import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import * as telemetry from "./index.js"
 import { trackPRCostMetric } from "./pr-cost.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
@@ -896,6 +898,38 @@ describe("SessionContext", () => {
 			expect(attrMap.acp_client_name).toBe("kimchi-vscode")
 			expect(attrMap.acp_client_version).toBe("0.0.1")
 		}
+	})
+
+	it("flushMetrics preserves a metric's own source attribute on code_edit_tool.decision", async () => {
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+		const ctx = new TelemetryContext(makeConfig())
+		recordEditDecision(ctx.cumulative, "Edit", "ts")
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const decision = body.resourceMetrics[0].scopeMetrics[0].metrics.find(
+			(metric: { name: string }) => metric.name === "claude_code.code_edit_tool.decision",
+		)
+		expect(decision).toBeDefined()
+		const attrMap = Object.fromEntries(
+			decision.sum.dataPoints[0].attributes.map((a: { key: string; value: { stringValue?: string } }) => [
+				a.key,
+				a.value.stringValue,
+			]),
+		)
+		// The decision-origin attribute must survive the process-identity stamping.
+		expect(attrMap.source).toBe("auto")
+		expect(attrMap.tool_name).toBe("Edit")
+		expect(attrMap.decision).toBe("accept")
+		expect(attrMap.language).toBe("ts")
+		// Non-colliding identity attributes still attach.
+		expect(attrMap.acp_client_name).toBe("kimchi-vscode")
 	})
 
 	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {
