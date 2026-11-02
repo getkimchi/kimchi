@@ -163,20 +163,33 @@ export async function scanBriefSkills(
 					continue
 				}
 				seen.add(name)
-				available.push({ name, description: skill.description ?? "", filePath: skill.filePath })
+				const entry: SkillListEntry = { name, description: skill.description ?? "", filePath: skill.filePath }
 				try {
 					// Same shape as the parent's auto-load steer (formatSkillViewResult):
 					// the entry-file body plus the skill directory, so bundled skills
 					// that reference linked files keep their fallback route even though
 					// the note tells the model not to re-load via skill_view.
 					const content = `${readFileSync(skill.filePath, "utf-8")}\nSkill directory: ${dirname(skill.filePath)}`
-					if (meta.origin === "harness" && isAgentCreated(dirname(skill.filePath))) continue
-					if (isModelInvocationDisabled(content)) continue
+					const agentCreated = meta.origin === "harness" && isAgentCreated(dirname(skill.filePath))
 					const required = requiresResource(content)
-					if (required && !resourceEnabled(required)) continue
-					sources.push({ name, content, origin: meta.origin, ...(meta.label ? { label: meta.label } : {}) })
+					const resourceOff = required !== undefined && !resourceEnabled(required)
+					if (isModelInvocationDisabled(content) || resourceOff) {
+						// The parent's model-facing catalog excludes these entirely —
+						// advertise nothing, preload nothing. Seen above, so a same-name
+						// skill in a weaker root cannot resurrect it.
+						continue
+					}
+					// agent_created harness skills stay in the catalog (the parent
+					// advertises them); only auto-load excludes them.
+					available.push(entry)
+					if (!agentCreated) {
+						sources.push({ name, content, origin: meta.origin, ...(meta.label ? { label: meta.label } : {}) })
+					}
 				} catch {
-					skipped += 1 // unreadable skill body: stays in the list, never preloaded
+					// Unreadable body: gates can't be checked — list it best-effort,
+					// never preload it.
+					skipped += 1
+					available.push(entry)
 				}
 			}
 		}

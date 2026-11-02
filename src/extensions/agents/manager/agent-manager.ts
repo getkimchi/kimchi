@@ -409,7 +409,8 @@ export class AgentManager {
 								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 							}
 							record.abortReason = abortReason
-							record.result = formatRunResultText(responseText, planPath, autoLoadedSkills)
+							const finalText = formatRunResultText(responseText, planPath, autoLoadedSkills)
+							record.result = finalText
 							record.session = session
 							record.lastTurnCount = turnsUsed
 							// Preserve the effective, normalized turn cap returned by the runner.
@@ -422,7 +423,7 @@ export class AgentManager {
 								if (!this.disposed) this.onComplete?.(record)
 								this.drainQueue()
 							}
-							return formatRunResultText(responseText, planPath, autoLoadedSkills)
+							return finalText
 						},
 					)
 					.catch((err) => {

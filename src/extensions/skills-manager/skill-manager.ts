@@ -360,7 +360,10 @@ export class SkillManager {
 					const skillPath = join(full, "SKILL.md")
 					try {
 						await stat(skillPath)
-						// agent_created flag: shared sidecar probe (skill-triggers.ts)
+						// agent_created flag: shared sidecar probe (skill-triggers.ts).
+						// Sync read is deliberate: the sidecar is tiny and page-cache-hot,
+						// and an async variant would fork the shared helper for no
+						// measurable gain inside this walk.
 						const agentCreated = isAgentCreatedSkillDir(full)
 						out.push({ name: entry, category, path: full, agent_created: agentCreated, origin })
 					} catch {

@@ -176,6 +176,16 @@ describe("scanBriefSkills", () => {
 			"pdf",
 			skillMd("name: pdf\ndescription: p\nrequires-resource: skills.pdf\ntriggers:\n  prompt:\n    extensions: [pdf]"),
 		)
+		// Toggle off: not advertised, not preloaded (parent-catalog parity).
+		expect(
+			(
+				await scanBriefSkills(
+					"read report.pdf",
+					cwd,
+					opts(home, () => false),
+				)
+			).available,
+		).toEqual([])
 		expect(
 			(
 				await scanBriefSkills(
