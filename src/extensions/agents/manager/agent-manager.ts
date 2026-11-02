@@ -50,6 +50,7 @@ import {
 	runRemoteAgent,
 } from "./remote-agent-runner.js"
 import { RemoteAgentSession } from "./remote-agent-session.js"
+import { formatRunResultText } from "./result-text.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -408,16 +409,7 @@ export class AgentManager {
 								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
 							}
 							record.abortReason = abortReason
-							// Surface brief-triggered skill preloads in the tool result so the
-							// orchestrator and the user transcript (both surfaces) see what was
-							// injected into the child's context.
-							const autoLoadNote = autoLoadedSkills?.length
-								? `\n\nSkills auto-loaded from task brief: ${autoLoadedSkills.map((s) => `${s.name} (${s.matched})`).join(", ")}`
-								: ""
-							const finalText = planPath
-								? `${responseText}\n\nPlan saved to: ${planPath}${autoLoadNote}`
-								: `${responseText}${autoLoadNote}`
-							record.result = finalText
+							record.result = formatRunResultText(responseText, planPath, autoLoadedSkills)
 							record.session = session
 							record.lastTurnCount = turnsUsed
 							// Preserve the effective, normalized turn cap returned by the runner.
@@ -430,7 +422,7 @@ export class AgentManager {
 								if (!this.disposed) this.onComplete?.(record)
 								this.drainQueue()
 							}
-							return finalText
+							return formatRunResultText(responseText, planPath, autoLoadedSkills)
 						},
 					)
 					.catch((err) => {

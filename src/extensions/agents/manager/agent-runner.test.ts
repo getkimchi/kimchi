@@ -59,7 +59,7 @@ vi.mock("../prompt/skill-loader.js", () => ({
 }))
 
 vi.mock("../prompt/brief-skill-loader.js", () => ({
-	matchBriefSkills: vi.fn().mockResolvedValue([]),
+	scanBriefSkills: vi.fn().mockResolvedValue({ available: [], matched: [] }),
 	renderBriefSkillBlock: vi.fn().mockImplementation((m: { name: string }) => `AUTOLOAD-${m.name.toUpperCase()}`),
 }))
 
@@ -156,10 +156,11 @@ import { loadProjectContextFiles } from "../../prompt-construction/context-files
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
-import { matchBriefSkills } from "../prompt/brief-skill-loader.js"
+import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
 import { type RunOptions, resumeAgent, runAgent } from "./agent-runner.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { formatRunResultText } from "./result-text.js"
 
 const mockCreateAgentSession = vi.mocked(createAgentSession)
 const mockGetConfig = vi.mocked(getConfig)
@@ -167,7 +168,7 @@ const mockGetAgentConfig = vi.mocked(getAgentConfig)
 const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
-const mockMatchBriefSkills = vi.mocked(matchBriefSkills)
+const mockScanBriefSkills = vi.mocked(scanBriefSkills)
 const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
 const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
@@ -631,7 +632,10 @@ describe("runAgent — telemetry extension", () => {
 			>["extensionsResult"],
 		})
 		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: true }))
-		mockMatchBriefSkills.mockResolvedValueOnce([{ name: "pdf", content: "PDF SKILL", matched: "ext:.pdf" }])
+		mockScanBriefSkills.mockResolvedValueOnce({
+			available: [{ name: "pdf", description: "p", filePath: "/skills/pdf/SKILL.md" }],
+			matched: [{ name: "pdf", content: "PDF SKILL", matched: "ext:.pdf" }],
+		})
 
 		const result = await runAgent(
 			ctx as unknown as Parameters<typeof runAgent>[0],
@@ -642,13 +646,15 @@ describe("runAgent — telemetry extension", () => {
 			},
 		)
 
-		expect(mockMatchBriefSkills).toHaveBeenCalledWith("analyze report.pdf", ctx.cwd)
+		expect(mockScanBriefSkills).toHaveBeenCalledWith("analyze report.pdf", ctx.cwd, { matchBrief: true })
 		const blockCalls = mockBuildAgentPrompt.mock.calls.filter(
 			(c) => (c[4] as { skillBlocks?: { name: string; content: string }[] } | undefined)?.skillBlocks?.length,
 		)
 		expect(blockCalls.length).toBeGreaterThan(0)
 		expect(blockCalls[0]?.[4]).toMatchObject({
 			skillBlocks: [{ name: "pdf", content: "AUTOLOAD-PDF" }],
+			// the same single scan still feeds the Available Skills list
+			skillListBlock: expect.stringContaining("**pdf**"),
 		})
 		expect(result.autoLoadedSkills).toEqual([{ name: "pdf", matched: "ext:.pdf" }])
 	})
@@ -666,7 +672,7 @@ describe("runAgent — telemetry extension", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
 	})
 
 	it("does not auto-load brief skills when the persona preloads an explicit skill list", async () => {
@@ -683,7 +689,7 @@ describe("runAgent — telemetry extension", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
 	})
 
 	it("does not auto-load brief skills with inherit_context", async () => {
@@ -701,7 +707,13 @@ describe("runAgent — telemetry extension", () => {
 			inheritContext: true,
 		})
 
-		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+		// The scan still runs (the Available Skills list is produced) but the
+		// brief is not matched, so nothing is preloaded.
+		expect(mockScanBriefSkills).toHaveBeenCalledWith("analyze report.pdf", ctx.cwd, { matchBrief: false })
+		const blockCalls = mockBuildAgentPrompt.mock.calls.filter(
+			(c) => (c[4] as { skillBlocks?: unknown[] } | undefined)?.skillBlocks?.length,
+		)
+		expect(blockCalls.length).toBe(0)
 	})
 
 	it("does not auto-load brief skills for isolated agents", async () => {
@@ -719,7 +731,7 @@ describe("runAgent — telemetry extension", () => {
 			isolated: true,
 		})
 
-		expect(mockMatchBriefSkills).not.toHaveBeenCalled()
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
 	})
 
 	it("stops a linked worker immediately after its host accepts the report", async () => {
@@ -2494,5 +2506,29 @@ describe("resumeAgent — inactivity steering", () => {
 		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("You appear to be stalled"))
 
 		vi.useRealTimers()
+	})
+})
+
+describe("formatRunResultText", () => {
+	it("appends the auto-loaded skills note to the response", () => {
+		expect(formatRunResultText("done", undefined, [{ name: "pdf", matched: "ext:.pdf" }])).toBe(
+			"done\n\nSkills auto-loaded from task brief: pdf (ext:.pdf)",
+		)
+	})
+
+	it("keeps the plan pointer first and joins multiple skills", () => {
+		expect(
+			formatRunResultText("done", "/plans/x.md", [
+				{ name: "pdf", matched: "ext:.pdf" },
+				{ name: "docx", matched: "kw:word doc" },
+			]),
+		).toBe(
+			"done\n\nPlan saved to: /plans/x.md\n\nSkills auto-loaded from task brief: pdf (ext:.pdf), docx (kw:word doc)",
+		)
+	})
+
+	it("leaves plain responses untouched when nothing was auto-loaded", () => {
+		expect(formatRunResultText("plain", undefined, undefined)).toBe("plain")
+		expect(formatRunResultText("plain", "/plans/x.md", [])).toBe("plain\n\nPlan saved to: /plans/x.md")
 	})
 })

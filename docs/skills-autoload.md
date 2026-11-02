@@ -56,6 +56,7 @@ Subagent task briefs are matched at spawn time, not via the `input` event: when 
 - Only `skills: true` personas participate. `skills: false` (Researcher, Debugger, Grader) and explicit `skills: [csv]` preloads are never supplemented; `inherit_context` agents skip the match (the forked parent history already carries the parent's loaded skills); isolated agents get nothing.
 - `agent_created` harness skills, `disable-model-invocation` skills, and `requires-resource` skills with the toggle off are excluded, exactly as on the parent path. Untrusted project roots contribute nothing.
 - The registry covers the same roots as the child's `Available Skills` list (bundled, harness, config, project). npm/`skillPaths`-discovered skills are absent from that list today, so they do not trigger for subagents either.
+- Local spawns only: remote (teleport) subagent runs execute on the sandbox worker and never go through the local spawn path, so their briefs are not matched there and no result note appears.
 - The Agent tool result names what was injected: `Skills auto-loaded from task brief: pdf (ext:.pdf)`.
 
 Implementation: `src/extensions/agents/prompt/brief-skill-loader.ts` (matching at spawn), wired in `src/extensions/agents/manager/agent-runner.ts`.
