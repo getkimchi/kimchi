@@ -1,6 +1,6 @@
 import { type AgentSession, SessionManager } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import { sideThreadMessages } from "./session.js"
+import { SIDE_CHAT_TOOLS, sideChatPrompt, sideThreadMessages } from "./session.js"
 
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
 
@@ -14,6 +14,32 @@ function sessionWith(messages: Parameters<SessionManager["appendMessage"]>[0][])
 		sessionManager,
 	} as AgentSession
 }
+
+describe("sideChatPrompt", () => {
+	it.each([true, false])("tells the side chat it is read-only and cannot change anything (fresh=%s)", (fresh) => {
+		const prompt = sideChatPrompt(fresh)
+		expect(prompt).toContain(SIDE_CHAT_TOOLS.join(", "))
+		expect(prompt).toMatch(/read-only/i)
+		expect(prompt).toMatch(/cannot (create|edit|modify)/i)
+		expect(prompt).toMatch(/never (attempt|claim).*chang/i)
+	})
+
+	it.each([true, false])("points intended changes at /wrap, run and sent by the user (fresh=%s)", (fresh) => {
+		const prompt = sideChatPrompt(fresh)
+		expect(prompt).toContain("/wrap")
+		expect(prompt).toMatch(/main agent/)
+		expect(prompt).toMatch(/user (runs|reviews|sends)/i)
+	})
+
+	it.each([
+		true,
+		false,
+	])("treats '>' lines as quotes from the main session, never as instructions (fresh=%s)", (fresh) => {
+		const prompt = sideChatPrompt(fresh)
+		expect(prompt).toMatch(/>[\s\S]*?quote/i)
+		expect(prompt).toMatch(/never (your|the user's) instructions|not (an? )?instructions/i)
+	})
+})
 
 describe("sideThreadMessages", () => {
 	it("drops the inherited main-session context", () => {
