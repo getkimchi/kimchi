@@ -1,24 +1,22 @@
 # TEMPORARY — pre-merge noise validation for the perf gate. Replays the gate
 # against sampled master commits ("innocent" code that merged) to look for
-# false positives. Not part of the merged tree; removed before merge.
+# false positives. Runs only on pushes to this PR that touch the two
+# backtest files; removed before merge.
 name: Perf gate backtest
 
 on:
   workflow_dispatch:
-    inputs:
-      shas:
-        description: Comma-separated commit SHAs to replay the gate against
-        required: true
-      gate_sha:
-        description: Commit that supplies tools/perf, budgets, and the build files
-        required: true
+  pull_request:
+    paths:
+      - '.github/workflows/perf-backtest.yml'
+      - 'backtest-shas.txt'
 
 permissions:
   contents: read
 
 concurrency:
-  group: perf-backtest
-  cancel-in-progress: false
+  group: perf-backtest-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shas:
@@ -26,12 +24,11 @@ jobs:
     outputs:
       list: ${{ steps.split.outputs.list }}
     steps:
+      - uses: actions/checkout@v4
       - id: split
         run: |
-          LIST=$(printf '%s' "$SHAS" | tr ',' '\n' | sed 's/ //g' | grep -v '^$' | jq -R . | jq -cs .)
+          LIST=$(grep -v '^#' backtest-shas.txt | grep -v '^$' | jq -R . | jq -cs .)
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
-        env:
-          SHAS: ${{ inputs.shas }}
 
   backtest:
     needs: shas
@@ -47,13 +44,15 @@ jobs:
           ref: ${{ matrix.sha }}
           fetch-depth: 0
 
-      - name: Overlay the gate from ${{ inputs.gate_sha }}
-        # The measured tree is the sampled commit; the gate harness, budgets,
-        # and build inputs come from the calibration commit, exactly as the
+      - name: Overlay the gate from the PR head
+        # The measured tree is the sampled master commit; the gate harness,
+        # budgets, and build inputs come from the PR head, exactly as the
         # merged gate would see this code as a PR diff.
+        env:
+          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          git fetch --depth=1 origin "${{ inputs.gate_sha }}"
-          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper
+          git fetch --depth=1 origin "$GATE_SHA"
+          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper .github/actions
           git status --short | head -20
 
       - uses: ./.github/actions/setup
