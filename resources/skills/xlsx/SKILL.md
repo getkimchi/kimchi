@@ -7,9 +7,13 @@ disables-skills: xlsx
 
 # xlsx
 
-All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
-- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/xlsx.mjs <command> ...`
-- Fallback: run the same script under plain Node — `node <skill-dir>/scripts/xlsx.mjs ...` — whenever the bun runtime fails to start (`bun is unable to write files to tempdir: EPERM` and other sandbox/bootstrap errors), or when `kimchi` isn't on PATH. Same commands, same output.
+All commands run the bundled runtime.
+- Primary: `kimchi doc-cli xlsx <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed.
+- Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/xlsx.mjs ...`. Same commands, same output.
+
+Run each command as its own single bash call: no `cd … &&`, `;` chains, or `echo`
+wrappers — a compound command loses the permission auto-allow and prompts. Use
+absolute paths instead of `cd`; the tool result already carries the exit status.
 
 Do NOT use openpyxl, ExcelJS, or SheetJS directly — the bundled CLI is the supported route. One exception: if `info` or `read` reports 0 rows or nothing for a workbook that plausibly holds data, suspect a producer shape the parser doesn't cover — the command prints a `note:` when it suspects this itself. Cross-check with openpyxl or Excel before concluding the file is empty, and say which route produced the numbers. Writes are atomic and never in place: `--out` must differ from the input. Files over the size cap (default 20 MB; raise via `KIMCHI_DOCUMENT_MAX_MB`) fail `too-large`.
 
