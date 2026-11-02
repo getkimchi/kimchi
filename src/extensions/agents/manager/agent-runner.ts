@@ -30,6 +30,7 @@ import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
+import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
@@ -48,9 +49,10 @@ import {
 	type SubagentType,
 	type ThinkingLevel,
 } from "../personas/types.js"
+import { renderBriefSkillBlock, scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
-import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
+import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
@@ -261,6 +263,9 @@ export interface RunResult {
 	maxTurns?: number
 	/** Absolute path to the saved plan file, if the agent produced a plan. */
 	planPath?: string
+	/** Skills auto-loaded into the system prompt because the task brief
+	 *  matched their declared triggers. */
+	autoLoadedSkills?: SkillTriggerHit[]
 }
 
 function collectResponseText(session: AgentSession) {
@@ -392,6 +397,10 @@ async function runAgentInner(
 
 	let toolNames = getToolNamesForType(type)
 
+	// Skills preloaded because the task brief matched their declared
+	// triggers; surfaced in the run result for the tool-result note.
+	let autoLoadedSkills: SkillTriggerHit[] | undefined
+
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
 		if (loaded.length > 0) {
@@ -399,11 +408,21 @@ async function runAgentInner(
 		}
 	} else if (skills === true) {
 		// skills === true (the default for Builder, Fixer, Explore, Plan, GP):
-		// inject a compact skill name+description list and add the Skill tool
-		// so sub-agents can discover and load skills on demand.
-		const availableSkills = listAvailableSkillNames(effectiveCwd)
-		if (availableSkills.length > 0) {
-			const skillLines = availableSkills.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
+		// one scan per spawn feeds both the Available Skills list and the
+		// trigger-matched preloads (subagent skill auto-load — see
+		// docs/skills-autoload.md). The Skill tool is added so sub-agents can
+		// also load skills on demand.
+		const scan = await scanBriefSkills(prompt, effectiveCwd, {
+			// inherit_context forks the parent conversation, which already
+			// carries the parent's loaded skills — don't match the brief again.
+			matchBrief: !options.inheritContext,
+		})
+		if (scan.matched.length > 0) {
+			extras.skillBlocks = scan.matched.map((m) => ({ name: m.name, content: renderBriefSkillBlock(m) }))
+			autoLoadedSkills = scan.matched.map(({ name, matched }) => ({ name, matched }))
+		}
+		if (scan.available.length > 0) {
+			const skillLines = scan.available.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
 			extras.skillListBlock = `## Available Skills
 
 Use the Skill tool to load a skill's full instructions when its description matches your task.
@@ -865,6 +884,7 @@ ${skillLines}`
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
 		planPath,
+		autoLoadedSkills,
 	}
 }
 

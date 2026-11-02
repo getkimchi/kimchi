@@ -548,4 +548,20 @@ Use the Skill tool to load a skill's full instructions.
 		expect(output).toContain("**my-skill**")
 		expect(output).toContain("Skill tool")
 	})
+
+	it("renders preloaded skill blocks in the prompt when provided", () => {
+		const agent: AgentConfig = {
+			name: "Test-SkillBlocks",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, {
+			skillBlocks: [{ name: "pdf", content: "PDF SKILL BODY" }],
+		})
+		expect(output).toContain("# Preloaded Skill: pdf")
+		expect(output).toContain("PDF SKILL BODY")
+	})
 })
