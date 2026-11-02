@@ -459,6 +459,29 @@ export async function redactTextOrThrow(text: string): Promise<string> {
 }
 
 /**
+ * Upper bound on a single engine scan before the fail-open path engages.
+ * The scan normally completes in milliseconds (wasm in-process); this bound
+ * exists to guarantee `redactTextCounted` always *settles* — the pii-redaction
+ * hooks' in-flight map keys its strong references on the promise's
+ * resolution, so a scan that never resolved would pin a message object for
+ * the process lifetime. The underlying engine promise cannot be cancelled,
+ * so a truly stuck scan still runs in the background; the bound is about
+ * settling the caller-visible promise, not freeing the engine.
+ */
+const SCAN_SETTLE_TIMEOUT_MS = 30_000
+
+function settleBoundScan(text: string): Promise<string> {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`PII redaction scan did not settle within ${SCAN_SETTLE_TIMEOUT_MS}ms; failing open`)),
+			SCAN_SETTLE_TIMEOUT_MS,
+		)
+	})
+	return Promise.race([redactTextOrThrow(text), timeout]).finally(() => clearTimeout(timer))
+}
+
+/**
  * Shared fail-open core behind `redactText` and the measured variant: scan,
  * and on engine failure return the original text unchanged. `onFailure` is
  * called with the thrown error so callers can count failures; whether (and
@@ -468,7 +491,7 @@ export async function redactTextOrThrow(text: string): Promise<string> {
  */
 async function redactTextCounted(text: string, onFailure?: (err: unknown) => void): Promise<string> {
 	try {
-		return await redactTextWithSnapshot(text, resolveSnapshot())
+		return await settleBoundScan(text)
 	} catch (err) {
 		onFailure?.(err)
 		return text

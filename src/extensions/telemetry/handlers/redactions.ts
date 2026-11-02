@@ -76,7 +76,7 @@ export function createRedactionHandlers() {
 			const count = toPositiveInt(payload?.count)
 			const stringsScanned =
 				typeof payload?.strings_scanned === "number" &&
-				Number.isFinite(payload.strings_scanned) &&
+				Number.isInteger(payload.strings_scanned) &&
 				payload.strings_scanned >= 0
 					? payload.strings_scanned
 					: 0

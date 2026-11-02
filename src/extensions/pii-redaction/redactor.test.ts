@@ -990,3 +990,35 @@ describe("redactObjectStringsMeasured — redaction + privacy-safe report", () =
 		expect(second.redacted).toEqual(first.redacted)
 	})
 })
+
+describe("scan settle bound — in-flight map must always release", () => {
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+
+	// A scan promise that never settles would keep the hooks' strong-keyed
+	// in-flight entry (and the unredacted message) pinned for the process
+	// lifetime. The settle bound treats it as an engine failure: fail-open
+	// original text, counted and logged once per invocation.
+	it("fails open (counted, logged once) when the engine scan never settles", async () => {
+		vi.useFakeTimers()
+		engineScanOverride.scanImpl = () => new Promise(() => {})
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const pending = redactObjectStringsMeasured({ content: "anything at all" })
+		await vi.advanceTimersByTimeAsync(30_000)
+		const { redacted, report } = await pending
+
+		expect(redacted.content).toBe("anything at all")
+		expect(report.engineFailures).toBe(1)
+		expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
+		expect(String(consoleErrorSpy.mock.calls[0]?.[1])).toContain("did not settle")
+		consoleErrorSpy.mockRestore()
+	})
+})

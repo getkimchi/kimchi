@@ -90,6 +90,19 @@ describe("handlers/redactions", () => {
 		})
 	})
 
+	it("non-integer strings_scanned is coerced to 0, never passed through", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		const handlers = createRedactionHandlers()
+		handlers.onRedactionRedacted(ctx, {
+			surface: "user_input",
+			entity_type: "EMAIL_ADDRESS",
+			count: 1,
+			strings_scanned: 1.5,
+		})
+		const attrs = attrsOf(await flush(ctx), REDACTION_TELEMETRY_RECORDS.REDACTED)
+		expect(attrs).toMatchObject({ strings_scanned: "0" })
+	})
+
 	it("emits one pii_redaction.session_affected per handler instance, on the first redaction only", async () => {
 		const ctx = new TelemetryContext(makeConfig())
 		const handlers = createRedactionHandlers()
