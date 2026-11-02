@@ -54,6 +54,15 @@
 			}
 		},
 		{
+			"includes": ["tools/perf/budgets.json"],
+			"formatter": {
+				"enabled": false
+			},
+			"linter": {
+				"enabled": false
+			}
+		},
+		{
 			"includes": ["src/extensions/tool-rendering.ts"],
 			"linter": {
 				"rules": {
