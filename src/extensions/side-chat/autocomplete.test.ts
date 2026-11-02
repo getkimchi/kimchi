@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { sideChatAutocomplete } from "./autocomplete.js"
+import { parseSideChatCommand, sideChatAutocomplete } from "./autocomplete.js"
 
 const CWD = "/tmp/side-chat"
 
@@ -9,6 +9,24 @@ async function slashSuggestions(mode: "chat" | "wrapping" | "review", text: stri
 	const suggestions = await provider.getSuggestions([text], 0, text.length, { signal: new AbortController().signal })
 	return suggestions?.items.map((item) => item.value)
 }
+
+describe("parseSideChatCommand", () => {
+	it("matches /close exactly", () => {
+		expect(parseSideChatCommand("/close")).toEqual({ name: "close" })
+		expect(parseSideChatCommand("/close now")).toBeUndefined()
+	})
+
+	it("takes the rest of the line as /wrap instructions", () => {
+		expect(parseSideChatCommand("/wrap")).toEqual({ name: "wrap", args: "" })
+		expect(parseSideChatCommand("/wrap be brief")).toEqual({ name: "wrap", args: "be brief" })
+		expect(parseSideChatCommand("/wraps up?")).toBeUndefined()
+	})
+
+	it("leaves other lines as prompt text", () => {
+		expect(parseSideChatCommand("why the /wrap?")).toBeUndefined()
+		expect(parseSideChatCommand("/btw new")).toBeUndefined()
+	})
+})
 
 describe("sideChatAutocomplete", () => {
 	it("hints only the side-chat commands, not the main session's", async () => {
@@ -30,6 +48,15 @@ describe("sideChatAutocomplete", () => {
 
 	it.each(["wrapping" as const, "review" as const])("hides /wrap when it cannot run (%s mode)", async (mode) => {
 		expect(await slashSuggestions(mode, "/")).toEqual(["close"])
+	})
+
+	it("hints exactly the commands the submit path parses", async () => {
+		const chatMode = (await slashSuggestions("chat", "/")) ?? []
+		for (const name of chatMode) {
+			expect(parseSideChatCommand(`/${name}`)?.name).toBe(name)
+		}
+		// /close is the one command parseable in every mode, hence hinted everywhere.
+		expect(parseSideChatCommand("/close")?.name).toBe("close")
 	})
 
 	it("does not hint slash commands mid-sentence", async () => {

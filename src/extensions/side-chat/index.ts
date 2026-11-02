@@ -29,6 +29,7 @@
 
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { parseSideChatCommand } from "./autocomplete.js"
 import { btwCompletions, parseBtwArgs } from "./command.js"
 import { PaneDivider } from "./divider.js"
 import { applyFocusChrome } from "./focus-chrome.js"
@@ -255,7 +256,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		if (!text) return
 		const { panel } = chat
 		panel.setNotice("")
-		if (text === "/close") {
+		const command = parseSideChatCommand(text)
+		if (command?.name === "close") {
 			void closeSideChat("closed")
 			return
 		}
@@ -266,8 +268,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		}
 		panel.editor.addToHistory(text)
 		panel.editor.setText("")
-		if (text === "/wrap" || text.startsWith("/wrap ")) {
-			void wrapUp(chat, text.slice("/wrap".length).trim())
+		if (command?.name === "wrap") {
+			void wrapUp(chat, command.args)
 			return
 		}
 		if (chat.record.title === UNTITLED_SIDE_CHAT) {

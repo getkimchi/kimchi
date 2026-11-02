@@ -27,6 +27,25 @@ const CLOSE_COMMAND: SlashCommand = {
 	description: "Close the side chat without sending anything",
 }
 
+/** The commands above are the single source of truth for what the side chat can run; the submit path parses with this. */
+export type SideChatCommand = { name: "close" } | { name: "wrap"; args: string }
+
+/**
+ * Parse a submitted line as a side-chat command; anything else is prompt text
+ * for the side session. `/close` matches the whole line exactly; `/wrap`
+ * takes the rest of the line as extra instructions. Mode gating (e.g. `/wrap`
+ * means plain draft text in review mode) stays with the caller — the hints
+ * apply the same filter via {@link sideChatAutocomplete}.
+ */
+export function parseSideChatCommand(text: string): SideChatCommand | undefined {
+	if (text === `/${CLOSE_COMMAND.name}`) return { name: "close" }
+	const wrap = `/${WRAP_COMMAND.name}`
+	if (text === wrap || text.startsWith(`${wrap} `)) {
+		return { name: "wrap", args: text.slice(wrap.length).trim() }
+	}
+	return undefined
+}
+
 /** Autocomplete provider for the side editor, with only the commands runnable in `mode` (plus @ file completion). */
 export function sideChatAutocomplete(mode: SidePanelMode, cwd: string): AutocompleteProvider {
 	const commands: SlashCommand[] = mode === "chat" ? [WRAP_COMMAND, CLOSE_COMMAND] : [CLOSE_COMMAND]
