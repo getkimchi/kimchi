@@ -1,7 +1,8 @@
 /**
  * Unit tests for the cohort lifecycle coordinator.
  *
- * Verifies the per-command 2s handoffs (each command gets its own deadline),
+ * Verifies the per-command handoffs (each command gets its own deadline; 15s
+ * by default, early on queued user input after the minimum runtime),
  * the absence of any recurring clock (timer-count stability across long
  * advances), bounded checkpoint waits (300s default, caller-passed
  * durations, joiners without deadline resets, early exits, last-handle
@@ -11,7 +12,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createProcessRegistry } from "./process-registry.js"
-import { createReviewCoordinator, USER_INPUT_POLL_MS } from "./review-coordinator.js"
+import {
+	createReviewCoordinator,
+	INITIAL_HANDOFF_SECONDS,
+	MIN_HANDOFF_SECONDS,
+	USER_INPUT_POLL_MS,
+} from "./review-coordinator.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
 const HANDOFF = 2
@@ -111,6 +117,65 @@ describe("initial handoff", () => {
 		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
 		await p
 		expect(vi.getTimerCount()).toBe(before)
+	})
+})
+
+describe("handoff defaults and user input", () => {
+	async function isSettled(p: Promise<unknown>): Promise<boolean> {
+		let settled = false
+		void p.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(0)
+		return settled
+	}
+
+	it("defaults to a 15s handoff so typical tests and builds return a normal result", async () => {
+		expect(INITIAL_HANDOFF_SECONDS).toBe(15)
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const p = c.awaitInitialHandoff(h)
+		await vi.advanceTimersByTimeAsync(14_999)
+		expect(await isSettled(p)).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("hands off early on queued user input, but not before the minimum runtime", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const p = c.awaitInitialHandoff(h, undefined, () => true)
+		await vi.advanceTimersByTimeAsync(MIN_HANDOFF_SECONDS * 1000 - 1)
+		expect(await isSettled(p)).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("hands off when user input is queued mid-handoff", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		let pending = false
+		const p = c.awaitInitialHandoff(h, undefined, () => pending)
+		await vi.advanceTimersByTimeAsync(5_000)
+		expect(await isSettled(p)).toBe(false)
+		pending = true
+		await vi.advanceTimersByTimeAsync(USER_INPUT_POLL_MS)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("lets a process exit win over pending user input and clears every timer", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const before = vi.getTimerCount()
+		const p = c.awaitInitialHandoff(h, undefined, () => false)
+		await vi.advanceTimersByTimeAsync(3_000)
+		await ops.exit(0)
+		await expect(p).resolves.toBe("exited")
+		expect(vi.getTimerCount()).toBeLessThanOrEqual(before)
 	})
 })
 

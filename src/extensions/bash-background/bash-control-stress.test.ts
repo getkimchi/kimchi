@@ -79,7 +79,7 @@ beforeEach(() => {
 	const registry = createProcessRegistry()
 	state = {
 		registry,
-		coordinator: createReviewCoordinator({ registry }),
+		coordinator: createReviewCoordinator({ registry, handoffSeconds: 2 }),
 		delivery: createTerminalDelivery(),
 		limitSeconds: 60,
 		sessionKind: "unattended",

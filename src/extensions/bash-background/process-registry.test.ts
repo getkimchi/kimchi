@@ -7,7 +7,7 @@
  * safety-limit behaviour can be asserted without spawning real shells.
  */
 
-import { existsSync, rmSync } from "node:fs"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -15,6 +15,8 @@ import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
 import {
 	createProcessRegistry,
 	elapsedSecondsSince,
+	INLINE_OUTPUT_MAX_BYTES,
+	INLINE_OUTPUT_MAX_LINES,
 	OutputRingBuffer,
 	SAFETY_LIMIT_REASON,
 	summarizeCommand,
@@ -236,7 +238,7 @@ describe("createProcessRegistry — snapshotTail", () => {
 
 		const snap = registry.finalSnapshot(handle)
 		expect(snap?.truncation?.truncated).toBe(true)
-		expect(snap?.content).toHaveLength(50_000)
+		expect(snap?.content).toHaveLength(INLINE_OUTPUT_MAX_BYTES)
 		expect(snap?.fullOutputPath).toContain("pi-bash-")
 		const spillPath = snap?.fullOutputPath
 		if (!spillPath) throw new Error("expected spill path")
@@ -247,6 +249,75 @@ describe("createProcessRegistry — snapshotTail", () => {
 		await registry.shutdown()
 		expect(registry.completedSnapshot(handle)).toBeUndefined()
 		expect(existsSync(spillPath)).toBe(false)
+	})
+
+	it("cuts output to the inline line budget and keeps every line in the log", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "seq 1 500", "/tmp", undefined, OPTS)
+		const lines = Array.from({ length: 500 }, (_, i) => `line ${i + 1}`)
+		ops.emit(Buffer.from(`${lines.join("\n")}\n`))
+		await ops.exit(0)
+		await registry.whenExited(handle)
+
+		const snap = registry.finalSnapshot(handle)
+		expect(snap?.truncation?.truncated).toBe(true)
+		expect(snap?.content.trimEnd().split("\n")).toHaveLength(INLINE_OUTPUT_MAX_LINES)
+		expect(snap?.content.trimEnd().endsWith("line 500")).toBe(true)
+		const logPath = snap?.fullOutputPath
+		if (!logPath) throw new Error("expected log path")
+		await registry.remove(handle)
+		expect(readFileSync(logPath, "utf-8")).toBe(`${lines.join("\n")}\n`)
+		await registry.shutdown()
+	})
+
+	it("creates no log file for small output that never reached handoff", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "echo hi", "/tmp", undefined, OPTS)
+		ops.emit(Buffer.from("hi\n"))
+		await ops.exit(0)
+		await registry.whenExited(handle)
+
+		const snap = registry.finalSnapshot(handle)
+		expect(snap?.truncation?.truncated).toBe(false)
+		expect(snap?.fullOutputPath).toBeUndefined()
+		expect(registry.snapshotSince(handle).logPath).toBeUndefined()
+		await registry.shutdown()
+	})
+
+	it("persistOutput starts a complete log: earlier output first, later output appended", async () => {
+		const ops = createFakeOps(0)
+		const registry = createProcessRegistry()
+		const handle = registry.spawn(ops, "server", "/tmp", undefined, OPTS)
+		ops.emit(Buffer.from("starting\n"))
+		expect(registry.snapshotSince(handle).logPath).toBeUndefined()
+
+		const logPath = registry.persistOutput(handle)
+		if (!logPath) throw new Error("expected log path")
+		expect(logPath).toContain("pi-bash-")
+		// Idempotent: the same log for the life of the process.
+		expect(registry.persistOutput(handle)).toBe(logPath)
+		expect(registry.snapshotSince(handle).logPath).toBe(logPath)
+
+		ops.emit(Buffer.from("ready\n"))
+		await ops.exit(0)
+		await registry.whenExited(handle)
+		// A backgrounded command reports its log even when output was not cut.
+		const final = registry.finalSnapshot(handle)
+		expect(final?.truncation?.truncated).toBe(false)
+		expect(final?.fullOutputPath).toBe(logPath)
+
+		await registry.remove(handle)
+		expect(readFileSync(logPath, "utf-8")).toBe("starting\nready\n")
+		await registry.shutdown()
+		expect(existsSync(logPath)).toBe(false)
+	})
+
+	it("persistOutput returns undefined for an unknown handle", async () => {
+		const registry = createProcessRegistry()
+		expect(registry.persistOutput("missing")).toBeUndefined()
+		await registry.shutdown()
 	})
 
 	it("creates a missing temp directory before spilling output", async () => {

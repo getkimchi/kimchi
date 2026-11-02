@@ -10,6 +10,7 @@ import {
 	formatBytes,
 	handoffGuidanceText,
 	inspectionHeaderText,
+	outputLogNoticeText,
 	processEvidenceText,
 	terminalResultText,
 	unseenOutputText,
@@ -159,11 +160,68 @@ describe("terminalResultText", () => {
 			truncated: true,
 			fullOutputPath: "/tmp/spill.log",
 		})
-		expect(text).toContain("[Output truncated. Full output: /tmp/spill.log]")
+		expect(text).toContain(
+			"[Output truncated to the last 200 lines / 8 KB. Full output: /tmp/spill.log — grep it instead of re-running the command.]",
+		)
+	})
+
+	it("names the log of an untruncated backgrounded command without claiming truncation", () => {
+		const text = terminalResultText({
+			handle: "h1",
+			commandSummary: "pnpm test",
+			elapsedSeconds: 40,
+			state: "exited",
+			exitCode: 0,
+			reason: null,
+			deadlineSeconds: 3600,
+			output: "ok",
+			truncated: false,
+			fullOutputPath: "/tmp/pi-bash-1.log",
+		})
+		expect(text).toContain("[Full log: /tmp/pi-bash-1.log]")
+		expect(text).not.toContain("truncated")
+	})
+})
+
+describe("outputLogNoticeText", () => {
+	it("is empty without a log", () => {
+		expect(outputLogNoticeText(true, undefined)).toBeUndefined()
+		expect(outputLogNoticeText(false, undefined)).toBeUndefined()
+	})
+})
+
+describe("log path in running text", () => {
+	const base = {
+		handle: "h1",
+		commandSummary: "pnpm dev",
+		runtimeSeconds: 20,
+		lastOutputAgeSeconds: 1,
+		consecutiveCheckpoints: 0,
+		safetyRemainingSeconds: 3580,
+		cwd: "/repo",
+	}
+
+	it("inspection evidence names the log once one exists", () => {
+		expect(processEvidenceText({ ...base, logPath: "/tmp/pi-bash-2.log" })).toContain("Full log: /tmp/pi-bash-2.log")
+		expect(processEvidenceText(base)).not.toContain("Full log")
+	})
+
+	it("an omission notice points at the log instead of the final truncation", () => {
+		const text = unseenOutputText(
+			incremental({ omittedBytes: 4096, newBytes: 8192, text: "tail", logPath: "/tmp/pi-bash-3.log" }),
+		)
+		expect(text).toContain("the full log /tmp/pi-bash-3.log retains everything — grep it")
 	})
 })
 
 describe("handoffGuidanceText", () => {
+	it("teaches the until-loop watch on the process log when one exists", () => {
+		const text = handoffGuidanceText("unattended", "/tmp/pi-bash-4.log")
+		expect(text).toContain('until grep -qE "<success>|<failure>" /tmp/pi-bash-4.log; do sleep 1; done')
+		expect(text).toContain("Always include failure patterns")
+		expect(handoffGuidanceText()).not.toContain("until grep")
+	})
+
 	it("states the continuation contract without scheduled-review claims", () => {
 		const text = handoffGuidanceText()
 		expect(text).toContain("continues by default")

@@ -6,7 +6,7 @@ import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
 test.use(TUI_TEST_CONFIG)
 
 // Deterministic long-running command: prints a line, then sleeps well past
-// the ~2s initial handoff so the first result yields a background handle,
+// the initial handoff (2s under the e2e fixture) so the first result yields a background handle,
 // and exits on its own shortly after.
 const LONG_COMMAND = "echo started && sleep 15"
 
@@ -96,6 +96,10 @@ test("background bash: slow command + independent read + final outcome via one b
 				messages.some((m) => textOf(m.content).includes(needle) && (role === undefined || m.role === role))
 			expect(contains("[Background bash process ended", "tool")).toBe(true)
 			expect(contains("[Background bash process ended", "user")).toBe(false)
+			// The handoff result names the live log and teaches the watch
+			// pattern, so the model can grep instead of polling or re-running.
+			expect(contains(" full log: ", "tool")).toBe(true)
+			expect(contains("until grep -qE", "tool")).toBe(true)
 			// 4 LLM requests: spawn, concurrent read, wait, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(4)
 		},

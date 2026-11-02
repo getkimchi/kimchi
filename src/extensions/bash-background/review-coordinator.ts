@@ -7,11 +7,13 @@
  * are delivered by the extension, and time only passes for a wait that
  * the model explicitly requested.
  *
- *  - Initial handoff (≤ `handoffSeconds`, default 2s): a one-time,
+ *  - Initial handoff (≤ `handoffSeconds`, default 15s): a one-time,
  *    per-command deadline for the `bash` tool call that spawned the
  *    process. When the process is still running at the deadline, `bash`
  *    resolves with the handle and unseen output. Every command gets its
- *    OWN handoff deadline — joiners never share or reset one.
+ *    OWN handoff deadline — joiners never share or reset one. In
+ *    user-facing sessions a queued user message hands off early, once the
+ *    command has had `MIN_HANDOFF_SECONDS` to finish on its own.
  *  - Cohort wait (`awaitCohortEvent`): blocks until the first cohort
  *    exit (including joiners), the wait's bounded checkpoint (the
  *    effective duration validated by the caller, capped at
@@ -39,8 +41,19 @@
 import type { ProcessRegistry } from "./process-registry.js"
 import type { TerminalDelivery } from "./terminal-delivery.js"
 
-/** One-time per-command handoff deadline (seconds). */
-export const INITIAL_HANDOFF_SECONDS = 2
+/**
+ * One-time per-command handoff deadline (seconds). Sized from trace data:
+ * ~90% of bash commands finish within 15s (75% within 2s), and most of
+ * those between 2s and 15s are tests and builds whose result the agent
+ * wants immediately — handing them off would only add a round trip.
+ */
+export const INITIAL_HANDOFF_SECONDS = 15
+
+/**
+ * Minimum time a command runs before a queued user message may release
+ * its handoff early, so quick commands still return a normal result.
+ */
+export const MIN_HANDOFF_SECONDS = 2
 
 /** Default bounded wait duration (seconds) when `waitSeconds` is omitted. */
 export const DEFAULT_WAIT_SECONDS = 300
@@ -70,6 +83,8 @@ export interface ReviewCoordinatorOptions {
 	registry: ProcessRegistry
 	/** Test override for the initial handoff deadline (seconds). */
 	handoffSeconds?: number
+	/** Test override for the minimum runtime before user input releases a handoff (seconds). */
+	minHandoffSeconds?: number
 	/** Test override for the default bounded wait duration (seconds). */
 	waitSeconds?: number
 }
@@ -82,9 +97,11 @@ export interface ReviewCoordinator {
 	/**
 	 * Resolve when the freshly spawned `handle` reaches its one-time
 	 * handoff deadline ("handoff"), its process exits ("exited"), or the
-	 * provided signal aborts ("aborted").
+	 * provided signal aborts ("aborted"). `hasPendingUserInput` (supplied by
+	 * user-facing executions only) hands off early once a user message is
+	 * queued and the command has run for the minimum handoff time.
 	 */
-	awaitInitialHandoff(handle: string, signal?: AbortSignal): Promise<HandoffResult>
+	awaitInitialHandoff(handle: string, signal?: AbortSignal, hasPendingUserInput?: () => boolean): Promise<HandoffResult>
 	/**
 	 * Claim the single concurrent cohort-wait slot. Returns `{ ok: false }`
 	 * when another `bash_control(wait: true)` is already active.
@@ -133,6 +150,7 @@ export interface ReviewCoordinator {
 export function createReviewCoordinator(options: ReviewCoordinatorOptions): ReviewCoordinator {
 	const registry = options.registry
 	const handoffSeconds = options.handoffSeconds ?? INITIAL_HANDOFF_SECONDS
+	const minHandoffSeconds = Math.min(options.minHandoffSeconds ?? MIN_HANDOFF_SECONDS, handoffSeconds)
 	const defaultWaitSeconds = options.waitSeconds ?? DEFAULT_WAIT_SECONDS
 
 	const handles = new Set<string>()
@@ -143,6 +161,8 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 	interface HandoffWaiter {
 		resolve: (result: HandoffResult) => void
 		timer: NodeJS.Timeout | undefined
+		/** Delay before user-input polling starts, then the polling interval. */
+		inputTimer: NodeJS.Timeout | undefined
 		onAbort: (() => void) | undefined
 		signal: AbortSignal | undefined
 		settled: boolean
@@ -181,6 +201,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		if (waiter.settled) return
 		waiter.settled = true
 		if (waiter.timer) clearTimeout(waiter.timer)
+		if (waiter.inputTimer) clearTimeout(waiter.inputTimer)
 		if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort)
 		handoffWaiters.delete(handle)
 		waiter.resolve(result)
@@ -212,13 +233,18 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		}
 	}
 
-	function awaitInitialHandoff(handle: string, signal?: AbortSignal): Promise<HandoffResult> {
+	function awaitInitialHandoff(
+		handle: string,
+		signal?: AbortSignal,
+		hasPendingUserInput?: () => boolean,
+	): Promise<HandoffResult> {
 		const entry = registry.getEntry(handle)
 		if (entry?.state !== "running") return Promise.resolve("exited")
 
 		const waiter: HandoffWaiter = {
 			resolve: () => {},
 			timer: undefined,
+			inputTimer: undefined,
 			onAbort: undefined,
 			signal,
 			settled: false,
@@ -243,6 +269,26 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		// handle's permanent exit observer via notifyExit).
 		waiter.timer = setTimeout(() => settleHandoffWaiter(handle, waiter, "handoff"), handoffSeconds * 1000)
 		waiter.timer.unref?.()
+
+		// User-facing sessions: a queued user message hands off early so the
+		// agent can answer it, but only after the minimum runtime — quick
+		// commands still return a normal result. Same accepted-queue check
+		// and cadence as a cohort wait (see awaitCohortEvent). clearTimeout
+		// also clears an interval, so one field covers both phases.
+		if (hasPendingUserInput) {
+			waiter.inputTimer = setTimeout(() => {
+				if (waiter.settled) return
+				if (hasPendingUserInput()) {
+					settleHandoffWaiter(handle, waiter, "handoff")
+					return
+				}
+				waiter.inputTimer = setInterval(() => {
+					if (hasPendingUserInput()) settleHandoffWaiter(handle, waiter, "handoff")
+				}, USER_INPUT_POLL_MS)
+				waiter.inputTimer.unref?.()
+			}, minHandoffSeconds * 1000)
+			waiter.inputTimer.unref?.()
+		}
 
 		return promise
 	}

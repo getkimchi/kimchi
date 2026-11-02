@@ -6,13 +6,15 @@
  * short handoff) so no real shell is spawned and timing is deterministic.
  *
  * Contract under test: commands always go through the registry; the tool
- * resolves at process exit OR at the one-time initial handoff (≤ 2s),
+ * resolves at process exit OR at the one-time initial handoff (≤ 15s),
  * never on a model-controlled cadence or timeout. Legacy `timeout` /
  * `checkin_interval` input fields are accepted and ignored.
  */
 
+import { readFileSync } from "node:fs"
 import { Value } from "typebox/value"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createToolContext } from "../__mocks__/context.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { createProcessRegistry } from "./process-registry.js"
@@ -111,6 +113,26 @@ describe("createBackgroundBashToolDefinition — exit before handoff", () => {
 		await expect(execPromise).rejects.toThrow("Command exited with code 3")
 	})
 
+	it("a failing command with long output names its log in the error", async () => {
+		const state = makeState(5)
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "pnpm test" })
+		await Promise.resolve()
+		const lines = Array.from({ length: 400 }, (_, i) => `test ${i + 1} failed`)
+		ops.emit(`${lines.join("\n")}\n`)
+		await ops.exit(1)
+		const error = await execPromise.then(
+			() => undefined,
+			(err: Error) => err,
+		)
+		expect(error?.message).toContain("test 400 failed")
+		expect(error?.message).not.toContain("test 1 failed\n")
+		expect(error?.message).toMatch(/Full output: \S*pi-bash-\S+\.log — grep it instead of re-running the command/)
+		expect(error?.message).toContain("Command exited with code 1")
+		await state.registry.shutdown()
+	})
+
 	it("does not pass an upstream timeout to ops.exec", async () => {
 		const state = makeState(5)
 		const ops = createFakeOps()
@@ -188,6 +210,47 @@ describe("createBackgroundBashToolDefinition — handoff", () => {
 		expect(state.coordinator.handles()).toContain(handle)
 
 		await state.registry.remove(handle)
+	})
+
+	it("starts a complete live log at handoff and names it with the watch pattern", async () => {
+		vi.useFakeTimers()
+		const state = makeState(1)
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		const execPromise = callExecute(tool, { command: "pnpm dev" })
+		await Promise.resolve()
+		ops.emit("compiling\n")
+		await vi.advanceTimersByTimeAsync(1000)
+		const result = await execPromise
+		const handle = result.details?.handle ?? ""
+		const logPath = state.registry.snapshotSince(handle).logPath
+		if (!logPath) throw new Error("expected a log at handoff")
+
+		const text = (result.content[0] as { text: string }).text
+		expect(text).toContain(` full log: ${logPath}`)
+		expect(text).toContain(`until grep -qE "<success>|<failure>" ${logPath}`)
+
+		ops.emit("ready\n")
+		await ops.exit(0)
+		await state.registry.remove(handle)
+		expect(readFileSync(logPath, "utf-8")).toBe("compiling\nready\n")
+		await state.registry.shutdown()
+	})
+
+	it("hands off early in a user-facing session when the user queues a message", async () => {
+		vi.useFakeTimers()
+		const state: BashSessionState = { ...makeState(60), sessionKind: "user-facing" }
+		const ops = createFakeOps()
+		const tool = makeTool(ops, state)
+		let queued = false
+		const ctx = createToolContext({ hasPendingMessages: () => queued })
+		const execPromise = tool.execute("call-1", { command: "pnpm build" } as never, undefined, undefined, ctx)
+		await vi.advanceTimersByTimeAsync(5_000)
+		queued = true
+		await vi.advanceTimersByTimeAsync(100)
+		const result = await execPromise
+		expect(result.details?.handoff).toBe(true)
+		await state.registry.shutdown()
 	})
 
 	it("delivers the handoff output once (cursor advances)", async () => {

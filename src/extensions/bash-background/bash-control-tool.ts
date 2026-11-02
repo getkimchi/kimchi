@@ -433,6 +433,7 @@ async function collectCohortSnapshot(
 				safetyRemainingSeconds: Math.max(0, Math.ceil((entry.deadlineMs - Date.now()) / 1000)),
 				sessionCwd: state.cwd,
 				cwd: entry.cwd,
+				logPath: incremental.logPath,
 			}),
 			unseenOutputText(incremental),
 		)

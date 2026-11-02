@@ -276,6 +276,11 @@ it(
 				]),
 			)
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("it is now stopped")
+			// The handoff and inspection results name the live log over ACP too.
+			const updatesText = JSON.stringify(fixture.client.sessionUpdates)
+			expect(updatesText).toContain(" full log: ")
+			expect(updatesText).toContain("until grep -qE")
+			expect(updatesText).toContain("Full log: ")
 		} finally {
 			await fixture.stop()
 		}

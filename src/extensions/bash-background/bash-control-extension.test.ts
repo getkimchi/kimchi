@@ -1086,7 +1086,7 @@ describe("completion continuation", () => {
 		// tool, and the chain that failed live (tool_result details →
 		// exitedHandles → trackedHandles removal) is asserted end to end.
 		const handoffRegistry = createProcessRegistry()
-		const handoffCoordinator = createReviewCoordinator({ registry: handoffRegistry })
+		const handoffCoordinator = createReviewCoordinator({ registry: handoffRegistry, handoffSeconds: 2 })
 		const handoffState: BashSessionState = {
 			registry: handoffRegistry,
 			coordinator: handoffCoordinator,
@@ -1778,7 +1778,7 @@ describe("cancellation-aware delivery", () => {
 		const replacementRegistry = createProcessRegistry()
 		const replacement: BashSessionState = {
 			registry: replacementRegistry,
-			coordinator: createReviewCoordinator({ registry: replacementRegistry }),
+			coordinator: createReviewCoordinator({ registry: replacementRegistry, handoffSeconds: 2 }),
 			delivery: createTerminalDelivery(),
 			limitSeconds: 600,
 			sessionKind: "unattended",

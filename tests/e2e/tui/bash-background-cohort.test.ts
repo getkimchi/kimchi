@@ -151,7 +151,7 @@ test("background bash cohort: exit during streaming queues at a safe boundary, d
 			artifactName: "bash-background-cohort-exit-while-streaming",
 			responses: [
 				// Turn 1: start a command that exits at ~5s, a few seconds past
-				// the ~2s initial handoff.
+				// the initial handoff (2s under the e2e fixture).
 				{
 					stream: ["Starting a short-lived command."],
 					toolCalls: [
@@ -215,7 +215,7 @@ test("background bash cohort: a short bounded wait checkpoints with evidence, th
 		{
 			artifactName: "bash-background-cohort-short-checkpoint",
 			responses: [
-				// Turn 1: start a long, silent command (~2s handoff; with the
+				// Turn 1: start a long, silent command (2s e2e handoff; with the
 				// requested 5s wait the first checkpoint lands ~7s after spawn).
 				{
 					stream: ["Starting a long silent command."],
@@ -568,7 +568,7 @@ test("background bash cohort: user message interrupts the wait; the turn settles
 test("background bash cohort: unattended exit during continued tool work reaches the next request and settles", async ({
 	terminal,
 }) => {
-	// The marker is emitted at process exit (~6s), past the ~2s handoff — and
+	// The marker is emitted at process exit (~6s), past the 2s e2e handoff — and
 	// assembled by the shell at runtime, so no request history can contain
 	// it before the exit output is delivered. The wider fake context keeps
 	// this multi-turn workflow from tripping the tiny default window's
@@ -695,7 +695,7 @@ test("background bash cohort: filtered inspection returns only the selected hand
 			artifactName: "bash-background-cohort-filtered-inspection-stop-only",
 			responses: [
 				// Turn 1: two long commands with distinct echo output (both hand
-				// off after ~2s).
+				// off after 2s under the e2e fixture).
 				{
 					stream: ["Starting two long commands."],
 					toolCalls: [

@@ -58,6 +58,19 @@ export const DEFAULT_BASH_PROCESS_LIMIT_SECONDS = 3600
 /** Reason recorded when the harness safety limit kills a process. */
 export const SAFETY_LIMIT_REASON = "safety-limit"
 
+/**
+ * Inline output budget for terminal results. Output beyond either limit is
+ * cut to its tail inline, and the complete output is kept in the process
+ * log file (created as soon as output exceeds the budget, or at handoff).
+ * Sized from trace data: the 99th-percentile bash result is ~6 KB, so the
+ * budget leaves nearly every result untouched while making unfiltered
+ * output safe to request (no need to pipe through head/tail).
+ */
+export const INLINE_OUTPUT_MAX_BYTES = 8 * 1024
+
+/** Inline line budget for terminal results (see INLINE_OUTPUT_MAX_BYTES). */
+export const INLINE_OUTPUT_MAX_LINES = 200
+
 /** Bounded display history for completed commands. */
 export const MAX_COMPLETED_PROCESSES = 100
 
@@ -115,6 +128,8 @@ export interface IncrementalSnapshot {
 	omittedBytes: number
 	/** Total stream bytes appended since spawn. */
 	totalBytes: number
+	/** Path of the complete output log, once one exists (see `persistOutput`). */
+	logPath?: string
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
@@ -255,6 +270,19 @@ class OutputAccumulator {
 		return { content: truncation.content, truncation, fullOutputPath: this.tempFilePath }
 	}
 
+	/** Path of the complete output log, or undefined while output is still memory-only. */
+	get path(): string | undefined {
+		return this.tempFilePath
+	}
+
+	/**
+	 * Start the complete output log now (idempotent): buffered chunks are
+	 * written first, so the log holds every byte from the start.
+	 */
+	persist(): string {
+		return this.ensureTempFile()
+	}
+
 	async closeTempFile(): Promise<void> {
 		if (!this.tempFileStream) {
 			if (this.tempFileError) throw this.tempFileError
@@ -331,16 +359,18 @@ class OutputAccumulator {
 		)
 	}
 
-	private ensureTempFile(): void {
-		if (this.tempFilePath) return
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix)
+	private ensureTempFile(): string {
+		if (this.tempFilePath) return this.tempFilePath
+		const path = defaultTempFilePath(this.tempFilePrefix)
+		this.tempFilePath = path
 		mkdirSync(tmpdir(), { recursive: true })
-		this.tempFileStream = createWriteStream(this.tempFilePath)
+		this.tempFileStream = createWriteStream(path)
 		this.tempFileStream.on("error", (error) => {
 			this.tempFileError ??= error
 		})
 		for (const chunk of this.rawChunks) this.writeTempFile(chunk)
 		this.rawChunks = []
+		return path
 	}
 
 	private writeTempFile(data: Buffer): void {
@@ -518,6 +548,12 @@ export interface ProcessRegistry {
 	listDisplaySnapshots(maxBytes?: number): readonly ProcessDisplaySnapshot[]
 	/** Initial + settled terminal snapshots; removal/shutdown detach observers. */
 	observeDisplay(handle: string, listener: (snapshot: ProcessDisplaySnapshot) => void, maxBytes?: number): () => void
+	/**
+	 * Start the process's complete output log now (idempotent) and return
+	 * its path. Called at handoff so every backgrounded command has a
+	 * greppable log from the moment the model receives its handle.
+	 */
+	persistOutput(handle: string): string | undefined
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string, fullOutput?: boolean): FinalSnapshot | undefined
 	/** Final result for a recently removed command, until eviction or session shutdown. */
@@ -618,8 +654,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		const controller = new AbortController()
 		const buffer = new OutputRingBuffer(opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES)
 		const accumulator = new OutputAccumulator({
-			maxLines: 2000,
-			maxBytes: 50_000,
+			maxLines: INLINE_OUTPUT_MAX_LINES,
+			maxBytes: INLINE_OUTPUT_MAX_BYTES,
 			tempFilePrefix: "pi-bash",
 		})
 
@@ -791,6 +827,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				newBytes,
 				omittedBytes: 0,
 				totalBytes: appendedTotal,
+				logPath: entry.accumulator.path,
 				state: entry.state,
 				exitCode: entry.exitCode,
 				reason: entry.reason,
@@ -836,6 +873,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			newBytes,
 			omittedBytes: evictedUnseen + skippedUnseen,
 			totalBytes: appendedTotal,
+			logPath: entry.accumulator.path,
 			state: entry.state,
 			exitCode: entry.exitCode,
 			reason: entry.reason,
@@ -898,6 +936,10 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	function persistOutput(handle: string): string | undefined {
+		return entries.get(handle)?.accumulator.persist()
+	}
+
 	async function closeOutput(entry: ProcessEntry): Promise<void> {
 		await entry.accumulator.closeTempFile().catch(() => {})
 		const path = entry.accumulator.snapshot().fullOutputPath
@@ -943,6 +985,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		snapshotTail,
 		snapshotSince,
 		markDelivered,
+		persistOutput,
 		finalSnapshot,
 		completedSnapshot: (handle) => completed.get(handle),
 		kill,

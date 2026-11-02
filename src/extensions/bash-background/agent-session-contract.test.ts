@@ -142,7 +142,7 @@ function backgroundBashFactory(ops: FakeOps) {
 	return (pi: ExtensionAPI): void => {
 		pi.on("session_start", (_event, sessionCtx) => {
 			const registry = createProcessRegistry()
-			const coordinator = createReviewCoordinator({ registry })
+			const coordinator = createReviewCoordinator({ registry, handoffSeconds: 2 })
 			const state: BashSessionState = {
 				registry,
 				coordinator,
