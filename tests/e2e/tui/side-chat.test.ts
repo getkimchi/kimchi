@@ -92,6 +92,32 @@ test("side chat answers next to the session and wraps up into a steer for the ma
 	)
 })
 
+test("the side editor hints only the slash commands the side chat can run", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-slash-hints",
+			extraArgs: ["--plan=false"],
+			seedHome: enableSideChat,
+			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/btw Which cache?")
+			await waitForText(terminal, "Use the LRU cache.", { full: false })
+			trace.step("side chat open with the side editor focused")
+
+			terminal.write("/")
+			// The narrow pane shows labels only (descriptions don't fit the dropdown).
+			await waitForText(terminal, "→ wrap", { full: false })
+			const view = viewText(terminal)
+			expect(view).toContain("close")
+			// Main-session commands (e.g. /btw) are not runnable here, so they are not hinted.
+			expect(view).not.toContain("btw")
+			trace.step("/ hints wrap and close, nothing from the main session")
+		},
+	)
+})
+
 test("closing a side chat mid-reply persists it as aborted and shows it interrupted on reopen", async ({
 	terminal,
 }) => {
