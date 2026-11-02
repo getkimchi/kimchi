@@ -128,7 +128,7 @@ describe("createBackgroundBashToolDefinition — exit before handoff", () => {
 		)
 		expect(error?.message).toContain("test 400 failed")
 		expect(error?.message).not.toContain("test 1 failed\n")
-		expect(error?.message).toMatch(/Full output: \S*pi-bash-\S+\.log — grep it instead of re-running the command/)
+		expect(error?.message).toMatch(/Full output: \S*kimchi-bash-\S+\.log — grep it instead of re-running the command/)
 		expect(error?.message).toContain("Command exited with code 1")
 		await state.registry.shutdown()
 	})

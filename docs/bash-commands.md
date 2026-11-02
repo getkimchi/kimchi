@@ -34,7 +34,7 @@ Compound command approval shows the original script, including quoting. **Allow 
 
 A managed Bash command returns a normal result if it finishes within **15 seconds**. Trace data put this threshold where most tests and builds still return directly: about 90% of commands finish within 15s. A command still running at 15s hands off: the agent gets a handle, and the command continues in the background. In interactive sessions, a queued user message hands the command off early, once it has run for at least 2 seconds.
 
-Inline output is bounded to the last **200 lines or 8 KB**. The complete output is written to a log file (`$TMPDIR/pi-bash-*.log`):
+Inline output is bounded to the last **200 lines or 8 KB**. The complete output is written to a log file (`$TMPDIR/kimchi-bash-*.log`):
 
 - **Quick commands** create a log only when their output exceeds the inline budget. The truncated result names the log.
 - **Backgrounded commands** always have a log, started at handoff. The log holds every byte from the start, and output keeps appending to it while the command runs. The handoff result, `bash_control` inspections and the exit result name it.
@@ -42,7 +42,7 @@ Inline output is bounded to the last **200 lines or 8 KB**. The complete output 
 Because long output is bounded and kept, the agent does not need to pipe through `head`/`tail`. It greps the log instead of re-running a command to see a different part of the output. To be woken when specific output appears, it runs a watcher as its own command:
 
 ```bash
-until grep -qE "Ready|ERROR|Traceback" /tmp/pi-bash-….log; do sleep 1; done
+until grep -qE "Ready|ERROR|Traceback" /tmp/kimchi-bash-….log; do sleep 1; done
 ```
 
 The watcher's exit is delivered like any other exit result. Include failure patterns in the search, or a crash looks like waiting. Logs are deleted when the session shuts down.

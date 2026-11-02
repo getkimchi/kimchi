@@ -705,7 +705,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		const accumulator = new OutputAccumulator({
 			maxLines: INLINE_OUTPUT_MAX_LINES,
 			maxBytes: INLINE_OUTPUT_MAX_BYTES,
-			tempFilePrefix: "pi-bash",
+			tempFilePrefix: "kimchi-bash",
 		})
 
 		// Declared before the exec callbacks so the onData/settlement closures

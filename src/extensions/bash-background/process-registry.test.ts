@@ -240,7 +240,7 @@ describe("createProcessRegistry — snapshotTail", () => {
 		const snap = registry.finalSnapshot(handle)
 		expect(snap?.truncation?.truncated).toBe(true)
 		expect(snap?.content).toHaveLength(INLINE_OUTPUT_MAX_BYTES)
-		expect(snap?.fullOutputPath).toContain("pi-bash-")
+		expect(snap?.fullOutputPath).toContain("kimchi-bash-")
 		const spillPath = snap?.fullOutputPath
 		if (!spillPath) throw new Error("expected spill path")
 
@@ -343,7 +343,7 @@ describe("createProcessRegistry — snapshotTail", () => {
 
 		const logPath = registry.persistOutput(handle)
 		if (!logPath) throw new Error("expected log path")
-		expect(logPath).toContain("pi-bash-")
+		expect(logPath).toContain("kimchi-bash-")
 		// Idempotent: the same log for the life of the process.
 		expect(registry.persistOutput(handle)).toBe(logPath)
 		expect(registry.snapshotSince(handle).logPath).toBe(logPath)

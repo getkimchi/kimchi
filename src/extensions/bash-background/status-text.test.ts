@@ -176,9 +176,9 @@ describe("terminalResultText", () => {
 			deadlineSeconds: 3600,
 			output: "ok",
 			truncated: false,
-			fullOutputPath: "/tmp/pi-bash-1.log",
+			fullOutputPath: "/tmp/kimchi-bash-1.log",
 		})
-		expect(text).toContain("[Full log: /tmp/pi-bash-1.log]")
+		expect(text).toContain("[Full log: /tmp/kimchi-bash-1.log]")
 		expect(text).not.toContain("truncated")
 	})
 })
@@ -202,22 +202,24 @@ describe("log path in running text", () => {
 	}
 
 	it("inspection evidence names the log once one exists", () => {
-		expect(processEvidenceText({ ...base, logPath: "/tmp/pi-bash-2.log" })).toContain("Full log: /tmp/pi-bash-2.log")
+		expect(processEvidenceText({ ...base, logPath: "/tmp/kimchi-bash-2.log" })).toContain(
+			"Full log: /tmp/kimchi-bash-2.log",
+		)
 		expect(processEvidenceText(base)).not.toContain("Full log")
 	})
 
 	it("an omission notice points at the log instead of the final truncation", () => {
 		const text = unseenOutputText(
-			incremental({ omittedBytes: 4096, newBytes: 8192, text: "tail", logPath: "/tmp/pi-bash-3.log" }),
+			incremental({ omittedBytes: 4096, newBytes: 8192, text: "tail", logPath: "/tmp/kimchi-bash-3.log" }),
 		)
-		expect(text).toContain("the full log /tmp/pi-bash-3.log retains everything — grep it")
+		expect(text).toContain("the full log /tmp/kimchi-bash-3.log retains everything — grep it")
 	})
 })
 
 describe("handoffGuidanceText", () => {
 	it("teaches the until-loop watch on the process log when one exists", () => {
-		const text = handoffGuidanceText("unattended", "/tmp/pi-bash-4.log")
-		expect(text).toContain('until grep -qE "<success>|<failure>" /tmp/pi-bash-4.log; do sleep 1; done')
+		const text = handoffGuidanceText("unattended", "/tmp/kimchi-bash-4.log")
+		expect(text).toContain('until grep -qE "<success>|<failure>" /tmp/kimchi-bash-4.log; do sleep 1; done')
 		expect(text).toContain("Always include failure patterns")
 		expect(handoffGuidanceText()).not.toContain("until grep")
 	})
