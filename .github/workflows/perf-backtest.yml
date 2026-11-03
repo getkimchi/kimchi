@@ -103,7 +103,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - sha: 6c54cf06b4f5d5542597162f94b4c05dcfae9e44
+          - sha: 1219aa4382b267cf407484e3e64fb0a320b39113
             tag: parent
           - sha: bd659df9dc84df5cdd27184df048086d2ab649a7
             tag: culprit
