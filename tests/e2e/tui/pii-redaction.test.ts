@@ -381,7 +381,11 @@ test("emits per-entity pii_redaction.redacted + session_affected OTLP records wh
 			},
 		}),
 		async (fixture) => {
-			terminal.submit("Contact me at alice@example.com or call 555-867-5309")
+			// Fixture value assembled at runtime: a literal card number here would
+			// itself be redacted to a marker on disk by any agent pipeline that
+			// edits this file (CREDIT_CARD is Luhn-validated, always on).
+			const card = ["4532", "0151", "1283", "0366"].join("")
+			terminal.submit(`Contact me at alice@example.com or pay with CC: ${card}`)
 
 			await expect(terminal.getByText("OK", { full: true })).toBeVisible()
 
@@ -407,7 +411,7 @@ test("emits per-entity pii_redaction.redacted + session_affected OTLP records wh
 
 			// One record per redacted entity type on the user_input surface.
 			const redacted = records.filter((r) => r.eventName === "pii_redaction.redacted")
-			expect(redacted.map((r) => r.attrs.entity_type).sort()).toEqual(["EMAIL_ADDRESS", "PHONE_NUMBER"])
+			expect(redacted.map((r) => r.attrs.entity_type).sort()).toEqual(["CREDIT_CARD", "EMAIL_ADDRESS"])
 			for (const record of redacted) {
 				expect(record.attrs.surface).toBe("user_input")
 				expect(record.attrs.count).toBe("1")
@@ -418,7 +422,7 @@ test("emits per-entity pii_redaction.redacted + session_affected OTLP records wh
 			for (const request of fixture.fake.requests.filter((r) => r.url.startsWith("/logs"))) {
 				const serialized = JSON.stringify(request.body)
 				expect(serialized).not.toContain("alice@example.com")
-				expect(serialized).not.toContain("555-867-5309")
+				expect(serialized).not.toContain(card)
 				expect(serialized).not.toContain("Contact me at")
 			}
 		},
