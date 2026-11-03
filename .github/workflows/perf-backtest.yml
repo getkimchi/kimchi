@@ -44,15 +44,16 @@ jobs:
           ref: ${{ matrix.sha }}
           fetch-depth: 0
 
-      - name: Overlay the gate from the PR head
-        # The measured tree is the sampled master commit; the gate harness,
-        # budgets, and build inputs come from the PR head, exactly as the
-        # merged gate would see this code as a PR diff.
+      - name: Overlay the gate harness from the PR head
+        # Only tools/perf (harness + budgets) comes from the PR head; the
+        # measured tree keeps its own package.json/lockfile/patches/proxy
+        # helper, so old code builds against its own dependencies — exactly
+        # what a PR diff touching nothing else would have compiled like.
         env:
           GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git fetch --depth=1 origin "$GATE_SHA"
-          git checkout FETCH_HEAD -- tools/perf package.json pnpm-lock.yaml biome.json tsconfig.json tools/proxy-helper patches/ .github/actions
+          git checkout FETCH_HEAD -- tools/perf
           git status --short | head -20
 
       - uses: ./.github/actions/setup
@@ -61,8 +62,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
+          go-version: stable
 
       - name: Build proxy-helper
         run: make copy-for-dev
@@ -76,13 +76,12 @@ jobs:
       - name: Build binary
         run: pnpm run build:binary
 
-      - name: Gate classifier selfcheck
-        run: python3 tools/perf/gate.py --selfcheck
-
       - name: Run perf gate
+        # Direct python3 calls: old trees have no perf:* package scripts.
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          pnpm run perf:gate --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
+          python3 tools/perf/gate.py --selfcheck
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
 
       - name: Upload run records
         if: always()
