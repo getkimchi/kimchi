@@ -725,3 +725,5 @@ Windows build and local VM testing notes live in [`docs/windows/README.md`](docs
 ## License
 
 [Apache License 2.0](LICENSE) -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the CLA and contributor guidelines.
+
+<!-- test change for kimchi-bridge (LLM4106) -->
