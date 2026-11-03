@@ -1,23 +1,15 @@
 /**
- * Records which harness build produced a session.
- *
- * Writes one `kimchi_build` entry per `session_start`, so every session (and
- * every resumed segment of one) says which kimchi it ran on. Offline trace
- * analysis needs this to tell whether an issue seen in a session is already
- * fixed on master, or has come back after a fix.
- *
- * - release builds: the version is the release tag (`1.27.0` ↔ `v1.27.0`);
- * - canary builds: the version embeds the commit (`0.0.0-canary.<date>.<sha>`);
- * - dev runs (kimchi executed from a source checkout, e.g. `pnpm run dev`):
- *   version `dev`; commit, branch and dirty state are read from that checkout —
- *   the harness checkout, not the session's project.
+ * Records which harness build produced a session: one `kimchi_build` entry per
+ * `session_start`. The entry's contract (fields, channels, how source runs are
+ * detected) is documented in docs/session-build-entry.md.
  *
  * Source runs are detected from where this module lives, not from
  * `PI_PACKAGE_DIR`/`getVersion()`: `entry.ts` may point the package dir at an
  * installed release's share dir when the checkout lacks built resources, and
  * `getVersion()` then reports that release's version.
  *
- * Build info is resolved once per process and never blocks or fails a session.
+ * Build info is resolved once per process, off the session_start path: the
+ * entry is appended when git answers, so session startup never waits on git.
  */
 
 import { execFile } from "node:child_process"
@@ -36,14 +28,10 @@ export type BuildChannel = "release" | "canary" | "dev" | "unknown"
 
 export interface KimchiBuildEntry {
 	schemaVersion: typeof KIMCHI_BUILD_SCHEMA_VERSION
-	/** Version as reported by `kimchi --version` (`dev` for source runs). */
 	version: string
 	channel: BuildChannel
-	/** Full commit for dev runs; the abbreviated canary commit for canaries; absent for releases (use the tag). */
 	commit?: string
-	/** Dev runs only; absent when HEAD is detached. */
 	branch?: string
-	/** Dev runs only: tracked files differ from the commit. */
 	dirty?: boolean
 }
 
@@ -62,7 +50,8 @@ export function classifyVersion(version: string): { channel: BuildChannel; commi
 	return { channel: "unknown" }
 }
 
-async function optional<T>(read: () => Promise<T>): Promise<T | undefined> {
+/** Runs a git read; a failure yields `undefined` so that field is simply left out. */
+async function bestEffort<T>(read: () => Promise<T>): Promise<T | undefined> {
 	try {
 		return await read()
 	} catch {
@@ -76,9 +65,9 @@ export async function readGitState(
 	git: GitRunner,
 ): Promise<Pick<KimchiBuildEntry, "commit" | "branch" | "dirty">> {
 	const [commit, branch, status] = await Promise.all([
-		optional(() => git(["rev-parse", "HEAD"], dir)),
-		optional(() => git(["rev-parse", "--abbrev-ref", "HEAD"], dir)),
-		optional(() => git(["status", "--porcelain", "--untracked-files=no"], dir)),
+		bestEffort(() => git(["rev-parse", "HEAD"], dir)),
+		bestEffort(() => git(["rev-parse", "--abbrev-ref", "HEAD"], dir)),
+		bestEffort(() => git(["status", "--porcelain", "--untracked-files=no"], dir)),
 	])
 	const state: Pick<KimchiBuildEntry, "commit" | "branch" | "dirty"> = {}
 	if (commit) state.commit = commit.trim()
@@ -98,10 +87,19 @@ export async function resolveBuildInfo(version: string, packageDir: string, git:
 
 const execFileAsync = promisify(execFile)
 
-/** Git pinned to `cwd`: GIT_* redirection in the user's environment must not point it at another repository. */
+/** The environment without any `GIT_*` variable, so nothing in the user's environment redirects git. */
+export function gitFreeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("GIT_")))
+}
+
+/** Git pinned to `cwd`: no `GIT_*` variable (GIT_DIR, GIT_OBJECT_DIRECTORY, GIT_CONFIG, …) can point it elsewhere. */
 export const runGit: GitRunner = async (args, cwd) => {
-	const { GIT_DIR: _dir, GIT_COMMON_DIR: _common, GIT_WORK_TREE: _tree, GIT_INDEX_FILE: _index, ...env } = process.env
-	const { stdout } = await execFileAsync("git", args, { cwd, env, timeout: 2000, maxBuffer: 1024 * 1024 })
+	const { stdout } = await execFileAsync("git", args, {
+		cwd,
+		env: gitFreeEnv(process.env),
+		timeout: 2000,
+		maxBuffer: 1024 * 1024,
+	})
 	return stdout
 }
 
@@ -109,7 +107,7 @@ export const runGit: GitRunner = async (args, cwd) => {
 const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 
 /** `dev` when `sourceRoot` is a kimchi source checkout (unreleased placeholder version), else the reported version. */
-export function detectVersion(sourceRoot: string, reportedVersion: () => string): string {
+export function detectVersion(sourceRoot: string, reportedVersion: string): string {
 	try {
 		const pkg = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8")) as {
 			name?: string
@@ -119,30 +117,43 @@ export function detectVersion(sourceRoot: string, reportedVersion: () => string)
 	} catch {
 		// No readable package.json here: a bundled binary.
 	}
-	return reportedVersion()
+	return reportedVersion
 }
 
-export interface BuildInfoDeps {
-	resolve(): Promise<KimchiBuildEntry>
-}
+/**
+ * @param resolve produces the build info; called once per process (again only if it rejected).
+ * @returns the extension, plus `settled()` — resolves once every pending append has run (for tests).
+ */
+export function createBuildInfoExtension(resolve: () => Promise<KimchiBuildEntry>) {
+	let buildInfo: Promise<KimchiBuildEntry> | undefined
+	const pending = new Set<Promise<void>>()
 
-export function createBuildInfoExtension(deps: BuildInfoDeps) {
-	return (pi: ExtensionAPI): void => {
-		let buildInfo: Promise<KimchiBuildEntry> | undefined
+	const load = (): Promise<KimchiBuildEntry> => {
+		buildInfo ??= resolve().catch((err: unknown) => {
+			buildInfo = undefined // a failure must not be cached for the rest of the process
+			throw err
+		})
+		return buildInfo
+	}
 
-		pi.on("session_start", async () => {
-			buildInfo ??= deps.resolve()
-			const entry = await buildInfo
-			try {
-				pi.appendEntry(KIMCHI_BUILD_ENTRY_TYPE, entry)
-			} catch (err) {
-				// The session was replaced while git was answering; its successor gets its own session_start.
-				if (!isStaleCtxError(err)) throw err
-			}
+	const extension = (pi: ExtensionAPI): void => {
+		// Not awaited: session_start handlers run in sequence, and startup must not wait on git.
+		pi.on("session_start", () => {
+			const append = load()
+				.then((entry) => pi.appendEntry(KIMCHI_BUILD_ENTRY_TYPE, entry))
+				.catch((err: unknown) => {
+					// Stale: the session was replaced while git answered; its successor gets its own entry.
+					// Anything else: the entry is best-effort and must never fail the session.
+					if (!isStaleCtxError(err)) console.warn(`kimchi_build entry not recorded: ${String(err)}`)
+				})
+				.finally(() => pending.delete(append))
+			pending.add(append)
 		})
 	}
+
+	return Object.assign(extension, { settled: () => Promise.all([...pending]).then(() => undefined) })
 }
 
-export default createBuildInfoExtension({
-	resolve: () => resolveBuildInfo(detectVersion(SOURCE_ROOT, getVersion), SOURCE_ROOT, runGit),
-})
+export default createBuildInfoExtension(() =>
+	resolveBuildInfo(detectVersion(SOURCE_ROOT, getVersion()), SOURCE_ROOT, runGit),
+)

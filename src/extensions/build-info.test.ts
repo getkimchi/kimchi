@@ -9,6 +9,7 @@ import {
 	createBuildInfoExtension,
 	detectVersion,
 	type GitRunner,
+	gitFreeEnv,
 	KIMCHI_BUILD_ENTRY_TYPE,
 	type KimchiBuildEntry,
 	readGitState,
@@ -40,16 +41,16 @@ describe("detectVersion", () => {
 
 	it("reports dev for a source checkout, whatever version the package dir reports", () => {
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
-		expect(detectVersion(dir, () => "1.27.0")).toBe("dev")
+		expect(detectVersion(dir, "1.27.0")).toBe("dev")
 	})
 
 	it("uses the reported version for a stamped build", () => {
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "1.27.0" }))
-		expect(detectVersion(dir, () => "1.27.0")).toBe("1.27.0")
+		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
 	})
 
 	it("uses the reported version when there is no package.json (bundled binary)", () => {
-		expect(detectVersion(dir, () => "1.27.0")).toBe("1.27.0")
+		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
 	})
 })
 
@@ -152,6 +153,31 @@ describe("runGit", () => {
 		rmSync(other, { recursive: true, force: true })
 	})
 
+	it("ignores every GIT_* variable, not just GIT_DIR", () => {
+		expect(
+			gitFreeEnv({
+				PATH: "/bin",
+				GIT_DIR: "a",
+				GIT_OBJECT_DIRECTORY: "b",
+				GIT_CONFIG: "c",
+				GIT_CEILING_DIRECTORIES: "d",
+			}),
+		).toEqual({ PATH: "/bin" })
+	})
+
+	it("reads the checkout when GIT_OBJECT_DIRECTORY points at another repository's objects", async () => {
+		process.env.GIT_OBJECT_DIRECTORY = join(other, ".git", "objects")
+		try {
+			expect(await readGitState(repo, runGit)).toEqual({
+				commit: git(repo, "rev-parse", "HEAD"),
+				branch: "main",
+				dirty: false,
+			})
+		} finally {
+			delete process.env.GIT_OBJECT_DIRECTORY
+		}
+	})
+
 	it("reads the harness checkout even when GIT_DIR points at another repository", async () => {
 		process.env.GIT_DIR = join(other, ".git")
 		writeFileSync(join(repo, "file.txt"), "two\n")
@@ -170,25 +196,66 @@ describe("build-info extension", () => {
 	it("records the build on every session start, resolving it once", async () => {
 		const resolve = vi.fn(async () => entry)
 		const mock = createExtensionApi()
-		createBuildInfoExtension({ resolve })(mock.api)
+		const extension = createBuildInfoExtension(resolve)
+		extension(mock.api)
 
 		await mock.emit("session_start", { reason: "startup" })
 		await mock.emit("session_start", { reason: "resume" })
+		await extension.settled()
 
 		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry, entry])
 		expect(resolve).toHaveBeenCalledTimes(1)
 	})
 
-	it("drops the entry when the session was replaced while resolving", async () => {
+	it("does not hold up session_start while the build is being resolved", async () => {
+		let finish: (value: KimchiBuildEntry) => void = () => {}
 		const mock = createExtensionApi()
-		createBuildInfoExtension({
-			resolve: async () => {
-				mock.invalidate()
-				return entry
-			},
-		})(mock.api)
+		const extension = createBuildInfoExtension(() => new Promise((resolve) => (finish = resolve)))
+		extension(mock.api)
 
-		await expect(mock.emit("session_start", { reason: "startup" })).resolves.toBeDefined()
+		await mock.emit("session_start", { reason: "startup" })
 		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([])
+
+		finish(entry)
+		await extension.settled()
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry])
+	})
+
+	it("retries on the next session start after a failed resolve", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const resolve = vi
+			.fn<() => Promise<KimchiBuildEntry>>()
+			.mockRejectedValueOnce(new Error("boom"))
+			.mockResolvedValue(entry)
+		const mock = createExtensionApi()
+		const extension = createBuildInfoExtension(resolve)
+		extension(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+		await extension.settled()
+		await mock.emit("session_start", { reason: "new" })
+		await extension.settled()
+
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry])
+		expect(resolve).toHaveBeenCalledTimes(2)
+		expect(warn).toHaveBeenCalledOnce()
+		warn.mockRestore()
+	})
+
+	it("drops the entry when the session was replaced while resolving", async () => {
+		const warn = vi.spyOn(console, "warn")
+		const mock = createExtensionApi()
+		const extension = createBuildInfoExtension(async () => {
+			mock.invalidate()
+			return entry
+		})
+		extension(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+		await extension.settled()
+
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([])
+		expect(warn).not.toHaveBeenCalled()
+		warn.mockRestore()
 	})
 })

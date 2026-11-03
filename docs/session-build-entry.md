@@ -17,12 +17,31 @@ back after a fix.
 | Field | Meaning |
 |---|---|
 | `schemaVersion` | `1` |
-| `version` | what `kimchi --version` reports; `dev` for source runs |
+| `version` | the release or canary version; `dev` for any run from a source checkout |
 | `channel` | `release`, `canary`, `dev` or `unknown` |
 | `commit` | dev: full `HEAD` commit of the kimchi checkout; canary: the abbreviated commit from the version; absent for releases (resolve the `v<version>` tag) |
 | `branch` | dev only; absent when `HEAD` is detached |
-| `dirty` | dev only; tracked files differ from `commit` |
+| `dirty` | dev only; tracked files differ from `commit` (untracked files are ignored) |
 
-For dev runs, git reads the checkout kimchi runs from (`PI_PACKAGE_DIR`), not the
-session's project, and ignores `GIT_DIR`/`GIT_WORK_TREE` redirection. A field git
-can't answer is left out. The entry never blocks or fails a session.
+## Source runs
+
+A run counts as `dev` when the code is loaded from a kimchi source checkout: the
+checkout root (`../..` from `src/extensions/`) holds the `@kimchi-dev/cli`
+`package.json` with the unreleased `0.0.0` version. Git then
+reads that checkout (the harness, not the session's project), with every `GIT_*`
+variable removed from its environment so nothing redirects it.
+
+The entry doesn't use `PI_PACKAGE_DIR` or `getVersion()` for this. When the
+checkout's resources aren't built, `entry.ts` points the package dir at an
+installed release's share dir, and `kimchi --version` then reports that release
+(e.g. `1.27.0`) even though the code is running from source. The entry records
+`dev` in that case.
+
+## Timing and failures
+
+Build info is resolved once per process. On a failure it's tried again at the
+next `session_start`. The `session_start` handler doesn't wait for it: the entry is
+appended when git answers (at most 2 s per git call), so it may come a few
+entries after `session_start`, and session startup never waits on git. A field
+git can't answer is left out. If the session is replaced before the answer
+arrives, no entry is written for it; its successor gets its own.
