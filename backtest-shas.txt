@@ -1,6 +1,3 @@
-# Binary bisect round 3 (positions 10-12 of 48 in the 426c51f0..1219aa438 window).
-# Known: pos13 (338c508f8d) LOW 8.62G, pos7 (110abce049) HIGH 25.88G.
-# Prime suspect: c31c60a7e (pos10) pr-cost SQLite ledger — matches profiled hot stacks.
-c31c60a7e789046898687f7a5ff19ae5978fd61d
-f918e7ee40be3c63fcc5c93991dc5737c611667d
-c5d79ad8bff62d6c6091381afc3a4d4102c0eb66
+# Does today's master (post #1610 unstick-queue, #1611 ledger-read-sharing)
+# still pay the #1529 idle regression? Expect ~25G if not addressed, ~8.6G if fixed.
+73be7d8431503fde20c99ac25a08214db424dd46
