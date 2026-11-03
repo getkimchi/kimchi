@@ -505,6 +505,12 @@ export function requestAttributions(
 	records: WorkRecord[],
 	report: PullRequestCostReport,
 	repositories: Map<string, RepositoryIdentity>,
+	/**
+	 * The work's current `/work issue` selection by work ID. A request recorded before its work selected an issue
+	 * reports the selection now, so the PRs it funds name it; a request that named one at input begin keeps it as
+	 * evidence of what the request was for.
+	 */
+	currentWorkIssue?: (workId: string) => string | undefined,
 ): Map<string, RequestAttribution> {
 	const original = new Map<string, WorkRecord[]>()
 	const links = new Map<string, WorkRecord>()
@@ -591,9 +597,15 @@ export function requestAttributions(
 			}
 		}
 		const workIssueKeys = new Set<string>()
-		for (const row of original.get(request.requestId) ?? [])
-			if (object(row.issue) && typeof row.issue.key === "string" && isIssueKey(row.issue.key))
-				workIssueKeys.add(row.issue.key)
+		for (const row of original.get(request.requestId) ?? []) {
+			const issue = object(row.issue) ? row.issue : undefined
+			if (issue && typeof issue.key === "string" && isIssueKey(issue.key)) {
+				workIssueKeys.add(issue.key)
+				continue
+			}
+			const current = currentWorkIssue?.(row.workId)
+			if (current) workIssueKeys.add(current)
+		}
 		const billingAccountVerified =
 			request.reason !== "work-account-mismatch" && request.reason !== "work-account-unverified"
 		attributions.set(request.requestId, {

@@ -222,6 +222,20 @@ describe("unwindowed request attribution", () => {
 			requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map()).get(requestId)?.workIssueKeys,
 		).toEqual(["ORIGINAL-1"])
 	})
+	it("reports a late /work issue selection for requests that named none", () => {
+		const rows = records([pull()])
+		expect(
+			requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map(), () => "LATE-1").get(requestId)
+				?.workIssueKeys,
+		).toEqual(["LATE-1"])
+	})
+	it("keeps the request-captured key when the work's selection changed since", () => {
+		const rows = records([pull()], { issue: { key: "ORIGINAL-1" } })
+		expect(
+			requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map(), () => "LATE-2").get(requestId)
+				?.workIssueKeys,
+		).toEqual(["ORIGINAL-1"])
+	})
 })
 
 describe("allowlisted repository snapshots", () => {

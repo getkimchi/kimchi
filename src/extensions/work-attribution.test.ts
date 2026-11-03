@@ -1655,7 +1655,7 @@ describe("Jira issue selection", () => {
 
 		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
 		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
-			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: not priced locally; see the console`,
+			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests that named no issue pick it up on the next upload.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: not priced locally; see the console`,
 			"info",
 		])
 		await input("Implement it")
@@ -1723,7 +1723,7 @@ describe("Jira issue selection", () => {
 		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
 		await command.handler("issue clear", ctx)
 		expect(printed()).toEqual([
-			`Jira issue ABC-123 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.\n${details([])}`,
+			`Jira issue ABC-123 cleared from this work. From the next prompt, requests have no issue, and requests that named it keep it.\n${details([])}`,
 			"info",
 		])
 		await command.handler("issue ABC 123", ctx)

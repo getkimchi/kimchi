@@ -123,6 +123,8 @@ function build(
 	rows: unknown[],
 	inputReport: unknown = report,
 	touched?: { requests: string[]; records: string[] },
+	/** A current `/work issue` selection every work resolves to; mirrors worker.ts's resolver. */
+	currentKey?: string,
 ): CommonEvents & { claims: number } {
 	const stored = rows.map((row, index) => ({
 		body: JSON.stringify(row),
@@ -139,12 +141,13 @@ import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.ur
 const input = await Bun.stdin.json();
 let claims = 0;
 const touched = input.touched && { requests: new Set(input.touched.requests), records: new Set(input.touched.records) };
-const built = buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++ }, touched);
+const currentWorkIssue = input.currentKey === undefined ? undefined : () => input.currentKey;
+const built = buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++ }, touched, currentWorkIssue);
 console.log(JSON.stringify({ ...built, claims }));
 `,
 			],
 			{
-				input: JSON.stringify({ stored, report: inputReport, repositories, producer, touched }),
+				input: JSON.stringify({ stored, report: inputReport, repositories, producer, touched, currentKey }),
 				encoding: "utf8",
 				timeout: 30_000,
 			},
@@ -448,6 +451,44 @@ it("keeps fork origin separate from parent PR allocation and recorded Jira metad
 		toId: "PR1",
 		quality: "confirmed",
 	})
+})
+
+it("links a late /work issue selection to requests that named no issue at input begin", () => {
+	const beforeSelection = records.map((row) => (row.type === "request" ? { ...row, issue: undefined } : row))
+	const late = {
+		...report,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
+		pullRequests: [
+			{
+				key: "parent-pr",
+				account,
+				workIds: [workId],
+				pullRequest: {
+					id: "PR1",
+					repositoryId: "42",
+					provider: "github",
+					host: "github.com",
+					repository: "parent/repo",
+					number: 1,
+					url: "https://github.com/parent/repo/pull/1",
+					state: "open",
+					title: "Provider title",
+					author: "provider-user",
+					branchIssueKeys: ["LLM-43"],
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: "2026-10-24T08:00:03Z",
+				},
+			},
+		],
+	}
+	const facts = build(beforeSelection, late, undefined, "LATE-7").accounts[0].facts
+	expect(facts.find((fact) => fact.pullRequest)?.pullRequest?.issueKeys).toEqual([
+		{ key: "LATE-7", source: "work" },
+		{ key: "LLM-43", source: "branch" },
+	])
+	expect(facts.find((fact) => fact.work)?.work?.issueKeys).toEqual([{ key: "LATE-7", source: "work" }])
 })
 
 it("makes units and reads claims only for touched requests while shared facts aggregate every request", () => {

@@ -187,7 +187,7 @@ export async function workIssueCommand(
 		return {
 			lines: [
 				changed
-					? `Jira issue ${key} selected for this work${replaced ? `, replacing ${replaced}` : ""}. It applies from the next prompt; earlier requests are unchanged.`
+					? `Jira issue ${key} selected for this work${replaced ? `, replacing ${replaced}` : ""}. It applies from the next prompt; earlier requests that named no issue pick it up on the next upload.`
 					: `Jira issue ${key} is already selected for this work.`,
 			],
 			changed,
@@ -195,7 +195,7 @@ export async function workIssueCommand(
 	return {
 		lines: [
 			changed
-				? `Jira issue ${replaced ? `${replaced} ` : ""}cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.`
+				? `Jira issue ${replaced ? `${replaced} ` : ""}cleared from this work. From the next prompt, requests have no issue, and requests that named ${replaced ? "it" : "one"} keep it.`
 				: "No Jira issue is selected for this work.",
 		],
 		changed,

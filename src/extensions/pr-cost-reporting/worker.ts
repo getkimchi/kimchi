@@ -13,6 +13,7 @@ import { LookupError } from "../pull-request-status/provider-records.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { readWorkCostReport } from "../work-attribution/cost-sync.js"
 import type { PullRequestCostReport } from "../work-attribution/costs.js"
+import { readWorkIssue } from "../work-attribution/issues.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
@@ -712,6 +713,11 @@ async function translateGroup(
 				),
 				records: new Set(changed.keys()),
 			}
+	const selections = new Map<string, string | undefined>()
+	const currentWorkIssue = (workId: string): string | undefined => {
+		if (!selections.has(workId)) selections.set(workId, readWorkIssue(agentDir, workId).selected?.key)
+		return selections.get(workId)
+	}
 	const built = buildEvents(
 		stored,
 		report,
@@ -720,6 +726,7 @@ async function translateGroup(
 		check,
 		(account, entity) => effectiveClaim(backend, account, entity),
 		touched,
+		currentWorkIssue,
 	)
 	check()
 	const facts = new Map(

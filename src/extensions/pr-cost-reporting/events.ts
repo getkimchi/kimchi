@@ -61,6 +61,8 @@ export function buildEvents(
 	check: () => void,
 	existingClaim: (account: string, entity: string) => Event | undefined,
 	touched?: { requests: ReadonlySet<string>; records: ReadonlySet<string> },
+	/** A work's current `/work issue` selection; requests recorded before it report it now. */
+	currentWorkIssue?: (workId: string) => string | undefined,
 ): CommonEvents {
 	const records = stored.map((row) => {
 		check()
@@ -69,7 +71,7 @@ export function buildEvents(
 	const native = nativeObservations(stored)
 	const observations = new Map(native.observations.map((row) => [row.requestId, row]))
 	const nativeProblems = new Map(native.unresolved.map((row) => [row.requestId, row]))
-	const attribution = requestAttributions(records, report, repositories)
+	const attribution = requestAttributions(records, report, repositories, currentWorkIssue)
 	const requests = new Map<string, { row: WorkRecord; hash: string }[]>()
 	for (let i = 0; i < records.length; i++) {
 		check()

@@ -249,7 +249,7 @@ describe("/work issue", () => {
 
 		expect(await command(cwd, "ABC-123")).toEqual({
 			lines: [
-				"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.",
+				"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests that named no issue pick it up on the next upload.",
 			],
 			changed: true,
 		})
@@ -261,7 +261,7 @@ describe("/work issue", () => {
 		})
 		expect(await command(cwd, "ABC-124")).toEqual({
 			lines: [
-				"Jira issue ABC-124 selected for this work, replacing ABC-123. It applies from the next prompt; earlier requests are unchanged.",
+				"Jira issue ABC-124 selected for this work, replacing ABC-123. It applies from the next prompt; earlier requests that named no issue pick it up on the next upload.",
 			],
 			changed: true,
 		})
@@ -271,7 +271,7 @@ describe("/work issue", () => {
 		})
 		expect(await command(cwd, " clear ")).toEqual({
 			lines: [
-				"Jira issue ABC-124 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
+				"Jira issue ABC-124 cleared from this work. From the next prompt, requests have no issue, and requests that named it keep it.",
 			],
 			changed: true,
 		})
@@ -308,7 +308,7 @@ describe("/work issue", () => {
 
 		expect(await command(agentDir, "clear")).toEqual({
 			lines: [
-				"Jira issue cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
+				"Jira issue cleared from this work. From the next prompt, requests have no issue, and requests that named one keep it.",
 			],
 			changed: true,
 		})

@@ -58,7 +58,7 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 		`Work ID: ${workId}`,
 	])
 	expect((await notice(active, sessionId, "/work issue ABC-123")).split("\n").slice(0, 3)).toEqual([
-		"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.",
+		"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests that named no issue pick it up on the next upload.",
 		`Work ID: ${workId}`,
 		"Jira issue: ABC-123",
 	])
