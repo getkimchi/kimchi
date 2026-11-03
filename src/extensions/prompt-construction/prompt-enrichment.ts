@@ -915,6 +915,10 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				sessionId,
 				hasUserLoop: hasUserLoop(),
 				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
+				// Re-read per build so `/language` and `kimchi config set language`
+				// take effect on the next turn without a restart. Project config
+				// (trusted) wins over global — resolve against the session cwd.
+				language: loadConfig({ cwd: ctx.cwd }).language,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

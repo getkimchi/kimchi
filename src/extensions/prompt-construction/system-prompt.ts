@@ -72,6 +72,11 @@ export interface SystemPromptBuildOptions {
 	 *  false, orchestrator delegation guidance requires joining backgrounded
 	 *  agents before turn end. Default: true. */
 	backgroundNotificationsReachUser?: boolean
+	/** Pinned reply language from the `language` config key (already validated
+	 *  by normalizeLanguageSetting). When set, the Language section becomes a
+	 *  hard rule ("always answer in X") instead of "mirror the user". Unset =
+	 *  adaptive. */
+	language?: string
 }
 
 export const SET_PHASE = "set_phase"
@@ -119,6 +124,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		registry,
 		roles,
 		hasUserLoop,
+		language: options.language,
 	})
 }
 
@@ -140,6 +146,7 @@ interface PromptParts {
 	registry?: ModelRegistry
 	roles?: ModelRoles
 	hasUserLoop: boolean
+	language?: string
 }
 
 const BASE_GOAL =
@@ -176,6 +183,29 @@ const LANGUAGE_SECTION = `## Language
 
 - Respond in the language the user writes in; default to English when unclear.
 - Match that language in everything the user reads — todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged.`
+
+/** Everything the user reads — shared by the adaptive and pinned variants so the
+ *  two rules never drift on what "the user reads" covers. */
+const LANGUAGE_SCOPE =
+	"todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged."
+
+/**
+ * Pinned variant, used when the `language` config key is set. Models with weak
+ * instruction-following (DeepSeek observed) otherwise follow the dominant
+ * language of a mixed-language history rather than the latest message; a pin
+ * removes the ambiguity entirely. Static per session, so the cached prefix is
+ * as stable as the adaptive rule.
+ */
+export function pinnedLanguageSection(language: string): string {
+	return `## Language
+
+- Always respond in ${language}, whatever language the user writes in — the user pinned this with kimchi's \`language\` setting. A request to switch languages inside the conversation does not override it; tell the user to change the setting (\`/language\`) instead.
+- Use ${language} in everything the user reads — ${LANGUAGE_SCOPE}`
+}
+
+function buildLanguageSection(language: string | undefined): string {
+	return language === undefined ? LANGUAGE_SECTION : pinnedLanguageSection(language)
+}
 
 /**
  * Resolve the mode-specific instruction payload for the system prompt.
@@ -469,7 +499,7 @@ function buildPrompt(parts: PromptParts): string {
 	// routed model and subagent gets the self-knowledge clause)
 	const intro = buildBaseInstructions(parts.toolNames.has("web_search") || parts.toolNames.has("web_fetch"))
 	sections.push(intro)
-	sections.push(LANGUAGE_SECTION)
+	sections.push(buildLanguageSection(parts.language))
 
 	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
 	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {

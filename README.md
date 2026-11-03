@@ -479,6 +479,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
 
+### Reply language
+
+Kimchi answers in the language you write in. To pin it instead (useful when a model drifts in mixed-language sessions), run `kimchi config set language ko` or `/language ko` in a session; `auto` unpins — see [docs/response-language.md](docs/response-language.md).
+
 ### Context files
 
 You can provide custom instructions that are injected into the system prompt on every session. Kimchi discovers two kinds of context files:

@@ -1,4 +1,12 @@
-import { loadConfig, readTelemetryConfig, writeTelemetryEnabled, writeTuiWheelScrollLines } from "../config.js"
+import {
+	LANGUAGE_AUTO,
+	loadConfig,
+	normalizeLanguageSetting,
+	readTelemetryConfig,
+	writeLanguage,
+	writeTelemetryEnabled,
+	writeTuiWheelScrollLines,
+} from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { isRegionId, REGION_ENV, REGIONS, selectableRegions } from "../regions.js"
 import { isTelemetryPolicyEnforced, readEffectiveTelemetryConfig, usageReportingPolicy } from "../telemetry-policy.js"
@@ -11,9 +19,10 @@ const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
  * schema-constrained keys (apiKey, region, …). Each entry pairs the CLI
  * surface validation with its config.js writer. New writable keys go here.
  */
-interface WritableKeyDef {
-	parse: (raw: string) => number | null
-	write: (value: number) => void
+interface WritableKeyDef<T = number | string> {
+	/** null = invalid input (exit 2, nothing written). */
+	parse: (raw: string) => T | null
+	write: (value: T) => void
 	describeValue: string
 	defaultDisplay: string
 }
@@ -24,9 +33,16 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 			const n = Number(raw)
 			return Number.isInteger(n) && n >= 1 ? n : null
 		},
-		write: (lines) => writeTuiWheelScrollLines(lines),
+		write: (lines) => writeTuiWheelScrollLines(lines as number),
 		describeValue: "an integer ≥ 1",
 		defaultDisplay: 'unset (default "auto")',
+	},
+	language: {
+		parse: (raw) =>
+			raw.trim().toLowerCase() === LANGUAGE_AUTO ? LANGUAGE_AUTO : (normalizeLanguageSetting(raw) ?? null),
+		write: (value) => writeLanguage(value === LANGUAGE_AUTO ? undefined : (value as string)),
+		describeValue: 'a language name or code such as "ko", "Korean" or "fr", or "auto" to mirror the user',
+		defaultDisplay: "unset (replies in the language you write in)",
 	},
 }
 
@@ -209,7 +225,7 @@ function printUsage(): void {
 	console.error("Usage: kimchi config telemetry [on|off]")
 	console.error("       kimchi config telemetry           # show effective status (an org policy may enforce it)")
 	console.error("       kimchi config region              # show the endpoint region (chosen at login)")
-	console.error("       kimchi config set <key> <value>   # write a config key")
+	console.error("       kimchi config set <key> <value>   # write a config key (e.g. set language ko)")
 	console.error("       kimchi config get <key>           # show a config key's effective value")
 	printWritableKeys()
 }

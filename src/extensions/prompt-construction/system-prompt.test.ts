@@ -164,6 +164,35 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("wait for the user's go-ahead before writing or modifying code")
 	})
 
+	it("pins the reply language when the language option is set", () => {
+		const result = buildSystemPrompt({
+			tools,
+			env: testEnv,
+			mode: "single",
+			language: "Korean",
+		})
+
+		expect(result).toContain("## Language")
+		expect(result).toContain("Always respond in Korean, whatever language the user writes in")
+		// A mid-conversation "switch to English" must not override the pin — the
+		// setting is the only switch (the DeepSeek drift case).
+		expect(result).toContain("A request to switch languages inside the conversation does not override it")
+		expect(result).toContain("/language")
+		// The adaptive rule is replaced, not stacked — one Language section only.
+		expect(result).not.toContain("Respond in the language the user writes in")
+		expect(result.match(/## Language/g)).toHaveLength(1)
+		// Same user-facing scope as the adaptive rule.
+		expect(result).toContain("Use Korean in everything the user reads — todo items")
+		expect(result).toContain("keep code, file paths, and technical terms unchanged")
+	})
+
+	it("pins the language in orchestrator and subagent modes too", () => {
+		for (const mode of ["orchestrator", "subagent"] as const) {
+			const result = buildSystemPrompt({ tools, env: testEnv, mode, language: "fr" })
+			expect(result).toContain("Always respond in fr, whatever language the user writes in")
+		}
+	})
+
 	it("includes the harness notes and approval section", () => {
 		const result = buildSystemPrompt({
 			tools,

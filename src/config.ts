@@ -267,6 +267,37 @@ export interface KimchiConfig {
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
 	tui?: TuiConfig
+	/**
+	 * Pinned reply language (e.g. "ko", "Korean", "fr"). When set, the system
+	 * prompt tells the model to always answer in this language instead of
+	 * mirroring the user's. Project config wins over global. Unset = mirror
+	 * the user's language (see src/extensions/prompt-construction/system-prompt.ts).
+	 */
+	language?: string
+}
+
+/** Longest accepted `language` value — a name or code, never a paragraph of instructions. */
+export const MAX_LANGUAGE_SETTING_LENGTH = 40
+
+/** Sentinel accepted by `kimchi config set language` and `/language` to unpin (mirror the user). */
+export const LANGUAGE_AUTO = "auto"
+
+/**
+ * Validate a `language` setting value: trimmed, single-line, non-empty, at most
+ * MAX_LANGUAGE_SETTING_LENGTH chars. Returns undefined for anything else so an
+ * invalid config value falls back to "mirror the user's language" instead of
+ * injecting arbitrary text into the system prompt.
+ */
+export function normalizeLanguageSetting(raw: unknown): string | undefined {
+	if (typeof raw !== "string") return undefined
+	const trimmed = raw.trim()
+	// Reject control bytes (newlines, tabs, escapes) BEFORE collapsing spaces: a
+	// multi-line value is an injection attempt, not sloppy whitespace.
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: the prompt is plain text
+	if (/[\x00-\x1f\x7f]/.test(trimmed)) return undefined
+	const value = trimmed.replace(/ {2,}/g, " ")
+	if (value.length === 0 || value.length > MAX_LANGUAGE_SETTING_LENGTH) return undefined
+	return value
 }
 
 /**
@@ -324,6 +355,7 @@ function readConfigExtras(configPath: string): {
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
 	tui?: TuiConfig
+	language?: string
 } {
 	try {
 		const raw = readFileSync(configPath, "utf-8")
@@ -447,6 +479,10 @@ function readConfigExtras(configPath: string): {
 			}
 		}
 
+		// Pinned reply language. Invalid values (non-string, empty, multi-line,
+		// over-long) are ignored so the prompt falls back to mirroring the user.
+		const language = normalizeLanguageSetting(parsed.language)
+
 		return {
 			apiKey,
 			llmEndpoint,
@@ -464,6 +500,7 @@ function readConfigExtras(configPath: string): {
 			memoryEmbedding,
 			memoryExtraction,
 			tui,
+			language,
 		}
 	} catch {
 		return {}
@@ -702,6 +739,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 		tui: projectExtras.tui ?? globalExtras.tui,
+		language: projectExtras.language ?? globalExtras.language,
 	}
 
 	// Region is account-level, so only the global config may set it.
@@ -735,6 +773,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryEmbedding: extras.memoryEmbedding,
 		memoryExtraction: extras.memoryExtraction,
 		tui: extras.tui,
+		language: extras.language,
 	}
 }
 
@@ -1208,6 +1247,24 @@ export function writeTuiWheelScrollLines(lines: number, configPath?: string): vo
 		const tui = raw.tui && typeof raw.tui === "object" && !Array.isArray(raw.tui) ? { ...raw.tui } : {}
 		;(tui as Record<string, unknown>).wheelScrollLines = lines
 		raw.tui = tui
+	})
+}
+
+/**
+ * Pin (or, with `undefined`, unpin) the reply language in the global config.
+ * The value must already be normalized (see normalizeLanguageSetting); the
+ * `kimchi config set language` and `/language` surfaces validate before
+ * calling this.
+ */
+export function writeLanguage(language: string | undefined, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		if (language === undefined) {
+			// biome-ignore lint/performance/noDelete: explicit removal is clearer than relying on JSON.stringify to silently drop undefined values
+			delete raw.language
+		} else {
+			raw.language = language
+		}
 	})
 }
 
