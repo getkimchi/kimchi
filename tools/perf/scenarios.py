@@ -18,6 +18,7 @@ Usage:
       --out runs.jsonl [--workroot DIR] [--reps 2]
 """
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -285,13 +286,23 @@ def counter_tier(tot):
     return "cpu_ms"
 
 
-def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0):
+def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60):
     """Aged HOME, idle. Gate: per-pass instr, reads, children, keystroke p95.
 
     Keystroke echo latency — the one wall-clock metric, measured on a
     single-tenant runner VM — is probed throughout the idle window: type a
     char, time the first PTY bytes back (its echo), erase it. The reconcile
     pass blocking the event loop shows up directly as echo latency.
+
+    Two phases, tagged per bucket via `"p"`:
+    1. the aged state as seeded — a stuck queue whose entries keep failing
+       (endpoint 413s them), so a reconcile schedule occupied by real due
+       work is the measured steady state;
+    2. `retire_queue_retries` moves every retry deadline past the window —
+       the queue is still full and the endpoint still refuses, but nothing
+       is due. A gate that honours the retry schedule shows background work
+       collapse after the single change-absorbing pass; anything that re-runs
+       the cycle on its own timer (the #1529 class) keeps paying full passes.
     """
     argv = [binary, "--provider", "fake", "--model", "basic"]
     t0 = time.time()
@@ -308,23 +319,37 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0):
         sampler.sample()
         prev = sampler.totals()
         prev_routes, _ = srv_state.snapshot()
-        n = int(total_s / bucket_s)
-        for _ in range(n):
-            deadline = time.time() + bucket_s
-            while time.time() < deadline:
-                lat = probe_keylat(tp)
-                if lat is not None:
-                    res["keylat_ms"].append(lat)
-                time.sleep(1.2)
-            sampler.sample()
-            cur = sampler.totals()
-            routes, _ = srv_state.snapshot()
-            d = delta(prev, cur)
-            d["t"] = round(time.time() - t0, 1)
-            d["requests"] = sum(routes.values()) - sum(prev_routes.values())
-            d["n_children"] = cur["n_children"]
-            res["buckets"].append(d)
-            prev, prev_routes = cur, routes
+
+        def window(phase, seconds):
+            n = int(seconds / bucket_s)
+            nonlocal prev, prev_routes
+            for _ in range(n):
+                deadline = time.time() + bucket_s
+                while time.time() < deadline:
+                    lat = probe_keylat(tp)
+                    if lat is not None:
+                        res["keylat_ms"].append(lat)
+                    time.sleep(1.2)
+                sampler.sample()
+                cur = sampler.totals()
+                routes, _ = srv_state.snapshot()
+                d = delta(prev, cur)
+                d["t"] = round(time.time() - t0, 1)
+                d["p"] = phase
+                d["requests"] = sum(routes.values()) - sum(prev_routes.values())
+                d["n_children"] = cur["n_children"]
+                res["buckets"].append(d)
+                prev, prev_routes = cur, routes
+
+        window(1, total_s)
+        if stuck_s > 0:
+            # Engagement invariant for the selfcheck: the queue's state file must
+            # have moved BEFORE the retire step — after it, state.json changes for
+            # free regardless of whether a pass ever ran.
+            sp = os.path.join(env["HOME"], ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
+            res["state_at_retire"] = hashlib.sha256(open(sp, "rb").read()).hexdigest() if os.path.exists(sp) else None
+            fixtures.retire_queue_retries(env["HOME"])
+            window(2, stuck_s)
         res["peak_mem"] = peak_mem(prev)
         res["pids_peak"] = (prev.get("cg") or {}).get("pids_peak", 0)
         res["child_names"] = prev["child_names"]  # advisory: sampled; names for debugging only
@@ -499,12 +524,17 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                 if not r.get("ok", False):
                     failures.append(f"{sc}: {r.get('error')}\n{r.get('screen_tail', '')[-400:]}")
                 # engagement: the aged reporting queue must actually run — its
-                # state file is rewritten (413 backoff) when the pass engages
+                # state file is rewritten (413 backoff) when the pass engages.
+                # Compare against the state captured BEFORE the retire step:
+                # retirement itself rewrites state.json, so post-run content can
+                # no longer prove engagement.
                 if sc == "idle" and state_before is not None:
                     sp = os.path.join(rep_root, "home", ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
                     after = open(sp, "rb").read() if os.path.exists(sp) else None
-                    if after == state_before:
-                        failures.append("idle: reporting queue never engaged (state.json unchanged; fixture drift?)")
+                    engaged = r.get("state_at_retire")
+                    unchanged = (engaged == hashlib.sha256(state_before).hexdigest()) if engaged is not None else (after == state_before)
+                    if unchanged:
+                        failures.append("idle: reporting queue never engaged before retire (state.json unchanged; fixture drift?)")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -526,6 +556,7 @@ def main():
     ap.add_argument("--workroot", default=None)
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--idle", type=float, default=90.0, help="idle scenario window (s; whole 30s pass periods)")
+    ap.add_argument("--stuck", type=float, default=60.0, help="idle stuck-queue phase window (s; 0 disables the phase)")
     ap.add_argument("--session-mb", type=int, default=8,
                     help="resume fixture session size in MB (8 for local, 31 in CI)")
     ap.add_argument("--expect-version", default=None,
@@ -574,7 +605,7 @@ def main():
                 elif args.scenario == "resume":
                     r = run_resume(args.binary, env, cwd, state)
                 else:
-                    r = run_idle(args.binary, env, cwd, state, args.idle)
+                    r = run_idle(args.binary, env, cwd, state, args.idle, stuck_s=args.stuck)
                 r.update({"scenario": args.scenario, "rep": rep, "version": version, "git": git_version})
                 out.write(json.dumps(r) + "\n")
                 out.flush()

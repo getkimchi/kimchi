@@ -46,6 +46,14 @@
    "limit": 33646537847,
    "budget_note": "idle background work over the window (v1.10 class)"
   },
+  "stuck_instr": {
+   "limit": 40000000000,
+   "budget_note": "INTERIM: set above today's master-era behavior so #1617 stays green; the fixed stack sits ~5x below — chunk 6 recalibrates on the canonical runner post-merge"
+  },
+  "stuck_read_mb": {
+   "limit": 120,
+   "budget_note": "INTERIM: set above today's master-era behavior so #1617 stays green; the fixed stack sits ~10x below — chunk 6 recalibrates on the canonical runner post-merge"
+  },
   "read_mb": {
    "limit": 186,
    "budget_note": "root's own per-pass re-reads of accumulated data"

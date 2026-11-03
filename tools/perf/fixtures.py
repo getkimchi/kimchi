@@ -19,6 +19,7 @@ The `--selfcheck` mode of scenarios.py asserts the engagement of the parts
 that drift silently (state.json loads, frozen notes scan, journals import).
 """
 import contextlib
+import time
 import datetime
 import hashlib
 import json
@@ -430,3 +431,55 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
              "producerId": producer_id, "entries": entries}
     json.dump(state, open(os.path.join(pr_cost, "state.json"), "w"))
     return db_path
+
+
+def retire_queue_retries(home, horizon_ms=3_600_000):
+    """Move every pending retry deadline past the measurement window: the
+    queue stays full and the endpoint keeps refusing, but nothing is due.
+
+    This is the stuck-but-quiet contrast for the idle lane: a gate that
+    honours retry deadlines shows background work collapse to ~zero after
+    the one change-absorbing pass, while any code that re-runs the cycle on
+    its own timer keeps paying full passes forever — regardless of when the
+    queue's own bookkeeping last changed.
+
+    The edit is deliberately a FOREIGN write (plain file + sqlite writes,
+    and the version sidecar is bumped like any third-party writer would):
+    the running binary must notice it exactly once, re-freeze the new
+    deadlines, and then sleep — which is precisely the behaviour that
+    distinguishes the fixed reconcile from the pre-fix one.
+    """
+    agent = os.path.join(home, ".config", "kimchi", "harness")
+    pr_cost = os.path.join(agent, "pr-cost-reporting")
+    retry_at = int(time.time() * 1000) + horizon_ms
+
+    sp = os.path.join(pr_cost, "state.json")
+    state = json.load(open(sp))
+    for entry in state["entries"].values():
+        entry["retryAt"] = retry_at
+    json.dump(state, open(sp, "w"))
+    # The sidecar reads before state.json in the product's own write path; a
+    # foreign writer bumps it after, which can only over-open, never close.
+    vp = os.path.join(pr_cost, "state.version")
+    cur = 0
+    try:
+        cur = int(open(vp).read().strip())
+    except (OSError, ValueError):
+        pass
+    open(vp, "w").write(str(cur + 1) + "\n")
+
+    db_path = os.path.join(pr_cost, "ledger.db")
+    with contextlib.closing(sqlite3.connect(db_path)) as con:
+        rows = con.execute("SELECT work_id, name, body FROM bookkeeping").fetchall()
+        for work_id, name, body in rows:
+            try:
+                obj = json.loads(body)
+            except (ValueError, TypeError):
+                continue
+            entry = obj.get("entry") if isinstance(obj, dict) else None
+            if not isinstance(entry, dict) or "retryAt" not in entry:
+                continue
+            entry["retryAt"] = retry_at
+            con.execute("UPDATE bookkeeping SET body = ? WHERE work_id = ? AND name = ?",
+                        (json.dumps(obj, separators=(",", ":")), work_id, name))
+        con.commit()

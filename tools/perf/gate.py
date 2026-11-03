@@ -81,12 +81,26 @@ EXTRACTORS = {
         # Skip the first bucket: it mixes startup with the first background pass.
         # Gating steady-state buckets only keeps a 1.5x per-pass regression at 1.5x
         # of the gated total, instead of being diluted by fixed startup work.
+        # Buckets are phase-tagged ("p"); untagged buckets from older records are
+        # phase 1 by definition (the stuck phase did not exist when they ran).
         "instr": (lambda r: sum(_wu(b.get("instr", 0), b.get("cycles", 0), b.get("cpu_ms", 0)) +
                                  _wu(b.get("desc_instr", 0), b.get("desc_cycles", 0), b.get("desc_cpu_ms", 0))
-                                 for b in r.get("buckets", [])[1:]),
+                                 for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]),
                   "work units", "idle background work over the window (v1.10 class)", (RATIO, IDLE_WORK)),
-        "read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in r.get("buckets", [])[1:]) / 1e6,
+        "read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p", 1) == 1][1:]) / 1e6,
                     "MB read", "root's own per-pass re-reads of accumulated data", (RATIO, IDLE_READS)),
+        # Phase 2: retry deadlines moved past the window — nothing is due, the
+        # queue is still stuck, and the endpoint still refuses. The fix
+        # (sleep-until-retry) shows a work collapse after the single pass that
+        # absorbs the retire edit; the #1529 class keeps paying full passes on
+        # its own timer regardless. Skip phase 2's first bucket: the absorbing
+        # pass legitimately lives there.
+        "stuck_instr": (lambda r: sum(_wu(b.get("instr", 0), b.get("cycles", 0), b.get("cpu_ms", 0)) +
+                                       _wu(b.get("desc_instr", 0), b.get("desc_cycles", 0), b.get("desc_cpu_ms", 0))
+                                       for b in [b for b in r.get("buckets", []) if b.get("p") == 2][1:]),
+                        "work units", "background work with a stuck queue and no due retries (sleep-schedule class)", (RATIO, IDLE_WORK)),
+        "stuck_read_mb": (lambda r: sum((b.get("disk_r", 0) + b.get("desc_disk_r", 0)) for b in [b for b in r.get("buckets", []) if b.get("p") == 2][1:]) / 1e6,
+                          "MB read", "reads with a stuck queue and no due retries", (RATIO, IDLE_READS)),
         # pids.peak is the kernel's own record of the run's peak concurrency —
         # exact, unlike any sampled child count. The additive allowance covers
         # an occasional extra helper, not a ratio on a small integer.
@@ -125,10 +139,17 @@ def run_selfcheck():
                    "load": {"instr": 100, "cycles": 0, "cpu_ms": 0},
                    "turn": {"instr": 100, "cycles": 0, "cpu_ms": 0}, "peak_mem": 100e6},
         "idle": {"scenario": "idle", "ok": True, "counter": "cgroup-instructions",
+                 # Phase 1 (default/untagged) + phase 2 (stuck-but-quiet): the
+                 # in-budget record must feed every idle extractor, including the
+                 # stuck-phase sums, with nonzero buckets.
                  "buckets": [{"instr": 0, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
                               "desc_cpu_ms": 0, "disk_r": 0, "desc_disk_r": 0},
                              {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
-                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0}],
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0},
+                             {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 2},
+                             {"instr": 100, "cycles": 0, "cpu_ms": 0, "desc_instr": 0, "desc_cycles": 0,
+                              "desc_cpu_ms": 0, "disk_r": 1e6, "desc_disk_r": 0, "p": 2}],
                  "pids_peak": 4, "keylat_p95_ms": 5.0},
     }
 
@@ -303,7 +324,7 @@ def run_scenarios(binary, scenarios, args, out_dir):
             os.remove(runs)
         cmd = [sys.executable, os.path.join(HERE, "scenarios.py"), "--binary", binary,
                "--scenario", sc, "--out", runs, "--reps", str(args.reps),
-               "--idle", str(args.idle), "--session-mb", str(args.session_mb),
+               "--idle", str(args.idle), "--stuck", str(args.stuck), "--session-mb", str(args.session_mb),
                "--workroot", os.path.join(out_dir, f"root-{sc}")]
         if args.expect_version:
             cmd += ["--expect-version", args.expect_version]
@@ -379,6 +400,8 @@ def main():
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--scenarios", default="session,resume,idle")
     ap.add_argument("--idle", type=float, default=90.0)  # whole 30s pass periods
+    ap.add_argument("--stuck", type=float, default=60.0,
+                    help="idle stuck-queue phase window (s): retries retired past the window, work must collapse")
     ap.add_argument("--session-mb", type=int, default=31)
     ap.add_argument("--calibrate", action="store_true", help="rewrite budgets.json from this run")
     ap.add_argument("--dry-run", action="store_true", help="classify --runs JSONL files, no execution")
