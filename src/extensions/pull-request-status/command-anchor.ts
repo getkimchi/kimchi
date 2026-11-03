@@ -139,9 +139,11 @@ export function observedCommandDirectory(command: string, baseCwd: string): stri
 }
 
 /**
- * The directory to anchor the branch and PR/MR lookup on: the observed command directory when
- * it lies inside or equal to one of the session repository's worktrees, otherwise `cwd`. Every
- * failure, including timeouts and a missing observed path, falls back to `cwd` (today's behavior).
+ * The directory to anchor the branch and PR/MR lookup on: the root of the linked worktree
+ * containing the observed command directory when there is one, otherwise `cwd`. Observations
+ * inside the session's main checkout or a foreign repository fall back to `cwd` (today's
+ * behavior) — the main checkout has one HEAD, so anchoring on its subdirectories adds nothing.
+ * Every failure, including timeouts and a missing observed path, falls back to `cwd`.
  */
 export async function anchorDirectory(
 	cwd: string,
@@ -162,11 +164,18 @@ export async function anchorDirectory(
 			Math.min(deadline, Date.now() + 2000),
 		)
 		if (!listing) return cwd
+		let main = true
 		for (const entry of listing.split("\0")) {
 			const worktree = /^worktree (.+)$/.exec(entry)?.[1]
-			const root = worktree ? safeRealpath(worktree) : undefined
+			if (!worktree) continue
+			const root = safeRealpath(worktree)
+			if (main) {
+				// The first record is the main checkout: its subdirectories share cwd's one HEAD.
+				main = false
+				continue
+			}
 			// A linked worktree can only report its root, so containment covers a nested observation.
-			if (root && (observedReal === root || observedReal.startsWith(`${root}/`))) return observed
+			if (observedReal === root || observedReal.startsWith(`${root}/`)) return root
 		}
 	} catch {
 		// Fail open to the session's own directory.

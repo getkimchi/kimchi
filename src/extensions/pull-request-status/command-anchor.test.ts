@@ -110,7 +110,22 @@ describe("anchorDirectory with a real repository", () => {
 		expect(await anchorDirectory(repo, worktree, signal, Date.now() + 5000)).toBe(worktree)
 		const nested = join(worktree, "nested")
 		mkdirSync(nested)
+		expect(await anchorDirectory(repo, nested, signal, Date.now() + 5000)).toBe(worktree)
+	})
+
+	it("falls back to cwd for a subdirectory of the main checkout", async () => {
+		const { repo } = repository("repo")
+		const src = join(repo, "src")
+		mkdirSync(src)
+		const signal = new AbortController().signal
+		expect(await anchorDirectory(repo, src, signal, Date.now() + 5000)).toBe(repo)
+		// A linked worktree still redirects even when it lives under the main checkout.
+		const nested = join(repo, ".worktrees", "wt")
+		mkdirSync(join(repo, ".worktrees"))
+		git(repo, "worktree", "add", "-q", "-b", "wt", nested)
 		expect(await anchorDirectory(repo, nested, signal, Date.now() + 5000)).toBe(nested)
+		mkdirSync(join(nested, "sub"))
+		expect(await anchorDirectory(repo, join(nested, "sub"), signal, Date.now() + 5000)).toBe(nested)
 	})
 
 	it("falls back to cwd for a foreign repository, a missing path or no observation", async () => {
