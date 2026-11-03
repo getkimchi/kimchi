@@ -9,7 +9,9 @@
  *
  * Additional custom patterns (castai_v1_ keys, Bearer/OAuth tokens, sensitive
  * JSON fields) are applied as a second pass because the bulkhead engine does
- * not cover them.
+ * not cover them. Context-free detectors (bare shapes: dates, national IDs,
+ * unsigned secrets) are excluded via the tier registry in `entity-tiers.ts`;
+ * their keyword-anchored variants live in the custom second pass.
  *
  * The engine is lazily initialized — `createEngine()` instantiates guard
  * objects with compiled regex patterns, which is cheap. The cached instance is
@@ -18,19 +20,26 @@
  */
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
+import { getRedactionConfig } from "./config.js"
 
 let engine: GuardrailsEngine | undefined
+let engineExclusionsSignature = ""
+let engineExclusions: ReadonlySet<string> = new Set()
+let userExclusions: ReadonlySet<string> = new Set()
 
 /**
- * Get or create the singleton redaction engine.
+ * Create a fresh redaction engine with the given entity exclusions applied.
  *
  * PiiGuard covers emails, phones, SSNs, credit cards (Luhn), IBANs (mod-97).
  * SecretGuard covers API keys, Bearer tokens, AWS keys, GitHub tokens.
  * Injection and content-safety guards are disabled — not relevant to PII
  * scrubbing.
+ *
+ * Exported (not module-private) so analysis tooling (the shadow-mode
+ * script) and tests can build engines with explicit policies without
+ * touching the process-wide singleton.
  */
-function getEngine(): GuardrailsEngine {
-	if (engine) return engine
+export function createRedactionEngine(excludedEntities: readonly string[]): GuardrailsEngine {
 	const config: BulkheadConfig = {
 		...DEFAULT_CONFIG,
 		enabled: true,
@@ -41,17 +50,119 @@ function getEngine(): GuardrailsEngine {
 			contentSafety: { enabled: false },
 		},
 	}
-	engine = createEngine(config)
-	// Exclude GUIDs from redaction — they are structural identifiers
-	// (ferment IDs, session IDs), not sensitive PII. Redacting them breaks
-	// internal flows that depend on UUIDs being present in context.
-	engine.setExcludeEntities(["GUID"])
+	const fresh = createEngine(config)
+	// Tier-driven exclusions: bare-shape detectors false-fire constantly in
+	// an engineering corpus (SHAs, timestamps, digit runs) — see
+	// entity-tiers.ts. GUID stays out: structural identifiers, not PII.
+	fresh.setExcludeEntities([...excludedEntities])
+	return fresh
+}
+
+/**
+ * Get or create the singleton engine for the current exclusion config.
+ * Rebuilds when the resolved exclusion list changes (e.g. a mid-session
+ * settings.json edit), so the ACP host picks up new exclusions without a
+ * restart. The comparison is a joined-string signature — O(list), no
+ * per-call engine construction.
+ */
+function getEngine(): GuardrailsEngine {
+	const config = getRedactionConfig()
+	const signature = [config.excludedEntities.join("\u0001"), config.userExcludedEntities.join("\u0001")].join("\u0002")
+	if (engine && signature === engineExclusionsSignature) return engine
+	engine = createRedactionEngine(config.excludedEntities)
+	engineExclusionsSignature = signature
+	engineExclusions = new Set(config.excludedEntities)
+	userExclusions = new Set(config.userExcludedEntities)
 	return engine
 }
 
 /** Reset the cached engine — for test isolation. */
 export function resetRedactorEngine(): void {
 	engine = undefined
+	engineExclusionsSignature = ""
+	engineExclusions = new Set()
+	userExclusions = new Set()
+}
+
+// ---------------------------------------------------------------------------
+// Exclusion-correct composition
+// ---------------------------------------------------------------------------
+
+interface EngineDetection {
+	entityType: string
+	start: number
+	end: number
+	/** The matched original text (for analysis tooling; never logged). */
+	text: string
+}
+
+/**
+ * Detect + compose `[REDACTED-TYPE]` replacements ourselves instead of
+ * trusting `engine.scan().redactedText`: bulkhead's multi-guard rebuild
+ * mis-pairs detections with replacement entries, so with exclusions active
+ * the returned text can carry markers for EXCLUDED entities while its
+ * `redactionMap` claims they were filtered (verified empirically — an
+ * excluded DATABASE_CONNECTION_STRING marker landed in text whose map held
+ * only EMAIL_ADDRESS). `analyze()` + our own composition is deterministic:
+ *
+ * - detections on the exclusion list are dropped before composition
+ * - overlapping detections resolve greedily: earliest start wins, then the
+ *   LONGEST span (redact more, not less, when they collide)
+ * - replacements spliced right-to-left so offsets stay valid
+ *
+ * Engine configuration involves no synthesizers/temporal policy, so
+ * analyze-only composition loses nothing against scan().
+ */
+
+/**
+ * Detection pass shared by composition and analysis tooling: analyze, drop
+ * excluded entities, then greedily resolve overlaps.
+ */
+export async function collectDetections(
+	text: string,
+	engine: GuardrailsEngine,
+	excluded: ReadonlySet<string>,
+): Promise<EngineDetection[]> {
+	const results = await engine.analyze(text)
+	const active: EngineDetection[] = []
+	for (const r of results) {
+		for (const d of r.detections) {
+			if (!excluded.has(d.entityType))
+				active.push({ entityType: d.entityType, start: d.start, end: d.end, text: d.text })
+		}
+	}
+	const byStart = [...active].sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start))
+	const kept: EngineDetection[] = []
+	let coveredUntil = -1
+	for (const d of byStart) {
+		if (d.start >= coveredUntil) {
+			kept.push(d)
+			coveredUntil = d.end
+		}
+	}
+	return kept
+}
+
+/** Splice kept detections into markers, right-to-left so offsets hold. */
+export function composeRedactedText(text: string, kept: EngineDetection[]): string {
+	let out = text
+	for (const d of [...kept].sort((a, b) => b.start - a.start)) {
+		out = `${out.slice(0, d.start)}[REDACTED-${d.entityType}]${out.slice(d.end)}`
+	}
+	return out
+}
+
+/**
+ * Run the engine's detection pass and return composed, exclusion-filtered
+ * text. Exported for the shadow-mode analysis script and tier tests —
+ * passing `engine` explicitly avoids the process-wide singleton.
+ */
+export async function detectAndCompose(
+	text: string,
+	engine: GuardrailsEngine,
+	excluded: ReadonlySet<string>,
+): Promise<string> {
+	return composeRedactedText(text, await collectDetections(text, engine, excluded))
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +172,13 @@ export function resetRedactorEngine(): void {
 interface CustomPattern {
 	name: string
 	regex: RegExp
+	/**
+	 * When set, only this capture group is replaced by the marker; the rest
+	 * of the match (the anchoring context) survives. Group 1 must be the
+	 * anchor, group 2 the secret. Bare patterns (no secretGroup) replace the
+	 * whole match, which is correct for prefixed shapes.
+	 */
+	secretGroup?: number
 }
 
 const CUSTOM_PATTERNS: CustomPattern[] = [
@@ -90,6 +208,41 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	},
 	// Credential filenames in home directory
 	{ name: "CREDENTIAL_FILE", regex: /~\/\.ssh\/[^\s"']+/g },
+	// ── Anchored re-additions for anchor_required engine entities ──────────
+	// These honor the bare secret shape only when context vouches for it —
+	// the engine's context-free versions are excluded via entity-tiers.
+	// AWS secret keys behind their keyword (a bare 40-char base64 run is a
+	// temp path or hash far more often than a secret).
+	{
+		name: "AWS_SECRET_KEY",
+		regex: /(aws_secret(?:_access)?_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})/gi,
+		secretGroup: 2,
+	},
+	// Azure storage keys inside a connection string.
+	{
+		name: "AZURE_STORAGE_KEY",
+		regex: /(AccountKey=)([A-Za-z0-9+/]{40,}={0,2})/g,
+		secretGroup: 2,
+	},
+	// Basic-auth header values.
+	{
+		name: "BASIC_AUTH",
+		regex: /(Authorization:\s*Basic\s+)([A-Za-z0-9+/=]{8,})/gi,
+		secretGroup: 2,
+	},
+	// Credentials in URLs, which the engine's URL redaction previously
+	// over-covered: userinfo passwords (`scheme://user:pass@host`) and
+	// secret-shaped query parameters (`?token=…`, `?api_key=…`).
+	{
+		name: "URL_WITH_CREDENTIALS",
+		regex: /(\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:)([^@\s/]+)(@[^\s/]+)/g,
+		secretGroup: 2,
+	},
+	{
+		name: "URL_WITH_CREDENTIALS",
+		regex: /([?&](?:token|api_?key|key|sig|signature|secret|password|access_token)=)([^&\s]{8,})/gi,
+		secretGroup: 2,
+	},
 ]
 
 /**
@@ -109,14 +262,13 @@ const SENSITIVE_KEYS = new Set([
 	"refresh_token",
 	"apikey",
 	"api_key",
-	"clientid",
-	"client_id",
 	"clientsecret",
 	"client_secret",
 	"privatekey",
 	"private_key",
 	"authorization",
-	"auth",
+	// client_id/clientid and bare "auth" deliberately absent: identifiers,
+	// not secrets — redacting them destroys OAuth configs for zero gain.
 ])
 
 function isSensitiveKey(key: string): boolean {
@@ -139,16 +291,38 @@ function isPreservedKey(key: string): boolean {
 /**
  * Apply custom regex patterns that the bulkhead engine does not cover.
  * This runs as a second pass after `engine.scan()`.
+ *
+ * Patterns whose name is in the USER-supplied exclusion list are skipped —
+ * the user's `redaction.excludedEntities` governs kimchi-owned markers
+ * (e.g. LOCAL_PATH). Registry defaults never filter customs: they exclude
+ * anchor-required entities at the ENGINE so their anchored re-additions
+ * here can fire (see config.ts / entity-tiers.ts).
  */
-function applyCustomPatterns(text: string): string {
+export function applyCustomPatterns(
+	text: string,
+	excluded: ReadonlySet<string> = userExclusions,
+	onMatch?: (match: { name: string; secret: string }) => void,
+): string {
 	let result = text
-	for (const { name, regex } of CUSTOM_PATTERNS) {
-		result = result.replace(regex, (match, _group) => {
+	for (const { name, regex, secretGroup } of CUSTOM_PATTERNS) {
+		if (excluded.has(name)) continue
+		const marker = `[REDACTED-${name}]`
+		result = result.replace(regex, (match, ...args: unknown[]) => {
 			// For patterns like "Bearer xxx", only redact the token part
-			if (match.startsWith("Bearer ")) {
-				return `Bearer [REDACTED-${name}]`
+			if (name === "BEARER_TOKEN") {
+				onMatch?.({ name, secret: match })
+				return `Bearer ${marker}`
 			}
-			return `[REDACTED-${name}]`
+			if (secretGroup !== undefined) {
+				// Capture groups precede offset/string in the rest args.
+				const secret = args[secretGroup - 1]
+				if (typeof secret === "string" && secret.length > 0) {
+					onMatch?.({ name, secret })
+					return match.replace(secret, marker)
+				}
+			}
+			onMatch?.({ name, secret: match })
+			return marker
 		})
 	}
 	return result
@@ -169,8 +343,8 @@ function applyCustomPatterns(text: string): string {
  * The error is logged per the code-review-lessons rule: no empty catch blocks.
  */
 export async function redactTextOrThrow(text: string): Promise<string> {
-	const result = await getEngine().scan(text)
-	const afterEngine = result.redactedText ?? text
+	const theEngine = getEngine()
+	const afterEngine = await detectAndCompose(text, theEngine, engineExclusions)
 	return applyCustomPatterns(afterEngine)
 }
 
@@ -199,6 +373,11 @@ async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) =
 		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
+		// Prime the engine (and with it the user-exclusion set) before any
+		// sensitive-key checks below — a top-level {password: "…"} input must
+		// not read the set before the first scan happens.
+		getEngine()
+		const secretFieldRedacts = !userExclusions.has("SECRET_FIELD")
 		const source = obj as Record<PropertyKey, unknown>
 		const keys: PropertyKey[] = [
 			...Object.keys(source),
@@ -213,7 +392,7 @@ async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) =
 					return Promise.resolve(value)
 				}
 				// Redact any string value stored under a sensitive key name.
-				if (typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
+				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
 				return redactObjectStringsWith(value, redactString)
