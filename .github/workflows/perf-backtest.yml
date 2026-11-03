@@ -134,9 +134,10 @@ jobs:
 
       - name: Dev-mode profiling wrapper
         run: |
+          BUNBIN="$(command -v bun)"
           cat > "$RUNNER_TEMP/prof-wrap.sh" <<EOF
           #!/bin/sh
-          exec bun --preload "$PWD/src/set-package-dir.ts" \
+          exec "$BUNBIN" --preload "$PWD/src/set-package-dir.ts" \
             --cpu-prof --cpu-prof-dir="$RUNNER_TEMP" --cpu-prof-name=profile.cpuprofile \
             "$PWD/src/entry.ts" "\$@"
           EOF
