@@ -1,0 +1,194 @@
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
+import {
+	classifyVersion,
+	createBuildInfoExtension,
+	detectVersion,
+	type GitRunner,
+	KIMCHI_BUILD_ENTRY_TYPE,
+	type KimchiBuildEntry,
+	readGitState,
+	resolveBuildInfo,
+	runGit,
+} from "./build-info.js"
+
+describe("classifyVersion", () => {
+	it.each([
+		["dev", { channel: "dev" }],
+		["1.27.0", { channel: "release" }],
+		["1.28.0-rc.1", { channel: "release" }],
+		["0.0.0-canary.20261103.e8dd4fb", { channel: "canary", commit: "e8dd4fb" }],
+		["unknown", { channel: "unknown" }],
+		["0.0.0-canary.20261103.not-a-sha", { channel: "unknown" }],
+	])("%s", (version, expected) => {
+		expect(classifyVersion(version)).toEqual(expected)
+	})
+})
+
+describe("detectVersion", () => {
+	let dir: string
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-build-version-"))
+	})
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("reports dev for a source checkout, whatever version the package dir reports", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
+		expect(detectVersion(dir, () => "1.27.0")).toBe("dev")
+	})
+
+	it("uses the reported version for a stamped build", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "1.27.0" }))
+		expect(detectVersion(dir, () => "1.27.0")).toBe("1.27.0")
+	})
+
+	it("uses the reported version when there is no package.json (bundled binary)", () => {
+		expect(detectVersion(dir, () => "1.27.0")).toBe("1.27.0")
+	})
+})
+
+function fakeGit(answers: Record<string, string | Error>): GitRunner {
+	return async (args) => {
+		const answer = answers[args.join(" ")]
+		if (answer === undefined || answer instanceof Error) throw answer ?? new Error(`unexpected git ${args.join(" ")}`)
+		return answer
+	}
+}
+
+describe("readGitState", () => {
+	it("reads commit, branch and a clean tree", async () => {
+		const git = fakeGit({
+			"rev-parse HEAD": "e8dd4fb5aa\n",
+			"rev-parse --abbrev-ref HEAD": "master\n",
+			"status --porcelain --untracked-files=no": "",
+		})
+		expect(await readGitState("/repo", git)).toEqual({ commit: "e8dd4fb5aa", branch: "master", dirty: false })
+	})
+
+	it("reports a dirty tree and omits the branch when HEAD is detached", async () => {
+		const git = fakeGit({
+			"rev-parse HEAD": "e8dd4fb5aa\n",
+			"rev-parse --abbrev-ref HEAD": "HEAD\n",
+			"status --porcelain --untracked-files=no": " M src/cli.ts\n",
+		})
+		expect(await readGitState("/repo", git)).toEqual({ commit: "e8dd4fb5aa", dirty: true })
+	})
+
+	it("omits every field git cannot answer", async () => {
+		expect(await readGitState("/not-a-repo", fakeGit({}))).toEqual({})
+	})
+})
+
+describe("resolveBuildInfo", () => {
+	it("does not consult git for a release", async () => {
+		const git = vi.fn<GitRunner>()
+		expect(await resolveBuildInfo("1.27.0", "/repo", git)).toEqual({
+			schemaVersion: 1,
+			version: "1.27.0",
+			channel: "release",
+		})
+		expect(git).not.toHaveBeenCalled()
+	})
+
+	it("takes the commit from a canary version", async () => {
+		const git = vi.fn<GitRunner>()
+		expect(await resolveBuildInfo("0.0.0-canary.20261103.e8dd4fb", "/repo", git)).toEqual({
+			schemaVersion: 1,
+			version: "0.0.0-canary.20261103.e8dd4fb",
+			channel: "canary",
+			commit: "e8dd4fb",
+		})
+		expect(git).not.toHaveBeenCalled()
+	})
+
+	it("reads the checkout for a dev run", async () => {
+		const git = fakeGit({
+			"rev-parse HEAD": "e8dd4fb5aa\n",
+			"rev-parse --abbrev-ref HEAD": "feat/x\n",
+			"status --porcelain --untracked-files=no": "",
+		})
+		expect(await resolveBuildInfo("dev", "/repo", git)).toEqual({
+			schemaVersion: 1,
+			version: "dev",
+			channel: "dev",
+			commit: "e8dd4fb5aa",
+			branch: "feat/x",
+			dirty: false,
+		})
+	})
+})
+
+describe("runGit", () => {
+	let repo: string
+	let other: string
+	const savedGitDir = process.env.GIT_DIR
+	const git = (cwd: string, ...args: string[]) =>
+		execFileSync("git", args, { cwd, env: { ...process.env, GIT_DIR: undefined }, encoding: "utf8" }).trim()
+
+	const init = (prefix: string): string => {
+		const dir = mkdtempSync(join(tmpdir(), prefix))
+		git(dir, "init", "-q", "-b", "main")
+		writeFileSync(join(dir, "file.txt"), "one\n")
+		git(dir, "add", "file.txt")
+		git(dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
+		return dir
+	}
+
+	beforeEach(() => {
+		repo = init("kimchi-build-info-")
+		other = init("kimchi-build-info-other-")
+	})
+
+	afterEach(() => {
+		if (savedGitDir === undefined) delete process.env.GIT_DIR
+		else process.env.GIT_DIR = savedGitDir
+		rmSync(repo, { recursive: true, force: true })
+		rmSync(other, { recursive: true, force: true })
+	})
+
+	it("reads the harness checkout even when GIT_DIR points at another repository", async () => {
+		process.env.GIT_DIR = join(other, ".git")
+		writeFileSync(join(repo, "file.txt"), "two\n")
+
+		expect(await readGitState(repo, runGit)).toEqual({
+			commit: git(repo, "rev-parse", "HEAD"),
+			branch: "main",
+			dirty: true,
+		})
+	})
+})
+
+describe("build-info extension", () => {
+	const entry: KimchiBuildEntry = { schemaVersion: 1, version: "1.27.0", channel: "release" }
+
+	it("records the build on every session start, resolving it once", async () => {
+		const resolve = vi.fn(async () => entry)
+		const mock = createExtensionApi()
+		createBuildInfoExtension({ resolve })(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+		await mock.emit("session_start", { reason: "resume" })
+
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry, entry])
+		expect(resolve).toHaveBeenCalledTimes(1)
+	})
+
+	it("drops the entry when the session was replaced while resolving", async () => {
+		const mock = createExtensionApi()
+		createBuildInfoExtension({
+			resolve: async () => {
+				mock.invalidate()
+				return entry
+			},
+		})(mock.api)
+
+		await expect(mock.emit("session_start", { reason: "startup" })).resolves.toBeDefined()
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([])
+	})
+})
