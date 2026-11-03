@@ -15,7 +15,7 @@ import { dirname, join } from "node:path"
 import { type Static, Type } from "typebox"
 import { Value } from "typebox/value"
 
-import { modelIdFromRef } from "./model-ref-utils.js"
+import { modelIdFromRef } from "../../shared/model-ref.js"
 import { MODEL_CAPABILITIES } from "./model-registry/builtin-models.js"
 import type { ModelTier } from "./model-registry/types.js"
 

@@ -2,16 +2,18 @@ import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { getModels } from "@earendil-works/pi-ai/compat"
 import {
+	type ExtensionAPI,
 	type ExtensionContext,
 	ExtensionSelectorComponent,
 	LoginDialogComponent,
+	type ModelRuntime,
 	OAuthSelectorComponent,
 	type ModelRegistry as PiModelRegistry,
 	readStoredCredential,
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { loginWithCastAiOauth } from "../../cli-auth/oauth.js"
+import { kimchiSsoExtensionOAuth, loginWithCastAiOauth } from "../../cli-auth/oauth.js"
 import {
 	clearApiKey,
 	endpointsForRegion,
@@ -22,6 +24,7 @@ import {
 	writeApiKey,
 	writeRegion,
 } from "../../config.js"
+import { markCredentialStale } from "../../credential-staleness.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import {
 	applyOrganizationHeader,
@@ -39,11 +42,13 @@ import {
 	normalizeSelfHostedBaseUrl,
 	REGIONS,
 	type RegionId,
+	type SelfHostedEndpoints,
 	selectableRegions,
 } from "../../regions.js"
+import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
+import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
-export const KIMCHI_DEFAULT_MODEL_ID = "minimax-m3"
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
 export const KIMCHI_SSO_LABEL = "Sign in with CAST AI (SSO)"
@@ -90,6 +95,72 @@ export function formatBrowserLoginMessage(url: string): string {
 	return `If the wrong browser or profile opened, right-click this link, choose "Copy Link", and open it in the correct one:\n${formatKimchiLoginLink(url)}`
 }
 
+export type ExtensionOAuthConfig = NonNullable<Parameters<ExtensionAPI["registerProvider"]>[1]>["oauth"]
+
+/**
+ * Kimchi provider auth for `kimchi-dev` and `kimchi-dev/*` sub-providers.
+ *
+ * `refreshToken`/`getApiKey` are credential-shape driven and shared by every
+ * login method: real OAuth refresh against the region's Auth0 token endpoint.
+ */
+export function createKimchiProviderOAuth(): ExtensionOAuthConfig {
+	const ssoOAuth = kimchiSsoExtensionOAuth(() => loadConfig().region, {
+		onInvalidGrant: (credential) => {
+			// The refresh token is dead — requests will start 401ing. Mark the
+			// provider (and the concrete key) stale so auth_status and warnings
+			// surface "sign in again" instead of silently failing turns.
+			markCredentialStale(undefined, KIMCHI_PROVIDER_ID)
+			if (credential.access) markCredentialStale(credential.access, KIMCHI_PROVIDER_ID)
+		},
+	})
+	return {
+		name: "Sign in with CAST AI (SSO)",
+		login: (callbacks) => ssoOAuth.login(callbacks),
+		refreshToken: ssoOAuth.refreshToken,
+		getApiKey: (credentials) => credentials.access,
+	}
+}
+
+/**
+ * Activate OAuth credentials for every Kimchi provider on a standalone
+ * ModelRuntime — the wiring the TUI gets from the login extension's
+ * `pi.registerProvider(..., { oauth })` calls. Without it, pi's auth
+ * resolution (`checkProviderAuth`) only activates providers whose
+ * `auth.oauth` is declared, so an SSO login would see zero available Kimchi
+ * models on a bare runtime. Idempotent; wraps `refresh` so sub-providers
+ * created by a catalog refresh (updateModelsConfig) get registered too.
+ */
+export function installKimchiOAuth(runtime: ModelRuntime): void {
+	const kimchiOAuth = createKimchiProviderOAuth()
+	const registered = new Set<string>()
+	const ensureRegistered = (): void => {
+		const providerIds = new Set(
+			runtime
+				.getProviders()
+				.map((provider) => provider.id)
+				.filter(isKimchiProvider),
+		)
+		providerIds.add(KIMCHI_PROVIDER_ID)
+		for (const providerId of providerIds) {
+			if (registered.has(providerId)) continue
+			runtime.registerProvider(providerId, { oauth: kimchiOAuth })
+			registered.add(providerId)
+		}
+	}
+	ensureRegistered()
+	const baseRefresh = runtime.refresh.bind(runtime)
+	runtime.refresh = async (options) => {
+		const result = await baseRefresh(options)
+		const registeredBefore = registered.size
+		ensureRegistered()
+		// registerProvider requeues availability asynchronously; settle it with a
+		// second offline refresh so the returned snapshot reflects the new
+		// registrations.
+		if (registered.size > registeredBefore) await baseRefresh({ ...options, allowNetwork: false })
+		return result
+	}
+}
+
 type AuthSelectorProvider = ConstructorParameters<typeof OAuthSelectorComponent>[1][number]
 type AuthStatus = ReturnType<PiModelRegistry["getProviderAuthStatus"]>
 
@@ -130,36 +201,55 @@ interface ModelRegistryLike<TModel extends ProviderModelLike = ProviderModelLike
 
 export const REGION_SELECTOR_TITLE = "Select region:"
 
-/** Title of the self-hosted base-URL prompt (no stored URL to offer). */
-export const SELF_HOSTED_BASE_URL_PROMPT = "Self-hosted Kimchi base URL:"
+/** Title of the self-hosted console-URL prompt (no stored URL to offer). */
+export const SELF_HOSTED_CONSOLE_URL_PROMPT = "Self-hosted Kimchi console URL:"
 
 /**
- * Prompt for the self-hosted base URL, re-prompting until the input parses as
- * an http(s) URL. Mirrors the API-key endpoint prompt: Esc (undefined) backs
- * out; Enter on an empty input keeps the stored URL when one exists.
- * Invalid input is normalized exactly like KIMCHI_SELF_HOSTED_URL (trim,
- * strip trailing slashes, require http(s)).
+ * Prompt for the self-hosted console URL, re-prompting until the input parses
+ * as an http(s) URL AND the install serves its discovery document at
+ * `<url>/env/endpoints.json` (see src/self-hosted-discovery.ts) — the only
+ * self-hosted flow: without the document there are no endpoints to log in
+ * with, so a missing/incomplete/unreachable one is an error, not a fallback.
+ * Mirrors the API-key endpoint prompt: Esc (undefined) backs out; Enter on an
+ * empty input keeps the stored console URL when one exists. Invalid input is
+ * normalized exactly like KIMCHI_SELF_HOSTED_URL (trim, strip trailing
+ * slashes, require http(s)).
  */
-export async function promptSelfHostedBaseUrl(options: {
+export async function promptSelfHostedEndpoints(options: {
 	prompt: (title: string, placeholder?: string) => Promise<string | undefined>
 	notifyError: (message: string) => void
-	/** Stored base URL offered as the Enter default, when one exists. */
+	/** Progress notices: discovery check, discovered endpoints. */
+	notifyStatus?: (message: string) => void
+	/** Stored console URL offered as the Enter default, when one exists. */
 	storedUrl?: string
-}): Promise<string | undefined> {
+	/** Test seam for the discovery fetch. */
+	discoverEndpoints?: typeof fetchSelfHostedEndpoints
+}): Promise<SelfHostedEndpoints | undefined> {
+	const discover = options.discoverEndpoints ?? fetchSelfHostedEndpoints
 	for (;;) {
 		const title = options.storedUrl
-			? `Self-hosted base URL (press Enter to use ${options.storedUrl}):`
-			: SELF_HOSTED_BASE_URL_PROMPT
+			? `Self-hosted console URL (press Enter to use ${options.storedUrl}):`
+			: SELF_HOSTED_CONSOLE_URL_PROMPT
 		const input = await options.prompt(title, options.storedUrl ? "" : "https://your-kimchi-host.example.com")
 		if (input === undefined) return undefined
 		const normalized = normalizeSelfHostedBaseUrl(input)
-		if (normalized) return normalized
-		if (!input.trim() && options.storedUrl) return options.storedUrl
-		options.notifyError(
-			input.trim()
-				? `Invalid base URL "${input}" (expected an http(s) URL, e.g. https://kimchi.example.com)`
-				: "A base URL is required for the self-hosted region, e.g. https://kimchi.example.com",
-		)
+		const consoleUrl = normalized ?? (!input.trim() && options.storedUrl ? options.storedUrl : undefined)
+		if (!consoleUrl) {
+			options.notifyError(
+				input.trim()
+					? `Invalid console URL "${input}" (expected an http(s) URL, e.g. https://kimchi.example.com)`
+					: "A console URL is required for the self-hosted region, e.g. https://kimchi.example.com",
+			)
+			continue
+		}
+
+		options.notifyStatus?.(`Checking ${consoleUrl}/env/endpoints.json…`)
+		const result = await discover(consoleUrl)
+		if (result.status === "discovered") {
+			options.notifyStatus?.(`Discovered endpoints — API ${result.endpoints.api}, LLM gateway ${result.endpoints.llm}.`)
+			return result.endpoints
+		}
+		options.notifyError(discoveryFailureMessage(result))
 	}
 }
 
@@ -175,7 +265,7 @@ export function createRegionSelector(options: {
 	regions?: KimchiRegion[]
 }): ExtensionSelectorComponent {
 	const current = REGIONS[options.currentRegion]
-	const regions = [current, ...(options.regions ?? selectableRegions()).filter((region) => region.id !== current.id)]
+	const regions = orderedLoginRegions(options.currentRegion, options.regions)
 	const labels = regions.map((region) => (region === current ? `${region.label} \u2014 current` : region.label))
 	return new ExtensionSelectorComponent(
 		REGION_SELECTOR_TITLE,
@@ -183,6 +273,17 @@ export function createRegionSelector(options: {
 		(option) => options.onSelect(regions[labels.indexOf(option)]?.id ?? current.id),
 		options.onBack,
 	)
+}
+
+/**
+ * Current region first, then the remaining selectable regions — the shared
+ * ordering for the `/login` region selector and the `kimchi login` CLI menu.
+ * `regions` overrides the candidate list (e.g. SSO login limits to regions
+ * with an OAuth tenant).
+ */
+export function orderedLoginRegions(currentRegion: RegionId, regions?: KimchiRegion[]): KimchiRegion[] {
+	const current = REGIONS[currentRegion]
+	return [current, ...(regions ?? selectableRegions()).filter((region) => region.id !== current.id)]
 }
 
 /**
@@ -194,6 +295,38 @@ export function regionChoiceRequired(currentRegion: RegionId): boolean {
 	return selectableRegions().some((region) => region.id !== currentRegion)
 }
 
+/** Title of the auth-method selector — shared by the TUI selector and the
+ * `kimchi login` CLI menu so both prompt with identical wording. */
+export const LOGIN_METHOD_SELECTOR_TITLE = "Select authentication method:"
+
+export type LoginMethodId = "sso" | "account" | "api-key" | "subscription"
+
+export interface LoginMethodChoice {
+	id: LoginMethodId
+	label: string
+}
+
+/**
+ * Shared auth-method menu for `/login` (and the startup gate) and the
+ * `kimchi login` CLI: CAST AI SSO first (the recommended browser login) when
+ * available, then account and API key. Keeping the ordering in one place
+ * prevents the TUI and CLI menus from drifting apart.
+ */
+export function loginMethodChoices(options: {
+	ssoAvailable: boolean
+	/** Every caller passes its surface's capability explicitly. */
+	includeApiKey: boolean
+	/** Subscription OAuth needs a live-session dialog — TUI-only. */
+	includeSubscription?: boolean
+}): LoginMethodChoice[] {
+	const choices: LoginMethodChoice[] = []
+	if (options.ssoAvailable) choices.push({ id: "sso", label: KIMCHI_SSO_LABEL })
+	choices.push({ id: "account", label: KIMCHI_ACCOUNT_LABEL })
+	if (options.includeApiKey) choices.push({ id: "api-key", label: KIMCHI_API_KEY_LABEL })
+	if (options.includeSubscription) choices.push({ id: "subscription", label: SUBSCRIPTION_LABEL })
+	return choices
+}
+
 export function createLoginChoiceSelector(options: {
 	onKimchiAccount: () => void
 	onKimchiApiKey?: () => void
@@ -202,30 +335,28 @@ export function createLoginChoiceSelector(options: {
 	onSubscription: () => void
 	onCancel: () => void
 }): ExtensionSelectorComponent {
-	const labels = [
-		// SSO first: it is the recommended login method.
-		...(options.onKimchiSso ? [KIMCHI_SSO_LABEL] : []),
-		KIMCHI_ACCOUNT_LABEL,
-		...(options.onKimchiApiKey ? [KIMCHI_API_KEY_LABEL] : []),
-		SUBSCRIPTION_LABEL,
-	]
+	const choices = loginMethodChoices({
+		ssoAvailable: !!options.onKimchiSso,
+		includeApiKey: !!options.onKimchiApiKey,
+		includeSubscription: true,
+	})
 	return new ExtensionSelectorComponent(
-		"Select authentication method:",
-		labels,
+		LOGIN_METHOD_SELECTOR_TITLE,
+		choices.map((choice) => choice.label),
 		(option) => {
-			if (option === KIMCHI_SSO_LABEL && options.onKimchiSso) {
-				options.onKimchiSso()
-				return
+			switch (choices.find((choice) => choice.label === option)?.id) {
+				case "sso":
+					options.onKimchiSso?.()
+					return
+				case "subscription":
+					options.onSubscription()
+					return
+				case "api-key":
+					options.onKimchiApiKey?.()
+					return
+				default:
+					options.onKimchiAccount()
 			}
-			if (option === SUBSCRIPTION_LABEL) {
-				options.onSubscription()
-				return
-			}
-			if (option === KIMCHI_API_KEY_LABEL && options.onKimchiApiKey) {
-				options.onKimchiApiKey()
-				return
-			}
-			options.onKimchiAccount()
 		},
 		options.onCancel,
 	)
@@ -319,6 +450,10 @@ export async function syncKimchiAuth(modelRegistry: ModelRegistryLike, token: st
 export interface KimchiBrowserLoginHost {
 	modelRegistry: ModelRegistryLike
 	setModel?: (model: ProviderModelLike) => Promise<unknown> | unknown
+	/** Currently active model, used to decide whether login should keep it
+	 *  (when it's already a Kimchi provider) or pick a fresh one. Returning
+	 *  `undefined` means "nothing active" — login will then set the default. */
+	getCurrentModel?: () => { provider: string; id?: string } | undefined
 	showStatus?: (message: string) => void
 	showError?: (message: string) => void
 	addFeedback?: (message: string) => void
@@ -331,9 +466,11 @@ export interface KimchiBrowserLoginOptions {
 	reuseExistingToken?: boolean
 	/** Region to log in to; persisted with the token. */
 	region: RegionId
-	/** Base URL for self-hosted logins; required when region is self-hosted
-	 *  (the login surfaces prompt for it and pass the value through). */
-	selfHostedUrl?: string
+	/** Self-hosted endpoints (see src/self-hosted-discovery.ts): the
+	 *  discovery document's values, or base-derived ones on the manual
+	 *  fallback. Required when region is self-hosted — the login surfaces
+	 *  resolve them via the console-URL prompt and pass them through. */
+	selfHostedEndpoints?: SelfHostedEndpoints
 }
 
 export interface KimchiApiKeyLoginOptions {
@@ -341,9 +478,11 @@ export interface KimchiApiKeyLoginOptions {
 	endpoint: string
 	/** Region to log in to; persisted with the token. `endpoint` still wins for the LLM gateway. */
 	region: RegionId
-	/** Base URL for self-hosted logins; persisted instead of `llmEndpoint`
-	 *  (see performKimchiApiKeyLogin) when region is self-hosted. */
-	selfHostedUrl?: string
+	/** Self-hosted endpoints (see src/self-hosted-discovery.ts): the
+	 *  discovery document's values, or base-derived ones on the manual
+	 *  fallback. Persisted instead of `llmEndpoint` (see
+	 *  performKimchiApiKeyLogin) when region is self-hosted. */
+	selfHostedEndpoints?: SelfHostedEndpoints
 }
 
 function formatKimchiTokenError(error: unknown, options: { saved: boolean }): string {
@@ -358,6 +497,46 @@ function formatKimchiTokenError(error: unknown, options: { saved: boolean }): st
 		return `Invalid API key. Please check your key and try again.${savedSuffix}`
 	}
 	return `Kimchi model refresh failed: ${detail}.${savedSuffix}`
+}
+
+/**
+ * Apply the post-login model selection: keep a prior Kimchi model (login is a
+ * credential/registry refresh, not a model switch), otherwise select the
+ * catalog default and announce it. A preserved prior model stays silent — the
+ * user already knows what they're running.
+ */
+async function applyPostLoginModel(host: KimchiBrowserLoginHost, providerModels: ProviderModelLike[]): Promise<void> {
+	const priorModel = host.getCurrentModel?.()
+	const priorKimchiModel = priorModel && isKimchiProvider(priorModel.provider) ? priorModel : undefined
+	const selectedModel = priorKimchiModel
+		? ({ id: priorKimchiModel.id ?? "", provider: priorKimchiModel.provider } as ProviderModelLike)
+		: defaultLoginModel(providerModels)
+	if (!priorKimchiModel) {
+		await host.setModel?.(selectedModel)
+	}
+	// Announce the model whenever login auto-selected one: the catalog default
+	// is dynamic, so the user can't predict it.
+	const announceModel = priorKimchiModel ? undefined : selectedModel.id
+	host.addFeedback?.(formatKimchiLoginSuccessMessage(announceModel))
+}
+
+/**
+ * Resolve the catalog default for login, mirroring the auto-model extension's
+ * fresh-session heir order: the Auto router when the catalog serves it, else
+ * the gated flash candidates (orgs not served `auto`), else the first served
+ * model. Keeping the order aligned means login and the next fresh session
+ * land on the same default instead of login installing a model the fresh
+ * session then rolls back.
+ */
+function defaultLoginModel(providerModels: ProviderModelLike[]): ProviderModelLike {
+	return (
+		providerModels.find((m) => isAutoRoutedModel(m)) ??
+		GATED_DEFAULT_MODEL_CANDIDATES.reduce<ProviderModelLike | undefined>(
+			(found, id) => found ?? providerModels.find((m) => m.id === id),
+			undefined,
+		) ??
+		providerModels[0]
+	)
 }
 
 async function configureKimchiToken(
@@ -409,9 +588,7 @@ async function configureKimchiToken(
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		await applyPostLoginModel(host, providerModels)
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
 		return true
@@ -503,9 +680,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
-		const selectedModel = providerModels.find((m) => m.id === KIMCHI_DEFAULT_MODEL_ID) ?? providerModels[0]
-		await host.setModel?.(selectedModel)
-		host.addFeedback?.(formatKimchiLoginSuccessMessage(selectedModel.id))
+		await applyPostLoginModel(host, providerModels)
 		return true
 	}
 
@@ -522,7 +697,7 @@ export async function performKimchiApiKeyLogin(
 	options: KimchiApiKeyLoginOptions,
 ): Promise<boolean> {
 	const token = options.apiKey.trim()
-	const endpoints = endpointsForRegion(options.region, { selfHostedUrl: options.selfHostedUrl })
+	const endpoints = endpointsForRegion(options.region, { endpoints: options.selfHostedEndpoints })
 	const endpoint = options.endpoint.trim() || endpoints.llmBaseUrl
 	if (!token) {
 		host.showError?.("Kimchi API key is required.")
@@ -531,13 +706,14 @@ export async function performKimchiApiKeyLogin(
 
 	try {
 		host.showStatus?.(`Refreshing Kimchi models from ${endpoint}...`)
-		// Self-hosted logins persist region + selfHostedUrl only: a stored
-		// llmEndpoint overrides the region (documented precedence), and the base
-		// URL must stay the single source every endpoint derives from. Dropping
-		// llmEndpoint also clears a stale custom endpoint from a previous region.
+		// Self-hosted logins persist region + the resolved endpoints only: a
+		// stored llmEndpoint overrides the region (documented precedence), and
+		// the endpoints must stay the single source every URL derives from.
+		// Dropping llmEndpoint also clears a stale custom endpoint from a
+		// previous region.
 		const persistOptions =
 			options.region === "self-hosted"
-				? { region: options.region, selfHostedUrl: options.selfHostedUrl }
+				? { region: options.region, selfHostedEndpoints: options.selfHostedEndpoints }
 				: { llmEndpoint: endpoint, region: options.region }
 		return await configureKimchiToken(host, token, endpoint, {
 			strictFreshDiscovery: true,
@@ -555,10 +731,11 @@ export async function performKimchiBrowserLogin(
 ): Promise<boolean> {
 	const cfg = loadConfig()
 	// A key only works in its own region, so a newly picked region needs a fresh
-	// login. The same goes for a self-hosted base change: the stored key was
+	// login. The same goes for a self-hosted console change: the stored key was
 	// issued by a different install.
 	const regionChanged = options.region !== cfg.region
-	const baseChanged = options.region === "self-hosted" && options.selfHostedUrl !== cfg.selfHostedUrl
+	const baseChanged =
+		options.region === "self-hosted" && options.selfHostedEndpoints?.console !== cfg.selfHostedEndpoints?.console
 	const existingToken = options.reuseExistingToken && !regionChanged && !baseChanged ? cfg.apiKey : ""
 	if (existingToken) {
 		host.showStatus?.("Refreshing Kimchi models with existing login...")
@@ -570,7 +747,7 @@ export async function performKimchiBrowserLogin(
 		host.showStatus?.("Opening browser for Kimchi login...")
 
 		const { token } = await authenticateViaBrowser({
-			webAppUrl: endpointsForRegion(options.region, { selfHostedUrl: options.selfHostedUrl }).webAppUrl,
+			webAppUrl: endpointsForRegion(options.region, { endpoints: options.selfHostedEndpoints }).webAppUrl,
 			onBrowserUrl: (url) => {
 				browserUrl = url
 				host.onBrowserUrl?.(url)
@@ -579,7 +756,7 @@ export async function performKimchiBrowserLogin(
 		})
 
 		const persist: WriteApiKeyOptions = { region: options.region }
-		if (options.selfHostedUrl) persist.selfHostedUrl = options.selfHostedUrl
+		if (options.selfHostedEndpoints) persist.selfHostedEndpoints = options.selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
 		return configureKimchiToken(host, token)
 	} catch (error) {
@@ -612,16 +789,19 @@ export async function performKimchiBrowserLoginWithDialog(
 	setModel: (model: ProviderModelLike) => Promise<unknown> | unknown,
 	options: { region: RegionId },
 ): Promise<KimchiBrowserLoginDialogResult> {
-	// Self-hosted needs its base URL before the browser flow can target the
-	// right web app; Esc here backs out to the selector that launched the login.
-	let selfHostedUrl: string | undefined
+	// Self-hosted needs its console URL before the browser flow can target
+	// the right web app; Esc here backs out to the selector that launched the
+	// login. The prompt resolves the install's endpoints (discovered or
+	// base-derived) that drive every derived endpoint.
+	let selfHostedEndpoints: SelfHostedEndpoints | undefined
 	if (options.region === "self-hosted") {
-		selfHostedUrl = await promptSelfHostedBaseUrl({
+		selfHostedEndpoints = await promptSelfHostedEndpoints({
 			prompt: (title, placeholder) => ctx.ui.input(title, placeholder),
 			notifyError: (message) => ctx.ui.notify(message, "error"),
-			storedUrl: loadConfig().selfHostedUrl,
+			notifyStatus: (message) => ctx.ui.notify(message, "info"),
+			storedUrl: loadConfig().selfHostedEndpoints?.console,
 		})
-		if (selfHostedUrl === undefined) return "cancelled"
+		if (selfHostedEndpoints === undefined) return "cancelled"
 	}
 	return ctx.ui.custom<KimchiBrowserLoginDialogResult>((tui, _theme, _keybindings, done) => {
 		let finished = false
@@ -652,6 +832,7 @@ export async function performKimchiBrowserLoginWithDialog(
 				{
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
@@ -663,7 +844,7 @@ export async function performKimchiBrowserLoginWithDialog(
 						]),
 					signal: dialog.signal,
 				},
-				{ region: options.region, selfHostedUrl, reuseExistingToken: true },
+				{ region: options.region, selfHostedEndpoints, reuseExistingToken: true },
 			)
 			if (cancelled || dialog.signal.aborted) finish("cancelled")
 			else finish(ok ? "success" : "failed")
@@ -735,6 +916,7 @@ export async function performKimchiSsoLoginWithExtensionUI(
 				const ok = await completeKimchiSsoLogin({
 					modelRegistry: ctx.modelRegistry,
 					setModel,
+					getCurrentModel: () => ctx.model,
 					showStatus: (message) => dialog.showProgress(message),
 					showError: (message) => ctx.ui.notify(message, "error"),
 					addFeedback: (message) => dialog.showProgress(message),
@@ -779,24 +961,27 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 	setModel: (model: ProviderModelLike) => Promise<unknown> | unknown,
 	options: { region: RegionId },
 ): Promise<"success" | "failed" | "cancelled"> {
-	// Self-hosted needs its base URL up front; Esc backs out to the selector
-	// that launched the login.
-	let selfHostedUrl: string | undefined
+	// Self-hosted needs its console URL up front; Esc backs out to the
+	// selector that launched the login. The prompt resolves the install's
+	// endpoints (discovered or base-derived) that drive the gateway
+	// derivation.
+	let selfHostedEndpoints: SelfHostedEndpoints | undefined
 	if (options.region === "self-hosted") {
-		selfHostedUrl = await promptSelfHostedBaseUrl({
+		selfHostedEndpoints = await promptSelfHostedEndpoints({
 			prompt: (title, placeholder) => ctx.ui.input(title, placeholder),
 			notifyError: (message) => ctx.ui.notify(message, "error"),
-			storedUrl: loadConfig().selfHostedUrl,
+			notifyStatus: (message) => ctx.ui.notify(message, "info"),
+			storedUrl: loadConfig().selfHostedEndpoints?.console,
 		})
-		if (selfHostedUrl === undefined) return "cancelled"
+		if (selfHostedEndpoints === undefined) return "cancelled"
 	}
 	const apiKey = await ctx.ui.input("Kimchi API Key:")
 	if (!apiKey?.trim()) return "cancelled"
 	let endpoint = ""
 	if (options.region !== "self-hosted") {
-		// Self-hosted derives the gateway from the base URL; a separate endpoint
-		// prompt would invite a divergence that is never persisted (see
-		// performKimchiApiKeyLogin).
+		// Self-hosted derives the gateway from the console URL / discovered
+		// endpoints; a separate endpoint prompt would invite a divergence that
+		// is never persisted (see performKimchiApiKeyLogin).
 		const defaultEndpoint = endpointsForRegion(options.region).llmBaseUrl
 		const endpointInput = await ctx.ui.input(`Kimchi endpoint (press Enter to use ${defaultEndpoint}):`)
 		endpoint = endpointInput?.trim() || defaultEndpoint
@@ -809,7 +994,7 @@ export async function performKimchiApiKeyLoginViaExtensionUI(
 			showError: (message) => ctx.ui.notify(message, "error"),
 			addFeedback: (message) => ctx.ui.notify(message, "info"),
 		},
-		{ apiKey: apiKey.trim(), endpoint, region: options.region, selfHostedUrl },
+		{ apiKey: apiKey.trim(), endpoint, region: options.region, selfHostedEndpoints },
 	)
 	return ok ? "success" : "failed"
 }

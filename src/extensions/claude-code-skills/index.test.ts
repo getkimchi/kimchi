@@ -8,12 +8,20 @@ import claudeCodeSkillsExtension from "./index.js"
 
 let dir: string
 let oldHome: string | undefined
+let oldAgentDir: string | undefined
+let oldEnableResources: string | undefined
 
 describe("Claude Code skills extension", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "kimchi-claude-code-skill-tool-"))
 		oldHome = process.env.HOME
 		process.env.HOME = join(dir, "home")
+		// Pin the resource-settings path to the temp home so bundled-skill
+		// frontmatter gating sees defaults, not the developer's live settings.
+		oldAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		process.env.KIMCHI_CODING_AGENT_DIR = join(dir, "agent-dir")
+		oldEnableResources = process.env.KIMCHI_ENABLE_RESOURCES
+		delete process.env.KIMCHI_ENABLE_RESOURCES
 		// Project fixtures live under <dir>/project — trusted for the tests
 		// that exercise project .claude/skills; fail-closed cases have their
 		// own tests in definition.test.ts.
@@ -27,6 +35,10 @@ describe("Claude Code skills extension", () => {
 		} else {
 			process.env.HOME = oldHome
 		}
+		if (oldAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = oldAgentDir
+		if (oldEnableResources === undefined) delete process.env.KIMCHI_ENABLE_RESOURCES
+		else process.env.KIMCHI_ENABLE_RESOURCES = oldEnableResources
 		rmSync(dir, { recursive: true, force: true })
 	})
 
@@ -165,6 +177,50 @@ describe("Claude Code skills extension", () => {
 		expect(textResult(result)).toBe('Claude Code skill "missing" was not found.')
 	})
 
+	it("refuses a skill disabled by an enabled bundled skill, naming the declarer", async () => {
+		writeSkill(join(dir, "home", ".claude", "skills", "pptx", "SKILL.md"), "Office skill instructions.")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		// The bundled pptx skill is on by default (skills.pptx), and its
+		// disables-skills frontmatter shadows the user-installed pptx skill.
+
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "pptx" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
+
+		expect(result.details).toMatchObject({ success: false, name: "pptx", disabledBy: "pptx" })
+		expect(textResult(result)).toBe(
+			'Claude Code skill "pptx" is unavailable: it is disabled by the enabled "pptx" skill.',
+		)
+		expect(textResult(result)).not.toContain("Office skill instructions.")
+	})
+
+	it("loads a skill shadowed by a bundled skill once the toggle is off", async () => {
+		writeSkill(join(dir, "home", ".claude", "skills", "pptx", "SKILL.md"), "Office skill instructions.")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		disablePptxSkill()
+
+		const result = await registeredSkillTool(join(dir, "project")).execute(
+			"call-1",
+			{ skill: "pptx" },
+			undefined,
+			undefined,
+			{
+				cwd: join(dir, "project"),
+				sessionManager: { getSessionId: () => "session-1" },
+			} as never,
+		)
+
+		expect(result.details).toMatchObject({ success: true, name: "pptx" })
+		expect(textResult(result)).toContain("Office skill instructions.")
+	})
+
 	it("contributes sanitized Claude Code skills through resources_discover", async () => {
 		writeRawSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
 		const { handlers } = registerExtension()
@@ -184,6 +240,32 @@ describe("Claude Code skills extension", () => {
 			{ name: "typescript-safety", description: "Claude Code skill: typescript-safety." },
 		])
 		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
+	})
+
+	it("omits Claude Code skills disabled by an enabled bundled skill from discovery", async () => {
+		writeRawSkill(join(dir, "home", ".claude", "skills", "pptx", "SKILL.md"), "Office skill instructions.\n")
+		mkdirSync(join(dir, "project", ".claude"), { recursive: true })
+		const { handlers } = registerExtension()
+
+		// skills.pptx is on by default: the only Claude Code skill is shadowed →
+		// nothing left to contribute.
+		const disabled = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		expect(disabled).toBeUndefined()
+
+		disablePptxSkill()
+		const enabled = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		const skillPaths = (enabled as { skillPaths?: string[] } | undefined)?.skillPaths ?? []
+		expect(skillPaths).toHaveLength(1)
+		const loaded = loadSkillsFromDir({ dir: skillPaths[0] ?? "", source: "path" })
+		expect(loaded.skills).toMatchObject([{ name: "pptx" }])
 	})
 
 	it("contributes Claude Code skill resources even when native project skills use the same name", async () => {
@@ -272,6 +354,12 @@ function registeredSkillTool(cwd: string): ToolDefinition {
 	fireSessionStart(cwd)
 	expect(tools, `Skill tool must register on session start in ${cwd}`).toHaveLength(1)
 	return tools[0]
+}
+
+/** Turn off the bundled pptx skill (skills.pptx) via the settings override. */
+function disablePptxSkill(): void {
+	mkdirSync(join(dir, "agent-dir"), { recursive: true })
+	writeFileSync(join(dir, "agent-dir", "settings.json"), JSON.stringify({ resources: { "skills.pptx": false } }))
 }
 
 function textResult(result: { content: Array<{ type: string; text?: string }> }): string {

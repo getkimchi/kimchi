@@ -60,6 +60,18 @@ describe("decide", () => {
 		expect(Object.keys(body.questions)).toEqual(["q1", "q2"])
 	})
 
+	it("sends the SSO organization header only when the gate carries one", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(answersBody(["q1"]))) as unknown as typeof fetch
+		const questions = { q1: { type: "choice" as const, instructions: "i", criteria: { yes: "y", no: "n" } } }
+		await decide({ ...GATE, organizationId: "org-7", fetchImpl }, "s", questions)
+		let call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+		expect((call?.[1]?.headers as Record<string, string>)["X-CastAi-Organization-Id"]).toBe("org-7")
+
+		await decide({ ...GATE, fetchImpl }, "s", questions)
+		call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[1]
+		expect((call?.[1]?.headers as Record<string, string>)["X-CastAi-Organization-Id"]).toBeUndefined()
+	})
+
 	it("rejects a question set over the gateway cap without calling fetch", async () => {
 		const fetchImpl = vi.fn() as unknown as typeof fetch
 		const questions = Object.fromEntries(

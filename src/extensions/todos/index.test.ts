@@ -24,6 +24,7 @@ import {
 } from "./store.js"
 import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoScope, type TodoStatus } from "./types.js"
+import { __resetTodoCrowding, claimTodoCrowding, isTodoCrowdingActive } from "./widget.js"
 
 vi.mock("../../resources/store.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../resources/store.js")>()
@@ -189,6 +190,22 @@ describe("todos extension session state", () => {
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, "resumed-session").map((todo) => todo.content)).toEqual([
 			"current resumed todo",
 		])
+	})
+
+	it("drops crowding claims left unreleased when the session shuts down", async () => {
+		// Regression: a questionnaire still open at shutdown never reached its
+		// release, so the todo strip stayed collapsed for the process lifetime.
+		__resetTodoCrowding()
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "startup" }, ctx)
+		const releaseQuestionnaire = claimTodoCrowding("questionnaire")
+
+		await harness.fire("session_shutdown", {}, ctx)
+
+		expect(isTodoCrowdingActive()).toBe(false)
+		releaseQuestionnaire()
+		expect(isTodoCrowdingActive()).toBe(false)
 	})
 
 	it("clears stale todos when the replacement session has no todo history", async () => {

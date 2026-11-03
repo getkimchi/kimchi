@@ -7,16 +7,15 @@ import {
 	type AgentSessionEvent,
 	type CreateAgentSessionOptions,
 	createAgentSession,
-	DefaultResourceLoader,
 	type ExtensionAPI,
 	getAgentDir,
 	type InlineExtension,
-	type ModelRuntime,
 	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../../resources/store.js"
+import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
@@ -31,6 +30,7 @@ import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
+import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
@@ -49,12 +49,14 @@ import {
 	type SubagentType,
 	type ThinkingLevel,
 } from "../personas/types.js"
+import { renderBriefSkillBlock, scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildParentContext, extractText } from "../prompt/context.js"
 import { buildAgentPrompt, formatTokenBudget, type PromptExtras } from "../prompt/prompts.js"
-import { listAvailableSkillNames, preloadSkills } from "../prompt/skill-loader.js"
+import { preloadSkills } from "../prompt/skill-loader.js"
 import { createSubagentBashClampExtension, subagentBashDefaultTimeoutExtension } from "../subagent-bash-clamp.js"
 import { createWorkerReportExtension, WORKER_REPORT_TOOL_NAME, type WorkerReportCapability } from "../worker-report.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
+import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type LifetimeUsage } from "./usage.js"
 
 /**
@@ -261,10 +263,9 @@ export interface RunResult {
 	maxTurns?: number
 	/** Absolute path to the saved plan file, if the agent produced a plan. */
 	planPath?: string
-}
-
-type ModelRegistryWithRuntime = {
-	runtime?: ModelRuntime
+	/** Skills auto-loaded into the system prompt because the task brief
+	 *  matched their declared triggers. */
+	autoLoadedSkills?: SkillTriggerHit[]
 }
 
 function collectResponseText(session: AgentSession) {
@@ -396,6 +397,10 @@ async function runAgentInner(
 
 	let toolNames = getToolNamesForType(type)
 
+	// Skills preloaded because the task brief matched their declared
+	// triggers; surfaced in the run result for the tool-result note.
+	let autoLoadedSkills: SkillTriggerHit[] | undefined
+
 	if (Array.isArray(skills)) {
 		const loaded = preloadSkills(skills, effectiveCwd)
 		if (loaded.length > 0) {
@@ -403,11 +408,21 @@ async function runAgentInner(
 		}
 	} else if (skills === true) {
 		// skills === true (the default for Builder, Fixer, Explore, Plan, GP):
-		// inject a compact skill name+description list and add the Skill tool
-		// so sub-agents can discover and load skills on demand.
-		const availableSkills = listAvailableSkillNames(effectiveCwd)
-		if (availableSkills.length > 0) {
-			const skillLines = availableSkills.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
+		// one scan per spawn feeds both the Available Skills list and the
+		// trigger-matched preloads (subagent skill auto-load — see
+		// docs/skills-autoload.md). The Skill tool is added so sub-agents can
+		// also load skills on demand.
+		const scan = await scanBriefSkills(prompt, effectiveCwd, {
+			// inherit_context forks the parent conversation, which already
+			// carries the parent's loaded skills — don't match the brief again.
+			matchBrief: !options.inheritContext,
+		})
+		if (scan.matched.length > 0) {
+			extras.skillBlocks = scan.matched.map((m) => ({ name: m.name, content: renderBriefSkillBlock(m) }))
+			autoLoadedSkills = scan.matched.map(({ name, matched }) => ({ name, matched }))
+		}
+		if (scan.available.length > 0) {
+			const skillLines = scan.available.map((s) => `- **${s.name}**: ${s.description}`).join("\n")
 			extras.skillListBlock = `## Available Skills
 
 Use the Skill tool to load a skill's full instructions when its description matches your task.
@@ -524,7 +539,16 @@ ${skillLines}`
 	if (options.workerReport) {
 		extensionFactories.push(createWorkerReportExtension(options.workerReport))
 	}
-	const loader = new DefaultResourceLoader({
+	// SubagentResourceLoader reads the system prompt live via the
+	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
+	// final active-tool list is known, reassigning `systemPrompt` and calling
+	// session.setActiveToolsByName() is enough for the session to rebuild its
+	// prompt options from the current value — NO second loader.reload(). That
+	// second reload used to exist only to re-evaluate systemPromptOverride, and
+	// it re-ran every inline extension factory against the loader's shared
+	// event bus, leaving orphaned duplicate copies whose bus subscriptions
+	// duplicated channel events (e.g. 2× subagent.bash_clamped telemetry).
+	const loader = new SubagentResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
 		noExtensions: effectiveExtensions === false,
@@ -532,7 +556,7 @@ ${skillLines}`
 		noPromptTemplates: true,
 		noThemes: true,
 		noContextFiles: true,
-		systemPromptOverride: () => systemPrompt,
+		readSystemPrompt: () => systemPrompt,
 		appendSystemPromptOverride: () => [],
 		extensionFactories,
 	})
@@ -541,8 +565,7 @@ ${skillLines}`
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
-	const modelRuntime = (ctx.modelRegistry as unknown as ModelRegistryWithRuntime).runtime
-	if (!modelRuntime) throw new Error("Pi model registry runtime is unavailable")
+	const modelRuntime = requireModelRuntime(ctx.modelRegistry)
 
 	const sessionOpts: CreateAgentSessionOptions = {
 		cwd: effectiveCwd,
@@ -594,12 +617,14 @@ ${skillLines}`
 			activeTools.push(WORKER_REPORT_TOOL_NAME)
 		}
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
+		// No loader.reload() here: SubagentResourceLoader reads the prompt live
+		// on every getSystemPrompt() call, so reassigning `systemPrompt` above
+		// is all setActiveToolsByName needs to rebuild the session's prompt
+		// options from the final tool list.
 		session.setActiveToolsByName(activeTools)
 	} else {
 		const activeTools = session.getActiveToolNames().filter((t) => !disallowedSet?.has(t))
 		systemPrompt = buildSystemPrompt(activeTools)
-		await loader.reload()
 		session.setActiveToolsByName(activeTools)
 	}
 
@@ -859,6 +884,7 @@ ${skillLines}`
 		turnsUsed: turnCount,
 		maxTurns: effectiveMaxTurns,
 		planPath,
+		autoLoadedSkills,
 	}
 }
 

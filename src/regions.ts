@@ -67,13 +67,6 @@ export const DEFAULT_REGION: RegionId = "us"
  */
 export const REGION_ENV = "KIMCHI_REGION"
 
-/**
- * Env override for the self-hosted base URL, the headless/CI companion to
- * `KIMCHI_REGION=self-hosted`. Invalid values warn once and count as unset
- * (see src/config.ts), falling back to the stored `selfHostedUrl`.
- */
-export const SELF_HOSTED_URL_ENV = "KIMCHI_SELF_HOSTED_URL"
-
 export function isRegionId(value: unknown): value is RegionId {
 	// Object.hasOwn, not `in`: "constructor"/"__proto__" are on the prototype chain.
 	return typeof value === "string" && Object.hasOwn(REGIONS, value)
@@ -99,29 +92,51 @@ export function selectableRegions(): KimchiRegion[] {
 }
 
 /**
- * Build the self-hosted region from the user-provided base URL.
+ * Endpoints a self-hosted login resolves from the install's discovery
+ * document (`GET <console>/env/endpoints.json`, see
+ * src/self-hosted-discovery.ts) — the only self-hosted flow.
  *
- * Derivation contract — ONE base URL drives every endpoint:
- *   webAppUrl  = base           (login pages, /cli-auth, billing links)
- *   llmBaseUrl = base + "/llm"  (chat, anthropic, search, models, credits)
- *   castApiUrl = base + "/api"  (key validation, telemetry, stats)
- *
- * NOTE: `castApiUrl` and `platformApiUrl` (webAppUrl + "/api") intentionally
- * BOTH resolve to `base/api`. The platform API (/v1/me, /workspaces, ...) and
- * the Cast AI API (/v1/llm/..., /ai-optimizer/...) serve disjoint sub-paths
- * behind the same self-hosted gateway — do not "deduplicate" them.
- *
- * The base is expected pre-normalized (see normalizeSelfHostedBaseUrl); a
- * trailing slash is stripped defensively so `/llm` never becomes `//llm`.
+ * Each value is an ORIGIN ONLY — no path suffix. The consumer appends the
+ * API shape it speaks (see discoveredSelfHostedRegion):
+ *   console → webAppUrl (SPA, /cli-auth login handoff — console UI only)
+ *   api     → castApiUrl (REST API: /v1/llm, /ai-optimizer, /v1/me — also
+ *             the platform API base, see platformApiUrl below)
+ *   llm     → llmBaseUrl (gateway: /openai/v1, /anthropic, /v1/search, /v1/rerank)
  */
-export function selfHostedRegion(base: string): KimchiRegion {
-	const trimmed = base.trim().replace(/\/+$/, "")
+export interface SelfHostedEndpoints {
+	api: string
+	console: string
+	llm: string
+}
+
+/**
+ * Build the self-hosted region from resolved endpoints.
+ *
+ * The discovery document advertises each origin separately, because a
+ * standalone install fronts the console/API host and the LLM gateway
+ * host-scoped:
+ *
+ *   webAppUrl  = console  (the SPA host — login hand-off and links only;
+ *                         no API traffic)
+ *   castApiUrl = api      (the REST API host — paths live at the root:
+ *                         /v1/me, /v1/llm, /ai-optimizer)
+ *   llmBaseUrl = llm      (the gateway ORIGIN ONLY — no path suffix)
+ *
+ * Every llmBaseUrl-derived endpoint then appends its own API shape via the
+ * shared region helpers: openAiBaseUrl = <llm>/openai/v1,
+ * anthropicBaseUrl = <llm>/anthropic, searchUrl = <llm>/v1/search — matching
+ * the discovery contract. platformApiUrl is the api origin directly (alias
+ * of castApiUrl — see platformApiUrl below). Endpoints are expected
+ * pre-normalized (see normalizeSelfHostedEndpoints); trailing slashes are
+ * stripped defensively.
+ */
+export function discoveredSelfHostedRegion(endpoints: SelfHostedEndpoints): KimchiRegion {
 	return {
 		id: "self-hosted",
 		label: "Self-hosted",
-		webAppUrl: trimmed,
-		llmBaseUrl: `${trimmed}/llm`,
-		castApiUrl: `${trimmed}/api`,
+		webAppUrl: endpoints.console.trim().replace(/\/+$/, ""),
+		llmBaseUrl: endpoints.llm.trim().replace(/\/+$/, ""),
+		castApiUrl: endpoints.api.trim().replace(/\/+$/, ""),
 	}
 }
 
@@ -144,6 +159,22 @@ export function normalizeSelfHostedBaseUrl(raw: string | undefined): string | un
 }
 
 /**
+ * Normalize and validate a discovery-document endpoints value: every key
+ * must be a valid absolute http(s) origin (trailing slashes stripped, same
+ * rules as normalizeSelfHostedBaseUrl). Returns undefined when any key is
+ * missing or invalid — callers treat that as "no discovery".
+ */
+export function normalizeSelfHostedEndpoints(raw: unknown): SelfHostedEndpoints | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+	const record = raw as Record<string, unknown>
+	const api = normalizeSelfHostedBaseUrl(typeof record.api === "string" ? record.api : undefined)
+	const consoleUrl = normalizeSelfHostedBaseUrl(typeof record.console === "string" ? record.console : undefined)
+	const llm = normalizeSelfHostedBaseUrl(typeof record.llm === "string" ? record.llm : undefined)
+	if (!api || !consoleUrl || !llm) return undefined
+	return { api, console: consoleUrl, llm }
+}
+
+/**
  * Low-level region → URL derivations.
  *
  * These are building blocks for `endpointsForRegion`/`resolveEndpoints` in
@@ -154,9 +185,43 @@ export function normalizeSelfHostedBaseUrl(raw: string | undefined): string | un
  * that are genuinely region-fixed regardless of any env override (e.g.
  * telemetry ingest URLs in src/integrations/constants.ts).
  */
-/** Platform API base (`/v1/me`, teleport, agents, sandbox). */
+/**
+ * Platform API base (`/v1/me`, org settings, workspaces, cost reporting).
+ *
+ * Alias of castApiUrl: the platform REST API serves these paths directly at
+ * the region's API origin root. The SaaS console (app.kimchi.dev/api) used
+ * to proxy them, and every route the harness calls is served on the API
+ * origin — so the console never carries API traffic and stays UI-only.
+ * Kept as a distinct name so callers keep one conceptual handle, and as a
+ * repoint seam if platform-only routes ever move to a dedicated platform
+ * host (KIMCHI_REMOTE_ENDPOINT overrides this — see endpointsForRegion).
+ */
 export function platformApiUrl(r: KimchiRegion): string {
-	return `${r.webAppUrl}/api`
+	return r.castApiUrl
+}
+
+/**
+ * Canonicalize a stored platform API base for equality comparison.
+ *
+ * platformApiUrl used to derive as `webAppUrl + "/api"` (the console's
+ * /api proxy) before it moved to the region's API origin. Durable records
+ * captured before that change — work-attribution billing sources, work
+ * accounts, PR-cost snapshot queues — still hold the legacy form, and
+ * comparing them against a freshly derived base by exact string equality
+ * would false-mismatch across the migration in both directions (upgrade
+ * and rollback). This maps every region's legacy console-proxy base onto
+ * its API origin; anything else (already-canonical bases, self-hosted or
+ * custom `KIMCHI_REMOTE_ENDPOINT` overrides) passes through with only
+ * trailing slashes stripped. Never conflates regions: the us legacy base
+ * maps to the us API origin only.
+ */
+export function canonicalPlatformApiUrl(url: string): string {
+	const trimmed = url.replace(/\/+$/, "")
+	for (const region of Object.values(REGIONS)) {
+		if (!region.webAppUrl) continue // self-hosted placeholder has no fixed URLs
+		if (trimmed === `${region.webAppUrl}/api`) return region.castApiUrl
+	}
+	return trimmed
 }
 
 /** Main chat/completions base. */

@@ -35,6 +35,7 @@ Org policy is fetched at startup and held for the session; each field has one en
 
 Behavior and contracts documented per topic — read the linked doc when working in that area:
 
+- [docs/acp-compaction.md](docs/acp-compaction.md) — compaction wire contract: `_kimchi.dev/compact` ext methods, `agent_activity` lifecycle, post-compaction `usage_update` refresh
 - [docs/acp-model-attribution.md](docs/acp-model-attribution.md) — per-message model/provider attribution on ACP blocks
 - [docs/agents.md](docs/agents.md) — agent infrastructure (workers, subagents, ferment planning pipeline)
 - [docs/artifacts.md](docs/artifacts.md) — generated-file artifacts: declaring them from tools (`details.artifacts`), detection, emission and replay
@@ -49,6 +50,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/model-routing.md](docs/model-routing.md) — auto model routing (incl. multi-model: main/author/verifier)
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
+- [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on declared `triggers.prompt` (extensions/keywords)
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
@@ -84,6 +86,7 @@ Use the bundled `kimchi-tmux` when developing or verifying harness commands, men
 - **Structure TUI tests through the shared fixture.** Use `runKimchiSession`, deterministic fake OpenAI responses, isolated temp `HOME`/workdir, and trace steps for meaningful checkpoints. Avoid brittle ANSI/snapshot assertions unless the rendering itself is the behavior under test.
 - **Known product bugs can use `test.fail`.** Add a short comment naming the bug/repro. When the underlying issue is fixed, the unexpected pass is the signal to remove `test.fail`.
 - **Quarantine only for unstable tests.** Use `tests/e2e/tui/skip-list.js` with a specific reason and remove the entry as soon as the instability is fixed.
+- **Label MCP-flow PRs with `mcp-e2e-live`.** When a change touches MCP or OAuth behaviour (adapter patches, `src/extensions/mcp/`, callback/auth flows, MCP e2e fixtures), add the `mcp-e2e-live` label to the PR — it runs the credentialed `MCP live` / `lifecycle` job, which proves expired Google tokens renew silently against real providers with a dedicated test account. Add the label before the final round of review, not on the first push: every run consumes the test account's credential.
 - **Don't hand-write common dependency mocks in tests.** Avoid creating `ExtensionContext` (`ctx`) or `ExtensionAPI` (`pi`) mocks inline inside a test file. Use shared mocks (e.g. under `src/extensions/__mocks__/**` for unit tests) when they exist, and add new ones there if several tests need the same dependency. Don't copy-paste partial mocks across tests.
 
 ## Dual-surface parity (TUI ↔ ACP)

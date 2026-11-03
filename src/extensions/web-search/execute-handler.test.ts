@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { REGIONS, regionEndpoints } from "../../regions.js"
 import { DEFAULT_LIMIT, executeWebSearch, type SearchResponse } from "./execute-handler.js"
@@ -31,14 +34,21 @@ function makeSources(count: number) {
 	}))
 }
 
+let agentDir: string
 beforeEach(() => {
 	configMock.loadConfig.mockReturnValue({ apiKey: "test-key-123" })
 	configMock.resolveEndpoints.mockReturnValue(regionEndpoints(REGIONS.eu))
+	// Isolate from the ambient agent dir — a developer shell's real auth.json
+	// would satisfy the keyless validation test.
+	agentDir = mkdtempSync(join(tmpdir(), "web-search-noauth-"))
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 })
 
 afterEach(() => {
 	vi.unstubAllGlobals()
+	vi.unstubAllEnvs()
 	vi.restoreAllMocks()
+	rmSync(agentDir, { recursive: true, force: true })
 })
 
 describe("executeWebSearch", () => {
@@ -47,7 +57,7 @@ describe("executeWebSearch", () => {
 			configMock.loadConfig.mockReturnValue({ apiKey: "" })
 
 			await expect(executeWebSearch({ query: "test" })).rejects.toThrow(
-				"Web search requires an API key. Run 'kimchi' and log in, or visit https://app.eu.kimchi.dev to create a key.",
+				"Web search requires a login. Run 'kimchi' and sign in (API key or SSO), or visit https://app.eu.kimchi.dev to create a key.",
 			)
 		})
 

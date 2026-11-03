@@ -26,6 +26,7 @@ import { expect, Key, test } from "@microsoft/tui-test"
 import { fullText, INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest } from "./support/fake-openai-server.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { readWorkRecords } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -295,15 +296,7 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			const workId = /^<!-- kimchi-work-id: ([0-9a-f-]{36}) -->\n/.exec(savedPlan)?.[1]
 			expect(workId).toBeDefined()
 			expect(savedPlan).toBe(`<!-- kimchi-work-id: ${workId} -->\n${planText}`)
-			const ledgerDir = join(fixture.agentDir, "work-attribution")
-			const requests = readdirSync(ledgerDir)
-				.flatMap((file) =>
-					readFileSync(join(ledgerDir, file), "utf8")
-						.trim()
-						.split("\n")
-						.map((line) => JSON.parse(line)),
-				)
-				.filter((record) => record.type === "request")
+			const requests = readWorkRecords(fixture.agentDir).filter((record) => record.type === "request")
 			expect(requests.length).toBeGreaterThanOrEqual(2)
 			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
 			trace.step("plan approval retained planning work identity automatically, without work commands")

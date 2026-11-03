@@ -36,6 +36,52 @@ const state = (entries: [string, PendingRepository][], fields: Partial<Reporting
 })
 
 describe("/pr-reporting status", () => {
+	it("keeps event delivery, retry failures and legacy repository counts separate", () => {
+		const status = statusText(state([], { enabled: false, error: undefined }), undefined, now, [
+			{
+				accountKey: "original-account",
+				pending: 3,
+				sendable: 2,
+				blocked: 1,
+				acknowledged: 7,
+				lastAcknowledgedAt: now - 1000,
+				batches: 1,
+				firstBatchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				retry: {
+					batchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+					attempts: 1,
+					retryAt: now + 60_000,
+					error: "PR cost event upload returned HTTP 503",
+				},
+			},
+		])
+		expect(status.warning).toBe(true)
+		const text = status.text.replace(/\n\s+/g, " ")
+		expect(text).toContain("PR cost event upload returned HTTP 503")
+		expect(text).toContain("1 event blocked; retained locally.")
+		expect(text).toContain("Repositories   0 queued · 0 acknowledged")
+		expect(text).toContain("Events         3 queued · 7 acknowledged")
+		expect(text).toContain("1 frozen batch awaiting acknowledgement")
+		expect(text).toContain("Event retry    in about 1 min")
+		expect(text).toContain("Last event ACK 2026-10-08T11:59:59.000Z")
+	})
+	it("shows a persisted batch even when no pending event rows remain", () => {
+		const status = statusText(state([]), undefined, now, [
+			{
+				accountKey: "original-account",
+				pending: 0,
+				sendable: 0,
+				blocked: 0,
+				acknowledged: 0,
+				lastAcknowledgedAt: null,
+				batches: 1,
+				firstBatchId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				retry: undefined,
+			},
+		])
+		expect(status.text).toContain("1 frozen batch awaiting acknowledgement")
+		expect(status.warning).toBe(false)
+	})
 	it("states the setting plainly and counts repositories on one line", () => {
 		expect(statusText(state([]), undefined, now)).toEqual({
 			text: ["PR reporting   Enabled (SaaS default)", "Repositories   0 queued · 0 acknowledged"].join("\n"),

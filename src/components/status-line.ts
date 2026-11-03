@@ -17,6 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { thinkingSelection } from "../thinking-selection.js"
 
 /** Stable identifier used by compaction steps to find segments. */
 export type SegmentId =
@@ -35,6 +36,7 @@ export type SegmentId =
 	| "lsp"
 	| "dap"
 	| "work-pr"
+	| "shells"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -448,6 +450,7 @@ const SHED_ORDER: SegmentId[] = [
 	"tags",
 	"phase",
 	"usage",
+	"shells",
 	"agents",
 	"thinking",
 	"credits",
@@ -555,7 +558,18 @@ function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
 
 function buildThinkingSegment(ctx: ExtensionContext, theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
-	const level = isAutoRoutedModel(ctx.model) ? "auto" : (ctx.thinkingLevel ?? "—")
+	// Tri-state curation: reasoning models without distinct levels show `on`
+	// (the provider default applies), non-reasoning models `off` — the same
+	// vocabulary as the /model THINKING column. A session level only shows
+	// when level selection is meaningful.
+	const selection = thinkingSelection(ctx.model)
+	const level = isAutoRoutedModel(ctx.model)
+		? "auto"
+		: selection.mode === "none"
+			? selection.reasoning
+				? "on"
+				: "off"
+			: (ctx.thinkingLevel ?? "—")
 	const text = `${dimText(theme, "thinking:")}${accentText(theme, level)}`
 	return { id: "thinking", text, width: visibleWidth(text) }
 }
@@ -742,15 +756,28 @@ function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "budget", text, width: visibleWidth(text), raw: { kind: "budget", percentage } }
 }
 
+/** Extension status key the background-bash extension sets to the number of
+ *  running managed Bash commands (cleared when none run). */
+export const SHELLS_STATUS_KEY = "shells"
+
+/** Activity segments (agents, shells) render only while something runs, and
+ *  always last on the line, so appearing/disappearing shifts nothing else. */
+const ACTIVITY_IDS: ReadonlySet<SegmentId> = new Set(["agents", "shells"])
+
 function buildAgentsSegment(theme: Theme, pinned: boolean): Segment | null {
 	if (!pinned) return null
 	const count = getActiveAgentCount()
-	if (count === 0) {
-		const text = dimText(theme, "0 agents")
-		return { id: "agents", text, width: visibleWidth(text) }
-	}
+	if (count === 0) return null
 	const text = accentText(theme, `${count} agent${count === 1 ? "" : "s"}`)
 	return { id: "agents", text, width: visibleWidth(text) }
+}
+
+function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
+	const count = Number(statusLineData.getExtensionStatuses().get(SHELLS_STATUS_KEY))
+	if (!Number.isInteger(count) || count <= 0) return null
+	const text = accentText(theme, `${count} shell${count === 1 ? "" : "s"}`)
+	return { id: "shells", text, width: visibleWidth(text) }
 }
 
 function buildFermentSegment(
@@ -823,7 +850,6 @@ export function buildStatusLineSegments(
 		buildFermentSegment(theme, pinned.has("ferment"), statusLineData),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
-		buildAgentsSegment(theme, pinned.has("agents")),
 		buildContextSegment(ctx, theme),
 		buildUsageSegment(ctx, theme, pinned.has("usage")),
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
@@ -832,6 +858,8 @@ export function buildStatusLineSegments(
 		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
 		buildDapSegment(theme, statusLineData, hidden.has("dap")),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
+		buildAgentsSegment(theme, pinned.has("agents")),
+		buildShellsSegment(theme, statusLineData, hidden.has("shells")),
 	].filter((s): s is Segment => s !== null)
 }
 
@@ -924,19 +952,19 @@ export class StatusLine implements Component {
 		// for non-core segments.
 		const CORE_LEAD_IDS: Set<SegmentId> = new Set(["permissions", "model"])
 
-		// Display order is unchanged: unpinned group left, pinned group right.
-		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id))
-		const pinned = survivors.filter((s) => pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
+		// Display order: unpinned group left, pinned group right, then the
+		// activity segments (agents, shells) last — they come and go, so keeping
+		// them at the end means nothing else shifts when they do.
+		const unpinned = survivors.filter(
+			(s) => !ACTIVITY_IDS.has(s.id) && (!pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id)),
+		)
+		const pinned = survivors.filter((s) => !ACTIVITY_IDS.has(s.id) && pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
+		const activity = survivors.filter((s) => ACTIVITY_IDS.has(s.id))
 
-		// Build content: unpinned (left) then pinned (right).
-		let contentLine: string
-		if (unpinned.length > 0 && pinned.length > 0) {
-			contentLine = `${joinSegments(unpinned, sep)}${sep}${joinSegments(pinned, sep)}`
-		} else if (pinned.length > 0) {
-			contentLine = joinSegments(pinned, sep)
-		} else {
-			contentLine = joinSegments(unpinned, sep)
-		}
+		const contentLine = [unpinned, pinned, activity]
+			.filter((group) => group.length > 0)
+			.map((group) => joinSegments(group, sep))
+			.join(sep)
 
 		// Append hint at the far right when there is room; truncate if not.
 		let line: string

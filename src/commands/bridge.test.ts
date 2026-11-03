@@ -1,0 +1,170 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const spawnSync = vi.hoisted(() => vi.fn())
+const existsSync = vi.hoisted(() => vi.fn())
+const resolveAuxiliaryFilesDir = vi.hoisted(() => vi.fn(() => "/fake-share"))
+
+vi.mock("node:child_process", () => ({ spawnSync }))
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:fs")>()),
+	existsSync,
+}))
+vi.mock("../auxiliary-files/resolver.js", () => ({ resolveAuxiliaryFilesDir }))
+vi.mock("../update/paths.js", () => ({ stableExecutablePath: () => "/opt/homebrew/opt/kimchi/bin/kimchi" }))
+
+import { runBridge } from "./bridge.js"
+
+describe("kimchi bridge command", () => {
+	beforeEach(() => {
+		spawnSync.mockReset()
+		existsSync.mockReset()
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("setup invokes the bundled installer with the single 'both' client argument", async () => {
+		// Regression: runInstaller used to pass separate "claude" and "codex"
+		// args, feeding "codex" into install.sh's [vVERSION] slot — every
+		// `kimchi bridge setup` failed with "Requested version differs from
+		// this package." before installing anything. The installer is spawned
+		// through bash: some release layouts shipped install.sh without the
+		// executable bit and a direct spawn failed with EACCES.
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		await runBridge(["setup"])
+
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "install", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
+	})
+
+	it("setup links the plugins to a binary path that a Homebrew upgrade keeps", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		await runBridge(["setup"])
+
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			expect.anything(),
+			expect.objectContaining({
+				env: expect.objectContaining({ KIMCHI_BIN: "/opt/homebrew/opt/kimchi/bin/kimchi" }),
+			}),
+		)
+	})
+
+	const bridgeCliCalls = () =>
+		spawnSync.mock.calls.filter(([file]) => String(file).endsWith("kimchi-bridge")).map(([, args]) => args)
+
+	it("setup resumes recording and enables gateway routing through the bridge CLI after installing", async () => {
+		// Regression: setup only ran `gateway enable`, so after `kimchi bridge
+		// disable` the gateway came back while recording stayed paused and the
+		// bridge dropped every hook — no PR costs, no warning.
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		await runBridge(["setup"])
+
+		expect(bridgeCliCalls()).toEqual([["enable"], ["gateway", "enable"]])
+	})
+
+	it("enable undoes disable: resumes recording and re-enables the gateway", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		const code = await runBridge(["enable"])
+
+		expect(code).toBe(0)
+		expect(bridgeCliCalls()).toEqual([["enable"], ["gateway", "enable"]])
+		// No reinstall: enable only flips the bridge's own switches.
+		expect(spawnSync).not.toHaveBeenCalledWith("bash", expect.anything(), expect.anything())
+	})
+
+	it("enable still tries the gateway and fails when resuming recording fails", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockImplementation((_file: string, args: string[]) => ({ status: args[0] === "enable" ? 1 : 0 }))
+
+		const code = await runBridge(["enable"])
+
+		expect(code).toBe(1)
+		expect(bridgeCliCalls()).toEqual([["enable"], ["gateway", "enable"]])
+	})
+
+	it("enable reports the missing bridge CLI", async () => {
+		existsSync.mockReturnValue(false)
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		const code = await runBridge(["enable"])
+
+		expect(code).toBe(1)
+		expect(spawnSync).not.toHaveBeenCalled()
+		expect(error).toHaveBeenCalledWith(expect.stringContaining("kimchi bridge setup"))
+	})
+
+	it("disable turns the gateway off and pauses recording", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		const code = await runBridge(["disable"])
+
+		expect(code).toBe(0)
+		expect(bridgeCliCalls()).toEqual([["gateway", "disable"], ["disable"]])
+	})
+
+	it("reports a spawn failure that Bun surfaces as undefined status", async () => {
+		// Regression: on EACCES Bun's spawnSync leaves status undefined, and
+		// the old `status === null` guard skipped the diagnostic — setup
+		// failed with no output at all.
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: undefined, error: new Error("EACCES: permission denied") })
+
+		const code = await runBridge(["setup"])
+
+		expect(code).toBe(1)
+		expect(spawnSync).toHaveBeenCalledTimes(1)
+	})
+
+	it("status reports the missing CLI with stale-routing guidance and falls back to installer receipts", async () => {
+		// The CLI shim is missing while the bundled installer package exists.
+		existsSync.mockImplementation((path: unknown) => !String(path).endsWith("kimchi-bridge"))
+		spawnSync.mockReturnValue({ status: 0 })
+
+		const code = await runBridge(["status"])
+
+		expect(code).toBe(1)
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "status", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
+	})
+
+	it("status delegates to the bridge CLI when the shim exists", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		const code = await runBridge(["status"])
+
+		expect(code).toBe(0)
+		const cliCall = spawnSync.mock.calls.find(([file]) => String(file).endsWith("kimchi-bridge"))
+		expect(cliCall?.[1]).toEqual(["status"])
+	})
+
+	it("remove invokes the bundled installer with the 'both' client argument", async () => {
+		existsSync.mockReturnValue(true)
+		spawnSync.mockReturnValue({ status: 0 })
+
+		await runBridge(["remove"])
+
+		expect(spawnSync).toHaveBeenCalledWith(
+			"bash",
+			[expect.stringMatching(/install\.sh$/), "uninstall", "both"],
+			expect.objectContaining({ stdio: "inherit" }),
+		)
+	})
+})

@@ -23,6 +23,11 @@ export interface OrchestrationInstructionsContext {
 	roles?: ModelRoles
 	/** Custom model metadata for non-registry models. */
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	/** Whether background-subagent completion notifications reach the user
+	 *  after the turn ends (TUI only). When false, delegation guidance makes
+	 *  foreground the default and requires joining backgrounded agents with
+	 *  get_subagent_result wait: true before turn end. Default: true. */
+	backgroundNotificationsReachUser?: boolean
 }
 
 export interface OrchestrationInstructionsResult {
@@ -33,7 +38,13 @@ export function resolveOrchestrationInstructions(
 	ctx: OrchestrationInstructionsContext,
 ): OrchestrationInstructionsResult {
 	return {
-		instructionsSection: buildOrchestrationChapter(ctx.roles, ctx.currentModelId, ctx.registry, ctx.customConfigs),
+		instructionsSection: buildOrchestrationChapter(
+			ctx.roles,
+			ctx.currentModelId,
+			ctx.registry,
+			ctx.customConfigs,
+			ctx.backgroundNotificationsReachUser ?? true,
+		),
 	}
 }
 
@@ -145,10 +156,13 @@ The review agent runs tests, checks lint, and verifies the implementation matche
 
 **Review verdicts are final**: Never edit a review report to change its verdict. If a flag is genuinely wrong, add a separate rationale note alongside the original review — do not alter the reviewer's output.`
 
-function buildAgentDelegation(delegatePlanning: boolean): string {
+function buildAgentDelegation(delegatePlanning: boolean, backgroundNotificationsReachUser = true): string {
 	const planBullet = delegatePlanning
 		? "- When delegating `plan` before `build`, have the Plan agent write a Markdown spec file (full method signatures, file paths, interfaces) under `.kimchi/plans/<slug>.md` — the canonical plan location. Pass that file path to the build Agent — it must not rediscover what was already decided."
 		: "- When writing the plan yourself before `build`, write the Markdown spec file (full method signatures, file paths, interfaces) under `.kimchi/plans/<slug>.md` — the canonical plan location. Pass that file path to the build Agent — it must not rediscover what was already decided."
+	const backgroundBullet = backgroundNotificationsReachUser
+		? "- Agents run in the background by default; spawn a few independent subtasks in parallel — the harness queues beyond its background concurrency cap. Use `run_in_background: false` only when a step blocks your very next action."
+		: "- Agents run in the foreground by default in this session; spawn independent subtasks together in one response — they run in parallel. If you background one, join it with get_subagent_result wait: true before ending your turn."
 
 	return `### Agent delegation
 
@@ -156,7 +170,7 @@ function buildAgentDelegation(delegatePlanning: boolean): string {
 
 - Write Agent prompts that are fully self-contained. Agents start with fresh context by default — include necessary instructions directly, or point them to a Markdown file containing larger context.
 ${planBullet}
-- Agents run in the background by default; spawn a few independent subtasks in parallel — the harness queues beyond its background concurrency cap. Use \`run_in_background: false\` only when a step blocks your very next action.
+${backgroundBullet}
 - After an Agent returns, TRUST its output unless the subagent itself reported errors or produced obviously incomplete work. Do NOT re-read source files just to verify a successful subagent's findings — this is the most common source of wasted orchestrator turns. For artifact-producing agents (Plan, Reviewer, Fixer, and Researcher when the research is non-trivial), have the subagent write its substantive output to the correct location and return the file path: Plan agents write specs to the canonical plan location (.kimchi/plans/<slug>.md); Reviewer, Fixer, and non-trivial Researcher agents write to a Markdown file in the Documents directory. Read ONLY that file (or pass it to the next subagent). Explore is the exception: Explore agents return decision-ready findings directly in the Agent result and must not be asked to write Markdown files, reports, docs, notes, or scratch files. For build agents specifically: if the agent reports tests pass and compilation succeeds, move on to the next chunk or to review. Do NOT re-read the code it wrote. For correction tasks, call Agent again with the correction task rather than fixing inline.
 - If an Agent call returns an error of any kind (including protocol violation, timeout, or exit error): do NOT attempt to implement or debug the work yourself. First assess whether the failure is retryable (e.g. transient timeouts or protocol violations) or not (e.g. missing files, permission errors, or invalid inputs). For retryable failures, call a replacement Agent with a corrected or simplified prompt — allow at most one retry per delegated step. For non-retryable failures, report the failure clearly and stop immediately without retrying.
 - **When a subagent returns agent_outcome.outcome other than "completed"**: the work is likely partial or invalid. Do NOT pick up the remaining work yourself — that defeats the purpose of delegation and wastes orchestrator tokens. Inspect agent_outcome.report before acting. Resume the same Agent only when remaining_steps are a direct continuation and preserving session context is valuable; use a changed-approach resume when the same thread still matters but the prior approach stalled; spawn a NEW follow-up Agent when remaining_steps have a clean narrower task boundary; run a short finalizer resume when the report is missing or the work appears finished but did not return completed; or stop/skip and report when blocked or unclear. Do not blindly retry the same prompt. **Include dependency context** in any replacement prompt: paste the public type signatures and function signatures of packages the follow-up agent will import (e.g. structs, interfaces, exported functions from earlier chunks) directly in the prompt so it does not waste turns re-reading files.
@@ -265,6 +279,7 @@ interface PhaseDirectiveContext {
 	roles?: ModelRoles
 	registry?: ModelRegistry
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
+	backgroundNotificationsReachUser?: boolean
 }
 
 function modelListForRole(assignment: RoleModelAssignment): string {
@@ -331,7 +346,9 @@ function buildBuildPhaseDirectives(ctx: PhaseDirectiveContext): string {
 		"- DO instruct every build agent to: (1) write the implementation, (2) write tests, (3) verify compilation and lint, (4) run tests exactly once. If compilation or tests fail, the agent reports failures and stops — no fix-retry cycles.",
 	)
 	lines.push(
-		"- DO run independent chunks in parallel up to the background-agent concurrency cap (the harness queues beyond it). Agents are backgrounded by default; set run_in_background: false only when a chunk blocks your very next action. Run sequential chunks one at a time.",
+		(ctx.backgroundNotificationsReachUser ?? true)
+			? "- DO run independent chunks in parallel up to the background-agent concurrency cap (the harness queues beyond it). Agents are backgrounded by default; set run_in_background: false only when a chunk blocks your very next action. Run sequential chunks one at a time."
+			: "- DO run independent chunks in parallel by issuing their Agent calls in the same response. Agents run in the foreground by default in this session; join any backgrounded agent with get_subagent_result wait: true before ending your turn. Run sequential chunks one at a time.",
 	)
 	lines.push(
 		"- DO NOT read the subagent's output files yourself, run tests yourself, or verify the code after the last build chunk completes. Transition to review immediately.",
@@ -425,10 +442,18 @@ function buildOrchestrationChapter(
 	currentModelId?: string,
 	registry?: ModelRegistry,
 	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>,
+	backgroundNotificationsReachUser = true,
 ): string {
 	const ownRoles = currentModelId && roles ? resolveModelRoleNames(currentModelId, roles) : []
 
-	const ctx: PhaseDirectiveContext = { ownRoles, currentModelId, roles, registry, customConfigs }
+	const ctx: PhaseDirectiveContext = {
+		ownRoles,
+		currentModelId,
+		roles,
+		registry,
+		customConfigs,
+		backgroundNotificationsReachUser,
+	}
 
 	const parts: string[] = []
 
@@ -466,7 +491,7 @@ Pass durable artifacts as Markdown files in the Documents directory: review find
 	parts.push(buildResearchPhaseDirectives(ctx))
 
 	parts.push(STEP_4_EXECUTE)
-	parts.push(buildAgentDelegation(delegatePlanning))
+	parts.push(buildAgentDelegation(delegatePlanning, backgroundNotificationsReachUser))
 	parts.push(THINKING_LEVELS)
 	parts.push(TOKEN_BUDGETS)
 	parts.push(PLAN_QUALITY_CHECKLIST)

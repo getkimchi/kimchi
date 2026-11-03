@@ -3,12 +3,13 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
+import { findModelByRef } from "../../shared/model-ref.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
 import { getRedactionConfig } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
+import { createNativeUsageCapture } from "../work-attribution/native-usage.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 import type { FermentV2EvaluatorFailureType } from "./domain-events.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
@@ -359,17 +360,22 @@ export async function evaluateFermentV2(
 				const attribution = inheritedWorkId
 					? tryWorkAttribution(() => recordProviderRequest(workContext, model, inheritedWorkId))
 					: undefined
+				const nativeUsage = createNativeUsageCapture(model)
+				nativeUsage.bind(attribution?.requestId)
 				providerRequestCount++
-				const response = await completeSimple(model, requestContext, {
-					apiKey: auth.apiKey,
-					headers: { ...auth.headers, ...(attribution ? { "X-Request-Id": attribution.requestId } : {}) },
-					reasoning: "minimal",
-					thinkingBudgets: correcting ? { minimal: 0 } : undefined,
-					samplingParams: isKimchiManagedJsonModeProvider(model.provider)
-						? { response_format: { type: "json_object" } }
-						: undefined,
-					signal,
-				})
+				const response = await nativeUsage.complete(() =>
+					completeSimple(model, requestContext, {
+						apiKey: auth.apiKey,
+						onProviderStreamEvent: nativeUsage.onProviderStreamEvent,
+						headers: { ...auth.headers, ...(attribution ? { "X-Request-Id": attribution.requestId } : {}) },
+						reasoning: "minimal",
+						thinkingBudgets: correcting ? { minimal: 0 } : undefined,
+						samplingParams: isKimchiManagedJsonModeProvider(model.provider)
+							? { response_format: { type: "json_object" } }
+							: undefined,
+						signal,
+					}),
+				)
 				if (signal.aborted) throw signal.reason
 				deadline = undefined
 				return response

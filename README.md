@@ -31,6 +31,8 @@ brew install getkimchi/tap/kimchi
 curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash
 ```
 
+The install script also adds Kimchi's work-reporting plugins to the official Claude Code and Codex CLIs it finds. They show what those sessions cost per pull request in the Kimchi console, using your Kimchi sign-in, and leave your inference settings unchanged. Kimchi's updates keep them current. To remove them, run `kimchi-bridge uninstall both`.
+
 **PowerShell (Windows):**
 
 ```powershell
@@ -521,6 +523,12 @@ kimchi update v1.2.3                # install a specific Kimchi release (downgra
 kimchi update v1.2.3-rc.1           # install a release candidate
 kimchi update --canary              # install the latest canary build from master
 ```
+
+Self-update checks call the GitHub API, which allows only 60 unauthenticated
+requests per hour per IP. When a token is available — from `GITHUB_TOKEN` or
+`GH_TOKEN`, or the gh CLI's stored credential — kimchi sends it along and
+gets GitHub's 5,000/hour budget instead. A bad token is detected (401) and
+retried unauthenticated, so a stale token never blocks an update.
 
 
 ### HTTP proxy

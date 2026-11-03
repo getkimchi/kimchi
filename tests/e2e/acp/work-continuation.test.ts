@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
 import { isWorkMatchingRequest } from "../tui/support/fake-openai-server.js"
-import { readWorkSummary } from "../tui/support/work-summary.js"
+import { readWorkNote, readWorkRecords, readWorkSummary } from "../tui/support/work-summary.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
@@ -58,11 +58,7 @@ it("links a plan pasted into Studio with an unowned output before dispatching it
 		const chats = () => active.fake.requests.filter((row) => row.url.startsWith("/openai/v1/chat/completions"))
 		await expect.poll(() => chats().length, { timeout: 10_000 }).toBe(1)
 		const requestId = chats()[0].headers["x-request-id"]
-		const ledgerDir = join(agentDir, "work-attribution")
-		const records = readdirSync(ledgerDir)
-			.filter((name) => name.endsWith(".jsonl"))
-			.flatMap((name) => readFileSync(join(ledgerDir, name), "utf8").trim().split("\n").filter(Boolean))
-			.map((line) => JSON.parse(line))
+		const records = readWorkRecords(agentDir)
 		expect(records).toContainEqual(expect.objectContaining({ type: "request", requestId, workId }))
 		expect(records).toContainEqual(
 			expect.objectContaining({
@@ -130,12 +126,7 @@ it("keeps unrelated Studio chat separate until a saved ADR is named, without mov
 	git("update-ref", "refs/remotes/origin/trunk", "HEAD")
 	git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
 	git("checkout", "-b", "feature")
-	const ledgerDir = join(active.homeDir, ".config", "kimchi", "harness", "work-attribution")
-	const records = () =>
-		readdirSync(ledgerDir)
-			.filter((name) => name.endsWith(".jsonl"))
-			.flatMap((name) => readFileSync(join(ledgerDir, name), "utf8").trim().split("\n").filter(Boolean))
-			.map((line) => JSON.parse(line))
+	const records = () => readWorkRecords(join(active.homeDir, ".config", "kimchi", "harness"))
 	const chats = () => active.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
 	const lastRequest = () => {
 		const requestId = chats().at(-1)?.headers["x-request-id"]
@@ -216,16 +207,7 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	fixture = active
 	const agentDir = join(active.homeDir, ".config", "kimchi", "harness")
 	execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd: active.workDir })
-	const records = () =>
-		readdirSync(join(agentDir, "work-attribution"))
-			.filter((name) => name.endsWith(".jsonl"))
-			.flatMap((name) =>
-				readFileSync(join(agentDir, "work-attribution", name), "utf8")
-					.trim()
-					.split("\n")
-					.filter(Boolean),
-			)
-			.map((line) => JSON.parse(line))
+	const records = () => readWorkRecords(agentDir)
 	const mainRequests = () =>
 		active.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions") && main(request))
 	const requestRecord = (index: number) => {
@@ -244,7 +226,7 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	expect(mainRequests()).toHaveLength(1)
 	expect(active.fake.requests.filter(judge)).toHaveLength(0)
 	const planned = requestRecord(0)
-	expect(JSON.parse(readFileSync(join(agentDir, "work", planned.workId, "intent.json"), "utf8"))).toMatchObject({
+	expect(JSON.parse(readWorkNote(agentDir, planned.workId, "intent") ?? "null")).toMatchObject({
 		workId: planned.workId,
 		summary: planningText,
 	})
@@ -329,16 +311,16 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	await expect
 		.poll(() => readWorkSummary(agentDir, unrelated.workId)?.requests.map((row) => row.requestId))
 		.toEqual([unrelated.requestId])
-	// Every derived file of a work stays free of prompt text; only its intent and retained plans hold user text.
+	// Derived projections and non-intent bookkeeping stay free of prompt text; intent and retained plans are private inputs.
 	for (const workId of [planned.workId, unrelated.workId]) {
-		const folder = join(agentDir, "work", workId)
-		const files = readdirSync(folder, { recursive: true, withFileTypes: true })
-			.filter((entry) => entry.isFile())
-			.map((entry) => join(entry.parentPath, entry.name))
-			.filter((path) => path !== join(folder, "intent.json") && !path.startsWith(join(folder, "plans")))
-		expect(files.some((path) => path.startsWith(join(folder, "rows")))).toBe(true)
-		for (const path of files)
+		const summary = readWorkSummary(agentDir, workId)
+		expect(summary).toBeDefined()
+		const derived = [
+			JSON.stringify(summary),
+			...["scope", "issue", "costs", "cost-totals"].map((name) => readWorkNote(agentDir, workId, name) ?? ""),
+		]
+		for (const text of derived)
 			for (const privateText of [planningText, continuationText, unrelatedText, "Decide whether a user's"])
-				expect(readFileSync(path, "utf8"), path).not.toContain(privateText)
+				expect(text).not.toContain(privateText)
 	}
 })

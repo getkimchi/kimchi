@@ -37,6 +37,7 @@ import {
 	installMcpOAuthCallbackBranding,
 } from "./oauth-callback-branding.js"
 import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
+import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
 import { collectReadOnlyMcpWireNames } from "./read-only.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
@@ -406,6 +407,9 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						// land where kimchi 1.14 and Studio read them. An explicit
 						// `--mcp-config` keeps winning; the trust flow never sees this default.
 						{ configPath: selectedResult.configPath ?? getSharedMcpConfigPath() }
+			// Offline-access request parameters for every OAuth authorize URL; stateless, see
+			// oauth-offline-access.ts.
+			installOfflineAccessAuthorizationUrlTransform()
 			createMcpAdapter(adapterOptions)(
 				createUpstreamApi(
 					pi,

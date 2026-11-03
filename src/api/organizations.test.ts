@@ -26,6 +26,19 @@ describe("verifyApiKey", () => {
 		})
 	})
 
+	it("sends the SSO organization header when one is given", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ organizationId: "org-2" }))
+		await verifyApiKey("oauth-token", { fetch: fetchImpl, organizationId: "org-2" })
+		expect(fetchImpl).toHaveBeenCalledWith("https://api.test/ai-optimizer/v1beta/api-keys:verify", {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer oauth-token",
+				"X-CastAi-Organization-Id": "org-2",
+				Accept: "application/json",
+			},
+		})
+	})
+
 	it("throws when the org id is missing", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ userId: "user-1" }))
 		await expect(verifyApiKey("key", { fetch: fetchImpl })).rejects.toThrow("Missing organizationId")
@@ -47,6 +60,19 @@ describe("getOrganization", () => {
 		expect(fetchImpl).toHaveBeenCalledWith("https://api.test/v1/organizations/org-1", {
 			method: "GET",
 			headers: { Authorization: "Bearer key", Accept: "application/json" },
+		})
+	})
+
+	it("sends the SSO organization header when one is given", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ id: "org-2", name: "CAST AI" }))
+		await getOrganization("oauth-token", "org-2", { fetch: fetchImpl, organizationId: "org-2" })
+		expect(fetchImpl).toHaveBeenCalledWith("https://api.test/v1/organizations/org-2", {
+			method: "GET",
+			headers: {
+				Authorization: "Bearer oauth-token",
+				"X-CastAi-Organization-Id": "org-2",
+				Accept: "application/json",
+			},
 		})
 	})
 

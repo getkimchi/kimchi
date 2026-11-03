@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => {
 		waitForDiagnostics: vi.fn(async () => false),
 		detectServers: vi.fn(() => [tsServer]),
 		detectMissingCandidates: vi.fn(() => []),
+		detectServerForPath: vi.fn(() => null),
 		serverForFile: vi.fn((filePath: string) => (filePath.endsWith(".ts") ? tsServer : null)),
 		findRoot: vi.fn((_file: string, _server: string, sessionCwd: string) => sessionCwd),
 	}
@@ -57,6 +58,7 @@ vi.mock("./client.js", () => ({
 vi.mock("./servers.js", () => ({
 	detectServers: mocks.detectServers,
 	detectMissingCandidates: mocks.detectMissingCandidates,
+	detectServerForPath: mocks.detectServerForPath,
 	serverForFile: mocks.serverForFile,
 	findRoot: mocks.findRoot,
 	resolveTsserverPath: vi.fn(() => undefined),
@@ -67,7 +69,7 @@ vi.mock("../prompt-construction/index.js", () => ({
 	createSystemPromptBlocks: vi.fn(() => ({ register: vi.fn() })),
 }))
 vi.mock("../prompt-construction/tool-visibility.js", () => ({
-	createToolVisibility: vi.fn(() => ({ disable: vi.fn() })),
+	createToolVisibility: vi.fn(() => ({ disable: vi.fn(), enable: vi.fn() })),
 }))
 vi.mock("../steer-marker.js", () => ({
 	markHarnessSteer: vi.fn((content: string) => content),
@@ -117,6 +119,10 @@ describe("lsp file sync failure handling", () => {
 		mocks.waitForDiagnostics.mockReset().mockResolvedValue(false)
 		mocks.detectServers.mockReset().mockReturnValue([mocks.tsServer])
 		mocks.detectMissingCandidates.mockReset().mockReturnValue([])
+		// No lazy mid-session activation by default — the lazy-activation
+		// tests in lsp-lazy-activation.test.ts cover that wiring with the real
+		// detection primitive.
+		mocks.detectServerForPath.mockReset().mockReturnValue(null)
 		mocks.serverForFile
 			.mockReset()
 			.mockImplementation((filePath: string) => (filePath.endsWith(".ts") ? mocks.tsServer : null))

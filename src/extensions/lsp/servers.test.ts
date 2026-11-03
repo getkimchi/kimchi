@@ -18,6 +18,7 @@ vi.mock("node:child_process", () => ({
 
 import {
 	detectMissingCandidates,
+	detectServerForPath,
 	detectServers,
 	findMainRepoRoot,
 	resolveTsNativeServerPath,
@@ -450,5 +451,128 @@ describe("marker walk — .git boundary", () => {
 		setFiles(["app/.git", "pyproject.toml"])
 		setBinaries([])
 		expect(detectMissingCandidates("/project/app/src")).toHaveLength(0)
+	})
+})
+
+describe("detectServerForPath — file-anchored lazy activation", () => {
+	it("resolves a .py file with an ancestor pyproject.toml to pyright at the marker dir", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const result = detectServerForPath("/project/src/main.py")
+		expect(result).not.toBeNull()
+		expect(result?.server.name).toBe("pyright")
+		expect(result?.root).toBe("/project")
+	})
+
+	it("matches every pyright root marker", () => {
+		setBinaries(["pyright-langserver"])
+		for (const marker of ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"]) {
+			setFiles([marker])
+			expect(detectServerForPath("/project/src/main.py")?.server.name).toBe("pyright")
+		}
+	})
+
+	it("returns null for a file in a bare scratch dir", () => {
+		setFiles([])
+		setBinaries(["pyright-langserver"])
+		expect(detectServerForPath("/project/scratch/main.py")).toBeNull()
+	})
+
+	it("ignores sibling unrelated projects — no downward activation", () => {
+		// The marker is in a SIBLING directory of the touched file, never on
+		// its ancestry — only the session-start downward scan may see it.
+		setFiles(["scratch/unrelated-project/pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		expect(detectServerForPath("/project/scratch/main.py")).toBeNull()
+	})
+
+	it("stops at the first .git ancestor — markers above the repo never leak", () => {
+		setFiles(["app/.git", "pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		expect(detectServerForPath("/project/app/src/main.py")).toBeNull()
+	})
+
+	it("finds a marker at the git root itself", () => {
+		// Markers are checked before the .git stop at the same directory.
+		setFiles([".git", "pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const result = detectServerForPath("/project/src/main.py")
+		expect(result?.server.name).toBe("pyright")
+		expect(result?.root).toBe("/project")
+	})
+
+	it("returns null on extension mismatch — .go with only Python markers", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		expect(detectServerForPath("/project/main.go")).toBeNull()
+	})
+
+	it("keys sibling source dirs to one root — src and tests share /project", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const fromSrc = detectServerForPath("/project/src/main.py")
+		const fromTests = detectServerForPath("/project/tests/test_main.py")
+		expect(fromSrc?.root).toBe("/project")
+		expect(fromTests?.root).toBe("/project")
+	})
+
+	it("returns null when the marker is present but the binary is missing", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries([])
+		expect(detectServerForPath("/project/src/main.py")).toBeNull()
+	})
+
+	it("re-evaluates binary availability on every call — late install activates", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries([])
+		expect(detectServerForPath("/project/src/main.py")).toBeNull()
+		// The binary becomes available mid-session (npm i -g pyright); the
+		// next source touch re-scans with no cached miss.
+		setBinaries(["pyright-langserver"])
+		expect(detectServerForPath("/project/src/main.py")?.server.name).toBe("pyright")
+	})
+
+	it("walks several ancestor hops to reach the marker", () => {
+		setFiles(["pyproject.toml"])
+		setBinaries(["pyright-langserver"])
+		const result = detectServerForPath("/project/a/b/c/main.py")
+		expect(result?.root).toBe("/project")
+	})
+
+	it("resolves .ts to the classic server in a classic workspace", () => {
+		setFiles(["package.json", "node_modules/typescript/lib/tsserver.js"])
+		setBinaries(["typescript-language-server"])
+		const result = detectServerForPath("/project/src/app.ts")
+		expect(result?.server.name).toBe("typescript-language-server")
+		expect(result?.root).toBe("/project")
+	})
+
+	it("resolves .ts to the TS7 native server from the matched root's own package", () => {
+		setFiles(["package.json", "node_modules/typescript/bin/tsc"])
+		setBinaries([])
+		const result = detectServerForPath("/project/src/app.ts")
+		expect(result?.server).toMatchObject({
+			name: "typescript-native",
+			command: "/project/node_modules/typescript/bin/tsc",
+			args: ["--lsp", "--stdio"],
+		})
+		expect(result?.root).toBe("/project")
+	})
+
+	it("resolves .go next to go.mod to gopls", () => {
+		setFiles(["go.mod"])
+		setBinaries(["gopls"])
+		const result = detectServerForPath("/project/cmd/main.go")
+		expect(result?.server.name).toBe("gopls")
+		expect(result?.root).toBe("/project")
+	})
+
+	it("returns null for files with no server-supported extension before touching the filesystem", () => {
+		setBinaries(["pyright-langserver"])
+		// No marker anywhere; a .md file must not even trigger the walk.
+		mockExistsSync.mockImplementation(() => {
+			throw new Error("existsSync must not be called for unsupported extensions")
+		})
+		expect(detectServerForPath("/project/README.md")).toBeNull()
 	})
 })

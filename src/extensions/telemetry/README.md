@@ -228,3 +228,7 @@ Example: `write|accept|TypeScript|auto`
 - **File paths are hashed** (SHA-256, first 12 chars) before being sent as `file_hash`.
 - **No prompt content or file contents** are transmitted.
 - Telemetry is on by default and controlled by `telemetry.enabled` in `~/.config/kimchi/config.json` (overridable via `$KIMCHI_TELEMETRY_ENABLED`).
+
+## Upstream pi Telemetry
+
+This extension reports only to the endpoints above. Upstream pi also has its own install telemetry — an anonymous version ping to `pi.dev/api/report-install` on install/update and pi attribution headers (`HTTP-Referer: pi.dev`, ...) on OpenRouter/NVIDIA/Cloudflare requests. Kimchi disables both harness-wide: `PI_TELEMETRY=0` in `src/entry.ts` and `applyPiTelemetryPatch()` in `src/cli.ts` (no-ops the ping on the InteractiveMode prototype). The `Install telemetry` item in pi's `/settings` panel is inert under kimchi. Note: pi also sends `x-opencode-session` / `x-opencode-client: pi` headers to opencode.ai-routed models; that path is upstream and not gated by this flag (it carries a session ID only, and targets opencode.ai, not pi.dev).

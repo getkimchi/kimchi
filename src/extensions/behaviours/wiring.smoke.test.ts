@@ -12,7 +12,7 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { markHarnessSteer } from "../steer-marker.js"
 import type { ResolverIO } from "./session-context.js"
 import { BEHAVIOUR_EVAL_TYPE, BEHAVIOUR_LOADED_TYPE, BEHAVIOUR_SESSION_SUMMARY_TYPE } from "./stats.js"
-import { cli, tool } from "./triggers.js"
+import { any, cli, lspServes, not, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 import { BEHAVIOUR_BODY_TYPE, wireBehaviours } from "./wiring.js"
 
@@ -89,6 +89,7 @@ const stubIO: ResolverIO = {
 	readGitRemoteHost: () => undefined,
 	isGitRepo: () => false,
 	walkPaths: () => new Set<string>(),
+	detectLspExtensions: () => new Set<string>(),
 }
 
 const baseline: Behaviour = {
@@ -118,10 +119,21 @@ const glabCli: Behaviour = {
 	triggers: { tool: tool("bash", (i) => i.command.startsWith("glab ")) },
 }
 
-function setupWired(behaviours: Behaviour[]): FakePi {
+// Same shape as glab-cli but with the explicit standing opt-in: the body is
+// policy, so the system-prompt block renders on every load path.
+const standingGlabCli: Behaviour = {
+	kind: "triggered",
+	name: "standing-glab",
+	description: "glab CLI guidance (standing policy)",
+	body: "Use glab for GitLab.",
+	triggers: { tool: tool("bash", (i) => i.command.startsWith("glab ")) },
+	standing: true,
+}
+
+function setupWired(behaviours: Behaviour[], resolverIO: ResolverIO = stubIO): FakePi {
 	const pi = new FakePi()
 	activePis.push(pi)
-	wireBehaviours(pi.asExtensionAPI(), behaviours, { resolverIO: stubIO })
+	wireBehaviours(pi.asExtensionAPI(), behaviours, { resolverIO })
 	return pi
 }
 
@@ -254,6 +266,99 @@ describe("wireBehaviours — tool_call", () => {
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
 
 		expect(pi.entries(BEHAVIOUR_EVAL_TYPE)).toEqual([])
+	})
+})
+
+describe("wireBehaviours — gate (LSP-vs-AST-nudge branch A, full path)", () => {
+	/** The python-edit shape: .py edit/write matcher + not(lspServes("py")) gate. */
+	const gatedPythonEdit: Behaviour = {
+		kind: "triggered",
+		name: "python-edit",
+		description: "Python validation guidance",
+		body: "When editing or creating Python.",
+		triggers: {
+			tool: any(
+				tool("edit", (i) => i.path.endsWith(".py")),
+				tool("write", (i) => i.path.endsWith(".py")),
+			),
+			gate: not(lspServes("py")),
+		},
+	}
+
+	/** stubIO with the lsp detection leg wired to a mutable set — exercises
+	 *  collectSessionSpecs (gate specs reach the resolver) →
+	 *  resolveSessionContext → evaluateToolTriggers(sessionCtx) end-to-end. */
+	function lspIO(lspExtensions: ReadonlySet<string>): ResolverIO {
+		return { ...stubIO, detectLspExtensions: () => new Set(lspExtensions) }
+	}
+
+	const pyEdit = { toolName: "edit", input: { path: "src/main.py" } }
+
+	it("does not load (or steer) a gated behaviour when the session-start LSP winner serves py", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set(["py", "pyw"])))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		await pi.fire("tool_result", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([])
+		expect(pi.sent).toEqual([])
+	})
+
+	it("loads and steers a gated behaviour when no LSP winner serves py", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set()))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		await pi.fire("tool_result", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toEqual([
+			{
+				type: BEHAVIOUR_LOADED_TYPE,
+				data: { name: "python-edit", trigger: "tool", turnIndex: 1, toolArgs: pyEdit.input },
+			},
+		])
+		expect(pi.sent).toEqual([
+			{
+				message: expect.objectContaining({
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: markHarnessSteer("When editing or creating Python."),
+					display: false,
+				}),
+				options: { deliverAs: "steer" },
+			},
+		])
+	})
+
+	it("a non-py LSP winner (gopls/TS) does not suppress the gate — py edits still load", async () => {
+		const pi = setupWired([gatedPythonEdit], lspIO(new Set(["ts", "tsx", "go"])))
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1)
+	})
+
+	it("a re-fired session_start re-resolves the gate against the fresh session", async () => {
+		// The detection set is mutable through the resolver stub: the first
+		// session is LSP-less (loads), the second (a resume into a pyright
+		// project) must re-gate — engine.reset() plus the fresh SessionContext
+		// snapshot handle both halves.
+		let detected = new Set<string>()
+		const pi = setupWired([gatedPythonEdit], {
+			...stubIO,
+			detectLspExtensions: () => new Set(detected),
+		})
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", pyEdit)
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1)
+
+		detected = new Set(["py", "pyw"])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 2 })
+		await pi.fire("tool_call", pyEdit)
+		expect(pi.entries(BEHAVIOUR_LOADED_TYPE)).toHaveLength(1) // still one — gated off
 	})
 })
 
@@ -401,7 +506,7 @@ describe("wireBehaviours — before_agent_start", () => {
 		expect(sp).not.toContain("Use glab for GitLab.")
 	})
 
-	it("renders a tool-triggered body's content in the system prompt on subsequent turns", async () => {
+	it("steer-delivers a default tool-triggered body: steer once, block never renders", async () => {
 		const pi = setupWired([glabCli])
 		await pi.fire(
 			"session_start",
@@ -413,7 +518,23 @@ describe("wireBehaviours — before_agent_start", () => {
 		)
 		await pi.fire("turn_start", { turnIndex: 1 })
 		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
 
+		// Steer delivery, exactly once.
+		expect(pi.sent).toEqual([
+			{
+				message: expect.objectContaining({
+					customType: BEHAVIOUR_BODY_TYPE,
+					content: markHarnessSteer("Use glab for GitLab."),
+					display: false,
+				}),
+				options: { deliverAs: "steer" },
+			},
+		])
+
+		// The block render returns undefined: a late-rendering block would
+		// rewrite the system prompt at the next user-prompt rebuild and cause a
+		// one-time full-context cache invalidation — steer + re-steer replaces it.
 		const sp = buildSystemPrompt({
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
@@ -421,11 +542,10 @@ describe("wireBehaviours — before_agent_start", () => {
 			mode: "orchestrator",
 			sessionId: TEST_SESSION_ID,
 		})
-
-		expect(sp).toContain("Use glab for GitLab.")
+		expect(sp).not.toContain("Use glab for GitLab.")
 	})
 
-	it("keeps a triggered body in the system prompt after session_compact", async () => {
+	it("keeps a triggered body in the system prompt after session_compact (session load, no re-steer)", async () => {
 		const pi = setupWired([ghCli])
 		await pi.fire(
 			"session_start",
@@ -446,7 +566,7 @@ describe("wireBehaviours — before_agent_start", () => {
 		})
 		expect(beforeCompact).toContain("Use gh for GitHub.")
 
-		await pi.fire("session_compact", {})
+		await pi.fire("session_compact", { type: "session_compact", reason: "manual", willRetry: false })
 
 		const afterCompact = buildSystemPrompt({
 			tools: [{ name: "read", description: "Read file contents" }],
@@ -456,6 +576,189 @@ describe("wireBehaviours — before_agent_start", () => {
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(afterCompact).toContain("Use gh for GitHub.")
+
+		// Session-triggered bodies never re-steer: the block renders from turn 0
+		// and survives compaction by construction.
+		expect(pi.sent).toEqual([])
+	})
+
+	it("renders a standing tool-triggered body in the system prompt (block on every load path)", async () => {
+		const pi = setupWired([standingGlabCli])
+		await pi.fire(
+			"session_start",
+			{},
+			{
+				cwd: "/tmp",
+				sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			},
+		)
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+
+		const sp = buildSystemPrompt({
+			tools: [{ name: "read", description: "Read file contents" }],
+			env: testEnv,
+			contextFiles: [],
+			mode: "orchestrator",
+			sessionId: TEST_SESSION_ID,
+		})
+
+		// standing: true opts into the block on every load path, accepting the
+		// one-time cache invalidation of a late-rendering block.
+		expect(sp).toContain("Use glab for GitLab.")
+	})
+})
+
+describe("wireBehaviours — session_compact (re-steer)", () => {
+	it.each([
+		false,
+		true,
+	] as const)("re-steers a tool-triggered body after compaction (willRetry: %s) — reason: compaction", async (willRetry) => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent).toHaveLength(1) // first delivery via tool_result
+
+		await pi.fire("session_compact", {
+			type: "session_compact",
+			reason: willRetry ? "overflow" : "manual",
+			willRetry,
+		})
+
+		// The re-steer lands without a user prompt in between — this is what
+		// carries the body through an inline overflow-recovery compaction
+		// (willRetry: true) where the original steer was consumed by the
+		// aborted turn.
+		expect(pi.sent).toHaveLength(2)
+		expect(pi.sent[1]).toEqual({
+			message: expect.objectContaining({
+				customType: BEHAVIOUR_BODY_TYPE,
+				content: markHarnessSteer("Use glab for GitLab."),
+				display: false,
+				details: { name: "glab-cli", reason: "compaction" },
+			}),
+			options: { deliverAs: "steer" },
+		})
+		expect(pi.sent[0].message.details).toEqual({ name: "glab-cli" })
+	})
+
+	it("skips the re-steer when the steer entry survived inside the keep-recent window", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent).toHaveLength(1) // first delivery via tool_result
+
+		// Post-rewrite branch where the steer entry is INSIDE the kept region:
+		// firstKeptEntryId points at the steer itself, so the rewrite retained
+		// it verbatim. Re-steering would duplicate the body in every
+		// subsequent request until the next compaction.
+		const branch = [
+			{ type: "message", id: "m0" },
+			{ type: "custom_message", customType: "behaviour", details: { name: "glab-cli" }, id: "s1" },
+			{ type: "message", id: "m1" },
+		]
+		await pi.fire(
+			"session_compact",
+			{
+				type: "session_compact",
+				reason: "manual",
+				willRetry: false,
+				compactionEntry: { id: "c1", firstKeptEntryId: "s1" },
+			},
+			{ sessionManager: { getBranch: () => branch } },
+		)
+
+		// The kept original is the only carrier — no re-steer.
+		expect(pi.sent).toHaveLength(1)
+	})
+
+	it("re-steers when the compaction entry says the steer fell outside the kept region", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+		expect(pi.sent).toHaveLength(1) // first delivery via tool_result
+
+		// firstKeptEntryId points PAST the steer entry: the rewrite folded it
+		// into the summary — the body is gone from context and must be
+		// re-steered.
+		const branch = [
+			{ type: "message", id: "m0" },
+			{ type: "custom_message", customType: "behaviour", details: { name: "glab-cli" }, id: "s1" },
+			{ type: "message", id: "m1" },
+		]
+		await pi.fire(
+			"session_compact",
+			{
+				type: "session_compact",
+				reason: "manual",
+				willRetry: false,
+				compactionEntry: { id: "c1", firstKeptEntryId: "m1" },
+			},
+			{ sessionManager: { getBranch: () => branch } },
+		)
+
+		expect(pi.sent).toHaveLength(2)
+		expect(pi.sent[1]).toEqual({
+			message: expect.objectContaining({
+				customType: BEHAVIOUR_BODY_TYPE,
+				details: { name: "glab-cli", reason: "compaction" },
+			}),
+			options: { deliverAs: "steer" },
+		})
+	})
+
+	it("re-steers on every compaction event (no once-only gating)", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+
+		await pi.fire("session_compact", { type: "session_compact", reason: "threshold", willRetry: false })
+		await pi.fire("session_compact", { type: "session_compact", reason: "manual", willRetry: false })
+
+		// One first delivery + one re-steer per compaction.
+		expect(pi.sent).toHaveLength(3)
+	})
+
+	it("re-steers standing tool-loaded bodies too — the block may not have rendered yet", async () => {
+		const pi = setupWired([standingGlabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await pi.fire("turn_start", { turnIndex: 1 })
+		await pi.fire("tool_call", { toolName: "bash", input: { command: "glab mr list" } })
+		await pi.fire("tool_result", { toolName: "bash", input: { command: "glab mr list" } })
+
+		// Inline compaction before any user-prompt rebuild: the standing block
+		// is not in the prompt yet, so the re-steer is the only carrier.
+		await pi.fire("session_compact", { type: "session_compact", reason: "overflow", willRetry: true })
+
+		expect(pi.sent).toHaveLength(2)
+		expect(pi.sent[1].message.details).toEqual({ name: "standing-glab", reason: "compaction" })
+	})
+
+	it("does not re-steer session-triggered bodies on compaction", async () => {
+		const pi = setupWired([ghCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+		await flushDeferredActions()
+
+		await pi.fire("session_compact", { type: "session_compact", reason: "manual", willRetry: false })
+
+		expect(pi.sent).toEqual([])
+	})
+
+	it("does not re-steer behaviours that never loaded", async () => {
+		const pi = setupWired([glabCli])
+		await pi.fire("session_start", {}, { cwd: "/tmp" })
+
+		await pi.fire("session_compact", { type: "session_compact", reason: "manual", willRetry: false })
+
+		expect(pi.sent).toEqual([])
 	})
 })
 

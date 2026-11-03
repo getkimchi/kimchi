@@ -15,6 +15,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
+import { backendFor } from "../pr-cost-reporting/ledger/records.js"
 import { getWorkId, setWorkId } from "../work-attribution.js"
 import { createWorkCommitTrackingOperations } from "./commits.js"
 import { calculatePullRequestCosts } from "./costs.js"
@@ -95,8 +96,9 @@ it("keeps the tool's error after recording writes made before cancellation", asy
 it("keeps a failed observation write off the terminal", async () => {
 	const ctx = createContext({ cwd })
 	const workId = getWorkId(ctx)
-	rmSync(join(cwd, ".agent", "work-attribution"), { recursive: true })
-	writeFileSync(join(cwd, ".agent", "work-attribution"), "blocked")
+	vi.spyOn(backendFor(join(cwd, ".agent")), "insertRecord").mockImplementationOnce(() => {
+		throw new Error("observation storage unavailable")
+	})
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 	const debug = vi.spyOn(diagnostics, "debugWorkAttribution").mockImplementation(() => {})
 	await observeToolFiles(ctx, "write", "bash", async () => writeFileSync(join(cwd, "new.ts"), "new\n"), { workId })

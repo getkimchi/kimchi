@@ -9,6 +9,7 @@
 import type { ChildProcess } from "node:child_process"
 import open from "open"
 import { resolveEndpoints } from "../config.js"
+import { readE2eSeam } from "../extensions/e2e-seam.js"
 import { generateState, startCallbackServer } from "./callback-server.js"
 
 export interface BrowserAuthOptions {
@@ -69,7 +70,11 @@ export async function authenticateViaBrowser(options: BrowserAuthOptions = {}): 
 		log(`Kimchi login: ${browserUrl}`)
 		options.onBrowserUrl?.(browserUrl)
 
-		if (options.quiet) {
+		// E2E seam: the TUI e2e rigs drive the real login flow, which would
+		// otherwise pop open the developer's actual browser on every login test
+		// — skip the opener under the harness (the URL is still logged, matching
+		// the quiet path, so tests can read it from the terminal).
+		if (options.quiet || readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_OPEN") === "1") {
 			log("If the browser did not open automatically, visit the URL above.")
 		} else {
 			log("Opening your browser to complete login…")

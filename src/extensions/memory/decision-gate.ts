@@ -17,6 +17,7 @@
  *
  * Pure I/O aside from fetch — unit-testable under Node.
  */
+import { GATEWAY_ORGANIZATION_HEADER } from "../../auth/gateway-credentials.js"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 
 /** Usage-tracking tag for billing attribution (matches memory:extraction). */
@@ -52,6 +53,9 @@ export interface DecisionGateOptions {
 	/** Full typesafe endpoint (https://host/typesafe/v1/systemone). */
 	endpoint: string
 	apiKey: string
+	/** SSO org routing header value — set only for OAuth (SSO) login, matching
+	 * what models.json stamps on every Kimchi provider request. */
+	organizationId?: string
 	/** Decision model id; the platform's stable alias today. */
 	model?: string
 	/** Per-attempt HTTP timeout. Turn-path callers should stay ≤ MEMORY_SEARCH_TIMEOUT_MS. */
@@ -114,6 +118,7 @@ export async function decide(
 			headers: {
 				"content-type": "application/json",
 				authorization: `Bearer ${gate.apiKey}`,
+				...(gate.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: gate.organizationId } : {}),
 			},
 			body: JSON.stringify({
 				model: gate.model ?? "d3",

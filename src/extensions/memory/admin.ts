@@ -10,6 +10,7 @@
  */
 import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { join, relative, sep } from "node:path"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { createMemoryBackend, defaultMemoryDir, normalizeMem0SearchResults } from "./backend.js"
 import { MEMORY_RESOURCE_ID, MEMORY_USER_ID } from "./config.js"
@@ -390,9 +391,9 @@ interface ResolvedDeps {
 }
 
 /** Resolve the decision endpoint for consolidate. Explicitly null only for
- * tests; a keyless config (the loadConfig default shape) is "unavailable",
- * never a gate pointed at the gateway with an empty Bearer — same guard as
- * the worker/turn resolvers (an unconfigured user must not 401-spam). */
+ * tests; no gateway credentials (the shared resolver found neither a key
+ * nor an SSO login) is "unavailable", never a gate pointed at the gateway
+ * with an empty Bearer — same guard as the worker/turn resolvers. */
 function defaultDecisionGate(deps?: AdminDeps): DecisionGateOptions | null {
 	if (deps?.decisionGate !== undefined) return deps.decisionGate
 	let config: ReturnType<typeof loadConfig>
@@ -401,8 +402,13 @@ function defaultDecisionGate(deps?: AdminDeps): DecisionGateOptions | null {
 	} catch {
 		return null
 	}
-	if (!config.apiKey) return null
-	return { endpoint: systemoneEndpoint(config.llmEndpoint), apiKey: config.apiKey }
+	const credentials = resolveGatewayCredentials(config)
+	if (credentials.source === "none") return null
+	return {
+		endpoint: systemoneEndpoint(config.llmEndpoint),
+		apiKey: credentials.token,
+		organizationId: credentials.organizationId,
+	}
 }
 
 function resolveDeps(deps?: AdminDeps): ResolvedDeps {

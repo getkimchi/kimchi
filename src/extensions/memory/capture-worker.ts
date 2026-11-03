@@ -47,6 +47,7 @@ import {
 } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { fetchWithRetry, isRetryableStatus } from "../../utils/http.js"
 import { redactText } from "../pii-redaction/redactor.js"
 import {
@@ -271,6 +272,8 @@ function tryParseArray(text: string): unknown[] | null {
 interface GatewayLlmOptions {
 	baseURL: string
 	apiKey: string
+	/** SSO org routing header value — set only for OAuth (SSO) login. */
+	organizationId?: string
 	model: string
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
@@ -310,6 +313,7 @@ export async function chatJson(
 			headers: {
 				"content-type": "application/json",
 				authorization: `Bearer ${options.apiKey}`,
+				...(options.organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: options.organizationId } : {}),
 			},
 			body: JSON.stringify({
 				model: options.model,
@@ -848,12 +852,17 @@ async function resolveDecisionContext(options: RunCaptureWorkerOptions): Promise
 	if (parsed.enabled.size === 0) return { gate: null, enabled: parsed.enabled }
 	try {
 		const config = (await import("../../config.js")).loadConfig()
-		// loadConfig never throws for a missing file — apiKey:"" is the
-		// keyless shape, and a gate built on it would 401 every call and spam
-		// the fail-open logs instead of behaving like "gates unavailable".
-		if (!config.apiKey) return { gate: null, enabled: parsed.enabled }
+		// No gateway credentials (neither key nor SSO login) — a gate built on
+		// that would 401 every call and spam the fail-open logs instead of
+		// behaving like "gates unavailable".
+		const credentials = resolveGatewayCredentials(config)
+		if (credentials.source === "none") return { gate: null, enabled: parsed.enabled }
 		return {
-			gate: { endpoint: systemoneEndpoint(config.llmEndpoint), apiKey: config.apiKey },
+			gate: {
+				endpoint: systemoneEndpoint(config.llmEndpoint),
+				apiKey: credentials.token,
+				organizationId: credentials.organizationId,
+			},
 			enabled: parsed.enabled,
 		}
 	} catch (err) {
@@ -1181,11 +1190,13 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 async function resolveWorkerLlm(options: RunCaptureWorkerOptions): Promise<GatewayLlmOptions> {
 	if (options.llm) return options.llm
 	const config = (await import("../../config.js")).loadConfig()
+	const credentials = resolveGatewayCredentials(config)
 	return {
 		baseURL: config.llmEndpoint,
-		apiKey: config.apiKey,
+		apiKey: credentials.token,
+		organizationId: credentials.organizationId,
 		model: await resolveExtractionModel(
-			{ baseURL: config.llmEndpoint, apiKey: config.apiKey },
+			{ baseURL: config.llmEndpoint, apiKey: credentials.token, organizationId: credentials.organizationId },
 			{ fetchImpl: options.fetchImpl, configuredModel: config.memoryExtraction?.model },
 		),
 		fetchImpl: options.fetchImpl,

@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { check } from "proper-lockfile"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
 import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
-import { readWorkSummary } from "./support/work-summary.js"
+import { readWorkNote, readWorkRecords, readWorkSummary, removeWorkNote } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
 const models = [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }]
@@ -16,15 +16,7 @@ const account = {
 	organizationId: "30000000-0000-4000-8000-000000000003",
 	userId: "40000000-0000-4000-8000-000000000004",
 }
-const readLedger = (directory: string) =>
-	readdirSync(directory)
-		.filter((file) => file.endsWith(".jsonl"))
-		.flatMap((file) =>
-			readFileSync(join(directory, file), "utf8")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line)),
-		)
+const readLedger = (directory: string) => readWorkRecords(dirname(directory))
 
 test("a user steer stays distinct from an identical extension follow-up", async ({ terminal }) => {
 	let release = () => {}
@@ -284,16 +276,15 @@ test("the next message recovers account tracking after its saved scope is lost",
 			await waitForText(terminal, "The first design is ready.")
 			const original = mainRecord()
 			expect(original.scope.account).toMatchObject(account)
-			const missing = join(fixture.agentDir, "work", original.workId, "scope.json")
-			rmSync(missing)
-			trace.step("the original request retains its account evidence when the work scope file disappears")
+			removeWorkNote(fixture.agentDir, original.workId, "scope")
+			trace.step("the original request retains its account evidence when the work scope note disappears")
 			terminal.submit("Plan an import.")
 			await waitForText(terminal, "The next design is ready.")
 			const next = mainRecord()
 			expect(next.workId).not.toBe(original.workId)
 			expect(next.scope.account).toMatchObject(account)
 			expect(records().find((row) => row.type === "request" && row.requestId === original.requestId)).toEqual(original)
-			expect(existsSync(missing)).toBe(false)
+			expect(readWorkNote(fixture.agentDir, original.workId, "scope")).toBeUndefined()
 			terminal.submit("/work")
 			await waitForText(terminal, `Work ID: ${next.workId}`, { full: false })
 			// The work panel selects the new current work and still lists the original work.
@@ -336,7 +327,9 @@ test("work that /ferment starts records its account from the first planning requ
 			)
 			expect(requests.length).toBeGreaterThan(0)
 			for (const request of requests) expect(request.scope).toMatchObject({ account })
-			expect(existsSync(join(fixture.agentDir, "work", requests[0].workId, "scope.json"))).toBe(true)
+			expect(JSON.parse(readWorkNote(fixture.agentDir, requests[0].workId, "scope") ?? "null")).toMatchObject({
+				account: expect.objectContaining(account),
+			})
 			trace.step("every request sent so far and its work carry the verified account, so reporting can upload them")
 		},
 	)

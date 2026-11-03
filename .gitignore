@@ -6,6 +6,9 @@ node_modules/
 package-lock.json
 yarn.lock
 
+# Repo-local pnpm store (created when installs run in a sandbox that blocks the global store)
+.pnpm-store/
+
 # Build output
 dist/
 
@@ -91,6 +94,15 @@ vendor/superpowers/
 
 # Bundled by scripts/copy-resources.js for development and releases.
 /resources/skills/create-skill/scripts/validate-skill.mjs
+/resources/skills/pptx/scripts/pptx.mjs
+/resources/skills/pdf/scripts/pdf.mjs
+/resources/skills/pdf/scripts/pdfium.wasm
+/resources/skills/docx/scripts/docx.mjs
+/resources/skills/xlsx/scripts/xlsx.mjs
 
 # E2E failure artifacts (written by the test fixtures on failure)
 *.fail.*.log
+.pnpm-store/
+/live-acp-*.log
+# Live MCP provider check output matrix (scripts/mcp-live-probe.mjs)
+/mcp-live-probe-matrix.json

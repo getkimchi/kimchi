@@ -371,6 +371,18 @@ describe("SkillManager", () => {
 			const result = await bundledMgr.view("bundled-skill")
 			expect(result.success).toBe(true)
 			expect(result.content).toContain("Bundled body.")
+			expect(result.skill_dir).toBe(join(bundledDir, "bundled-skill"))
+		})
+
+		it("view exposes the resolved directory for a folder-based harness skill with scripts", async () => {
+			await bundledMgr.create("scripted-skill", "---\ndescription: has scripts\n---\nBody.")
+			const scriptsDir = join(tmpDir, "scripted-skill", "scripts")
+			mkdirSync(scriptsDir, { recursive: true })
+			writeFileSync(join(scriptsDir, "run.mjs"), "console.log('hi')")
+			const result = await bundledMgr.view("scripted-skill")
+			expect(result.success).toBe(true)
+			expect(result.skill_dir).toBe(join(tmpDir, "scripted-skill"))
+			expect(result.linked_files?.scripts).toContain("scripts/run.mjs")
 		})
 
 		it("harness skill shadows a bundled skill with the same name", async () => {
@@ -531,6 +543,9 @@ describe("SkillManager", () => {
 				const result = await mgr.view("loose-skill")
 				expect(result.success).toBe(true)
 				expect(result.content).toContain("Loose body.")
+				// Loose single-file skills have no own directory: skillDir may be a
+				// shared skills root, so it must not be exposed as the skill's dir.
+				expect(result.skill_dir).toBeUndefined()
 			} finally {
 				rmSync(discoveredDir, { recursive: true, force: true })
 			}

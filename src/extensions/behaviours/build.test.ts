@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest"
 import { type BehaviourSource, buildBehaviours } from "./build.js"
-import { tool } from "./triggers.js"
+import { cli, lspServes, not, tool } from "./triggers.js"
 
 const validBody = (name: string) => `---
 name: ${name}
@@ -85,5 +85,66 @@ body b
 
 	it("returns an empty array for an empty source list", () => {
 		expect(buildBehaviours([])).toEqual([])
+	})
+
+	it("preserves the standing flag on the built behaviour", () => {
+		const sources: BehaviourSource[] = [
+			{ raw: validBody("standing-one"), kind: "triggered", triggers: { tool: tool("bash") }, standing: true },
+		]
+		const result = buildBehaviours(sources)
+		expect(result).toHaveLength(1)
+		expect(result[0].kind).toBe("triggered")
+		expect((result[0] as { standing?: boolean }).standing).toBe(true)
+	})
+
+	it("round-trips the standing flag as unset by default", () => {
+		const sources: BehaviourSource[] = [
+			{ raw: validBody("habit-one"), kind: "triggered", triggers: { tool: tool("bash") } },
+		]
+		const result = buildBehaviours(sources)
+		expect(result).toHaveLength(1)
+		expect(result[0].kind).toBe("triggered")
+		// Default delivery (steer + re-steer) — the flag must stay absent, not
+		// coerced, so the wiring can distinguish unset from false.
+		expect((result[0] as { standing?: boolean }).standing).toBeUndefined()
+	})
+
+	it("throws when a gate is declared without a tool trigger", () => {
+		expect(() =>
+			buildBehaviours([
+				{
+					raw: validBody("gate-only"),
+					kind: "triggered",
+					triggers: { session: cli("gh"), gate: not(lspServes("py")) },
+				},
+			]),
+		).toThrowError(/triggered behaviour gate-only declares gate without a tool trigger/)
+	})
+
+	it("throws when a gate is the only trigger at all", () => {
+		expect(() =>
+			buildBehaviours([
+				{
+					raw: validBody("gate-alone"),
+					kind: "triggered",
+					triggers: { gate: not(lspServes("py")) },
+				},
+			]),
+		).toThrowError(/triggered behaviour gate-alone has no session or tool trigger/)
+	})
+
+	it("builds a gated behaviour and preserves the gate on the trigger slot", () => {
+		const gate = not(lspServes("py"))
+		const sources: BehaviourSource[] = [
+			{
+				raw: validBody("python-edit"),
+				kind: "triggered",
+				triggers: { tool: tool("write"), gate },
+			},
+		]
+		const result = buildBehaviours(sources)
+		expect(result).toHaveLength(1)
+		expect(result[0].kind).toBe("triggered")
+		expect((result[0] as { triggers: { gate?: unknown } }).triggers.gate).toBe(gate)
 	})
 })

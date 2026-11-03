@@ -3,13 +3,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { MCP_STATUS_EVENT, type McpStatusSnapshot } from "pi-mcp-adapter"
 import { getMe } from "../../api/me.js"
 import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
 import { isKimchiProvider } from "../../kimchi-provider.js"
+import { refFromModel } from "../../shared/model-ref.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { resolveEffectiveModel } from "../auto-model/state.js"
 import { getKimchiAuthPath } from "../login/flow.js"
-import { refFromModel } from "../model-catalog/ref-utils.js"
 import { createStatusPanelComponent } from "./panel.js"
 
 export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, and MCP status"
@@ -203,23 +204,25 @@ export default function statusExtension(pi: ExtensionAPI): void {
 	 * Refetches only when the key changes (e.g. after /login or /logout).
 	 */
 	const refreshIdentity = (): void => {
-		const apiKey = getEnvironmentApiKey() ?? loadConfig().apiKey
-		if (!apiKey) {
+		// API key or the SSO credential in auth.json — an OAuth login must show
+		// identity rows too (config.apiKey alone is "" for SSO users).
+		const credentials = resolveGatewayCredentials({ apiKey: getEnvironmentApiKey() ?? loadConfig().apiKey })
+		if (!credentials.token) {
 			identity = undefined
 			return
 		}
-		if (identity?.apiKey === apiKey) return
+		if (identity?.apiKey === credentials.token) return
 		// Writes go to this object, so a fetch for a superseded key cannot
 		// overwrite the identity of the current one.
-		const current: Identity = { apiKey }
+		const current: Identity = { apiKey: credentials.token }
 		identity = current
-		getMe(apiKey)
+		getMe(credentials.token)
 			.then((me) => {
 				current.email = me.email
 			})
 			.catch(() => {})
-		verifyApiKey(apiKey)
-			.then(({ organizationId }) => getOrganization(apiKey, organizationId))
+		verifyApiKey(credentials.token)
+			.then(({ organizationId }) => getOrganization(credentials.token, organizationId))
 			.then((organization) => {
 				current.organization = organization
 			})

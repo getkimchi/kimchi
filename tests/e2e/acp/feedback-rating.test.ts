@@ -9,13 +9,10 @@
 
 import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { AVAILABLE_EXT_METHODS } from "../../../src/modes/acp/capabilities.js"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, waitForSessionUpdate } from "./support/scenarios.js"
 
-const FEEDBACK_METHOD = "_kimchi.dev/feedback"
-
-/** Distinctive sentinel: lets the "never reaches the model" assertion stand
- * out from any incidental string in prompts or system text. */
 const REASON_SENTINEL = "REASON-SENTINEL-9f27b2"
 
 async function rate(
@@ -23,7 +20,7 @@ async function rate(
 	sessionId: string,
 	params: { sentiment: string; reason?: string },
 ): Promise<unknown> {
-	return fixture.conn.extMethod(FEEDBACK_METHOD, {
+	return fixture.conn.extMethod(AVAILABLE_EXT_METHODS.feedback, {
 		sessionId,
 		action: "rate_response",
 		...params,

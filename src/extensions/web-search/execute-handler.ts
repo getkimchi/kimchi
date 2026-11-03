@@ -6,6 +6,11 @@
  */
 
 import { truncateHead, truncateLine } from "@earendil-works/pi-coding-agent"
+import {
+	type GatewayCredentials,
+	gatewayAuthHeaders,
+	resolveGatewayCredentials,
+} from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { fetchWithRetry } from "../../utils/http.js"
 
@@ -57,7 +62,11 @@ export function formatForLLM(response: SearchResponse, maxContentChars = DEFAULT
 	return parts.join("\n")
 }
 
-async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortSignal): Promise<SearchResponse> {
+async function fetchSearchResponse(
+	body: object,
+	credentials: Pick<GatewayCredentials, "token" | "organizationId">,
+	signal?: AbortSignal,
+): Promise<SearchResponse> {
 	let response: Response
 	try {
 		response = await fetchWithRetry(
@@ -66,7 +75,7 @@ async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortS
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					Authorization: `Bearer ${apiKey}`,
+					...gatewayAuthHeaders(credentials),
 				},
 				body: JSON.stringify(body),
 			},
@@ -97,10 +106,10 @@ async function fetchSearchResponse(body: object, apiKey: string, signal?: AbortS
 }
 
 export async function executeWebSearch(params: WebSearchParams, signal?: AbortSignal): Promise<WebSearchResult> {
-	const apiKey = loadConfig().apiKey
-	if (!apiKey) {
+	const credentials = resolveGatewayCredentials(loadConfig())
+	if (!credentials.token) {
 		throw new Error(
-			`Web search requires an API key. Run 'kimchi' and log in, or visit ${resolveEndpoints().webAppUrl} to create a key.`,
+			`Web search requires a login. Run 'kimchi' and sign in (API key or SSO), or visit ${resolveEndpoints().webAppUrl} to create a key.`,
 		)
 	}
 
@@ -116,7 +125,7 @@ export async function executeWebSearch(params: WebSearchParams, signal?: AbortSi
 
 	const startedAt = Date.now()
 
-	const data = await fetchSearchResponse(body, apiKey, signal)
+	const data = await fetchSearchResponse(body, credentials, signal)
 	const raw = formatForLLM(data, maxContentChars)
 	const truncation = truncateHead(raw, { maxLines: MAX_LINES })
 

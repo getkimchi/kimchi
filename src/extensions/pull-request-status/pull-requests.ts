@@ -1,8 +1,8 @@
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { writeFileDurably } from "../../config/json.js"
-import { object, readWorkRecords } from "../work-attribution/summary.js"
+import { backendFor, getNote, readRecords, setNote } from "../pr-cost-reporting/ledger/records.js"
+import { importWorkRecordsAsync, object, workJournalFingerprint } from "../work-attribution/summary.js"
 import { appendWorkRecord } from "../work-attribution.js"
 import { mergePullRequestLinks as mergePullRequests, pullRequestKey } from "./links.js"
 import { api, credential, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
@@ -42,6 +42,8 @@ export interface WorkPullRequest {
 	title?: string
 	/** The author's login: GitHub `user.login`, GitLab `author.username`. Like `title`, uploaded only. */
 	author?: string
+	/** The Jira keys the PR's head branch names, at most 20; the branch name itself is not kept. Uploaded only. */
+	branchIssueKeys?: string[]
 	state: "open" | "closed" | "merged"
 	repository: string
 	host: string
@@ -76,7 +78,10 @@ export interface WorkPullRequestUpdate {
 interface DiscoveryState {
 	commits: Map<string, WorkPullRequestUpdate>
 	readThrough?: number
+	journalFingerprint?: string
 	nextCommit?: string
+	/** Give known links first turn after pending lookups exhaust a pass, and vice versa. */
+	refreshFirst?: boolean
 	running?: Promise<void>
 }
 
@@ -130,11 +135,11 @@ interface LookupChecks {
 
 /** The lease owner reads the check cache before each pass; another process may have written it. */
 function readLookupChecks(agentDir: string): LookupChecks {
-	const checks: LookupChecks = { checkedAt: new Map() }
+	const checks: LookupChecks = { saved: getNote(agentDir, "agent", "pr-checks"), checkedAt: new Map() }
 	let value: unknown
 	try {
-		checks.saved = readFileSync(join(agentDir, "work-attribution", LOOKUP_CHECKS), "utf8")
-		value = JSON.parse(checks.saved)
+		// The note is authoritative, including an empty cache; legacy files are read only before migration.
+		value = JSON.parse(checks.saved ?? readFileSync(join(agentDir, "work-attribution", LOOKUP_CHECKS), "utf8"))
 	} catch {
 		// A missing or damaged cache only costs one more check per commit.
 		return checks
@@ -152,12 +157,12 @@ function readLookupChecks(agentDir: string): LookupChecks {
 }
 
 /** Durably saves at most once per pass, only after a change, and forgets commits no longer recorded. */
-async function saveLookupChecks(
+function saveLookupChecks(
 	agentDir: string,
 	groups: Map<string, WorkPullRequestUpdate[]>,
 	checks: LookupChecks,
 	assertLease: () => void,
-): Promise<void> {
+): void {
 	const now = Date.now()
 	const value: Record<string, Record<string, string>> = {}
 	for (const key of [...checks.checkedAt.keys()].sort()) {
@@ -170,8 +175,11 @@ async function saveLookupChecks(
 	}
 
 	const contents = `${JSON.stringify(value)}\n`
-	if (contents === (checks.saved ?? "{}\n")) return
-	await writeFileDurably(join(agentDir, "work-attribution", LOOKUP_CHECKS), contents, assertLease)
+	if (contents === checks.saved) return
+	backendFor(agentDir).tx(() => {
+		assertLease()
+		setNote(agentDir, "agent", "pr-checks", contents)
+	})
 }
 
 function commitKey(row: WorkPullRequestUpdate): string {
@@ -180,10 +188,10 @@ function commitKey(row: WorkPullRequestUpdate): string {
 
 function readCommits(agentDir: string, state: DiscoveryState): void {
 	const started = Date.now()
-	const records = readWorkRecords(
-		agentDir,
-		state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
-	)
+	const records = readRecords(agentDir, {
+		type: "commit",
+		modifiedSince: state.readThrough === undefined ? undefined : state.readThrough - MTIME_SLACK_MS,
+	})
 	for (const row of records) {
 		if (
 			row.type !== "commit" ||
@@ -239,8 +247,18 @@ async function scan(
 	assertLease: () => void,
 	onUpdate?: (update: WorkPullRequestUpdate) => void,
 ): Promise<void> {
-	signal.throwIfAborted()
+	const deadline = Date.now() + PASS_BUDGET_MS
+	const check = () => {
+		assertLease()
+		signal.throwIfAborted()
+		if (Date.now() >= deadline) throw new Error("PR discovery pass time limit exceeded")
+	}
+	const fingerprint = await workJournalFingerprint(agentDir, check)
+	check()
+	if (state.journalFingerprint !== fingerprint) await importWorkRecordsAsync(agentDir, check)
+	check()
 	readCommits(agentDir, state)
+	state.journalFingerprint = fingerprint
 	const groups = new Map<string, WorkPullRequestUpdate[]>()
 	for (const commit of state.commits.values()) {
 		onUpdate?.(commit)
@@ -256,15 +274,28 @@ async function scan(
 		0,
 		jobs.findIndex(([key]) => key === state.nextCommit),
 	)
+	// Pending pushes normally go first. If they exhaust the budget, known links get the next pass's first turn.
+	const order = jobs.map((_, offset) => (start + offset) % jobs.length)
+	const hasKnown = (index: number) => jobs[index][1].some((commit) => commit.pullRequests.length)
+	const lastChecked = (index: number) =>
+		Math.max(
+			checks.checkedAt.get(jobs[index][0]) ?? 0,
+			...jobs[index][1].map((commit) => Date.parse(commit.prLookup?.checkedAt ?? "") || 0),
+		)
+	order.sort((a, b) => {
+		const priority = Number(hasKnown(a)) - Number(hasKnown(b))
+		if (priority) return state.refreshFirst ? -priority : priority
+		// Refresh the oldest checks first so one slow known link cannot starve the other known links.
+		return hasKnown(a) ? lastChecked(a) - lastChecked(b) : 0
+	})
 
-	const deadline = Date.now() + PASS_BUDGET_MS
 	const repositories = new Map<string, Promise<Repository>>()
 	const tokens = new Map<string, Promise<string | undefined>>()
 	const associations = new Map<string, Promise<WorkPullRequest[]>>()
 	const refreshed = new Map<string, Promise<WorkPullRequest>>()
-	for (let offset = 0; offset < jobs.length && Date.now() < deadline; offset++) {
+	for (const index of order) {
+		if (Date.now() >= deadline) break
 		signal.throwIfAborted()
-		const index = (start + offset) % jobs.length
 		const [key, commits] = jobs[index]
 		state.nextCommit = jobs[(index + 1) % jobs.length][0]
 		const known = mergePullRequests(...commits.map((commit) => commit.pullRequests))
@@ -278,6 +309,7 @@ async function scan(
 		)
 			continue
 		if (!lookupDue(commits, checks.checkedAt.get(key))) continue
+		state.refreshFirst = known.length === 0
 		const first = commits[0]
 		let found: WorkPullRequest[] = []
 		let failure: LookupError | undefined
@@ -380,7 +412,7 @@ async function scan(
 		// Keep the next job stable even if source records append during this pass.
 		if (jobs.length === 1) state.nextCommit = key
 	}
-	await saveLookupChecks(agentDir, groups, checks, assertLease)
+	saveLookupChecks(agentDir, groups, checks, assertLease)
 }
 
 /** Every process can display persisted results, including while another process owns discovery. */

@@ -33,15 +33,15 @@ import {
 	type PromptRequest,
 	type PromptResponse,
 	RequestError,
+	type ResumeSessionRequest,
+	type ResumeSessionResponse,
 	type SessionConfigOption,
 	type SessionConfigSelectOption,
-	type SessionModelState,
+	type SessionId,
 	type SessionNotification,
 	type SessionUpdate,
 	type SetSessionConfigOptionRequest,
 	type SetSessionConfigOptionResponse,
-	type SetSessionModelRequest,
-	type SetSessionModelResponse,
 	type ToolCallContent,
 } from "@agentclientprotocol/sdk"
 import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
@@ -51,6 +51,7 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
+	estimateTokens,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
@@ -68,7 +69,7 @@ import {
 	endpointsForRegion,
 	loadConfig as loadKimchiConfig,
 	resolveEndpoints,
-	resolveSelfHostedBaseUrl,
+	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
 } from "../../config.js"
@@ -89,12 +90,6 @@ import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import {
-	availableModelRefs,
-	findModelByRef,
-	refFromModel,
-	splitModelRef,
-} from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -117,6 +112,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -132,6 +128,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -163,14 +160,9 @@ import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelM
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
-import {
-	type AcpSkillInfo,
-	buildSkillCommandPrompt,
-	buildSkillListBlock,
-	cachedSkillListBlock,
-	setCachedSkillListBlock,
-	tryParseSkillCommand,
-} from "./skill-commands.js"
+import { AcpSessionResourceLoader } from "./session-resource-loader.js"
+import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
+import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
@@ -278,6 +270,58 @@ export interface RunAcpOptions {
 	mcpProbe?: McpProbe
 }
 
+/**
+ * Fresh turn bookkeeping (id maps, artifact buffer, usage accumulator).
+ * Prompt turns pass the resolve/reject pair that settles their PromptRequest;
+ * unsolicited runs pass no-ops — nothing awaits their outcome.
+ */
+function createTurnContext(
+	resolve: (res: PromptResponse) => void = () => {},
+	reject: (err: unknown) => void = () => {},
+): TurnContext {
+	return {
+		cancelled: false,
+		hiddenToolCallIds: new Set(),
+		announcedToolCallIds: new Set(),
+		lastStreamedContent: new Map(),
+		preWriteContents: new Map(),
+		pendingFileChanges: new Map(),
+		toolCallArgs: new Map(),
+		artifactBuffer: new TurnArtifactBuffer(),
+		usage: emptyTurnUsage(),
+		resolve,
+		reject,
+	}
+}
+
+/** Cancellation token for a prompt that has no TurnContext yet. */
+type PendingPrompt = {
+	cancelled: boolean
+	/** Resolves when the prompt is cancelled, so a parked wait never outlives cancel/close/shutdown. */
+	released: Promise<void>
+	release: () => void
+}
+
+function createPendingPrompt(): PendingPrompt {
+	let release!: () => void
+	const released = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	return { cancelled: false, released, release }
+}
+
+/**
+ * Cancel every prompt accepted but not yet started: mark it and release its
+ * wait, so it resolves "cancelled" instead of starting — or hanging when the
+ * run it waits on is never settled (session close, server shutdown).
+ */
+function cancelPendingPrompts(entry: SessionRecord): void {
+	for (const pending of entry.pendingPrompts ?? []) {
+		pending.cancelled = true
+		pending.release()
+	}
+}
+
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
@@ -286,6 +330,23 @@ type SessionRecord = {
 	// paths (pre-write reads for per-turn diffs).
 	cwd: string
 	turn?: TurnContext
+	/**
+	 * Bookkeeping for an UNSOLICITED run — an agent run no prompt owns (a
+	 * background-bash completion notification waking an idle agent, or any
+	 * other extension-triggered run). Allocated at agent_start while no
+	 * prompt turn exists, cleared at agent_settled: while set, the session
+	 * counts as run-active (steering injects into it; a new prompt waits it
+	 * out) and the event forwarding uses it exactly like a prompt turn's
+	 * context, so the run's streamed text, tool calls, and usage reach the
+	 * client. Its resolve/reject are no-ops — nothing awaits its outcome.
+	 */
+	unsolicitedTurn?: TurnContext
+	/**
+	 * Prompts accepted but not yet started (no TurnContext of their own):
+	 * e.g. waiting out an unsolicited run. `cancel` marks every entry so a
+	 * cancelled prompt resolves "cancelled" instead of starting its turn.
+	 */
+	pendingPrompts?: Set<PendingPrompt>
 	/**
 	 * Session-wide monotonic counter for ACP messageIds. Every distinct
 	 * content block (text or thinking) across every assistant message in
@@ -382,6 +443,28 @@ interface DisposeSessionRecordOpts {
 interface RetireToolCallOpts {
 	removeFromHidden?: boolean
 }
+
+// ─── Schema-compat types removed upstream by SDK 1.9.0 ───
+// Upstream dropped model selectors: the `session/set_model` method and the
+// `models` field on session/new + session/load responses (model switching now
+// happens through `session/set_config_option`). These are local copies of the
+// 0.19.2-era shapes kept for `session/set_model`, which the 1.9 schema
+// deleted outright while in-flight clients (Zed, Kimchi Studio, the VS Code
+// extension) still call it. Served through the extension-method fallback —
+// see the compat tests. The legacy top-level `models` field on new/load
+// responses was dropped for the 1.9 line: spec-strict clients only get the
+// schema surface, and Studio/VS Code both read the model catalogue from the
+// `model` config option already.
+export type ModelId = string
+export interface SetSessionModelRequest {
+	sessionId: SessionId
+	modelId: ModelId
+	_meta?: { [key: string]: unknown } | null
+}
+export type SetSessionModelResponse = Record<string, never>
+
+/** Wire name of the upstream-removed set-model method, kept for old clients. */
+const SET_MODEL_COMPAT_METHOD = "session/set_model"
 
 export class KimchiAcpAgent implements Agent {
 	private sessions = new Map<string, SessionRecord>()
@@ -498,7 +581,7 @@ export class KimchiAcpAgent implements Agent {
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
-				sessionCapabilities: { list: {}, close: {} },
+				sessionCapabilities: { list: {}, close: {}, resume: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
@@ -565,15 +648,18 @@ export class KimchiAcpAgent implements Agent {
 		// The success page copy names no client: this flow may be launched by any
 		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		//
-		// Self-hosted resolves its web-app URL from the configured base URL
-		// (KIMCHI_SELF_HOSTED_URL env or the stored selfHostedUrl) — ACP clients
-		// have no interactive prompt surface, so a missing base fails fast here
-		// with the actionable configuration error instead of being prompted for.
-		const selfHostedUrl = region === "self-hosted" ? resolveSelfHostedBaseUrl() : undefined
+		// Self-hosted resolves its web-app URL from the stored endpoints —
+		// ACP clients have no interactive prompt surface, so a missing value
+		// fails fast here with the actionable configuration error instead of
+		// being prompted for. ACP cannot run endpoint discovery itself (no URL
+		// input); logins created by the TUI /login or `kimchi login
+		// <console-url>` persist the discovered endpoints that this path then
+		// resolves.
+		const selfHostedEndpoints = region === "self-hosted" ? resolveSelfHostedEndpoints() : undefined
 		let token: string
 		try {
 			;({ token } = await authenticateViaBrowser({
-				webAppUrl: endpointsForRegion(region, { selfHostedUrl }).webAppUrl,
+				webAppUrl: endpointsForRegion(region, { endpoints: selfHostedEndpoints }).webAppUrl,
 				successMessage: ACP_SUCCESS_MESSAGE,
 			}))
 		} catch (error) {
@@ -586,9 +672,10 @@ export class KimchiAcpAgent implements Agent {
 
 		// Persist the key so new sessions pick it up via the login extension's
 		// session_start handler (which reads loadConfig().apiKey), with its region
-		// and — for self-hosted — the base URL it was authenticated against.
+		// and — for self-hosted — the console URL and discovery endpoints it was
+		// authenticated against.
 		const persist: WriteApiKeyOptions = { region }
-		if (selfHostedUrl) persist.selfHostedUrl = selfHostedUrl
+		if (selfHostedEndpoints) persist.selfHostedEndpoints = selfHostedEndpoints
 		writeApiKey(token, undefined, persist)
 		// Fresh login invalidates earlier 401 marks — auth_status flips back now.
 		clearCredentialStale(KIMCHI_PROVIDER_ID)
@@ -613,7 +700,7 @@ export class KimchiAcpAgent implements Agent {
 		return {}
 	}
 
-	async unstable_logout(_params: LogoutRequest): Promise<LogoutResponse> {
+	async logout(_params: LogoutRequest): Promise<LogoutResponse> {
 		// Clear the persisted API key from config (loadConfig().apiKey), so
 		// new sessions no longer pick it up via the login extension.
 		clearApiKey()
@@ -663,8 +750,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			registerAcpPrompter(
 				sessionId,
-				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
-					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				createAcpPermissionPrompter(
+					this.conn,
+					sessionId,
+					uiContext,
+					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+					record.cwd,
 				),
 			)
 			await this.bindAcpExtensions(session, uiContext)
@@ -691,7 +782,6 @@ export class KimchiAcpAgent implements Agent {
 			return {
 				sessionId,
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(session.sessionId)
@@ -749,6 +839,11 @@ export class KimchiAcpAgent implements Agent {
 		tracker.emitRestoredSnapshot()
 	}
 
+	// NOTE: upstream never stabilized this method — it was removed from the
+	// schema in favor of session/set_config_option. `unstable_setSessionModel`
+	// is kept as purely our legacy-compat surface (served to old clients over
+	// the removed wire name via the extMethod fallback); the name's `unstable_`
+	// prefix intentionally signals "not part of the current spec".
 	async unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse> {
 		const record = this.sessions.get(params.sessionId)
 		if (!record) {
@@ -867,6 +962,20 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+		return this.loadSessionInternal(params, true)
+	}
+
+	// session/resume (stable since the 1.9 schema line, advertised via
+	// sessionCapabilities.resume): attach to an existing session WITHOUT
+	// replaying its transcript — the client keeps its own history, so
+	// re-emitting it before the response would duplicate every message.
+	async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+		// mcpServers is optional on resume (unlike load) — normalize before
+		// sharing the load pipeline.
+		return this.loadSessionInternal({ ...params, mcpServers: params.mcpServers ?? [] }, false)
+	}
+
+	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
@@ -876,31 +985,34 @@ export class KimchiAcpAgent implements Agent {
 			if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
-			this.replayTranscript(existing.session)
+			if (replayHistory) this.replayTranscript(existing.session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
 			return {
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		}
-		const loading = this.loadingSessions.get(sessionId)
+		// Coalesce only across identical intents: concurrent load + resume of
+		// the same id must each run with their own replayHistory decision,
+		// otherwise the second caller inherits the first's replay behavior.
+		const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
+		const loading = this.loadingSessions.get(coalesceKey)
 		if (loading) return loading
 
-		const loadingPromise = this.loadSessionFresh(params)
-		this.loadingSessions.set(sessionId, loadingPromise)
+		const loadingPromise = this.loadSessionFresh(params, replayHistory)
+		this.loadingSessions.set(coalesceKey, loadingPromise)
 		try {
 			return await loadingPromise
 		} finally {
-			if (this.loadingSessions.get(sessionId) === loadingPromise) {
-				this.loadingSessions.delete(sessionId)
+			if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
+				this.loadingSessions.delete(coalesceKey)
 			}
 		}
 	}
 
-	private async loadSessionFresh(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+	private async loadSessionFresh(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
 		// loader hands back a live session must unwind registration AND dispose,
@@ -949,8 +1061,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 			registerAcpPrompter(
 				sessionId,
-				createAcpPermissionPrompter(this.conn, sessionId, uiContext, (piToolCallId, toolName) =>
-					this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				createAcpPermissionPrompter(
+					this.conn,
+					sessionId,
+					uiContext,
+					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+					record.cwd,
 				),
 			)
 			await this.bindAcpExtensions(session, uiContext)
@@ -973,7 +1089,7 @@ export class KimchiAcpAgent implements Agent {
 			// when the loadSession promise settles. No turn context is created, so a
 			// concurrent session/cancel during replay is a no-op — a turn must not
 			// be considered active during replay.
-			this.replayTranscript(session)
+			if (replayHistory) this.replayTranscript(session)
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
@@ -983,7 +1099,6 @@ export class KimchiAcpAgent implements Agent {
 			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				configOptions,
-				models: buildSessionModelState(configOptions),
 			}
 		} catch (err) {
 			unregisterAcpPrompter(sessionId)
@@ -1000,9 +1115,23 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
-	async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
 		await this.closeSessionRecord(params.sessionId)
 		return {}
+	}
+
+	// ─── Compat aliases ───
+	// The `unstable_*` prefix was dropped from SDK method names when the wire
+	// methods stabilized (names on the wire never changed). Clients built
+	// against 0.19-era release of this harness may still be calling the old
+	// TS-surface names via subclassing/test helpers, so keep thin aliases —
+	// they delegate, they never duplicate logic.
+	async unstable_logout(params: LogoutRequest): Promise<LogoutResponse> {
+		return this.logout(params)
+	}
+
+	async unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		return this.closeSession(params)
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -1025,6 +1154,26 @@ export class KimchiAcpAgent implements Agent {
 				"compaction is in progress for this session — wait for the compaction_end activity notification and retry",
 			)
 		}
+		// Own cancellation from acceptance: until this prompt creates its
+		// TurnContext (which cancel() marks directly), a cancel arriving during
+		// its awaits — skill parsing, or waiting out an unsolicited run — must
+		// still stop it from starting.
+		const pending = createPendingPrompt()
+		entry.pendingPrompts ??= new Set()
+		const pendingPrompts = entry.pendingPrompts
+		pendingPrompts.add(pending)
+		try {
+			return await this.runPrompt(entry, params, pending)
+		} finally {
+			pendingPrompts.delete(pending)
+		}
+	}
+
+	private async runPrompt(
+		entry: SessionRecord,
+		params: PromptRequest,
+		pending: PendingPrompt,
+	): Promise<PromptResponse> {
 		const supportsImages = modelSupportsImages(entry.session.model)
 		// Warn about unsupported block types (audio, embeddedContext) once per
 		// type. Dropped images do NOT join this dedupe — they additionally surface
@@ -1082,25 +1231,30 @@ export class KimchiAcpAgent implements Agent {
 		if (!text && images.length === 0) {
 			return { stopReason: "end_turn" }
 		}
+		// An unsolicited run (e.g. a completion-notification wake) may still be
+		// streaming: the client's previous prompt already resolved, so it
+		// legitimately believes the session is free — but pi rejects a prompt
+		// mid-run ("Agent is already processing"). Wait the run out, then start
+		// this prompt's own turn. The code between the await and
+		// session.prompt() is synchronous, so no new wake can interleave; the
+		// wait is bounded by the run itself.
+		if (entry.unsolicitedTurn) {
+			// Cancel, close, and shutdown release the wait directly: abort may not
+			// settle waitForIdle() on a session being torn down.
+			await Promise.race([entry.session.waitForIdle(), pending.released])
+			// Defensive reset: agent_settled already clears it after the full run
+			// chain — anything left here is stale state, never this prompt's turn.
+			entry.unsolicitedTurn = undefined
+		}
+		// Cancelled before its turn existed: never start it.
+		if (pending.cancelled) return { stopReason: "cancelled" }
 		let turnResolve!: (r: PromptResponse) => void
 		let turnReject!: (e: unknown) => void
 		const result = new Promise<PromptResponse>((resolve, reject) => {
 			turnResolve = resolve
 			turnReject = reject
 		})
-		entry.turn = {
-			cancelled: false,
-			hiddenToolCallIds: new Set(),
-			announcedToolCallIds: new Set(),
-			lastStreamedContent: new Map(),
-			preWriteContents: new Map(),
-			pendingFileChanges: new Map(),
-			toolCallArgs: new Map(),
-			artifactBuffer: new TurnArtifactBuffer(),
-			usage: emptyTurnUsage(),
-			resolve: turnResolve,
-			reject: turnReject,
-		}
+		entry.turn = createTurnContext(turnResolve, turnReject)
 		// Kick off session.prompt but don't await inside the async function body —
 		// shutdown() needs to be able to reject `result` and have the caller's await
 		// on prompt() settle immediately, which can't happen while this body is
@@ -1141,7 +1295,7 @@ export class KimchiAcpAgent implements Agent {
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
-					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
+					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : entry.turn.refused ? "refusal" : "end_turn")
 				}
 			},
 			(err) => {
@@ -1166,6 +1320,7 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
+		cancelPendingPrompts(entry)
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —
 		// session.prompt() resolves only after all chained calls — so awaiting
@@ -1277,6 +1432,22 @@ export class KimchiAcpAgent implements Agent {
 				// bookkeeping prompt() uses: upstream compact() would silently abort
 				// the running turn, so the handler requires an idle session.
 				return handleCompact((sessionId) => this.getSessionTurnTarget(sessionId), params)
+			case SET_MODEL_COMPAT_METHOD: {
+				// Compat: upstream removed `session/set_model` from the
+				// schema in favor of configOptions, so SDK 1.9.0 no longer routes
+				// it to a typed handler — it arrives here raw via the extMethod
+				// fallback. Validate the 0.19.2-era shape and delegate; new
+				// clients use session/set_config_option, which serves the same
+				// state (see buildConfigOptions).
+				const { sessionId, modelId } = params as { sessionId?: unknown; modelId?: unknown }
+				if (typeof sessionId !== "string" || !sessionId) {
+					throw RequestError.invalidParams(undefined, "sessionId is required")
+				}
+				if (typeof modelId !== "string" || !modelId) {
+					throw RequestError.invalidParams(undefined, "modelId is required")
+				}
+				return this.unstable_setSessionModel({ sessionId, modelId })
+			}
 			case AVAILABLE_EXT_METHODS.compact_abort:
 				// Compaction-specific abort (not the whole-turn kill switch): stops
 				// only the summarization; idempotent when nothing is compacting.
@@ -1303,6 +1474,7 @@ export class KimchiAcpAgent implements Agent {
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
+			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId)
 			unregisterSessionPermissionFlagController(entry.session.sessionId)
 			clearPermissionModeEnv(entry.session.sessionId)
@@ -1325,16 +1497,22 @@ export class KimchiAcpAgent implements Agent {
 		unregisterSessionPermissionFlagController(sessionId)
 		clearPermissionModeEnv(sessionId)
 		entry.unsubscribe()
-		if (entry.turn) {
-			entry.turn.cancelled = true
+		// Prompts parked behind an unsolicited run own no turn yet: resolve them
+		// as cancelled rather than leaving the client's request unanswered.
+		cancelPendingPrompts(entry)
+		if (entry.turn) entry.turn.cancelled = true
+		// Abort whatever is running — a prompt's turn or an unsolicited run (a
+		// background exit waking the agent) — so nothing keeps streaming
+		// against the disposed session.
+		if (entry.turn || entry.unsolicitedTurn) {
 			try {
 				await entry.session.abort()
 			} catch {
 				// Closing is best-effort cleanup; still resolve the pending prompt
 				// as cancelled and release the session resources below.
 			}
-			this.finalizeTurn(entry, "cancelled")
 		}
+		if (entry.turn) this.finalizeTurn(entry, "cancelled")
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 
@@ -1362,8 +1540,144 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * Forward one assistant text/thinking delta to the client.
+	 *
+	 * All bookkeeping here is ENTRY-level (block ids, streamed-text
+	 * tracking, emitted model meta), so the same path serves prompt-owned
+	 * turns and UNSOLICITED runs (no active turn): a background-bash
+	 * completion notification waking an idle agent streams its response
+	 * with no prompt attached, and the client still receives the message.
+	 * The optional `noteTextBlock` registers artifact links on the owning
+	 * turn's buffer — unsolicited runs pass none (their artifacts are not
+	 * attachable; the persisted history still carries the text).
+	 */
+	private forwardAssistantDelta(
+		sessionId: string,
+		entry: SessionRecord,
+		event: Extract<AgentSessionEvent, { type: "message_update" }>,
+		noteTextBlock?: (messageId: string, attribution: ModelAttribution | undefined) => void,
+	): void {
+		const ame = event.assistantMessageEvent
+		if ((ame.type !== "text_delta" && ame.type !== "thinking_delta") || !ame.delta) return
+		let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
+		if (messageId === undefined) {
+			messageId = `km.${entry.nextBlockId++}`
+			entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
+		}
+		// Artifact links attach to the turn's last text block id.
+		// Thinking ids are never registered: a chunk on one would
+		// render as an empty agent message on kind-keyed clients.
+		if (ame.type === "text_delta") {
+			noteTextBlock?.(messageId, event.message.role === "assistant" ? modelAttributionFrom(event.message) : undefined)
+		}
+		// modelAttributionFrom reads the partial assistant message — the
+		// same best-known tuple the auto-model extension learns from — so
+		// the first chunk of a block carries its attribution and a later
+		// chunk corrects it if `responseModel` lands mid-stream.
+		const modelMeta =
+			event.message.role === "assistant"
+				? modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(event.message))
+				: undefined
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
+				content: { type: "text", text: ame.delta },
+				messageId,
+				...spreadModelMeta(modelMeta),
+			},
+		})
+		// Track streamed text length only — thinking is not restored at
+		// message_end and must not be re-emitted from that path.
+		if (ame.type === "text_delta") {
+			const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
+			entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
+		}
+	}
+
+	/**
+	 * Emit text a message_end carries that streaming never sent — entry-level
+	 * bookkeeping only, so it also serves unsolicited runs (no active turn).
+	 * See forwardAssistantDelta for the entry-level guarantee.
+	 */
+	private forwardUnsentMessageText(
+		sessionId: string,
+		entry: SessionRecord,
+		msg: AssistantMessage,
+		noteTextBlock?: (messageId: string, attribution: ModelAttribution | undefined) => void,
+	): void {
+		if (!Array.isArray(msg.content)) return
+		msg.content.forEach((block, index) => {
+			if (block.type !== "text") return
+			const streamed = entry.streamedText.get(index) ?? ""
+			if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+			let messageId = entry.contentIndexToBlockId.get(index)
+			if (messageId === undefined) {
+				messageId = `km.${entry.nextBlockId++}`
+				entry.contentIndexToBlockId.set(index, messageId)
+			}
+			// Text blocks only reach here (filtered above).
+			noteTextBlock?.(messageId, modelAttributionFrom(msg))
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: block.text.slice(streamed.length) },
+					messageId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+			entry.streamedText.set(index, block.text)
+		})
+	}
+
+	/**
+	 * Land per-block model-attribution corrections after the final message —
+	 * entry-level only, so it also serves unsolicited runs (no active turn).
+	 */
+	private correctEmittedModelMeta(sessionId: string, entry: SessionRecord, msg: AssistantMessage): void {
+		// A provider may report the served model only on this final message,
+		// so every streamed chunk carried the requested-id fallback. When the
+		// authoritative attribution differs from what a block id already
+		// emitted — and the restore path sent no chunk for it — land the
+		// correction explicitly: a zero-length chunk on that id. Content-append
+		// is a no-op and the client's last-wins rule
+		// (docs/acp-model-attribution.md) applies the served ref.
+		const authoritativeAttribution = modelAttributionFrom(msg)
+		for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
+			// Correction only: ids that already carried an attribution. A block
+			// that streamed without one (malformed partial events) has nothing to
+			// correct, and the restore path above covers un-streamed text.
+			if (!entry.emittedModelMeta.has(blockId)) continue
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
+			if (modelMeta === undefined) continue
+			// Match the correction's update kind to the block's real chunks — a
+			// thinking block corrected as agent_message_chunk would render a
+			// spurious empty agent message on clients keyed by kind. The final
+			// message's content array is index-aligned with the streamed
+			// contentIndexes (the restore path above relies on the same pairing).
+			const blockKind = msg.content[contentIndex]?.type
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: blockKind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
+					content: { type: "text", text: "" },
+					messageId: blockId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+		}
+	}
+
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
+		// Stop the adapter from publishing skill-refresh results: a discovery
+		// pass still in flight must not commit an obsolete snapshot (or
+		// rebuild prompt options) after the session is gone.
+		const disposable = entry.session.resourceLoader as { dispose?: () => void }
+		disposable.dispose?.()
 		if (!opts.alreadyUnsubscribed) entry.unsubscribe()
 		// Emit session_shutdown to extensions and await all handlers before
 		// calling dispose(). dispose() is synchronous and returns void, so async
@@ -1377,7 +1691,13 @@ export class KimchiAcpAgent implements Agent {
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
-		const turn = entry.turn
+		// The active run's bookkeeping: the prompt-owned turn, or — for an
+		// unsolicited run (no prompt in flight, e.g. a background-bash
+		// completion notification waking an idle agent) — its passive context.
+		// Handlers below stay uniform across both; paths that must only ever
+		// see a prompt-owned turn (finalizeTurn and friends) read entry.turn
+		// directly.
+		const turn = entry.turn ?? entry.unsolicitedTurn
 		// Stall/retry/compaction events have no schema session-update type —
 		// forward them as a kimchi.dev activity notification so the client can
 		// pin a running turn's pause to its cause. No-op for transcript/tool
@@ -1386,6 +1706,9 @@ export class KimchiAcpAgent implements Agent {
 		// Routed-model pick changes mirror the transcript entry as an ext
 		// notification; change-only, per the extension's dedup.
 		emitRoutedModelUpdate(this.conn, sessionId, event)
+		// Skill auto-loads mirror their transcript entry the same way, so IDE
+		// clients can surface what the TUI renders as a one-line entry.
+		emitSkillAutoloadUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {
@@ -1422,6 +1745,12 @@ export class KimchiAcpAgent implements Agent {
 				entry.streamedText.clear()
 				entry.emittedModelMeta.clear()
 				entry.toolCallIdMap.clear()
+				// An unsolicited run started (no prompt owns it): allocate its
+				// passive bookkeeping so its streamed text, tool calls, and usage
+				// forward exactly like a prompt turn's. agent_start fires per
+				// chained continue within the run, so an existing context is
+				// kept — only the run chain's first start allocates.
+				if (!entry.turn) entry.unsolicitedTurn ??= createTurnContext()
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
@@ -1431,9 +1760,22 @@ export class KimchiAcpAgent implements Agent {
 				// Held plan-review execution drained: pi-mono emits agent_settled
 				// exactly once, after the FULL run chain (chained continues, retries,
 				// compaction) completes — the deterministic end point for an internal
-				// turn that has no session.prompt() promise to await.
-				if (turn?.planReviewHeld && turn.planReviewExecuting) {
-					this.finalizeHeldPlanReviewTurn(entry, turn)
+				// turn that has no session.prompt() promise to await. Prompt-owned
+				// only: an unsolicited run has no prompt to hold open.
+				if (entry.turn?.planReviewHeld && entry.turn.planReviewExecuting) {
+					this.finalizeHeldPlanReviewTurn(entry, entry.turn)
+				}
+				// An unsolicited run finished its full chain: flush its buffered
+				// artifacts and final usage the way finalizeTurn does for prompts,
+				// then drop its bookkeeping — the session is idle again for
+				// turn-target gating and new prompts.
+				if (!entry.turn && entry.unsolicitedTurn) {
+					const unsolicited = entry.unsolicitedTurn
+					entry.unsolicitedTurn = undefined
+					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
+						this.send({ sessionId: entry.session.sessionId, update })
+					}
+					this.emitUsageUpdate(entry.session, unsolicited.usage)
 				}
 				return
 			}
@@ -1452,47 +1794,21 @@ export class KimchiAcpAgent implements Agent {
 				return
 			}
 			case "message_update": {
-				if (!turn) return
 				const ame = event.assistantMessageEvent
-				if ((ame.type === "text_delta" || ame.type === "thinking_delta") && ame.delta) {
-					let messageId = entry.contentIndexToBlockId.get(ame.contentIndex)
-					if (messageId === undefined) {
-						messageId = `km.${entry.nextBlockId++}`
-						entry.contentIndexToBlockId.set(ame.contentIndex, messageId)
-					}
-					// Artifact links attach to the turn's last text block id.
-					// Thinking ids are never registered: a chunk on one would
-					// render as an empty agent message on kind-keyed clients.
-					if (ame.type === "text_delta") {
-						turn.artifactBuffer.noteTextBlock(
-							messageId,
-							event.message.role === "assistant" ? modelAttributionFrom(event.message) : undefined,
-						)
-					}
-					// modelAttributionFrom reads the partial assistant message — the
-					// same best-known tuple the auto-model extension learns from — so
-					// the first chunk of a block carries its attribution and a later
-					// chunk corrects it if `responseModel` lands mid-stream.
-					const modelMeta =
-						event.message.role === "assistant"
-							? modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(event.message))
-							: undefined
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
-							content: { type: "text", text: ame.delta },
-							messageId,
-							...spreadModelMeta(modelMeta),
-						},
-					})
-					// Track streamed text length only — thinking is not restored at
-					// message_end and must not be re-emitted from that path.
-					if (ame.type === "text_delta") {
-						const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
-						entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
-					}
+				// Unsolicited run (no active prompt — e.g. a background-bash
+				// completion notification waking an idle agent): forward the
+				// assistant's streamed text and thinking so the client still
+				// receives the response. Tool-call streaming stays turn-scoped
+				// (its progress/result bookkeeping lives on the turn), so it is
+				// not forwarded for runs no prompt owns; the persisted history
+				// still carries those results for the next prompt to replay.
+				if (!turn) {
+					this.forwardAssistantDelta(sessionId, entry, event)
+					return
 				}
+				this.forwardAssistantDelta(sessionId, entry, event, (messageId, attribution) =>
+					turn.artifactBuffer.noteTextBlock(messageId, attribution),
+				)
 
 				// Tool call argument generation started — emit pending tool_call so
 				// the client can show progress while the model streams the arguments.
@@ -1511,6 +1827,7 @@ export class KimchiAcpAgent implements Agent {
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
+							cwd: entry.cwd,
 						})
 						this.send({ sessionId, update })
 						turn.announcedToolCallIds.add(block.id)
@@ -1573,7 +1890,7 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments)
+					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
@@ -1591,9 +1908,20 @@ export class KimchiAcpAgent implements Agent {
 				return
 			}
 			case "message_end": {
-				if (!turn) return
 				const msg = event.message
 				if (msg.role !== "assistant") return
+				// Unsolicited run (no active prompt — see forwardAssistantDelta):
+				// publish the resolved model pick, flush any text streaming never
+				// sent, and land attribution corrections, so the client receives
+				// the wake run's response. Turn-scoped outcome tracking, artifacts,
+				// and usage accounting do not apply — no prompt owns the run, so
+				// there is no turn to finalize.
+				if (!turn) {
+					this.publishModelOptionIfChanged(sessionId, entry)
+					this.forwardUnsentMessageText(sessionId, entry, msg)
+					this.correctEmittedModelMeta(sessionId, entry, msg)
+					return
+				}
 				// The pick is learned from this message (responseModel), after
 				// message_start — push the resolved label here too. Idempotent: the
 				// lastModelOptionName seed makes this a no-op unless the label changed.
@@ -1605,7 +1933,22 @@ export class KimchiAcpAgent implements Agent {
 				// toolUse, deferred) → a completed message, clear. A failed attempt
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
-				if (msg.stopReason === "error") {
+				turn.refused = isRefusal(msg)
+				if (turn.refused) {
+					// A refusal is a turn outcome, not a failure: report it as
+					// stopReason "refusal" with the reason the user can act on. The
+					// canned text may already be streamed and can't be retracted, so
+					// the reason goes out as a separate message.
+					turn.lastAssistantError = undefined
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							messageId: `km.${randomUUID()}`,
+							content: { type: "text", text: REFUSAL_MESSAGE },
+						},
+					})
+				} else if (msg.stopReason === "error") {
 					// Capture the preserved raw text, not the display placeholder: the
 					// interactive-error-surface extension may have mutated errorMessage
 					// to "Retrying…" in an earlier message_end handler. The placeholder
@@ -1626,62 +1969,10 @@ export class KimchiAcpAgent implements Agent {
 				// sent === block.text.length for every block, so nothing extra
 				// goes out here. Emitted before usage accounting so ordering
 				// relative to emitUsageUpdate is unchanged.
-				if (Array.isArray(msg.content)) {
-					msg.content.forEach((block, index) => {
-						if (block.type !== "text") return
-						const streamed = entry.streamedText.get(index) ?? ""
-						if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
-						let messageId = entry.contentIndexToBlockId.get(index)
-						if (messageId === undefined) {
-							messageId = `km.${entry.nextBlockId++}`
-							entry.contentIndexToBlockId.set(index, messageId)
-						}
-						// Text blocks only reach here (filtered above).
-						turn.artifactBuffer.noteTextBlock(messageId, modelAttributionFrom(msg))
-						const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
-						this.send({
-							sessionId,
-							update: {
-								sessionUpdate: "agent_message_chunk",
-								content: { type: "text", text: block.text.slice(streamed.length) },
-								messageId,
-								...spreadModelMeta(modelMeta),
-							},
-						})
-						entry.streamedText.set(index, block.text)
-					})
-				}
-				// A provider may report the served model only on this final message,
-				// so every streamed chunk carried the requested-id fallback. When the
-				// authoritative attribution differs from what a block id already
-				// emitted — and the restore loop above sent no chunk for it — land the
-				// correction explicitly: a zero-length chunk on that id. Content-append
-				// is a no-op and the client's last-wins rule (docs/acp-model-attribution.md)
-				// applies the served ref.
-				const authoritativeAttribution = modelAttributionFrom(msg)
-				for (const [contentIndex, blockId] of entry.contentIndexToBlockId) {
-					// Correction only: ids that already carried an attribution. A block
-					// that streamed without one (malformed partial events) has nothing to
-					// correct, and the restore loop above covers un-streamed text.
-					if (!entry.emittedModelMeta.has(blockId)) continue
-					const modelMeta = modelMetaFor(entry.emittedModelMeta, blockId, authoritativeAttribution)
-					if (modelMeta === undefined) continue
-					// Match the correction's update kind to the block's real chunks — a
-					// thinking block corrected as agent_message_chunk would render a
-					// spurious empty agent message on clients keyed by kind. The final
-					// message's content array is index-aligned with the streamed
-					// contentIndexes (the restore loop above relies on the same pairing).
-					const blockKind = msg.content[contentIndex]?.type
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: blockKind === "thinking" ? "agent_thought_chunk" : "agent_message_chunk",
-							content: { type: "text", text: "" },
-							messageId: blockId,
-							...spreadModelMeta(modelMeta),
-						},
-					})
-				}
+				this.forwardUnsentMessageText(sessionId, entry, msg, (messageId, attribution) =>
+					turn.artifactBuffer.noteTextBlock(messageId, attribution),
+				)
+				this.correctEmittedModelMeta(sessionId, entry, msg)
 				const usage = msg.usage
 				if (usage) {
 					updateTurnUsage(turn, usage)
@@ -1721,7 +2012,7 @@ export class KimchiAcpAgent implements Agent {
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, event.args)
+					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
@@ -1739,6 +2030,7 @@ export class KimchiAcpAgent implements Agent {
 						toolName: event.toolName,
 						rawInput: event.args,
 						status: "in_progress",
+						cwd: entry.cwd,
 					})
 					// No pending notification was sent (back-compat) → emit tool_call as before
 					this.send({ sessionId, update })
@@ -1810,7 +2102,16 @@ export class KimchiAcpAgent implements Agent {
 				// Diffs are additional content blocks, appended after the existing
 				// text/image content. Failed mutations emit no diff: the client
 				// would otherwise render a change that never landed.
-				const diffs = event.isError ? [] : pending.map((p) => fileChangeToDiffContent(resolveFileChange(p, preWrite)))
+				// Protocol compatibility requires diff content `path` to be
+				// absolute — resolve the tool arg through pi's own normalization
+				// (cwd + @-prefix/nbsp handling) so the wire path matches what the
+				// tool touched.
+				const diffs = event.isError
+					? []
+					: pending.map((p) => {
+							const change = resolveFileChange(p, preWrite)
+							return fileChangeToDiffContent({ ...change, path: resolveToolPath(change.path, entry.cwd) })
+						})
 				const acpToolCallId = this.resolveAcpToolCallId(entry, event.toolCallId)
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
@@ -1836,6 +2137,12 @@ export class KimchiAcpAgent implements Agent {
 						title: name,
 					},
 				})
+				return
+			}
+			case "compaction_end": {
+				// Successful compaction changed the context — refresh the client's
+				// usage gauge immediately (see emitPostCompactionUsage).
+				this.emitPostCompactionUsage(sessionId, entry.session, event)
 				return
 			}
 			default:
@@ -2083,6 +2390,7 @@ export class KimchiAcpAgent implements Agent {
 						piToolCallId: tc.id,
 						status,
 						rawInput: args,
+						cwd: record?.cwd,
 					}),
 				})
 				this.send({
@@ -2489,16 +2797,58 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
+	// Post-compaction context refresh: on a successful compaction the client's
+	// gauge is stale (getContextUsage().tokens stays null until the next LLM
+	// response after the boundary) and the turn-boundary path above cannot
+	// cover out-of-turn compaction. The compaction_end event carries pi's own
+	// post-compaction estimate, so emit straight from it — bare, no _meta.
+	// Success ⇔ result present (aborts/failures carry none); cancelled and
+	// failed compactions emit nothing. Full contract: docs/acp-compaction.md.
+	private emitPostCompactionUsage(
+		sessionId: string,
+		session: AgentSession,
+		event: Extract<AgentSessionEvent, { type: "compaction_end" }>,
+	): void {
+		const result = event.result
+		if (event.aborted || !result) return
+		// Prefer the event's estimate; if absent, recompute the same fold over
+		// session.messages (the exact list pi measured). The fold always yields
+		// a number, so success always emits; estimateMessagesTokens itself is
+		// not importable (pi's exports map) — re-verify parity on pi upgrades.
+		const used =
+			typeof result.estimatedTokensAfter === "number"
+				? result.estimatedTokensAfter
+				: session.messages.reduce((n, m) => n + estimateTokens(m), 0)
+		const contextWindow = session.getContextUsage()?.contextWindow
+		if (!contextWindow) {
+			// Unreachable for a succeeded compaction (pi requires a model) — log
+			// anyway so a future pi change can't strand the gauge silently.
+			console.warn(`[acp-usage] skipping post-compaction usage_update for ${sessionId}: context window unknown`)
+			return
+		}
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "usage_update",
+				used,
+				size: contextWindow,
+			},
+		})
+	}
+
 	/**
 	 * Session lookup for the ext-method gating that steering, feedback and
-	 * compact share: the session plus whether a turn is truly active. A
+	 * compact share: the session plus whether a run is truly active. A
 	 * cancelled turn stays defined until the prompt settles, but cancel() has
-	 * already resolved its outcome — it is not "no turn in progress".
+	 * already resolved its outcome — it is not "no turn in progress". An
+	 * UNSOLICITED run (no prompt owns it — e.g. a completion-notification
+	 * wake) also counts as active: steering must inject into it rather than
+	 * telling the client to send a prompt that pi would reject mid-run.
 	 */
 	private getSessionTurnTarget(sessionId: string): SessionTurnTarget | undefined {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return undefined
-		const turnActive = entry.turn !== undefined && !entry.turn.cancelled
+		const turnActive = (entry.turn !== undefined && !entry.turn.cancelled) || entry.unsolicitedTurn !== undefined
 		return {
 			session: entry.session,
 			turnActive,
@@ -2520,7 +2870,7 @@ export class KimchiAcpAgent implements Agent {
 		} else if (turn.lastAssistantError) {
 			this.failTurn(entry, toTurnError(turn.lastAssistantError))
 		} else {
-			this.finalizeTurn(entry, "end_turn")
+			this.finalizeTurn(entry, turn.refused ? "refusal" : "end_turn")
 		}
 	}
 
@@ -2771,22 +3121,6 @@ function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode):
 	return [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
 }
 
-export function buildSessionModelState(configOptions: SessionConfigOption[]): SessionModelState | null {
-	// biome-ignore lint/style/noNonNullAssertion: model config option is static, it is always available
-	const configOption = configOptions.find((opt) => opt.id === "model")!
-	const options = (configOption as SessionConfigOption & { type: "select" }).options as SessionConfigSelectOption[]
-	return {
-		currentModelId: configOption.currentValue as string,
-		availableModels: options.map((m) => ({
-			modelId: m.value,
-			name: m.name,
-			// Carry the option's secondary line through, so clients reading
-			// `models` see the same labelling as those reading `configOptions`.
-			...(m.description ? { description: m.description } : {}),
-		})),
-	}
-}
-
 // Checks model PRESENCE only — pi resolves a non-null model object even on
 // keyless machines, and this check is shared by newSession and loadSession.
 // The credential gate for session-create lives in assertSessionModelHasAuth
@@ -2992,9 +3326,15 @@ function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 		// Build the set of roots to enumerate: cwd (when present) plus any
 		// non-empty additionalDirectories. Dedupe to avoid double-listing when
 		// a client sends cwd as one of the additional roots.
+		// Compat: SDK 1.9.0 removed `additionalDirectories` from
+		// ListSessionsRequest (zod strips it before typed dispatch, so in
+		// practice old clients degrade gracefully to cwd-only listing). The
+		// cast keeps the merge for paths that still hand us the field.
+		const legacyAdditionalDirs = (params as ListSessionsRequest & { additionalDirectories?: string[] })
+			.additionalDirectories
 		const roots: string[] = []
 		if (params.cwd) roots.push(params.cwd)
-		for (const dir of params.additionalDirectories ?? []) {
+		for (const dir of legacyAdditionalDirs ?? []) {
 			if (!roots.includes(dir)) roots.push(dir)
 		}
 		if (roots.length === 0) {
@@ -3042,36 +3382,24 @@ async function createSessionSettings(
 	configureHttpIdleTimeout(() => settingsManager.getHttpIdleTimeoutMs())
 	const callerServers = convertAcpMcpServers(params.mcpServers ?? [])
 	const mcpExtension = options.mcpExtensionFactory?.({ cwd, callerServers })
-	// Annotated explicitly: the appendSystemPromptOverride closure references
-	// `resourceLoader` in its own initializer, which TS otherwise flags as
-	// circular (7022).
-	const resourceLoader: DefaultResourceLoader = new DefaultResourceLoader({
+	// The main loader carries the LIVE extension set (inline factories + MCP
+	// adapter) and is only reloaded on intentional full session reloads. The
+	// ACP adapter in front of it serves skills from per-session discovery
+	// snapshots that skill refreshes recompute without extension reloads, and
+	// computes the append prompt per call so a committed skills snapshot is
+	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
 		extensionFactories: [...options.extensionFactories, ...(mcpExtension ? [mcpExtension] : [])],
-		appendSystemPromptOverride: () => {
-			// Per-loader cached so a mid-session project-trust grant can
-			// invalidate it (see invalidateSkillListBlock); built lazily on
-			// first access, errors fall back to an empty block — it is
-			// non-essential.
-			let block = cachedSkillListBlock(resourceLoader)
-			if (block === undefined) {
-				try {
-					block = buildSkillListBlock(resourceLoader)
-				} catch {
-					// If the loader isn't ready (e.g. during reload before skills
-					// are populated), return empty rather than crashing session
-					// startup.
-					block = ""
-				}
-				setCachedSkillListBlock(resourceLoader, block)
-			}
-			// CLI flag content first, then _meta["kimchi.dev"].appendSystemPrompt,
-			// then the skill list block (matches upstream override behaviour).
-			const base = resolveAcpAppendSystemPrompt(params, options) ?? []
-			return [...base, ...(block ? [block] : [])]
-		},
+	})
+	const resourceLoader = new AcpSessionResourceLoader({
+		mainLoader,
+		cwd,
+		agentDir: options.agentDir,
+		settingsManager,
+		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
@@ -3484,10 +3812,28 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 	}
 	for (const s of signals) process.on(s, onSignal)
 
+	// A clean shutdown ends when the client closes stdin (conn.closed
+	// resolves). If the transport dies on an error instead — a json-stream
+	// failure, the pipe killed mid-turn — conn.closed rejects, and the
+	// launcher must see a failing exit code rather than a flat success.
+	let exitCode = 0
 	try {
 		await conn.closed
+	} catch {
+		exitCode = 1
 	} finally {
 		for (const s of signals) process.off(s, onSignal)
-		await agentInstance?.shutdown()
+		// A rejecting or hanging shutdown must not swallow process.exit — a
+		// stdio agent must leave after stdin closes. Mirror the signal
+		// path's .catch, bounded so a wedged dispose can't outlive the pipe.
+		await Promise.race([
+			agentInstance?.shutdown().catch(() => {}),
+			new Promise((resolve) => setTimeout(resolve, 1_000)),
+		])
+		// The transport is closed and every session is disposed, but stray
+		// event-loop holders (extension timers, MCP clients, watchers) would
+		// otherwise keep us alive. A stdio agent must exit after stdin closes
+		// (stdio-protocol compatibility, and Zed's own lifecycle expectations).
+		process.exit(exitCode)
 	}
 }

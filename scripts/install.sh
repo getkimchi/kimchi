@@ -156,5 +156,38 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 	esac
 fi
 
+# The release carries Kimchi's work-reporting plugins for the official Claude
+# Code and Codex CLIs (getkimchi/kimchi-bridge). Add them to each client
+# found. They run on this Kimchi binary, report with Kimchi's sign-in and
+# leave inference settings alone. Adding them is opt-in: ask when run from a
+# terminal, and honor KIMCHI_BRIDGE_SKIP for scripted installs. Anyone who
+# skips can add them later with `kimchi bridge setup`.
+BRIDGE_INSTALLER="$DATA_DIR/kimchi/bridge/install.sh"
+if [ -f "$BRIDGE_INSTALLER" ] && [ -n "${SUDO_USER:-}" ]; then
+	# Under sudo the plugins would be registered by another user, leaving files in this home that
+	# Claude Code and Codex could no longer write.
+	echo -e "${YELLOW}Skipping Kimchi work reporting under sudo. Rerun this installer without sudo to add it to Claude Code and Codex.${NC}" >&2
+elif [ -f "$BRIDGE_INSTALLER" ] && [ -n "${KIMCHI_BRIDGE_SKIP:-}" ]; then
+	echo -e "${BLUE}Kimchi work reporting not added (KIMCHI_BRIDGE_SKIP). Run ${GREEN}kimchi bridge setup${NC} anytime to add it.${NC}"
+elif [ -f "$BRIDGE_INSTALLER" ]; then
+	for client in claude codex; do
+		command -v "$client" >/dev/null 2>&1 || continue
+		# Interactive terminals get a real choice; piped installs default to yes
+		# and print how to undo.
+		if [ -t 0 ]; then
+			printf "${BLUE}Add Kimchi work reporting to %s?${NC} [Y/n] " "$client"
+			read -r answer
+			case "$answer" in
+				n | N | no) echo "Skipped. Run 'kimchi bridge setup' anytime to add it."; continue ;;
+			esac
+		fi
+		echo ""
+		echo -e "${BLUE}Adding Kimchi work reporting to ${client}…${NC}"
+		# stdin stays with this script when it is piped into bash.
+		KIMCHI_BIN="$INSTALL_PATH" bash "$BRIDGE_INSTALLER" install "$client" </dev/null ||
+			echo -e "${YELLOW}Kimchi is installed, but work reporting for ${client} is not. Rerun this installer to retry.${NC}" >&2
+	done
+fi
+
 echo ""
 echo -e "${BLUE}Next:${NC} run ${GREEN}kimchi${NC} and follow the first-time wizard to configure your API key and migrate your skills and MCPs"

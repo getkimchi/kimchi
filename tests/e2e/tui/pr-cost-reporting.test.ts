@@ -58,7 +58,7 @@ for (const telemetry of [false, true]) {
 				expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)
 				trace.step("explicit consent is saved and the upload fields are explained")
 				terminal.submit("/pr-reporting off")
-				await waitForText(terminal, "Pending uploads were deleted")
+				await waitForText(terminal, "Pending uploads are paused")
 				const state = JSON.parse(readFileSync(path, "utf8"))
 				expect(state.enabled).toBe(false)
 				expect(state.entries).toEqual({})

@@ -28,6 +28,8 @@ const { spawnRemoteAgent } = await import("../agents/index.js")
 
 function makeCtx(): ExtensionContext {
 	return {
+		// Session-keyed telemetry attribution reads the id from the ctx.
+		sessionManager: { getSessionId: () => "runner-test-session" },
 		ui: {
 			notify: vi.fn(),
 			onTerminalInput: vi.fn(),

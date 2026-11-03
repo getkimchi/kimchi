@@ -12,6 +12,7 @@ export function createAcpPermissionPrompter(
 	sessionId: string,
 	uiContext: ExtensionUIContext,
 	resolveAcpToolCallId: AcpToolCallIdResolver,
+	cwd?: string,
 ): ToolPermissionPrompter {
 	return {
 		async request(req): Promise<ApprovalOutcome> {
@@ -35,6 +36,7 @@ export function createAcpPermissionPrompter(
 				toolName: req.toolName,
 				rawInput: req.input,
 				status: "pending",
+				cwd,
 			})
 			const response = await requestWithAbort(conn.requestPermission({ sessionId, toolCall, options }), req.signal)
 

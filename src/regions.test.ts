@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import { withExperimentalFeatures } from "./extensions/experimental.js"
 import {
 	anthropicBaseUrl,
+	canonicalPlatformApiUrl,
+	discoveredSelfHostedRegion,
 	experimentalOpenAiBaseUrl,
 	isRegionId,
 	keyValidationUrl,
@@ -12,14 +14,17 @@ import {
 	regionEndpoints,
 	searchUrl,
 	selectableRegions,
-	selfHostedRegion,
 	telemetryLogsUrl,
 	telemetryMetricsUrl,
 } from "./regions.js"
 
 const us = REGIONS.us
 const eu = REGIONS.eu
-const selfHosted = selfHostedRegion("https://kimchi.example.com")
+const selfHosted = discoveredSelfHostedRegion({
+	api: "https://kimchi.example.com/api",
+	console: "https://kimchi.example.com",
+	llm: "https://kimchi.example.com/llm",
+})
 
 describe("REGIONS", () => {
 	it("declares us, eu, and self-hosted", () => {
@@ -45,7 +50,7 @@ describe("REGIONS", () => {
 	})
 
 	it("self-hosted registry entry is a placeholder with empty URLs", () => {
-		// The real entry is built per install by selfHostedRegion(base); the
+		// The real entry is built per install from resolved endpoints; the
 		// registry entry only anchors the id/label and keeps RegionId complete.
 		expect(REGIONS["self-hosted"].label).toBe("Self-hosted")
 		expect(REGIONS["self-hosted"].webAppUrl).toBe("")
@@ -55,8 +60,8 @@ describe("REGIONS", () => {
 })
 
 describe("derivation helpers — us golden URLs", () => {
-	// This table is a deliberate tripwire: it must match exactly the URLs
-	// hardcoded across the codebase today (see .kimchi/docs/endpoints-inventory.md).
+	// The US region's derived-URL contract: this table is the tripwire — update
+	// it only as part of a deliberate endpoint change.
 	it("returns exactly the URLs used today", () => {
 		expect({
 			platformApiUrl: platformApiUrl(us),
@@ -68,7 +73,7 @@ describe("derivation helpers — us golden URLs", () => {
 			telemetryLogsUrl: telemetryLogsUrl(us),
 			telemetryMetricsUrl: telemetryMetricsUrl(us),
 		}).toEqual({
-			platformApiUrl: "https://app.kimchi.dev/api",
+			platformApiUrl: "https://api.cast.ai",
 			openAiBaseUrl: "https://llm.kimchi.dev/openai/v1",
 			anthropicBaseUrl: "https://llm.kimchi.dev/anthropic",
 			experimentalOpenAiBaseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
@@ -82,7 +87,7 @@ describe("derivation helpers — us golden URLs", () => {
 
 describe("derivation helpers — eu variants", () => {
 	it("derives eu URLs from the eu bases", () => {
-		expect(platformApiUrl(eu)).toBe("https://app.eu.kimchi.dev/api")
+		expect(platformApiUrl(eu)).toBe("https://api.eu.cast.ai")
 		expect(openAiBaseUrl(eu)).toBe("https://llm.eu.kimchi.dev/openai/v1")
 		expect(anthropicBaseUrl(eu)).toBe("https://llm.eu.kimchi.dev/anthropic")
 		expect(experimentalOpenAiBaseUrl(eu)).toBe("https://llm.eu.kimchi.dev/experimental/openai/v1")
@@ -94,9 +99,10 @@ describe("derivation helpers — eu variants", () => {
 })
 
 describe("derivation helpers — self-hosted golden URLs", () => {
-	// The full endpoint inventory a self-hosted server must serve, derived
-	// from ONE base URL via selfHostedRegion(base). This table is the contract
-	// the self-hosted server implements — keep it in sync with any change.
+	// The full endpoint inventory derived from a discovery document whose
+	// values carry path prefixes (the legacy install layout). The helpers
+	// must append the API shapes onto whatever bases the document advertises —
+	// this table is that contract, kept in sync with any change.
 	it("derives every endpoint from the base URL", () => {
 		expect(regionEndpoints(selfHosted)).toEqual({
 			region: "self-hosted",
@@ -114,19 +120,42 @@ describe("derivation helpers — self-hosted golden URLs", () => {
 		})
 	})
 
-	it("keeps platformApiUrl and castApiUrl on the same /api base by design", () => {
-		// Both resolve to base/api: the platform API (/v1/me, /workspaces, ...)
-		// and the Cast AI API (/v1/llm/..., /ai-optimizer/...) serve disjoint
-		// sub-paths behind the one self-hosted gateway. This is intentional —
-		// see the comment on selfHostedRegion.
+	it("platformApiUrl is the region's API origin (alias of castApiUrl) in every region", () => {
+		// The platform API (/v1/me, /workspaces, ...) and the Cast AI API
+		// (/v1/llm/..., /ai-optimizer/...) live behind the same API origin —
+		// the console host never carries API traffic.
+		expect(platformApiUrl(us)).toBe(us.castApiUrl)
+		expect(platformApiUrl(eu)).toBe(eu.castApiUrl)
 		expect(platformApiUrl(selfHosted)).toBe(selfHosted.castApiUrl)
 	})
 
 	it("strips a trailing slash from the base before appending paths", () => {
-		const trailing = selfHostedRegion("https://kimchi.example.com/")
+		const trailing = discoveredSelfHostedRegion({
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		})
 		expect(trailing.llmBaseUrl).toBe("https://kimchi.example.com/llm")
 		expect(trailing.castApiUrl).toBe("https://kimchi.example.com/api")
 		expect(trailing.webAppUrl).toBe("https://kimchi.example.com")
+	})
+})
+
+describe("canonicalPlatformApiUrl", () => {
+	it("maps each region's legacy console-proxy base onto its API origin", () => {
+		expect(canonicalPlatformApiUrl("https://app.kimchi.dev/api")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://app.eu.kimchi.dev/api")).toBe("https://api.eu.cast.ai")
+	})
+
+	it("is idempotent for current bases and strips trailing slashes", () => {
+		expect(canonicalPlatformApiUrl("https://api.cast.ai")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://api.cast.ai/")).toBe("https://api.cast.ai")
+		expect(canonicalPlatformApiUrl("https://app.kimchi.dev/api/")).toBe("https://api.cast.ai")
+	})
+
+	it("leaves unknown and self-hosted bases untouched", () => {
+		expect(canonicalPlatformApiUrl("https://kimchi.example.com/api")).toBe("https://kimchi.example.com/api")
+		expect(canonicalPlatformApiUrl("https://from-env.example.com")).toBe("https://from-env.example.com")
 	})
 })
 

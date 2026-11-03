@@ -24,6 +24,8 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
+import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
@@ -37,12 +39,18 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
+import { backgroundNotificationsReachUser, isTuiSession } from "../prompt-construction/session-user-loop.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
 import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
-import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
+import {
+	type RemoteExecutionStats,
+	trackRemoteExecution,
+	trackSubagentSpawned,
+	trySessionId,
+} from "../telemetry/index.js"
 import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
 import {
 	getAgentConversation,
@@ -62,7 +70,7 @@ import {
 import { PARENT_SESSION_ID_ENV_KEY } from "./manager/constants.js"
 import { GroupJoinManager } from "./manager/group-join.js"
 import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
-import type { RemoteSessionMeta } from "./manager/remote-agent-runner.js"
+import { deleteRemoteSession, type RemoteSessionMeta } from "./manager/remote-agent-runner.js"
 import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
 import { prepareAgentSessionFile } from "./manager/session-file.js"
 import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
@@ -89,7 +97,7 @@ import {
 	type NotificationDetails,
 	type SubagentType,
 } from "./personas/types.js"
-import { findResumableRemoteRuns, persistRemoteRunState } from "./remote-run-persistence.js"
+import { findResumableRemoteRuns, persistRemoteRunState, type RemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
 import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
 import { registerResumeSubagentTool } from "./resume-tool.js"
@@ -188,11 +196,80 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 	})
 }
 
-export const AGENT_TOOL_GUIDELINES = `Guidelines:
+/**
+ * Surface-dependent Agent-tool text. In the TUI a backgrounded agent's
+ * completion notification reaches the user after the turn ends, so the tui
+ * variants tell the model to background, end the turn, and rely on the
+ * notification. Every other surface (rpc/ACP, json, print) never delivers
+ * that notification, so the detached variants make foreground the default
+ * and require joining any backgrounded agent with get_subagent_result
+ * wait: true before the turn ends. TUI strings must stay byte-identical —
+ * they are the long-reviewed interactive-session contract.
+ */
+const BACKGROUND_TEXT = {
+	tui: {
+		guidelines: `Guidelines:
 - Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
 - Choose the mode by dependency: agents run in the background by default, so set run_in_background: false only when the agent blocks your very next action (immediate dependency). If the result is needed for a LATER step, keep it backgrounded and join it with get_subagent_result wait: true when you need it — do not wait right after spawning; do independent work or end your turn first. For fire-and-forget or parallel work, background it and rely on the completion notification; the notification contains the results.
 - One call per task, detailed prompt.
-- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`,
+		runInBackgroundParameter:
+			"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+		waitParameter:
+			"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
+		spawnTrailer: `You will be notified when this agent completes — the completion notification will contain the results.
+Do NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.
+Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
+		queuedBody: (maxConcurrent: number) =>
+			`Agent is queued behind the background-agent concurrency cap (max ${maxConcurrent} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`,
+		timedOutBody: (capSeconds: number) =>
+			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`,
+		abortedBody:
+			"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification.",
+		runningBody:
+			"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results.",
+	},
+	detached: {
+		guidelines: `Guidelines:
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- Choose the mode by dependency: in this session agents run in the foreground by default and the Agent call returns the result. Several Agent calls in one response run in parallel, so spawn independent agents together. Completion notifications are NOT delivered after your turn ends here: if you set run_in_background: true to keep working while an agent runs, you MUST join it with get_subagent_result wait: true before ending your turn.
+- One call per task, detailed prompt.
+- Follow-ups: resume_subagent (continue), get_subagent_result (status check or bounded join), steer_subagent (redirect).`,
+		runInBackgroundParameter:
+			"Default: false in this session (the Agent call runs the agent to completion and returns its result). If true, the agent runs in the background and returns its ID immediately; you will NOT be notified after your turn ends, so you MUST join it with get_subagent_result wait: true before ending your turn. Set to true only to keep working on independent tasks while the agent runs.",
+		waitParameter:
+			"If true, block until the agent completes (capped at 60s per call — call again while it is still running). Required before ending your turn for every backgrounded agent in this session. Default: false.",
+		spawnTrailer: `You will NOT be notified after your turn ends in this session. Continue with independent work, then join it with get_subagent_result wait: true before ending your turn.
+Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
+		queuedBody: (maxConcurrent: number) =>
+			`Agent is queued behind the background-agent concurrency cap (max ${maxConcurrent} concurrent) and has not started. Join it with get_subagent_result wait: true before ending your turn — notifications are not delivered after the turn ends in this session.`,
+		timedOutBody: (capSeconds: number) =>
+			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed. Call get_subagent_result with wait: true again to keep waiting; do not finish your turn while it runs — notifications are not delivered after the turn ends in this session.`,
+		abortedBody:
+			"Wait cancelled before the agent completed. The result was NOT consumed. Re-call with wait: true to re-join before ending your turn.",
+		runningBody:
+			"Agent is still running. Join it with get_subagent_result wait: true before ending your turn — notifications are not delivered after the turn ends in this session.",
+	},
+} as const
+
+function backgroundText(reachUser: boolean) {
+	return reachUser ? BACKGROUND_TEXT.tui : BACKGROUND_TEXT.detached
+}
+
+/** Agent-tool guidelines for the current surface. `true` (TUI) keeps the
+ *  background-by-default contract; `false` flips to foreground-by-default
+ *  with a join-before-turn-end requirement. */
+export function buildAgentToolGuidelines(backgroundNotificationsReachUser: boolean): string {
+	return backgroundText(backgroundNotificationsReachUser).guidelines
+}
+
+/** `run_in_background` parameter description for the current surface. `true`
+ *  (TUI) keeps the interactive notification promise; `false` describes the
+ *  foreground default and the join-before-turn-end requirement instead of
+ *  promising a notification this surface never delivers. */
+export function buildRunInBackgroundParameterDescription(backgroundNotificationsReachUser: boolean): string {
+	return backgroundText(backgroundNotificationsReachUser).runInBackgroundParameter
+}
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
 	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
@@ -984,6 +1061,45 @@ export default function (pi: ExtensionAPI) {
 		})
 	}
 
+	/** Emit a `subagents:*` lifecycle event, tolerating a session that was
+	 * replaced/reloaded mid-run: pi.events.emit asserts active on every
+	 * call, and the event serves the now-dead session's UI (widget rows,
+	 * steer-outcome watchers) — dropping it is the correct degradation, not
+	 * queuing it for a session that never knew about the agent. Any other
+	 * error still propagates. Only the temporally-deferred emissions route
+	 * through here; entry-time ones (subagents:ready, subagents:created)
+	 * evaluate while the runtime is fresh and stay direct. */
+	function emitSubagentEvent(channel: string, data: unknown): void {
+		try {
+			pi.events.emit(channel, data)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
+	/** Append the auxiliary `subagents:record` entry for export-transcript
+	 * enrichment, tolerating a stale runtime: the entry cannot be written
+	 * once the session is replaced, and it is auxiliary — the run's result
+	 * still reaches the orchestrator. Any other error still propagates. */
+	function appendSubagentRecordSafe(record: AgentRecord): void {
+		try {
+			appendSubagentRecord(record)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
+	/** Persist `remote_run:state` for resume-after-restart, tolerating a stale
+	 * runtime (the entry serves the now-dead session's transcript). Any other
+	 * error still propagates. */
+	function persistRemoteRunStateSafe(state: RemoteRunState): void {
+		try {
+			persistRemoteRunState(pi, state)
+		} catch (err) {
+			if (!isStaleCtxError(err)) throw err
+		}
+	}
+
 	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
 	let batchFinalizeTimer: ReturnType<typeof setTimeout> | undefined
 	let batchCounter = 0
@@ -1028,25 +1144,40 @@ export default function (pi: ExtensionAPI) {
 		lastUserAbortAt = Date.now()
 	})
 
+	async function retirePlainRemote(record: AgentRecord): Promise<void> {
+		if (record.gitWorkflow || !record.remoteSession) return
+		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		if (apiKey)
+			await deleteRemoteSession(record.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT }).catch(
+				(err) => {
+					console.warn(`[agents] failed to retire remote session: ${err}`)
+				},
+			)
+	}
+
+	let sessionShuttingDown = false
 	const manager = new AgentManager(
 		(record) => {
+			if (record.remote && sessionShuttingDown) return
 			const retryCandidate = budgetRetryCandidates.get(record.id)
 			budgetRetryCandidates.delete(record.id)
 			blockBudgetRetryIfNeeded(record, retryCandidate)
 
 			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
+			const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
 			const eventData = buildEventData(record)
 			if (isError) {
-				pi.events.emit("subagents:failed", eventData)
+				emitSubagentEvent("subagents:failed", eventData)
 			} else {
-				pi.events.emit("subagents:completed", eventData)
+				emitSubagentEvent("subagents:completed", eventData)
 			}
 
-			appendSubagentRecord(record)
+			appendSubagentRecordSafe(record)
 			// Overwrite the persisted running state with the terminal outcome — a
 			// later session resume must not reattach to a finished run.
+			let completionState: RemoteRunState | undefined
 			if (record.remote && record.acpSessionId && record.remoteSession) {
-				persistRemoteRunState(pi, {
+				completionState = {
 					id: record.id,
 					description: record.description,
 					remoteSession: record.remoteSession,
@@ -1062,7 +1193,12 @@ export default function (pi: ExtensionAPI) {
 							: record.status === "completed" || record.status === "steered"
 								? "completed"
 								: "stopped",
-				})
+					...(record.triggersRemoteCompletion && !isError && !userAbortedRun
+						? { completionPending: true, result: record.result ?? "" }
+						: {}),
+				}
+				persistRemoteRunStateSafe(completionState)
+				if (!isError && !completionState.completionPending) void retirePlainRemote(record)
 			}
 
 			// A consumed result normally suppresses the completion surface — but
@@ -1100,6 +1236,7 @@ export default function (pi: ExtensionAPI) {
 					isError ? "failed" : "completed",
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
+					trySessionId(record.spawnCtx),
 				)
 				// spawnCtx is captured at spawn time — don't fall back to a stale
 				// global context.
@@ -1107,18 +1244,24 @@ export default function (pi: ExtensionAPI) {
 				// A user abort (Escape) after this agent started means the user opted
 				// out of the cloud run — it finishes on its own, but its completion is
 				// surfaced nowhere.
-				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
 				if (isError) {
 					// Errored runs have no result to review/sync — no completion
 					// dropdown. handleRemoteFailure notifies the user (or steers a
 					// headless agent, which would otherwise see nothing) and resumes
-					// the ferment paused for cloud execution.
-					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
-						error: record.error,
-						recoveryNote: record.recoveryNote,
-						fermentId: record.fermentId,
-						stoppedByUser: record.status === "stopped",
-					})
+					// the ferment paused for cloud execution. Guarded: a stale runtime
+					// means the spawning session was replaced mid-run — resumeFerment
+					// (first statement, no ctx access) still ran, and the dead
+					// session's notification surface is correctly dropped.
+					try {
+						handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+							error: record.error,
+							recoveryNote: record.recoveryNote,
+							fermentId: record.fermentId,
+							stoppedByUser: record.status === "stopped",
+						})
+					} catch (err) {
+						if (!isStaleCtxError(err)) throw err
+					}
 				} else if (!userAbortedRun && completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
@@ -1128,12 +1271,19 @@ export default function (pi: ExtensionAPI) {
 						fermentId: record.fermentId,
 						gitWorkflow: record.gitWorkflow,
 						recoveryNote: record.recoveryNote,
-					}).catch((err) => {
-						currentUi?.notify(
-							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
-							"warning",
-						)
 					})
+						.then(async () => {
+							if (sessionShuttingDown || !completionState) return
+							persistRemoteRunStateSafe({ ...completionState, completionPending: false })
+							await retirePlainRemote(record)
+						})
+						.catch((err) => {
+							if (isStaleCtxError(err)) return
+							currentUi?.notify(
+								`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+								"warning",
+							)
+						})
 				} else if (!userAbortedRun) {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
 				} else if (record.fermentId) {
@@ -1141,8 +1291,17 @@ export default function (pi: ExtensionAPI) {
 					// Esc is the product's ferment-pause signal (the ferment extension
 					// pauses and says "Run /ferment resume to continue"), so the ferment
 					// stays paused. Only leave a breadcrumb so the finished run isn't
-					// forgotten.
-					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					// forgotten. Guarded: a stale spawnCtx (session replaced mid-run)
+					// must not turn this suppressed completion into an onComplete throw —
+					// the manager chain would mark the successful run as failed and skip
+					// its queue draining. On stale, the breadcrumb still reaches
+					// currentUi (the live session's surface).
+					let ui: ExtensionUIContext | undefined = currentUi
+					try {
+						if (completionCtx?.hasUI) ui = completionCtx.ui
+					} catch (err) {
+						if (!isStaleCtxError(err)) throw err
+					}
 					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
 				}
 				agentActivity.delete(record.id)
@@ -1159,7 +1318,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		undefined,
 		(record, ctx) => {
-			pi.events.emit("subagents:started", {
+			emitSubagentEvent("subagents:started", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1168,7 +1327,7 @@ export default function (pi: ExtensionAPI) {
 			void trackSubagentSpawned(record, ctx)
 		},
 		(record, info) => {
-			pi.events.emit("subagents:compacted", {
+			emitSubagentEvent("subagents:compacted", {
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1251,7 +1410,7 @@ export default function (pi: ExtensionAPI) {
 			// is ready — the meta + ACP id only exist then.
 			onRemoteReady: ({ meta, acpSessionId }: { meta: RemoteSessionMeta; acpSessionId: string }) => {
 				const rec = manager.getRecord(id)
-				persistRemoteRunState(pi, {
+				persistRemoteRunStateSafe({
 					id,
 					description: desc,
 					remoteSession: meta,
@@ -1310,7 +1469,7 @@ export default function (pi: ExtensionAPI) {
 				widget.ensureTimer()
 				widget.update()
 
-				pi.events.emit("subagents:backgrounded", {
+				emitSubagentEvent("subagents:backgrounded", {
 					id,
 					type: "Remote-Runner",
 					description: desc,
@@ -1345,6 +1504,8 @@ export default function (pi: ExtensionAPI) {
 	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
 
 	pi.on("session_shutdown", async () => {
+		sessionShuttingDown = true
+		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
 		unsubKill?.()
@@ -1407,7 +1568,11 @@ export default function (pi: ExtensionAPI) {
 				continue
 			}
 			agentActivity.set(run.id, bgState)
-			ctx.ui.notify?.(`Resumed remote cloud agent: ${run.description} — still running in the sandbox`)
+			ctx.ui.notify?.(
+				outcome === "completed"
+					? `Remote cloud agent result restored: ${run.description}`
+					: `Resumed remote cloud agent: ${run.description} — still running in the sandbox`,
+			)
 		}
 		widget.ensureTimer()
 		widget.update()
@@ -1523,7 +1688,7 @@ export default function (pi: ExtensionAPI) {
 
 ${typeListText}
 
-${AGENT_TOOL_GUIDELINES}`,
+${buildAgentToolGuidelines(isTuiSession())}`,
 			parameters: Type.Object({
 				prompt: Type.String({
 					description: "The task for the agent to perform.",
@@ -1568,8 +1733,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				),
 				run_in_background: Type.Optional(
 					Type.Boolean({
-						description:
-							"Default: true in interactive sessions (false in headless and ACP runs). Run the agent in the background and return its ID immediately; you will be notified on completion. Set to false only when the next step in your workflow cannot proceed without the agent's result.",
+						description: buildRunInBackgroundParameterDescription(isTuiSession()),
 					}),
 				),
 				isolated: Type.Optional(
@@ -1696,6 +1860,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				reloadCustomAgents()
 
+				// Capture the session facts every post-run path needs BEFORE the
+				// first await: the race below can run for minutes, and a session
+				// replace/fork/reload mid-run invalidates this per-call ctx (every
+				// property read throws — see ../stale-ctx.ts), which must not turn a
+				// completed subagent result into a tool error. cwd/session id are
+				// call-invariant. The multi-model flag deliberately freezes at spawn
+				// time — the agent runs under the config it was spawned with.
+				// Same convention as the surfaceMode capture in get_subagent_result
+				// and spawnCtx in agent-manager.
+				const agentCwd = ctx.cwd
+				const parentSessionId = ctx.sessionManager.getSessionId()
+				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
 				const rawType = params.subagent_type as SubagentType
 				const resolved = resolveType(rawType)
 				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
@@ -1731,7 +1908,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// resolve the default model from the role config based on the agent
 				// type. This ensures Builder calls use the configured builder model,
 				// not the orchestrator's own model.
-				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+				if (multiModelEnabled && !resolvedConfig.modelFromParams) {
 					const roleModelRef = resolveRoleModelRef(subagentType)
 					if (roleModelRef) {
 						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
@@ -1747,7 +1924,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				// an explicit model, the resolved model must belong to the configured
 				// multi-model role pool. This runs before budget-retry and task_ref checks
 				// so invalid models are rejected immediately.
-				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
+				if (multiModelEnabled && resolvedConfig.modelFromParams) {
 					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
 					const allowed = new Set(getAllowedMultiModelRefs())
 					if (!allowed.has(fullRef)) {
@@ -1853,11 +2030,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 						origBgOnSession(session)
 						const rec = manager.getRecord(id)
 						if (rec?.outputFile) {
+							// Invoked by the runner after async session creation —
+							// temporally post-await, so it must use the entry-time
+							// capture, not ctx.cwd (stale after a mid-run session
+							// replace).
 							rec.outputCleanup = streamToOutputFile(
 								session as Parameters<typeof streamToOutputFile>[0],
 								rec.outputFile,
 								id,
-								ctx.cwd,
+								agentCwd,
 							)
 						}
 					}
@@ -1920,7 +2101,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 					const isQueued = record?.status === "queued"
 					return textResult(
-						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes — the completion notification will contain the results.\nDo NOT call get_subagent_result with wait: true just to wait for it — that blocks your run and queues user input. Continue with other independent work, or stop your turn and return control to the user.\nUse steer_subagent to send it messages. Do not duplicate this agent's work.`,
+						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\n${backgroundText(backgroundNotificationsReachUser(ctx.mode)).spawnTrailer}`,
 						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
 					)
 				}
@@ -1962,11 +2143,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 							widget.ensureTimer()
 							const rec = manager.getRecord(a.id)
 							if (rec?.outputFile) {
+								// Invoked by the runner after async session creation
+								// — temporally post-await, so it must use the
+								// entry-time capture, not ctx.cwd (stale after a
+								// mid-run session replace).
 								rec.outputCleanup = streamToOutputFile(
 									session as Parameters<typeof streamToOutputFile>[0],
 									rec.outputFile,
 									a.id,
-									ctx.cwd,
+									agentCwd,
 								)
 							}
 							break
@@ -2049,14 +2234,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 					fgDetached = true
 					clearInterval(spinnerInterval)
 
-					const outputFile = createOutputFilePath(
-						ctx.cwd,
-						spawnedId,
-						ctx.sessionManager.getSessionId(),
-						parentSessionDir,
-					)
+					const outputFile = createOutputFilePath(agentCwd, spawnedId, parentSessionId, parentSessionDir)
 					record.outputFile = outputFile
-					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					writeInitialEntry(outputFile, spawnedId, params.prompt as string, agentCwd)
 					if (record.session) {
 						// Tear down the foreground streaming subscription before
 						// re-subscribing against the same session for background output.
@@ -2065,7 +2245,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							record.session as Parameters<typeof streamToOutputFile>[0],
 							outputFile,
 							spawnedId,
-							ctx.cwd,
+							agentCwd,
 						)
 					}
 
@@ -2090,13 +2270,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 					widget.ensureTimer()
 					widget.update()
 
-					pi.events.emit("subagents:backgrounded", {
+					emitSubagentEvent("subagents:backgrounded", {
 						id: spawnedId,
 						type: subagentType,
 						description: params.description,
 						visibility,
 					})
 
+					// Ctrl+B is a TUI-only keybinding — this path cannot be reached from
+					// another surface, so the notification promise in this text stays valid.
 					return textResult(
 						`Agent sent to background by the user (Ctrl+B).\nAgent ID: ${spawnedId}\nType: ${displayName}\nDescription: ${params.description}\n${outputFile ? `Output file: ${outputFile}\n` : ""}\nThe agent continues running in the background. You will be notified when it completes.\nDo NOT call get_subagent_result now — that would block and defeat the purpose of backgrounding. Continue with other independent work, or stop your turn and return control to the user. The completion notification will contain the results.`,
 						{
@@ -2175,17 +2357,15 @@ ${AGENT_TOOL_GUIDELINES}`,
 				record.latestOutcome ??= buildAgentOutcome(record)
 				// Persist a subagents:record entry for foreground agents so exports
 				// can enrich them with full transcripts the same way background
-				// agents are handled.
-				appendSubagentRecord(record)
+				// agents are handled. Best-effort under a mid-run session replace:
+				// the entry is skipped (the result still returns) — see
+				// appendSubagentRecordSafe.
+				appendSubagentRecordSafe(record)
 
 				const timeTaken = formatMs(durationMs)
 				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
-				const instruction = getStatusInstruction(
-					record.status,
-					getMultiModelEnabled(ctx.sessionManager),
-					record.abortReason,
-				)
+				const instruction = getStatusInstruction(record.status, multiModelEnabled, record.abortReason)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
 					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
@@ -2211,8 +2391,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}),
 				wait: Type.Optional(
 					Type.Boolean({
-						description:
-							"If true, block until the agent completes (capped at 60s). Do NOT use right after backgrounding an agent — you will be notified when it completes, and blocking queues user input. Only for true dependencies. Default: false.",
+						description: backgroundText(isTuiSession()).waitParameter,
 					}),
 				),
 				verbose: Type.Optional(
@@ -2276,11 +2455,19 @@ ${AGENT_TOOL_GUIDELINES}`,
 				return new Text(line, 0, 0)
 			},
 
-			execute: async (_toolCallId, params, signal, _onUpdate, _ctx) => {
+			execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
 				const record = manager.getRecord(params.agent_id as string)
 				if (!record) {
 					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
 				}
+
+				// Capture the surface before the bounded join below: `ctx.mode` routes
+				// through the extension runner's assertActive() and throws once the
+				// session is replaced or forked mid-wait (see stale-ctx.ts), but a
+				// timed-out join must still return guidance text, not a tool error.
+				// A session keeps one surface for its lifetime, so the entry-time
+				// capture is equivalent to reading it when building the response.
+				const surfaceMode = ctx.mode
 
 				let waitOutcome: AgentWaitOutcome | undefined
 				if (params.wait && record.status === "running" && record.promise) {
@@ -2310,19 +2497,18 @@ ${AGENT_TOOL_GUIDELINES}`,
 					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
 					`Description: ${record.description}\n\n`
 
+				const texts = backgroundText(backgroundNotificationsReachUser(surfaceMode))
 				let bodyForDisplay: string
 				if (record.status === "queued") {
-					bodyForDisplay = `Agent is queued behind the background-agent concurrency cap (max ${manager.getMaxConcurrent()} concurrent) and has not started. Do not wait on it — you will be notified when it completes. If its output is a hard dependency, check back with wait: true once it reports running.`
+					bodyForDisplay = texts.queuedBody(manager.getMaxConcurrent())
 					output += bodyForDisplay
 				} else if (record.status === "running") {
 					if (waitOutcome === "timed_out") {
-						bodyForDisplay = `Waited ${GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`
+						bodyForDisplay = texts.timedOutBody(GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000)
 					} else if (waitOutcome === "aborted") {
-						bodyForDisplay =
-							"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification."
+						bodyForDisplay = texts.abortedBody
 					} else {
-						bodyForDisplay =
-							"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results."
+						bodyForDisplay = texts.runningBody
 					}
 					output += bodyForDisplay
 				} else if (record.status === "error") {
@@ -2406,7 +2592,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 				if (!record.session) {
 					if (!record.pendingSteers) record.pendingSteers = []
 					record.pendingSteers.push(params.message as string)
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					emitSubagentEvent("subagents:steered", { id: record.id, message: params.message })
 					return textResult(
 						`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`,
 					)
@@ -2414,7 +2600,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				try {
 					await steerAgent(record.session, params.message as string)
-					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					emitSubagentEvent("subagents:steered", { id: record.id, message: params.message })
 					const tokens = formatLifetimeTokens(record)
 					const contextPercent = getSessionContextPercent(record.session)
 					const stateParts: string[] = []

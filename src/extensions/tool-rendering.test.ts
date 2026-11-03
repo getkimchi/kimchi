@@ -30,6 +30,7 @@ import toolRenderingExtension, {
 	patchAssistantMessageRender,
 	patchToolRenderCacheInvalidation,
 	patchUserMessageRender,
+	removeImageChildren,
 	splitLeadingOsc133Markers,
 	summarizeMcpToolInvocationArgs,
 	summarizeOpenAiToolCall,
@@ -1150,5 +1151,41 @@ describe("tool-rendering marker resolution", () => {
 			{} as never,
 		)
 		expect(received[0].content).toEqual([{ type: "text", text: withMidText }])
+	})
+})
+
+describe("removeImageChildren (read-image collapse)", () => {
+	it("clears imageSources alongside components and spacers, keeping upstream's index-aligned reuse invariant", () => {
+		// Regression test: leaving imageSources stale made the next updateDisplay
+		// match a source against an empty imageComponents array, reuse `undefined`
+		// and pass it to addChild — crashing --continue replay of a read image
+		// (WeakMap keys must be objects or non-registered symbols).
+		const removed: unknown[] = []
+		const image = { kind: "image" }
+		const spacer = { kind: "spacer" }
+		const source = { data: "AAAA", mimeType: "image/png", widthCells: 40 }
+		const component = {
+			imageComponents: [image],
+			imageSpacers: [spacer],
+			imageSources: [source],
+			removeChild: (child: unknown) => {
+				removed.push(child)
+			},
+		}
+
+		// deleteRenderedKittyImages only fires on image-capable TTYs; force the
+		// non-TTY path so the test is deterministic in any terminal.
+		const originalIsTTY = process.stdout.isTTY
+		Object.defineProperty(process.stdout, "isTTY", { value: false, configurable: true })
+		try {
+			removeImageChildren(component)
+		} finally {
+			Object.defineProperty(process.stdout, "isTTY", { value: originalIsTTY, configurable: true })
+		}
+
+		expect(component.imageComponents).toEqual([])
+		expect(component.imageSpacers).toEqual([])
+		expect(component.imageSources).toEqual([])
+		expect(removed).toEqual([image, spacer])
 	})
 })

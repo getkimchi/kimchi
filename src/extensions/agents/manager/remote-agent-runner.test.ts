@@ -84,9 +84,11 @@ vi.mock("../../../sandbox/worker/acp-client.js", async (importOriginal) => {
 				cancel: mockCancel,
 				forceDisconnect: mockForceDisconnect,
 				setCallbacks: vi.fn(),
+				setSignal: vi.fn(),
 			}
 		}),
 		RemoteConnectionError,
+		AcpSessionDetachedError: actual.AcpSessionDetachedError,
 		// Pure helper — use the real implementation (unit-tested in acp-client.test.ts).
 		extractFinalAssistantText: actual.extractFinalAssistantText,
 	}
@@ -98,6 +100,7 @@ import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import {
 	AcpSessionClient,
 	type AcpSessionClientOptions,
+	AcpSessionDetachedError,
 	RemoteConnectionError,
 } from "../../../sandbox/worker/acp-client.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
@@ -214,6 +217,7 @@ beforeEach(() => {
 			cancel: mockCancel,
 			forceDisconnect: mockForceDisconnect,
 			setCallbacks: vi.fn(),
+			setSignal: vi.fn(),
 			get loadReplay() {
 				return mockLoadReplay
 			},
@@ -344,6 +348,20 @@ describe("runRemoteAgent", () => {
 		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks: undefined }))
 
 		expect(result.responseText).toBe("no callback text")
+	})
+
+	it("disconnects observation without deleting the remote session or starting recovery", async () => {
+		const controller = new AbortController()
+		mockPrompt.mockImplementationOnce(async () => {
+			controller.abort(new AcpSessionDetachedError())
+			throw controller.signal.reason
+		})
+		await expect(
+			runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ signal: controller.signal })),
+		).rejects.toBeInstanceOf(AcpSessionDetachedError)
+		expect(deleteSession).not.toHaveBeenCalled()
+		expect(getSession).not.toHaveBeenCalled()
+		expect(mockClose).toHaveBeenCalled()
 	})
 
 	it("closes AcpSessionClient and deletes session on success", async () => {
@@ -1744,6 +1762,18 @@ describe("attachRemoteAgent", () => {
 		await expect(attachRemoteAgent(makeAttachOptions())).rejects.toThrow("no longer reachable")
 
 		// Unknown outcome — the unreachable session is not deleted.
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("leaves the worker session available when observation detaches during recovery", async () => {
+		const controller = new AbortController()
+		vi.mocked(getSession).mockImplementation(async () => {
+			controller.abort(new AcpSessionDetachedError())
+			throw controller.signal.reason
+		})
+		await expect(attachRemoteAgent(makeAttachOptions({ signal: controller.signal }))).rejects.toMatchObject({
+			name: "AbortError",
+		})
 		expect(deleteSession).not.toHaveBeenCalled()
 	})
 

@@ -104,7 +104,10 @@ You are a senior X engineer who...
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list
   preloads named skills from the project's skill paths into the system prompt
   (useful when the agent needs reference material). Project skills in the nearest
-  `.kimchi/skills` directory are available automatically.
+  `.kimchi/skills` directory are available automatically. With `true`, skills
+  whose declared triggers match the task brief are additionally auto-loaded at
+  spawn (see [skills-autoload.md](skills-autoload.md)); `false` and comma-list
+  personas never get brief-triggered injections.
 - **`prompt_mode: append`** — Treat body as an addendum to the parent's full
   system prompt. The default `replace` makes the persona fully self-contained.
 - **`memory` (removed)** — The per-agent persistent-memory field no longer has
@@ -271,3 +274,16 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
+
+## Remote runs and session replacement
+
+Starting a new session, resuming another session, or reloading extensions detaches
+local observation of remote agents. It does not cancel their work on the worker.
+Local subagents are stopped during shutdown. Explicitly stopping a remote agent
+still cancels its remote turn.
+
+Remote runs belong to their originating session. Resuming that session reattaches
+to work still running on the worker, or restores a saved result and its completion
+menu. Finished output is persisted as `remote_run:state` with `completionPending`
+and `result` until the menu is handled. Plain remote sessions are retired after
+the menu, or after returning a foreground result; PR-intent sessions follow their review, steer, and terminal-action lifecycle.

@@ -6,10 +6,13 @@
 // current version. We never throw out of this module — entry.ts wraps the
 // call in its own try/catch but we also catch internally as defense-in-depth.
 
+import { homedir } from "node:os"
 import { basename } from "node:path"
+import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { type CliMode, getCliModeArg, hasExportFlag, hasPrintFlag, PROTOCOL_MODES } from "../cli-modes.js"
 import { getVersion } from "../utils.js"
-import { isHomebrewInstall } from "./paths.js"
+import { refreshBridge } from "./install.js"
+import { isHomebrewInstall, stableExecutablePath } from "./paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting } from "./settings.js"
 import { applyUpdate, checkForUpdate, parseCanarySha7 } from "./workflow.js"
 
@@ -279,7 +282,12 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 		if (process.env.KIMCHI_NO_UPDATE_CHECK) return
 		if (argvHasSkipTrigger(process.argv)) return
 		if (isNonInteractiveLaunch(process.argv)) return
-		if (isHomebrewInstall()) return
+		if (isHomebrewInstall()) {
+			// Homebrew updates the binary without `kimchi update`, which refreshes the bundled
+			// work-reporting plugins elsewhere; this is a no-op once they match.
+			refreshBridge(resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath), stableExecutablePath())
+			return
+		}
 		if (parseCanarySha7(getVersion()) !== null) return
 		// Dev/source launches: getVersion() returns "dev" when package.json has
 		// the 0.0.0 placeholder. In that case process.execPath is the Bun/Node

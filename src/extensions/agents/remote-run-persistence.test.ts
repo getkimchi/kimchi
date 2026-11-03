@@ -116,6 +116,14 @@ describe("findResumableRemoteRuns", () => {
 		expect(findResumableRemoteRuns({ getBranch: () => branch })).toHaveLength(0)
 	})
 
+	it("restores completed results until the completion menu is handled", () => {
+		const pending = makeState({ status: "completed", completionPending: true, result: "finished work" })
+		expect(findResumableRemoteRuns({ getBranch: () => [entry(pending)] })).toEqual([pending])
+		expect(
+			findResumableRemoteRuns({ getBranch: () => [entry(pending), entry({ ...pending, completionPending: false })] }),
+		).toEqual([])
+	})
+
 	it("returns an empty list for a session without remote entries", () => {
 		expect(findResumableRemoteRuns({ getBranch: () => [] })).toEqual([])
 	})

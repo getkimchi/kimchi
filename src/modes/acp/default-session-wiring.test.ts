@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 type ResourceLoaderOptions = Record<string, unknown>
 
 const capturedLoaderOptions: ResourceLoaderOptions[] = []
+/** ResourceLoaders handed to createAgentSession — the ACP adapter in front of
+ *  the main loader (append content is served by the adapter, see
+ *  session-resource-loader.ts). */
+const capturedSessionLoaders: Array<{ getAppendSystemPrompt(): string[] }> = []
 
 // Partial mock: keep the entire real pi-coding-agent package, but record the
 // options handed to DefaultResourceLoader and stub createAgentSession. The
@@ -24,13 +28,16 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return {
 		...actual,
 		DefaultResourceLoader: CapturingResourceLoader,
-		createAgentSession: async () => ({ session: { sessionId: "stubbed-session" } }) as never,
+		createAgentSession: async (options: { resourceLoader?: { getAppendSystemPrompt(): string[] } }) => {
+			if (options?.resourceLoader) capturedSessionLoaders.push(options.resourceLoader)
+			return { session: { sessionId: "stubbed-session" } } as never
+		},
 	}
 })
 
 // Stub the skill-list block: buildSkillListBlock(cwd) would otherwise
 // discover the real HOME's skills and pollute the asserted prompt array (the
-// block itself is upstream's contribution appended after the _meta entries).
+// block itself is the adapter's contribution appended after the _meta entries).
 vi.mock("./skill-commands.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./skill-commands.js")>()
 	return { ...actual, buildSkillListBlock: () => "" }
@@ -44,18 +51,14 @@ function encodeCwdDir(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
 }
 
-// Since the rebase onto upstream/master, DefaultResourceLoader is configured
-// through appendSystemPromptOverride (upstream added the skill-list block via
-// an override), not a static appendSystemPrompt array. Invoke the captured
-// override the way pi's resource loader does (with the discovered base
-// entries — empty here because the temp cwd has no append-system prompt file)
-// and assert on the appended entries.
-type AppendOverride = (base: string[]) => string[]
-
-function invokeCapturedOverride(index = 0): string[] {
-	const override = capturedLoaderOptions[index].appendSystemPromptOverride as AppendOverride | undefined
-	if (!override) throw new Error("expected DefaultResourceLoader to receive an appendSystemPromptOverride")
-	return override([])
+// The append content is served by the ACP adapter's getAppendSystemPrompt()
+// (computed per call: configured base + the skill-list block). Reading it the
+// way the session's prompt rebuild does keeps these wiring tests on the
+// served contract rather than loader constructor options.
+function servedAppend(index = 0): string[] {
+	const loader = capturedSessionLoaders[index]
+	if (!loader) throw new Error("expected createAgentSession to receive a resourceLoader")
+	return loader.getAppendSystemPrompt()
 }
 
 describe("default session factory/loader _meta wiring", () => {
@@ -65,6 +68,7 @@ describe("default session factory/loader _meta wiring", () => {
 
 	beforeEach(() => {
 		capturedLoaderOptions.length = 0
+		capturedSessionLoaders.length = 0
 		agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-wiring-agent-"))
 		cwd = mkdtempSync(join(tmpdir(), "kimchi-acp-wiring-cwd-"))
 		tempDirs.push(agentDir, cwd)
@@ -78,7 +82,7 @@ describe("default session factory/loader _meta wiring", () => {
 		return { extensionFactories: [], agentDir, ...extra }
 	}
 
-	it("defaultSessionFactory threads _meta['kimchi.dev'].appendSystemPrompt into DefaultResourceLoader.appendSystemPrompt", async () => {
+	it("defaultSessionFactory threads _meta['kimchi.dev'].appendSystemPrompt into the served append prompt", async () => {
 		const factory = defaultSessionFactory(makeOptions())
 		await factory({
 			cwd,
@@ -86,7 +90,7 @@ describe("default session factory/loader _meta wiring", () => {
 			_meta: { "kimchi.dev": { appendSystemPrompt: "You are a worker under AO supervision." } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
-		expect(invokeCapturedOverride()).toEqual(["You are a worker under AO supervision."])
+		expect(servedAppend()).toEqual(["You are a worker under AO supervision."])
 	})
 
 	it("defaultSessionFactory appends meta content after --append-system-prompt CLI flag content", async () => {
@@ -97,16 +101,17 @@ describe("default session factory/loader _meta wiring", () => {
 			_meta: { "kimchi.dev": { appendSystemPrompt: "meta prompt" } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
-		expect(invokeCapturedOverride()).toEqual(["cli base prompt", "meta prompt"])
+		expect(servedAppend()).toEqual(["cli base prompt", "meta prompt"])
 	})
 
-	it("defaultSessionFactory leaves appendSystemPrompt unset when no meta is present (backward compat)", async () => {
+	it("defaultSessionFactory serves no append content when no meta is present (backward compat)", async () => {
 		const factory = defaultSessionFactory(makeOptions())
 		await factory({ cwd, mcpServers: [] })
 		expect(capturedLoaderOptions).toHaveLength(1)
-		// Only the upstream skill-list block may be appended — and an empty
-		// temp cwd yields no skills, so the result must be empty.
-		expect(invokeCapturedOverride()).toEqual([])
+		// Only the adapter's skill-list block may be appended — and an empty
+		// temp cwd yields no skills (the block is stubbed to "" here), so the
+		// result must be empty.
+		expect(servedAppend()).toEqual([])
 	})
 
 	it("defaultSessionLoader threads _meta['kimchi.dev'].appendSystemPrompt identically", async () => {
@@ -131,6 +136,6 @@ describe("default session factory/loader _meta wiring", () => {
 			_meta: { "kimchi.dev": { appendSystemPrompt: "Loaded sessions get the same prompt." } },
 		})
 		expect(capturedLoaderOptions).toHaveLength(1)
-		expect(invokeCapturedOverride()).toEqual(["Loaded sessions get the same prompt."])
+		expect(servedAppend()).toEqual(["Loaded sessions get the same prompt."])
 	})
 })

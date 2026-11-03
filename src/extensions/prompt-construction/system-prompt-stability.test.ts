@@ -773,6 +773,7 @@ describe("system prompt stability contract", () => {
 			readGitRemoteHost: () => undefined,
 			isGitRepo: () => false,
 			walkPaths: () => new Set<string>(),
+			detectLspExtensions: () => new Set<string>(),
 		}
 
 		let harness: TestHarness

@@ -1,5 +1,5 @@
-import type { Model } from "@earendil-works/pi-ai"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai"
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { Key } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, sendTerminalInput } from "../__mocks__/context.js"
@@ -31,10 +31,61 @@ async function flushInvitationEntry(): Promise<void> {
 const CTRL_R = "\x12"
 
 // Shared mocks (see AGENTS.md: do not hand-roll ctx/pi mocks in test files).
-function makeApi() {
+// Default entries end with a clean settled reply, so the settle path's
+// agent_settled arming works out of the box; pass [] for a fresh session.
+function makeApi(entries: SessionEntry[] = settledEntries()) {
 	const harness = createExtensionApi()
-	const ctx = createContext({ hasUI: true, mode: "tui" })
+	const ctx = createContext({
+		hasUI: true,
+		mode: "tui",
+		sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
+	})
 	return { ...harness, ctx }
+}
+
+/** A minimal persisted log ending in a clean end_turn reply — the fact the
+ * derivation arms from, live and restored alike. */
+function settledEntries(): SessionEntry[] {
+	return [
+		{
+			type: "message",
+			id: "e1",
+			parentId: null,
+			timestamp: "t",
+			message: { role: "user", content: "fix it", timestamp: 0 },
+		},
+		{
+			type: "message",
+			id: "e2",
+			parentId: "e1",
+			timestamp: "t",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				api: "openai-completions",
+				provider: "kimchi-dev",
+				model: "kimi-k3",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 0,
+			},
+		},
+	]
+}
+
+/** The fixture's tail reply, narrowed for mutation — tests state only the
+ * fact they vary instead of repeating the narrow-then-throw dance. */
+function tailAssistant(entries: SessionEntry[]): AssistantMessage {
+	const entry = entries.at(-1)
+	if (entry?.type !== "message" || entry.message.role !== "assistant") throw new Error("fixture")
+	return entry.message
 }
 
 const feedbackMock = vi.hoisted(() => ({ trackFeedback: vi.fn() }))
@@ -46,6 +97,15 @@ const ratingDialogMock = vi.hoisted(() => ({ show: vi.fn() }))
 vi.mock("../telemetry/index.js", () => ({
 	trackFeedback: feedbackMock.trackFeedback,
 	trackModelSwitchFeedback: trackModelSwitchFeedbackMock,
+	// The feedback ctx carries a sessionManager (see makeApi); the guarded
+	// read just unwraps it.
+	trySessionId: (ctx: { sessionManager?: { getSessionId(): string | undefined } }) => {
+		try {
+			return ctx.sessionManager?.getSessionId()
+		} catch {
+			return undefined
+		}
+	},
 }))
 
 vi.mock("./dialog.js", () => ({
@@ -103,14 +163,23 @@ describe("feedbackExtension rating window registry", () => {
 		})
 	})
 
+	it("does not arm when the settled turn was cancelled", () => {
+		// The partial reply persists with stopReason "aborted" — the same fact
+		// the restored path reads, so live and restored agree.
+		const entries = settledEntries()
+		tailAssistant(entries).stopReason = "aborted"
+		const { api, ctx, getHandler } = makeApi(entries)
+		feedbackExtension(api)
+
+		getHandler("agent_settled")({}, ctx)
+		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+
 	it("captures the resolved routed pick when the settle ran on a routed virtual model", () => {
-		const { api, ctx, getHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
-		setAutoRoutingState("test-session", {
-			status: "resolved",
-			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
-			requestedId: "auto-beta",
-		})
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto-beta"
+		tailAssistant(entries).responseModel = "glm-5.3"
+		const { api, ctx, getHandler } = makeApi(entries)
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -164,6 +233,119 @@ describe("feedbackExtension rating window registry", () => {
 
 		await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
 		expect(getRatingWindow("test-session")).toBeUndefined()
+	})
+
+	// A session constructed from a persisted log (TUI resume, ACP
+	// session/load) re-derives its rating state at session_start — the same
+	// facts the settle path arms from, read back from the transcript.
+	describe("rating window armed from a loaded transcript", () => {
+		it("arms the window from a loaded log whose last reply settled end_turn", async () => {
+			const { api, ctx, getHandler } = makeApi(settledEntries())
+			feedbackExtension(api)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({
+				autoModelUsed: false,
+				routedModelId: undefined,
+			})
+		})
+
+		it("reports the transcript's routed pick for an Auto reply", async () => {
+			const entries = settledEntries()
+			tailAssistant(entries).model = "auto"
+			tailAssistant(entries).responseModel = "glm-5.3"
+			const { api, ctx, getHandler } = makeApi(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: true, routedModelId: "glm-5.3" })
+		})
+
+		it("does not arm from a log whose tail aborted", async () => {
+			const entries = settledEntries()
+			tailAssistant(entries).stopReason = "aborted"
+			const { api, ctx, getHandler } = makeApi(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("does not arm from an already-rated log", async () => {
+			const entries: SessionEntry[] = [
+				...settledEntries(),
+				{
+					type: "custom",
+					id: "e3",
+					parentId: "e2",
+					timestamp: "t",
+					customType: "feedback-summary",
+					data: { sentiment: "positive", reason: "ok" },
+				},
+			]
+			const { api, ctx, getHandler } = makeApi(entries)
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "reload" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("does not arm for a fresh session with no entries", async () => {
+			const { api, ctx, getHandler } = makeApi([])
+			feedbackExtension(api)
+
+			await getHandler("session_start")({ reason: "startup" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
+
+		it("a settle-armed window is replaced by what the replacement session's log derives", async () => {
+			const { api, ctx, getHandler } = makeApi()
+			feedbackExtension(api)
+			getHandler("agent_settled")({}, ctx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: false, routedModelId: undefined })
+
+			const entries = settledEntries()
+			tailAssistant(entries).model = "auto"
+			tailAssistant(entries).responseModel = "glm-5.3"
+			const resumeCtx = createContext({
+				sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
+			})
+			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+			await getHandler("session_start")({ reason: "resume" }, resumeCtx)
+			expect(getRatingWindow("test-session")).toEqual({ autoModelUsed: true, routedModelId: "glm-5.3" })
+		})
+
+		it("a forked session's inherited tail arms from the copied log", async () => {
+			// /fork and /clone replace the session: session_shutdown then
+			// session_start, and the new session's entries are the parent's
+			// copied log — its settled tail arms by the same rule.
+			const { api, ctx, getHandler } = makeApi(settledEntries())
+			feedbackExtension(api)
+
+			await getHandler("session_shutdown")({ reason: "user_exit" }, ctx)
+			expect(getRatingWindow("test-session")).toBeUndefined()
+
+			await getHandler("session_start")({ reason: "resume" }, ctx)
+			expect(getRatingWindow("test-session")).toEqual({
+				autoModelUsed: false,
+				routedModelId: undefined,
+			})
+		})
+
+		it("invites on resume so the restored reply can be rated", async () => {
+			const { api, ctx, getHandler, getShortcutHandler, getAppendedEntries } = makeApi(settledEntries())
+			feedbackExtension(api)
+			await getHandler("session_start")({ reason: "resume" }, ctx)
+
+			dialogMock.show.mockResolvedValueOnce({ reason: "Solved my task" })
+			await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+
+			expect(dialogMock.show).toHaveBeenCalledWith(ctx, { sentiment: "positive", autoModelUsed: false })
+			expect(getAppendedEntries("feedback-summary")).toHaveLength(1)
+			// The window is consumed — one rating per settled response.
+			expect(getRatingWindow("test-session")).toBeUndefined()
+		})
 	})
 })
 
@@ -242,6 +424,7 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "negative",
 			reason: "Too slow",
 			reasonType: "predefined",
+			sessionId: "test-session",
 		})
 	})
 
@@ -260,6 +443,7 @@ describe("feedbackExtension state machine", () => {
 			sentiment: "positive",
 			reason: "Solved my task",
 			reasonType: "predefined",
+			sessionId: "test-session",
 		})
 	})
 
@@ -286,8 +470,9 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("detects auto-model and passes autoModelUsed=true to the details dialog", async () => {
-		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto", name: "Auto" }
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto"
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi(entries)
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -300,14 +485,12 @@ describe("feedbackExtension state machine", () => {
 	})
 
 	it("reports the resolved concrete pick as routing_model for a routed virtual model", async () => {
-		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
-		;(ctx as unknown as { model: unknown }).model = { provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" }
-		// Seed the routing state so the settled turn resolves auto-beta → glm-5.3.
-		setAutoRoutingState("test-session", {
-			status: "resolved",
-			model: { provider: "kimchi-dev", id: "glm-5.3" } as Model<string>,
-			requestedId: "auto-beta",
-		})
+		const entries = settledEntries()
+		tailAssistant(entries).model = "auto-beta"
+		tailAssistant(entries).responseModel = "glm-5.3"
+		const { api, ctx, getHandler, getShortcutHandler } = makeApi(entries)
+		// The reply's own entry carries the routed pick — the same fact the
+		// restored path reads.
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
 
@@ -351,9 +534,17 @@ describe("feedbackExtension state machine", () => {
 		const { api, ctx, getHandler, getShortcutHandler } = makeApi()
 		feedbackExtension(api)
 		getHandler("agent_settled")({}, ctx)
-		await getHandler("session_start")({ reason: "resume" }, ctx)
+		// The replacement session's log rates nothing — the reset wins over any
+		// invitation carried across. (A log that rates something re-arms by
+		// design; that's the restore path, not a leak.)
+		const freshCtx = createContext({
+			hasUI: true,
+			mode: "tui",
+			sessionManager: { getEntries: () => [], getSessionId: () => "test-session" },
+		})
+		await getHandler("session_start")({ reason: "resume" }, freshCtx)
 
-		await getShortcutHandler(Key.ctrl("1"))?.(ctx)
+		await getShortcutHandler(Key.ctrl("1"))?.(freshCtx)
 		expect(dialogMock.show).not.toHaveBeenCalled()
 	})
 
@@ -563,6 +754,7 @@ describe("feedbackExtension state machine", () => {
 			reason: "Better at code",
 			modelName: "Concrete",
 			modelId: "concrete-model",
+			sessionId: "test-session",
 		})
 	})
 
@@ -622,6 +814,7 @@ describe("feedbackExtension state machine", () => {
 			reason: "second try",
 			modelName: "Concrete",
 			modelId: "concrete-model",
+			sessionId: "test-session",
 		})
 	})
 
@@ -886,7 +1079,7 @@ describe("feedbackExtension stale ctx handling", () => {
 		feedbackExtension(api)
 		const ctx = createContext({
 			sessionManager: {
-				getSessionId: () => {
+				getEntries: () => {
 					throw new Error("boom")
 				},
 			},
@@ -960,6 +1153,7 @@ describe("feedbackExtension legacy-terminal rating picker", () => {
 			reason: "Too slow",
 			reasonType: "predefined",
 			routingModelId: undefined,
+			sessionId: "test-session",
 		})
 	})
 

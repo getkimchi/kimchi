@@ -21,13 +21,14 @@ export function fullText(terminal: Terminal): string {
 
 export async function waitForText(
 	terminal: Terminal,
-	pattern: string | RegExp,
+	pattern: string | RegExp | ((text: string) => boolean),
 	options: { timeoutMs?: number; full?: boolean } = {},
 ): Promise<void> {
 	const { timeoutMs = 15_000, full = true } = options
 	const read = () => (full ? fullText(terminal) : viewText(terminal))
 	const matches = (text: string) => {
 		if (typeof pattern === "string") return text.includes(pattern)
+		if (typeof pattern === "function") return pattern(text)
 		// Reset lastIndex so a global/sticky regex doesn't skip matches across polls.
 		pattern.lastIndex = 0
 		return pattern.test(text)
@@ -39,7 +40,8 @@ export async function waitForText(
 		await new Promise((resolve) => setTimeout(resolve, 100))
 		text = read()
 	}
-	throw new Error(`Timed out waiting for ${String(pattern)}.\n\nTerminal:\n${text}`)
+	const expected = typeof pattern === "function" ? `text matching ${pattern.name || "a check"}` : String(pattern)
+	throw new Error(`Timed out waiting for ${expected}.\n\nTerminal:\n${text}`)
 }
 
 /**
@@ -66,6 +68,32 @@ export async function findFermentArtifact(
 		await new Promise((r) => setTimeout(r, 250))
 	}
 	return undefined
+}
+
+/**
+ * Poll a recorded-request list (fixture.fake.requests) until a request matches
+ * the predicate — for assertions on traffic that races orchestrator UI events
+ * (e.g. a background subagent's first request can land AFTER the orchestrator's
+ * follow-up turn renders, so asserting immediately after a waitForText sees
+ * zero child requests). Throws with the URLs seen so far on timeout.
+ */
+export async function waitForRequest<T extends { url: string }>(
+	requests: T[],
+	predicate: (request: T) => boolean,
+	description: string,
+	timeoutMs = STREAM_TIMEOUT_MS,
+): Promise<T> {
+	const startedAt = Date.now()
+	while (Date.now() - startedAt < timeoutMs) {
+		const found = requests.find(predicate)
+		if (found) return found
+		await new Promise((resolve) => setTimeout(resolve, 100))
+	}
+	const recent = requests.slice(-20).map((r) => r.url)
+	const seen = recent.join(", ") || "none"
+	const omitted = requests.length - recent.length
+	const suffix = omitted > 0 ? ` (…and ${omitted} earlier)` : ""
+	throw new Error(`Timed out waiting for ${description}.\n\nRequests seen: ${seen}${suffix}`)
 }
 
 /**

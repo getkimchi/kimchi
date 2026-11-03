@@ -782,16 +782,24 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 	// dedupe → supersede → hash-mark → job removal, against a temp HOME so
 	// the memory root, ledger, and lock are fully isolated.
 	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	let home: string
 
 	beforeEach(() => {
 		home = mkdtempSync(join(tmpdir(), "kimchi-capture-pipeline-"))
 		process.env.HOME = home
 		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		// The drain resolves gateway credentials from $KIMCHI_CODING_AGENT_DIR/auth.json;
+		// point it at the credential-less temp home so a developer shell's real
+		// login can't turn the d3 decision gates live (they'd call the real
+		// gateway instead of the fake LLM and skip every window).
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
 		vi.mocked(spawn).mockClear()
 	})
 	afterEach(() => {
 		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
 		rmSync(home, { recursive: true, force: true })
 	})
 
@@ -1693,6 +1701,7 @@ describe("messageHash v2 scoping", () => {
 
 describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 	const realHome = process.env.HOME
+	const realAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 	let home: string
 	let consoleError: ReturnType<typeof vi.spyOn>
 
@@ -1700,10 +1709,15 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		home = mkdtempSync(join(tmpdir(), "kimchi-capture-poison-"))
 		process.env.HOME = home
 		mkdirSync(join(home, ".config", "kimchi", "memory", "pending"), { recursive: true })
+		// See the pipeline describe: keep the ambient agent-dir credentials out
+		// of the drain so the decision gates stay off the real gateway.
+		process.env.KIMCHI_CODING_AGENT_DIR = join(home, "agent-config")
 		consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 	afterEach(() => {
 		process.env.HOME = realHome
+		if (realAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = realAgentDir
 		rmSync(home, { recursive: true, force: true })
 		consoleError.mockRestore()
 	})

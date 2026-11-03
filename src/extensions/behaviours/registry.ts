@@ -18,7 +18,7 @@ import pythonEditBody from "./bodies/python-edit.md" with { type: "text" }
 import reReadBeforeEditBody from "./bodies/re-read-before-edit.md" with { type: "text" }
 import { type BehaviourSource, buildBehaviours } from "./build.js"
 import { bashInvokes, fetchesHost } from "./matchers.js"
-import { any, cli, gitRemote, gitRepo, tool } from "./triggers.js"
+import { any, cli, gitRemote, gitRepo, lspServes, not, tool } from "./triggers.js"
 import type { Behaviour } from "./types.js"
 
 const ghInvocation = bashInvokes("gh")
@@ -39,7 +39,17 @@ const sources: BehaviourSource[] = [
 	{
 		raw: pythonEditBody,
 		kind: "triggered",
-		triggers: { tool: pythonFileEdit },
+		triggers: {
+			tool: pythonFileEdit,
+			// Branch A of LSP-vs-AST-nudge precedence: when the session-start
+			// LSP winner serves Python, the lsp-tools system-prompt block has
+			// covered validation guidance from turn 0 ("prefer lsp over
+			// text-based alternatives") — suppress the AST nudge entirely so no
+			// contradictory body is ever steered. Go/TS winners don't serve `py`,
+			// so the nudge survives there; lazy mid-session activation (branch B) is
+			// handled by the one-time activation steer in the LSP extension.
+			gate: not(lspServes("py")),
+		},
 	},
 	{ raw: reReadBeforeEditBody, kind: "baseline" },
 	{
@@ -53,6 +63,11 @@ const sources: BehaviourSource[] = [
 			observed: ghInvocation,
 			violated: githubFromOtherTool,
 		},
+		// Standing policy: the body carries the consent policy for external /
+		// irreversible actions, so it keeps front-of-prompt authority on every
+		// load path (block renders even for tool loads) instead of the default
+		// steer + re-steer delivery.
+		standing: true,
 	},
 	{
 		raw: glabCliBody,
@@ -65,6 +80,9 @@ const sources: BehaviourSource[] = [
 			observed: glabInvocation,
 			violated: gitlabFromOtherTool,
 		},
+		// Standing policy, same rationale as gh-cli (consent rules for
+		// external / irreversible actions).
+		standing: true,
 	},
 ]
 

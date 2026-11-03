@@ -12,10 +12,13 @@
  * also records the load circumstances (turn, trigger source, tool args) so
  * downstream consumers (session summary) don't need a parallel side-table.
  *
- * Persistence across turns is handled by the system-prompt block registered
- * for each triggered behaviour: the block renders its body iff the behaviour
- * is loaded, so the loaded set surviving a session reset is sufficient —
- * no explicit re-injection is required after compaction.
+ * Persistence across turns is handled per delivery class: session-triggered
+ * bodies and `standing` bodies persist via the system-prompt block registered
+ * for each triggered behaviour (the block renders its body while the behaviour
+ * is loaded, so the loaded set surviving a session reset is sufficient — no
+ * explicit re-injection is required after compaction). Default tool-triggered
+ * bodies are steer-delivered only: wiring.ts re-sends the steer on every
+ * `session_compact` event to carry them across context rewrites.
  *
  * The `pending` queue exists solely to gate the in-turn steer delivery from
  * `tool_result`: a tool-triggered body is steered exactly once, the first
@@ -67,11 +70,18 @@ export class TriggerEngine {
 	 * events for behaviours that newly transitioned to loaded. Already-loaded
 	 * behaviours are skipped, so a behaviour cannot fire twice on tool events
 	 * even when many subsequent calls also match the matcher.
+	 *
+	 * A behaviour declaring `gate` must additionally pass it against the
+	 * session-start `SessionContext` (probe-as-veto on the tool path only).
+	 * Without a snapshot (a tool event before `session_start` — not expected
+	 * in practice) the gate is skipped: fail-open, so the nudge still firing
+	 * is the safe direction (no missed validation guidance).
 	 */
-	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number): LoadEvent[] {
+	evaluateToolTriggers(event: ToolCallEvent, turnIndex: number, sessionCtx?: SessionContext): LoadEvent[] {
 		return this.evaluateAll((b) => {
 			const matcher = b.triggers.tool
 			if (!matcher?.(event)) return undefined
+			if (b.triggers.gate && sessionCtx && !b.triggers.gate(sessionCtx)) return undefined
 			return { trigger: "tool", turnIndex, toolName: event.toolName, toolArgs: event.input }
 		})
 	}

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util"
+import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 
 export type BillingPlan = "community" | "coder" | "teams" | "enterprise"
@@ -58,6 +59,8 @@ export type BudgetStatus = "OK" | "WARNING" | "EXHAUSTED"
 
 interface BillingApiConfig {
 	apiKey: string
+	/** SSO org routing header value — set only for OAuth (SSO) login. */
+	organizationId?: string
 	creditsUrl: string
 	budgetUrl: string
 }
@@ -124,19 +127,25 @@ export function subscribeBillingStatus(listener: (status: BillingStatus | undefi
 	return () => listeners.delete(listener)
 }
 
-export function configureBillingCreditsApi(options: { apiKey?: string; llmEndpoint?: string }): void {
+export function configureBillingCreditsApi(options: {
+	apiKey?: string
+	organizationId?: string
+	llmEndpoint?: string
+}): void {
 	const apiKey = options.apiKey?.trim()
 	const llmEndpoint = options.llmEndpoint?.trim()
 	const next =
 		apiKey && llmEndpoint
 			? {
 					apiKey,
+					organizationId: options.organizationId,
 					creditsUrl: creditsEndpointFromLlmEndpoint(llmEndpoint),
 					budgetUrl: budgetEndpointFromLlmEndpoint(llmEndpoint),
 				}
 			: undefined
 	const changed =
 		creditsApiConfig?.apiKey !== next?.apiKey ||
+		creditsApiConfig?.organizationId !== next?.organizationId ||
 		creditsApiConfig?.creditsUrl !== next?.creditsUrl ||
 		creditsApiConfig?.budgetUrl !== next?.budgetUrl
 	creditsApiConfig = next
@@ -178,7 +187,7 @@ export async function refreshBillingStatus(
 	let response: Response
 	try {
 		response = await fetchImpl(config.creditsUrl, {
-			headers: { Authorization: `Bearer ${config.apiKey}` },
+			headers: gatewayAuthHeaders({ token: config.apiKey, organizationId: config.organizationId }),
 			signal: AbortSignal.timeout(options.requestTimeoutMs ?? BILLING_REFRESH_TIMEOUT_MS),
 		})
 	} catch {
@@ -214,7 +223,7 @@ export async function refreshBudgetStatus(
 	let response: Response
 	try {
 		response = await fetchImpl(config.budgetUrl, {
-			headers: { Authorization: `Bearer ${config.apiKey}` },
+			headers: gatewayAuthHeaders({ token: config.apiKey, organizationId: config.organizationId }),
 			signal: AbortSignal.timeout(options.requestTimeoutMs ?? BILLING_REFRESH_TIMEOUT_MS),
 		})
 	} catch {
@@ -277,7 +286,14 @@ export async function refreshBillingStatusFromConfig(
 	// generation bump when credentials actually change.
 	try {
 		const config = (options.loadConfig ?? loadConfig)()
-		configureBillingCreditsApi({ apiKey: config.apiKey, llmEndpoint: config.llmEndpoint })
+		// API key or the SSO credential in auth.json — otherwise billing quietly
+		// never loaded for OAuth users (config.apiKey is "" for them).
+		const credentials = resolveGatewayCredentials({ apiKey: config.apiKey })
+		configureBillingCreditsApi({
+			apiKey: credentials.token,
+			organizationId: credentials.organizationId,
+			llmEndpoint: config.llmEndpoint,
+		})
 	} catch (error) {
 		console.warn("[billing] failed to load config for billing refresh:", error)
 		return undefined

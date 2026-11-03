@@ -22,13 +22,27 @@
  */
 import type { ExtensionAPI, SessionShutdownEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { resolveBashProcessLimitSeconds } from "../../cli-args.js"
+import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
+import { bashSessionKindFromContext } from "./session-policy.js"
 import { getSessionState, setSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
+
+/**
+ * Handoff override for e2e rigs (KIMCHI_E2E_BASH_HANDOFF_SECONDS), honored
+ * inside test harnesses only: e2e scenarios script short commands that must
+ * hand off quickly. Production always uses INITIAL_HANDOFF_SECONDS.
+ */
+function e2eHandoffSeconds(): number | undefined {
+	const seam = readE2eSeam("KIMCHI_E2E_BASH_HANDOFF_SECONDS")
+	const parsed = seam === undefined || seam.trim() === "" ? Number.NaN : Number(seam)
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
 
 /**
  * Create a background-bash extension. Registers the background `bash` tool
@@ -72,10 +86,21 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// waits — no recurring clock).
 		const registry = createProcessRegistry()
 		const limitSeconds = resolveBashProcessLimitSeconds() ?? DEFAULT_BASH_PROCESS_LIMIT_SECONDS
-		const coordinator = createReviewCoordinator({ registry })
+		const coordinator = createReviewCoordinator({ registry, handoffSeconds: e2eHandoffSeconds() })
 		const delivery = createTerminalDelivery()
-		const state = { registry, coordinator, delivery, limitSeconds, cwd: sessionCtx.cwd }
+		// Resolved once per session and stored as required state so the
+		// control tool (wait release) and the completion guard share it.
+		const sessionKind = bashSessionKindFromContext(sessionCtx)
+		const state = { registry, coordinator, delivery, limitSeconds, sessionKind, cwd: sessionCtx.cwd }
 		setSessionState(sessionCtx.sessionManager.getSessionId(), state)
+
+		// Footer indicator: publish the running-command count while any run,
+		// cleared at zero (the footer hides the segment then). Reset first so a
+		// previous session's count never lingers.
+		sessionCtx.ui.setStatus(SHELLS_STATUS_KEY, undefined)
+		registry.onRunningCountChange((count) => {
+			sessionCtx.ui.setStatus(SHELLS_STATUS_KEY, count > 0 ? String(count) : undefined)
+		})
 
 		// Re-register `bash` with the background execution definition.
 		// The description is the bash-tool-guard steering text so the

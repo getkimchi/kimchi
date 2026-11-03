@@ -39,6 +39,8 @@ vi.mock("./remote-agent-runner.js", () => ({
 	continueRemoteAgent: vi.fn(),
 	attachRemoteAgent: vi.fn(),
 	isRemoteSessionConnected: vi.fn(),
+	discardLiveKeptAcpClient: vi.fn(),
+	deleteRemoteSession: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock("../../teleport/ui/git-token-prompt.js", () => ({
@@ -59,7 +61,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { loadWorkspaceFile, WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
-import { createContext } from "../../__mocks__/context.js"
+import { createContext, createLiveContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
@@ -72,6 +74,8 @@ import { resumeAgent, runAgent } from "./agent-runner.js"
 import {
 	attachRemoteAgent,
 	continueRemoteAgent,
+	deleteRemoteSession,
+	discardLiveKeptAcpClient,
 	isRemoteSessionConnected,
 	type RemoteSessionMeta,
 	runRemoteAgent,
@@ -1239,6 +1243,93 @@ describe("AgentManager remote git credential resolution", () => {
 	})
 })
 
+describe("AgentManager remote stale-session resilience", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	beforeEach(() => {
+		// Default mocks for the remote path (mirrors the git-credential describe)
+		mockResolveClonePlan.mockResolvedValue({
+			url: "git@gitlab.com:team/repo.git",
+			httpsUrl: "https://gitlab.com/team/repo.git",
+			branch: "main",
+		})
+		mockResolveGitToken.mockResolvedValue(undefined)
+		mockListWorkspaces.mockResolvedValue([])
+		mockLoadWorkspaceFile.mockReturnValue(undefined)
+		mockRunRemoteAgent.mockResolvedValue({
+			responseText: "done",
+			stopReason: "end_turn",
+			remoteSession: {
+				workspaceId: "ws-1",
+				sessionName: "acp-test",
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+				cwd: "/home/sandbox/acp-test",
+			},
+		})
+	})
+
+	it("retires a foreground plain remote session after reading its result", async () => {
+		manager = new AgentManager()
+		const record = await manager.spawnAndWait(fakePi(), fakeCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+		expect(record.status).toBe("completed")
+		expect(deleteRemoteSession).toHaveBeenCalledWith(expect.anything(), "test-key", expect.anything())
+	})
+
+	it("completes with the captured session facts when the ctx goes stale mid workspace lookup", async () => {
+		// Suspend the workspace lookup so the remote run is in flight when the
+		// session is replaced: every post-lookup ctx read (cwd, session id, ui,
+		// mode) must come from the entry-time captures taken while the runtime
+		// was fresh, or the live run dies on a stale read.
+		let releaseWorkspaces!: (list: Awaited<ReturnType<typeof listWorkspaces>>) => void
+		const workspacesGate = new Promise<Awaited<ReturnType<typeof listWorkspaces>>>((resolve) => {
+			releaseWorkspaces = resolve
+		})
+		mockListWorkspaces.mockReturnValueOnce(workspacesGate)
+
+		const live = createLiveContext({
+			cwd: "/work/myrepo",
+			mode: "tui",
+			sessionManager: { getSessionId: () => "parent-test-session" },
+		})
+		manager = new AgentManager()
+
+		const runPromise = manager.spawnAndWait(fakePi(), live.ctx as unknown as ExtensionContext, "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		// Session replaced/forked while the lookup pends — every later ctx
+		// property read throws (Pi's assertActive, simulated by the live mock).
+		live.invalidate()
+		releaseWorkspaces([])
+
+		const record = await runPromise
+		// The run completes instead of erroring on a stale ctx read.
+		expect(record.status).toBe("completed")
+		expect(record.error).toBeUndefined()
+		// runRemoteAgent received the entry-time captures, not a live read.
+		expect(mockRunRemoteAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.objectContaining({
+				localPath: "/work/myrepo",
+				workspaceName: "myrepo",
+				tags: { [SESSION_TAG_PARENT_SESSION_ID]: "parent-test-session" },
+			}),
+		)
+	})
+})
+
 describe("AgentManager remote stopReason mapping", () => {
 	let manager: AgentManager | undefined
 
@@ -1807,6 +1898,24 @@ describe("AgentManager resumeRemoteRecord", () => {
 		status: "running",
 	}
 
+	it("restores a persisted completion in the resumed session without contacting the worker", async () => {
+		mockIsRemoteSessionConnected.mockResolvedValue(true)
+		const onComplete = vi.fn()
+		manager = new AgentManager(onComplete)
+		const ctx = createContext()
+		expect(
+			await manager.resumeRemoteRecord(
+				{ ...state, status: "completed", completionPending: true, result: "saved result" },
+				ctx,
+			),
+		).toBe("completed")
+		expect(onComplete).toHaveBeenCalledWith(
+			expect.objectContaining({ result: "saved result", spawnCtx: ctx, triggersRemoteCompletion: true }),
+		)
+		expect(mockIsRemoteSessionConnected).not.toHaveBeenCalled()
+		expect(mockAttachRemoteAgent).not.toHaveBeenCalled()
+	})
+
 	it("completes a resumed remote run through the normal completion path", async () => {
 		mockAttachRemoteAgent.mockResolvedValue({
 			responseText: "recovered result",
@@ -1867,6 +1976,33 @@ describe("AgentManager resumeRemoteRecord", () => {
 		expect(record?.error).toContain("no longer exists")
 	})
 
+	it("detaches remote observation on disposal without cancelling worker work or delivering completion", async () => {
+		let finish!: (value: Awaited<ReturnType<typeof attachRemoteAgent>>) => void
+		mockAttachRemoteAgent.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finish = resolve
+			}),
+		)
+		const onComplete = vi.fn()
+		manager = new AgentManager(onComplete)
+		const live = createLiveContext({ mode: "tui" })
+		await manager.resumeRemoteRecord(state, live.ctx)
+		const record = manager.getRecord(state.id)
+		const pending = record?.promise
+		const signal = mockAttachRemoteAgent.mock.calls.at(-1)?.[0].signal
+		if (!record?.abortController || !pending || !signal) throw new Error("Expected a remote observation")
+		manager.abortAll({ skipRemote: true })
+		manager.dispose()
+		live.invalidate()
+
+		expect(signal.aborted).toBe(true)
+		expect(signal.reason.name).toBe("AcpSessionDetachedError")
+		expect(record.abortController.signal.aborted).toBe(false)
+		finish({ responseText: "finished after replacement", stopReason: "recovered", remoteSession: state.remoteSession })
+		await pending
+		expect(onComplete).not.toHaveBeenCalled()
+	})
+
 	it("spares remote records in abortAll({skipRemote: true}) but stops them on a plain abortAll", async () => {
 		// The attach never settles — the resumed run stays "running".
 		mockAttachRemoteAgent.mockReturnValue(new Promise(() => {}))
@@ -1895,6 +2031,17 @@ describe("AgentManager resumeRemoteRecord", () => {
 		expect(mockAttachRemoteAgent).not.toHaveBeenCalled()
 		expect(manager.getRecord(state.id)).toBeUndefined()
 		expect(manager.getRunningCount()).toBe(0)
+	})
+
+	it("disconnects a completed run removed before session shutdown", async () => {
+		manager = new AgentManager()
+		await manager.resumeRemoteRecord(
+			{ ...state, status: "completed", completionPending: true, result: "done" },
+			createContext(),
+		)
+		manager.clearCompleted()
+		expect(discardLiveKeptAcpClient).toHaveBeenCalledWith(state.remoteSession)
+		expect(manager.listAgents()).toEqual([])
 	})
 
 	it("restores the persisted gitWorkflow onto the resumed record", async () => {

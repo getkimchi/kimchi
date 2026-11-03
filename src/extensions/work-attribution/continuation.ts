@@ -7,7 +7,7 @@ import { readPlanWorkId } from "../../shared/planning/plan-markdown.js"
 import type { WorkContext } from "../work-attribution.js"
 import { type FileTransition, readAttributedFileState, readRepositoryTransitions } from "./file-transitions.js"
 import { captureWorkScope, readWorkScope, sameWorkScope, type WorkAccount, type WorkScopeSnapshot } from "./scope.js"
-import { readWorkRecords } from "./summary.js"
+import { readWorkRecordsOfType } from "./summary.js"
 
 const MARKDOWN_REFERENCE = /(?:^|[\s@'"`([])([^\s@'"`()[\]<>#]+\.md)(?:#[^\s'"`()[\]<>]*)?(?=$|[\s'"`()[\],;:.!?])/gi
 const FILE_REFERENCE =
@@ -157,9 +157,9 @@ function savedPlanOwners(path: string): string[] {
 			return saved
 		}
 	}
-	return readWorkRecords(getAgentDir()).flatMap((row) => {
+	return readWorkRecordsOfType(getAgentDir(), "plan").flatMap((row) => {
 		const cwd = row.cwd
-		if (row.type !== "plan" || typeof cwd !== "string") return []
+		if (typeof cwd !== "string") return []
 		const named = [row.path, row.snapshotPath].some(
 			(saved) =>
 				typeof saved === "string" && basename(saved) === basename(path) && canonical(resolve(cwd, saved)) === path,

@@ -1,58 +1,39 @@
-/**
- * Reads a work's local summary the way docs/work-attribution.md describes it, independently of the product reader.
- * `work.json` is a manifest whose `logs` name `rows/<collection>.<generation>.jsonl`, sessions included; only the
- * first `bytes` of each log are committed, and a later row with the same key replaces an earlier one in place.
- */
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
+/** Node E2E readers use the existing Bun driver for the production SQLite store. */
+import { execFileSync } from "node:child_process"
+import { resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+import type { WorkSummaryView } from "../../../../src/extensions/work-attribution/row-log.js"
+import type { WorkRecord } from "../../../../src/extensions/work-attribution/summary.js"
 
-type Row = Record<string, unknown>
+// tui-test relocates bundled helpers into .tui-test/cache; its runner supplies the original repository root.
+const DRIVER = process.env.KIMCHI_REPO_ROOT
+	? resolve(process.env.KIMCHI_REPO_ROOT, "tests/e2e/tui/support/ledger-driver.ts")
+	: fileURLToPath(new URL("./ledger-driver.ts", import.meta.url))
 
-const KEYS: Record<string, (row: Row) => string> = {
-	workLinks: (row) =>
-		JSON.stringify([
-			row.linkId,
-			row.revision,
-			row.sourceWorkId,
-			row.targetWorkId,
-			row.requestIds,
-			row.scope,
-			row.status,
-			row.evidence,
-		]),
-	requests: (row) => JSON.stringify(row.requestId),
-	plans: (row) => JSON.stringify([row.sessionId, row.path, row.snapshotPath]),
-	commits: (row) => JSON.stringify([row.sessionId, row.sha, row.repository, row.worktree]),
-	fileTransitions: (row) => JSON.stringify(row.transitionId),
-	fileObservations: (row) => JSON.stringify(row.observationId),
-	continuations: (row) => JSON.stringify([row.sessionId, row.source, row.evidence]),
-	sessions: (row) => JSON.stringify(row.sessionId),
+function ledger(agentDir: string, command: string, arg?: string): unknown {
+	const output = execFileSync("bun", [DRIVER, command, agentDir, ...(arg === undefined ? [] : [arg])], {
+		encoding: "utf8",
+		timeout: 15_000,
+	})
+	return JSON.parse(output.trim())
 }
 
-/** Every row of the summary, or undefined while it is missing or a writer is replacing a log. */
-export function readWorkSummary(agentDir: string, workId: string): Record<string, Row[] | unknown> | undefined {
-	const folder = join(agentDir, "work", workId)
-	try {
-		const manifest = JSON.parse(readFileSync(join(folder, "work.json"), "utf8"))
-		if (manifest.version !== 2) return undefined
-		const view: Record<string, Row[] | unknown> = { workId: manifest.workId }
-		for (const [collection, key] of Object.entries(KEYS)) {
-			const log = manifest.logs[collection]
-			const rows = new Map<string, Row>()
-			if (log) {
-				const text = readFileSync(join(folder, "rows", `${collection}.${log.generation}.jsonl`))
-					.subarray(0, log.bytes)
-					.toString("utf8")
-				for (const line of text.split("\n")) {
-					if (!line) continue
-					const row = JSON.parse(line)
-					rows.set(key(row), row)
-				}
-			}
-			view[collection] = collection === "sessions" ? [...rows.values()].map((row) => row.sessionId) : [...rows.values()]
-		}
-		return view
-	} catch {
-		return undefined
-	}
+/** Includes read-only legacy hydration, so intentional old-install fixtures keep their meaning. */
+export function readWorkRecords(agentDir: string): WorkRecord[] {
+	return ledger(agentDir, "read-work-records") as WorkRecord[]
+}
+
+/** Every committed projection row, or undefined while the work has no projection yet. */
+export function readWorkSummary(agentDir: string, workId: string): WorkSummaryView | undefined {
+	return (ledger(agentDir, "rows", workId) as WorkSummaryView | null) ?? undefined
+}
+
+/** Tracker notes are inspected separately from projections to preserve privacy assertions. */
+export function readWorkNote(agentDir: string, workId: string, name: string): string | undefined {
+	return (ledger(agentDir, "note", JSON.stringify([workId, name])) as string | null) ?? undefined
+}
+
+/** Test-only storage-loss injection; immutable authority records are never removed. */
+export function removeWorkNote(agentDir: string, workId: string, name: string): void {
+	ledger(agentDir, "remove-note", JSON.stringify([workId, name]))
 }

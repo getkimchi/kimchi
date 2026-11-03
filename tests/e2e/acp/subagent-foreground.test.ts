@@ -92,7 +92,50 @@ describe("ACP integration — subagent foreground default", () => {
 		const continuation = chatBodies.find((b, i) => i !== subagentIdx && b.includes(SUBAGENT_MARKER))
 		expect(continuation, "orchestrator continuation carries subagent result").toBeDefined()
 
+		// Single-load regression (subagent-double-extension-load): the subagent's
+		// outgoing request must carry the FINAL system prompt — the one resolved
+		// AFTER binding, with its active tool list — not the pre-binding draft.
+		// The prompt is re-resolved without a second loader reload, so this
+		// asserts the live-prompt adapter delivered the final content.
+		const subagentRequest = fixture.fake.requests.filter(
+			(r) => r.url.endsWith("/chat/completions") && JSON.stringify(r.body ?? {}).includes("sub-agent"),
+		)[0]
+		const subagentBody = subagentRequest ? subagentRequest.body : undefined
+		const subagentMessages =
+			(subagentBody as { messages?: Array<{ role: string; content: unknown }> } | undefined)?.messages ?? []
+		const subagentSystemMessage = subagentMessages.find((m) => m.role === "system")
+		const subagentSystem = subagentSystemMessage ? subagentSystemMessage.content : undefined
+		const systemText = typeof subagentSystem === "string" ? subagentSystem : JSON.stringify(subagentSystem ?? "")
+		expect(systemText).toContain("## Available Tools")
+		expect(systemText).toContain("- read")
+
 		// Turn completes with the orchestrator's scripted wrap-up.
 		expect(result.chunks).toContain("Orchestrator wrapping up.")
+	})
+
+	it("advertises the Agent tool with foreground-by-default guidance in a real ACP process", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+
+		const result = await prompt(fixture, sessionId, "delegate to an agent")
+		expect(result.stopReason, "turn stop reason").toBe("end_turn")
+
+		// The load-time surface check must resolve to non-TUI inside a real ACP
+		// process: the Agent tool description tells the model agents run in the
+		// foreground here and that backgrounded agents must be joined — it must
+		// never promise a turn-end completion notification.
+		const chatRequests = fixture.fake.requests.filter(
+			(request) =>
+				request.url.endsWith("/chat/completions") &&
+				request.body !== null &&
+				typeof request.body === "object" &&
+				"tools" in request.body,
+		)
+		const agentTool = chatRequests
+			.flatMap((r) => (r.body as { tools?: Array<{ function?: { name?: string; description?: string } }> }).tools ?? [])
+			.find((t) => t.function?.name === "Agent")
+		expect(agentTool, "Agent tool advertised to the model").toBeDefined()
+		const description = agentTool?.function?.description ?? ""
+		expect(description).toContain("foreground by default")
+		expect(description).not.toContain("end your turn")
 	})
 })

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
+import { backendFor, capture, setNote } from "../pr-cost-reporting/ledger/records.js"
 import * as attribution from "../work-attribution.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
@@ -28,6 +29,8 @@ let dir: string
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "kimchi-work-link-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
+	// Explicit legacy inputs are fixtures, not files created by the new capture path.
+	fs.mkdirSync(join(dir, "work-attribution"))
 })
 afterEach(async () => {
 	await flushWorkSummaries()
@@ -241,7 +244,14 @@ it("refuses a correction when the session changes during account verification", 
 	expect(readWorkRecords(dir).filter((row) => row.type === "work_link")).toEqual([])
 })
 
-function acceptedContinuation(kind: "plan" | "artifact" = "plan", name = "planner") {
+function acceptedContinuation(
+	kind: "plan" | "artifact" = "plan",
+	name = "planner",
+	options: {
+		omitOrigin?: boolean
+		accept?: (receipt: Pick<WorkContinuation, "source" | "evidence">) => Pick<WorkContinuation, "source" | "evidence">
+	} = {},
+) {
 	const ctx = createContext({ cwd: dir, sessionManager: { getSessionId: () => name } })
 	const workId = getWorkId(ctx)
 	const originalScope = createWorkScopeSnapshot(join(dir, ".git")).scope
@@ -265,8 +275,16 @@ function acceptedContinuation(kind: "plan" | "artifact" = "plan", name = "planne
 					path: "docs/adr.md",
 					requestId: producer,
 				}
-	appendWorkRecord(ctx, origin, workId)
-	const continuation: Pick<WorkContinuation, "source" | "evidence"> = {
+	const originRecord = {
+		...origin,
+		version: 1,
+		workId,
+		sessionId: ctx.sessionManager.getSessionId(),
+		cwd: dir,
+		recordedAt: new Date().toISOString(),
+	} as WorkRecord
+	if (!options.omitOrigin) appendWorkRecord(ctx, origin, workId)
+	const accepted: Pick<WorkContinuation, "source" | "evidence"> = {
 		source: kind === "plan" ? "saved-plan" : "named-artifact",
 		evidence: {
 			path: saved.snapshotPath,
@@ -276,9 +294,23 @@ function acceptedContinuation(kind: "plan" | "artifact" = "plan", name = "planne
 			...(kind === "plan" ? { contentHash: saved.contentHash } : { transitionId }),
 		},
 	}
+	const continuation = options.accept ? options.accept(accepted) : accepted
 	const consumer = createContext({ cwd: dir, sessionManager: { getSessionId: () => `${name}-consumer` } })
 	appendWorkRecord(consumer, { type: "work", continuation }, workId)
-	return { ctx, consumer, workId, originalScope, segment, unrelated, research, producer, saved, origin, continuation }
+	return {
+		ctx,
+		consumer,
+		workId,
+		originalScope,
+		segment,
+		unrelated,
+		research,
+		producer,
+		saved,
+		origin,
+		originRecord,
+		continuation,
+	}
 }
 function repair(progress: { nextContinuation?: string } = {}, assertLease = () => {}) {
 	return reconcileWorkContinuations(dir, new AbortController().signal, assertLease, progress)
@@ -352,16 +384,10 @@ it.each([
 })
 
 it("retries an accepted continuation when its original producer record is restored", async () => {
-	const flow = acceptedContinuation()
-	const ledger = join(dir, "work-attribution", `${flow.ctx.sessionManager.getSessionId()}.jsonl`)
-	const original = readWorkRecords(dir).find((row) => row.type === "plan")
-	const rows = readWorkRecords(dir).filter(
-		(row) => row.sessionId === flow.ctx.sessionManager.getSessionId() && row.type !== "plan",
-	)
-	fs.writeFileSync(ledger, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+	const flow = acceptedContinuation("plan", "planner", { omitOrigin: true })
 	await repair()
 	expect(links()).toEqual([])
-	fs.appendFileSync(ledger, `${JSON.stringify(original)}\n`)
+	capture(dir, flow.originRecord, attribution.workLedgerPath(flow.ctx))
 	await repair()
 	expect(links()).toHaveLength(1)
 })
@@ -369,26 +395,16 @@ it("retries an accepted continuation when its original producer record is restor
 it("can use restored pre-acceptance production when no producer identity was available at acceptance", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
-	const flow = acceptedContinuation()
-	const records = readWorkRecords(dir)
-	const original = records.find((row) => row.type === "plan")
-	const ledger = join(dir, "work-attribution", `${flow.ctx.sessionManager.getSessionId()}.jsonl`)
-	fs.writeFileSync(
-		ledger,
-		`${records
-			.filter((row) => row.sessionId === flow.ctx.sessionManager.getSessionId() && row.type !== "plan")
-			.map((row) => JSON.stringify(row))
-			.join("\n")}\n`,
-	)
-	vi.setSystemTime(new Date("2026-10-05T09:01:00Z"))
-	const { requestId: _requestId, ...evidence } = flow.continuation.evidence
-	fs.writeFileSync(
-		join(dir, "work-attribution", `${flow.consumer.sessionManager.getSessionId()}.jsonl`),
-		`${JSON.stringify({ version: 1, type: "work", workId: flow.workId, cwd: dir, recordedAt: new Date().toISOString(), sessionId: flow.consumer.sessionManager.getSessionId(), continuation: { ...flow.continuation, evidence } })}\n`,
-	)
+	const flow = acceptedContinuation("plan", "planner", {
+		omitOrigin: true,
+		accept: ({ source, evidence: { requestId: _requestId, ...evidence } }) => {
+			vi.setSystemTime(new Date("2026-10-05T09:01:00Z"))
+			return { source, evidence }
+		},
+	})
 	await repair()
 	expect(links()).toEqual([])
-	fs.appendFileSync(ledger, `${JSON.stringify(original)}\n`)
+	capture(dir, flow.originRecord, attribution.workLedgerPath(flow.ctx))
 	await repair()
 	expect(links()).toHaveLength(1)
 })
@@ -423,20 +439,19 @@ it.each([
 	"ambiguous-producer",
 	"missing-segment",
 ])("leaves %s history unknown", async (kind) => {
-	const flow = acceptedContinuation()
-	const receipt = structuredClone(flow.continuation)
-	if (kind === "legacy-plan") receipt.evidence.contentHash = undefined
-	if (kind === "edited-restored")
-		receipt.evidence.contentHash = createHash("sha256").update("different accepted bytes").digest("hex")
-	if (kind === "semantic") receipt.source = "semantic"
-	if (kind === "receipt-account")
-		receipt.evidence.account = { ...flow.originalScope.account, organizationId: randomUUID() }
-	if (kind === "receipt-repository") receipt.evidence.repository = join(dir, "other.git")
-	fs.writeFileSync(
-		join(dir, "work-attribution", `${flow.consumer.sessionManager.getSessionId()}.jsonl`),
-		`${JSON.stringify({ version: 1, type: "work", workId: flow.workId, cwd: dir, recordedAt: new Date().toISOString(), sessionId: flow.consumer.sessionManager.getSessionId(), continuation: receipt })}\n`,
-	)
-	if (kind === "scope-missing") fs.rmSync(join(dir, "work", flow.workId, "scope.json"))
+	const flow = acceptedContinuation("plan", "planner", {
+		accept: (receipt) => {
+			if (kind === "legacy-plan") receipt.evidence.contentHash = undefined
+			if (kind === "edited-restored")
+				receipt.evidence.contentHash = createHash("sha256").update("different accepted bytes").digest("hex")
+			if (kind === "semantic") receipt.source = "semantic"
+			if (kind === "receipt-account" && receipt.evidence.account)
+				receipt.evidence.account = { ...receipt.evidence.account, organizationId: randomUUID() }
+			if (kind === "receipt-repository") receipt.evidence.repository = join(dir, "other.git")
+			return receipt
+		},
+	})
+	if (kind === "scope-missing") setNote(dir, flow.workId, "scope", "null")
 	const request = readWorkRecords(dir).find((row) => row.type === "request" && row.requestId === flow.producer)
 	if (!request) throw new Error("Missing producer")
 	if (kind === "request-account")
@@ -518,12 +533,15 @@ it.each(["session", "inferred"] as const)("confirms the restored %s planning inp
 })
 
 it("repairs a legacy native transition receipt using only its original scope", async () => {
-	const flow = acceptedContinuation("artifact")
-	const { account: _account, segmentId: _segmentId, requestId: _requestId, ...evidence } = flow.continuation.evidence
-	fs.writeFileSync(
-		join(dir, "work-attribution", `${flow.consumer.sessionManager.getSessionId()}.jsonl`),
-		`${JSON.stringify({ version: 1, type: "work", workId: flow.workId, cwd: dir, sessionId: flow.consumer.sessionManager.getSessionId(), continuation: { source: "named-artifact", evidence } })}\n`,
-	)
+	acceptedContinuation("artifact", "planner", {
+		accept: ({
+			source,
+			evidence: { account: _account, segmentId: _segmentId, requestId: _requestId, ...evidence },
+		}) => ({
+			source,
+			evidence,
+		}),
+	})
 	await repair()
 	expect(links()).toHaveLength(1)
 })
@@ -553,10 +571,8 @@ it.each(["active", "revoked"])("never replaces an existing %s correction", async
 it("does not use a partial ledger scan and retries the complete scan later", async () => {
 	acceptedContinuation()
 	await flushWorkSummaries()
-	const read = fs.readFileSync
-	const failure = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
-		if (String(args[0]).endsWith("planner.jsonl")) throw Object.assign(new Error("Denied"), { code: "EACCES" })
-		return read(...args)
+	const failure = vi.spyOn(backendFor(dir), "readRecords").mockImplementationOnce(() => {
+		throw new Error("Could not read work ledger: Denied")
 	})
 	await expect(repair()).rejects.toThrow("Could not read work ledger")
 	failure.mockRestore()
@@ -570,7 +586,7 @@ for (const mode of ["pin", "live", "history"] as const) {
 		"truncated-correction",
 		"invalid-correction",
 		"invalid-producer",
-	])(`${mode} refuses a source snapshot containing %s and retries after repair`, async (kind) => {
+	])(`${mode} preserves hard %s coverage after its source is rewritten`, async (kind) => {
 		const flow = acceptedContinuation()
 		await flushWorkSummaries()
 		const requests = readWorkRecords(dir).filter((row) => row.type === "request")
@@ -616,11 +632,13 @@ for (const mode of ["pin", "live", "history"] as const) {
 			`Incomplete work history contains invalid records in ${damaged}:1`,
 		)
 		expect(links()).toEqual([])
-		// Repairing the source, including an empty journal, permits a fresh complete scan.
+		// Deliberate immutable-history contract change: 65dfefb12 cleared damage on a whitespace rewrite.
+		// A rewrite can hide a correction or producer; only append-based tail recovery can clear a repairable cut.
 		fs.writeFileSync(damaged, "\n \t\r\n")
-		const recovered = await invoke()
-		if (mode === "pin") expect(recovered).toMatchObject({ evidence: { requestId: flow.producer } })
-		else expect(links()).toHaveLength(1)
+		await expect(Promise.resolve().then(invoke)).rejects.toThrow(
+			`Incomplete work history contains invalid records in ${damaged}:1`,
+		)
+		expect(links()).toEqual([])
 		expect(readWorkRecords(dir).filter((row) => row.type === "request")).toEqual(requests)
 		const report = calculatePullRequestCosts(readWorkRecords(dir), [
 			{
@@ -682,7 +700,9 @@ for (const mode of ["pin", "live", "history"] as const) {
 	])(`${mode} keeps both matching producers unresolved when one retained plan is %s`, async (kind) => {
 		vi.useFakeTimers({ toFake: ["Date"] })
 		vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
-		const flow = acceptedContinuation()
+		const flow = acceptedContinuation("plan", "planner", {
+			accept: ({ source, evidence: { requestId: _requestId, ...evidence } }) => ({ source, evidence }),
+		})
 		await flushWorkSummaries()
 		const snapshotPath = join(dir, "other-retained.md")
 		if (kind !== "missing")
@@ -695,10 +715,7 @@ for (const mode of ["pin", "live", "history"] as const) {
 			evidence: { ...evidence, path: flow.saved.path },
 		}
 		vi.setSystemTime(new Date("2026-10-05T09:01:00Z"))
-		fs.writeFileSync(
-			join(dir, "work-attribution", `${flow.consumer.sessionManager.getSessionId()}.jsonl`),
-			`${JSON.stringify({ version: 1, type: "work", workId: flow.workId, cwd: dir, recordedAt: new Date().toISOString(), sessionId: flow.consumer.sessionManager.getSessionId(), continuation })}\n`,
-		)
+		appendWorkRecord(flow.consumer, { type: "work", continuation }, flow.workId)
 		const producers = readWorkRecords(dir).filter(
 			(row) =>
 				row.type === "plan" && row.path === continuation.evidence.path && row.contentHash === evidence.contentHash,
@@ -716,10 +733,11 @@ for (const mode of ["pin", "live", "history"] as const) {
 it("retries a failed append without recording history as complete", async () => {
 	acceptedContinuation()
 	await flushWorkSummaries()
-	const write = fs.writeFileSync
-	const failure = vi.spyOn(fs, "writeFileSync").mockImplementation((...args) => {
-		if (String(args[1]).includes('"type":"work_link"')) throw new Error("Disk full")
-		return write(...args)
+	const backend = backendFor(dir)
+	const insert = backend.insertRecord.bind(backend)
+	const failure = vi.spyOn(backend, "insertRecord").mockImplementation((record) => {
+		if (record.type === "work_link") throw new Error("Disk full")
+		return insert(record)
 	})
 	await expect(repair()).rejects.toThrow("Disk full")
 	failure.mockRestore()
@@ -741,17 +759,12 @@ it("stops before publishing when the lease is lost", async () => {
 it.each(["later request", "earlier request"])("never uses a later same-hash plan produced by a %s", async (kind) => {
 	vi.useFakeTimers({ toFake: ["Date"] })
 	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
-	const flow = acceptedContinuation()
-	const { requestId: _requestId, ...evidence } = flow.continuation.evidence
-	fs.writeFileSync(
-		join(dir, "work-attribution", `${flow.consumer.sessionManager.getSessionId()}.jsonl`),
-		`${JSON.stringify({ version: 1, type: "work", workId: flow.workId, cwd: dir, recordedAt: new Date().toISOString(), sessionId: flow.consumer.sessionManager.getSessionId(), continuation: { ...flow.continuation, evidence } })}\n`,
-	)
-	const ledger = join(dir, "work-attribution", `${flow.ctx.sessionManager.getSessionId()}.jsonl`)
-	const rows = readWorkRecords(dir).filter(
-		(row) => row.sessionId === flow.ctx.sessionManager.getSessionId() && row.type !== "plan",
-	)
-	fs.writeFileSync(ledger, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+	const flow = acceptedContinuation("plan", "planner", {
+		omitOrigin: true,
+		accept: ({ source, evidence: { requestId: _requestId, ...evidence } }) => ({ source, evidence }),
+	})
+	expect(readWorkRecords(dir).filter((row) => row.type === "plan")).toEqual([])
+	expect(flow.continuation.evidence.requestId).toBeUndefined()
 	vi.setSystemTime(new Date("2026-10-05T09:01:00Z"))
 	const requestId =
 		kind === "earlier request"
@@ -767,12 +780,13 @@ it("abandons an over-budget source scan before writing and retries it later", as
 	await flushWorkSummaries()
 	let now = 0
 	vi.spyOn(Date, "now").mockImplementation(() => now)
-	const read = fs.readFileSync
-	const slow = vi.spyOn(fs, "readFileSync").mockImplementation((...args) => {
-		if (String(args[0]).endsWith(".jsonl")) now += 4000
-		return read(...args)
+	const backend = backendFor(dir)
+	const read = backend.readRecords.bind(backend)
+	const slow = vi.spyOn(backend, "readRecords").mockImplementation((options, checkBudget) => {
+		now += 4000
+		return read(options, checkBudget)
 	})
-	await expect(repair()).rejects.toThrow("Could not read work ledger")
+	await expect(repair()).rejects.toThrow("time limit")
 	slow.mockRestore()
 	expect(links()).toEqual([])
 	await repair()
@@ -816,63 +830,57 @@ it("recovers a large receipt set over bounded passes without permanently skippin
 	expect(links()).toHaveLength(26)
 })
 
-it("reads each journal once and no retained plan in a full pass over confirmed receipts", async () => {
+it("reads ledger history once and no retained plan in a full pass over confirmed receipts", async () => {
 	for (let index = 0; index < 30; index++) acceptedContinuation("plan", `planner-${index}`)
 	const progress = {}
 	await repair(progress)
 	await repair(progress)
 	expect(links()).toHaveLength(30)
 	await flushWorkSummaries()
+	const backend = backendFor(dir)
+	const count = backend.recordCount()
+	const history = vi.spyOn(backend, "readRecords")
 	const read = vi.spyOn(fs, "readFileSync")
-	// A restarted process has no progress, so it reads the whole history.
+	// A restarted process has no progress, so it reads the whole authority once.
 	await repair()
-	const paths = read.mock.calls.map(([path]) => String(path))
-	const journals = paths.filter((path) => path.endsWith(".jsonl"))
-	expect(journals).toHaveLength(60)
-	expect(new Set(journals).size).toBe(60)
-	expect(paths.filter((path) => path.endsWith(".md"))).toEqual([])
+	expect(history).toHaveBeenCalledTimes(1)
+	expect(history.mock.results[0].value).toHaveLength(count)
+	expect(read.mock.calls.map(([path]) => String(path)).filter((path) => path.endsWith(".md"))).toEqual([])
 	expect(links()).toHaveLength(30)
 })
 
-it("skips unchanged history after a pass that examined every receipt without writing, until a journal changes", async () => {
-	const flow = acceptedContinuation()
-	const ledger = join(dir, "work-attribution", `${flow.ctx.sessionManager.getSessionId()}.jsonl`)
-	const original = readWorkRecords(dir).find((row) => row.type === "plan")
-	const rows = readWorkRecords(dir).filter(
-		(row) => row.sessionId === flow.ctx.sessionManager.getSessionId() && row.type !== "plan",
-	)
-	fs.writeFileSync(ledger, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`)
+it("skips unchanged history after a pass that examined every receipt without writing, until a record arrives", async () => {
+	const flow = acceptedContinuation("plan", "planner", { omitOrigin: true })
 	await flushWorkSummaries()
 	const progress = {}
 	await repair(progress)
 	expect(links()).toEqual([])
-	const read = vi.spyOn(fs, "readFileSync")
+	const read = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
-	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	expect(read).not.toHaveBeenCalled()
 	read.mockRestore()
-	// Restoring the producer record changes its journal, so the next pass reads history again and confirms the plan.
-	fs.appendFileSync(ledger, `${JSON.stringify(original)}\n`)
+	// A newly available producer changes the authority fingerprint and makes the receipt eligible again.
+	capture(dir, flow.originRecord, attribution.workLedgerPath(flow.ctx))
 	await repair(progress)
 	expect(links()).toHaveLength(1)
 })
 
 it("does not retry plan receipts saved without an acceptance hash, so their history can settle", async () => {
 	for (let index = 0; index < 30; index++) {
-		const { consumer, workId, continuation } = acceptedContinuation("plan", `planner-${index}`)
-		const { contentHash: _contentHash, requestId: _requestId, ...evidence } = continuation.evidence
-		const sessionId = consumer.sessionManager.getSessionId()
-		// Releases before acceptance hashes saved plan receipts that can never name their producer.
-		fs.writeFileSync(
-			join(dir, "work-attribution", `${sessionId}.jsonl`),
-			`${JSON.stringify({ version: 1, type: "work", workId, sessionId, cwd: dir, recordedAt: new Date().toISOString(), continuation: { source: continuation.source, evidence } })}\n`,
-		)
+		// Releases before acceptance hashes saved receipts that can never name their producer.
+		acceptedContinuation("plan", `planner-${index}`, {
+			accept: ({ source, evidence: { contentHash: _contentHash, requestId: _requestId, ...evidence } }) => ({
+				source,
+				evidence,
+			}),
+		})
 	}
 	await flushWorkSummaries()
 	const progress = {}
 	await repair(progress)
-	const read = vi.spyOn(fs, "readFileSync")
+	const read = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
-	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	expect(read).not.toHaveBeenCalled()
 	read.mockRestore()
 	expect(links()).toEqual([])
 })
@@ -889,31 +897,41 @@ it("lets receipts that can never link drop out, so passes over more than 25 of t
 	const progress = {}
 	await repair(progress)
 	await repair(progress)
-	const read = vi.spyOn(fs, "readFileSync")
+	const read = vi.spyOn(backendFor(dir), "readRecords")
 	await repair(progress)
-	expect(read.mock.calls.filter(([path]) => String(path).endsWith(".jsonl"))).toEqual([])
+	expect(read).not.toHaveBeenCalled()
 	read.mockRestore()
 	expect(links()).toHaveLength(26)
 })
 
-it("reads only journals changed since the last pass once no receipt can still link", async () => {
+it("reads only new ledger records since the last pass once no receipt can still link", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] })
+	vi.setSystemTime(new Date("2026-10-05T09:00:00Z"))
 	for (let index = 0; index < 3; index++) acceptedContinuation("plan", `planner-${index}`)
 	const progress = {}
 	await repair(progress)
+	vi.setSystemTime(new Date("2026-10-05T09:01:00Z"))
 	await repair(progress)
 	expect(links()).toHaveLength(3)
 	await flushWorkSummaries()
-	const journals = join(dir, "work-attribution")
-	const earlier = new Date(Date.now() - 60_000)
-	for (const file of fs.readdirSync(journals)) fs.utimesSync(join(journals, file), earlier, earlier)
-	// Another session keeps working; each request appends to its own journal.
+	vi.setSystemTime(new Date("2026-10-05T09:02:00Z"))
 	const active = createContext({ cwd: dir, sessionManager: { getSessionId: () => "active" } })
-	recordProviderRequest(active)
+	const request = recordProviderRequest(active)
 	await flushWorkSummaries()
-	const read = vi.spyOn(fs, "readFileSync")
+	const backend = backendFor(dir)
+	const original = backend.readRecords.bind(backend)
+	let records: ReturnType<typeof original> = []
+	const read = vi.spyOn(backend, "readRecords").mockImplementation((...args) => {
+		records = original(...args)
+		return records
+	})
 	await repair(progress)
-	expect(read.mock.calls.map(([path]) => String(path)).filter((path) => path.endsWith(".jsonl"))).toEqual([
-		join(journals, "active.jsonl"),
+	expect(read).toHaveBeenCalledTimes(1)
+	expect(read.mock.calls[0][0]).toMatchObject({ modifiedSince: expect.any(Number) })
+	expect(records.length).toBeGreaterThan(0)
+	expect(records.every((row) => row.sessionId === "active")).toBe(true)
+	expect(records.filter((row) => row.type === "request").map((row) => JSON.parse(row.body).requestId)).toEqual([
+		request.requestId,
 	])
 	read.mockRestore()
 	expect(links()).toHaveLength(3)

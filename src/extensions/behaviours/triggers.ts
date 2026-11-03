@@ -27,8 +27,10 @@ export type ProbeSpec =
 	| { kind: "gitRemote"; host: string }
 	| { kind: "gitRepo" }
 	| { kind: "path"; glob: string }
+	| { kind: "lspServes"; ext: string }
 	| { kind: "any"; children: ProbeSpec[] }
 	| { kind: "all"; children: ProbeSpec[] }
+	| { kind: "not"; child: ProbeSpec }
 
 export interface SessionProbe {
 	(ctx: SessionContext): boolean
@@ -57,6 +59,19 @@ export function gitRepo(): SessionProbe {
 
 export function path(glob: string): SessionProbe {
 	return withProbeSpec((ctx) => ctx.pathMatches.has(glob), { kind: "path", glob })
+}
+
+/** True iff the session-start LSP winner serves `ext` (see
+ *  `SessionContext.lspServes` — the session-start snapshot, not live LSP
+ *  state, so concurrent ACP sessions gate independently). */
+export function lspServes(ext: string): SessionProbe {
+	return withProbeSpec((ctx) => ctx.lspServes.has(ext), { kind: "lspServes", ext })
+}
+
+/** Negate a probe — the primitive `not(lspServes("py"))` gate shape. The
+ *  child spec stays reachable for the resolver's leaf walk. */
+export function not(probe: SessionProbe): SessionProbe {
+	return withProbeSpec((ctx) => !probe(ctx), { kind: "not", child: probe.__spec })
 }
 
 // ============================================================================
@@ -158,6 +173,10 @@ function combineMatchers(kind: "any" | "all", matchers: ToolMatcher[]): ToolMatc
 export function walkLeaves(spec: ProbeSpec, visit: (leaf: ProbeSpec) => void): void {
 	if (spec.kind === "any" || spec.kind === "all") {
 		for (const child of spec.children) walkLeaves(child, visit)
+		return
+	}
+	if (spec.kind === "not") {
+		walkLeaves(spec.child, visit)
 		return
 	}
 	visit(spec)

@@ -20,7 +20,7 @@ export interface AttachArgs {
 
 export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): Promise<void> {
 	if (!ctx.apiKey) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	const { workspaceId, sessionName } = args

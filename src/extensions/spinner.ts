@@ -1,5 +1,5 @@
 // Braille spinner — used by per-tool block icons (subagent, etc.)
-const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+export const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const BRAILLE_INTERVAL_MS = 80
 
 export interface SpinnerState {

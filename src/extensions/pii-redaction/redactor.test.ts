@@ -1,9 +1,43 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { getRedactionConfig, resetRedactionConfigCache } from "./config.js"
-import { redactMessages, redactObjectStrings, redactText, resetRedactorEngine } from "./redactor.js"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
+import { setResourceOverride } from "../../resources/store.js"
+import { getRedactionConfig } from "./config.js"
+import {
+	redactMessages,
+	redactObjectStrings,
+	redactObjectStringsStrict,
+	redactText,
+	resetRedactorEngine,
+} from "./redactor.js"
+import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
+
+// Toggleable engine-scan override for the strict-variant failure tests. When
+// `scanImpl` is null (the default) createEngine returns the real engine, so
+// every other test in this file exercises the real redaction behavior; the
+// strict tests set a rejecting scan to simulate an engine failure.
+const engineScanOverride = vi.hoisted(() => ({
+	scanImpl: null as ((text: string) => Promise<unknown>) | null,
+}))
+
+vi.mock("@bulkhead-ai/core", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bulkhead-ai/core")>()
+	return {
+		...actual,
+		createEngine: (...args: Parameters<typeof actual.createEngine>) => {
+			const engine = actual.createEngine(...args)
+			if (!engineScanOverride.scanImpl) return engine
+			// Delegate to the real engine but intercept `scan` — Object.create
+			// keeps the prototype (setExcludeEntities etc.) intact.
+			const overridden = Object.create(engine) as typeof engine
+			overridden.scan = engineScanOverride.scanImpl as typeof engine.scan
+			return overridden
+		},
+	}
+})
 
 // ─── Test PII / secret values ────────────────────────────────────────────────
 // SSNs use non-obvious numbers (not 000/666/9xx area, valid group & serial)
@@ -363,101 +397,127 @@ describe("redactObjectStrings — trace ID preservation", () => {
 	})
 })
 
-describe("getRedactionConfig — opt-out paths", () => {
-	let savedHome: string | undefined
-	let savedEnv: string | undefined
-	let tmpHome: string
+describe("getRedactionConfig — resources-system enablement", () => {
+	let codingAgentDir: string
 
 	beforeEach(() => {
-		savedHome = process.env.HOME
-		savedEnv = process.env.KIMCHI_REDACTION_ENABLED
-		tmpHome = mkdtempSync(join(tmpdir(), "kimchi-redact-home-"))
-		process.env.HOME = tmpHome
-		process.env.KIMCHI_REDACTION_ENABLED = ""
-		resetRedactionConfigCache()
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-settings-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
 	})
 
 	afterEach(() => {
-		if (savedHome !== undefined) process.env.HOME = savedHome
-		else process.env.HOME = ""
-		if (savedEnv !== undefined) process.env.KIMCHI_REDACTION_ENABLED = savedEnv
-		else process.env.KIMCHI_REDACTION_ENABLED = ""
-		resetRedactionConfigCache()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
 	})
 
-	/** Write a global config.json in the temp HOME so loadConfig picks it up */
-	function writeConfig(data: Record<string, unknown>): void {
-		const configDir = join(tmpHome, ".config", "kimchi")
-		mkdirSync(configDir, { recursive: true })
-		writeFileSync(join(configDir, "config.json"), JSON.stringify(data), "utf-8")
-		resetRedactionConfigCache()
-	}
-
-	it("defaults to disabled when no config and no env", () => {
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("defaults to disabled — no override, no env, no org policy", () => {
+		expect(getRedactionConfig().enabled).toBe(false)
 	})
 
-	it("disables via KIMCHI_REDACTION_ENABLED=0 env var", () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "0"
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("KIMCHI_ENABLE_RESOURCES enables transiently", () => {
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", PII_REDACTION_RESOURCE_ID)
+		expect(getRedactionConfig().enabled).toBe(true)
 	})
 
-	it("disables via KIMCHI_REDACTION_ENABLED=false env var", () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "false"
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("a persistent /resources override enables it", () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, true)
+
+		expect(getRedactionConfig().enabled).toBe(true)
 	})
 
-	it("disables via config.json redaction.enabled=false", () => {
-		writeConfig({ redaction: { enabled: false } })
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("a persistent disable beats the env enable", () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", PII_REDACTION_RESOURCE_ID)
+
+		expect(getRedactionConfig().enabled).toBe(false)
 	})
 
-	it("env var overrides config.json (env=0 wins over config=true)", () => {
-		writeConfig({ redaction: { enabled: true } })
-		process.env.KIMCHI_REDACTION_ENABLED = "0"
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("org ON is a soft default — enables, and a local disable still wins", async () => {
+		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "ON" } })
+
+		expect(getRedactionConfig().enabled).toBe(true)
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
+		expect(getRedactionConfig().enabled).toBe(false)
 	})
 
-	it("enables via KIMCHI_REDACTION_ENABLED=1 env var", () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "1"
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+	it("org FORCE_ON locks it on, beating a pre-existing local disable", async () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
+		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
+
+		expect(getRedactionConfig().enabled).toBe(true)
 	})
 
-	it("enables via KIMCHI_REDACTION_ENABLED=true env var", () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "true"
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+	it("org FORCE_OFF beats a pre-existing local enable and the env var", async () => {
+		setResourceOverride(PII_REDACTION_RESOURCE_ID, true)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", PII_REDACTION_RESOURCE_ID)
+		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_OFF" } })
+
+		expect(getRedactionConfig().enabled).toBe(false)
 	})
 
-	it("enables via config.json redaction.enabled=true", () => {
-		writeConfig({ redaction: { enabled: true } })
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(true)
+	it("a malformed settings.json throws — the platform's fail-visible convention", () => {
+		writeFileSync(join(codingAgentDir, "settings.json"), "{ not valid json")
+
+		// Org FORCE_* policies are checked before the settings read, so only
+		// unmanaged or soft-defaulted deployments hit this path; the behavior
+		// matches the bash tool-blocker, which already fails visible on the
+		// same corrupt file.
+		expect(() => getRedactionConfig()).toThrow()
+	})
+})
+
+describe("redactObjectStringsStrict — fail-closed export variant", () => {
+	beforeEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
+	})
+	afterEach(() => {
+		resetRedactorEngine()
+		engineScanOverride.scanImpl = null
 	})
 
-	it("falls back to default when config.json is malformed", () => {
-		const configDir = join(tmpHome, ".config", "kimchi")
-		mkdirSync(configDir, { recursive: true })
-		writeFileSync(join(configDir, "config.json"), "{ not valid json", "utf-8")
-		resetRedactionConfigCache()
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("throws on an engine failure while the lenient variant returns the original text", async () => {
+		engineScanOverride.scanImpl = () => Promise.reject(new Error("engine exploded"))
+		const secret = { nested: { content: "call me at john.doe@example.com" } }
+
+		await expect(redactObjectStringsStrict(secret)).rejects.toThrow("engine exploded")
+
+		// Lenient contract unchanged: a scan failure returns the original text.
+		const lenient = await redactObjectStrings(secret)
+		expect(lenient.nested.content).toBe("call me at john.doe@example.com")
 	})
 
-	it("falls back to default when redaction key is missing", () => {
-		writeConfig({ theme: "dark" })
-		const config = getRedactionConfig()
-		expect(config.enabled).toBe(false)
+	it("walk parity with the lenient variant on a fixture object", async () => {
+		interface FixtureEntry {
+			id: string
+			type: string
+			message?: { role: string; content: string }
+			customType?: string
+			data?: { traceId: string; apiKey: string }
+		}
+		const fixture: { header: { id: string }; entries: FixtureEntry[]; systemPrompt: string } = {
+			header: { id: "s1" },
+			entries: [
+				{ id: "m1", type: "message", message: { role: "user", content: "email john.doe@example.com" } },
+				{ id: "m2", type: "custom", customType: "diagnostics", data: { traceId: "abc123", apiKey: "sk-abcdef123456" } },
+			],
+			systemPrompt: "You are helpful. Bearer sk-1234567890abcdef1234567890abcdef",
+		}
+
+		const lenient = await redactObjectStrings(structuredClone(fixture))
+		const strict = await redactObjectStringsStrict(structuredClone(fixture))
+
+		expect(strict).toEqual(lenient)
+		// Both variants actually redacted (sanity: the fixture contains PII).
+		expect(JSON.stringify(strict)).not.toContain("john.doe@example.com")
+		expect(JSON.stringify(strict)).toContain("[REDACTED-EMAIL_ADDRESS]")
+		// Sensitive-key force-redaction identical.
+		expect(strict.entries[1]?.data?.apiKey).toBe("[REDACTED-SECRET_FIELD]")
+		// Preserved keys identical.
+		expect(strict.entries[1]?.data?.traceId).toBe("abc123")
+		// Input never mutated by either variant.
+		expect(fixture.entries[0]?.message?.content).toContain("john.doe@example.com")
 	})
 })

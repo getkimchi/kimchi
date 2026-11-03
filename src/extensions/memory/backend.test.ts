@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { type KimchiConfig, loadConfig } from "../../config.js"
 import {
 	buildMemoryConfig,
@@ -10,6 +10,7 @@ import {
 	disableMem0Telemetry,
 	EXTRACTION_MODEL,
 	historyDbPath,
+	MEMORY_CREDENTIALS_ERROR,
 	MEMORY_EMBEDDING_DIMS,
 	MEMORY_EMBEDDING_MODEL,
 	memoryDbPath,
@@ -24,7 +25,7 @@ function testConfig(overrides: Partial<KimchiConfig> = {}): KimchiConfig {
 		apiKey: "test-key",
 		agentConfigDir: "/agent-config-dir",
 		region: "us",
-		selfHostedUrl: undefined,
+		selfHostedEndpoints: undefined,
 		llmEndpoint: "https://gateway.test/openai/v1",
 		customLlmEndpoint: undefined,
 		maxToolResultChars: 10_000,
@@ -261,8 +262,19 @@ describe("memory paths", () => {
 })
 
 describe("createMemoryBackend", () => {
-	it("rejects with a clear error when no API key resolves", async () => {
-		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(/API key/)
+	it("rejects with a clear error when no gateway credential resolves", async () => {
+		// Isolate from the ambient agent dir — a developer shell's real login
+		// (auth.json) is a valid credential source since the SSO fix.
+		const emptyAgentDir = mkdtempSync(join(tmpdir(), "memory-no-agent-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", emptyAgentDir)
+		try {
+			await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(
+				MEMORY_CREDENTIALS_ERROR,
+			)
+		} finally {
+			vi.unstubAllEnvs()
+			rmSync(emptyAgentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("requires the Bun runtime when constructing under Node (vitest)", async () => {
@@ -382,6 +394,95 @@ describe("resolveExtractionModel no longer calls the auto router", () => {
 		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("deepseek-v4-flash-0731")
 		for (const [input] of fetchImpl.mock.calls) {
 			expect(String(input)).not.toContain("/v1/route")
+		}
+	})
+})
+
+describe("gateway credential resolution (SSO)", () => {
+	let agentDir: string
+
+	function seedAuth(contents: unknown): void {
+		writeFileSync(join(agentDir, "auth.json"), JSON.stringify(contents))
+	}
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "memory-oauth-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("buildMemoryConfig falls back to the stored OAuth credential when no API key is configured", () => {
+		seedAuth({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-1" } })
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))
+		expect(config.embedder.config.apiKey).toBe("oauth-access")
+		expect(config.llm.config.apiKey).toBe("oauth-access")
+	})
+
+	it("buildMemoryConfig prefers the configured API key over the stored OAuth credential", () => {
+		seedAuth({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-1" } })
+		const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "config-key" }))
+		expect(config.embedder.config.apiKey).toBe("config-key")
+	})
+
+	it("createMemoryBackend throws the shared credentials error with neither key nor SSO login", async () => {
+		await expect(createMemoryBackend({ dbPath: "/tmp/mem.db" }, testConfig({ apiKey: "" }))).rejects.toThrow(
+			MEMORY_CREDENTIALS_ERROR,
+		)
+	})
+})
+
+describe("tagEmbeddingRequests organization header", () => {
+	function stubFetch(): Array<{ url: string; headers: Headers; body?: string }> {
+		const seen: Array<{ url: string; headers: Headers; body?: string }> = []
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			seen.push({
+				url: String(input),
+				headers: new Headers(init?.headers),
+				body: init?.body ? String(init.body) : undefined,
+			})
+			return new Response("{}", { status: 200 })
+		})
+		return seen
+	}
+
+	it("adds the SSO org header on gateway-origin requests, honoring a pre-stamped one", async () => {
+		const originalFetch = globalThis.fetch
+		const seen = stubFetch()
+		try {
+			tagEmbeddingRequests("https://gw.test/v1", "org-7")
+			await globalThis.fetch("https://gw.test/v1/chat/completions", { method: "POST", body: "{}" })
+			await globalThis.fetch("https://gw.test/v1/embeddings", {
+				method: "POST",
+				headers: { "X-CastAi-Organization-Id": "org-stamped" },
+				body: JSON.stringify({ input: ["t"] }),
+			})
+			await globalThis.fetch("https://openrouter.ai/v1/embeddings", { method: "POST", body: "{}" })
+			expect(seen[0]?.headers.get("x-castai-organization-id")).toBe("org-7")
+			// pre-stamped (models.json provider headers) is never clobbered
+			expect(seen[1]?.headers.get("x-castai-organization-id")).toBe("org-stamped")
+			// other origins are untouched
+			expect(seen[2]?.headers.get("x-castai-organization-id")).toBeNull()
+			// the embeddings tag still rides along
+			expect(JSON.parse(seen[1]?.body ?? "{}").tags).toEqual(["memory:embedding"])
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it("refreshes state per install call — a later key-based creation stops adding the header", async () => {
+		const originalFetch = globalThis.fetch
+		const seen = stubFetch()
+		try {
+			tagEmbeddingRequests("https://gw.test/v1", "org-7")
+			tagEmbeddingRequests("https://gw.test/v1") // same wrapper, state now org-less
+			await globalThis.fetch("https://gw.test/v1/chat/completions", { method: "POST", body: "{}" })
+			expect(seen[0]?.headers.get("x-castai-organization-id")).toBeNull()
+		} finally {
+			globalThis.fetch = originalFetch
 		}
 	})
 })

@@ -42,6 +42,19 @@ afterEach(() => {
 })
 
 describe("initOrgPolicy", () => {
+	it("passes the SSO organization header option through to the policy fetch", async () => {
+		const cachePath = cachePathFor({})
+		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY })
+
+		await initOrgPolicy("oauth-token", { cachePath, organizationId: "org-1" })
+
+		expect(mockedFetchOrgPolicy).toHaveBeenCalledWith(
+			"oauth-token",
+			expect.objectContaining({ organizationId: "org-1" }),
+		)
+		expect(getOrgPolicy()).toEqual({ allowedPermissionModes: PLAN_ONLY })
+	})
+
 	it("fetches and stores the policy on a cache miss", async () => {
 		const cachePath = cachePathFor({})
 		resolveWithPolicy("org-1", { allowedPermissionModes: PLAN_ONLY, usageReporting: "FORCE_ON" })

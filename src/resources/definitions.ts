@@ -3,14 +3,57 @@ import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
 import { PI_PACKAGE_LOOKUP_RESOURCE_ID } from "../extensions/pi-package-lookup/index.js"
+import { PII_REDACTION_RESOURCE_ID } from "../extensions/pii-redaction/resource.js"
+import { SIDE_CHAT_RESOURCE_ID } from "../extensions/side-chat/resource.js"
 import { COST_PER_PR_RESOURCE_ID } from "../extensions/work-attribution/resource.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { discoverClaudeCodeHookResourceDefinitions } from "./claude-code-hook-resources.js"
 import { discoverKimchiHookResourceDefinitions } from "./kimchi-hook-resources.js"
 import { discoverPackageResources } from "./package-resources.js"
-import type { ResourceDefinition, ResourceKind } from "./types.js"
+import type { ResourceDefinition, ResourceId, ResourceKind } from "./types.js"
+
+export const PPTX_SKILL_RESOURCE_ID: ResourceId = "skills.pptx"
+export const PDF_SKILL_RESOURCE_ID: ResourceId = "skills.pdf"
+export const DOCX_SKILL_RESOURCE_ID: ResourceId = "skills.docx"
+export const XLSX_SKILL_RESOURCE_ID: ResourceId = "skills.xlsx"
 
 export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
+	{
+		id: PPTX_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "PPTX skill",
+		description:
+			"Ship the bundled PowerPoint skill for reading, creating, and editing decks. While on, it takes precedence over a user-installed pptx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: PDF_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "PDF skill",
+		description:
+			"Ship the bundled PDF skill for reading, creating, and transforming PDFs (merge, split, rotate, reorder, form filling). While on, it takes precedence over a user-installed pdf skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: DOCX_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "DOCX skill",
+		description:
+			"Ship the bundled Word skill for reading, creating, and editing .docx files. While on, it takes precedence over a user-installed docx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
+		id: XLSX_SKILL_RESOURCE_ID,
+		kind: "skills",
+		label: "XLSX skill",
+		description:
+			"Ship the bundled Excel skill for reading, creating, and editing .xlsx/.xlsm/.csv files. While on, it takes precedence over a user-installed xlsx skill.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
 	{
 		id: "hooks.bash",
 		kind: "hooks",
@@ -160,9 +203,26 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		defaultEnabled: false,
 		restartRequired: true,
 	},
+	{
+		id: SIDE_CHAT_RESOURCE_ID,
+		kind: "extensions",
+		experimental: true,
+		label: "Side chat",
+		description:
+			"Branch a side chat docked to the right of the session (/btw): quote transcript selections, then /wrap a steering prompt back to the main agent. Fullscreen TUI only.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
+	{
+		id: PII_REDACTION_RESOURCE_ID,
+		kind: "extensions",
+		label: "PII redaction",
+		description:
+			"Redact emails, phone numbers, financial identifiers, and secrets from prompts, tool results, and stored sessions.",
+		defaultEnabled: false,
+		restartRequired: true,
+	},
 ]
-
-export const RESOURCE_KINDS: readonly ResourceKind[] = ["hooks", "tools", "extensions", "plugins"]
 
 export const TOOL_RESOURCE_IDS: Readonly<Record<string, string>> = {
 	web_search: "tools.web_search",

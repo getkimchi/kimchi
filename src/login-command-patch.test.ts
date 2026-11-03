@@ -7,6 +7,7 @@ import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import * as loginPatch from "./login-command-patch.js"
 import * as modelsModule from "./models.js"
 import * as piAuthModule from "./pi-auth.js"
+import { fetchSelfHostedEndpoints } from "./self-hosted-discovery.js"
 
 const { oauthDelegate, warningDelegate } = loginPatch
 
@@ -18,6 +19,13 @@ vi.mock("@earendil-works/pi-ai/compat", async () => {
 		...(actual as object),
 		getModels: vi.fn().mockReturnValue([]),
 	}
+})
+
+// The self-hosted login prompt resolves the install's endpoints via the
+// discovery document; unit tests must not hit the network.
+vi.mock("./self-hosted-discovery.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./self-hosted-discovery.js")>()
+	return { ...actual, fetchSelfHostedEndpoints: vi.fn() }
 })
 
 beforeAll(() => {
@@ -40,6 +48,15 @@ beforeEach(() => {
 	synchronizedApiKey = ""
 	vi.spyOn(piAuthModule, "syncPiAuth").mockImplementation(async (_authPath, _modelsPath, apiKey) => {
 		synchronizedApiKey = apiKey
+	})
+	// Default: the install predates discovery (no /env/endpoints.json), so the
+	// self-hosted prompt falls back to the manual single-base derivation.
+	// Individual tests override this to exercise the discovered path.
+	vi.mocked(fetchSelfHostedEndpoints).mockReset()
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "unavailable",
+		cause: "not-found",
+		reason: "no discovery document at /env/endpoints.json (HTTP 404)",
 	})
 })
 
@@ -94,6 +111,7 @@ function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegist
 		session: {
 			modelRuntime: registry,
 			setModel: vi.fn().mockResolvedValue(undefined),
+			model: undefined,
 		},
 		showSelector: vi.fn((build: (done: () => void) => { component: unknown; focus?: unknown }) => {
 			const result = build(() => {
@@ -272,6 +290,106 @@ it("falls back to the first available model when the default is not present", as
 	expect(getFeedbackMessages(fakeIm)).toContainEqual(
 		expect.stringContaining("Logged in to Kimchi. Selected other-model. Credentials saved to "),
 	)
+})
+
+it("announces the auto-selected model when no prior Kimchi model is active", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-default",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// The login default is the first model in the registry, so the success
+	// message announces which model was auto-selected.
+	registry.getAvailable.mockReturnValue([{ id: "minimax-m3", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "minimax-m3", provider: "kimchi-dev" }, { persist: true })
+	const messages = getFeedbackMessages(fakeIm)
+	expect(messages).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected minimax-m3. Credentials saved to "),
+	)
+})
+
+it("defaults to the Auto router when the catalog serves it", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-auto",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// The catalog serves the routed virtual model alongside concrete models —
+	// login must prefer the router, matching the fresh-session default policy.
+	registry.getAvailable.mockReturnValue([
+		{ id: "glm-5.3", provider: "kimchi-dev" },
+		{ id: "auto", provider: "kimchi-dev" },
+	])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "auto", provider: "kimchi-dev" }, { persist: true })
+	expect(getFeedbackMessages(fakeIm)).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected auto. Credentials saved to "),
+	)
+})
+
+it("preserves a Kimchi provider model that is already active across login", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-preserve",
+	})
+
+	const registry = makeFakeModelRegistry()
+	// Registry returns the default, but the session already runs a different
+	// Kimchi model — login should not clobber the user's choice.
+	registry.getAvailable.mockReturnValue([
+		{ id: "minimax-m3", provider: "kimchi-dev" },
+		{ id: "kimi-k2.6", provider: "kimchi-dev" },
+	])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.session.model = { id: "kimi-k2.6", provider: "kimchi-dev" }
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	// Login refreshes the credential but does not switch the model away from
+	// the user's prior Kimchi pick.
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+	const messages = getFeedbackMessages(fakeIm)
+	expect(messages).toContainEqual(expect.stringContaining("Logged in to Kimchi. Credentials saved to "))
+	expect(messages).not.toContainEqual(expect.stringContaining("Selected "))
+})
+
+it("still switches the model when the prior session model is non-Kimchi", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-switch",
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "minimax-m3", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// The prior model is from a different provider — login must switch to a
+	// Kimchi model so the new credential is actually usable.
+	fakeIm.session.model = { id: "gpt-4o", provider: "openai" }
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "minimax-m3", provider: "kimchi-dev" }, { persist: true })
 })
 
 it("reports failure when no models are available for the provider", async () => {
@@ -528,15 +646,23 @@ it("selecting Europe for API-key login defaults the endpoint to the EU gateway",
 	})
 })
 
-it("selecting Self-hosted for API-key login prompts for the base URL, not a separate endpoint", async () => {
+it("selecting Self-hosted for API-key login prompts for the console URL, not a separate endpoint", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
 
 	const fakeIm = makeFakeInteractiveMode(registry)
-	// Base URL prompt first, then the API key — no endpoint prompt: the base
-	// URL is the single source every endpoint derives from.
+	// Console URL prompt first, then the API key — no endpoint prompt: the
+	// console URL is the single source every endpoint derives from.
 	fakeIm.showExtensionInput
 		.mockResolvedValueOnce(" https://kimchi.example.com/ ")
 		.mockResolvedValueOnce("self-hosted-key")
@@ -549,17 +675,29 @@ it("selecting Self-hosted for API-key login prompts for the base URL, not a sepa
 
 	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
 		1,
-		"Self-hosted Kimchi base URL:",
+		"Self-hosted Kimchi console URL:",
 		"https://your-kimchi-host.example.com",
 	)
 	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(2, "Kimchi API Key:", "Enter your Kimchi API key")
 	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
+	// The discovery outcome is surfaced as persistent chat feedback (showStatus
+	// would be coalesced away by the next status line).
+	expect(
+		getFeedbackMessages(fakeIm).some(
+			(m) =>
+				m === "Discovered endpoints — API https://kimchi.example.com/api, LLM gateway https://kimchi.example.com/llm.",
+		),
+	).toBe(true)
 	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://kimchi.example.com/llm...")
-	// Self-hosted persists region + selfHostedUrl only — a stored llmEndpoint
-	// would override the region derivation.
+	// Self-hosted persists region + the discovered endpoints only — a stored
+	// llmEndpoint would override the endpoint derivation.
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
 	})
 	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
 		"/tmp/kimchi-api-login-test/models.json",
@@ -571,8 +709,16 @@ it("selecting Self-hosted for API-key login prompts for the base URL, not a sepa
 	)
 })
 
-it("re-prompts for the self-hosted base URL until it parses", async () => {
+it("re-prompts for the self-hosted console URL until it parses", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 
 	const registry = makeFakeModelRegistry()
 	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
@@ -590,15 +736,19 @@ it("re-prompts for the self-hosted base URL until it parses", async () => {
 	await waitForMockCall(fakeIm.session.setModel)
 
 	expect(fakeIm.showError).toHaveBeenCalledWith(
-		'Invalid base URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
+		'Invalid console URL "not a url" (expected an http(s) URL, e.g. https://kimchi.example.com)',
 	)
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
 	})
 })
 
-it("Esc on the self-hosted base URL prompt returns to the auth-method selector without logging in", async () => {
+it("Esc on the self-hosted console URL prompt returns to the auth-method selector without logging in", async () => {
 	const registry = makeFakeModelRegistry()
 	const fakeIm = makeFakeInteractiveMode(registry)
 	fakeIm.showExtensionInput.mockResolvedValueOnce(undefined)
@@ -619,8 +769,41 @@ it("Esc on the self-hosted base URL prompt returns to the auth-method selector w
 	expect(configModule.writeApiKey).not.toHaveBeenCalled()
 })
 
-it("selecting Self-hosted for account login prompts for the base URL and targets its web app", async () => {
+it("a console URL without the discovery document errors and re-prompts without logging in", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// A first URL whose install serves no document, then Esc out of the
+	// re-prompt: no login may happen (nothing is derived from the URL).
+	fakeIm.showExtensionInput.mockResolvedValueOnce("https://kimchi.example.com").mockResolvedValueOnce(undefined)
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
+	await flushAsyncLogin()
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Endpoint discovery failed: no discovery document at /env/endpoints.json (HTTP 404). A self-hosted install must serve /env/endpoints.json.",
+	)
+	expect(fakeIm.showExtensionInput).toHaveBeenCalledTimes(2)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(modelsModule.updateModelsConfig).not.toHaveBeenCalled()
+})
+
+it("selecting Self-hosted for account login prompts for the console URL and targets its web app", async () => {
 	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
 	const cliAuthModule = await import("./cli-auth/index.js")
 	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "self-hosted-token" })
 
@@ -645,13 +828,69 @@ it("selecting Self-hosted for account login prompts for the base URL and targets
 	await flushAsyncLogin()
 
 	expect(fakeIm.showExtensionInput).toHaveBeenCalledWith(
-		"Self-hosted Kimchi base URL:",
+		"Self-hosted Kimchi console URL:",
 		"https://your-kimchi-host.example.com",
 	)
 	expect(authSpy.mock.calls[0]?.[0]?.webAppUrl).toBe("https://kimchi.example.com")
 	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-token", undefined, {
 		region: "self-hosted",
-		selfHostedUrl: "https://kimchi.example.com",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com/api",
+			console: "https://kimchi.example.com",
+			llm: "https://kimchi.example.com/llm",
+		},
+	})
+})
+
+it("a discovered self-hosted install drives the LLM gateway from the document and persists the endpoints", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(fetchSelfHostedEndpoints).mockResolvedValue({
+		status: "discovered",
+		endpoints: {
+			api: "https://kimchi.example.com",
+			console: "https://kimchi.example.com",
+			llm: "https://llm.example.com",
+		},
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("https://kimchi.example.com").mockResolvedValueOnce("self-hosted-key")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm, 2) // Self-hosted region
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(getFeedbackMessages(fakeIm).some((m) => m === "Checking https://kimchi.example.com/env/endpoints.json…")).toBe(
+		true,
+	)
+	expect(
+		getFeedbackMessages(fakeIm).some(
+			(m) => m === "Discovered endpoints — API https://kimchi.example.com, LLM gateway https://llm.example.com.",
+		),
+	).toBe(true)
+	// The models refresh targets the DISCOVERED gateway origin, not base/llm.
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.example.com...")
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"self-hosted-key",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://llm.example.com",
+		},
+	)
+	// The endpoints are persisted next to the console URL.
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("self-hosted-key", undefined, {
+		region: "self-hosted",
+		selfHostedEndpoints: {
+			api: "https://kimchi.example.com",
+			console: "https://kimchi.example.com",
+			llm: "https://llm.example.com",
+		},
 	})
 })
 

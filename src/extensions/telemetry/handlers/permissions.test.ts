@@ -59,6 +59,8 @@ describe("handleToolDecision", () => {
 		const cases = [
 			["yolo_bypass", "config"],
 			["no_ui", "config"],
+			["bundled_skill_cli", "config"],
+			["bundled_skill_dir_deny", "config"],
 			["classifier", "hook"],
 			["allow_once", "user_temporary"],
 			["allow_remember_wildcard", "user_permanent"],

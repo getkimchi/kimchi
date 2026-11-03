@@ -186,26 +186,17 @@ export async function redactText(text: string): Promise<string> {
 /**
  * Deep-walk any JSON-serializable structure and redact all string values.
  *
- * Unlike `redactMessages`, which only scans `type:"text"` content blocks,
- * this function walks **every** string in the object tree — including
- * tool-call arguments, tool results, metadata fields, etc. This is the
- * right tool for export transcripts where secrets can appear anywhere.
- *
- * Additionally, values stored under sensitive keys (password, token, secret,
- * auth, apiKey, etc.) are redacted regardless of whether the value matches
- * a secret pattern — the key name itself signals sensitivity.
- *
- * Returns a **new** structure; the input is never mutated.
- *
- * @param obj  Any JSON-serializable value (object, array, primitive)
- * @returns     Deep clone with all string values redacted
+ * Shared walker for the lenient and strict public variants — identical
+ * semantics: every string walked, trace-ID keys passed through unchanged,
+ * sensitive-key string values force-redacted, enumerable symbols preserved.
+ * Only the per-string redaction function differs (fail-open vs fail-closed).
  */
-export async function redactObjectStrings<T>(obj: T): Promise<T> {
+async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) => Promise<string>): Promise<T> {
 	if (typeof obj === "string") {
-		return (await redactText(obj)) as T
+		return (await redactString(obj)) as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStrings(item))) as Promise<T>
+		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		const source = obj as Record<PropertyKey, unknown>
@@ -225,7 +216,7 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 				if (typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStrings(value)
+				return redactObjectStringsWith(value, redactString)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}
@@ -235,6 +226,45 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 		return result as T
 	}
 	return obj
+}
+
+/**
+ * Deep-walk any JSON-serializable structure and redact all string values.
+ *
+ * Unlike `redactMessages`, which only scans `type:"text"` content blocks,
+ * this function walks **every** string in the object tree — including
+ * tool-call arguments, tool results, metadata fields, etc. This is the
+ * right tool for export transcripts where secrets can appear anywhere.
+ *
+ * Additionally, values stored under sensitive keys (password, token, secret,
+ * auth, apiKey, etc.) are redacted regardless of whether the value matches
+ * a secret pattern — the key name itself signals sensitivity.
+ *
+ * Returns a **new** structure; the input is never mutated.
+ *
+ * Lenient failure policy: a scanning failure falls back to the original text
+ * (via `redactText`) — redaction must never break the prompt pipeline.
+ *
+ * @param obj  Any JSON-serializable value (object, array, primitive)
+ * @returns     Deep clone with all string values redacted
+ */
+export async function redactObjectStrings<T>(obj: T): Promise<T> {
+	return redactObjectStringsWith(obj, redactText)
+}
+
+/**
+ * Strict variant of `redactObjectStrings` for the export pipeline.
+ *
+ * Identical walk semantics — every string, sensitive-key force-redaction,
+ * preserved trace IDs, symbols kept — but built on `redactTextOrThrow`: an
+ * engine/scan failure **propagates** instead of silently returning the
+ * original text. Exports fail closed — an unredacted transcript must never
+ * be published.
+ *
+ * Returns a **new** structure; callers must assign the result.
+ */
+export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
+	return redactObjectStringsWith(obj, redactTextOrThrow)
 }
 
 /** A pi-ai message with optional role/content fields. */

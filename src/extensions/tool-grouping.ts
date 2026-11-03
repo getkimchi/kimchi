@@ -91,7 +91,13 @@ export function patchAddChild(): void {
 	if (proto[ADDCHILD_PATCH_FLAG]) return
 	const original = proto.addChild
 	proto.addChild = function patchedAddChild(component: object) {
-		parentMap.set(component, this)
+		// Only WeakMap-keyable values (objects/functions) can be recorded. A
+		// primitive here means a caller broke upstream's child contract —
+		// delegate anyway (upstream addChild itself tolerates it), but never
+		// let parent tracking turn that into a crash.
+		if (component !== null && (typeof component === "object" || typeof component === "function")) {
+			parentMap.set(component, this)
+		}
 		return original.call(this, component)
 	}
 	proto[ADDCHILD_PATCH_FLAG] = true

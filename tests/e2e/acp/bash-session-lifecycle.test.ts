@@ -85,7 +85,7 @@ for (const otherSession of [false, true]) {
 					).not.toContain("lifecycle.pid")
 				}
 				process.kill(pid, 0)
-				await fixture.conn.unstable_closeSession({ sessionId: a })
+				await fixture.conn.closeSession({ sessionId: a })
 				await waitFor(
 					() => {
 						try {
@@ -221,7 +221,7 @@ it(
 			expect(requestA).not.toContain("b.pid")
 			await fixture.conn.cancel({ sessionId: a })
 			expect((await inspecting).stopReason).toBe("cancelled")
-			await fixture.conn.unstable_closeSession({ sessionId: a })
+			await fixture.conn.closeSession({ sessionId: a })
 			expect(() => process.kill(pids[0], 0)).toThrow()
 			process.kill(pids[1], 0)
 			const workingB = fixture.conn.prompt({

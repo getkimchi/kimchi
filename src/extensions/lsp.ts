@@ -25,7 +25,7 @@ import {
 	waitForDiagnostics,
 } from "./lsp/client.js"
 import { applyWorkspaceEdit } from "./lsp/edits.js"
-import { detectMissingCandidates, detectServers, findRoot, serverForFile } from "./lsp/servers.js"
+import { detectMissingCandidates, detectServerForPath, detectServers, findRoot, serverForFile } from "./lsp/servers.js"
 import type {
 	Hover,
 	Location,
@@ -46,6 +46,7 @@ export function clientCwd(filePath: string, sessionCwd: string): string {
 }
 
 const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics"
+const LSP_ACTIVATION_CUSTOM_TYPE = "lsp_activation"
 const DIAG_WAIT_TIMEOUT_MS = 2000
 
 /** Diagnostic log for LSP failures — silent unless NODE_DEBUG=kimchi:lsp. A
@@ -108,9 +109,19 @@ export default function (pi: ExtensionAPI) {
 	// session cwd — every execute() would only answer "No LSP server available".
 	// Detection needs ctx.cwd, which only exists at session_start, so the gate
 	// is a visibility vote rather than a registration skip: tools stay
-	// registered but hidden from the advertised surface. The vote is static per
-	// session — servers do not warm up later — so there is no reveal transition.
+	// registered but hidden from the advertised surface. The vote is not fully
+	// static: when no server was detected at session start, the file-sync
+	// handler keeps scanning touched files, and a mid-session activation
+	// (see maybeActivateForPath) removes the vote, revealing the tools on the
+	// next request.
 	const visibility = createToolVisibility(pi)
+	// Project root of a lazily-activated server (the matched marker's
+	// directory), set only when activation happened mid-session. Every sync
+	// and lsp_* tool call keys the client here so sibling source dirs share
+	// one chain and files outside the session cwd (started-elsewhere case)
+	// resolve to the root detection found — a root findRoot's session-cwd
+	// clamp cannot see.
+	let activationRoot: string | undefined
 	// Tracks the pending diagnostic wait so a newer edit can cancel the previous
 	// one (avoiding stale status-bar updates) and so session_shutdown can
 	// abort any leftover waiter before tearing down clients. The local
@@ -219,6 +230,75 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** Lazily activate a server for a touched file when none is active — the
+	 *  project materialized mid-session (scaffolded files, a clone landing in
+	 *  the tree), its binary was installed after session start, or the session
+	 *  was started outside the project tree. Runs on every server-supported
+	 *  file touch while no server is active (see the tool_result handler for
+	 *  why nothing is throttled or cached). On a hit: adopt the single winner,
+	 *  remember the activation root (the matched marker's directory — sibling
+	 *  source dirs and outside-cwd files key their clients there), remove the
+	 *  visibility vote that hid the lsp_* tools so the next request's tools
+	 *  array carries them, and mirror the session-start statusline. */
+	function maybeActivateForPath(resolved: string, statusUi: ExtensionUIContext | undefined): void {
+		const hit = detectServerForPath(resolved)
+		if (!hit) return
+		activeServers = [hit.server]
+		activationRoot = hit.root
+		// A degraded "not installed" report from session start is stale the
+		// moment activation succeeds.
+		degradedServers = []
+		visibility.enable(LSP_TOOL_NAMES)
+		if (statusUi) {
+			statusUi.setStatus("lsp", `LSP: ${hit.server.name}`)
+		}
+		// One-time activation steer: this path only runs when LSP was NOT
+		// active at session start, so sessions that had the lsp-tools prompt
+		// block from turn 0 (the branch-A geometry) never see it. Announces
+		// the server and the lsp_* tools; for a pyright winner it explicitly
+		// supersedes any already-steered ast.parse post-edit validation (steer
+		// recency would otherwise favor the later AST body) and keys the
+		// fallback on the tool's ordinary-result refusal shapes ("No LSP server
+		// available for this file type.", unavailable/failed server), not
+		// isError — those refusals are ordinary results. Hidden harness steer,
+		// same channel as LSP diagnostics steers and behaviour bodies; works on
+		// both TUI and ACP.
+		const activationParts = [
+			`Language server ${hit.server.name} is now active (project root ${hit.root}).`,
+			"The `lsp_*` tools are available — call `lsp_diagnostics` after editing files it serves, and use `lsp_hover` / `lsp_definition` / `lsp_references` / `lsp_rename` for navigation instead of grep-based lookups.",
+		]
+		if (hit.server.extensions.includes("py")) {
+			activationParts.push(
+				'For Python files this supersedes the earlier ast.parse post-edit validation — call `lsp_diagnostics` on the edited file (it reports syntax, type, and import errors). If it reports no server available, the server is unavailable, or it fails, fall back to the `python3 -c "import ast..."` check.',
+			)
+		}
+		pi.sendMessage(
+			{
+				customType: LSP_ACTIVATION_CUSTOM_TYPE,
+				content: markHarnessSteer(activationParts.join(" ")),
+				display: false,
+			},
+			{ deliverAs: "steer" },
+		)
+		debug(`LSP: ${hit.server.name} activated mid-session for ${hit.root}`)
+	}
+
+	/** Client root for a file: findRoot bounded by the activation root when
+	 *  the file lives inside it, otherwise by the session cwd. findRoot's
+	 *  boundary gives monorepo nested packages their own roots and falls
+	 *  back to the file's own directory when no marker lies below it. The
+	 *  activation-root boundary applies to files inside the session cwd too:
+	 *  a lazily-detected project may sit ABOVE the cwd (session started in a
+	 *  subdir), and the session-cwd clamp would key such files at their own
+	 *  directory instead of the project root — splitting one project across
+	 *  separate chains and missing its configuration. */
+	function clientRootForFile(filePath: string, server: ServerConfig): string {
+		if (activationRoot !== undefined && inWorkspace(filePath, activationRoot)) {
+			return findRoot(filePath, server.name, activationRoot)
+		}
+		return findRoot(filePath, server.name, cwd)
+	}
+
 	function cancelPendingRefresh(): void {
 		if (!pendingRefresh) return
 		pendingRefresh.abort.abort()
@@ -240,6 +320,7 @@ export default function (pi: ExtensionAPI) {
 		failedClients = new Map()
 		reportedFailures = new Set()
 		activeServers = detectServers(cwd)
+		activationRoot = undefined
 
 		// Compute missing candidates independently of active servers. In a mixed
 		// repo (e.g. both go.mod and package.json present but only one server
@@ -301,24 +382,45 @@ export default function (pi: ExtensionAPI) {
 		const filePath = event.input.path
 		if (typeof filePath !== "string") return
 
+		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
+
+		// Lazy mid-session activation runs BEFORE the read and workspace guards
+		// below: reads trigger detection (still without spawning a chain or
+		// opening a document), and the materialized project may live outside the
+		// session cwd (session started elsewhere) — only the touched file's own
+		// ancestry establishes it, which the workspace guard below would reject.
+		// While no server is active this runs on every server-supported-extension
+		// touch, unthrottled and uncached: every suppression mechanism would also
+		// be a miss mechanism (a clone landing during a cooldown window, or a
+		// binary installed late, would otherwise deactivate LSP for the rest of
+		// the session). The scan is an ancestor-marker walk bounded by .git depth
+		// (microseconds), and it stops permanently after activation (below), so
+		// the single-winner bound caps total scans per session.
+		if (activeServers.length === 0) {
+			maybeActivateForPath(resolved, ui ?? ctx.ui)
+		}
+
 		// Reads never touch LSP. Opening every browsed file was the chain
 		// growth vector — one didOpen per read, never closed, with zero
 		// payoff (the read branch fetched no diagnostics). Chains now spawn
 		// and documents open only on edits and explicit lsp_* tool calls.
 		if (isReadToolResult(event)) return
 
-		const resolved = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath)
 		// Never spawn a chain for files outside the session workspace: they
 		// resolve to a different project root, and one edit there used to
-		// boot a whole second server (measured: a 1.4-2.9GB chain in ~6s).
-		if (!inWorkspace(resolved, cwd)) return
+		// boot a whole second server (measured: a 1.4-2.9GB chain in ~6s). A
+		// lazily-activated project root is the one accepted exception — the
+		// session was started outside that project's tree.
+		if (!inWorkspace(resolved, cwd) && !(activationRoot !== undefined && inWorkspace(resolved, activationRoot))) return
 		const server = serverForFile(resolved, activeServers)
 		if (!server) return
 		// Resolve the project root the same way the lsp_* tools do (a nested
 		// package in a monorepo is its own root), so the failure cache and the
 		// spawned client are keyed by the same root whichever path sees the
-		// file first.
-		const root = findRoot(resolved, server.name, cwd)
+		// file first. Inside a lazily-activated project the walk is bounded by
+		// the activation root instead of the session cwd — findRoot's session-cwd
+		// clamp cannot see markers above the cwd.
+		const root = clientRootForFile(resolved, server)
 		// Skip servers that already failed on this root this session —
 		// re-spawning once per file op floods the output with the same error.
 		if (hasClientFailed(server, root)) return
@@ -426,10 +528,10 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const outside = outsideWorkspaceResult(filePath, cwd)
+			const outside = outsideWorkspaceResult(filePath, cwd, activationRoot)
 			if (outside) return outside
 
-			const client = await startClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, clientRootForFile(filePath, server))
 			await refreshFile(client, filePath)
 
 			const waitMs = Math.min(params.wait_ms ?? 2000, 10000)
@@ -487,10 +589,10 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const outside = outsideWorkspaceResult(filePath, cwd)
+			const outside = outsideWorkspaceResult(filePath, cwd, activationRoot)
 			if (outside) return outside
 
-			const client = await startClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, clientRootForFile(filePath, server))
 			await ensureFileOpen(client, filePath)
 
 			const result = (await sendRequest(client, "textDocument/hover", {
@@ -534,10 +636,10 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const outside = outsideWorkspaceResult(filePath, cwd)
+			const outside = outsideWorkspaceResult(filePath, cwd, activationRoot)
 			if (outside) return outside
 
-			const client = await startClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, clientRootForFile(filePath, server))
 			await ensureFileOpen(client, filePath)
 
 			const lspMethod = `textDocument/${params.method ?? "definition"}`
@@ -584,10 +686,10 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const outside = outsideWorkspaceResult(filePath, cwd)
+			const outside = outsideWorkspaceResult(filePath, cwd, activationRoot)
 			if (outside) return outside
 
-			const client = await startClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, clientRootForFile(filePath, server))
 			await ensureFileOpen(client, filePath)
 
 			const result = (await sendRequest(client, "textDocument/references", {
@@ -631,10 +733,10 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "No LSP server available for this file type." }], details: null }
 			}
 
-			const outside = outsideWorkspaceResult(filePath, cwd)
+			const outside = outsideWorkspaceResult(filePath, cwd, activationRoot)
 			if (outside) return outside
 
-			const client = await startClient(server, findRoot(filePath, server.name, cwd))
+			const client = await startClient(server, clientRootForFile(filePath, server))
 			await ensureFileOpen(client, filePath)
 
 			// Check if rename is valid at this position
@@ -703,12 +805,16 @@ function inWorkspace(filePath: string, sessionCwd: string): boolean {
 	return isPathWithin(filePath, sessionCwd)
 }
 
-/** Guard result shared by the five lsp_* tools: null when the file is in-workspace. */
+/** Guard result shared by the five lsp_* tools: null when the file is
+ *  in-workspace — the session cwd, or (lazily-activated sessions) the
+ *  activation root when the session started outside the project tree. */
 function outsideWorkspaceResult(
 	filePath: string,
 	sessionCwd: string,
+	activationRoot?: string,
 ): { content: Array<{ type: "text"; text: string }>; details: null } | null {
 	if (inWorkspace(filePath, sessionCwd)) return null
+	if (activationRoot !== undefined && inWorkspace(filePath, activationRoot)) return null
 	return { content: [{ type: "text", text: OUTSIDE_WORKSPACE_TEXT }], details: null }
 }
 

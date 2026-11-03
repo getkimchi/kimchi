@@ -20,6 +20,24 @@ process.env.USERPROFILE = testHome
 process.env.XDG_CONFIG_HOME = join(testHome, ".config")
 process.env.XDG_DATA_HOME = join(testHome, ".local", "share")
 process.env.XDG_CACHE_HOME = join(testHome, ".cache")
+// The agent dir (models.json, auth.json) is overridable via
+// KIMCHI_CODING_AGENT_DIR and developer shells commonly export it. Without
+// this default, unit tests resolve the developer's REAL auth.json as a
+// credential source (keyless code paths silently become authenticated).
+// Per-test vi.stubEnv still wins over this default.
+process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
+// Same hazard for the legacy PI_CODING_AGENT_DIR name some shells export;
+// otherwise hydrate() imports the developer's real work-history journals
+// into unit tests and background imports can stall past the hook timeout.
+process.env.PI_CODING_AGENT_DIR = join(testHome, "agent-legacy")
+// The enclosing harness exports git tracing hooks for commit attribution.
+// The GIT_TRACE_REFS debug ref backend crashes some git binaries (a plain
+// `git pack-refs --all` segfaults on broken builds), and traces from scratch
+// repos pollute the developer's real attribution capture, so tests must not
+// inherit any git tracer. Scrub by prefix so tracers added later are covered too.
+for (const key of Object.keys(process.env)) {
+	if (key.startsWith("GIT_TRACE") || key === "GIT_CURL_TRACE") delete process.env[key]
+}
 
 afterAll(() => {
 	// Retry through transient Windows EBUSY; a leftover only costs temp space,

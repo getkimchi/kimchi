@@ -150,6 +150,27 @@ describe("parseOrgPolicy", () => {
 })
 
 describe("fetchOrgPolicy", () => {
+	it("sends the SSO organization header on verify and resolve when one is given", async () => {
+		const seen: RequestInit[] = []
+		let call = 0
+		const fetchImpl = (async () => {
+			call++
+			if (call === 1) return jsonResponse({ organizationId: "org-1" })
+			return jsonResponse({ settings: {} })
+		}) as unknown as typeof globalThis.fetch
+		const wrapped = (async (url: string, init?: RequestInit) => {
+			seen.push(init ?? {})
+			return fetchImpl(url, init)
+		}) as unknown as typeof globalThis.fetch
+
+		await fetchOrgPolicy("oauth-token", { fetch: wrapped, organizationId: "org-1" })
+
+		expect(seen).toHaveLength(2)
+		for (const headers of seen) {
+			expect((headers.headers as Record<string, string>)["X-CastAi-Organization-Id"]).toBe("org-1")
+		}
+	})
+
 	it("returns the resolved policy from the gateway's camelCase JSON", async () => {
 		const fetchImpl = routeFetch(
 			{ organizationId: "org-1" },

@@ -1,4 +1,5 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import type { readOutboxStatus } from "./ledger/outbox.js"
 import {
 	inUploadWindow,
 	type LimitNotices,
@@ -74,7 +75,21 @@ export function statusText(
 	state: ReportingState,
 	skipReason: string | undefined,
 	now = Date.now(),
+	outbox: ReturnType<typeof readOutboxStatus> = [],
 ): { text: string; warning: boolean } {
+	const events = outbox.reduce(
+		(total, status) => ({
+			pending: total.pending + status.pending,
+			blocked: total.blocked + status.blocked,
+			acknowledged: total.acknowledged + status.acknowledged,
+			batches: total.batches + status.batches,
+			lastAcknowledgedAt: Math.max(total.lastAcknowledgedAt, status.lastAcknowledgedAt ?? 0),
+		}),
+		{ pending: 0, blocked: 0, acknowledged: 0, batches: 0, lastAcknowledgedAt: 0 },
+	)
+	const retryAt = Math.min(
+		...outbox.flatMap((status) => (status.retry && status.retry.retryAt > now ? [status.retry.retryAt] : [])),
+	)
 	const entries = Object.values(state.entries)
 	const pending = entries.filter((entry) => entry.pending)
 	const waiting = pending.filter((entry) => inUploadWindow(entry, now)).length
@@ -98,8 +113,15 @@ export function statusText(
 			return lines
 		}),
 		...new Set(
-			[state.error, ...pending.map((entry) => entry.lastError)].filter((value): value is string => value !== undefined),
+			[
+				state.error,
+				...pending.map((entry) => entry.lastError),
+				...outbox.flatMap((status) =>
+					status.retry ? [status.retry.error ?? "A previous PR cost event upload failed"] : [],
+				),
+			].filter((value): value is string => value !== undefined),
 		),
+		...(events.blocked ? [`${plural(events.blocked, "event")} blocked; retained locally.`] : []),
 	]
 	const sections = [
 		...(problems.length ? [["Delivery problems", ...problems.flatMap((problem) => wrap(problem, "- "))]] : []),
@@ -114,6 +136,15 @@ export function statusText(
 				`${formatCount(pending.length)} queued · ${formatCount(acknowledged)} acknowledged`,
 				...(waiting ? [`${formatCount(waiting)} waiting for the 5-minute upload window`] : []),
 			),
+			...(outbox.length
+				? row(
+						"Events",
+						`${formatCount(events.pending)} queued · ${formatCount(events.acknowledged)} acknowledged`,
+						...(events.batches ? [`${plural(events.batches, "frozen batch")} awaiting acknowledgement`] : []),
+					)
+				: []),
+			...(Number.isFinite(retryAt) ? row("Event retry", inAbout(retryAt - now)) : []),
+			...(events.lastAcknowledgedAt ? row("Last event ACK", new Date(events.lastAcknowledgedAt).toISOString()) : []),
 		],
 		...(state.skippedRequests
 			? [

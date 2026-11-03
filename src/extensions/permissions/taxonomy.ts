@@ -1,6 +1,10 @@
 import { type ControlOperator, type ParseEntry, parse as parseShell } from "shell-quote"
 import type { ToolCategory } from "./types.js"
 
+// shell-quote >= 1.11 types ControlOperator as an interface; the operator
+// string itself is the `op` field.
+type ShellOp = ControlOperator["op"]
+
 export const FILE_TOOLS = new Set(["read", "write", "edit", "ls", "grep", "find"])
 
 const STATIC_CATEGORIES: Record<string, ToolCategory> = {
@@ -349,11 +353,34 @@ const HARD_BLOCK_PROGRAMS = new Set(["sudo", "su", "shutdown", "reboot", "halt",
 //   - `<`: input redirect — also appears twice in a row for heredocs (<<EOF)
 //   - `<(` / `(`: process substitution / subshell — can hide arbitrary code
 //   - `&`: backgrounding
-//   - `&>` (combined stdout+stderr redirect-to-file): shell-quote decomposes
-//      this into `&` + `>`, so it is blocked transitively via the `&` rule.
-//      This safety is incidental — if `&` were ever relaxed, `&>` would need
-//      explicit handling.
-const DANGEROUS_OPS = new Set<ControlOperator>([">", ">>", ">&", "<", "<(", "(", ")", "&"])
+//   - `&>` / `&>>`: combined stdout+stderr redirect-to-file. shell-quote 1.11+
+//      emits these as single operators (older versions decomposed them into `&`
+//      + `>`); they are blocked unconditionally — unlike `>` there is no
+//      `/dev/null` allowance, matching the pre-1.11 behavior where the `&`
+//      always blocked them.
+//   - `<<` / `<<-` / `<<<`: heredocs / here-strings — stdin constructs whose
+//      bodies are opaque to segment parsing.
+//   - `>(` / `>|` / `<>` / `<&`: process-substitution output, clobber-forced
+//      redirect, and read/write fd redirects — all can write files.
+const DANGEROUS_OPS = new Set<ShellOp>([
+	">",
+	">>",
+	">&",
+	"<",
+	"<(",
+	">(",
+	"(",
+	")",
+	"&",
+	"&>",
+	"&>>",
+	">|",
+	"<>",
+	"<&",
+	"<<",
+	"<<-",
+	"<<<",
+])
 
 // `>` / `>>` targets that are allowed because they discard or duplicate
 // existing streams rather than creating persistent state.
@@ -436,15 +463,22 @@ export function splitCompoundCommand(command: string): string[] | null {
 				currentTokens.push(entry.op)
 				continue
 			}
-			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
-				// Consume the redirect target (also covers `>&1` fd-to-fd redirects).
-				// NOTE: Other redirects (<, <<) are intentionally not supported —
-				// they would not change the program classification outcome for
-				// permission evaluation.
+			if (
+				(op === ">" || op === ">>" || op === ">&" || op === "&>" || op === "&>>") &&
+				typeof entries[i + 1] === "string"
+			) {
+				// Consume the redirect target (also covers `>&1` fd-to-fd redirects
+				// and combined `&>` / `&>>` redirects, single ops since shell-quote 1.11).
 				currentTokens.push(entry.op)
 				currentTokens.push(entries[i + 1] as string)
 				i++
+				continue
 			}
+			// Every other operator is preserved verbatim so the reconstructed
+			// segment still carries it — dropping it would hide redirects like
+			// `>|`, `<>`, `<&`, or heredocs from downstream read-only
+			// classification (fail closed).
+			currentTokens.push(op)
 		}
 	}
 
@@ -633,7 +667,7 @@ function isDangerousRmSegment(tokens: string[]): boolean {
 
 interface Segment {
 	tokens: string[]
-	ops: Array<{ op: ControlOperator; target?: string }>
+	ops: Array<{ op: ShellOp; target?: string }>
 }
 
 // Parse a bash command into top-level segments separated by `|`, `;`, `&&`,
@@ -670,7 +704,10 @@ export function parseCommandSegments(command: string): Segment[] {
 				current = { tokens: [], ops: [] }
 				continue
 			}
-			if ((op === ">" || op === ">>" || op === ">&") && typeof entries[i + 1] === "string") {
+			if (
+				(op === ">" || op === ">>" || op === ">&" || op === "&>" || op === "&>>") &&
+				typeof entries[i + 1] === "string"
+			) {
 				current.ops.push({ op, target: entries[i + 1] as string })
 				i++ // consume the redirect target
 				continue

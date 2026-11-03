@@ -40,6 +40,7 @@
  *     stays the extensions.memory resource (/resources, restart required).
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
@@ -312,14 +313,16 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 			try {
 				const config = loadConfig()
-				// loadConfig never throws for a missing file — apiKey:"" is the
+				// A credential-less resolution (no key, no SSO login) is the
 				// keyless shape; a gate on it would 401 per call and spam the
 				// fail-open logs instead of behaving like "gates unavailable".
-				resolvedDecision = config.apiKey
+				const credentials = resolveGatewayCredentials(config)
+				resolvedDecision = credentials.token
 					? {
 							gate: {
 								endpoint: systemoneEndpoint(config.llmEndpoint),
-								apiKey: config.apiKey,
+								apiKey: credentials.token,
+								organizationId: credentials.organizationId,
 								timeoutMs: MEMORY_SEARCH_TIMEOUT_MS / 2,
 								maxRetries: 1,
 							},

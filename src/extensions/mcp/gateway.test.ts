@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { McpConfig } from "pi-mcp-adapter/types"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as ConfigModule from "../../config.js"
 
 const configState = vi.hoisted(() => ({
@@ -47,16 +50,27 @@ function configWith(...urls: (string | undefined)[]): McpConfig {
 }
 
 describe("buildBuiltinGatewayServer", () => {
+	let agentDir: string
+
 	beforeEach(() => {
 		configState.environmentKey = undefined
 		configState.savedKey = undefined
 		configState.castApiUrl = "https://api.cast.ai"
+		// Isolate from the ambient agent dir — a developer shell's real auth.json
+		// is a credential source for the keyless tests now.
+		agentDir = mkdtempSync(join(tmpdir(), "mcp-gateway-auth-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 		regionsState.regions = {
 			us: { castApiUrl: "https://api.cast.ai" },
 			eu: { castApiUrl: "https://api.eu.cast.ai" },
 			"self-hosted": { castApiUrl: "" },
 		}
 		resourceState.enabled = false
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		rmSync(agentDir, { recursive: true, force: true })
 	})
 
 	it("exposes the resource id used by /resources", () => {
@@ -121,6 +135,22 @@ describe("buildBuiltinGatewayServer", () => {
 		configState.savedKey = "castai_v1_key"
 		configState.castApiUrl = "https://api.cast.ai///"
 		expect(buildBuiltinGatewayServer()?.entry.url).toBe("https://api.cast.ai/mcp")
+	})
+
+	it("builds from an SSO login (auth.json OAuth credential + org header) when no key is configured", () => {
+		resourceState.enabled = true
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-3" } }),
+		)
+		expect(buildBuiltinGatewayServer()).toEqual({
+			name: GATEWAY_SERVER_NAME,
+			entry: {
+				url: "https://api.cast.ai/mcp",
+				headers: { Authorization: "Bearer oauth-access", "X-CastAi-Organization-Id": "org-3" },
+				lifecycle: "keep-alive",
+			},
+		})
 	})
 })
 

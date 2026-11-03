@@ -647,7 +647,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 		{
 			artifactName: "ferment-v2-mode-evaluation-gate",
 			seedHome: enableFermentV2Mode,
-			env: { KIMCHI_REDACTION_ENABLED: "1" },
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.pii-redaction" },
 			// Keep this evaluation scenario above the SDK's 16K compaction reserve;
 			// the fake model's default 8K window triggers unrelated compaction.
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true, contextWindow: 200_000 }],

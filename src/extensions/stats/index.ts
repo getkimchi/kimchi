@@ -13,6 +13,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import { verifyApiKey } from "../../api/organizations.js"
+import { type GatewayCredentials, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { CastAiStatsApi, getTimeRange } from "./api.js"
@@ -30,16 +31,29 @@ import {
 import { formatError, formatHelp } from "./display.js"
 import { formatAnalyticsVisual, formatProductivityVisual, type SortBy } from "./visual.js"
 
-function apiKey(): string {
-	const key = loadConfig().apiKey || process.env.CASTAI_API_KEY
-	if (!key) {
-		throw new Error("No API key found. Please run `kimchi login` to set up your API key.")
+/**
+ * The credential for the Cast AI analytics API: the same resolution as every
+ * other harness caller (configured key, then the SSO credential in auth.json).
+ * CASTAI_API_KEY stays as an explicit override for both paths.
+ */
+function statsCredentials(): GatewayCredentials {
+	const resolved = resolveGatewayCredentials(loadConfig())
+	if (resolved.token) return resolved
+	const override = process.env.CASTAI_API_KEY
+	return override ? { token: override, source: "api-key" } : resolved
+}
+
+function credentialsOrThrow(): GatewayCredentials {
+	const credentials = statsCredentials()
+	if (!credentials.token) {
+		throw new Error("No credentials found. Run `kimchi` and sign in (API key or SSO), or set CASTAI_API_KEY.")
 	}
-	return key
+	return credentials
 }
 
 function createApiClient(): CastAiStatsApi {
-	return new CastAiStatsApi({ apiKey: apiKey() })
+	const credentials = credentialsOrThrow()
+	return new CastAiStatsApi({ apiKey: credentials.token, organizationId: credentials.organizationId })
 }
 
 /**
@@ -147,13 +161,23 @@ async function handleCostCommand(args: string, ctx: ExtensionCommandContext): Pr
 	}
 	const { view, days } = parseCostArgs(args)
 	try {
-		const key = apiKey()
-		const [{ organizationId }, { id: userId }] = await Promise.all([verifyApiKey(key), getMe(key)])
+		const credentials = credentialsOrThrow()
+		// The SSO credential's organization id is authoritative on the OAuth
+		// path (the token is user-scoped, not org-scoped); API keys get theirs
+		// from api-keys:verify.
+		const [{ id: userId }, organizationId] = await Promise.all([
+			getMe(credentials.token, { organizationId: credentials.organizationId }),
+			credentials.organizationId
+				? Promise.resolve(credentials.organizationId)
+				: verifyApiKey(credentials.token, { organizationId: credentials.organizationId }).then(
+						(identity) => identity.organizationId,
+					),
+		])
 		// Kimchi sends the session id only with telemetry on; only the sessions view looks for this session.
 		const sessionId = view === "sessions" && isTelemetryEnabled() ? ctx.sessionManager.getSessionId() : undefined
 		const window = costWindow(days, sessionId)
 		ctx.ui.notify(`Fetching billed costs for the last ${window.days} days...`, "info")
-		const response = await new CastAiStatsApi({ apiKey: key }).generateBreakdown(
+		const response = await new CastAiStatsApi({ apiKey: credentials.token, organizationId }).generateBreakdown(
 			organizationId,
 			COST_VIEWS[view],
 			window.startTime,

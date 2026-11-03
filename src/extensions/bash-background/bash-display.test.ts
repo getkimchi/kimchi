@@ -7,7 +7,7 @@ import { createFakeOps } from "./__mocks__/fake-bash-ops.js"
 import { bashStatus, bashStatusColor, createBashRenderers, safeBashText } from "./bash-display.js"
 import { createProcessRegistry, type ProcessDisplaySnapshot } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
-import { getSessionState, setSessionState } from "./session-registry.js"
+import { type BashSessionState, getSessionState, setSessionState } from "./session-registry.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
 const sessionId = "display-test"
@@ -21,7 +21,8 @@ function makeState(registry: ReturnType<typeof createProcessRegistry>) {
 		coordinator: createReviewCoordinator({ registry }),
 		delivery: createTerminalDelivery(),
 		limitSeconds: 60,
-	}
+		sessionKind: "unattended",
+	} satisfies BashSessionState
 }
 
 const display: ProcessDisplaySnapshot = {

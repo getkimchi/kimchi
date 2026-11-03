@@ -153,13 +153,16 @@ describe("ACP integration — artifact links from bash output", () => {
 					],
 				},
 				{ stream: ["Deck generated."] },
-				// Turn 5: call 1 produces the file (passes detection), call 2
-				// deletes it — only the flush-time re-check can drop the chip.
+				// Turn 5: call 1 produces the file (passes detection), a later
+				// call deletes it — only the flush-time re-check can drop the chip.
+				// The two calls sit on separate response steps: pi executes a
+				// tool-call batch concurrently, so an rm sharing the producing
+				// call's batch races the file's creation and can lose it (CI
+				// flake — the rm hits ENOENT and the file survives to the flush,
+				// emitting the chip the test asserts is absent).
 				{
 					toolCalls: [
 						{
-							// Distinct id/index: the fake server defaults both to
-							// "call_fake"/0, which would merge the two calls.
 							id: "call_produce",
 							index: 0,
 							function: {
@@ -169,9 +172,13 @@ describe("ACP integration — artifact links from bash output", () => {
 								}),
 							},
 						},
+					],
+				},
+				{
+					toolCalls: [
 						{
 							id: "call_cleanup",
-							index: 1,
+							index: 0,
 							function: {
 								name: "bash",
 								arguments: JSON.stringify({ command: "rm temp.pdf && echo cleaned" }),

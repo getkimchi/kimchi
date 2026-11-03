@@ -96,6 +96,8 @@ function makeCtx(hasUI = true): ExtensionContext {
 	return {
 		cwd: "/repo/kimchi",
 		hasUI,
+		// Session-keyed telemetry attribution reads the id from the ctx.
+		sessionManager: { getSessionId: () => "post-completion-test-session" },
 		ui: {
 			select: vi.fn(),
 			notify: vi.fn(),

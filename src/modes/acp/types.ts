@@ -4,12 +4,13 @@ import type { TurnArtifactBuffer } from "./artifact-links.js"
 import type { AcpSkillInfo } from "./skill-commands.js"
 
 /**
- * The session targeted by a turn-scoped ext method, plus whether a turn is
+ * The session targeted by a turn-scoped ext method, plus whether a run is
  * truly active. `turnActive` is `SessionRecord.turn` defined AND not
- * cancelled: a cancelled turn stays defined until the prompt settles, but
+ * cancelled (a cancelled turn stays defined until the prompt settles, but
  * cancel() has already resolved its outcome — it is not "a turn in
- * progress". Handlers gate on this instead of reaching into the agent's
- * private turn bookkeeping.
+ * progress"), OR an unsolicited run in flight (no prompt owns it — e.g. a
+ * completion-notification wake). Handlers gate on this instead of reaching
+ * into the agent's private turn bookkeeping.
  */
 export type SessionTurnTarget = {
 	session: AgentSession
@@ -42,6 +43,11 @@ export type TurnContext = {
 	 * resolve) — an "error" surviving here must failTurn, never end_turn.
 	 */
 	lastAssistantError?: { stopReason: "error"; errorMessage?: string }
+	/**
+	 * The last assistant message was refused (see refused-turns). Read at
+	 * finalize: the turn ends with stopReason "refusal", not a failure.
+	 */
+	refused?: boolean
 	/**
 	 * Pre-write file contents read at tool_execution_start for `write` tool
 	 * calls: the original file content if the file existed (later surfaced as

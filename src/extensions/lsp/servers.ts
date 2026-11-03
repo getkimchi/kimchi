@@ -186,9 +186,24 @@ function countSourceFiles(cwd: string, extensions: string[], depth: number = 3):
  */
 function detectTsServers(cwd: string): ServerConfig[] {
 	if (!markerPresent(cwd, ROOT_MARKERS["typescript-language-server"])) return []
-	const nativePath = resolveTsNativeServerPath(cwd)
-	if (nativePath) return [tsNativeConfig(nativePath)]
-	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? [TYPESCRIPT_LANGUAGE_SERVER] : []
+	const server = tsServerForRoot(cwd)
+	return server ? [server] : []
+}
+
+/**
+ * Resolve the TypeScript server config for a marker-matched root: the TS7
+ * native server when the root's own typescript package carries the native
+ * signature, otherwise the classic server when its binary is on PATH, else
+ * null. Shared by session-start detection (detectTsServers) and lazy
+ * file-anchored activation (detectServerForPath) so both choose the same
+ * config for the same workspace. The native flavor needs no PATH check —
+ * its command is the workspace-local tsc launcher, already
+ * existence-checked by resolveTsNativeServerPath.
+ */
+function tsServerForRoot(root: string): ServerConfig | null {
+	const nativePath = resolveTsNativeServerPath(root)
+	if (nativePath) return tsNativeConfig(nativePath)
+	return exists(TYPESCRIPT_LANGUAGE_SERVER.command) ? TYPESCRIPT_LANGUAGE_SERVER : null
 }
 
 /**
@@ -214,6 +229,63 @@ export function detectMissingCandidates(cwd: string): ServerConfig[] {
 export function serverForFile(filePath: string, servers: ServerConfig[]): ServerConfig | null {
 	const ext = path.extname(filePath).slice(1).toLowerCase()
 	return servers.find((s) => s.extensions.includes(ext)) ?? null
+}
+
+/**
+ * File-anchored detection for lazy mid-session activation: walk up from the
+ * touched file's directory to the nearest ancestor marker of a server that
+ * serves the file's extension, stopping at `.git` (same boundary as
+ * findMarkerUp — markers above the repo root belong to unrelated directories
+ * and must not bleed in).
+ *
+ * Ancestor-only by design: a marker must sit on the touched file's ancestry
+ * to establish "a project containing this file" — a sibling
+ * `unrelated-project/pyproject.toml` does not qualify. The downward/nested
+ * scan stays exclusive to session-start discovery (detectServers), where it
+ * means "the user works in a polyglot repo".
+ *
+ * Returns the matched marker's directory as `root` — the project root, not
+ * the touched file's directory, so sibling source dirs (`/project/src` vs
+ * `/project/tests`) share one client. Null when no ancestor establishes a
+ * project for the extension, or the resolved server's binary is missing —
+ * callers re-scan on the next file touch with no caching, so a late binary
+ * install (or clone) activates on the following touch.
+ *
+ * Cheap by construction: a handful of existsSync per walked directory,
+ * bounded by the `.git` boundary — microseconds even on deep trees, safe to
+ * run unthrottled on every server-supported-extension file touch while no
+ * server is active.
+ */
+export function detectServerForPath(filePath: string): { server: ServerConfig; root: string } | null {
+	const ext = path.extname(filePath).slice(1).toLowerCase()
+	// Registry extension sets are disjoint — at most one candidate serves the
+	// extension, so the walk checks a single marker set, and unsupported files
+	// (the common case: .md, .json, ...) exit before any filesystem access.
+	const candidate = SERVERS.find((s) => s.extensions.includes(ext))
+	if (!candidate) return null
+
+	let dir = path.resolve(path.dirname(filePath))
+	while (true) {
+		const markers = ROOT_MARKERS[candidate.name] ?? []
+		if (markers.some((m) => fs.existsSync(path.join(dir, m)))) {
+			let server: ServerConfig | null
+			if (candidate === TYPESCRIPT_LANGUAGE_SERVER) {
+				// TypeScript resolves its flavor (classic vs TS7 native) from the
+				// matched root's own typescript package — the same decision
+				// session-start detection would make for this workspace. Flavor
+				// resolution carries its own availability checks.
+				server = tsServerForRoot(dir)
+			} else {
+				server = exists(candidate.command) ? candidate : null
+			}
+			if (!server) return null
+			return { server, root: dir }
+		}
+		if (fs.existsSync(path.join(dir, ".git"))) return null
+		const parent = path.dirname(dir)
+		if (dir === parent) return null
+		dir = parent
+	}
 }
 
 /**

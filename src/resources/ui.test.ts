@@ -77,6 +77,7 @@ describe("ResourceManagerComponent", () => {
 		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "plugins")
 
 		component.handleInput("\t")
+		component.handleInput("\t")
 		const experimentalTab = component.render(160).join("\n")
 
 		expect(experimentalTab).toContain("Experimental")

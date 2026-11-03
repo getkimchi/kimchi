@@ -133,6 +133,57 @@ describe("kimchi mcp probe", () => {
 		expect(probeTools).not.toHaveBeenCalled()
 	})
 
+	it("requires a tool name for --call", async () => {
+		mockStdin(input())
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json", "--call"])).toBe(1)
+		expect(output.json.error).toContain("--call requires a tool name")
+		expect(probeTools).not.toHaveBeenCalled()
+	})
+
+	it("requires --call when only --args is given", async () => {
+		mockStdin(input())
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json", "--args", "{}"])).toBe(1)
+		expect(output.json.error).toContain("--args requires --call")
+		expect(probeTools).not.toHaveBeenCalled()
+	})
+
+	it("rejects non-object --args", async () => {
+		mockStdin(input())
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json", "--call", "lookup", "--args", "[1]"])).toBe(1)
+		expect(output.json.error).toContain("--args must be a JSON object")
+		expect(probeTools).not.toHaveBeenCalled()
+	})
+
+	it("passes the requested tool call through to the probe", async () => {
+		mockStdin(input())
+		probeTools.mockResolvedValue({ tools: [], needsAuth: false, error: null })
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json", "--call", "lookup", "--args", '{"id":"a1"}'])).toBe(0)
+		expect(probeTools).toHaveBeenCalledWith(
+			"fixture",
+			{ command: "node", args: ["server.js"] },
+			expect.objectContaining({ call: { tool: "lookup", args: { id: "a1" } } }),
+		)
+		expect(output.json.call).toBeUndefined()
+	})
+
+	it("exits 1 with the full result when the requested tool call fails", async () => {
+		mockStdin(input())
+		probeTools.mockResolvedValue({
+			tools: [{ name: "other" }],
+			needsAuth: false,
+			error: null,
+			call: { ok: false, error: "no such tool", content: null },
+		})
+		const output = captureStdout()
+		expect(await runMcp(["probe", "--json", "--call", "lookup"])).toBe(1)
+		expect(output.json.call).toEqual({ ok: false, error: "no such tool", content: null })
+		expect(output.json.tools).toEqual([{ name: "other" }])
+	})
+
 	it("accepts dotted names and passes the complete server configuration through", async () => {
 		const server = { command: "node", args: ["server.js"], env: { FIXTURE: "1" }, includeTools: ["lookup"] }
 		mockStdin(input("github.com", server))

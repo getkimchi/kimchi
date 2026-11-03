@@ -60,6 +60,13 @@ process.env.PI_CODING_AGENT_DIR = agentDir
 process.title = "kimchi"
 process.env.PI_SKIP_VERSION_CHECK = "1"
 process.env.KIMCHI_DISABLE_BUILTIN_PROVIDERS = "1"
+// Kill switch for pi's own install telemetry: the interactive-mode ping to
+// pi.dev/api/report-install and the pi attribution headers stamped onto
+// OpenRouter/NVIDIA/Cloudflare requests. PI_TELEMETRY is pi's documented
+// disable switch; it is read at call time and wins over the persisted
+// enableInstallTelemetry setting. Unconditional override — kimchi never
+// sends telemetry to pi, even when the user or pi's /settings toggle opts in.
+process.env.PI_TELEMETRY = "0"
 
 installProxyAgent()
 

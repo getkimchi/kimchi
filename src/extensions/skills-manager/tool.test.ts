@@ -1,7 +1,37 @@
 import { describe, expect, it, vi } from "vitest"
 import { SkillManager } from "./skill-manager.js"
-import { createSkillManageTool, SkillManageSchema } from "./tool.js"
+import { createSkillManageTool, createSkillViewTool, SkillManageSchema } from "./tool.js"
 import { UsageTracker } from "./usage.js"
+
+describe("createSkillViewTool", () => {
+	function makeViewMocks(viewResult: unknown) {
+		const manager = { view: vi.fn().mockResolvedValue(viewResult) } as unknown as SkillManager
+		const tracker = { bumpUse: vi.fn().mockResolvedValue(undefined) } as unknown as UsageTracker
+		return { manager, tracker }
+	}
+
+	it("renders the skill directory line when the skill exposes one", async () => {
+		const { manager, tracker } = makeViewMocks({ success: true, content: "Body.", skill_dir: "/skills/pdf" })
+		const tool = createSkillViewTool(manager, tracker)
+		const res = await tool.execute("call-1", { name: "pdf" })
+		expect(res.content[0].text).toContain("Skill directory: /skills/pdf")
+		expect((res.details as { skill_dir?: string }).skill_dir).toBe("/skills/pdf")
+	})
+
+	it("omits the directory line for single-file skills", async () => {
+		const { manager, tracker } = makeViewMocks({ success: true, content: "Body." })
+		const tool = createSkillViewTool(manager, tracker)
+		const res = await tool.execute("call-1", { name: "loose" })
+		expect(res.content[0].text).not.toContain("Skill directory:")
+	})
+
+	it("bumps usage on success", async () => {
+		const { manager, tracker } = makeViewMocks({ success: true, content: "Body.", skill_dir: "/s" })
+		const tool = createSkillViewTool(manager, tracker)
+		await tool.execute("call-1", { name: "pdf" })
+		expect(tracker.bumpUse).toHaveBeenCalledWith("pdf")
+	})
+})
 
 describe("createSkillManageTool", () => {
 	function makeMocks() {

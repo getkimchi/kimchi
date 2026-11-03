@@ -342,46 +342,61 @@ describe("kimchi config region", () => {
 		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: eu — Europe")
 	})
 
-	it("prints the self-hosted region with its configured base URL", async () => {
+	it("prints the self-hosted region with its stored endpoints", async () => {
 		await withExperimentalFeatures(true, async () => {
 			vi.mocked(loadConfig).mockReturnValue({
 				apiKey: "",
 				region: "self-hosted",
-				selfHostedUrl: "https://kimchi.example.com",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com/api",
+					console: "https://kimchi.example.com",
+					llm: "https://kimchi.example.com/llm",
+				},
 			} as ReturnType<typeof loadConfig>)
 
 			const exit = await runConfig(["region"])
 
 			expect(exit).toBe(0)
 			expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: self-hosted — Self-hosted")
-			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Self-hosted base URL: https://kimchi.example.com")
+			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Self-hosted console URL: https://kimchi.example.com")
 			expect(vi.mocked(console.log).mock.calls[2]?.[0]).toBe(
+				"Self-hosted endpoints: api https://kimchi.example.com/api, llm https://kimchi.example.com/llm",
+			)
+			expect(vi.mocked(console.log).mock.calls[3]?.[0]).toBe(
 				"Available regions: us (United States), eu (Europe), self-hosted (Self-hosted)",
 			)
 		})
 	})
 
-	it("notes the KIMCHI_SELF_HOSTED_URL env override when it is in effect", async () => {
-		vi.stubEnv("KIMCHI_SELF_HOSTED_URL", "https://env.example.com")
-		vi.mocked(loadConfig).mockReturnValue({
-			apiKey: "",
-			region: "self-hosted",
-			selfHostedUrl: "https://env.example.com",
-		} as ReturnType<typeof loadConfig>)
+	it("prints discovered self-hosted endpoints when stored", async () => {
+		await withExperimentalFeatures(true, async () => {
+			vi.mocked(loadConfig).mockReturnValue({
+				apiKey: "",
+				region: "self-hosted",
+				selfHostedEndpoints: {
+					api: "https://kimchi.example.com",
+					console: "https://kimchi.example.com",
+					llm: "https://llm.example.com",
+				},
+			} as ReturnType<typeof loadConfig>)
 
-		const exit = await runConfig(["region"])
+			const exit = await runConfig(["region"])
 
-		expect(exit).toBe(0)
-		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
-			"Self-hosted base URL: https://env.example.com (from KIMCHI_SELF_HOSTED_URL, overrides config)",
-		)
+			expect(exit).toBe(0)
+			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Self-hosted console URL: https://kimchi.example.com")
+			expect(vi.mocked(console.log).mock.calls[2]?.[0]).toBe(
+				"Self-hosted endpoints: api https://kimchi.example.com, llm https://llm.example.com",
+			)
+			expect(vi.mocked(console.log).mock.calls[3]?.[0]).toBe(
+				"Available regions: us (United States), eu (Europe), self-hosted (Self-hosted)",
+			)
+		})
 	})
 
-	it("prints a self-hosted region without a base URL as not configured", async () => {
+	it("prints a self-hosted region without endpoints as not configured", async () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",
 			region: "self-hosted",
-			selfHostedUrl: undefined,
 		} as ReturnType<typeof loadConfig>)
 
 		const exit = await runConfig(["region"])
@@ -389,7 +404,7 @@ describe("kimchi config region", () => {
 		expect(exit).toBe(0)
 		expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe("Region: self-hosted — Self-hosted")
 		expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe(
-			'Self-hosted base URL: not configured — set KIMCHI_SELF_HOSTED_URL or run "kimchi login" and choose Self-hosted',
+			'Self-hosted console URL: not configured — run "kimchi login <console-url>"',
 		)
 	})
 

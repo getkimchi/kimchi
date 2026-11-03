@@ -9,7 +9,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui"
 import type { ResourcePolicy } from "../api/org-settings.js"
-import { getResourceDefinitions, getResourcesByKind, RESOURCE_KINDS } from "./definitions.js"
+import { getResourceDefinitions, getResourcesByKind } from "./definitions.js"
 import {
 	describeOrgLock,
 	getResourcePolicy,
@@ -18,6 +18,7 @@ import {
 	setResourceOverride,
 } from "./store.js"
 import type { ResourceDefinition, ResourceKind } from "./types.js"
+import { RESOURCE_KINDS } from "./types.js"
 
 const VALUE_ENABLED = "enabled"
 const VALUE_DISABLED = "disabled"
@@ -190,6 +191,8 @@ function tabIcon(tab: ResourceTab): string {
 			return "▣"
 		case "plugins":
 			return "◈"
+		case "skills":
+			return "⧉"
 		case "experimental":
 			return "✦"
 	}
@@ -207,6 +210,8 @@ function tabDescription(tab: ResourceTab): string {
 			return "Built-in Kimchi feature modules."
 		case "plugins":
 			return "External connector and package surfaces."
+		case "skills":
+			return "Bundled Kimchi skills."
 		case "experimental":
 			return "Opt-in Kimchi features that are still experimental."
 	}

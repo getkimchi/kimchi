@@ -78,6 +78,12 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.0.0-dry-run.{0}', github.sha) }}
+      # tsc needs ~2.7 GB of heap on this codebase, which exceeds the ~2 GB
+      # V8 old-space Node derives on memory-constrained runners (macos-15
+      # arm64 OOM'd the v1.21.3 release). The `checks` job already typechecks
+      # the exact same commit before any build job runs (needs: [checks]),
+      # so re-running it in five build jobs only adds OOM risk.
+      KIMCHI_SKIP_TYPECHECK: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +122,12 @@ jobs:
       - name: Build binary
         run: node scripts/build-binary.js --target ${{ matrix.target }}
 
+      - name: Bundle work-reporting plugins
+        if: ${{ matrix.os != 'windows' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/bundle-bridge.sh
+
       - name: Install Linux credential-store service
         if: ${{ matrix.os == 'linux' }}
         run: |
@@ -138,6 +150,20 @@ jobs:
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
         run: .\dist\bin\kimchi.exe mcp keyring-check --json
+
+      - name: Verify document skill scripts execute under the binary
+        shell: bash
+        run: |
+          set -e
+          BIN="./dist/bin/kimchi"
+          [ -f "$BIN" ] || BIN="./dist/bin/kimchi.exe"
+          for cli in pptx pdf docx xlsx; do
+            script="dist/share/kimchi/skills/$cli/scripts/$cli.mjs"
+            [ -f "$script" ] || { echo "missing $script"; exit 1; }
+            out=$(BUN_BE_BUN=1 "$BIN" "$script" 2>&1 || true)
+            echo "$out" | head -1
+            echo "$out" | grep -q "usage: $cli.mjs" || { echo "$cli.mjs did not print usage"; exit 1; }
+          done
 
       - name: Verify binary architecture
         if: ${{ matrix.os != 'windows' }}

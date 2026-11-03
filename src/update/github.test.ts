@@ -1,8 +1,18 @@
 import { rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it, type MockInstance, vi } from "vitest"
+import { beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
+import { resolveGithubToken } from "./auth.js"
 import { assetName, GitHubClient, type Repo } from "./github.js"
+
+// The auth module is mocked module-wide so client tests stay deterministic:
+// no real $GITHUB_TOKEN and no `gh auth token` subprocess. The resolution
+// behavior itself (env precedence, gh fallback, caching) is covered by
+// auth.test.ts against the real module.
+vi.mock("./auth.js", () => ({
+	resolveGithubToken: vi.fn(),
+	resetGithubTokenCache: vi.fn(),
+}))
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 
@@ -46,7 +56,9 @@ describe("GitHubClient.latestRelease", () => {
 	})
 
 	it("throws on non-200 response", async () => {
-		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 404, headers: new Headers() }) as unknown as typeof fetch
 		const client = new GitHubClient({ fetch: fetchImpl })
 		await expect(client.latestRelease(REPO)).rejects.toThrow(/404/)
 	})
@@ -120,7 +132,9 @@ describe("GitHubClient.canaryRelease", () => {
 	})
 
 	it("throws on non-200 response", async () => {
-		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 404 }) as unknown as typeof fetch
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 404, headers: new Headers() }) as unknown as typeof fetch
 		const client = new GitHubClient({ fetch: fetchImpl })
 		await expect(client.canaryRelease(REPO)).rejects.toThrow(/404/)
 	})
@@ -226,6 +240,102 @@ describe("GitHubClient.downloadArchive abort", () => {
 			await expect(pending).rejects.toThrow()
 		} finally {
 			rmSync(dest, { force: true })
+		}
+	})
+})
+
+describe("GitHubClient authentication", () => {
+	const okRelease = () => ({
+		ok: true,
+		status: 200,
+		json: async () => ({ tag_name: "v1.2.3", html_url: "https://github.com/x/y/releases/tag/v1.2.3" }),
+	})
+
+	beforeEach(() => {
+		vi.mocked(resolveGithubToken).mockReset()
+	})
+
+	it("attaches the resolved token as a Bearer header on API requests", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue("ghp_test")
+		const fetchImpl = vi.fn().mockResolvedValue(okRelease()) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await client.latestRelease(REPO)
+		const init = (fetchImpl as unknown as MockInstance).mock.calls[0][1] as RequestInit
+		expect(init.headers).toMatchObject({
+			Accept: "application/vnd.github+json",
+			Authorization: "Bearer ghp_test",
+		})
+	})
+
+	it("omits the Authorization header when no token resolves", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue(undefined)
+		const fetchImpl = vi.fn().mockResolvedValue(okRelease()) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await client.latestRelease(REPO)
+		const init = (fetchImpl as unknown as MockInstance).mock.calls[0][1] as RequestInit
+		expect(init.headers).toEqual({ Accept: "application/vnd.github+json" })
+	})
+
+	it("retries once without auth when the token is rejected (401)", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue("ghp_bad")
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, status: 401, headers: new Headers() })
+			.mockResolvedValueOnce(okRelease()) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		const got = await client.latestRelease(REPO)
+		expect(got.tagName).toBe("v1.2.3")
+		expect(fetchImpl).toHaveBeenCalledTimes(2)
+		const retry = (fetchImpl as unknown as MockInstance).mock.calls[1][1] as RequestInit
+		expect(retry.headers).toEqual({ Accept: "application/vnd.github+json" })
+	})
+
+	it("fails on 401 without an unauthenticated retry when no token was attached", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue(undefined)
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValue({ ok: false, status: 401, headers: new Headers() }) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.latestRelease(REPO)).rejects.toThrow(/401/)
+		expect(fetchImpl).toHaveBeenCalledTimes(1)
+	})
+
+	it("names the rate limit when a 403 comes with an exhausted budget", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue(undefined)
+		const headers = new Headers({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1792747384" })
+		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 403, headers }) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.latestRelease(REPO)).rejects.toThrow(/github API rate limit exceeded \(resets [^)]+\)/)
+	})
+
+	it("keeps a bare 403 as a plain status error when the budget is not the cause", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue(undefined)
+		const headers = new Headers({ "x-ratelimit-remaining": "59" })
+		const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 403, headers }) as unknown as typeof fetch
+		const client = new GitHubClient({ fetch: fetchImpl })
+		await expect(client.latestRelease(REPO)).rejects.toThrow(/github API returned 403/)
+	})
+
+	it("does not authenticate release asset downloads", async () => {
+		vi.mocked(resolveGithubToken).mockResolvedValue("ghp_test")
+		const origPlat = process.platform
+		const origArch = process.arch
+		Object.defineProperty(process, "platform", { value: "linux" })
+		Object.defineProperty(process, "arch", { value: "x64" })
+		const fetchImpl = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: async () => "0000000000000000000000000000000000000000000000000000000000000000  kimchi_linux_amd64.tar.gz\n",
+		}) as unknown as typeof fetch
+		try {
+			const client = new GitHubClient({ fetch: fetchImpl })
+			await client.fetchChecksum(REPO, "v1.0.0")
+			expect(fetchImpl).toHaveBeenCalledTimes(1)
+			const init = (fetchImpl as unknown as MockInstance).mock.calls[0][1] as RequestInit | undefined
+			expect(init?.headers).toBeUndefined()
+		} finally {
+			Object.defineProperty(process, "platform", { value: origPlat })
+			Object.defineProperty(process, "arch", { value: origArch })
 		}
 	})
 })
