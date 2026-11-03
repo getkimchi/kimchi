@@ -9,6 +9,8 @@ import { getResourceSettingsPath, setResourceOverride } from "../../resources/st
 import { getRedactionConfig } from "./config.js"
 import { getDefaultExcludedEntities } from "./entity-tiers.js"
 import {
+	applyCustomPatterns,
+	getRedactionConfigError,
 	redactMessages,
 	redactObjectStrings,
 	redactObjectStringsStrict,
@@ -618,6 +620,106 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		resetRedactorEngine()
 		const result = await redactTextOrThrow(`aws_secret_access_key=${fx.awsSecret}`)
 		expectRedacted(result, fx.awsSecret, "AWS_SECRET_KEY")
+	})
+})
+
+describe("anchored splice and re-additions — review regressions", () => {
+	beforeEach(() => resetRedactorEngine())
+	afterEach(() => resetRedactorEngine())
+
+	it("splices by position: a password equal to the username does not survive (no substring replace)", () => {
+		// Regression for the substring-replace bug: with user == pass, the
+		// first occurrence of the secret text is inside the anchor, and the
+		// old match.replace(secret, marker) marked the username while the
+		// password passed through next to a redaction marker.
+		const input = ["db at postgres", "ql://", "admin", ":", "admin", "@db.internal/app"].join("")
+		const out = applyCustomPatterns(input, new Set())
+		expect(out).not.toContain("admin") // neither user nor pass may survive
+		expect(out).toContain("[REDACTED-URL_WITH_CREDENTIALS]")
+		expect(out).toContain("db.internal/app")
+	})
+
+	it("splices by position when the keyword itself contains the secret text", () => {
+		// The value ('Authoriz') is a prefix of the anchor ('Authorization: ') —
+		// a substring search would marker the anchor and leak the value; the
+		// positional splice must redact the value and keep the anchor.
+		const value = "Authoriz"
+		const out = applyCustomPatterns(["Authorization", ": Basic ", value].join(""), new Set())
+		expect(out).toBe("Authorization: Basic [REDACTED-BASIC_AUTH]")
+	})
+
+	it("preserves the Bearer prefix byte-for-byte (no case rewriting)", () => {
+		const token = ["ey", "JhbGciOiJIUzI1Ni".toLowerCase(), "x9".repeat(8)].join("")
+		const out = applyCustomPatterns(`authorization: bearer ${token}`, new Set())
+		expect(out).toBe(`authorization: bearer [REDACTED-BEARER_TOKEN]`)
+	})
+
+	it("re-adds TELEGRAM_BOT_TOKEN and OKTA_TOKEN behind their keywords only", async () => {
+		const tg = ["123456789:AA", "x".repeat(33)].join("") // <digits>:<35 chars>
+		const okta = ["a", "0".repeat(41)].join("") // 42-char base62-ish
+		// Bare shapes survive (tier-registry default excludes them).
+		const bare = `token blob ${tg} and ${okta} tail`
+		expect(await redactText(bare)).toBe(bare)
+		// Keyword-anchored forms redact.
+		const anchored = await redactText(`telegram_bot_token=${tg} okta_token: ${okta}`)
+		expect(anchored).not.toContain(tg)
+		expect(anchored).not.toContain(okta)
+		expect(anchored).toContain("[REDACTED-TELEGRAM_BOT_TOKEN]")
+		expect(anchored).toContain("[REDACTED-OKTA_TOKEN]")
+	})
+})
+
+describe("settings validation failure — degrade, never silently bypass", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-badcfg-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("a typo'd exclusion list degrades to defaults — redaction stays ON", async () => {
+		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN
+		resetRedactorEngine()
+		// The lenient path must keep redacting with the registry defaults —
+		// NOT swallow the config error into a full bypass.
+		const result = await redactText(`mail ${fx.email} key ${["sk-", "liveTe".repeat(4), "9z"].join("")}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(getRedactionConfigError()).toBeDefined()
+	})
+
+	it("the strict export path fails closed on the same typo", async () => {
+		writeSettings({ excludedEntities: ["SSN"] })
+		resetRedactorEngine()
+		await expect(redactObjectStringsStrict({ a: "hello" })).rejects.toThrow(/redaction settings invalid/)
+	})
+
+	it("fixing the settings clears the error and restores the export path", async () => {
+		writeSettings({ excludedEntities: ["SSN"] })
+		resetRedactorEngine()
+		await expect(redactObjectStringsStrict({ a: "hello" })).rejects.toThrow(/redaction settings invalid/)
+		writeSettings({ excludedEntities: ["GUID"] })
+		resetRedactorEngine()
+		const out = await redactObjectStringsStrict({ a: "hello" })
+		expect(out).toEqual({ a: "hello" })
+		expect(getRedactionConfigError()).toBeUndefined()
+	})
+
+	it("a non-object redaction block throws like a malformed key", () => {
+		writeSettings("junk")
+		expect(() => getRedactionConfig()).toThrow(/must be an object/)
 	})
 })
 

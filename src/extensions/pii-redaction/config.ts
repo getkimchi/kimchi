@@ -14,10 +14,15 @@
  * A present `excludedEntities` array REPLACES the tier-registry default
  * wholesale; an absent key keeps the registry default byte-for-byte.
  * Unknown entity names throw (fail-visible — the same convention as a
- * malformed settings.json). When the platform later carries the list via
- * managed settings, it takes precedence above the local key
- * (managed → local → registry default); see
- * `.kimchi/plans/redaction-precision.md` for the compatibility contract.
+ * malformed settings.json). Consumers split by failure policy: the strict
+ * export path lets the throw propagate (fail closed — no transcript is
+ * published under a policy nobody wrote down), while the redactor's
+ * snapshot resolution degrades to the registry defaults with one loud log
+ * so a settings typo can never silently switch the live pipeline's
+ * redaction off. When the platform later carries the list via managed
+ * settings, it takes precedence above the local key (managed → local →
+ * registry default); see `.kimchi/plans/redaction-precision.md` for the
+ * compatibility contract.
  *
  * Reads go through the stat-gated JSON cache shared with the resources
  * store, so per-event consultation is cheap and mid-session edits are
@@ -33,7 +38,7 @@
  */
 
 import { readJsonCached } from "../../config/json.js"
-import { getResourcePolicy, getResourceSettingsPath, isResourceEnabled } from "../../resources/store.js"
+import { getResourceSettingsPath, isResourceEnabled, isResourceLocked } from "../../resources/store.js"
 import { getDefaultExcludedEntities, isKnownEntity } from "./entity-tiers.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 
@@ -60,11 +65,9 @@ export interface RedactionConfig {
 
 /** Read the current config: resources-system enablement + local exclusion list. */
 export function getRedactionConfig(): RedactionConfig {
-	const locked = getResourcePolicy(PII_REDACTION_RESOURCE_ID)
-	const forceLocked = locked === "FORCE_ON" || locked === "FORCE_OFF"
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
 	// settings file is never opened.
-	if (forceLocked) {
+	if (isResourceLocked(PII_REDACTION_RESOURCE_ID)) {
 		return {
 			enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
 			excludedEntities: getDefaultExcludedEntities(),
@@ -90,8 +93,9 @@ export function getRedactionConfig(): RedactionConfig {
 function readExcludedEntitiesSetting(): string[] | undefined {
 	const settings = readJsonCached(getResourceSettingsPath())
 	const redaction = settings.redaction
+	if (redaction === undefined) return undefined
 	if (redaction === null || typeof redaction !== "object" || Array.isArray(redaction)) {
-		return undefined
+		throw new Error('settings.json "redaction" must be an object')
 	}
 	const raw = (redaction as Record<string, unknown>).excludedEntities
 	if (raw === undefined) return undefined

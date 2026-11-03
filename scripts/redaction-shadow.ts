@@ -178,12 +178,11 @@ async function main(): Promise<void> {
 		uniqueSpans: number
 		files: number
 		occurrences: number
-		literals: number
 	}
 	function aggregate(tally: Tally): Map<string, EntityRow> {
 		const rows = new Map<string, EntityRow>()
 		for (const entry of tally.values()) {
-			const row = rows.get(entry.entity) ?? { uniqueSpans: 0, files: 0, occurrences: 0, literals: 0 }
+			const row = rows.get(entry.entity) ?? { uniqueSpans: 0, files: 0, occurrences: 0 }
 			row.uniqueSpans += 1
 			row.files = Math.max(row.files, entry.files.size)
 			row.occurrences += entry.occurrences

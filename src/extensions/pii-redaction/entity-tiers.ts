@@ -99,6 +99,8 @@ const BARE_SHAPE_OTHER = [
 	"PERSON", // unverified whether it fires — classified so a future activation is off
 	"ORGANIZATION", // same
 	"GUID", // structural identifiers (ferment/session IDs) — redacting breaks flows
+	"IP_ADDRESS", // shape-precise and kept on — see BARE_SHAPE_KEPT
+	"MAC_ADDRESS", // same
 	"TELEGRAM_BOT_TOKEN", // `<digits>:<35 chars>` collides with CI section markers
 	"OKTA_TOKEN", // bare shape — collides with branch names / base64 blobs
 ] as const
@@ -129,8 +131,6 @@ const ANCHOR_REQUIRED_ENTITIES = [
 const ANCHORED_ENTITIES = [
 	"EMAIL_ADDRESS",
 	"PRIVATE_KEY",
-	"IP_ADDRESS", // kept: shape-precise — see BARE_SHAPE_KEPT rationale
-	"MAC_ADDRESS", // kept: shape-precise
 	// Cloud / infra
 	"AWS_ACCESS_KEY",
 	"AWS_MWS_KEY",
@@ -228,7 +228,9 @@ const ANCHORED_ENTITIES = [
 	"TWILIO_KEY",
 	"SALESFORCE_TOKEN",
 	"ZENDESK_TOKEN",
-	"SHOPIFY_TOKEN", // (dedup harmless — registry is a map)
+	// Dev-platform / registry tokens (prefixed shapes)
+	"SONARQUBE_TOKEN", // squ_/sqp_ prefix
+	"AIRTABLE_KEY", // key…/pat….<hex> prefixed shapes
 	// Observability / ops
 	"DATADOG_API_KEY",
 	"NEW_RELIC_KEY",

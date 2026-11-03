@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { getDefaultExcludedEntities, getEntityTier, isKnownEntity } from "./entity-tiers.js"
-import { applyCustomPatterns, createRedactionEngine, detectAndCompose } from "./redactor.js"
+import { applyCustomPatterns, CUSTOM_PATTERN_NAMES, createRedactionEngine, detectAndCompose } from "./redactor.js"
 
 // Fixture values are assembled at runtime — see redactor.test.ts for why
 // (this file is itself edited by a redacting agent pipeline).
@@ -65,6 +66,21 @@ describe("entity tier registry", () => {
 		expect(unknown).toEqual([])
 	})
 
+	it("registry covers the engine's full detector inventory (static drift guard)", () => {
+		// Marker emission only guards entities the fixture corpus triggers.
+		// This guard diffs the registry against the engine's actual detector
+		// inventory, extracted from the bundled @bulkhead-ai/core dist — the
+		// same source the runtime loads.
+		const dist = readFileSync(
+			new URL("../../../node_modules/@bulkhead-ai/core/dist/index.js", import.meta.url),
+			"utf-8",
+		)
+		const inventory = new Set([...dist.matchAll(/secretType:\s*"([A-Z0-9_]+)"/g)].map((m) => m[1]))
+		expect(inventory.size).toBeGreaterThan(100) // extraction still works
+		const unregistered = [...inventory].filter((name) => !isKnownEntity(name))
+		expect(unregistered).toEqual([])
+	})
+
 	it("with default exclusions, only checksum/anchored tiers emit at engine level", async () => {
 		const engine = createRedactionEngine(getDefaultExcludedEntities())
 		const composed = await detectAndCompose(corpus, engine, new Set(getDefaultExcludedEntities()))
@@ -74,7 +90,11 @@ describe("entity tier registry", () => {
 		// so they must not be counted as leaks here.
 		const leaked = [...markerTypesOf(composed)].filter((t) => {
 			const tier = getEntityTier(t)
-			return tier === "bare_shape" || tier === "anchor_required"
+			if (tier !== "bare_shape" && tier !== "anchor_required") return false
+			// BARE_SHAPE_KEPT names are shape-precise exceptions deliberately
+			// left on at engine level (dotted quads and MAC addresses do not
+			// collide with common text).
+			return !(t === "IP_ADDRESS" || t === "MAC_ADDRESS")
 		})
 		expect(leaked).toEqual([])
 		// Custom markers (post-pass) are all registered — anchored re-additions
@@ -89,6 +109,16 @@ describe("entity tier registry", () => {
 		const afterCustom = applyCustomPatterns(corpus, new Set())
 		for (const t of markerTypesOf(afterCustom)) {
 			expect(isKnownEntity(t)).toBe(true)
+		}
+	})
+
+	it("every custom-pattern name is a registered entity (structural sync)", () => {
+		// Corpus-driven checks only cover patterns the fixtures trigger; this
+		// enumerates the pattern table itself so a new pattern without a
+		// registry entry fails here — an unregistered name could never appear
+		// in redaction.excludedEntities, silently making it un-excludable.
+		for (const name of CUSTOM_PATTERN_NAMES) {
+			expect(isKnownEntity(name), `custom pattern "${name}" is not registered in entity-tiers`).toBe(true)
 		}
 	})
 

@@ -21,11 +21,29 @@
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
 import { getRedactionConfig } from "./config.js"
+import { getDefaultExcludedEntities } from "./entity-tiers.js"
 
-let engine: GuardrailsEngine | undefined
-let engineExclusionsSignature = ""
-let engineExclusions: ReadonlySet<string> = new Set()
-let userExclusions: ReadonlySet<string> = new Set()
+/**
+ * One atomic view of the redaction policy: the engine, the engine-level
+ * exclusion set, and the raw user exclusion list, resolved together.
+ *
+ * A mid-flight settings edit rebuilds `current` wholesale; in-flight callers
+ * keep the snapshot they resolved at pass entry, so a single redaction pass
+ * never mixes the old engine policy with the new custom-pattern policy (the
+ * pre-snapshot design read the module globals after an await, which let a
+ * concurrent rebuild land between the two passes). The superseded engine is
+ * simply GC'd — never disposed — so in-flight scans are unaffected.
+ */
+interface EngineSnapshot {
+	engine: GuardrailsEngine
+	exclusions: ReadonlySet<string>
+	userExclusions: ReadonlySet<string>
+	/** Joined exclusion signature the snapshot was built from. */
+	signature: string
+}
+
+let current: EngineSnapshot | undefined
+let configError: Error | undefined
 
 /**
  * Create a fresh redaction engine with the given entity exclusions applied.
@@ -59,29 +77,58 @@ export function createRedactionEngine(excludedEntities: readonly string[]): Guar
 }
 
 /**
- * Get or create the singleton engine for the current exclusion config.
+ * Resolve the current policy snapshot for the resolved exclusion config.
  * Rebuilds when the resolved exclusion list changes (e.g. a mid-session
  * settings.json edit), so the ACP host picks up new exclusions without a
  * restart. The comparison is a joined-string signature — O(list), no
  * per-call engine construction.
+ *
+ * A broken `redaction.excludedEntities` settings block must not turn
+ * redaction off: the lenient paths (hooks, bug report) would silently pass
+ * text through and the operator's only signal would be a per-event log.
+ * Instead the snapshot degrades to the registry defaults, the error is
+ * remembered for the strict export path (which fails closed on it), and it
+ * is logged once here, loudly.
  */
-function getEngine(): GuardrailsEngine {
-	const config = getRedactionConfig()
+function resolveSnapshot(): EngineSnapshot {
+	let config: ReturnType<typeof getRedactionConfig>
+	try {
+		config = getRedactionConfig()
+		configError = undefined
+	} catch (err) {
+		const error = err instanceof Error ? err : new Error(String(err))
+		if (configError?.message !== error.message) {
+			console.error(
+				`[pii-redaction] ${error.message} — using default exclusions; exports will fail until settings.json is fixed.`,
+			)
+		}
+		configError = error
+		config = { enabled: true, excludedEntities: getDefaultExcludedEntities(), userExcludedEntities: [] }
+	}
 	const signature = [config.excludedEntities.join("\u0001"), config.userExcludedEntities.join("\u0001")].join("\u0002")
-	if (engine && signature === engineExclusionsSignature) return engine
-	engine = createRedactionEngine(config.excludedEntities)
-	engineExclusionsSignature = signature
-	engineExclusions = new Set(config.excludedEntities)
-	userExclusions = new Set(config.userExcludedEntities)
-	return engine
+	if (current && signature === current.signature) return current
+	current = {
+		engine: createRedactionEngine(config.excludedEntities),
+		exclusions: new Set(config.excludedEntities),
+		userExclusions: new Set(config.userExcludedEntities),
+		signature,
+	}
+	return current
+}
+
+/**
+ * The settings error the current snapshot degraded on, if any. The strict
+ * export path fails closed on this instead of exporting with fallback
+ * exclusions the operator did not write down.
+ */
+export function getRedactionConfigError(): Error | undefined {
+	return configError
 }
 
 /** Reset the cached engine — for test isolation. */
 export function resetRedactorEngine(): void {
-	engine = undefined
-	engineExclusionsSignature = ""
-	engineExclusions = new Set()
-	userExclusions = new Set()
+	current = undefined
+	configError = undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +231,10 @@ interface CustomPattern {
 const CUSTOM_PATTERNS: CustomPattern[] = [
 	// CastAI API keys
 	{ name: "CASTAI_API_KEY", regex: /castai_v1_[A-Za-z0-9_-]{8,}/g },
-	// Bearer tokens (Authorization header or standalone)
+	// Bearer tokens (Authorization header or standalone). Anchor is captured
+	// so the splice preserves the original prefix byte-for-byte (case included).
 	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
-	{ name: "BEARER_TOKEN", regex: /(?:Bearer\s+)([A-Za-z0-9_\-\.]{16,})/gi },
+	{ name: "BEARER_TOKEN", regex: /(bearer\s+)([A-Za-z0-9_\-\.]{16,})/gi, secretGroup: 2 },
 	// OAuth tokens (Google ya29.*, Azure)
 	// biome-ignore lint/complexity/noUselessEscapeInRegex: -
 	{ name: "OAUTH_TOKEN", regex: /ya29\.[A-Za-z0-9_\-]{16,}/g },
@@ -233,11 +281,12 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		secretGroup: 2,
 	},
 	// Credentials in URLs, which the engine's URL redaction previously
-	// over-covered: userinfo passwords (`scheme://user:pass@host`) and
-	// secret-shaped query parameters (`?token=…`, `?api_key=…`).
+	// over-covered: userinfo credentials (`scheme://user:pass@host` — both
+	// parts redacted; scheme and host kept for diagnostics) and secret-shaped
+	// query parameters (`?token=…`, `?api_key=…`).
 	{
 		name: "URL_WITH_CREDENTIALS",
-		regex: /(\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/\s:@]+:)([^@\s/]+)(@[^\s/]+)/g,
+		regex: /(\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/\s:@]+:[^@\s/]+)(@[^\s/]+)/g,
 		secretGroup: 2,
 	},
 	{
@@ -245,7 +294,29 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex: /([?&](?:token|api_?key|key|sig|signature|secret|password|access_token)=)([^&\s]{8,})/gi,
 		secretGroup: 2,
 	},
+	// Keyword-anchored re-additions for bare-shape engine entities the tier
+	// registry excludes (TELEGRAM_BOT_TOKEN, OKTA_TOKEN): the bare shapes
+	// collide with common text, but behind their keyword they are secrets.
+	{
+		name: "TELEGRAM_BOT_TOKEN",
+		regex: /((?:telegram|tg)[_-]?bot[_-]?token\s*[:=]\s*["']?)([0-9]{8,10}:[A-Za-z0-9_-]{35})/gi,
+		secretGroup: 2,
+	},
+	{
+		name: "OKTA_TOKEN",
+		regex: /(okta(?:_api)?_token\s*[:=]\s*["']?)([A-Za-z0-9_-]{42})/gi,
+		secretGroup: 2,
+	},
 ]
+
+/**
+ * Distinct entity names emitted by CUSTOM_PATTERNS. Exported so the
+ * entity-tiers registry test can enforce that every custom marker type is
+ * a known entity — an unregistered name could never appear in
+ * `redaction.excludedEntities` (validation throws), silently making the
+ * pattern un-excludable.
+ */
+export const CUSTOM_PATTERN_NAMES: readonly string[] = [...new Set(CUSTOM_PATTERNS.map((p) => p.name))]
 
 /**
  * JSON object keys whose string values should be redacted regardless of
@@ -302,7 +373,7 @@ function isPreservedKey(key: string): boolean {
  */
 export function applyCustomPatterns(
 	text: string,
-	excluded: ReadonlySet<string> = userExclusions,
+	excluded: ReadonlySet<string>,
 	onMatch?: (match: { name: string; secret: string }) => void,
 ): string {
 	let result = text
@@ -310,17 +381,26 @@ export function applyCustomPatterns(
 		if (excluded.has(name)) continue
 		const marker = `[REDACTED-${name}]`
 		result = result.replace(regex, (match, ...args: unknown[]) => {
-			// For patterns like "Bearer xxx", only redact the token part
-			if (name === "BEARER_TOKEN") {
-				onMatch?.({ name, secret: match })
-				return `Bearer ${marker}`
-			}
 			if (secretGroup !== undefined) {
-				// Capture groups precede offset/string in the rest args.
-				const secret = args[secretGroup - 1]
+				// Replace by POSITION, never by substring search: the secret's text
+				// can also occur inside the anchor (user == password URLs, keyword
+				// prefixes containing the secret), and a substring replace would
+				// marker the anchor and leak the secret. The anchored patterns all
+				// cover their match with capture groups, so splice from the groups
+				// the callback hands us (offset + input trail the rest args).
+				const groups = args.slice(0, -2)
+				const secret = groups[secretGroup - 1]
 				if (typeof secret === "string" && secret.length > 0) {
 					onMatch?.({ name, secret })
-					return match.replace(secret, marker)
+					const parts = groups.map((g) => (typeof g === "string" ? g : ""))
+					const prefix = parts.slice(0, secretGroup - 1).join("")
+					const tail = parts.slice(secretGroup).join("")
+					if (prefix.length + secret.length + tail.length === match.length) {
+						return `${prefix}${marker}${tail}`
+					}
+					// Groups no longer tile the match (future pattern drift) — fail
+					// safe by redacting the whole match rather than searching.
+					return marker
 				}
 			}
 			onMatch?.({ name, secret: match })
@@ -345,9 +425,9 @@ export function applyCustomPatterns(
  * The error is logged per the code-review-lessons rule: no empty catch blocks.
  */
 export async function redactTextOrThrow(text: string): Promise<string> {
-	const theEngine = getEngine()
-	const afterEngine = await detectAndCompose(text, theEngine, engineExclusions)
-	return applyCustomPatterns(afterEngine)
+	const snapshot = resolveSnapshot()
+	const afterEngine = await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
+	return applyCustomPatterns(afterEngine, snapshot.userExclusions)
 }
 
 export async function redactText(text: string): Promise<string> {
@@ -367,19 +447,22 @@ export async function redactText(text: string): Promise<string> {
  * sensitive-key string values force-redacted, enumerable symbols preserved.
  * Only the per-string redaction function differs (fail-open vs fail-closed).
  */
-async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) => Promise<string>): Promise<T> {
+async function redactObjectStringsWith<T>(
+	obj: T,
+	redactString: (text: string) => Promise<string>,
+	snapshot: EngineSnapshot,
+): Promise<T> {
 	if (typeof obj === "string") {
 		return (await redactString(obj)) as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString))) as Promise<T>
+		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString, snapshot))) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
-		// Prime the engine (and with it the user-exclusion set) before any
-		// sensitive-key checks below — a top-level {password: "…"} input must
-		// not read the set before the first scan happens.
-		getEngine()
-		const secretFieldRedacts = !userExclusions.has("SECRET_FIELD")
+		// The snapshot was resolved once at the pass entry — the sensitive-key
+		// policy below is the same atomic view the string scans use, even if a
+		// concurrent settings edit rebuilds the engine mid-walk.
+		const secretFieldRedacts = !snapshot.userExclusions.has("SECRET_FIELD")
 		const source = obj as Record<PropertyKey, unknown>
 		const keys: PropertyKey[] = [
 			...Object.keys(source),
@@ -397,7 +480,7 @@ async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) =
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStringsWith(value, redactString)
+				return redactObjectStringsWith(value, redactString, snapshot)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}
@@ -430,7 +513,7 @@ async function redactObjectStringsWith<T>(obj: T, redactString: (text: string) =
  * @returns     Deep clone with all string values redacted
  */
 export async function redactObjectStrings<T>(obj: T): Promise<T> {
-	return redactObjectStringsWith(obj, redactText)
+	return redactObjectStringsWith(obj, redactText, resolveSnapshot())
 }
 
 /**
@@ -445,7 +528,17 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
  * Returns a **new** structure; callers must assign the result.
  */
 export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
-	return redactObjectStringsWith(obj, redactTextOrThrow)
+	const snapshot = resolveSnapshot()
+	// Fail closed on a broken settings block: exporting with fallback
+	// exclusions the operator did not write down would publish a transcript
+	// redacted under a policy nobody chose. The lenient paths already
+	// degraded to defaults with a loud log; here the error must stop the
+	// export so the operator fixes settings.json first.
+	const settingsError = getRedactionConfigError()
+	if (settingsError) {
+		throw new Error(`redaction settings invalid: ${settingsError.message}`)
+	}
+	return redactObjectStringsWith(obj, redactTextOrThrow, snapshot)
 }
 
 /** A pi-ai message with optional role/content fields. */
