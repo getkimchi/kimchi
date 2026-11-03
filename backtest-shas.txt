@@ -1,1 +1,6 @@
-bd659df9dc84df5cdd27184df048086d2ab649a7
+# Binary bisect round 3 (positions 10-12 of 48 in the 426c51f0..1219aa438 window).
+# Known: pos13 (338c508f8d) LOW 8.62G, pos7 (110abce049) HIGH 25.88G.
+# Prime suspect: c31c60a7e (pos10) pr-cost SQLite ledger — matches profiled hot stacks.
+c31c60a7e789046898687f7a5ff19ae5978fd61d
+f918e7ee40be3c63fcc5c93991dc5737c611667d
+c5d79ad8bff62d6c6091381afc3a4d4102c0eb66
