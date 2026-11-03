@@ -5,7 +5,7 @@ import { getActiveThinkingState, getCurrentThinkingScopeKey, getThinkingStepsMod
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 interface RenderOptions {
-	mode: "collapsed" | "summary" | "expanded" | "none"
+	mode: "collapsed" | "expanded" | "none"
 	steps: DerivedThinkingStep[]
 	blocks: ThinkingSourceBlock[]
 	activeStepId?: string
@@ -89,29 +89,6 @@ function renderThinkingInlineSegment(theme: ThinkingThemeLike, segment: InlineSe
 	if (segment.style === "bold") return theme.bold(theme.fg("thinkingText", segment.text))
 	if (segment.style === "code") return theme.bold(theme.fg("accent", segment.text))
 	return theme.fg("thinkingText", segment.text)
-}
-
-function wrapStepHeader(
-	theme: ThinkingThemeLike,
-	width: number,
-	step: DerivedThinkingStep,
-	active: boolean,
-	connector: string,
-): string[] {
-	const connectorColor = active ? "accent" : "muted"
-	const icon = theme.fg(roleColor(step.role), step.icon)
-	const prefix = `${theme.fg(connectorColor, connector)} ${icon} `
-	const continuationPrefix = " ".repeat(visibleWidth(`${connector} ${step.icon} `))
-	const renderedSummary = renderThinkingInlineMarkup(theme, step.summary)
-	const summaryText = active ? theme.bold(renderedSummary) : renderedSummary
-	const wrappedSummary = wrapTextWithAnsi(summaryText, Math.max(8, width - visibleWidth(prefix)))
-	if (wrappedSummary.length === 0) {
-		return [truncateToWidth(prefix, width, "")]
-	}
-
-	return wrappedSummary.map((line, index) =>
-		truncateToWidth(`${index === 0 ? prefix : continuationPrefix}${line}`, width, ""),
-	)
 }
 
 function pickCollapsedStep(steps: DerivedThinkingStep[], activeStepId?: string): DerivedThinkingStep | undefined {
@@ -322,83 +299,6 @@ function renderCollapsed(
 	})
 }
 
-function stepHasEventType(step: DerivedThinkingStep, type: string): boolean {
-	return step.summaryEvents?.some((event) => event.type === type) ?? false
-}
-
-function selectSummarySteps(steps: DerivedThinkingStep[], activeStepId?: string): DerivedThinkingStep[] {
-	if (steps.length <= 5) return steps
-
-	const indexed = steps.map((step, index) => ({ step, index }))
-	const selected = new Set<number>()
-	const activeIndex = activeStepId ? steps.findIndex((step) => step.id === activeStepId) : -1
-	let latestFailureIndex = -1
-	let latestSuccessAfterFailureIndex = -1
-
-	for (let index = 0; index < steps.length; index += 1) {
-		const step = steps[index]
-		if (step.hasExplicitFailure) {
-			latestFailureIndex = index
-			latestSuccessAfterFailureIndex = -1
-		}
-		if (latestFailureIndex !== -1 && step.hasExplicitSuccess && index > latestFailureIndex) {
-			latestSuccessAfterFailureIndex = index
-		}
-	}
-
-	if (activeIndex !== -1) selected.add(activeIndex)
-	if (latestFailureIndex !== -1) selected.add(latestFailureIndex)
-	if (latestSuccessAfterFailureIndex !== -1) selected.add(latestSuccessAfterFailureIndex)
-
-	const scoreEntry = ({ step, index }: { step: DerivedThinkingStep; index: number }): number => {
-		let score = step.collapsedPriority ?? 0
-		const isStaleSuccessBeforeLatestFailure =
-			step.hasExplicitSuccess && latestFailureIndex !== -1 && index < latestFailureIndex
-		if (index === latestFailureIndex && latestSuccessAfterFailureIndex === -1) score += 120
-		if (index === latestSuccessAfterFailureIndex) score += 110
-		if (stepHasEventType(step, "decision") || stepHasEventType(step, "plan_change")) score += 80
-		if (step.hasExplicitFailure) score += 50
-		if (step.hasExplicitSuccess && !isStaleSuccessBeforeLatestFailure) score += 45
-		if (isStaleSuccessBeforeLatestFailure) score -= 200
-		if (
-			stepHasEventType(step, "focus") &&
-			!stepHasEventType(step, "decision") &&
-			!stepHasEventType(step, "plan_change") &&
-			!step.hasExplicitFailure &&
-			!step.hasExplicitSuccess
-		)
-			score -= 15
-		return score + index / 100
-	}
-
-	const targetCount = Math.min(5, steps.length)
-	for (const entry of [...indexed].sort((left, right) => scoreEntry(right) - scoreEntry(left))) {
-		if (selected.size >= targetCount) break
-		selected.add(entry.index)
-	}
-
-	return [...selected]
-		.sort((left, right) => left - right)
-		.map((index) => steps[index])
-		.slice(0, targetCount)
-}
-
-function renderSummary(
-	theme: ThinkingThemeLike,
-	width: number,
-	steps: DerivedThinkingStep[],
-	activeStepId?: string,
-): string[] {
-	const lines = [truncateToWidth(`${theme.fg("muted", "▍")} ${theme.fg("dim", "Thinking Steps · Summary")}`, width)]
-	const visibleSteps = selectSummarySteps(steps, activeStepId)
-	for (let index = 0; index < visibleSteps.length; index++) {
-		const step = visibleSteps[index]
-		const connector = index === visibleSteps.length - 1 ? "└─" : "├─"
-		lines.push(...wrapStepHeader(theme, width, step, step.id === activeStepId, connector))
-	}
-	return lines
-}
-
 function renderThinkingInlineMarkup(theme: ThinkingThemeLike, text: string): string {
 	const sanitized = sanitizeThinkingText(text)
 	const segments = parseThinkingInlineSegments(sanitized)
@@ -511,10 +411,7 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 			options.cacheOwner,
 		)
 	}
-	if (options.mode === "expanded") {
-		return renderExpanded(theme, width, options.steps, options.cacheOwner)
-	}
-	return renderSummary(theme, width, options.steps, options.activeStepId)
+	return renderExpanded(theme, width, options.steps, options.cacheOwner)
 }
 
 export class ThinkingStepsComponent implements Component {
