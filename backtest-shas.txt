@@ -4,3 +4,9 @@
 
 # Fix candidate for the #1529 idle regression: pass-gated reconciliation.
 f194f3eadd37bb5619517098dbd052e5015cabd3
+
+# R2 on top of the gate: sleep between a stuck queue's retry deadlines
+# (version sidecar + post-attempt stamp). Healthy-queue lane only — the
+# synthetic fixture is too chatty to express the stuck regime, so this run
+# should show parity with f194f3ead, NOT a drop against it.
+d316cbf1c80b9f8b70f7481b75fae7df0f218d04
