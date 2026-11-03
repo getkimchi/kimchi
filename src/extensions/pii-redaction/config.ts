@@ -63,6 +63,19 @@ export interface RedactionConfig {
 	userExcludedEntities: string[]
 }
 
+/**
+ * Non-throwing enablement gate for the extension hooks. The hooks need only
+ * `enabled`, which never depends on the `redaction` settings block whose
+ * validation can throw — a typo'd exclusion list must not turn the gate
+ * into a rejection the extension runner discards (that would store and send
+ * unredacted content with only a per-event log). Exclusion degrade
+ * semantics live in the redactor's snapshot resolution; a fully malformed
+ * settings.json still fails visibly per the readJson convention.
+ */
+export function isRedactionEnabled(): boolean {
+	return isResourceEnabled(PII_REDACTION_RESOURCE_ID)
+}
+
 /** Read the current config: resources-system enablement + local exclusion list. */
 export function getRedactionConfig(): RedactionConfig {
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
