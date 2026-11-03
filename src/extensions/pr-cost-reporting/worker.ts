@@ -32,10 +32,12 @@ import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
+	deadLetterFrozenSnapshot,
 	deferFrozenSnapshot,
 	type FrozenSnapshot,
 	freezeSnapshots,
 	frozenSnapshotPending,
+	HOLD_EXPIRY_MS,
 	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
@@ -175,6 +177,8 @@ export interface FrozenDueMeta {
 	key: string
 	account: string
 	held: boolean
+	/** The body was dead-lettered and no retry will ever select it again. */
+	dead: boolean
 	hasContent: boolean
 	urgent: boolean
 	retryAt: number
@@ -186,6 +190,7 @@ function frozenDueMeta(job: FrozenSnapshot): FrozenDueMeta {
 		key: job.key,
 		account: accountKey(job.entry.account),
 		held: job.entry.held === true,
+		dead: job.entry.dead !== undefined,
 		// Mirrors the delivery loop's pause skip word for word: a body with zero requests and zero
 		// pull requests withdraws nothing, so it goes out even on a paused account.
 		hasContent: (job.entry.pending?.requests.length ?? 0) > 0 || (job.entry.pending?.pullRequests.length ?? 0) > 0,
@@ -237,9 +242,13 @@ export function deliverSnapshots(
 		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
 		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
 		const due = frozen
-			.filter(
-				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
-			)
+			.filter(({ key, entry }) => {
+				const live = state.entries[key] ?? entry
+				// A settled body is refused by the server as long as its bytes are: neither the live
+				// entry's own mark nor an older frozen note's mark ever selects for delivery again.
+				const dead = live.dead !== undefined || entry.dead !== undefined
+				return !live.held && !dead && entry.retryAt <= now && !inUploadWindow(entry, now)
+			})
 			.sort((a, b) => {
 				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
 				if (priority) return priority
@@ -372,8 +381,21 @@ export function deliverSnapshots(
 							// retry carries a body the server can accept instead of resending it for hours.
 							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
 						}
-					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
-						// The server rejected this body for its size; the next pass retries the halved one.
+					} else if (uploadAttempted && status === 410) {
+						// Explicitly gone: the server cannot say this about a missing route; settle.
+						await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+					} else if (uploadAttempted && status === 404 && (entry.attempts ?? 0) >= 2) {
+						// The third spaced 404: a durable deletion. A single 404 can be an undeployed
+						// or rolled-back /pr-cost-snapshots route while api-keys:verify still answers,
+						// and those windows last minutes, so a lone 404 must never settle the queue
+						// tail — it falls through to the normal defer below (attempts increments on
+						// defer, after this dispatch, so 2 already counted = two prior spaced refusals).
+						await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+					} else if (uploadAttempted && status === 413) {
+						if (!(await trimFrozenSnapshot(agentDir, job, assertOwnership)))
+							// Halving reached its floor and the server still refuses the size: settle
+							// the body instead of deferring the same refusal forever.
+							await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
 					} else
 						await deferFrozenSnapshot(
 							agentDir,
@@ -604,8 +626,9 @@ const CAPTURE_FAILED = "PR reporting could not capture a complete inventory; pre
  *   Bun:sqlite does not exempt same-connection commits from the pragma.
  * - legacy journal stat identity: imported only inside passes, so it must open the gate itself.
  * Time is the remaining input, and the snapshot due filter (worker.ts `due`) reads exactly the
- * fields FrozenDueMeta and the stamp-time holds carry: held, retryAt, urgency, the warm
- * upload-window fields and account pauses. Frozen rows are content-addressed and every row mutation
+ * fields FrozenDueMeta and the stamp-time holds carry: held, dead, retryAt, urgency, the warm
+ * upload-window fields and account pauses — plus the earliest hold deadline queueSnapshots
+ * releases, stamped so a quiet tick still wakes for it. Frozen rows are content-addressed and every row mutation
  * rides through queue.ts's update() (state.json) or a ledger commit (dataVersion), so a stamped
  * gate cannot go stale behind a matching signature. Only isTelemetryEnabled is consulted live: an
  * in-session toggle changes reporting duty without touching any file or ledger.
@@ -615,6 +638,10 @@ interface PassGate {
 	frozen: FrozenDueMeta[]
 	/** Held flag per queue key at the last sweep — the live key wins over frozen metadata. */
 	liveHeld: Record<string, boolean>
+	/** Dead-lettered flag per queue key at the last sweep — the live key wins over frozen metadata. */
+	liveDead: Record<string, boolean>
+	/** Earliest hold deadline; when it passes the freeze sweep releases the hold, so the pass opens. */
+	nextHoldExpiryAt?: number
 	/** Account pauses at the last sweep (retryAt thaws by clock, so frozen stamps stay exact). */
 	pauses: { account: string; retryAt: number }[]
 	/** Failed repository-identity lookups live only in repositoryCache; the next retry opens the pass. */
@@ -651,12 +678,14 @@ function gateHasDue(gate: PassGate, now: number): boolean {
 	if (gate.nextLookupRetryAt !== undefined && now >= gate.nextLookupRetryAt) return true
 	if (!gate.captureDone) return true
 	if (gate.eventsRetryAt !== undefined && now >= gate.eventsRetryAt) return true
+	if (gate.nextHoldExpiryAt !== undefined && now >= gate.nextHoldExpiryAt) return true
 	const paused = new Set(gate.pauses.filter((pause) => pause.retryAt > now).map((pause) => pause.account))
 	for (const meta of gate.frozen) {
 		// Mirrors the delivery loop's `due` pick and its per-attempt account-pause skip: a held key or a
 		// paused account with claims never goes out, anything else due re-opens the pass.
 		const held = gate.liveHeld[meta.key] ?? meta.held
-		if (held || (paused.has(meta.account) && meta.hasContent)) continue
+		const dead = meta.dead || gate.liveDead[meta.key] === true
+		if (held || dead || (paused.has(meta.account) && meta.hasContent)) continue
 		const inWindow =
 			!meta.urgent &&
 			meta.uploadedAt !== undefined &&
@@ -697,10 +726,20 @@ async function passGateStamp(
 		if (status.retry && (eventsRetryAt === undefined || status.retry.retryAt < eventsRetryAt))
 			eventsRetryAt = status.retry.retryAt
 	}
+	let nextHoldExpiryAt: number | undefined
+	// Only a hold with a parked body can wake something up; the freeze sweep releases those.
+	for (const entry of Object.values(state.entries))
+		if (entry.heldAt !== undefined && entry.pending !== undefined && entry.dead === undefined) {
+			// A settled entry can never deliver from a wakeup: it must not hold the gate open.
+			const expires = entry.heldAt + HOLD_EXPIRY_MS
+			if (nextHoldExpiryAt === undefined || expires < nextHoldExpiryAt) nextHoldExpiryAt = expires
+		}
 	return {
 		signature,
 		frozen,
 		liveHeld: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.held === true])),
+		liveDead: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.dead !== undefined])),
+		nextHoldExpiryAt,
 		pauses: Object.entries(state.paused ?? []).map(([account, pause]) => ({ account, retryAt: pause.retryAt })),
 		nextLookupRetryAt,
 		captureDone: backendFor(agentDir).markedRecords().length === 0,
