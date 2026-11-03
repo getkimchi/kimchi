@@ -522,7 +522,9 @@ async function redactObjectStringsWith<T>(
 		return out as T
 	}
 	if (Array.isArray(obj)) {
-		return Promise.all(obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair))) as Promise<T>
+		return Promise.all(
+			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair)),
+		) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
 		// The snapshot was resolved once at the pass entry — the sensitive-key
@@ -667,24 +669,23 @@ export interface RedactionMeasurement<T> {
 export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionMeasurement<T>> {
 	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
-	// One snapshot per measured pass — the SECRET_FIELD gate and every string
-	// scan see the same atomic policy view, exactly like the lenient variant.
+	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
+	// every settle-bounded string scan (redactTextCounted resolves its own)
+	// see an atomic policy view, exactly like the lenient variant.
 	const snapshot = resolveSnapshot()
 	const redactStringMeasured = async (text: string): Promise<string> => {
 		if (text.length === 0) return text
 		report.stringsScanned += 1
-		try {
-			return await redactTextWithSnapshot(text, snapshot)
-		} catch (err) {
+		return redactTextCounted(text, (err) => {
 			report.engineFailures += 1
 			// One log per invocation: a persistently degraded engine would
-				// otherwise print a stack trace per scanned string per hook.
+			// otherwise print a stack trace per scanned string per hook.
 			if (!failureLogged) {
 				failureLogged = true
 				console.error("PII redaction scan failed, returning original text:", err)
 			}
 			return text
-		}
+		})
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
 		tallyMarkersNet(input, output, report.entities),
