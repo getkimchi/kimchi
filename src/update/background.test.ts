@@ -153,9 +153,9 @@ describe("runUpdateTick", () => {
 		const result = await runUpdateTick({
 			currentVersion: "1.0.0",
 			acquireLock: () => makeLock(),
-			checkForUpdate: async () => {
-				throw "string failure" // biome-ignore lint/complexity/useThrowOnlyError: exercising the normalization path
-			},
+			// A rejected non-Error exercises the normalization path without a
+			// `throw` statement (biome useThrowOnlyError stays happy).
+			checkForUpdate: () => Promise.reject<CheckResult>("string failure"),
 			applyUpdate: async () => undefined,
 			store,
 		})
