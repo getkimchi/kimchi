@@ -43,6 +43,11 @@ export type TurnContext = {
 	 */
 	lastAssistantError?: { stopReason: "error"; errorMessage?: string }
 	/**
+	 * The last assistant message was refused (see refused-turns). Read at
+	 * finalize: the turn ends with stopReason "refusal", not a failure.
+	 */
+	refused?: boolean
+	/**
 	 * Pre-write file contents read at tool_execution_start for `write` tool
 	 * calls: the original file content if the file existed (later surfaced as
 	 * the diff's oldText), null for a new file. Keyed by toolCallId; the entry

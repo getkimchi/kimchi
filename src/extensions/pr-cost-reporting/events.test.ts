@@ -33,7 +33,7 @@ it("uploads real SDK capture through the worker with exact legacy drainage and a
 			rejectedBackoff: true,
 			keyFenced: true,
 			redirectsRejected: true,
-			legacyBoundary: true,
+			legacyBeside: true,
 			failedPassAborted: true,
 			abandonedRetained: true,
 		})
@@ -684,4 +684,135 @@ closeBackends();
 	} finally {
 		rmSync(agent, { recursive: true, force: true })
 	}
+})
+
+/** Runs `steps` in Bun on a fresh ledger holding `rows`, with this version's report, event builder and outbox in scope. */
+function withLedger(rows: unknown[], steps: string, extra: object = {}) {
+	const agent = mkdtempSync(join(tmpdir(), "kimchi-claims-"))
+	try {
+		return JSON.parse(
+			execFileSync(
+				"bun",
+				[
+					"--eval",
+					`
+import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.url).href)};
+import {capture,readStoredRecordsAsync,closeBackends,backendFor} from ${JSON.stringify(new URL("./ledger/records.ts", import.meta.url).href)};
+import {observeEvents,effectiveClaim} from ${JSON.stringify(new URL("./ledger/outbox.ts", import.meta.url).href)};
+import {accountKey} from ${JSON.stringify(new URL("./snapshot.ts", import.meta.url).href)};
+import {calculatePullRequestCosts} from ${JSON.stringify(new URL("../work-attribution/costs.ts", import.meta.url).href)};
+const input=await Bun.stdin.json();
+for(const row of input.rows)capture(input.agent,row,input.agent+"/native-observations.jsonl");
+const stored=await readStoredRecordsAsync(input.agent,()=>{});
+const report=calculatePullRequestCosts(stored.map(row=>JSON.parse(row.body)),[]);
+const repositories=new Map(input.repositories);
+const key=accountKey(input.account);
+const prior=(account,entity)=>effectiveClaim(backendFor(input.agent),account,entity);
+const build=(source,existing=prior)=>buildEvents(stored,source,repositories,input.producer,()=>{},existing);
+const observe=(built)=>{for(const group of built.accounts)observeEvents(input.agent,key,group.facts,[],()=>{})};
+const claimOf=(id)=>build(report,()=>undefined).accounts[0].facts.find(fact=>fact.usage?.requestId===id);
+const result={error:null};
+try{${steps}}catch(caught){result.error=caught.message}
+closeBackends();
+console.log(JSON.stringify(result));
+`,
+				],
+				{
+					input: JSON.stringify({ agent, rows, repositories, producer, account, ...extra }),
+					encoding: "utf8",
+					timeout: 30_000,
+				},
+			),
+		)
+	} finally {
+		rmSync(agent, { recursive: true, force: true })
+	}
+}
+
+it("keeps a corrected claim's reported allocation when a newer version re-translates it", { timeout: 30_000 }, () => {
+	const linkId = "55555555-5555-4555-8555-555555555555"
+	const pull = (number: number, checkedAt: string) => ({
+		provider: "github",
+		host: "github.com",
+		repository: "fork/repo",
+		repositoryId: "999",
+		id: String(number),
+		number,
+		url: `https://github.com/fork/repo/pull/${number}`,
+		state: "open",
+		mergedAt: null,
+		closedAt: null,
+		headSha: "a".repeat(40),
+		mergeCommitSha: null,
+		checkedAt,
+	})
+	// The commit was listed in PR 1, then in PR 2 stacked on it as well.
+	const commit = (checkedAt: string, pullRequests: unknown[]) => ({
+		version: 1,
+		type: "commit",
+		workId,
+		sessionId: owner.sessionId,
+		sha: "c".repeat(40),
+		repository: scope.repository,
+		worktree: "/private/repo",
+		recordedAt: checkedAt,
+		pullRequests,
+		prLookup: { status: "linked", checkedAt },
+	})
+	const rows = [
+		records[0],
+		records[1],
+		commit("2026-10-24T08:01:00Z", [pull(1, "2026-10-24T08:01:00Z")]),
+		commit("2026-10-24T08:02:00Z", [pull(1, "2026-10-24T08:02:00Z"), pull(2, "2026-10-24T08:02:00Z")]),
+		{
+			version: 1,
+			type: "work_link",
+			workId,
+			sessionId: owner.sessionId,
+			scope,
+			linkId,
+			revision: 1,
+			status: "active",
+			sourceWorkId: workId,
+			targetWorkId: workId,
+			requestIds: [requestId],
+			evidence: { source: "work-command" },
+			recordedAt: "2026-10-24T08:03:00Z",
+		},
+	]
+	// Kimchi 1.25.0 shared the request by both PRs under this receipt, as the rows listing the commit in both still do.
+	const result = withLedger(
+		rows,
+		`
+observe(build(calculatePullRequestCosts(stored.map(row=>JSON.parse(row.body)).filter(row=>row.prLookup?.checkedAt!==input.firstListed),[])));
+observe(build(report));
+const current=prior(key,claimOf(input.requestId).entityId);
+result.allocation=current.allocation;
+result.correction=current.correction.id;
+`,
+		{ requestId, firstListed: "2026-10-24T08:01:00Z" },
+	)
+	expect(result).toEqual({
+		error: null,
+		allocation: { kind: "shared", pullRequestIds: ["1", "2"], method: "user-correction" },
+		correction: linkId,
+	})
+})
+
+it("captures other requests when the outbox would refuse one claim's update", { timeout: 30_000 }, () => {
+	const other = "44444444-4444-4444-8444-444444444444"
+	const rows = [...records.slice(0, 2), ...records.slice(0, 2).map((row) => ({ ...row, requestId: other }))]
+	// An earlier upload named another start time for one request; its start time cannot change now.
+	const result = withLedger(
+		rows,
+		`
+observeEvents(input.agent,key,[{...claimOf(input.other),startedAt:"2026-10-24T07:59:00Z"}],[],()=>{});
+const built=build(report);
+observe(built);
+result.unresolved=built.unresolved.map(row=>[row.requestId,row.reason]);
+result.captured=!!prior(key,claimOf(input.requestId).entityId);
+`,
+		{ requestId, other },
+	)
+	expect(result).toEqual({ error: null, unresolved: [[other, "invalid_request_event"]], captured: true })
 })

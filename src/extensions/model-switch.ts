@@ -1,9 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../shared/model-ref.js"
 import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
-import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
 import {
 	contextFitsModel,
 	getLatestMessages,

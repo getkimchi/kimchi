@@ -20,11 +20,14 @@ const mockLoadAutoUpdateNoticeShown = vi.fn(() => true)
 const mockIsHomebrewInstall = vi.fn(() => false)
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
 const mockGetVersion = vi.fn(() => "1.0.0")
+const mockRefreshBridge = vi.fn(() => [] as string[])
 
 vi.mock("./paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
 	resolveExecutablePath: () => "/fake/kimchi",
+	stableExecutablePath: () => "/fake/opt/kimchi/bin/kimchi",
 }))
+vi.mock("./install.js", () => ({ refreshBridge: mockRefreshBridge }))
 vi.mock("./settings.js", () => ({
 	loadAutoUpdateSetting: mockLoadAutoUpdateSetting,
 	loadAutoUpdateNoticeShown: mockLoadAutoUpdateNoticeShown,
@@ -136,6 +139,13 @@ describe("maybeAutoUpdateOnLaunch — skip gates", () => {
 		expect(mockCheckForUpdate).not.toHaveBeenCalled()
 		expect(mockApplyUpdate).not.toHaveBeenCalled()
 		expect(execveSpy).not.toHaveBeenCalled()
+	})
+
+	it("refreshes the work-reporting plugins on a Homebrew install, which never runs kimchi update", async () => {
+		mockRefreshBridge.mockClear()
+		mockIsHomebrewInstall.mockReturnValue(true)
+		await maybeAutoUpdateOnLaunch()
+		expect(mockRefreshBridge).toHaveBeenCalledWith(expect.any(String), "/fake/opt/kimchi/bin/kimchi")
 	})
 
 	it("skips when running on a canary build", async () => {

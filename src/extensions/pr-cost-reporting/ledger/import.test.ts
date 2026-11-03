@@ -25,7 +25,15 @@ import {
 	reportJournalProblems,
 } from "./import.js"
 import { createMemoryRecords } from "./memory-records.js"
-import { capture, closeBackends, type JournalCursor, readRecords, readWorkRows, useBackendFactory } from "./records.js"
+import {
+	backendFor,
+	capture,
+	closeBackends,
+	type JournalCursor,
+	readRecords,
+	readWorkRows,
+	useBackendFactory,
+} from "./records.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
@@ -288,6 +296,176 @@ describe("import loop over the memory backend", () => {
 		expect(result.anomalies).toHaveLength(1)
 		expect(result).toMatchObject({ imported: 0, skipped: 2, files: [{ mode: "mutation", generation: 2 }] })
 		expect(readRecords(dir)).toHaveLength(3)
+	})
+
+	it("a mutation with parseable lines no longer marks history incomplete", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// A same-size rewrite is a mutation; every line still parses, so no problem is saved.
+		writeFileSync(file, line(work()) + line(request("req-2")))
+		const result = await importJournals(dir)
+		expect(result.anomalies).toHaveLength(1)
+		expect(result.problems).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
+	it("clears a saved problem note once the journal re-reads cleanly from the start", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// The field state: an old build's mutation seed left a stale problem note behind.
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toHaveLength(1)
+		// A flagged journal is re-read from the start; a clean window retires the note.
+		const result = await importJournals(dir)
+		expect(result.problems).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+	})
+
+	it("an emptied journal retires its stale problem note instead of wedging capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		const flagged: unknown[] = []
+		reportJournalProblems(dir, (problem) => flagged.push(problem))
+		expect(flagged).toHaveLength(1)
+		// The journal is emptied in place, the way copytruncate-style rotation does.
+		writeFileSync(file, "")
+		await importJournals(dir)
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
+	it("an emptied journal retires its stale tail note instead of wedging capture", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		// An interrupted append left its tail note; the note is reported like a coverage note.
+		backendFor(dir).putNote("journal-tail", file, JSON.stringify([{ kind: "invalid", path: file, line: 2 }]))
+		const flagged: unknown[] = []
+		reportJournalProblems(dir, (problem) => flagged.push(problem))
+		expect(flagged).toHaveLength(1)
+		// The journal is emptied in place, the way copytruncate-style rotation does.
+		writeFileSync(file, "")
+		await importJournals(dir)
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-tail", file) ?? "null")).toEqual([])
+	})
+
+	it("retires a stale coverage note across windows once the re-read reaches the end", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		// A journal well beyond one re-read window: only persisted re-verification progress can
+		// carry the from-start replay to the end, or the stale note would wedge capture forever.
+		writeFileSync(file, Array.from({ length: 6 }, (_, index) => line(request(`req-${index}`))).join(""))
+		await importJournals(dir)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		// The first window cannot reach the end, so the note must survive it.
+		const first = await importJournals(dir, { maxBytes: 120 })
+		expect(first.pending).toBe(true)
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).not.toEqual([])
+		// Later windows continue the re-read and retire the note only at the end.
+		for (let pass = 0; pass < 32; pass++) {
+			const result = await importJournals(dir, { maxBytes: 120 })
+			if (!result.pending) break
+		}
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
+	it("keeps a flagged journal's note until the re-read reaches its damage", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")) + "{bad json\n")
+		await importJournals(dir)
+		expect(backendFor(dir).getNote("journal-coverage", file)).toBeDefined()
+		// Clean windows before the damage do not retire the note; only the end-reaching read can.
+		const early = await importJournals(dir, { maxBytes: 150 })
+		expect(early.problems).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).not.toEqual([])
+		await importJournals(dir, { maxBytes: 150 })
+		// The damage is re-read and re-saved, not re-reported; the flag survives the full re-read.
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toHaveLength(1)
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).not.toEqual([])
+		// A rewrite of damaged content is a mutation: it keeps the flag, because it can hide the
+		// evidence behind it (the continuation-repair contract).
+		writeFileSync(file, line(work()) + line(request("req-2")))
+		await importJournals(dir)
+		const afterRewrite: unknown[] = []
+		reportJournalProblems(dir, (problem) => afterRewrite.push(problem))
+		// The seed joins the stale per-line problem; both stay, because both describe history
+		// this journal's current content can no longer prove.
+		expect(afterRewrite).toHaveLength(2)
+	})
+
+	it("a journal truncated to an unterminated line retires its stale problem note", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, line(work()) + line(request("req-1")))
+		await importJournals(dir)
+		backendFor(dir).putNote("journal-coverage", file, JSON.stringify([{ kind: "invalid", path: file, line: 1 }]))
+		// copytruncate-style rotation leaves a partial line behind.
+		writeFileSync(file, line(work()).slice(0, -5))
+		await importJournals(dir)
+		const replayed: unknown[] = []
+		reportJournalProblems(dir, (problem) => replayed.push(problem))
+		expect(replayed).toEqual([])
+		expect(JSON.parse(backendFor(dir).getNote("journal-coverage", file) ?? "null")).toEqual([])
+	})
+
+	it("keeps the problem when a line really is damaged", async () => {
+		const dir = agentDir()
+		dirs.push(dir)
+		useBackendFactory(() => createMemoryRecords())
+		const folder = journal(dir)
+		const file = join(folder, "parent.jsonl")
+		writeFileSync(file, `{not json\n${line(request("req-1"))}`)
+		const result = await importJournals(dir)
+		expect(result.problems).toHaveLength(1)
+		expect(backendFor(dir).getNote("journal-coverage", file)).toBeDefined()
+		const problems: unknown[] = []
+		reportJournalProblems(dir, (problem) => problems.push(problem))
+		expect(problems).toHaveLength(1)
 	})
 
 	it("a removed journal keeps the imported rows and reports journal-removed", async () => {

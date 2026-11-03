@@ -8,6 +8,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
+import { canonicalPlatformApiUrl } from "../../regions.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { backendFor, getNote, hasNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { object } from "./summary.js"
@@ -168,7 +169,14 @@ export function isWorkAccount(value: unknown): value is WorkAccount {
 }
 
 export function sameWorkAccount(left: WorkAccount, right: WorkAccount): boolean {
-	return left.apiUrl === right.apiUrl && left.organizationId === right.organizationId && left.userId === right.userId
+	// The API base compares canonically so accounts captured before the
+	// platform API moved to the region's API origin (legacy webAppUrl + "/api")
+	// keep matching the freshly derived base in both upgrade and rollback.
+	return (
+		canonicalPlatformApiUrl(left.apiUrl) === canonicalPlatformApiUrl(right.apiUrl) &&
+		left.organizationId === right.organizationId &&
+		left.userId === right.userId
+	)
 }
 
 /** The configured platform API without a trailing slash, as accounts and reports compare it. */

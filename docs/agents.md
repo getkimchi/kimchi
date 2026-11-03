@@ -104,7 +104,10 @@ You are a senior X engineer who...
 - **`skills`** — `true` (default) inherits all parent skills. A comma-list
   preloads named skills from the project's skill paths into the system prompt
   (useful when the agent needs reference material). Project skills in the nearest
-  `.kimchi/skills` directory are available automatically.
+  `.kimchi/skills` directory are available automatically. With `true`, skills
+  whose declared triggers match the task brief are additionally auto-loaded at
+  spawn (see [skills-autoload.md](skills-autoload.md)); `false` and comma-list
+  personas never get brief-triggered injections.
 - **`prompt_mode: append`** — Treat body as an addendum to the parent's full
   system prompt. The default `replace` makes the persona fully self-contained.
 - **`memory` (removed)** — The per-agent persistent-memory field no longer has

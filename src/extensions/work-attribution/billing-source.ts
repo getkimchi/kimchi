@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { resolveEndpoints } from "../../config.js"
+import { canonicalPlatformApiUrl } from "../../regions.js"
 import { isWorkId } from "../../shared/work-id.js"
 import { plainURL } from "../../utils/url.js"
 import { object, SHA256_HEX } from "./summary.js"
@@ -57,8 +58,13 @@ export function isBillingSource(value: unknown): value is BillingSource {
 }
 
 export function sameBillingSource(left: BillingSource, right: BillingSource): boolean {
+	// The API base compares canonically so sources captured before the
+	// platform API moved to the region's API origin (legacy webAppUrl + "/api")
+	// keep matching the freshly derived base in both upgrade and rollback.
 	return (
-		left.apiUrl === right.apiUrl && left.gatewayUrl === right.gatewayUrl && left.credentialHash === right.credentialHash
+		canonicalPlatformApiUrl(left.apiUrl) === canonicalPlatformApiUrl(right.apiUrl) &&
+		left.gatewayUrl === right.gatewayUrl &&
+		left.credentialHash === right.credentialHash
 	)
 }
 

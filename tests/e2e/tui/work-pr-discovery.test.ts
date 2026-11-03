@@ -27,6 +27,8 @@ test("pending work survives a GitHub login error and finds a PR while coding con
 			artifactName: "work-pr-discovery",
 			gitInit: true,
 			extraArgs,
+			// Shorten the 30 s reconciliation tick so the discovered-PR flip arrives in seconds.
+			env: { KIMCHI_E2E_RECONCILIATION_INTERVAL_MS: "1000" },
 			responses: [{ stream: ["You can keep coding while GitHub is unavailable."] }],
 			seedHome(home, cwd) {
 				const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim()

@@ -12,7 +12,7 @@
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { isRoutedResolutionEntry } from "../../extensions/auto-model/index.js"
-import { refFromParts } from "../../extensions/model-catalog/ref-utils.js"
+import { refFromParts } from "../../shared/model-ref.js"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
 

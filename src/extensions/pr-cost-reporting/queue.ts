@@ -9,10 +9,11 @@ import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
-import { backendFor } from "./ledger/records.js"
+import { backendFor, diagnostic } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
 	accountKey,
+	fitSnapshot,
 	MAX_REVISION,
 	type ReportingRepository,
 	type RepositorySnapshot,
@@ -600,7 +601,12 @@ function applyAck(state: ReportingState, entry: PendingRepository, sentRevision:
 	if (!entry.pending || entry.pending.revision !== sentRevision) return
 	validateAck(sentRevision, ack)
 	if (ack.status !== "stale") {
-		entry.requestHashes = entry.pending.requests.map((request) => requestHash(request.requestId)).sort()
+		const acked = entry.pending.requests.map((request) => requestHash(request.requestId)).sort()
+		// A trimmed body keeps the server's earlier claims under the same revision, so only a
+		// complete inventory shrinks membership; an incomplete one keeps what it may still hold.
+		entry.requestHashes = entry.pending.coverage.historyComplete
+			? acked
+			: [...new Set([...entry.requestHashes, ...acked])].sort()
 		entry.acceptedDigest = entry.pendingDigest
 		entry.lastAcknowledgedAt = ack.receivedAt
 		entry.markers = snapshotMarkers(entry.pending)
@@ -661,7 +667,7 @@ export function deferSnapshot(
  * less cannot be met by any upload, so only the proportional one applies then. The client never sends more
  * than the server's 2,000 windowed PR IDs, so that limit teaches nothing.
  */
-function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
+export function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number | undefined {
 	if (limit.limit !== "requests" && limit.limit !== "pullRequests" && limit.limit !== "bytes") return undefined
 	const measured = {
 		requests: pending.requests.length,
@@ -723,6 +729,88 @@ export function limitSnapshot(
 
 const FROZEN_SNAPSHOTS = "legacy-pr-cost-snapshots"
 const SNAPSHOT_RECEIPTS = "legacy-pr-cost-snapshot-receipts"
+/** Per key, the pending frozen ids and their sizes; the guard that keeps a stuck queue bounded. */
+const FROZEN_INDEX = "legacy-pr-cost-pending"
+export const FROZEN_QUEUE_BYTES = 64 * 1024 * 1024
+let frozenQueueBytes = FROZEN_QUEUE_BYTES
+
+/** Test-only override for the per-key pending byte cap. */
+export function __setFrozenQueueCapForTest(bytes: number): void {
+	frozenQueueBytes = bytes
+}
+
+interface FrozenIndexEntry {
+	id: string
+	bytes: number
+	/** The body was held when it was frozen; held claims are never dropped by the cap. */
+	held?: true
+}
+
+function readFrozenIndex(backend: ReturnType<typeof backendFor>, key: string): FrozenIndexEntry[] {
+	const body = backend.getNote(FROZEN_INDEX, key)
+	if (body === undefined) return []
+	try {
+		const value: unknown = JSON.parse(body)
+		if (
+			Array.isArray(value) &&
+			value.every(
+				(entry) =>
+					object(entry) &&
+					typeof entry.id === "string" &&
+					typeof entry.bytes === "number" &&
+					entry.bytes >= 0 &&
+					(entry.held === undefined || entry.held === true),
+			)
+		)
+			return value as FrozenIndexEntry[]
+	} catch {
+		// A damaged index resets; the pending notes it forgot still drain through the normal walk.
+	}
+	return []
+}
+
+function writeFrozenIndex(backend: ReturnType<typeof backendFor>, key: string, entries: FrozenIndexEntry[]): void {
+	if (entries.length) backend.putNote(FROZEN_INDEX, key, JSON.stringify(entries))
+	else backend.deleteNote(FROZEN_INDEX, key)
+}
+
+/** Removes a frozen id from its key's index; the pending or receipt note itself is untouched. */
+function unindexFrozen(backend: ReturnType<typeof backendFor>, key: string, id: string): void {
+	writeFrozenIndex(
+		backend,
+		key,
+		readFrozenIndex(backend, key).filter((entry) => entry.id !== id),
+	)
+}
+
+/**
+ * Records a frozen id for its key and keeps the key's pending queue bounded: when the total passes
+ * the cap, the oldest pending bodies are dropped (with a diagnostic) so one undeliverable
+ * repository cannot grow without limit. A body frozen while held keeps its claims and is never
+ * the cap's victim; a body deleted mid-delivery elsewhere settles as a benign ownership change.
+ */
+function indexFrozen(
+	backend: ReturnType<typeof backendFor>,
+	agentDir: string,
+	key: string,
+	id: string,
+	bytes: number,
+	held?: boolean,
+): void {
+	const index = readFrozenIndex(backend, key).filter((entry) => entry.id !== id)
+	index.push({ id, bytes, ...(held ? { held: true } : {}) })
+	let total = index.reduce((sum, entry) => sum + entry.bytes, 0)
+	while (index.length > 1 && total > frozenQueueBytes) {
+		const oldest = index.find((entry) => entry.id !== id && !entry.held)
+		if (!oldest) break
+		index.splice(index.indexOf(oldest), 1)
+		total -= oldest.bytes
+		backend.deleteNote(FROZEN_SNAPSHOTS, oldest.id)
+		diagnostic(agentDir, "frozen-queue-capped")
+	}
+	writeFrozenIndex(backend, key, index)
+}
+
 export interface FrozenSnapshot {
 	version: 1
 	id: string
@@ -731,6 +819,52 @@ export interface FrozenSnapshot {
 	entry: PendingRepository
 	ack?: SnapshotAck
 	resume?: string
+}
+
+/** A kept request without billing evidence is the only unpriced one a legacy body can still identify. */
+const legacyUnpriced = (request: SnapshotContent["requests"][number]) => !request.billingRecordIds.length
+
+/**
+ * A legacy pending body over the upload limits is trimmed before it is frozen: an oversized body can
+ * never be delivered, and every later capture of the same claims would freeze another full copy.
+ * Trimmed coverage is marked incomplete so the server keeps its earlier claims.
+ */
+export function trimLegacySnapshot(pending: WireSnapshot): WireSnapshot {
+	const { schemaVersion, producerId, revision: rev, generatedAt, ...content } = pending
+	if (
+		content.requests.length <= SNAPSHOT_LIMITS.requests &&
+		content.pullRequests.length <= SNAPSHOT_LIMITS.pullRequests &&
+		Buffer.byteLength(JSON.stringify(pending)) <= SNAPSHOT_LIMITS.bytes
+	)
+		return pending
+	const fitted = fitSnapshot(content, SNAPSHOT_LIMITS, legacyUnpriced)
+	const trimmed: SnapshotContent = fitted
+		? fitted.content
+		: {
+				repository: content.repository,
+				pullRequests: [],
+				requests: [],
+				// Omission without a name withdraws an earlier upload's claims, so the emptied body
+				// still names the PRs the original body held as windowed.
+				...(content.windowedPullRequestIds === undefined
+					? {}
+					: { windowedPullRequestIds: content.windowedPullRequestIds }),
+				coverage: {
+					observedRequests: 0,
+					unpricedRequests: 0,
+					historyComplete: false,
+					trimmedRequests: content.requests.length,
+				},
+			}
+	// A body that cannot be represented under the limits still freezes; delivery retries trim it instead.
+	if (fitted) fitted.content.coverage.trimmedRequests = (content.coverage.trimmedRequests ?? 0) + fitted.trimmed
+	const next: WireSnapshot = { schemaVersion, producerId, revision: rev, generatedAt, ...trimmed }
+	try {
+		validateSnapshot(next)
+		return next
+	} catch {
+		return pending
+	}
 }
 
 function frozenId(account: WorkAccount, body: string): string {
@@ -801,16 +935,24 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 	backend.tx(() => {
 		assertCurrent()
 		for (const [key, entry] of entries) {
-			const body = JSON.stringify(entry.pending)
+			// The queue's size limit applies to new frozen bodies whatever built them; the live entry keeps
+			// the trimmed body so the next pass freezes the same id instead of another full copy. An
+			// unchanged body leaves the entry alone: an acknowledged receipt clears `pending` here.
+			const original = entry.pending
+			if (!original) continue
+			const pending = trimLegacySnapshot(original)
+			const body = JSON.stringify(pending)
 			const id = frozenId(entry.account, body)
 			const frozen = storedFrozen(agentDir, id)
 			if (frozen === undefined) {
 				const value: FrozenSnapshot = { version: 1, id, key, body, entry, resume: frozenResume(agentDir) }
 				backend.putNote(FROZEN_SNAPSHOTS, id, encodeFrozen(value))
+				indexFrozen(backend, agentDir, key, id, Buffer.byteLength(body), entry.held)
 			} else {
 				if (frozen.key !== key || frozen.body !== body) throw new Error("Frozen PR snapshot identity mismatch")
 				if (state.enabled && frozen.ack) applyAck(state, entry, entry.revision, frozen.ack)
 			}
+			if (pending !== original) entry.pending = pending
 		}
 		assertCurrent()
 	})
@@ -822,39 +964,20 @@ export function freezeSnapshots(agentDir: string, assertCurrent: () => void): Pr
 }
 
 /**
- * A page of due uploads cannot prove drainage: delayed and old-writer bodies still own legacy claims. A held body is
- * never sent, and only an older writer that sees its evidence again releases it, so it does not hold events back.
+ * Rereads consent before an event batch is frozen, sent or acknowledged. The action runs under the state lock, so
+ * turning reporting off cannot interleave with it. Events do not wait for legacy snapshots: one the server never
+ * accepts, such as a body above the 1 MiB limit in front of the API, would hold its account's events for good.
  */
-export async function withDrainedLegacyAccount(
+export async function withReportingConsent(
 	agentDir: string,
-	account: WorkAccount,
 	action: (check: () => void) => void,
 	assertCurrent: () => void,
 ): Promise<boolean> {
 	let ready = false
 	await update(
 		agentDir,
-		async (state, check) => {
-			freezeState(agentDir, state, check)
+		(state, check) => {
 			if (!state.enabled) return
-			const key = accountKey(account)
-			const owns = (entry: PendingRepository) => !entry.held && accountKey(entry.account) === key
-			if (Object.values(state.entries).some((entry) => entry.pending && owns(entry))) return
-			const backend = backendFor(agentDir)
-			let after = ""
-			for (;;) {
-				check()
-				const page = backend.readNotePage(FROZEN_SNAPSHOTS, after, 16)
-				if (!page.length) break
-				for (const row of page) {
-					check()
-					const frozen = storedFrozen(agentDir, row.name)
-					if (!frozen || frozen.ack) throw new Error("Invalid pending frozen PR snapshot ownership")
-					if (owns(state.entries[frozen.key] ?? frozen.entry)) return
-				}
-				after = page[page.length - 1].name
-				await setImmediate()
-			}
 			check()
 			if (state.followsTelemetry && !isTelemetryEnabled()) return
 			const consent = () => {
@@ -952,6 +1075,7 @@ function updateFrozen(
 				if (frozen.ack) {
 					backend.putNote(SNAPSHOT_RECEIPTS, frozen.id, encodeFrozen(frozen))
 					backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
+					unindexFrozen(backend, frozen.key, frozen.id)
 				} else backend.putNote(FROZEN_SNAPSHOTS, frozen.id, encodeFrozen(frozen))
 				assertCurrent()
 			})
@@ -1006,6 +1130,98 @@ export function deferFrozenSnapshot(
 		},
 		assertCurrent,
 	)
+}
+
+/** A 413 trim stops halving here; a body this small is deferred like any other rejection. */
+const TRIM_FLOOR_REQUESTS = 16
+const TRIM_FLOOR_BYTES = 64 * 1024
+
+/**
+ * A body the server rejected for its size is replaced: the same claims, fewer requests, coverage
+ * marked incomplete. Without a limit it is halved (the bare 413 an infrastructure layer returns);
+ * with a server-stated byte cap it shrinks to the cap the server named, so the retry carries a
+ * body the server can accept. The live queue entry keeps the trimmed body so the next capture does
+ * not freeze the rejected one again. Resolves false when the body cannot shrink further, so the
+ * caller defers or waits as before.
+ */
+export async function trimFrozenSnapshot(
+	agentDir: string,
+	sent: FrozenSnapshot,
+	assertCurrent: () => void,
+	limit?: ServerLimit,
+): Promise<boolean> {
+	let trimmed = false
+	await update(
+		agentDir,
+		(state, check) => {
+			if (!state.enabled) return
+			const backend = backendFor(agentDir)
+			backend.tx(() => {
+				assertCurrent()
+				check()
+				const frozen = storedFrozen(agentDir, sent.id)
+				if (frozen === undefined) throw new Error("Frozen PR snapshot disappeared")
+				if (frozen.body !== sent.body || frozen.key !== sent.key) throw new Error("Frozen PR snapshot changed")
+				if (frozen.ack) return
+				refreshFrozenSchedule(agentDir, frozen)
+				const current: WireSnapshot = JSON.parse(frozen.body)
+				if (current.requests.length <= TRIM_FLOOR_REQUESTS) {
+					// The body cannot shrink further; make the permanent rejection observable.
+					diagnostic(agentDir, "frozen-413-floor")
+					return
+				}
+				const { schemaVersion, producerId, revision, generatedAt, ...content } = current
+				// A server-stated byte cap is the target; without one the body halves.
+				const target =
+					(limit ? learnedLimit(current, limit) : undefined) ?? Math.floor(Buffer.byteLength(frozen.body) / 2)
+				const fitted = fitSnapshot(
+					content,
+					{
+						// With a stated cap the bytes bind at the cap itself; halving keeps its own floor.
+						requests:
+							limit !== undefined
+								? SNAPSHOT_LIMITS.requests
+								: Math.max(TRIM_FLOOR_REQUESTS, Math.floor(current.requests.length / 2)),
+						pullRequests: SNAPSHOT_LIMITS.pullRequests,
+						bytes: limit !== undefined ? Math.max(1, target) : Math.max(TRIM_FLOOR_BYTES, target),
+					},
+					legacyUnpriced,
+				)
+				if (!fitted?.trimmed) {
+					// The content cannot shrink further; make the permanent rejection observable.
+					diagnostic(agentDir, "frozen-413-floor")
+					return
+				}
+				fitted.content.coverage.trimmedRequests = (current.coverage.trimmedRequests ?? 0) + fitted.trimmed
+				const next: WireSnapshot = { schemaVersion, producerId, revision, generatedAt, ...fitted.content }
+				validateSnapshot(next)
+				const body = JSON.stringify(next)
+				const replacement: FrozenSnapshot = {
+					version: 1,
+					id: frozenId(frozen.entry.account, body),
+					key: frozen.key,
+					body,
+					entry: { ...frozen.entry, attempts: 0, retryAt: 0, uploadedAt: undefined },
+					resume: frozenResume(agentDir),
+				}
+				backend.putNote(FROZEN_SNAPSHOTS, replacement.id, encodeFrozen(replacement))
+				backend.deleteNote(FROZEN_SNAPSHOTS, frozen.id)
+				unindexFrozen(backend, frozen.key, frozen.id)
+				indexFrozen(backend, agentDir, frozen.key, replacement.id, Buffer.byteLength(body), frozen.entry.held)
+				// The live entry must not hold the rejected body: the next freeze would recreate its note.
+				const live = state.entries[frozen.key]
+				if (live?.pending && JSON.stringify(live.pending) === frozen.body) {
+					live.pending = next
+					live.attempts = 0
+					live.retryAt = 0
+					live.uploadedAt = undefined
+				}
+				trimmed = true
+			})
+		},
+		assertCurrent,
+	)
+	return trimmed
 }
 
 export function limitFrozenSnapshot(

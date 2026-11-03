@@ -90,12 +90,6 @@ import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
 import type { McpProbe, ProbeResult } from "../../extensions/mcp/probe.js"
-import {
-	availableModelRefs,
-	findModelByRef,
-	refFromModel,
-	splitModelRef,
-} from "../../extensions/model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
@@ -118,6 +112,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -133,6 +128,7 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
+import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
@@ -165,6 +161,7 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
+import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
 import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
@@ -1204,7 +1201,7 @@ export class KimchiAcpAgent implements Agent {
 					}
 					this.failTurn(entry, toTurnError(terminal))
 				} else {
-					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : "end_turn")
+					this.finalizeTurn(entry, entry.turn.cancelled ? "cancelled" : entry.turn.refused ? "refusal" : "end_turn")
 				}
 			},
 			(err) => {
@@ -1470,6 +1467,9 @@ export class KimchiAcpAgent implements Agent {
 		// Routed-model pick changes mirror the transcript entry as an ext
 		// notification; change-only, per the extension's dedup.
 		emitRoutedModelUpdate(this.conn, sessionId, event)
+		// Skill auto-loads mirror their transcript entry the same way, so IDE
+		// clients can surface what the TUI renders as a one-line entry.
+		emitSkillAutoloadUpdate(this.conn, sessionId, event)
 		switch (event.type) {
 			case "queue_update": {
 				if (!entry.previousQueue) {
@@ -1690,7 +1690,22 @@ export class KimchiAcpAgent implements Agent {
 				// toolUse, deferred) → a completed message, clear. A failed attempt
 				// pi auto-retries is superseded by the retry's message_end, which
 				// lands here and clears the flag.
-				if (msg.stopReason === "error") {
+				turn.refused = isRefusal(msg)
+				if (turn.refused) {
+					// A refusal is a turn outcome, not a failure: report it as
+					// stopReason "refusal" with the reason the user can act on. The
+					// canned text may already be streamed and can't be retracted, so
+					// the reason goes out as a separate message.
+					turn.lastAssistantError = undefined
+					this.send({
+						sessionId,
+						update: {
+							sessionUpdate: "agent_message_chunk",
+							messageId: `km.${randomUUID()}`,
+							content: { type: "text", text: REFUSAL_MESSAGE },
+						},
+					})
+				} else if (msg.stopReason === "error") {
 					// Capture the preserved raw text, not the display placeholder: the
 					// interactive-error-surface extension may have mutated errorMessage
 					// to "Retrying…" in an earlier message_end handler. The placeholder
@@ -2661,7 +2676,7 @@ export class KimchiAcpAgent implements Agent {
 		} else if (turn.lastAssistantError) {
 			this.failTurn(entry, toTurnError(turn.lastAssistantError))
 		} else {
-			this.finalizeTurn(entry, "end_turn")
+			this.finalizeTurn(entry, turn.refused ? "refusal" : "end_turn")
 		}
 	}
 
