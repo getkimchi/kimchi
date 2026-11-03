@@ -718,7 +718,7 @@ Supported platforms:
 - Linux (amd64, arm64)
 - Windows (amd64)
 
-Release assets follow the naming convention `kimchi_{os}_{arch}.tar.gz` for macOS/Linux and `kimchi_windows_amd64.zip` for Windows, with a `checksums.txt` (SHA256) for verification.
+Release assets use the naming convention `kimchi_{os}_{arch}.tar.gz` for macOS/Linux and `kimchi_windows_amd64.zip` for Windows, with a `checksums.txt` (SHA256) for verification.
 
 Windows build and local VM testing notes live in [`docs/windows/README.md`](docs/windows/README.md).
 
