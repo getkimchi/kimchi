@@ -52,6 +52,15 @@ let flakyPrmArmed = false
 const oauthClientSecret = process.env.KIMCHI_MCP_FIXTURE_OAUTH_CLIENT_SECRET ?? "kimchi-e2e-client-secret"
 const oauthAccessToken = "kimchi-e2e-oauth-access-token"
 const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
+// oauth-google-like: Google's token-issuance rules. A refresh token is minted
+// only when the authorization request carried access_type=offline, and an
+// already-consented client is issued one again only with prompt=consent.
+// Refresh grants are valid only for tokens this server actually issued; the
+// authorization endpoint is advertised as Google's, and the e2e browser
+// driver replays the authorize request against this origin.
+const googleLike = scenario === "oauth-google-like"
+const googleLikeConsentedClients = new Set()
+const googleLikeIssuedRefreshTokens = new Set()
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
@@ -331,11 +340,12 @@ async function runHttpFixture() {
 				if (rejectOnStrictAccept(request, response, url.pathname)) return
 				sendJson(response, 200, {
 					issuer: splitIssuer ? `${origin}/as` : origin,
-					// oauth-google-authorization-endpoint advertises Google's endpoint so tests can
-					// inspect the authorize URL Kimchi builds; the record-only browser driver
-					// never fetches it.
+					// oauth-google-authorization-endpoint and oauth-google-like advertise Google's
+					// endpoint so the client's Google behavior runs for real; the record-only
+					// driver never fetches it, while oauth-google-like replays the request
+					// against this origin.
 					authorization_endpoint:
-						scenario === "oauth-google-authorization-endpoint"
+						scenario === "oauth-google-authorization-endpoint" || googleLike
 							? "https://accounts.google.com/o/oauth2/v2/auth"
 							: `${origin}/authorize`,
 					token_endpoint: `${origin}/token`,
@@ -385,7 +395,7 @@ async function runHttpFixture() {
 					response.end()
 					return
 				}
-				if (scenario === "oauth-pre-registered" && redirectUri !== OAUTH_PRE_REGISTERED_REDIRECT_URI) {
+				if ((scenario === "oauth-pre-registered" || googleLike) && redirectUri !== OAUTH_PRE_REGISTERED_REDIRECT_URI) {
 					// Emulate Google: the redirect URI is compared as an exact string
 					// against the client's pre-registered list; anything else is a 400.
 					record("oauth_authorization_denied", { redirectUri })
@@ -393,10 +403,22 @@ async function runHttpFixture() {
 					return
 				}
 				const code = `kimchi-e2e-code-${randomUUID()}`
+				// Google mints a refresh token only for access_type=offline, and re-issues
+				// one to an already-consented client only when prompt=consent is present.
+				// Consent latches at authorize-request time (single flow per fixture
+				// process): a later /authorize in the same process sees the client as
+				// already consented even if the first token exchange never completed.
+				const googleLikeGrantRefreshToken =
+					googleLike &&
+					url.searchParams.get("access_type") === "offline" &&
+					(!googleLikeConsentedClients.has(url.searchParams.get("client_id")) ||
+						url.searchParams.get("prompt") === "consent")
+				if (googleLike) googleLikeConsentedClients.add(url.searchParams.get("client_id"))
 				authorizationCodes.set(code, {
 					clientId: url.searchParams.get("client_id"),
 					codeChallenge,
 					redirectUri,
+					...(googleLike ? { googleLikeGrantRefreshToken } : {}),
 				})
 				record("oauth_authorized", {
 					redirectUri,
@@ -465,20 +487,31 @@ async function runHttpFixture() {
 					const expiresIn =
 						scenario === "oauth-expiring" ||
 						scenario === "oauth-split-issuer-flaky-prm" ||
-						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0)
+						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0) ||
+						googleLike
 							? 1
 							: 3600
 					authorizationCodeGrants += 1
 					oauthManualRevoked = false
 					authorizationCodes.delete(code)
-					record("oauth_token_issued", { grantType, pkceVerified: true, expiresIn })
+					let refreshTokenValue = oauthRefreshToken
+					if (googleLike) {
+						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? `kimchi-e2e-rt-${randomUUID()}` : undefined
+						if (refreshTokenValue) googleLikeIssuedRefreshTokens.add(refreshTokenValue)
+					}
+					record("oauth_token_issued", {
+						grantType,
+						pkceVerified: true,
+						expiresIn,
+						...(googleLike ? { refreshTokenIssued: refreshTokenValue !== undefined } : {}),
+					})
 					flakyPrmArmed = scenario === "oauth-split-issuer-flaky-prm"
 					oauthAccessTokenExpiresAt = Date.now() + expiresIn * 1000
 					sendJson(response, 200, {
 						access_token: oauthAccessToken,
 						token_type: "Bearer",
 						expires_in: expiresIn,
-						refresh_token: oauthRefreshToken,
+						...(refreshTokenValue === undefined ? {} : { refresh_token: refreshTokenValue }),
 						scope: "mcp:tools",
 					})
 					return
@@ -493,16 +526,26 @@ async function runHttpFixture() {
 					sendJson(response, 400, { error: "invalid_grant" })
 					return
 				}
-				if (grantType === "refresh_token" && params.get("refresh_token") === oauthRefreshToken) {
+				if (
+					grantType === "refresh_token" &&
+					(googleLike
+						? googleLikeIssuedRefreshTokens.has(params.get("refresh_token"))
+						: params.get("refresh_token") === oauthRefreshToken)
+				) {
 					record("oauth_token_issued", { grantType, expiresIn: 3600 })
 					oauthAccessTokenExpiresAt = Date.now() + 3_600_000
 					sendJson(response, 200, {
 						access_token: oauthAccessToken,
 						token_type: "Bearer",
 						expires_in: 3600,
-						refresh_token: oauthRefreshToken,
+						refresh_token: googleLike ? params.get("refresh_token") : oauthRefreshToken,
 						scope: "mcp:tools",
 					})
+					return
+				}
+				if (grantType === "refresh_token") {
+					record("oauth_token_rejected", { grantType })
+					sendJson(response, 400, { error: "invalid_grant", error_description: "refresh token was not issued" })
 					return
 				}
 				sendJson(response, 400, { error: "unsupported_grant_type" })

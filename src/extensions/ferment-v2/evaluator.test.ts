@@ -9,7 +9,6 @@ import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../pr
 import { createContext } from "../__mocks__/context.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles } from "../orchestration/model-roles.js"
-import { resetRedactionConfigCache } from "../pii-redaction/config.js"
 import * as redactor from "../pii-redaction/redactor.js"
 import * as diagnostics from "../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
@@ -69,13 +68,15 @@ afterEach(async () => {
 	rmSync(attributionDir, { recursive: true, force: true })
 })
 
-let savedRedactionEnv: string | undefined
-
 describe("Ferment V2 evaluator", () => {
+	let redactionSettingsDir: string
 	beforeEach(() => {
-		savedRedactionEnv = process.env.KIMCHI_REDACTION_ENABLED
-		delete process.env.KIMCHI_REDACTION_ENABLED
-		resetRedactionConfigCache()
+		// Hermetic resources layer for the redaction gate: no org policy,
+		// no user overrides; redaction tests enable the resource via
+		// KIMCHI_ENABLE_RESOURCES inside the test.
+		redactionSettingsDir = mkdtempSync(join(tmpdir(), "evaluator-redaction-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", redactionSettingsDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
 		redactor.resetRedactorEngine()
 		completeMock.mockReset()
 		multiModelMock.mockReturnValue(false)
@@ -93,9 +94,7 @@ describe("Ferment V2 evaluator", () => {
 
 	afterEach(() => {
 		resetProjectScopeTrustForTests()
-		if (savedRedactionEnv === undefined) delete process.env.KIMCHI_REDACTION_ENABLED
-		else process.env.KIMCHI_REDACTION_ENABLED = savedRedactionEnv
-		resetRedactionConfigCache()
+		rmSync(redactionSettingsDir, { recursive: true, force: true })
 		redactor.resetRedactorEngine()
 		vi.restoreAllMocks()
 	})
@@ -311,8 +310,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it("redacts the evaluator prompt before the direct provider call", async () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "1"
-		resetRedactionConfigCache()
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "extensions.pii-redaction")
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
 
 		await evaluateFermentV2(
@@ -326,8 +324,7 @@ describe("Ferment V2 evaluator", () => {
 	})
 
 	it("does not call the evaluator provider when enabled redaction fails", async () => {
-		process.env.KIMCHI_REDACTION_ENABLED = "1"
-		resetRedactionConfigCache()
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "extensions.pii-redaction")
 		vi.spyOn(redactor, "redactTextOrThrow").mockRejectedValueOnce(new Error("redaction unavailable"))
 		completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"missing smoke test"}'))
 

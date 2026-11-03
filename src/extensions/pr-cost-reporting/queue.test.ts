@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
 import * as files from "node:fs/promises"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -16,10 +17,12 @@ import type { WorkRecord } from "../work-attribution/summary.js"
 import { backendFor } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
+	__setFrozenQueueCapForTest,
 	acknowledgeFrozenSnapshot,
 	acknowledgeSnapshot,
 	deferSnapshot,
 	dueLimitNotices,
+	FROZEN_QUEUE_BYTES,
 	freezeSnapshots,
 	learnedLimits,
 	limitSnapshot,
@@ -29,7 +32,8 @@ import {
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
-	withDrainedLegacyAccount,
+	trimLegacySnapshot,
+	withReportingConsent,
 } from "./queue.js"
 import {
 	accountKey,
@@ -38,6 +42,8 @@ import {
 	type RepositorySnapshot,
 	repositoryKey,
 	SNAPSHOT_LIMITS,
+	validateSnapshot,
+	type WireSnapshot,
 } from "./snapshot.js"
 
 const account = {
@@ -48,6 +54,7 @@ const account = {
 const requestId = "33333333-3333-4333-8333-333333333333"
 const otherRequestId = "44444444-4444-4444-8444-444444444444"
 const billing = "77777777-7777-4777-8777-777777777777"
+const contentRepo = { provider: "github" as const, host: "github.com", id: "42" }
 const snapshot = (requestIds: string[] = []): RepositorySnapshot => ({
 	account,
 	content: {
@@ -124,7 +131,182 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
-	it("blocks common delivery for delayed legacy bodies and after opt-out, but not for held ones", async () => {
+	it("trims a legacy pending body over the upload limits before it is frozen", async () => {
+		await setReportingEnabled(directory, true)
+		const requests = Array.from({ length: 33_000 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			startedAt: "2026-10-04T12:00:00Z",
+			billingRecordIds: [billing],
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+		}))
+		const pending: WireSnapshot = {
+			schemaVersion: 1,
+			producerId: "55555555-5555-4555-8555-555555555555",
+			revision: "1",
+			generatedAt: "2026-10-04T12:00:00Z",
+			repository: { provider: "github" as const, host: "github.com", id: "42" },
+			pullRequests: [],
+			requests,
+			coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+		}
+		const trimmed = trimLegacySnapshot(pending)
+		expect(trimmed.requests.length).toBeLessThanOrEqual(SNAPSHOT_LIMITS.requests)
+		expect(Buffer.byteLength(JSON.stringify(trimmed))).toBeLessThanOrEqual(SNAPSHOT_LIMITS.bytes)
+		expect(trimmed.coverage.historyComplete).toBe(false)
+		expect(trimmed.coverage.trimmedRequests).toBeGreaterThan(0)
+		expect(trimmed.coverage.observedRequests).toBe(trimmed.requests.length)
+		validateSnapshot(trimmed)
+		// An under-limit body is stored unchanged.
+		expect(trimLegacySnapshot(trimmed)).toBe(trimmed)
+	})
+
+	it("keeps windowedPullRequestIds in the unfittable fallback", async () => {
+		await setReportingEnabled(directory, true)
+		// Correction receipts are never left out, so corrections alone can make the body
+		// unfittable; the emptied fallback must still name the windowed PRs, or the server
+		// would withdraw their uploaded claims.
+		const requests = Array.from({ length: 33_000 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			startedAt: "2026-10-04T12:00:00Z",
+			billingRecordIds: [billing],
+			correction: {
+				id: "44444444-4444-4444-8444-444444444444",
+				revision: 1,
+				recordedAt: "2026-10-04T12:00:00Z",
+				source: "work-command" as const,
+			},
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+		}))
+		const pending: WireSnapshot = {
+			schemaVersion: 1,
+			producerId: "55555555-5555-4555-8555-555555555555",
+			revision: "1",
+			generatedAt: "2026-10-04T12:00:00Z",
+			repository: contentRepo,
+			pullRequests: [],
+			requests,
+			windowedPullRequestIds: ["101", "102"],
+			coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+		}
+		const trimmed = trimLegacySnapshot(pending)
+		expect(trimmed.windowedPullRequestIds).toEqual(["101", "102"])
+		expect(trimmed.requests.length).toBeLessThanOrEqual(SNAPSHOT_LIMITS.requests)
+		validateSnapshot(trimmed)
+	})
+
+	it("bounds one key's pending frozen queue by bytes, dropping oldest first", async () => {
+		await setReportingEnabled(directory, true)
+		__setFrozenQueueCapForTest(10_000)
+		try {
+			const backend = backendFor(directory)
+			const keyOf = async () => Object.keys((await readReportingState(directory)).entries)[0]
+			let ids: string[] = []
+			for (let index = 0; index < 5; index++) {
+				// Every version carries all earlier requests, or the queue holds the previous body.
+				ids = [
+					...ids,
+					...Array.from(
+						{ length: 20 },
+						(_, request) => `${(index * 20 + request).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
+					),
+				]
+				await queueSnapshots(directory, [snapshot(ids)])
+				await freezeSnapshots(directory, () => {})
+			}
+			const pending = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
+			// The cap keeps only as many pending bodies as fit; the oldest were dropped, not the newest.
+			expect(pending.length).toBeLessThan(5)
+			expect(pending.length).toBeGreaterThanOrEqual(1)
+			const newest = JSON.parse(pending[pending.length - 1].body)
+			const state = await readReportingState(directory)
+			expect(JSON.stringify(Object.values(state.entries)[0].pending)).toBe(newest.body)
+			// The index matches the surviving notes.
+			const index = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
+			expect(index.map((entry: { id: string }) => entry.id).sort()).toEqual(pending.map((row) => row.name).sort())
+			// An acknowledged body leaves the index.
+			const acked = JSON.parse(pending[0].body)
+			await acknowledgeFrozenSnapshot(
+				directory,
+				{ ...acked, entry: { ...acked.entry, pending: JSON.parse(acked.body) } },
+				{ status: "accepted", revision: JSON.parse(acked.body).revision, receivedAt: new Date().toISOString() },
+				() => {},
+			)
+			const after = JSON.parse(backend.getNote("legacy-pr-cost-pending", await keyOf()) ?? "[]")
+			expect(after).toHaveLength(index.length - 1)
+		} finally {
+			__setFrozenQueueCapForTest(FROZEN_QUEUE_BYTES)
+		}
+	})
+
+	it("keeps a held body when the per-key cap drops pending notes", async () => {
+		await setReportingEnabled(directory, true)
+		__setFrozenQueueCapForTest(10_000)
+		try {
+			const backend = backendFor(directory)
+			const base = await readReportingState(directory)
+			const producerId = base.producerId
+			const key =
+				Object.keys((await readReportingState(directory)).entries)[0] ??
+				`${accountKey(account)}:${repositoryKey(contentRepo)}`
+			const ids = (count: number, offset: number) =>
+				Array.from(
+					{ length: count },
+					(_, index) => `${(offset + index).toString(16).padStart(8, "0")}-3333-4333-8333-333333333333`,
+				)
+			const body = (count: number, offset: number, revision: string) =>
+				JSON.stringify({
+					schemaVersion: 1,
+					producerId,
+					revision,
+					generatedAt: "2026-10-04T12:00:00Z",
+					repository: contentRepo,
+					pullRequests: [],
+					requests: ids(count, offset).map((requestId) => ({
+						requestId,
+						billingRecordIds: [billing],
+						startedAt: "2026-10-04T12:00:00Z",
+						allocation: { kind: "unlinked", pullRequestIds: [], method: "native" },
+					})),
+					coverage: { observedRequests: count, unpricedRequests: 0, historyComplete: true },
+				})
+			const entryFor = (pending: string, held?: true) => ({
+				account,
+				repository: contentRepo,
+				revision: "1",
+				requestHashes: [],
+				attempts: 0,
+				retryAt: 0,
+				...(held ? { held: true } : {}),
+				pending: JSON.parse(pending),
+			})
+			const writeEntry = async (pending: string, held?: true) => {
+				await writeFile(
+					join(directory, "pr-cost-reporting/state.json"),
+					JSON.stringify({
+						...base,
+						entries: { [key]: entryFor(pending, held) },
+					}),
+				)
+				await freezeSnapshots(directory, () => {})
+			}
+			// A held body first: its claims may still live on the server, so the cap never drops it.
+			const heldBody = body(20, 0, "1")
+			await writeEntry(heldBody, true)
+			// Later versions cross the cap; only non-held bodies are dropped, oldest first.
+			for (let round = 0; round < 3; round++) await writeEntry(body(20, 100 + round * 20, "1"))
+			const pending = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
+			expect(pending.length).toBeLessThan(4)
+			const bodies = pending.map((row) => JSON.parse(row.body).body)
+			expect(bodies).toContain(heldBody)
+			const index = JSON.parse(backend.getNote("legacy-pr-cost-pending", key) ?? "[]")
+			expect(index.map((entry: { id: string }) => entry.id).sort()).toEqual(pending.map((row) => row.name).sort())
+			expect(index.some((entry: { held?: true }) => entry.held)).toBe(true)
+		} finally {
+			__setFrozenQueueCapForTest(FROZEN_QUEUE_BYTES)
+		}
+	})
+
+	it("runs an event step beside delayed, held and frozen legacy bodies of its account, but not after opt-out", async () => {
 		await setReportingEnabled(directory, true)
 		await queueSnapshots(directory, [snapshot([requestId])])
 		const path = join(directory, "pr-cost-reporting/state.json")
@@ -132,93 +314,64 @@ describe("durable reporting queue", () => {
 		for (const entry of Object.values(state.entries)) entry.retryAt = Date.now() + 60_000
 		await writeFile(path, JSON.stringify(state))
 		const action = vi.fn()
-		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(false)
-		expect(action).not.toHaveBeenCalled()
-		// Only an older writer that sees the missing evidence again would release a held body.
+		// A body above the 1 MiB limit in front of the API never drains, so it must not hold events back.
+		expect(await withReportingConsent(directory, action, () => {})).toBe(true)
 		for (const entry of Object.values(state.entries)) entry.held = true
 		await writeFile(path, JSON.stringify(state))
-		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(true)
-		expect(action).toHaveBeenCalledOnce()
-		action.mockClear()
+		expect(await withReportingConsent(directory, action, () => {})).toBe(true)
+		await freezeSnapshots(directory, () => {})
+		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(1)
+		expect(await withReportingConsent(directory, action, () => {})).toBe(true)
+		expect(action).toHaveBeenCalledTimes(3)
 		await setReportingEnabled(directory, false)
-		expect(await withDrainedLegacyAccount(directory, { ...account, userId: otherRequestId }, action, () => {})).toBe(
-			false,
-		)
-		expect(action).not.toHaveBeenCalled()
+		expect(await withReportingConsent(directory, action, () => {})).toBe(false)
+		expect(action).toHaveBeenCalledTimes(3)
 	})
 
-	it("scans all frozen ownership before allowing only the drained account", async () => {
+	it("holds the state lock during an event step, so an opt-out saves before or after it", async () => {
 		await setReportingEnabled(directory, true)
-		await queueSnapshots(
+		let locked = false
+		await withReportingConsent(
 			directory,
-			Array.from({ length: 20 }, (_, index) => ({
-				...snapshot([requestId]),
-				account: { ...account, userId: `22222222-2222-4222-8222-${String(index).padStart(12, "0")}` },
-			})),
-		)
-		const state = await freezeSnapshots(directory, () => {})
-		const backend = backendFor(directory)
-		const rows = backend.readNotePage("legacy-pr-cost-snapshots", "", 100)
-		expect(rows).toHaveLength(20)
-		const last = JSON.parse(rows[19].body)
-		await writeFile(join(directory, "pr-cost-reporting/state.json"), JSON.stringify({ ...state, entries: {} }))
-		const action = vi.fn()
-		expect(await withDrainedLegacyAccount(directory, last.entry.account, action, () => {})).toBe(false)
-		expect(action).not.toHaveBeenCalled()
-		const pending = JSON.parse(last.body)
-		await acknowledgeFrozenSnapshot(
-			directory,
-			{ ...last, entry: { ...last.entry, pending } },
-			{
-				status: "accepted",
-				revision: pending.revision,
-				receivedAt: new Date().toISOString(),
+			() => {
+				locked = existsSync(`${join(directory, "pr-cost-reporting")}.lock`)
 			},
 			() => {},
 		)
-		expect(await withDrainedLegacyAccount(directory, last.entry.account, action, () => {})).toBe(true)
-		expect(action).toHaveBeenCalledOnce()
-		expect(backend.readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(19)
+		expect(locked).toBe(true)
 	})
 
-	it("never runs a common action after cancellation during the complete frozen scan", async () => {
+	it("never runs an event step after its lease or credentials changed", async () => {
 		await setReportingEnabled(directory, true)
-		await queueSnapshots(directory, [snapshot([requestId])])
-		const state = await freezeSnapshots(directory, () => {})
-		await writeFile(join(directory, "pr-cost-reporting/state.json"), JSON.stringify({ ...state, entries: {} }))
-		const backend = backendFor(directory)
-		const read = backend.readNotePage.bind(backend)
-		let canceled = false
-		vi.spyOn(backend, "readNotePage").mockImplementation((...args) => {
-			const rows = read(...args)
-			canceled = true
-			return rows
-		})
 		const action = vi.fn()
 		await expect(
-			withDrainedLegacyAccount(directory, { ...account, userId: otherRequestId }, action, () => {
-				if (canceled) throw new Error("lease lost")
+			withReportingConsent(directory, action, () => {
+				throw new Error("lease lost")
 			}),
 		).rejects.toThrow("lease lost")
 		expect(action).not.toHaveBeenCalled()
 	})
 
-	it("rechecks follow-telemetry consent after the awaited frozen scan", async () => {
+	it("stops an event step when the SaaS uploads it follows are turned off", async () => {
 		await setReportingEnabled(directory, true)
 		const state = await readReportingState(directory)
 		await writeFile(
 			join(directory, "pr-cost-reporting/state.json"),
 			JSON.stringify({ ...state, followsTelemetry: true }),
 		)
-		const backend = backendFor(directory)
-		const read = backend.readNotePage.bind(backend)
-		vi.spyOn(backend, "readNotePage").mockImplementation((...args) => {
-			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
-			return read(...args)
-		})
-		const action = vi.fn()
-		expect(await withDrainedLegacyAccount(directory, account, action, () => {})).toBe(false)
-		expect(action).not.toHaveBeenCalled()
+		const after = vi.fn()
+		await expect(
+			withReportingConsent(
+				directory,
+				(consent) => {
+					vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+					consent()
+					after()
+				},
+				() => {},
+			),
+		).rejects.toThrow("PR reporting is disabled")
+		expect(after).not.toHaveBeenCalled()
 	})
 
 	it("keeps an empty disabled freeze read-only while explicit consent still persists", async () => {

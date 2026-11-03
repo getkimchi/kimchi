@@ -364,6 +364,11 @@ export function launchKimchi(
 		// deliberately cover the remote-run menu opt in via
 		// `env: { KIMCHI_REMOTE_RUN: "1" }`.
 		"KIMCHI_REMOTE_RUN=0",
+		// Default-off assertions for every resources-gated feature: the
+		// launching shell's KIMCHI_ENABLE_RESOURCES would otherwise leak in
+		// and flip resource defaults in the child. Tests opting a resource
+		// in pass env: { KIMCHI_ENABLE_RESOURCES: "..." }.
+		"KIMCHI_ENABLE_RESOURCES=",
 		// Login e2e tests drive the real browser flow — without this seam every
 		// one of them pops open the developer's actual browser (the token is
 		// delivered straight to the callback server instead).

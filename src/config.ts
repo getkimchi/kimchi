@@ -262,7 +262,6 @@ export interface KimchiConfig {
 	migrationState?: MigrationState
 	onboarding: OnboardingConfig
 	deviceId: string
-	redaction?: { enabled?: boolean }
 	/** Memory embedding overrides — model and vector dimensions (see docs/memory-extension.md). */
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
@@ -351,7 +350,6 @@ function readConfigExtras(configPath: string): {
 	onboarding?: OnboardingConfig
 	preferences?: PreferencesConfig
 	deviceId?: string
-	redaction?: { enabled?: boolean }
 	memoryEmbedding?: { model?: string; dims?: number }
 	memoryExtraction?: { model?: string }
 	tui?: TuiConfig
@@ -433,16 +431,9 @@ function readConfigExtras(configPath: string): {
 			(typeof parsed.device_id === "string" && parsed.device_id.length > 0 && parsed.device_id) ||
 			undefined
 
-		// Read redaction config
-		let redaction: { enabled?: boolean } | undefined
-		const rd = parsed.redaction
-		if (rd && typeof rd === "object" && typeof rd.enabled === "boolean") {
-			redaction = { enabled: rd.enabled }
-		}
-
 		// Read memory embedding overrides — model + vector dimensions.
 		// Invalid parts are ignored (fall back to defaults), matching the
-		// redaction/mcpSearch parse conventions.
+		// mcpSearch parse conventions.
 		let memoryEmbedding: { model?: string; dims?: number } | undefined
 		const me = parsed.memoryEmbedding
 		if (me && typeof me === "object") {
@@ -464,7 +455,7 @@ function readConfigExtras(configPath: string): {
 		}
 
 		// Read TUI config. Invalid values are ignored (fall back to the
-		// pi-tui default of 1), matching the redaction/memoryEmbedding
+		// pi-tui default of 1), matching the memoryEmbedding
 		// parse conventions. Fractional values pass through here — the pi-tui
 		// clamp floors them.
 		let tui: TuiConfig | undefined
@@ -496,7 +487,6 @@ function readConfigExtras(configPath: string): {
 			onboarding,
 			deviceId,
 			preferences,
-			redaction,
 			memoryEmbedding,
 			memoryExtraction,
 			tui,
@@ -735,7 +725,6 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: projectExtras.migrationState ?? globalExtras.migrationState,
 		onboarding: globalExtras.onboarding,
 		deviceId: projectExtras.deviceId ?? globalExtras.deviceId,
-		redaction: projectExtras.redaction ?? globalExtras.redaction,
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 		tui: projectExtras.tui ?? globalExtras.tui,
@@ -769,7 +758,6 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		migrationState: extras.migrationState,
 		onboarding: extras.onboarding ?? {},
 		deviceId: extras.deviceId ?? "",
-		redaction: extras.redaction,
 		memoryEmbedding: extras.memoryEmbedding,
 		memoryExtraction: extras.memoryExtraction,
 		tui: extras.tui,

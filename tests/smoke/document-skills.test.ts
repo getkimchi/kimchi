@@ -6,10 +6,12 @@
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { runSkillScript } from "./harness.js"
+import { runBinary, runSkillScript } from "./harness.js"
 
 describe("document skills under the compiled binary", () => {
 	let workDir: string
@@ -105,6 +107,110 @@ describe("document skills under the compiled binary", () => {
 			runSkillScript({ workDir, cli: "pdf", args: ["rotate", "r.pdf", "--out", "rot.pdf", "--angle", "90"] }).status,
 		).toBe(0)
 	})
+
+	it("doc-cli subcommand: the in-binary route runs the same CLIs", () => {
+		writeFileSync(join(workDir, "doc.md"), "# Subcommand route\n\n- via the in-binary import\n")
+		const create = runBinary({
+			args: ["doc-cli", "pdf", "create", "sub.pdf", "--content", "doc.md"],
+			cwd: workDir,
+		})
+		expect(create.status).toBe(0)
+		const read = runBinary({ args: ["doc-cli", "pdf", "read", "sub.pdf"], cwd: workDir })
+		expect(read.status).toBe(0)
+		expect(read.stdout).toContain("Subcommand route")
+		const info = runBinary({ args: ["doc-cli", "pdf", "info", "sub.pdf"], cwd: workDir })
+		expect(JSON.parse(info.stdout)).toMatchObject({ pageCount: 1, encrypted: false })
+		const unknown = runBinary({
+			args: ["doc-cli", "evil", "info", "x.pdf"],
+			cwd: workDir,
+			throwOnError: false,
+		})
+		expect(unknown.status).toBe(2)
+		expect(unknown.stderr).toContain("usage: kimchi doc-cli")
+	})
+
+	it("doc-cli subcommand: docx create → read round trip", () => {
+		writeFileSync(join(workDir, "doc2.md"), "# Docx via doc-cli\n\nA paragraph.\n")
+		const create = runBinary({
+			args: ["doc-cli", "docx", "create", "sub.docx", "--content", "doc2.md"],
+			cwd: workDir,
+		})
+		expect(create.status).toBe(0)
+		const read = runBinary({ args: ["doc-cli", "docx", "read", "sub.docx"], cwd: workDir })
+		expect(read.status).toBe(0)
+		expect(read.stdout).toContain("Docx via doc-cli")
+	})
+
+	it("doc-cli subcommand: xlsx reads CSVs through the route", () => {
+		writeFileSync(join(workDir, "data.csv"), "a,b\n1,2\n3,4\n")
+		const read = runBinary({ args: ["doc-cli", "xlsx", "read", "data.csv"], cwd: workDir })
+		expect(read.status).toBe(0)
+		expect(read.stdout).toContain("a")
+		expect(read.stdout).toContain("4")
+	})
+
+	it("doc-cli subcommand: pptx create → read round trip", () => {
+		writeFileSync(join(workDir, "deck2.md"), "# Deck via doc-cli\n\n---\n\n# Two\n\n- point\n")
+		const create = runBinary({
+			args: ["doc-cli", "pptx", "create", "sub.pptx", "--content", "deck2.md"],
+			cwd: workDir,
+		})
+		expect(create.status).toBe(0)
+		const read = runBinary({ args: ["doc-cli", "pptx", "read", "sub.pptx"], cwd: workDir })
+		expect(read.status).toBe(0)
+		expect(read.stdout).toContain("Deck via doc-cli")
+	})
+
+	it("doc-cli subcommand: large piped output arrives complete (drain before exit)", async () => {
+		// >64 KB of stdout through a pipe: if process.exit raced ahead of the
+		// stream flush, the tail would be truncated.
+		const { PDFDocument } = await import("@cantoo/pdf-lib")
+		const doc = await PDFDocument.create()
+		const page = doc.addPage([600, 800])
+		const form = doc.getForm()
+		for (let i = 0; i < 3000; i++) {
+			form.createTextField(`field${String(i).padStart(5, "0")}`).addToPage(page, {
+				x: 10,
+				y: 5,
+				width: 50,
+				height: 8,
+			})
+		}
+		writeFileSync(join(workDir, "fields.pdf"), await doc.save())
+		const fields = runBinary({ args: ["doc-cli", "pdf", "fields", "fields.pdf"], cwd: workDir })
+		expect(fields.status).toBe(0)
+		expect(fields.stdout.length, "output exceeds the 64 KB pipe buffer").toBeGreaterThan(64 * 1024)
+		const lines = fields.stdout.trim().split("\n")
+		expect(lines.length).toBe(3000)
+		expect(lines.at(-1)).toContain('"name":"field02999"')
+	}, 60000)
+
+	it("doc-cli subcommand: cold route exits without touching the network", async () => {
+		// Any pre-route regression (org-policy fetch, telemetry ping) would hit
+		// the recording endpoint; the route must exit before any of that.
+		const requests: string[] = []
+		const server: Server = createServer((req, res) => {
+			requests.push(`${req.method} ${req.url}`)
+			res.destroy()
+		})
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+		const { port } = server.address() as AddressInfo
+		try {
+			const result = runBinary({
+				args: ["doc-cli", "evil", "info", "x.pdf"],
+				cwd: workDir,
+				throwOnError: false,
+				extraEnv: {
+					KIMCHI_API_KEY: "cold-route-probe",
+					KIMCHI_REMOTE_ENDPOINT: `http://127.0.0.1:${port}`,
+				},
+			})
+			expect(result.status).toBe(2)
+			expect(requests).toEqual([])
+		} finally {
+			server.close()
+		}
+	}, 60000)
 
 	it("pdf.mjs: text fields list and fill", async () => {
 		// @cantoo/pdf-lib is a repo dependency; build a one-field form fixture.

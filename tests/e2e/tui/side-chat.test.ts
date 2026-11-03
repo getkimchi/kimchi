@@ -92,6 +92,111 @@ test("side chat answers next to the session and wraps up into a steer for the ma
 	)
 })
 
+test("the side editor hints only the slash commands the side chat can run", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-slash-hints",
+			extraArgs: ["--plan=false"],
+			seedHome: enableSideChat,
+			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/btw Which cache?")
+			await waitForText(terminal, "Use the LRU cache.", { full: false })
+			trace.step("side chat open with the side editor focused")
+
+			terminal.write("/")
+			// The narrow pane shows labels only (descriptions don't fit the dropdown).
+			await waitForText(terminal, "→ wrap", { full: false })
+			const view = viewText(terminal)
+			expect(view).toContain("close")
+			// Main-session commands (e.g. /btw) are not runnable here, so they are not hinted.
+			expect(view).not.toContain("btw")
+			trace.step("/ hints wrap and close, nothing from the main session")
+		},
+	)
+})
+
+test("a side chat keeps saving and wraps its full thread after automatic compaction", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-compaction-history",
+			extraArgs: ["--plan=false"],
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 100_000, maxTokens: 4096 }],
+			seedHome(homeDir) {
+				enableSideChat(homeDir)
+				const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(path, "utf-8"))
+				writeFileSync(path, JSON.stringify({ ...settings, compaction: { reserveTokens: 5000, keepRecentTokens: 1 } }))
+			},
+			responses: [
+				{ match: isMainRequest, stream: ["Main context noted."] },
+				{ match: isMainRequest, stream: ["Main context expanded."] },
+				{
+					match: isSideRequest,
+					stream: ["Use the LRU cache."],
+					usage: { prompt_tokens: 96_000, completion_tokens: 10 },
+				},
+				{
+					match: (request) => JSON.stringify(request.body).includes("context summarization assistant"),
+					stream: ["The main context and cache discussion were condensed."],
+				},
+				{ match: isSideRequest, stream: ["Set its capacity to 256."] },
+				{ match: isWrapUpRequest, stream: ["Use an LRU cache with capacity 256."] },
+			],
+		},
+		async (fixture, trace) => {
+			const chatRequests = () =>
+				fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+			terminal.submit("The main-only codeword is PAPAYA-42.")
+			await waitForText(terminal, "Main context noted.", { full: false })
+			terminal.submit("Keep that main context.")
+			await waitForText(terminal, "Main context expanded.", { full: false })
+			terminal.submit("/btw Which cache?")
+			await waitForText(terminal, "Use the LRU cache.", { full: false })
+			expect(
+				await poll(
+					() =>
+						chatRequests().some((request) => JSON.stringify(request.body).includes("context summarization assistant")),
+					100,
+					5_000,
+				),
+			).toBe(true)
+			trace.step("the side session automatically compacts its inherited main context and first turn")
+
+			terminal.submit("What capacity?")
+			await waitForText(terminal, "Set its capacity to 256.", { full: false })
+			expect(
+				await poll(
+					() => {
+						const file = sideChatFiles(fixture.homeDir)[0]
+						return file !== undefined && readFileSync(file, "utf-8").includes("Set its capacity to 256.")
+					},
+					100,
+					5_000,
+				),
+			).toBe(true)
+			const transcript = readFileSync(sideChatFiles(fixture.homeDir)[0], "utf-8")
+			for (const text of ["Which cache?", "Use the LRU cache.", "What capacity?", "Set its capacity to 256."])
+				expect(transcript).toContain(text)
+			expect(transcript).not.toContain("PAPAYA-42")
+			trace.step("both turns are saved without inherited main messages after compaction")
+
+			terminal.submit("/wrap")
+			await waitForText(terminal, "Steering prompt for main session", { full: false })
+			const wrap = JSON.stringify(chatRequests().find(isWrapUpRequest)?.body)
+			expect(wrap).toContain("[User]: Which cache?")
+			expect(wrap).toContain("[Assistant]: Use the LRU cache.")
+			expect(wrap).toContain("[User]: What capacity?")
+			expect(wrap).toContain("[Assistant]: Set its capacity to 256.")
+			expect(wrap).not.toContain("PAPAYA-42")
+			trace.step("/wrap receives the full side thread after compaction")
+		},
+	)
+})
+
 test("closing a side chat mid-reply persists it as aborted and shows it interrupted on reopen", async ({
 	terminal,
 }) => {

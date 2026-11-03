@@ -187,8 +187,9 @@ it("keeps imported authority after a source is rewritten or removed, and stops r
 		expect(readWorkRecords(agentDir, undefined, undefined, (problem) => problems.push(problem))).toEqual([work])
 		return problems
 	}
-	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
-	expect(read()).toEqual([{ kind: "invalid", path, line: 1 }])
+	// An emptied journal has nothing left to hide; its imported authority is the record store.
+	expect(read()).toEqual([])
+	expect(read()).toEqual([])
 	unlinkSync(path)
 	expect(read()).toEqual([])
 	expect(read()).toEqual([])

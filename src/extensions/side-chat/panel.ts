@@ -28,6 +28,7 @@ import {
 	VStack,
 	visibleWidth,
 } from "@earendil-works/pi-tui"
+import { sideChatAutocomplete } from "./autocomplete.js"
 import { applyFocusChrome } from "./focus-chrome.js"
 import { type Frame, rectContains, rectOf, type SideChatHost } from "./harness.js"
 import { type HeaderAction, PanelHeader } from "./header.js"
@@ -96,6 +97,7 @@ export class SideChatPanel {
 			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
 		})
 		this.editor = new CustomEditor(host.ui, host.editorTheme, host.keybindings, { paddingX: 1 })
+		this.editor.setAutocompleteProvider(sideChatAutocomplete(this.mode, this.cwd))
 		applyFocusChrome(this.editor, theme, {
 			label: "side chat",
 			focusedColor: () => (this.mode === "review" ? "success" : undefined),
@@ -156,6 +158,8 @@ export class SideChatPanel {
 
 	setMode(mode: SidePanelMode): void {
 		this.mode = mode
+		// Rebuild the hints: /wrap only runs in chat mode (see handleSubmit).
+		this.editor.setAutocompleteProvider(sideChatAutocomplete(mode, this.cwd))
 		this.host.requestRender()
 	}
 

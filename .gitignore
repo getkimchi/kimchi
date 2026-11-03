@@ -104,3 +104,5 @@ vendor/superpowers/
 *.fail.*.log
 .pnpm-store/
 /live-acp-*.log
+# Live MCP provider check output matrix (scripts/mcp-live-probe.mjs)
+/mcp-live-probe-matrix.json

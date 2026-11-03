@@ -10,7 +10,7 @@ export interface MeResponse {
 }
 
 export interface GetMeOptions {
-	/** Override the API endpoint (defaults to KIMCHI_REMOTE_ENDPOINT or https://app.kimchi.dev/api). */
+	/** Override the API endpoint (defaults to KIMCHI_REMOTE_ENDPOINT or the region's API origin, e.g. https://api.cast.ai). */
 	endpoint?: string
 	/** SSO organization routing header — set when the bearer is an OAuth credential. */
 	organizationId?: string

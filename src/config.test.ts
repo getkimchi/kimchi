@@ -963,7 +963,7 @@ describe("region config", () => {
 		expect(resolved).toMatchObject({
 			region: "us",
 			webAppUrl: "https://app.kimchi.dev",
-			platformApiUrl: "https://app.kimchi.dev/api",
+			platformApiUrl: "https://api.cast.ai",
 			llmEndpoint: "https://llm.kimchi.dev/openai/v1",
 			castApiUrl: "https://api.cast.ai",
 		})
@@ -975,7 +975,7 @@ describe("region config", () => {
 		expect(resolved).toMatchObject({
 			region: "eu",
 			webAppUrl: "https://app.eu.kimchi.dev",
-			platformApiUrl: "https://app.eu.kimchi.dev/api",
+			platformApiUrl: "https://api.eu.cast.ai",
 			llmEndpoint: "https://llm.eu.kimchi.dev/openai/v1",
 			castApiUrl: "https://api.eu.cast.ai",
 		})

@@ -92,7 +92,7 @@ export interface AuthenticateOptions {
 	 * Override the cloud API endpoint (used by tests). Resolution order:
 	 * 1. this option
 	 * 2. `KIMCHI_REMOTE_ENDPOINT` env-var (for dev / mock-server testing)
-	 * 3. production default `https://app.kimchi.dev/api`
+	 * 3. the region's API origin (`https://api.cast.ai` for the US region)
 	 */
 	endpoint?: string
 	/**

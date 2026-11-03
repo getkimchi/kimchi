@@ -85,6 +85,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
@@ -140,6 +141,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
+import refusedTurnsExtension from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -296,6 +298,23 @@ async function cliMain(): Promise<void> {
 		process.exit(await runExportWorkerMain(originalArgs.slice(1)))
 	}
 
+	// Document-skill CLI route: `kimchi doc-cli <pdf|docx|xlsx|pptx> …` loads the
+	// staged bundle in-process — the binary resolves the script, the agent
+	// never supplies a path. Routed before telemetry/org-policy like the workers
+	// above: the agent calls it repeatedly inside one session, and the route
+	// must stay invisible to app_started instrumentation.
+	if (originalArgs[0] === "doc-cli") {
+		const { runDocCliMain } = await import("./extensions/documents/doc-cli-main.js")
+		const code = await runDocCliMain(originalArgs.slice(1))
+		// Exit through the event loop, never process.exit(): a hard exit can
+		// truncate large piped output — the empty-write drain this route used
+		// still lost ~16% of a 3000-line `fields` dump on CI runners (the OS
+		// pipe had not drained when the callback fired). exitCode + return lets
+		// the runtime keep the process alive until stdio has flushed.
+		process.exitCode = code
+		return
+	}
+
 	// Observes provider transport failures in-process (via message_end) so the
 	// exit path can reclassify a failed run as infrastructure (exit 74).
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
@@ -400,7 +419,7 @@ async function cliMain(): Promise<void> {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
-		// Only chat TUI sessions load the warning extension after startup dialogs.
+		// Only chat TUI sessions load the api-key warning extension after startup dialogs.
 		// Setup commands render their own Clack warning; other subcommands exit before extensions load.
 		if (
 			apiKeyWarning &&
@@ -924,6 +943,9 @@ async function cliMain(): Promise<void> {
 				thinkingStepsExtension,
 				assistantPrefixExtension,
 				clipboardImageExtension,
+				// Binary document intake: read-tool redirect + @file stubbing. Runs in
+				// every permission mode — correctness, not permission.
+				documentIntakeExtension,
 				sessionModeOnboarding,
 				tipsExtension(),
 				...enabledExtensionFactories([
@@ -959,6 +981,7 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				refusedTurnsExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,
