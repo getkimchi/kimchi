@@ -304,7 +304,32 @@ function createTurnContext(
 }
 
 /** Cancellation token for a prompt that has no TurnContext yet. */
-type PendingPrompt = { cancelled: boolean }
+type PendingPrompt = {
+	cancelled: boolean
+	/** Resolves when the prompt is cancelled, so a parked wait never outlives cancel/close/shutdown. */
+	released: Promise<void>
+	release: () => void
+}
+
+function createPendingPrompt(): PendingPrompt {
+	let release!: () => void
+	const released = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	return { cancelled: false, released, release }
+}
+
+/**
+ * Cancel every prompt accepted but not yet started: mark it and release its
+ * wait, so it resolves "cancelled" instead of starting — or hanging when the
+ * run it waits on is never settled (session close, server shutdown).
+ */
+function cancelPendingPrompts(entry: SessionRecord): void {
+	for (const pending of entry.pendingPrompts ?? []) {
+		pending.cancelled = true
+		pending.release()
+	}
+}
 
 type SessionRecord = {
 	session: AgentSession
@@ -1078,7 +1103,7 @@ export class KimchiAcpAgent implements Agent {
 		// TurnContext (which cancel() marks directly), a cancel arriving during
 		// its awaits — skill parsing, or waiting out an unsolicited run — must
 		// still stop it from starting.
-		const pending: PendingPrompt = { cancelled: false }
+		const pending = createPendingPrompt()
 		entry.pendingPrompts ??= new Set()
 		const pendingPrompts = entry.pendingPrompts
 		pendingPrompts.add(pending)
@@ -1159,7 +1184,9 @@ export class KimchiAcpAgent implements Agent {
 		// session.prompt() is synchronous, so no new wake can interleave; the
 		// wait is bounded by the run itself.
 		if (entry.unsolicitedTurn) {
-			await entry.session.waitForIdle()
+			// Cancel, close, and shutdown release the wait directly: abort may not
+			// settle waitForIdle() on a session being torn down.
+			await Promise.race([entry.session.waitForIdle(), pending.released])
 			// Defensive reset: agent_settled already clears it after the full run
 			// chain — anything left here is stale state, never this prompt's turn.
 			entry.unsolicitedTurn = undefined
@@ -1238,7 +1265,7 @@ export class KimchiAcpAgent implements Agent {
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
-		for (const pending of entry.pendingPrompts ?? []) pending.cancelled = true
+		cancelPendingPrompts(entry)
 		// Drain the steer/follow-up queue BEFORE awaiting the abort. pi-mono
 		// chains queued steering messages into the running prompt —
 		// session.prompt() resolves only after all chained calls — so awaiting
@@ -1376,6 +1403,7 @@ export class KimchiAcpAgent implements Agent {
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
+			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId)
 			unregisterSessionPermissionFlagController(entry.session.sessionId)
 			clearPermissionModeEnv(entry.session.sessionId)
@@ -1398,16 +1426,22 @@ export class KimchiAcpAgent implements Agent {
 		unregisterSessionPermissionFlagController(sessionId)
 		clearPermissionModeEnv(sessionId)
 		entry.unsubscribe()
-		if (entry.turn) {
-			entry.turn.cancelled = true
+		// Prompts parked behind an unsolicited run own no turn yet: resolve them
+		// as cancelled rather than leaving the client's request unanswered.
+		cancelPendingPrompts(entry)
+		if (entry.turn) entry.turn.cancelled = true
+		// Abort whatever is running — a prompt's turn or an unsolicited run (a
+		// background exit waking the agent) — so nothing keeps streaming
+		// against the disposed session.
+		if (entry.turn || entry.unsolicitedTurn) {
 			try {
 				await entry.session.abort()
 			} catch {
 				// Closing is best-effort cleanup; still resolve the pending prompt
 				// as cancelled and release the session resources below.
 			}
-			this.finalizeTurn(entry, "cancelled")
 		}
+		if (entry.turn) this.finalizeTurn(entry, "cancelled")
 		await this.disposeSessionRecord(entry, { alreadyUnsubscribed: true })
 	}
 

@@ -1738,6 +1738,56 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["again"])
 	})
 
+	// Regression (PR #1616 review): close and shutdown only serviced prompts
+	// that owned a turn, so a prompt parked behind an unsolicited run was never
+	// answered and the run kept streaming against the disposed session.
+	describe("a prompt waiting out an unsolicited run on teardown", () => {
+		const outcomeOf = (pending: Promise<{ stopReason: string }>) =>
+			Promise.race([pending.then((r) => r.stopReason), delay(250).then(() => "hung" as const)])
+
+		it("is cancelled when the session closes, and the run is aborted", async () => {
+			let releaseIdle!: () => void
+			fake.waitForIdleImpl = () =>
+				new Promise<void>((resolve) => {
+					releaseIdle = resolve
+				})
+			fake.abortImpl = async () => releaseIdle()
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await expect(agent.unstable_closeSession({ sessionId })).resolves.toEqual({})
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.aborted).toBe(true)
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+
+		it("is cancelled on close even when abort never settles the wait", async () => {
+			fake.waitForIdleImpl = () => new Promise<void>(() => {})
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await agent.unstable_closeSession({ sessionId })
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+
+		it("is cancelled when the server shuts down", async () => {
+			fake.waitForIdleImpl = () => new Promise<void>(() => {})
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await agent.shutdown()
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+	})
+
 	it("sends exactly one end_turn after chained agent.continue() cycles complete", async () => {
 		const { conn: recordingConn, updates } = makeRecordingConn()
 		const localAgent = new KimchiAcpAgent(recordingConn, {
