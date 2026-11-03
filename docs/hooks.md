@@ -1,6 +1,6 @@
 # Kimchi Hooks
 
-Kimchi supports Pi-native extension package hooks and user-owned Bash hooks.
+Kimchi supports Pi-native extension package hooks and user-owned Bash hooks. See also the [Pi SDK docs](https://pi.dev) for upstream hook APIs.
 
 ## Native Pi Packages
 
