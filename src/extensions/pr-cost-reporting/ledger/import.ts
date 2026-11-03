@@ -496,6 +496,26 @@ export function importJournalSlice(agentDir: string, checkBudget?: () => void): 
 	return importJournalFiles(agentDir, syncWorkJournals(agentDir), options, true).pending === true
 }
 
+/**
+ * Cheap change probe for pass gates: one line per journal carrying the identity
+ * prepareJournal uses to decide a file needs work (path list + dev/ino + size + mtime), without
+ * opening or hashing anything. A tick matching the last pass's probe line-for-line has no new
+ * legacy input to import; any append, rewrite, deletion, or creation differs.
+ */
+export function legacyInputSignature(agentDir: string): string {
+	const parts: string[] = []
+	for (const path of syncWorkJournals(agentDir)) {
+		try {
+			const info = statSync(path)
+			parts.push(`${path}:${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`)
+		} catch (error) {
+			if (!object(error) || error.code !== "ENOENT") throw error
+			parts.push(`${path}:gone`)
+		}
+	}
+	return parts.join("\n")
+}
+
 /** One session's journal in full, so a resumed legacy session keeps its work before the background import arrives. */
 export function importSessionJournal(agentDir: string, path: string): void {
 	for (;;) if (!importJournalFiles(agentDir, [path], {}, false).pending) return
