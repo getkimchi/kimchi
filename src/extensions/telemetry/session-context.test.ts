@@ -12,7 +12,6 @@ import { createContext } from "../__mocks__/context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { recordEditDecision } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
-import { setTelemetryFermentV2Context } from "./ferment-v2-context.js"
 import * as telemetry from "./index.js"
 import { trackPRCostMetric } from "./pr-cost.js"
 import { _resetSharedAccumulators, TelemetryContext } from "./session-context.js"
@@ -900,7 +899,7 @@ describe("SessionContext", () => {
 		}
 	})
 
-	it("flushMetrics preserves a metric's own source attribute on code_edit_tool.decision", async () => {
+	it("flushMetrics stamps source and keeps decision_source on code_edit_tool.decision", async () => {
 		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
 		const ctx = new TelemetryContext(makeConfig())
 		recordEditDecision(ctx.cumulative, "Edit", "ts")
@@ -923,12 +922,14 @@ describe("SessionContext", () => {
 				a.value.stringValue,
 			]),
 		)
-		// The decision-origin attribute must survive the process-identity stamping.
-		expect(attrMap.source).toBe("auto")
+		// The decision-origin attribute no longer collides with the
+		// process-identity `source`; both survive the flush stamping.
+		expect(attrMap.source).toBe("cli")
+		expect(attrMap.decision_source).toBe("auto")
 		expect(attrMap.tool_name).toBe("Edit")
 		expect(attrMap.decision).toBe("accept")
 		expect(attrMap.language).toBe("ts")
-		// Non-colliding identity attributes still attach.
+		// Identity attributes still attach.
 		expect(attrMap.acp_client_name).toBe("kimchi-vscode")
 	})
 

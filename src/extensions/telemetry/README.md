@@ -91,6 +91,13 @@ how it already records `X-Session-Id` / `X-Turn-Index`. When Auto routing is
 active, its `/v1/route` request receives the same telemetry correlation headers
 as the concrete model request; unrelated provider headers are not forwarded.
 
+Provider requests made by an ACP-driven process additionally carry
+`X-Acp-Client-Name` (the ACP client from the `initialize` handshake, same
+source as the `acp_client_name` log/metric attribute) so the proxy can
+attribute `chat_completions` rows to the consuming client — the client split
+needs this header, not just the metric stamping, because recorded
+`chat_completions` rows are produced by the proxy itself.
+
 ## Pre-Session Events
 
 Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endpoint**.
@@ -204,7 +211,7 @@ split metrics by harness path or ACP client the same way they split logs.
 | `claude_code.lines_of_code.count` | Sum | Lines added or removed | `type` (`added` / `removed`), `language` |
 | `claude_code.tool.usage` | Sum | Tool invocation count | `tool_name` |
 | `claude_code.tool.duration_ms` | Sum | Total tool execution time (ms) | `tool_name` |
-| `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `source` |
+| `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `decision_source` |
 
 ### `editDecisions` Key Format
 
@@ -215,6 +222,11 @@ The accumulator stores edit decisions under a pipe-delimited key:
 ```
 
 Example: `write|accept|TypeScript|auto`
+
+The fourth segment is the decision origin and is emitted as the
+`decision_source` attribute (always `auto` today). It is named `decision_source`
+— not `source` — because `source` on every data point holds the session origin
+(`cli` / `acp`), the same rename the log path applies to its decision events.
 
 ## Transport Details
 

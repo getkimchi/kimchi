@@ -255,6 +255,6 @@ describe("collectMetrics", () => {
 		expect(m?.attrs.tool_name).toBe("write")
 		expect(m?.attrs.decision).toBe("accept")
 		expect(m?.attrs.language).toBe("TypeScript")
-		expect(m?.attrs.source).toBe("auto")
+		expect(m?.attrs.decision_source).toBe("auto")
 	})
 })
