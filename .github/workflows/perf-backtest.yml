@@ -90,3 +90,68 @@ jobs:
           name: backtest-${{ matrix.sha }}
           path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
           if-no-files-found: ignore
+
+  # One-shot debugging lane: JS-level CPU profile of the idle scenario on the
+  # culprit commit (bd659df9d) vs its parent, to pin down which stacks burn
+  # the post-#1482 idle instructions. Runs the app in dev mode (bun
+  # --cpu-prof src/entry.ts) so the profile carries JS frames; the gate
+  # binary profile would need symbols Bun does not embed.
+  profile:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sha: 6c54cf06b4f5d5542597162f94b4c05dcfae9e44
+            tag: parent
+          - sha: bd659df9dc84df5cdd27184df048086d2ab649a7
+            tag: culprit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          fetch-depth: 0
+
+      - name: Overlay the gate harness from the PR head
+        env:
+          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git fetch --depth=1 origin "$GATE_SHA"
+          git checkout FETCH_HEAD -- tools/perf
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build proxy-helper
+        run: make copy-for-dev
+        working-directory: tools/proxy-helper
+
+      - name: Dev-mode profiling wrapper
+        run: |
+          cat > "$RUNNER_TEMP/prof-wrap.sh" <<EOF
+          #!/bin/sh
+          exec bun --preload "$PWD/src/set-package-dir.ts" \
+            --cpu-prof --cpu-prof-dir="$RUNNER_TEMP" --cpu-prof-name=profile.cpuprofile \
+            "$PWD/src/entry.ts" "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/prof-wrap.sh"
+          "$RUNNER_TEMP/prof-wrap.sh" --version
+
+      - name: Run profiled idle scenario
+        run: python3 tools/perf/scenarios.py --binary "$RUNNER_TEMP/prof-wrap.sh" --scenario idle --idle 60 --out "$RUNNER_TEMP/profile.jsonl"
+
+      - name: Upload profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-${{ matrix.tag }}
+          path: |
+            ${{ runner.temp }}/profile.cpuprofile
+            ${{ runner.temp }}/profile.jsonl
+          if-no-files-found: ignore
