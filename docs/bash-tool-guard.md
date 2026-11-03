@@ -75,8 +75,8 @@ consume memory until the container OOMs.
 
 Two supported ways to run a long command, depending on whether it must
 outlive the session:
-- Session-scoped: run it with the bash tool — after a brief initial
-  handoff (~2s) you get a handle and it continues by default while
+- Session-scoped: run it with the bash tool — after its initial
+  handoff (~15s) you get a handle and its live log path, and it continues by default while
   other tools stay available; exit results are delivered automatically
   (do not poll); stop it via bash_control stop_handles. It is killed
   when the session ends.

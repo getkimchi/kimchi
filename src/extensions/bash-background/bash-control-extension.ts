@@ -58,7 +58,8 @@
  * registry-verified running handles, and the first read of a session does
  * not consume the once-per-session allowance.
  *
- * Completion continuation: a normal assistant stop
+ * Completion continuation (UNATTENDED sessions — print/json/headless
+ * and agent workers; see ./session-policy.ts): a normal assistant stop
  * (`stopReason === "stop"`) with unresolved managed work — running
  * processes or terminal outcomes awaiting authoritative delivery — queues
  * one consolidated hidden follow-up directing the model to wait or stop,
@@ -77,6 +78,16 @@
  * cancellation, provider errors, token exhaustion, and shutdown never
  * trigger it, and an aborted run releases the outstanding reminder
  * (kimchi's surfaces drop queued follow-ups on abort).
+ *
+ * USER-FACING sessions (TUI and conversational RPC/ACP) suppress that
+ * forced-disposition reminder entirely: a human can queue a message at
+ * any time (releasing an active bash_control wait through the tool's
+ * pending-user-message check), completion notifications wake an idle
+ * agent, and a chat turn may settle while commands keep running. The
+ * queued-reminder revalidation applies the same policy, so a stale
+ * reminder can never restart waiting in a user-facing session. Exit
+ * tracking, notification batching, acknowledgements, abort recovery, and
+ * concurrency advisories stay active on BOTH policies.
  */
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -85,6 +96,7 @@ import { classifyTool } from "../permissions/taxonomy.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { BASH_CONTROL_TOOL_NAME, createBashControlToolDefinition } from "./bash-control-tool.js"
 import { elapsedSecondsSince } from "./process-registry.js"
+import { bashSessionKindFromContext } from "./session-policy.js"
 import { type BashSessionState, getSessionState } from "./session-registry.js"
 import { terminalResultText } from "./status-text.js"
 import type { BashExitMessageDetails, TerminalOwner } from "./terminal-delivery.js"
@@ -352,7 +364,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		exitDeliveryTimer = undefined
 		runTerminated = undefined
 		disposed = false
-		pi.registerTool(createBashControlToolDefinition(getState))
+		pi.registerTool(createBashControlToolDefinition(getState, { sessionKind: bashSessionKindFromContext(ctx) }))
 	})
 
 	pi.on("agent_start", () => {
@@ -853,6 +865,13 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		}
 		if (stopReason !== "stop") return
 		if (trackedHandles.size === 0 && !getState()?.delivery.hasPending()) return
+		// Session policy (see ./session-policy.ts): user-facing sessions
+		// suppress reminders that force a wait or stop — a human can send a
+		// message at any time, completion notifications wake an idle agent,
+		// and a turn may settle while commands keep running. Settling never
+		// marks the work complete or discards pending outcomes: tracking,
+		// exit delivery, acknowledgements, and recovery all stay active.
+		if (getState()?.sessionKind === "user-facing") return
 		// Read current lifecycle state at the guard boundary: distinguish
 		// live processes from terminal outcomes awaiting delivery. Only the
 		// REGISTRY is authoritative for liveness — a tracked handle whose
@@ -931,6 +950,31 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		// Consumed: the reminder reached the conversation, so a later stop
 		// with genuinely unresolved work may queue a fresh one.
 		completionReminderOutstanding = false
+		// Policy revalidation (the same decision the turn_end guard applies):
+		// a reminder that reached a user-facing session must not force a wait
+		// or stop — a human can message at any time and completion
+		// notifications wake the agent — so it is replaced with a suppression
+		// note. Outcome accounting is untouched: tracking and pending
+		// deliveries stay exactly as they are.
+		if (getState()?.sessionKind === "user-facing") {
+			return {
+				message: {
+					role: "custom",
+					customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
+					content: [
+						{
+							type: "text",
+							text: markHarnessSteer(
+								"[Background bash completion reminder was suppressed: this session has a human available, so the turn may settle while commands keep running — their exit results arrive on their own. Continue with the task.]",
+							),
+						},
+					],
+					display: false,
+					details: message.details,
+					timestamp: message.timestamp,
+				},
+			}
+		}
 		// Revalidate from current process and delivery state.
 		const { running, awaitingDelivery } = unresolvedProcesses()
 		const sameSet = sameHandles(details.running, running) && sameHandles(details.awaiting, [...awaitingDelivery])

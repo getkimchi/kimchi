@@ -376,6 +376,10 @@ export function launchKimchi(
 		// Static todo spinner glyph: each animation tick force-renders the
 		// whole TUI, which pushed the suite past its job budget.
 		"KIMCHI_E2E_STATIC_TODO_SPINNER=1",
+		// Background-bash scenarios script short sleeps (3–6s) that must hand
+		// off; keep the e2e handoff at 2s instead of the 15s product default
+		// (covered by unit tests). Tests may override via `env`.
+		"KIMCHI_E2E_BASH_HANDOFF_SECONDS=2",
 		// Forward the test-harness marker: KIMCHI_E2E_* seams (readE2eSeam)
 		// fire only under a harness — production binaries must never see them.
 		// (set by scripts/run-tui-e2e.js for the tui-test runner; smoke harness
