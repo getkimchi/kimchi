@@ -1,6 +1,6 @@
 # Event Bus Channels
 
-Extensions communicate through the pi event bus (`pi.events`), available to every extension including externally loaded ones (`-e`). All channels use `pi.events.emit(channel, payload)` to publish and `pi.events.on(channel, handler)` to subscribe.
+Extensions communicate through the pi event bus (`pi.events`), available to every extension including externally loaded ones (`-e`). All channels use `pi.events.emit(channel, payload)` to publish and `pi.events.on(channel, handler)` to subscribe. Channel names are plain strings, so keep the `<domain>:<event>` convention when adding new ones.
 
 ---
 
