@@ -1,3 +1,6 @@
 # Does today's master (post #1610 unstick-queue, #1611 ledger-read-sharing)
 # still pay the #1529 idle regression? Expect ~25G if not addressed, ~8.6G if fixed.
 73be7d8431503fde20c99ac25a08214db424dd46
+
+# Fix candidate for the #1529 idle regression: pass-gated reconciliation.
+3bb779b21fa0e0f3ce4ae1ca6952e0101ee6e47fe2
