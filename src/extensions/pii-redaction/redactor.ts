@@ -212,10 +212,12 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 	// These honor the bare secret shape only when context vouches for it —
 	// the engine's context-free versions are excluded via entity-tiers.
 	// AWS secret keys behind their keyword (a bare 40-char base64 run is a
-	// temp path or hash far more often than a secret).
+	// temp path or hash far more often than a secret). Value length is
+	// deliberately loose — the keyword carries the precision, and the export
+	// path is fail-closed: a truncated or padded key must still redact.
 	{
 		name: "AWS_SECRET_KEY",
-		regex: /(aws_secret(?:_access)?_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})/gi,
+		regex: /(aws_secret(?:_access)?_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{16,})/gi,
 		secretGroup: 2,
 	},
 	// Azure storage keys inside a connection string.

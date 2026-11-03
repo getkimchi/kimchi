@@ -177,6 +177,19 @@ describe("redactText — anchored secret patterns", () => {
 		expect(await redactText(bare)).toBe(bare)
 	})
 
+	it("redacts keyword-anchored values even when shorter or longer than 40 chars", async () => {
+		// Export is fail-closed: the keyword carries the precision, so a
+		// truncated (39-char) or padded value must still redact.
+		const short = ["aws_secret_access_key = ", "wJalrXUtnFEMI".repeat(3)].join("")
+		const shortOut = await redactText(short)
+		expect(shortOut).not.toContain(["wJalrXUtnFEMI".repeat(3)].join(""))
+		expect(shortOut).toContain("AWS_SECRET_KEY")
+
+		const long = `aws_secret_access_key = ${["K7xQ".repeat(11), "=="].join("")}`
+		const longOut = await redactText(long)
+		expect(longOut).not.toContain(["K7xQ".repeat(11)].join(""))
+	})
+
 	it("redacts AccountKey values inside connection strings", async () => {
 		const result = await redactText(fx.azureConnString)
 		expectRedacted(result, fx.azureAccountKey, "AZURE_STORAGE_KEY")
