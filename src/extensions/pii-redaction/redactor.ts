@@ -424,15 +424,18 @@ export function applyCustomPatterns(
  * returned unchanged — redaction must never break the prompt pipeline.
  * The error is logged per the code-review-lessons rule: no empty catch blocks.
  */
-export async function redactTextOrThrow(text: string): Promise<string> {
-	const snapshot = resolveSnapshot()
+async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot): Promise<string> {
 	const afterEngine = await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
 	return applyCustomPatterns(afterEngine, snapshot.userExclusions)
 }
 
+export async function redactTextOrThrow(text: string): Promise<string> {
+	return redactTextWithSnapshot(text, resolveSnapshot())
+}
+
 export async function redactText(text: string): Promise<string> {
 	try {
-		return await redactTextOrThrow(text)
+		return await redactTextWithSnapshot(text, resolveSnapshot())
 	} catch (err) {
 		console.error("PII redaction scan failed, returning original text:", err)
 		return text
@@ -513,7 +516,20 @@ async function redactObjectStringsWith<T>(
  * @returns     Deep clone with all string values redacted
  */
 export async function redactObjectStrings<T>(obj: T): Promise<T> {
-	return redactObjectStringsWith(obj, redactText, resolveSnapshot())
+	// One config resolution per pass: the per-string callback is bound to the
+	// entry snapshot, so a deep-walk export pays one policy read, not two
+	// statSync calls per string. Mid-session edits are honored by the next
+	// pass re-resolving at its entry.
+	const snapshot = resolveSnapshot()
+	return redactObjectStringsWith(
+		obj,
+		(text) =>
+			redactTextWithSnapshot(text, snapshot).catch((err) => {
+				console.error("PII redaction scan failed, returning original text:", err)
+				return text
+			}),
+		snapshot,
+	)
 }
 
 /**
@@ -538,7 +554,7 @@ export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
 	if (settingsError) {
 		throw new Error(`redaction settings invalid: ${settingsError.message}`)
 	}
-	return redactObjectStringsWith(obj, redactTextOrThrow, snapshot)
+	return redactObjectStringsWith(obj, (text) => redactTextWithSnapshot(text, snapshot), snapshot)
 }
 
 /** A pi-ai message with optional role/content fields. */
