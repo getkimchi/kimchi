@@ -24,6 +24,7 @@ import {
 	pendingFrozenSnapshots,
 	queueSnapshots,
 	readReportingState,
+	recordReportingError,
 	setReportingEnabled,
 	UPLOAD_INTERVAL_MS,
 } from "./queue.js"
@@ -1874,16 +1875,13 @@ describe("gated quiet passes", () => {
 		expect(posts()).toHaveLength(1)
 		const [frozen] = await pendingFrozenSnapshots(directory, () => {}, Date.now() - 1)
 		if (!frozen) throw new Error("a deferred snapshot must wait between pass gates")
-		// The pass deferred the row on disk, so the stamp no longer matches: one re-stamp pass follows...
-		const afterFirst = freeze.mock.calls.length
-		await run()
-		expect(freeze.mock.calls.length).toBeGreaterThan(afterFirst)
-		// ...and only now the tick turns truly quiet: no full cycle runs on an unchanged, not-due state.
+		// The pass's own deferral bookkeeping is absorbed into the stamp: nothing the pass did not
+		// write itself changed on disk, so the very next tick runs no full cycle at all.
 		const settled = freeze.mock.calls.length
 		await run()
 		expect(freeze.mock.calls.length).toBe(settled)
 		expect(posts()).toHaveLength(1)
-		// Opting out re-opens the pass (the state write moves the signature) and then stays quiet.
+		// Opting out is a write from outside the pass: it re-opens one pass and then stays quiet.
 		await setReportingEnabled(directory, false)
 		vi.spyOn(Date, "now").mockReturnValue(frozen.entry.retryAt + 1000)
 		await run()
@@ -1900,7 +1898,7 @@ describe("gated quiet passes", () => {
 		expect(posts()).toHaveLength(2)
 	})
 
-	it("treats any atomic rewrite of the queue as a change, even from another process", async () => {
+	it("re-opens for a foreign queue write, not for a content-identical rewrite", async () => {
 		await seedLinked()
 		let refuse = true
 		http.mockImplementation(async (input) =>
@@ -1913,17 +1911,21 @@ describe("gated quiet passes", () => {
 		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
 		const freeze = vi.spyOn(queue, "freezeSnapshots")
 		await run()
-		await run()
 		const settled = freeze.mock.calls.length
 		await run()
 		expect(freeze.mock.calls.length).toBe(settled)
 		expect(posts()).toHaveLength(1)
-		// Another session rewrites the queue (its own delivery bookkeeping): the next pass must run fully
-		// and see the retry as due at its stamped time, not wait for anything local to move.
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
-		refuse = false
+		// A content-identical rewrite (an editor touch, a sync tool) moves no real state: the tick
+		// stays quiet — only real writes move the version the gate reads.
 		const path = join(directory, "pr-cost-reporting", "state.json")
 		await writeFile(path, await readFile(path))
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		// A foreign write — any session's real queue change — bumps the version the stamp keeps:
+		// the next pass runs fully and sees the retry as due at its stamped time.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
+		refuse = false
+		await recordReportingError(directory, "foreign writer")
 		await run()
 		expect(freeze.mock.calls.length).toBeGreaterThan(settled)
 		expect(posts()).toHaveLength(2)
@@ -1961,6 +1963,97 @@ it("keeps a fresh hold parked while its evidence looks incomplete", async () => 
 	http.mockClear()
 	await deliver()
 	expect(http).not.toHaveBeenCalled()
+})
+
+it("sleeps between a failing snapshot's own retry deadlines instead of chasing its bookkeeping", async () => {
+	vi.spyOn(Math, "random").mockReturnValue(0.5)
+	http.mockImplementation(async (input) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: org, userId: user })
+			: new Response(null, { status: 500 }),
+	)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	await run()
+	expect(posts()).toHaveLength(1)
+	let entry = Object.values((await readReportingState(directory)).entries)[0]
+	const firstRetryAt = entry.retryAt
+	// The pass's own deferral bookkeeping (attempts/retryAt in state.json, ledger commits) moved
+	// the version signals the gate reads; its stamp absorbs them: the very next tick is quiet.
+	const settled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	expect(posts()).toHaveLength(1)
+	// A retry's clock is the later of backoff and the upload window after the last attempt;
+	// middling ticks stay quiet both ways.
+	vi.spyOn(Date, "now").mockReturnValue(firstRetryAt + 1)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	const wake = Math.max(firstRetryAt, (entry.uploadedAt ?? 0) + UPLOAD_INTERVAL_MS) + 1
+	// At the entry's own schedule exactly one pass runs and retries; its failure re-parks later.
+	vi.spyOn(Date, "now").mockReturnValue(wake)
+	await run()
+	expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+	expect(posts()).toHaveLength(2)
+	entry = Object.values((await readReportingState(directory)).entries)[0]
+	expect(entry.retryAt).toBeGreaterThan(firstRetryAt)
+	const reSettled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(reSettled)
+})
+
+it("a 413-trimmed body is due again on the next pass instead of riding the attempt's own window", async () => {
+	// The trim REPLACES the frozen row: attempts/retryAt reset to zero and the upload-window
+	// clock clears, so the halved body retries immediately — the stamp must not keep the
+	// attempt's own rejected-window picture, or the gate would sit on a body the queue says
+	// is due for minutes (and, for a capped-limit trim, for a limit-length backoff).
+	const requests = [
+		content.content.requests[0],
+		...Array.from({ length: 39 }, (_, index) => ({
+			requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+			billingRecordIds: [],
+			startedAt: "2026-10-04T12:00:00Z",
+			allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+		})),
+	]
+	await queueSnapshots(directory, [
+		{
+			account: content.account,
+			content: {
+				repository: content.content.repository,
+				pullRequests: [],
+				requests,
+				coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+			},
+		},
+	])
+	http.mockImplementation(async (input) =>
+		String(input).endsWith("api-keys:verify")
+			? Response.json({ organizationId: org, userId: user })
+			: new Response(null, { status: 413 }),
+	)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	await run()
+	expect(posts()).toHaveLength(1) // original body rejected
+	// Next tick: the trimmed row is due NOW — the gate opens even though the attempt itself
+	// just happened (its window would otherwise hold a fresh upload shut for five minutes).
+	const afterTrim = freeze.mock.calls.length
+	await run()
+	expect(posts()).toHaveLength(2) // 40 requests halved to 20, retried immediately
+	expect(freeze.mock.calls.length).toBeGreaterThan(afterTrim)
+	// Still above the trim floor: second 413 halves 20 -> 16 and is due immediately again.
+	const afterSecond = freeze.mock.calls.length
+	await run()
+	expect(posts()).toHaveLength(3)
+	expect(freeze.mock.calls.length).toBeGreaterThan(afterSecond)
+	// At the floor the body settles (dead-letter — dead-letter PR on this stack base); the pass
+	// after THAT is finally quiet — each immediate reopen up to here traced a due trim, not churn.
+	const settled = freeze.mock.calls.length
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
 })
 
 it("stamps an event upload parked on backoff at its deadline instead of ticking until it drains", async () => {

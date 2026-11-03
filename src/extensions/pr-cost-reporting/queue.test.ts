@@ -28,7 +28,9 @@ import {
 	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
+	reportingOwnWrites,
 	reportingProducer,
+	runWithReportingOwnWrites,
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
@@ -127,6 +129,34 @@ describe("org usage-reporting policy", () => {
 		)
 		const state = await readReportingState(directory)
 		expect(state.enabled).toBe(true)
+	})
+})
+
+describe("reconcile pass own-write tracking", () => {
+	it("counts only writes issued from inside the pass's own async context", async () => {
+		await setReportingEnabled(directory, true) // preexisting content: enable=true
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false) // in-pass bookkeeping: true -> false, counted
+			expect(reportingOwnWrites(directory)).toBe(1)
+		})
+		// The /pr-reporting command's handler world: launched outside any tracking context, its
+		// write must never be absorbed into a pass's own-write count — or its content could be
+		// silently slept over once the on-disk version matched the pass stamp.
+		await setReportingEnabled(directory, true)
+		expect(reportingOwnWrites(directory)).toBe(1)
+		// A later pass for the same directory adds its own writes on top; the supervisor
+		// subtracts the pass-start baseline, so the counter is cumulative per directory.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(false)
+		// An identical-content write bumps nothing — absorption could never hide it anyway.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
 	})
 })
 

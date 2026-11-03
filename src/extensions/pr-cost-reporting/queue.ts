@@ -1,5 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
-import { statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -277,15 +278,41 @@ function validateEntry(key: string, entry: PendingRepository, producerId: string
 	}
 }
 
-/** (mtime, size) of state.json without parsing; pass gates read freshness through this. */
-export function reportingStateFileSignature(agentDir: string): { mtimeMs: number; size: number } | undefined {
+/** The sidecar version file; bumped once per real state.json change, so it stays tiny to read. */
+export function reportingStateVersionPath(agentDir: string): string {
+	return join(reportingDirectory(agentDir), "state.version")
+}
+
+/** Monotonic version of state.json without parsing it; pass gates read freshness through this. */
+export function reportingStateVersion(agentDir: string): number {
 	try {
-		const file = statSync(reportingStatePath(agentDir))
-		return { mtimeMs: file.mtimeMs, size: file.size }
+		const text = readFileSync(reportingStateVersionPath(agentDir), "utf8").trim()
+		const version = Number(text)
+		return Number.isSafeInteger(version) && version >= 0 ? version : 0
 	} catch (error) {
 		if (!object(error) || error.code !== "ENOENT") throw error
-		return undefined
+		return 0
 	}
+}
+
+/** Sidecar bumps THIS process recorded while a pass was tracking them — never anyone else's. */
+const ownReportingWrites = new Map<string, number>()
+// The async-context scoping is load-bearing: a write from a command handler or another session
+// racing the pass mid-flight must NOT be absorbed — its content could otherwise be silently slept
+// over once its version matched the stamp.
+const reportingPassContext = new AsyncLocalStorage<string>()
+
+/**
+ * Bracket a reconcile pass's own queue writes: only writes issued from inside this async context
+ * (and only for this agentDir) are absorbed into the pass stamp, so a same-process write from
+ * anywhere else still re-opens the next tick.
+ */
+export function runWithReportingOwnWrites<T>(agentDir: string, fn: () => Promise<T>): Promise<T> {
+	return reportingPassContext.run(agentDir, fn)
+}
+
+export function reportingOwnWrites(agentDir: string): number {
+	return ownReportingWrites.get(agentDir) ?? 0
 }
 
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
@@ -375,6 +402,10 @@ async function update(
 		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
 		if (body === text) return state
 		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
+		// The sidecar moves first: a crash between the two writes leaves a phantom version bump (one
+		// extra pass) rather than a moved state.json that a stale version would hide forever.
+		await writeFileDurably(reportingStateVersionPath(agentDir), `${reportingStateVersion(agentDir) + 1}\n`, check)
+		if (reportingPassContext.getStore() === agentDir) ownReportingWrites.set(agentDir, reportingOwnWrites(agentDir) + 1)
 		await writeFileDurably(reportingStatePath(agentDir), body, check)
 
 		const parent = await open(directory, "r")

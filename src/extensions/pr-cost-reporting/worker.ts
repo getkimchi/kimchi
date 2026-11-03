@@ -46,9 +46,11 @@ import {
 	type ReportingState,
 	readReportingState,
 	recordReportingError,
+	reportingOwnWrites,
 	reportingProducer,
-	reportingStateFileSignature,
 	reportingStatePath,
+	reportingStateVersion,
+	runWithReportingOwnWrites,
 	type ServerLimit,
 	type SnapshotAck,
 	trimFrozenSnapshot,
@@ -212,7 +214,6 @@ export function deliverSnapshots(
 		const state = await freezeSnapshots(agentDir, check)
 		if (!state.enabled) return undefined
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
-		const meta = frozen.map((row) => frozenDueMeta(row))
 		/** The configured credential: API key, or the SSO token from auth.json. */
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
@@ -238,6 +239,14 @@ export function deliverSnapshots(
 				.filter(([, pause]) => pause.retryAt > now)
 				.map(([account]) => account),
 		)
+		// Attempt outcomes, recorded as they happen: the row's new retry deadline and its
+		// new uploadedAt (both moves stamp the upload-window clock the due filter reads),
+		// or null when the row is gone (acknowledged or replaced mid-flight) and stops being
+		// due. The stamp derives its post-attempt picture from these; re-reading the whole
+		// queue after delivery would mean a second full parse of every frozen body per pass.
+		// UploadedAt is THIS side's attempt time; the queue's internal timestamp may lag a
+		// millisecond — immaterial against a five-minute window, and never a risk of over-close.
+		const dueMarks = new Map<string, { retryAt: number; uploadedAt?: number; dead?: boolean } | null>()
 
 		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
 		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
@@ -353,6 +362,7 @@ export function deliverSnapshots(
 				const ack: SnapshotAck = await response.json()
 				assertCurrent()
 				await acknowledgeFrozenSnapshot(agentDir, job, ack, assertCurrent)
+				dueMarks.set(job.key, null)
 				trackPRCostMetric({ kind: "delivery", outcome: "success" })
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
@@ -371,15 +381,23 @@ export function deliverSnapshots(
 						return true
 					}
 				}
-				if (gone()) continue
+				if (gone()) {
+					dueMarks.set(job.key, null)
+					continue
+				}
 				try {
 					if (limit) {
-						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
+						const attemptedAt = Date.now()
+						const limitRetryAt = attemptedAt + jitter(LIMIT_RETRY_MS)
+						await limitFrozenSnapshot(agentDir, job, limit, limitRetryAt, assertOwnership)
+						dueMarks.set(job.key, { retryAt: limitRetryAt, uploadedAt: attemptedAt })
 						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
 						else if (limit.scope === "snapshot" && limit.limit === "bytes") {
 							// The server's own byte cap rejected this body; trim it to the cap it stated, so the
 							// retry carries a body the server can accept instead of resending it for hours.
-							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
+							// A successful trim REPLACES the row entirely (due immediately: attempts and the
+							// window clock reset) — overwrite any earlier mark with that reality.
+							if (await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)) dueMarks.set(job.key, { retryAt: 0 })
 						}
 					} else if (uploadAttempted && status === 410) {
 						// Explicitly gone: the server cannot say this about a missing route; settle.
@@ -391,26 +409,54 @@ export function deliverSnapshots(
 						// tail — it falls through to the normal defer below (attempts increments on
 						// defer, after this dispatch, so 2 already counted = two prior spaced refusals).
 						await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+						// Settled rows are kept for the record but are never due again: the stamp carries
+						// the dead flag instead of any retry deadline.
+						dueMarks.set(job.key, { retryAt: 0, dead: true })
 					} else if (uploadAttempted && status === 413) {
-						if (!(await trimFrozenSnapshot(agentDir, job, assertOwnership)))
+						if (await trimFrozenSnapshot(agentDir, job, assertOwnership))
+							// The server rejected this body for its size; its halved replacement is due
+							// immediately (attempts and the window clock reset).
+							dueMarks.set(job.key, { retryAt: 0 })
+						else {
 							// Halving reached its floor and the server still refuses the size: settle
 							// the body instead of deferring the same refusal forever.
 							await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
-					} else
-						await deferFrozenSnapshot(
-							agentDir,
-							job,
-							Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-							errorMessage,
-							assertOwnership,
-						)
+							dueMarks.set(job.key, { retryAt: 0, dead: true })
+						}
+					} else {
+						const attemptedAt = Date.now()
+						const nextRetryAt = attemptedAt + retryDelay(status, entry.attempts, retryAfterMs)
+						await deferFrozenSnapshot(agentDir, job, nextRetryAt, errorMessage, assertOwnership)
+						dueMarks.set(job.key, { retryAt: nextRetryAt, uploadedAt: attemptedAt })
+					}
 				} catch (error) {
-					if (gone()) continue
+					if (gone()) {
+						dueMarks.set(job.key, null)
+						continue
+					}
 					throw error
 				}
 			}
 		}
-		return meta
+		// Attempts above moved retry bookkeeping on the rows the pass started with: the stamp must
+		// carry POST-attempt due times — otherwise every failing entry's stale retryAt would re-open
+		// on the next tick and a failing queue would never sleep between attempts. The post-attempt
+		// picture is derived, not re-read: each attempt's new deadline was computed by this loop,
+		// acknowledged/replaced rows drop out, and rows never attempted keep the pass-start picture.
+		return frozen
+			.map((row) => frozenDueMeta(row))
+			.filter((meta) => dueMarks.get(meta.key) !== null)
+			.map((meta) => {
+				const mark = dueMarks.get(meta.key)
+				return mark
+					? {
+							...meta,
+							retryAt: mark.retryAt,
+							uploadedAt: mark.uploadedAt,
+							dead: mark.dead ?? meta.dead,
+						}
+					: meta
+			})
 	})
 }
 
@@ -617,8 +663,11 @@ const CAPTURE_FAILED = "PR reporting could not capture a complete inventory; pre
  * Pass gate: an unchanged, not-due tick costs one file stat plus cheap ledger counters instead of a
  * full freeze + capture + deliver cycle (which reads and deep-validates a queue of up to 24 MiB).
  * The signature covers every input a pass consumes:
- * - state.json's (mtime, size): every writer — this process or another session — replaces the file
- *   atomically (queueing, acknowledgements, opt-outs, delivery bookkeeping, frozen-trim rewrites).
+ * - state.json's sidecar version: every writer — this process or another session — bumps a tiny
+ *   monotonic counter next to it on every real change (queueing, acknowledgements, opt-outs,
+ *   delivery bookkeeping, frozen-trim rewrites). The stamp is pass-start version plus this
+ *   process's own bump count, so a pass's own writes never re-open it and any other writer does.
+ *   Raw content-identical rewrites never bump it (update() never writes those at all).
  * - recordCount: ledger rows appended by capture between ticks, in any process.
  * - dirtyWorks: a flagged projection forces repair regardless of row count.
  * - dataVersion: PRAGMA data_version plus an own-commit counter — any ledger write in ANY process
@@ -655,19 +704,14 @@ interface PassGate {
 }
 const passGates = new Map<string, PassGate>()
 
-async function probePassSignature(agentDir: string): Promise<string> {
-	const file = reportingStateFileSignature(agentDir)
+/** The ledger slots of a probe: every writer rides through the reconcile lease, so they read live. */
+function probeLedgerSlots(agentDir: string): string {
 	const backend = backendFor(agentDir)
 	return [
-		file?.mtimeMs ?? 0,
-		file?.size ?? 0,
 		// Records are insert-only, so the rowid watermark tracks appends O(1) where COUNT(*) was O(n).
 		backend.recordWatermark(),
 		backend.dataVersion(),
 		backend.dirtyWorks().length,
-		// Legacy journals are imported only inside passes, so their stat identity opens the gate itself;
-		// without it a torn-append repair or a late-arriving record could wait forever.
-		legacyInputSignature(agentDir),
 	].join(":")
 }
 
@@ -761,39 +805,61 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
-	const signatureBefore = await probePassSignature(agentDir)
+	const versionBefore = reportingStateVersion(agentDir)
+	const ownBefore = reportingOwnWrites(agentDir)
+	// Legacy journals are imported only inside passes, so their stat identity opens the gate itself;
+	// without it a torn-append repair or a late-arriving record could wait forever.
+	const journalBefore = legacyInputSignature(agentDir)
+	const signatureBefore = `${versionBefore}:${probeLedgerSlots(agentDir)}:${journalBefore}`
 	const gate = passGates.get(agentDir)
 	// Nothing moved and nothing could go out: this tick delays nothing by skipping its cycle.
 	if (gate?.signature === signatureBefore && !gateHasDue(gate, Date.now())) return
-	const state = await freezeSnapshots(agentDir, () => {
-		assertLease()
-		signal.throwIfAborted()
+	// Only writes from inside this pass's own async context are absorbed into the stamp below; a
+	// same-process write arriving anywhere else (command handler, another session) re-opens the
+	// next tick normally.
+	return runWithReportingOwnWrites(agentDir, async () => {
+		const state = await freezeSnapshots(agentDir, () => {
+			assertLease()
+			signal.throwIfAborted()
+		})
+		if (!state.enabled) {
+			passGates.set(agentDir, await passGateStamp(agentDir, state, [], signatureBefore))
+			return
+		}
+		try {
+			await captureEvents(agentDir, signal, assertLease)
+		} catch {
+			if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
+		}
+		// Reports already queued go out with their own time even when this pass could not capture a new inventory.
+		if (signal.aborted) return
+		let frozen: FrozenDueMeta[] | undefined
+		try {
+			frozen = await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+			await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+		} catch {
+			if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
+		}
+		// Stamp only a completed, quiet sweep: a failed or aborted pass leaves the next tick fully open.
+		// A still-open outbox no longer blocks the stamp — its own backoff note reopens the gate when due.
+		if (frozen !== undefined && !signal.aborted) {
+			// The stamp absorbs exactly what THIS process wrote during the pass: the version slot starts
+			// from pass start plus this process's own state.json bumps, so a failing entry's own retry
+			// bookkeeping does not re-open the very next tick — but any other session's bump differs
+			// from the stamp and re-opens exactly once, and a foreign journal append rides its own
+			// stat slot the same way. Ledger slots read live post-pass: their writers all ride this
+			// same reconcile lease, so nothing they track can be moved by anyone else mid-pass.
+			// passGateStamp's own outbox repair may commit to the ledger itself: stamp the content
+			// first, THEN read the ledger slots — every writer this process could be is ordered before.
+			const stamp = await passGateStamp(agentDir, state, frozen, "")
+			const signatureAfter = [
+				versionBefore + (reportingOwnWrites(agentDir) - ownBefore),
+				probeLedgerSlots(agentDir),
+				journalBefore,
+			].join(":")
+			passGates.set(agentDir, { ...stamp, signature: signatureAfter })
+		}
 	})
-	if (!state.enabled) {
-		passGates.set(agentDir, await passGateStamp(agentDir, state, [], signatureBefore))
-		return
-	}
-	try {
-		await captureEvents(agentDir, signal, assertLease)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
-	}
-	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
-	if (signal.aborted) return
-	let frozen: FrozenDueMeta[] | undefined
-	try {
-		frozen = await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
-		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
-	}
-	// Stamp only a completed, quiet sweep: a failed or aborted pass leaves the next tick fully open.
-	// A still-open outbox no longer blocks the stamp — its own backoff note reopens the gate when due.
-	if (frozen !== undefined && !signal.aborted)
-		// signatureBefore is what this pass consumed; a write during the pass (own or foreign) differs
-		// from the stamp, so the next tick re-opens, discovers it, and stamps again — a quiet stamp
-		// survives only once a pass ran start-to-finish without anything changing underneath.
-		passGates.set(agentDir, await passGateStamp(agentDir, state, frozen, signatureBefore))
 }
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
