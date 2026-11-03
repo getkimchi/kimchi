@@ -9,4 +9,4 @@ f194f3eadd37bb5619517098dbd052e5015cabd3
 # (version sidecar + post-attempt stamp). Healthy-queue lane only — the
 # synthetic fixture is too chatty to express the stuck regime, so this run
 # should show parity with f194f3ead, NOT a drop against it.
-9111a753c3d207306395b6f71898aa5f17b53f02
+be9b99c4631a2cd41b8ae45f8a37157a2a747c17
