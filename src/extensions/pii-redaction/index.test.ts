@@ -169,6 +169,28 @@ describe("pii-redaction extension — event emission wiring", () => {
 		])
 	})
 
+	// Regression (PR #1619 review): pi-ai's ToolResultMessage carries role
+	// "toolResult", not "tool" — a tool-result message in restored history
+	// (before_provider_request cache miss) was redacted but never reported.
+	it("before_provider_request maps toolResult-role messages to the tool_result surface", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const toolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_1",
+			toolName: "read",
+			content: [{ type: "text", text: "Output file contains alice@example.com" }],
+		}
+		await invoke("before_provider_request", { payload: { messages: [toolResultMessage] } })
+		expect(emitted).toEqual([
+			{
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({ surface: "tool_result", entity_type: "EMAIL_ADDRESS", count: 1 }),
+			},
+		])
+	})
+
 	// Regression for the live-host failure mode: message_end is where user
 	// messages are actually redacted (it runs before before_provider_request),
 	// so user_input facts must be labelled from the message_role here. And the

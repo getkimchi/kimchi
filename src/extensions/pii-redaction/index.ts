@@ -51,7 +51,7 @@ const redactionInFlight = new Map<object, Promise<RedactionMeasurement<object>>>
 function surfaceForRole(role: unknown): RedactionSurface | undefined {
 	if (role === "user") return "user_input"
 	if (role === "assistant") return "assistant_message"
-	if (role === "tool") return "tool_result"
+	if (role === "toolResult") return "tool_result"
 	return undefined
 }
 
