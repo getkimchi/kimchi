@@ -499,6 +499,10 @@ describe("kimchi config set/get language", () => {
 		vi.clearAllMocks()
 		vi.spyOn(console, "log").mockImplementation(() => {})
 		vi.spyOn(console, "error").mockImplementation(() => {})
+		// Default: no project override — the effective value is whatever was written.
+		vi.mocked(loadConfig).mockImplementation((() => ({
+			language: vi.mocked(writeLanguage).mock.calls.at(-1)?.[0],
+		})) as unknown as typeof loadConfig)
 	})
 
 	afterEach(() => {
@@ -511,13 +515,35 @@ describe("kimchi config set/get language", () => {
 		expect(exit).toBe(0)
 		expect(writeLanguage).toHaveBeenCalledWith("Korean")
 		expect(console.log).toHaveBeenCalledWith("language = Korean (written to global config)")
+		expect(console.error).not.toHaveBeenCalled()
 	})
 
-	it("unpins with auto", async () => {
+	it("unpins with auto and says the key was unset, not written", async () => {
 		const exit = await runConfig(["set", "language", "Auto"])
 
 		expect(exit).toBe(0)
 		expect(writeLanguage).toHaveBeenCalledWith(undefined)
+		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("language unset in global config"))
+		expect(console.error).not.toHaveBeenCalled()
+	})
+
+	it("warns when a trusted project config shadows the value just written", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ language: "fr" } as ReturnType<typeof loadConfig>)
+
+		const exit = await runConfig(["set", "language", "ko"])
+
+		expect(exit).toBe(0)
+		expect(writeLanguage).toHaveBeenCalledWith("ko")
+		expect(console.log).toHaveBeenCalledWith("language = ko (written to global config)")
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
+		expect(loadConfig).toHaveBeenCalledWith({ cwd: process.cwd() })
+	})
+
+	it("warns when unpinning while a trusted project config still pins", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ language: "fr" } as ReturnType<typeof loadConfig>)
+
+		expect(await runConfig(["set", "language", "auto"])).toBe(0)
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
 	})
 
 	it.each(["", "   ", "x".repeat(41)])("rejects invalid value %j (exit 2, no write)", async (raw) => {

@@ -10,6 +10,8 @@ import {
 	buildSystemPrompt,
 	type EnvironmentInfo,
 	formatEnvironmentSection,
+	LANGUAGE_HINT_CUSTOM_TYPE,
+	pinnedLanguageTurnHint,
 } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -191,6 +193,16 @@ describe("buildSystemPrompt", () => {
 			const result = buildSystemPrompt({ tools, env: testEnv, mode, language: "fr" })
 			expect(result).toContain("Always respond in fr, whatever language the user writes in")
 		}
+	})
+
+	it("builds a one-line per-turn reminder for the pinned language", () => {
+		const hint = pinnedLanguageTurnHint("English")
+		expect(hint.startsWith("Reply in English.")).toBe(true)
+		// Explicitly covers the drift case: the latest message and the history
+		// may both be in another language.
+		expect(hint).toContain("even if the message above, or the rest of the conversation, is in another language")
+		expect(hint).not.toContain("\n")
+		expect(LANGUAGE_HINT_CUSTOM_TYPE).toBe("language_hint")
 	})
 
 	it("includes the harness notes and approval section", () => {

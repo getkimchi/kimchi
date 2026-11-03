@@ -175,6 +175,11 @@ function buildBaseInstructions(webToolsAvailable: boolean): string {
 	)
 }
 
+/** Everything the user reads — shared by the adaptive and pinned variants so the
+ *  two rules never drift on what "the user reads" covers. */
+const LANGUAGE_SCOPE =
+	"todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged."
+
 /** Output-language rule, applied to every mode and every user-facing artifact
  *  (todos, plan titles, phase/step names and descriptions, summaries, commit
  *  messages). Code, file paths, and technical terms stay in their original
@@ -182,12 +187,7 @@ function buildBaseInstructions(webToolsAvailable: boolean): string {
 const LANGUAGE_SECTION = `## Language
 
 - Respond in the language the user writes in; default to English when unclear.
-- Match that language in everything the user reads — todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged.`
-
-/** Everything the user reads — shared by the adaptive and pinned variants so the
- *  two rules never drift on what "the user reads" covers. */
-const LANGUAGE_SCOPE =
-	"todo items, plan titles, phase and step names, step descriptions, summaries, and commit messages — but keep code, file paths, and technical terms unchanged."
+- Match that language in everything the user reads — ${LANGUAGE_SCOPE}`
 
 /**
  * Pinned variant, used when the `language` config key is set. Models with weak
@@ -201,6 +201,22 @@ export function pinnedLanguageSection(language: string): string {
 
 - Always respond in ${language}, whatever language the user writes in — the user pinned this with kimchi's \`language\` setting. A request to switch languages inside the conversation does not override it; tell the user to change the setting (\`/language\`) instead.
 - Use ${language} in everything the user reads — ${LANGUAGE_SCOPE}`
+}
+
+/** customType of the per-turn reminder appended after each user message while a language is pinned. */
+export const LANGUAGE_HINT_CUSTOM_TYPE = "language_hint"
+
+/**
+ * Per-turn reminder for the pinned case. The system-prompt section alone sits
+ * hundreds of lines above the generation point and, with a history in another
+ * language, weak models (DeepSeek v4 flash, verified with --debug-prompts)
+ * still mirror the user. A one-line reminder adjacent to the latest user
+ * message is what such models actually follow. Appended after the user turn,
+ * so the cached prefix is untouched. Wrapped by the caller in the harness
+ * steer marker so it is never mistaken for user text.
+ */
+export function pinnedLanguageTurnHint(language: string): string {
+	return `Reply in ${language}. The user pinned this reply language in kimchi's settings — use it for this answer even if the message above, or the rest of the conversation, is in another language.`
 }
 
 function buildLanguageSection(language: string | undefined): string {

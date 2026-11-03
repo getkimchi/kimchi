@@ -291,13 +291,27 @@ export const LANGUAGE_AUTO = "auto"
 export function normalizeLanguageSetting(raw: unknown): string | undefined {
 	if (typeof raw !== "string") return undefined
 	const trimmed = raw.trim()
-	// Reject control bytes (newlines, tabs, escapes) BEFORE collapsing spaces: a
-	// multi-line value is an injection attempt, not sloppy whitespace.
+	// Reject control bytes (newlines, tabs, escapes), Unicode line/paragraph
+	// separators and bidi controls BEFORE collapsing spaces: a multi-line or
+	// direction-flipping value is an injection attempt, not sloppy whitespace.
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: the prompt is plain text
-	if (/[\x00-\x1f\x7f]/.test(trimmed)) return undefined
+	if (/[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(trimmed)) return undefined
 	const value = trimmed.replace(/ {2,}/g, " ")
 	if (value.length === 0 || value.length > MAX_LANGUAGE_SETTING_LENGTH) return undefined
+	// "auto" (any case) is the explicit unpin sentinel, on every surface — the
+	// CLI, `/language`, and a hand-edited config file alike.
+	if (value.toLowerCase() === LANGUAGE_AUTO) return LANGUAGE_AUTO
 	return value
+}
+
+/**
+ * Effective pinned language from the project (trusted) and global values.
+ * Project wins, and an explicit project `"auto"` unpins a global pin — the
+ * sentinel is resolved here, after precedence, so it never reaches the prompt.
+ */
+export function resolvePinnedLanguage(project: string | undefined, global: string | undefined): string | undefined {
+	const language = project ?? global
+	return language === LANGUAGE_AUTO ? undefined : language
 }
 
 /**
@@ -739,7 +753,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 		memoryEmbedding: projectExtras.memoryEmbedding ?? globalExtras.memoryEmbedding,
 		memoryExtraction: projectExtras.memoryExtraction ?? globalExtras.memoryExtraction,
 		tui: projectExtras.tui ?? globalExtras.tui,
-		language: projectExtras.language ?? globalExtras.language,
+		language: resolvePinnedLanguage(projectExtras.language, globalExtras.language),
 	}
 
 	// Region is account-level, so only the global config may set it.

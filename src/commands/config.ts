@@ -23,27 +23,56 @@ interface WritableKeyDef<T = number | string> {
 	/** null = invalid input (exit 2, nothing written). */
 	parse: (raw: string) => T | null
 	write: (value: T) => void
+	/**
+	 * Optional post-write check: returns a warning when the value just written
+	 * to the global config is not the effective one (e.g. a trusted project
+	 * config overrides it), so the user is not misled by the success line.
+	 */
+	warnIfShadowed?: (value: T) => string | undefined
+	/** Optional success line; default `<key> = <value> (written to global config)`. */
+	formatWritten?: (key: string, value: T) => string
 	describeValue: string
 	defaultDisplay: string
 }
 
+/**
+ * Keeps each entry's value type inferred end-to-end (parse → write →
+ * warnIfShadowed) while the table itself is looked up by string key. The one
+ * erasing cast lives here instead of in every entry.
+ */
+function defineKey<T extends number | string>(def: WritableKeyDef<T>): WritableKeyDef {
+	return def as unknown as WritableKeyDef
+}
+
 const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
-	"tui.wheelScrollLines": {
+	"tui.wheelScrollLines": defineKey<number>({
 		parse: (raw) => {
 			const n = Number(raw)
 			return Number.isInteger(n) && n >= 1 ? n : null
 		},
-		write: (lines) => writeTuiWheelScrollLines(lines as number),
+		write: (lines) => writeTuiWheelScrollLines(lines),
 		describeValue: "an integer ≥ 1",
 		defaultDisplay: 'unset (default "auto")',
-	},
-	language: {
-		parse: (raw) =>
-			raw.trim().toLowerCase() === LANGUAGE_AUTO ? LANGUAGE_AUTO : (normalizeLanguageSetting(raw) ?? null),
-		write: (value) => writeLanguage(value === LANGUAGE_AUTO ? undefined : (value as string)),
+	}),
+	language: defineKey<string>({
+		// normalizeLanguageSetting maps "auto" (any case) to LANGUAGE_AUTO.
+		parse: (raw) => normalizeLanguageSetting(raw) ?? null,
+		write: (value) => writeLanguage(value === LANGUAGE_AUTO ? undefined : value),
+		warnIfShadowed: (value) => {
+			// The write went to the global config; a trusted project config in the
+			// current directory can still pin a different value.
+			const wanted = value === LANGUAGE_AUTO ? undefined : value
+			const effective = loadConfig({ cwd: process.cwd() }).language
+			if (effective === wanted) return undefined
+			return `warning: this project's .kimchi/config.json pins language "${effective}", which overrides the global value here — edit that file to change it for this project`
+		},
+		formatWritten: (key, value) =>
+			value === LANGUAGE_AUTO
+				? `${key} unset in global config (replies in the language you write in)`
+				: `${key} = ${value} (written to global config)`,
 		describeValue: 'a language name or code such as "ko", "Korean" or "fr", or "auto" to mirror the user',
 		defaultDisplay: "unset (replies in the language you write in)",
-	},
+	}),
 }
 
 /**
@@ -191,7 +220,9 @@ function handleSet(args: string[]): number {
 		return 2
 	}
 	def.write(value)
-	console.log(`${key} = ${value} (written to global config)`)
+	console.log(def.formatWritten ? def.formatWritten(key, value) : `${key} = ${value} (written to global config)`)
+	const warning = def.warnIfShadowed?.(value)
+	if (warning) console.error(warning)
 	return 0
 }
 
