@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
+import { statSync } from "node:fs"
 import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -250,6 +251,17 @@ function validateEntry(key: string, entry: PendingRepository, producerId: string
 			repositoryKey(entry.pending.repository) !== repositoryKey(entry.repository)
 		)
 			throw new Error("Invalid PR reporting state")
+	}
+}
+
+/** (mtime, size) of state.json without parsing; pass gates read freshness through this. */
+export function reportingStateFileSignature(agentDir: string): { mtimeMs: number; size: number } | undefined {
+	try {
+		const file = statSync(reportingStatePath(agentDir))
+		return { mtimeMs: file.mtimeMs, size: file.size }
+	} catch (error) {
+		if (!object(error) || error.code !== "ENOENT") throw error
+		return undefined
 	}
 }
 

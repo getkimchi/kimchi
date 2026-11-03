@@ -1952,7 +1952,7 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		child.once("error", reject)
 	})
 	const readVersion = new Promise<void>((resolve, reject) => {
-		timer = setTimeout(() => reject(new Error("schema opener never read version 0: " + errors)), 10_000)
+		timer = setTimeout(() => reject(new Error(`schema opener never read version 0: ${errors}`)), 10_000)
 		child.stdout.on("data", (chunk: Buffer) => {
 			output += chunk.toString()
 			if (output.includes('"versionRead":0')) {
@@ -1965,7 +1965,7 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		})
 		child.once("error", reject)
 		child.once("exit", () => {
-			if (!sawVersion) reject(new Error("schema opener exited before stale read: " + output + errors))
+			if (!sawVersion) reject(new Error(`schema opener exited before stale read: ${output}${errors}`))
 		})
 	})
 	try {

@@ -18,6 +18,7 @@ import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
 import { backendFor, readRecords } from "./ledger/records.js"
+import * as queue from "./queue.js"
 import {
 	pendingFrozenSnapshots,
 	queueSnapshots,
@@ -27,7 +28,14 @@ import {
 } from "./queue.js"
 import { accountKey, type RepositorySnapshot, type WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
-import { deliverEvents, deliverSnapshots, LIMIT_RETRY_MS, reconcileReporting, serverLimit } from "./worker.js"
+import {
+	deliverEvents,
+	deliverSnapshots,
+	LIMIT_RETRY_MS,
+	reconcileReporting,
+	resetReportingPassGates,
+	serverLimit,
+} from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -1730,6 +1738,122 @@ describe("idle reporting passes", () => {
 		expect(blockingRead).not.toHaveBeenCalled()
 		expect(posts()).toHaveLength(1)
 	})
+})
+
+describe("gated quiet passes", () => {
+	beforeEach(resetReportingPassGates)
+
+	it("stays quiet between due times, honors opt-outs, and fires the deferred retry at its stamped time", async () => {
+		await seedLinked()
+		let refuse = true
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: refuse
+					? new Response(null, { status: 500 })
+					: Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() }),
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const freeze = vi.spyOn(queue, "freezeSnapshots")
+		await run()
+		expect(posts()).toHaveLength(1)
+		const [frozen] = await pendingFrozenSnapshots(directory, () => {}, Date.now() - 1)
+		if (!frozen) throw new Error("a deferred snapshot must wait between pass gates")
+		// The pass deferred the row on disk, so the stamp no longer matches: one re-stamp pass follows...
+		const afterFirst = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(afterFirst)
+		// ...and only now the tick turns truly quiet: no full cycle runs on an unchanged, not-due state.
+		const settled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		expect(posts()).toHaveLength(1)
+		// Opting out re-opens the pass (the state write moves the signature) and then stays quiet.
+		await setReportingEnabled(directory, false)
+		vi.spyOn(Date, "now").mockReturnValue(frozen.entry.retryAt + 1000)
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+		const disabled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(disabled)
+		expect(posts()).toHaveLength(1)
+		// Re-enabled and past the stamped retry time, the due snapshot goes out.
+		await setReportingEnabled(directory, true)
+		refuse = false
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(disabled)
+		expect(posts()).toHaveLength(2)
+	})
+
+	it("treats any atomic rewrite of the queue as a change, even from another process", async () => {
+		await seedLinked()
+		let refuse = true
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: refuse
+					? new Response(null, { status: 500 })
+					: Response.json({ status: "accepted", revision: "1", receivedAt: new Date().toISOString() }),
+		)
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		const freeze = vi.spyOn(queue, "freezeSnapshots")
+		await run()
+		await run()
+		const settled = freeze.mock.calls.length
+		await run()
+		expect(freeze.mock.calls.length).toBe(settled)
+		expect(posts()).toHaveLength(1)
+		// Another session rewrites the queue (its own delivery bookkeeping): the next pass must run fully
+		// and see the retry as due at its stamped time, not wait for anything local to move.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10 * 60_000)
+		refuse = false
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		await writeFile(path, await readFile(path))
+		await run()
+		expect(freeze.mock.calls.length).toBeGreaterThan(settled)
+		expect(posts()).toHaveLength(2)
+	})
+})
+
+it("stamps an event upload parked on backoff at its deadline instead of ticking until it drains", async () => {
+	resetReportingPassGates()
+	const batch = {
+		id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		accountKey: accountKey(content.account),
+		body: new TextEncoder().encode("{}"),
+		eventIds: [],
+		createdAt: Date.now(),
+		orderKey: "",
+	}
+	backendFor(directory).insertOutboxBatch(batch)
+	// The schedule note every failed upload leaves behind: parked for an hour, bound to the
+	// queue's current legacy-snapshot resume marker (the note is dropped for any other).
+	const resume = backendFor(directory).getNote("agent", "legacy-snapshot-resume")
+	backendFor(directory).putNote(
+		"pr-cost-delivery",
+		accountKey(content.account),
+		JSON.stringify({ batchId: batch.id, attempts: 1, retryAt: Date.now() + 60 * 60_000, resume }),
+	)
+	respond(accepted)
+	const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+	const freeze = vi.spyOn(queue, "freezeSnapshots")
+	let quiet = freeze.mock.calls.length
+	for (let absorbing = 0; absorbing < 8; absorbing++) {
+		await run()
+		if (freeze.mock.calls.length === quiet) break
+		quiet = freeze.mock.calls.length
+	}
+	const settled = quiet
+	// Before the parked upload's deadline: ticks run no cycle at all — the outbox's own
+	// backoff note, not a full scan, says when to worry about it again.
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	await run()
+	expect(freeze.mock.calls.length).toBe(settled)
+	// Past its deadline the pass re-opens and the upload goes out.
+	vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60_000)
+	await run()
+	expect(freeze.mock.calls.length).toBeGreaterThan(settled)
 })
 
 describe("journals with a torn final append", () => {
