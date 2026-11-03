@@ -90,7 +90,7 @@ async function waitForToolContextRequest(
 	)
 }
 
-test("redacts email and phone from user prompt before LLM receives it", async ({ terminal }) => {
+test("redacts email from user prompt; bare-shape phone passes through by default", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		withRedactionEnabled({
@@ -105,8 +105,12 @@ test("redacts email and phone from user prompt before LLM receives it", async ({
 			const request = firstChatRequest(fixture)
 			const userText = lastUserMessage(request as { body: unknown })
 
+			// Email is checksum-validated — redacted regardless of context.
 			expect(userText).not.toContain("alice@example.com")
-			expect(userText).not.toContain("555-867-5309")
+			// Phone is a bare-shape detector: off by default under the tier
+			// policy (digit runs collide with order numbers and account IDs).
+			// The email's marker must still appear.
+			expect(userText).toContain("555-867-5309")
 			expect(userText).toContain("[REDACTED")
 		},
 	)
