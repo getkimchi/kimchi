@@ -229,6 +229,13 @@ describe("unwindowed request attribution", () => {
 				?.workIssueKeys,
 		).toEqual(["LATE-1"])
 	})
+	it("treats a captured key that fails validation as no key and reports the late selection", () => {
+		const rows = records([pull()], { issue: { key: "not a key" } })
+		expect(
+			requestAttributions(rows, calculatePullRequestCosts(rows, []), new Map(), () => "LATE-1").get(requestId)
+				?.workIssueKeys,
+		).toEqual(["LATE-1"])
+	})
 	it("keeps the request-captured key when the work's selection changed since", () => {
 		const rows = records([pull()], { issue: { key: "ORIGINAL-1" } })
 		expect(

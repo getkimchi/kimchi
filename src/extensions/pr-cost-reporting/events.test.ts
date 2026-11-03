@@ -123,8 +123,10 @@ function build(
 	rows: unknown[],
 	inputReport: unknown = report,
 	touched?: { requests: string[]; records: string[] },
-	/** A current `/work issue` selection every work resolves to; mirrors worker.ts's resolver. */
-	currentKey?: string,
+	/** Current `/work issue` selections by work ID; mirrors worker.ts's memoized resolver. */
+	currentWorkIssues?: Record<string, string>,
+	/** A first pass's claim event and its entity; existingClaim answers with it, as an already-uploaded batch would. */
+	claimEvent?: { entity: string; event: unknown },
 ): CommonEvents & { claims: number } {
 	const stored = rows.map((row, index) => ({
 		body: JSON.stringify(row),
@@ -141,13 +143,23 @@ import {buildEvents} from ${JSON.stringify(new URL("./events.ts", import.meta.ur
 const input = await Bun.stdin.json();
 let claims = 0;
 const touched = input.touched && { requests: new Set(input.touched.requests), records: new Set(input.touched.records) };
-const currentWorkIssue = input.currentKey === undefined ? undefined : () => input.currentKey;
-const built = buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, () => { claims++ }, touched, currentWorkIssue);
+const selections = input.currentWorkIssues;
+const currentWorkIssue = selections && ((workId) => selections[workId]);
+const prior = input.claimEvent;
+const built = buildEvents(input.stored, input.report, new Map(input.repositories), input.producer, () => {}, (account, entity) => { claims++; return prior && entity === prior.entity ? prior.event : undefined; }, touched, currentWorkIssue);
 console.log(JSON.stringify({ ...built, claims }));
 `,
 			],
 			{
-				input: JSON.stringify({ stored, report: inputReport, repositories, producer, touched, currentKey }),
+				input: JSON.stringify({
+					stored,
+					report: inputReport,
+					repositories,
+					producer,
+					touched,
+					currentWorkIssues,
+					claimEvent,
+				}),
 				encoding: "utf8",
 				timeout: 30_000,
 			},
@@ -483,12 +495,124 @@ it("links a late /work issue selection to requests that named no issue at input 
 			},
 		],
 	}
-	const facts = build(beforeSelection, late, undefined, "LATE-7").accounts[0].facts
+	const facts = build(beforeSelection, late, undefined, { [workId]: "LATE-7" }).accounts[0].facts
 	expect(facts.find((fact) => fact.pullRequest)?.pullRequest?.issueKeys).toEqual([
 		{ key: "LATE-7", source: "work" },
 		{ key: "LLM-43", source: "branch" },
 	])
 	expect(facts.find((fact) => fact.work)?.work?.issueKeys).toEqual([{ key: "LATE-7", source: "work" }])
+})
+
+it("re-emits the PR and work facts with the new key on the batch after the selection lands", () => {
+	// The production path: a first batch already uploaded the PR without a work key, then the user
+	// ran /work issue. The next build must carry the key; nothing may suppress the changed fact.
+	const beforeSelection = records.map((row) => (row.type === "request" ? { ...row, issue: undefined } : row))
+	const late = {
+		...report,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
+		pullRequests: [
+			{
+				key: "parent-pr",
+				account,
+				workIds: [workId],
+				pullRequest: {
+					id: "PR1",
+					repositoryId: "42",
+					provider: "github",
+					host: "github.com",
+					repository: "parent/repo",
+					number: 1,
+					url: "https://github.com/parent/repo/pull/1",
+					state: "open",
+					title: "Provider title",
+					author: "provider-user",
+					branchIssueKeys: ["LLM-43"],
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: "2026-10-24T08:00:03Z",
+				},
+			},
+		],
+	}
+	const first = build(beforeSelection, late)
+	const firstPr = first.accounts[0].facts.find((fact) => fact.pullRequest)
+	expect(firstPr?.pullRequest?.issueKeys).toEqual([{ key: "LLM-43", source: "branch" }])
+	const firstUsage = first.accounts[0].facts.find((fact) => fact.usage)
+	if (!firstUsage) throw new Error("the first batch emitted no usage fact")
+	const second = build(
+		beforeSelection,
+		late,
+		undefined,
+		{ [workId]: "LATE-7" },
+		{
+			entity: firstUsage.entityId,
+			event: firstUsage,
+		},
+	)
+	const secondFacts = second.accounts[0].facts
+	expect(secondFacts.find((fact) => fact.pullRequest)?.pullRequest?.issueKeys).toEqual([
+		{ key: "LATE-7", source: "work" },
+		{ key: "LLM-43", source: "branch" },
+	])
+	expect(secondFacts.find((fact) => fact.work)?.work?.issueKeys).toEqual([{ key: "LATE-7", source: "work" }])
+})
+
+it("applies a late selection to its own work only", () => {
+	const otherWorkId = "55555555-5555-4555-8555-555555555555"
+	const otherRequestId = "66666666-6666-4666-8666-666666666666"
+	const bare = (rows: typeof records, ids: { workId: string; requestId: string }) =>
+		rows.map((row) => ({
+			...row,
+			workId: ids.workId,
+			requestId: ids.requestId,
+			issue: undefined,
+		}))
+	const rowsA = bare(records, { workId, requestId })
+	const rowsB = bare(records, { workId: otherWorkId, requestId: otherRequestId })
+	const late = {
+		...report,
+		requests: [
+			{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"], workIds: [workId] },
+			{
+				...report.requests[0],
+				requestId: otherRequestId,
+				allocation: "pull-request",
+				pullRequestIds: ["parent-pr"],
+				workIds: [otherWorkId],
+			},
+		],
+		pullRequests: [
+			{
+				key: "parent-pr",
+				account,
+				workIds: [workId, otherWorkId],
+				pullRequest: {
+					id: "PR1",
+					repositoryId: "42",
+					provider: "github",
+					host: "github.com",
+					repository: "parent/repo",
+					number: 1,
+					url: "https://github.com/parent/repo/pull/1",
+					state: "open",
+					title: "Provider title",
+					author: "provider-user",
+					branchIssueKeys: [],
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: "2026-10-24T08:00:03Z",
+				},
+			},
+		],
+	}
+	const facts = build([...rowsA, ...rowsB], late, undefined, { [otherWorkId]: "LATE-9" }).accounts[0].facts
+	expect(facts.find((fact) => fact.workId === workId && fact.work)?.work?.issueKeys).toEqual([])
+	expect(facts.find((fact) => fact.workId === otherWorkId && fact.work)?.work?.issueKeys).toEqual([
+		{ key: "LATE-9", source: "work" },
+	])
+	expect(facts.find((fact) => fact.pullRequest)?.pullRequest?.issueKeys).toEqual([{ key: "LATE-9", source: "work" }])
 })
 
 it("makes units and reads claims only for touched requests while shared facts aggregate every request", () => {

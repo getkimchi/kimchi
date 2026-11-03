@@ -603,8 +603,9 @@ export function requestAttributions(
 				workIssueKeys.add(issue.key)
 				continue
 			}
-			const current = currentWorkIssue?.(row.workId)
-			if (current) workIssueKeys.add(current)
+			const current = typeof row.workId === "string" ? currentWorkIssue?.(row.workId) : undefined
+			// A damaged note must not bypass the same validation a captured key passes.
+			if (current && isIssueKey(current)) workIssueKeys.add(current)
 		}
 		const billingAccountVerified =
 			request.reason !== "work-account-mismatch" && request.reason !== "work-account-unverified"

@@ -713,6 +713,9 @@ async function translateGroup(
 				),
 				records: new Set(changed.keys()),
 			}
+	// readWorkIssue's contract is "reading never throws": a malformed note or a work ID that is no
+	// UUID reads as no selection, and snapshot.ts validates the resolved key again, so one damaged
+	// selection can neither hold back a batch nor slip an invalid key into it.
 	const selections = new Map<string, string | undefined>()
 	const currentWorkIssue = (workId: string): string | undefined => {
 		if (!selections.has(workId)) selections.set(workId, readWorkIssue(agentDir, workId).selected?.key)
