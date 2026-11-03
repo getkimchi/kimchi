@@ -2,16 +2,16 @@
  * kimchi `/update` slash command — exposes the auto-update toggle and a
  * manual "update now" action in the TUI.
  *
- * The auto-update-on-launch decision lives in src/update/auto-update.ts
- * (Phase 2) and runs headlessly before the TUI boots. This command is the
- * user-facing surface for the same settings: flip the toggle, kick off a
- * one-shot update, or just see the running version.
+ * Automatic updates run as background ticks (background-update.ts); this
+ * command is the user-facing surface: flip the toggle, kick off a one-shot
+ * update, or just see the running version.
  *
  * Mirrors the `agents/index.ts:showSettings()` pattern: registerCommand
  * + ctx.ui.select menu + ctx.ui.notify feedback.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { acquireUpdaterLock } from "../update/lock.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateSetting, saveAutoUpdateSetting } from "../update/settings.js"
 import { applyUpdate, checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
@@ -22,7 +22,6 @@ import { registerTipProvider } from "./tips/registry.js"
 const LOG_PREFIX = "[kimchi-auto-update]"
 
 // Re-export pure helpers so tests can drive them without booting the TUI.
-export { argvHasSkipTrigger } from "../update/auto-update.js"
 export {
 	loadAutoUpdateNoticeShown,
 	loadAutoUpdateSetting,
@@ -38,7 +37,7 @@ export interface ManualUpdateResult {
 /**
  * Run a one-shot update check + apply. Used by the `/update` command's
  * "Update kimchi now" menu item and exported for tests. We deliberately
- * skip the 24h cache (`skipCache: true`) because the user explicitly
+ * skip the 30-minute shared cache (`skipCache: true`) because the user explicitly
  * asked to check.
  *
  * Never throws — both `checkForUpdate` and `applyUpdate` failures are
@@ -47,6 +46,13 @@ export interface ManualUpdateResult {
 export async function runManualUpdate(): Promise<ManualUpdateResult> {
 	const current = getVersion()
 	const isCanary = parseCanarySha7(current) !== null
+	// Share the updater lock with the background ticks: two concurrent
+	// installers would race on the share-directory swap (applyUpdate is
+	// atomic for the binary but not for vendor/bridge copies).
+	const lock = acquireUpdaterLock()
+	if (lock === null) {
+		return { ok: false, message: "An update is already in progress. Retry in a moment." }
+	}
 	try {
 		const check = await checkForUpdate({
 			currentVersion: current,
@@ -68,6 +74,8 @@ export async function runManualUpdate(): Promise<ManualUpdateResult> {
 		const message = (err as Error).message
 		process.stderr.write(`${LOG_PREFIX} update check failed: ${message}\n`)
 		return { ok: false, message: `Update check failed: ${message}` }
+	} finally {
+		lock.release()
 	}
 }
 

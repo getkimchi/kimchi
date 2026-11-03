@@ -8,11 +8,47 @@ export interface RepoState {
 	release_url?: string
 }
 
-interface PersistedState {
-	repos?: Record<string, unknown>
+/** Tick outcomes of the background updater (GLOSSARY.md: update tick).
+ *  Owned here so the persisted record, the tick, and the telemetry handler
+ *  share one vocabulary. */
+export type UpdateOutcome = "skipped-lock" | "no-update" | "installed" | "check-failed" | "install-failed"
+
+export const UPDATE_OUTCOMES: ReadonlySet<string> = new Set([
+	"skipped-lock",
+	"no-update",
+	"installed",
+	"check-failed",
+	"install-failed",
+])
+
+/** Record of the most recently installed release. The dedup primitive:
+ *  a running session keeps its own version after installing (the install
+ *  only applies to the NEXT launch), so without this record every other
+ *  session would reinstall the same release on each of its ticks. */
+export interface LastInstalledRecord {
+	tag: string
+	at: string
 }
 
-const TTL_MS = 60 * 60 * 1_000 // 1 Hour
+/** The update result (GLOSSARY.md): outcome of the most recent background
+ *  tick, kept for diagnosis because failures are never shown to the user. */
+export interface UpdateResultRecord {
+	at: string
+	outcome: UpdateOutcome
+	version?: string
+	error?: string
+}
+
+interface PersistedState {
+	repos?: Record<string, unknown>
+	update_result?: unknown
+	last_installed?: unknown
+}
+
+// Shared across sessions: the background update tick fires every 30
+// minutes, so a 30-minute TTL means at most one GitHub check per machine
+// per tick interval regardless of how many sessions are open.
+const TTL_MS = 30 * 60 * 1_000 // 30 minutes
 
 export function isStale(rs: RepoState, now: number = Date.now()): boolean {
 	const t = Date.parse(rs.checked_at)
@@ -72,9 +108,10 @@ export function loadRepoState(owner: string, name: string): RepoState | null {
 
 /**
  * Read-modify-write the per-repo state. Best-effort: errors are swallowed
- * so a corrupt state file can't block an actual update. No mutex — the
- * kimchi process is single-threaded and there's no second consumer of
- * this file.
+ * so a corrupt state file can't block an actual update. No mutex — several
+ * concurrent sessions can interleave load/save; for the cache entry a lost
+ * race costs only a refetch. Diagnostics writes that must not race
+ * (update_result, last_installed) happen under the updater lock instead.
  */
 export function saveRepoState(owner: string, name: string, rs: RepoState): void {
 	try {
@@ -91,4 +128,56 @@ export function saveRepoState(owner: string, name: string, rs: RepoState): void 
 export function isUpdateCheckDisabled(): boolean {
 	const v = process.env.KIMCHI_NO_UPDATE_CHECK
 	return v !== undefined && v !== ""
+}
+
+function parseUpdateResult(raw: unknown): UpdateResultRecord | null {
+	if (!raw || typeof raw !== "object") return null
+	const v = raw as Partial<UpdateResultRecord>
+	if (typeof v.outcome !== "string" || !UPDATE_OUTCOMES.has(v.outcome)) return null
+	if (typeof v.at !== "string" || Number.isNaN(Date.parse(v.at))) return null
+	const out: UpdateResultRecord = { at: v.at, outcome: v.outcome as UpdateOutcome }
+	if (typeof v.version === "string") out.version = v.version
+	if (typeof v.error === "string") out.error = v.error
+	return out
+}
+
+/** Record the outcome of one background tick. `at` is stamped here so
+ *  callers can't forget the timestamp. Best-effort: never throws. */
+export function saveUpdateResult(rec: Omit<UpdateResultRecord, "at">): void {
+	try {
+		const state = loadState() ?? {}
+		saveState({ ...state, update_result: { ...rec, at: new Date().toISOString() } satisfies UpdateResultRecord })
+	} catch {
+		// Best-effort diagnostics; must never affect the calling tick.
+	}
+}
+
+/** The recorded outcome of the most recent background tick, or null when
+ *  none was recorded or the entry is unparseable. */
+export function loadUpdateResult(): UpdateResultRecord | null {
+	const state = loadState()
+	return parseUpdateResult(state?.update_result)
+}
+
+/** Record a successfully installed release (its tag, e.g. "v0.0.23").
+ *  Best-effort: never throws. */
+export function saveLastInstalled(tag: string): void {
+	try {
+		const state = loadState() ?? {}
+		saveState({ ...state, last_installed: { tag, at: new Date().toISOString() } satisfies LastInstalledRecord })
+	} catch {
+		// Best-effort.
+	}
+}
+
+/** The tag of the most recently installed release, or null. Drives the
+ *  tick's reinstall dedup: a session still running the old version should
+ *  not install a release another session already installed. */
+export function loadLastInstalled(): LastInstalledRecord | null {
+	const raw = loadState()?.last_installed
+	if (!raw || typeof raw !== "object") return null
+	const v = raw as Partial<LastInstalledRecord>
+	if (typeof v.tag !== "string" || v.tag === "") return null
+	if (typeof v.at !== "string" || Number.isNaN(Date.parse(v.at))) return null
+	return { tag: v.tag, at: v.at }
 }

@@ -25,6 +25,10 @@ vi.mock("../utils.js", () => ({
 }))
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
+	stableExecutablePath: () => "/fake/brew/opt/kimchi/bin/kimchi",
+}))
+vi.mock("../update/install.js", () => ({
+	refreshBridge: vi.fn(),
 }))
 vi.mock("../update/settings.js", () => ({
 	loadAutoUpdateSetting: () => loadAutoUpdateSettingMock(),

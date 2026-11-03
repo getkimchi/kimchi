@@ -2,7 +2,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
+import {
+	isStale,
+	isUpdateCheckDisabled,
+	loadLastInstalled,
+	loadRepoState,
+	loadUpdateResult,
+	saveLastInstalled,
+	saveRepoState,
+	saveUpdateResult,
+} from "./state.js"
 
 describe("update state cache", () => {
 	let tmp: string
@@ -164,20 +173,83 @@ describe("update state cache", () => {
 			expect(loadRepoState("a", "b")).toBeNull()
 		})
 	})
+
+	describe("update result", () => {
+		it("returns null when no result was recorded", () => {
+			expect(loadUpdateResult()).toBeNull()
+		})
+
+		it("round-trips a recorded tick outcome", () => {
+			saveUpdateResult({ outcome: "installed", version: "v2.0.0" })
+			const got = loadUpdateResult()
+			expect(got?.outcome).toBe("installed")
+			expect(got?.version).toBe("v2.0.0")
+			expect(Date.parse(got?.at ?? "")).not.toBeNaN()
+		})
+
+		it("round-trips a failure with its truncated error", () => {
+			saveUpdateResult({ outcome: "check-failed", error: "network down" })
+			expect(loadUpdateResult()).toMatchObject({ outcome: "check-failed", error: "network down" })
+		})
+
+		it("does not clobber the per-repo cache entries", () => {
+			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
+			saveUpdateResult({ outcome: "no-update" })
+			expect(loadRepoState("a", "b")?.latest_version).toBe("1.0.0")
+		})
+
+		it("keeps the per-repo cache when writing a result first", () => {
+			saveUpdateResult({ outcome: "no-update" })
+			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
+			expect(loadUpdateResult()?.outcome).toBe("no-update")
+		})
+
+		it("returns null for an unparseable result entry", () => {
+			writeRawState({ update_result: 42 })
+			expect(loadUpdateResult()).toBeNull()
+		})
+	})
+
+	describe("last installed", () => {
+		it("returns null when nothing was installed", () => {
+			expect(loadLastInstalled()).toBeNull()
+		})
+
+		it("round-trips the installed tag with a timestamp", () => {
+			saveLastInstalled("v2.0.0")
+			const got = loadLastInstalled()
+			expect(got?.tag).toBe("v2.0.0")
+			expect(Date.parse(got?.at ?? "")).not.toBeNaN()
+		})
+
+		it("does not clobber the repo cache or the update result", () => {
+			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
+			saveUpdateResult({ outcome: "installed", version: "v2.0.0" })
+			saveLastInstalled("v2.0.0")
+			expect(loadRepoState("a", "b")?.latest_version).toBe("1.0.0")
+			expect(loadUpdateResult()?.outcome).toBe("installed")
+			expect(loadLastInstalled()?.tag).toBe("v2.0.0")
+		})
+
+		it("returns null for an unparseable entry", () => {
+			writeRawState({ last_installed: "v2.0.0" })
+			expect(loadLastInstalled()).toBeNull()
+		})
+	})
 })
 
 describe("isStale", () => {
-	const hour = 60 * 60 * 1000
+	const halfHour = 30 * 60 * 1000
 	const t0 = Date.parse("2026-01-01T00:00:00Z")
 
 	it("returns false for a fresh check", () => {
 		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0)).toBe(false)
 	})
-	it("returns false within 1h", () => {
-		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + hour - 1)).toBe(false)
+	it("returns false within 30 min", () => {
+		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + halfHour - 1)).toBe(false)
 	})
-	it("returns true past 1h", () => {
-		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + hour + 1)).toBe(true)
+	it("returns true past 30 min", () => {
+		expect(isStale({ checked_at: "2026-01-01T00:00:00Z", latest_version: "1" }, t0 + halfHour + 1)).toBe(true)
 	})
 	it("returns true when checked_at is unparseable (defensive)", () => {
 		expect(isStale({ checked_at: "garbage", latest_version: "1" }, t0)).toBe(true)

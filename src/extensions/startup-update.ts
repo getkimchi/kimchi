@@ -1,7 +1,10 @@
+import { homedir } from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
+import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { IS_ACP_MODE } from "../modes/acp/state.js"
-import { isHomebrewInstall } from "../update/paths.js"
+import { refreshBridge } from "../update/install.js"
+import { isHomebrewInstall, stableExecutablePath } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting, markAutoUpdateNoticeShown } from "../update/settings.js"
 import { checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
@@ -10,27 +13,28 @@ const UPDATE_STATUS_KEY = "update-available"
 const AUTO_UPDATE_NOTICE_ENTRY = "auto-update-notice"
 
 export const AUTO_UPDATE_NOTICE =
-	"Auto-update is now on by default: from the next launch, kimchi installs new versions in the background when it starts. Run `/update` to turn it off."
+	"Auto-update is on: kimchi installs new versions in the background while you work; they apply on the next launch. Run `/update` to turn it off."
 
 /**
- * Startup-time check for new kimchi versions. Uses cache (24h) and displays
- * a message on the status line (right side, centered) if an update is available.
+ * Startup-time check for new kimchi versions. Uses the shared 30-minute
+ * cache and displays a message on the status line (right side, centered)
+ * if an update is available.
  * Silently fails on errors to not block harness launch.
  *
  * The message is displayed via setStatus and read by the status line renderer.
  *
  * When auto-update is enabled (opt-out default — the toggle defaults
  * to on, so most users land here), the footer hint is suppressed — users
- * get updates silently on next launch. The first launch with the toggle
- * on also emits a one-time announcement of the default change and how to
- * opt out via `/update` — a persistent transcript entry in the TUI (the
- * notify() toast would auto-dismiss). The launch auto-update
- * (auto-update.ts) waits for this announcement, so upgraded users hear
- * about it before their first update.
+ * get updates silently via the background updater. The first launch with
+ * the toggle on also emits a one-time announcement of the default change
+ * and how to opt out via `/update` — a persistent transcript entry in the
+ * TUI (the notify() toast would auto-dismiss). The background updater
+ * (background-update.ts) waits for this announcement, so upgraded users
+ * hear about it before their first update.
  *
- * ACP sessions neither show nor mark the announcement: the launch
- * auto-update never runs in protocol modes — ACP clients (e.g. Studio)
- * own harness updates themselves — so a "updates on next launch" notice
+ * ACP sessions neither show nor mark the announcement: the background
+ * updater never runs in protocol modes — ACP clients (e.g. Studio)
+ * own harness updates themselves — so an "updates in the background" notice
  * would be false there. Leaving the flag unmarked also keeps the accurate
  * TUI notice pending for the user's first TUI session.
  */
@@ -49,13 +53,25 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		// stable. Currency on canary is checked by `kimchi update --canary`.
 		if (parseCanarySha7(current) !== null) return
 
+		// The background updater skips Homebrew installs, but the bundle-refresh
+		// side effect of the old on-launch path must survive: brew upgrade swaps
+		// the binary without `kimchi update`, which refreshes the bundled
+		// work-reporting plugins elsewhere. Idempotent — a no-op once they match.
+		if (isHomebrewInstall()) {
+			try {
+				refreshBridge(resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath), stableExecutablePath())
+			} catch (err) {
+				console.warn(`[startup-update] bridge refresh failed: ${(err as Error).message}`)
+			}
+		}
+
 		try {
 			const autoUpdateEnabled = loadAutoUpdateSetting()
-			// Only suppress the footer nag when on-launch auto-update can
-			// actually run. Homebrew installs are skipped by the launch
-			// auto-update path (see auto-update.ts), so a Homebrew user with
-			// autoUpdate=true would otherwise get neither a background update
-			// nor the `brew upgrade kimchi` hint.
+			// Only suppress the footer nag when the background updater can
+			// actually run. Homebrew installs are skipped by the updater (see
+			// background-update.ts), so a Homebrew user with autoUpdate=true
+			// would otherwise get neither a background update nor the
+			// `brew upgrade kimchi` hint.
 			if (autoUpdateEnabled && !isHomebrewInstall()) {
 				// Auto-update is on: no nag (next launch applies silently).
 				// First TUI launch only: announce the default change and how to
