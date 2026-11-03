@@ -28,7 +28,7 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
-import { getRedactionConfig } from "./config.js"
+import { isRedactionEnabled } from "./config.js"
 import { redactObjectStrings, redactText } from "./redactor.js"
 
 /** Cache of redacted messages, keyed by original message reference. */
@@ -37,8 +37,9 @@ const redactionCache = new WeakMap<object, object>()
 const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// 1. Redact assistant messages before they are stored.
 	pi.on("message_end", async (event: unknown) => {
-		const config = getRedactionConfig()
-		if (!config.enabled) return
+		// Non-throwing gate: a broken settings block must not reject the hook
+		// (the extension runner discards rejected results — unredacted storage).
+		if (!isRedactionEnabled()) return
 
 		const evt = event as Record<string, unknown> | null
 		if (!evt || typeof evt !== "object") return
@@ -54,8 +55,9 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
 	// 2. Redact tool result content before it is persisted.
 	pi.on("tool_result", async (event: unknown) => {
-		const config = getRedactionConfig()
-		if (!config.enabled) return
+		// Non-throwing gate: a broken settings block must not reject the hook
+		// (the extension runner discards rejected results — unredacted storage).
+		if (!isRedactionEnabled()) return
 
 		const evt = event as Record<string, unknown> | null
 		if (!evt || typeof evt !== "object") return
@@ -87,8 +89,9 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		const messages = payload.messages
 		if (!Array.isArray(messages)) return
 
-		const config = getRedactionConfig()
-		if (!config.enabled) return
+		// Non-throwing gate: a broken settings block must not reject the hook
+		// (the extension runner discards rejected results — unredacted storage).
+		if (!isRedactionEnabled()) return
 
 		// Walk messages: system messages pass through unchanged, non-system
 		// messages are redacted (or fetched from cache if already redacted).
