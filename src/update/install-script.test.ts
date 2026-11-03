@@ -35,6 +35,8 @@ describe.skipIf(process.platform === "win32")("shared Kimchi shell installer", (
 			encoding: "utf8",
 			input: fromStdin ? readFileSync(installer, "utf8") : undefined,
 			timeout: 10_000,
+			// Stdin and stdout are pipes here, never a terminal: consent probes miss
+			// the user, so the installer must skip the plugins deterministically.
 			env: {
 				...process.env,
 				PATH: `${commands}:${installBin}`,
@@ -100,8 +102,8 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 
 	afterEach(() => rmSync(root, { recursive: true, force: true }))
 
-	it("adds the bundled plugins to each official client it finds", () => {
-		const result = run()
+	it("adds the bundled plugins to each official client it finds with scripted consent", () => {
+		const result = run({ KIMCHI_BRIDGE_YES: "1" })
 		expect(result.status, result.stderr).toBe(0)
 		expect(readFileSync(join(installBin, "kimchi"), "utf8")).toContain("fixture Kimchi")
 		expect(readFileSync(join(root, "data", "kimchi", "theme.txt"), "utf8")).toBe("fixture theme")
@@ -112,11 +114,11 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 
 	it("skips clients that are not installed", () => {
 		rmSync(join(commands, "codex"))
-		expect(run().status).toBe(0)
+		expect(run({ KIMCHI_BRIDGE_YES: "1" }).status).toBe(0)
 		expect(read("bridge.log")).toBe("install claude\n")
 		rmSync(join(commands, "claude"))
 		writeFileSync(join(root, "bridge.log"), "")
-		expect(run().status).toBe(0)
+		expect(run({ KIMCHI_BRIDGE_YES: "1" }).status).toBe(0)
 		expect(read("bridge.log")).toBe("")
 	})
 
@@ -137,17 +139,33 @@ cat "$KIMCHI_INSTALL_TEST_ARCHIVE"`,
 	})
 
 	it("keeps Kimchi installed and says how to retry when a plugin fails", () => {
-		const result = run({ KIMCHI_INSTALL_TEST_ADAPTER_FAILURE: "claude" })
+		const result = run({ KIMCHI_INSTALL_TEST_ADAPTER_FAILURE: "claude", KIMCHI_BRIDGE_YES: "1" })
 		expect(result.status).toBe(0)
 		expect(existsSync(join(installBin, "kimchi"))).toBe(true)
 		expect(result.stderr).toContain("work reporting for claude is not. Rerun this installer to retry.")
 		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
 	})
 
-	it("supports the documented piped installer entry point", () => {
+	it("never adds the plugins where no terminal can confirm", () => {
+		const result = run()
+		expect(result.status, result.stderr).toBe(0)
+		expect(read("bridge.log")).toBe("")
+		expect(result.stdout).toContain("No terminal to confirm with, so work reporting for claude was not added")
+		expect(result.stdout).toContain("No terminal to confirm with, so work reporting for codex was not added")
+		expect(result.stdout).toContain("kimchi bridge setup")
+	})
+
+	it("supports the documented piped installer entry point without silent consent", () => {
 		const result = run({}, true)
 		expect(result.status, result.stderr).toBe(0)
-		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
+		expect(read("bridge.log")).toBe("")
+		expect(result.stdout).toContain("No terminal to confirm with")
 		expect(result.stdout).toContain("Next:")
+	})
+
+	it("adds the plugins to a piped installer given scripted consent", () => {
+		const result = run({ KIMCHI_BRIDGE_YES: "1" }, true)
+		expect(result.status, result.stderr).toBe(0)
+		expect(read("bridge.log")).toBe("install claude\ninstall codex\n")
 	})
 })
