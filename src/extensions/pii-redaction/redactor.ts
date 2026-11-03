@@ -289,9 +289,12 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex: /(\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/\s:@]+:[^@\s/]+)(@[^\s/]+)/g,
 		secretGroup: 2,
 	},
+	// Query parameters that carry credentials. `;` is included as a leading
+	// separator for `;`-delimited connection strings (Azure SAS).
 	{
 		name: "URL_WITH_CREDENTIALS",
-		regex: /([?&](?:token|api_?key|key|sig|signature|secret|password|access_token)=)([^&\s]{8,})/gi,
+		regex:
+			/([?&;](?:token|api_?key|key|sig|signature|secret|password|access_token|refresh_token|session_token|client_secret|sas|sharedaccesssignature)=)([^&;\s]{8,})/gi,
 		secretGroup: 2,
 	},
 	// Keyword-anchored re-additions for bare-shape engine entities the tier
@@ -302,9 +305,29 @@ const CUSTOM_PATTERNS: CustomPattern[] = [
 		regex: /((?:telegram|tg)[_-]?bot[_-]?token\s*[:=]\s*["']?)([0-9]{8,10}:[A-Za-z0-9_-]{35})/gi,
 		secretGroup: 2,
 	},
+	// Okta tokens vary in length (SSWS-prefixed are 44); the keyword anchor
+	// carries the precision, so the value range is deliberately loose.
 	{
 		name: "OKTA_TOKEN",
-		regex: /(okta(?:_api)?_token\s*[:=]\s*["']?)([A-Za-z0-9_-]{42})/gi,
+		regex: /(okta(?:_api)?_token\s*[:=]\s*["']?)([A-Za-z0-9_-]{40,44})/gi,
+		secretGroup: 2,
+	},
+	// Keyword-anchored free-text secrets: `password: …`, `secret = …`,
+	// `token: …`, `credential: …`. Restores the engine's GENERIC_SECRET
+	// coverage (anchor_required, excluded by default) for the free-text case
+	// the JSON sensitive-key path cannot see. Value charset excludes `[` so
+	// an earlier pattern's `[REDACTED-…]` marker is never re-consumed.
+	{
+		name: "GENERIC_SECRET",
+		regex:
+			/((?:api[_-]?|access[_-]?)?(?:secret|password|passwd|token|credential|credentials)\s*[:=]\s*["']?)([^\s"'[]{16,})/gi,
+		secretGroup: 2,
+	},
+	// Docker registry auth from a config's JSON `"auth"` key (base64 of
+	// user:password). Restores DOCKER_REGISTRY_AUTH coverage.
+	{
+		name: "DOCKER_REGISTRY_AUTH",
+		regex: /("auth"\s*:\s*")([A-Za-z0-9+/=]{16,})"/g,
 		secretGroup: 2,
 	},
 ]
@@ -340,8 +363,10 @@ const SENSITIVE_KEYS = new Set([
 	"privatekey",
 	"private_key",
 	"authorization",
-	// client_id/clientid and bare "auth" deliberately absent: identifiers,
-	// not secrets — redacting them destroys OAuth configs for zero gain.
+	"auth",
+	// `auth` stays on: an opaque token under {"auth": "…"} is common (docker
+	// registry configs). OAuth identifier keys remain out — client_id/clientid
+	// are public, and redacting them destroys configs for zero gain.
 ])
 
 function isSensitiveKey(key: string): boolean {

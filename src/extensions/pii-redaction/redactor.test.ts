@@ -656,16 +656,76 @@ describe("anchored splice and re-additions — review regressions", () => {
 
 	it("re-adds TELEGRAM_BOT_TOKEN and OKTA_TOKEN behind their keywords only", async () => {
 		const tg = ["123456789:AA", "x".repeat(33)].join("") // <digits>:<35 chars>
-		const okta = ["a", "0".repeat(41)].join("") // 42-char base62-ish
+		// Okta tokens vary in length (SSWS-prefixed are 44) — the range must
+		// tolerate short and long values behind the keyword.
+		const okta = (n: number) => ["a", "0".repeat(n - 1)].join("")
 		// Bare shapes survive (tier-registry default excludes them).
-		const bare = `token blob ${tg} and ${okta} tail`
+		const bare = `token blob ${tg} and ${okta(42)} tail`
 		expect(await redactText(bare)).toBe(bare)
-		// Keyword-anchored forms redact.
-		const anchored = await redactText(`telegram_bot_token=${tg} okta_token: ${okta}`)
+		// Keyword-anchored forms redact across the accepted length range.
+		const anchored = await redactText(
+			[
+				"telegram_bot_token=",
+				tg,
+				" okta_token: ",
+				okta(40),
+				" okta_api_token=",
+				okta(42),
+				" okta_token: ",
+				okta(44),
+			].join(""),
+		)
 		expect(anchored).not.toContain(tg)
-		expect(anchored).not.toContain(okta)
+		expect(anchored).not.toContain(okta(40))
+		expect(anchored).not.toContain(okta(42))
+		expect(anchored).not.toContain(okta(44))
 		expect(anchored).toContain("[REDACTED-TELEGRAM_BOT_TOKEN]")
-		expect(anchored).toContain("[REDACTED-OKTA_TOKEN]")
+		expect(anchored.split("[REDACTED-OKTA_TOKEN]").length - 1).toBe(3)
+	})
+
+	it("catches credential query parameters across separators and names", async () => {
+		// `;`-delimited connection strings (Azure SAS) and extended names.
+		const sas = ["SharedAccessSignature", "=sig=".slice(0, 4), "x".repeat(24)].join("")
+		const out = await redactText(
+			[
+				"https://x.servicebus.windows.net/?",
+				sas,
+				"&refresh_token=",
+				"r".repeat(24),
+				";client_secret=",
+				"c".repeat(24),
+			].join(""),
+		)
+		expect(out).not.toContain("x".repeat(24))
+		expect(out).not.toContain("r".repeat(24))
+		expect(out).not.toContain("c".repeat(24))
+		expect(out.split("[REDACTED-URL_WITH_CREDENTIALS]").length - 1).toBe(3)
+	})
+
+	it("re-adds GENERIC_SECRET behind keyword:value pairs only", async () => {
+		// Free-text secrets the JSON sensitive-key path cannot see.
+		const secret = ["opaque-prox", "y-token-99"].join("")
+		const anchored = await redactText(`the api_secret: ${secret} was rotated`)
+		expect(anchored).not.toContain(secret)
+		expect(anchored).toContain("[REDACTED-GENERIC_SECRET]")
+		// A 16+ run without a keyword passes (bare-shape precision).
+		const bare = `blob ${secret} tail`
+		expect(await redactText(bare)).toBe(bare)
+	})
+
+	it("re-adds DOCKER_REGISTRY_AUTH from the config's JSON auth key", async () => {
+		const creds = Buffer.from("svc:p4ssw0rd99").toString("base64")
+		const result = await redactText(`docker config {"auth": "${creds}"}`)
+		expect(result).not.toContain(creds)
+		expect(result).toContain("[REDACTED-DOCKER_REGISTRY_AUTH]")
+	})
+
+	it("force-redacts string values under an 'auth' JSON key", async () => {
+		const result = await redactObjectStrings({ auth: "opaque-proxy-token-99" })
+		expect(result).toEqual({ auth: "[REDACTED-SECRET_FIELD]" })
+		// Object-valued auth stays structural (OAuth configs).
+		const nested = await redactObjectStrings({ auth: { url: "https://sso.example.com" } })
+		expect(nested).toEqual({ auth: { url: "https://sso.example.com" } })
 	})
 })
 
