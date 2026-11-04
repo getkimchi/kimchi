@@ -11,6 +11,14 @@ vi.mock("../../utils/http.js", () => ({
 		(options?.fetchImpl ?? globalThis.fetch)(url, init),
 }))
 
+// Partial mock: only the version seam differs from the real module, so the
+// resource-attribute assertions can distinguish the detected version from
+// the package-dir version ("dev" in this environment).
+vi.mock("../../utils.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../utils.js")>()),
+	getDetectedVersion: vi.fn(() => "9.9.9-dev"),
+}))
+
 const BASE_NS = String(new Date("2026-06-02T10:00:00.000Z").getTime() * 1_000_000)
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
@@ -60,6 +68,10 @@ describe("sendLog", () => {
 		expect(resourceLog.resource.attributes).toContainEqual({
 			key: "service.name",
 			value: { stringValue: "kimchi" },
+		})
+		expect(resourceLog.resource.attributes).toContainEqual({
+			key: "user_agent.original",
+			value: { stringValue: "kimchi/9.9.9-dev" },
 		})
 
 		const logRecord = resourceLog.scopeLogs[0].logRecords[0]

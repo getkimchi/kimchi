@@ -11,6 +11,10 @@
  *
  * Build info is resolved once per process, off the session_start path: the
  * entry is appended when git answers, so session startup never waits on git.
+ * A session_shutdown handler holds the shutdown until pending appends settle,
+ * so a short-lived session (the ACP server disposes sessions after the
+ * awaited shutdown) still gets its entry. A partial entry (a git read failed)
+ * is appended but not cached — the next session_start retries git.
  */
 
 import { execFile } from "node:child_process"
@@ -102,20 +106,37 @@ export const runGit: GitRunner = async (args, cwd) => {
 }
 
 /**
- * @param resolve produces the build info; called once per process (again only if it rejected).
+ * @param resolve produces the build info; called once per process (again when it rejects or yields a partial entry).
  * @returns the extension, plus `settled()` — resolves once every pending append has run (for tests).
  */
 export function createBuildInfoExtension(resolve: () => Promise<KimchiBuildEntry>) {
 	let buildInfo: Promise<KimchiBuildEntry> | undefined
 	const pending = new Set<Promise<void>>()
 
+	/** A complete entry is cached for the process. A dev entry missing `commit` or
+	 *  `dirty` had a git read fail — that answer is transient (a missing binary, a
+	 *  lock, a timeout), so it must not be cached: the next session_start retries.
+	 *  A missing `branch` is legitimate (detached HEAD) and still complete. */
+	const complete = (entry: KimchiBuildEntry): boolean =>
+		entry.channel !== "dev" || (entry.commit !== undefined && entry.dirty !== undefined)
+
 	const load = (): Promise<KimchiBuildEntry> => {
-		buildInfo ??= resolve().catch((err: unknown) => {
-			buildInfo = undefined // a failure must not be cached for the rest of the process
-			throw err
-		})
-		return buildInfo
+		if (buildInfo) return buildInfo
+		const resolving = resolve().then(
+			(entry) => {
+				if (!complete(entry)) buildInfo = undefined // partial: retry git on the next session_start
+				return entry
+			},
+			(err: unknown) => {
+				buildInfo = undefined // a failure must not be cached for the rest of the process
+				throw err
+			},
+		)
+		buildInfo = resolving
+		return resolving
 	}
+
+	const settled = (): Promise<void> => Promise.all([...pending]).then(() => undefined)
 
 	const extension = (pi: ExtensionAPI): void => {
 		// Not awaited: session_start handlers run in sequence, and startup must not wait on git.
@@ -130,9 +151,15 @@ export function createBuildInfoExtension(resolve: () => Promise<KimchiBuildEntry
 				.finally(() => pending.delete(append))
 			pending.add(append)
 		})
+		// A short-lived session must not lose its entry to the async append: the
+		// ACP server emits session_shutdown and awaits every handler before it
+		// disposes the session, so holding this handler until the pending appends
+		// settle (bounded by git's per-call timeout) lets the entry land while
+		// the ctx is still live.
+		pi.on("session_shutdown", () => settled())
 	}
 
-	return Object.assign(extension, { settled: () => Promise.all([...pending]).then(() => undefined) })
+	return Object.assign(extension, { settled })
 }
 
 export default createBuildInfoExtension(() => resolveBuildInfo(getDetectedVersion(), SOURCE_ROOT, runGit))

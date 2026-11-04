@@ -233,4 +233,75 @@ describe("build-info extension", () => {
 		expect(warn).not.toHaveBeenCalled()
 		warn.mockRestore()
 	})
+
+	it("holds session_shutdown until a pending append settles, so a short-lived session keeps its entry", async () => {
+		let finish: (value: KimchiBuildEntry) => void = () => {}
+		const mock = createExtensionApi()
+		const extension = createBuildInfoExtension(() => new Promise((resolve) => (finish = resolve)))
+		extension(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+
+		// The ACP dispose sequence: session_shutdown is emitted and awaited
+		// BEFORE the session is disposed. While git is pending, the emission
+		// must not resolve — the handler is holding it.
+		let shutdownDone = false
+		const shutdown = mock.emit("session_shutdown", { reason: "quit" }).then(() => (shutdownDone = true))
+		await new Promise((resolve) => setTimeout(resolve, 10))
+		expect(shutdownDone).toBe(false)
+
+		finish(entry)
+		await shutdown
+		// dispose() runs only after the awaited shutdown: the entry landed while the ctx was live.
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry])
+	})
+
+	it("appends a partial entry (git failed) but retries git on the next session start", async () => {
+		const partial: KimchiBuildEntry = { schemaVersion: 1, version: "dev", channel: "dev" }
+		const completeEntry: KimchiBuildEntry = {
+			schemaVersion: 1,
+			version: "dev",
+			channel: "dev",
+			commit: "e8dd4fb5aa",
+			branch: "feat/x",
+			dirty: false,
+		}
+		const resolve = vi.fn().mockResolvedValueOnce(partial).mockResolvedValueOnce(completeEntry)
+		const mock = createExtensionApi()
+		const extension = createBuildInfoExtension(resolve)
+		extension(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+		await extension.settled()
+		await mock.emit("session_start", { reason: "resume" })
+		await extension.settled()
+		await mock.emit("session_start", { reason: "new" })
+		await extension.settled()
+
+		// Partial first, complete after the retry, then the cached complete entry.
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([partial, completeEntry, completeEntry])
+		expect(resolve).toHaveBeenCalledTimes(2)
+	})
+
+	it("caches a dev entry whose branch alone is missing (detached HEAD)", async () => {
+		const detached: KimchiBuildEntry = {
+			schemaVersion: 1,
+			version: "dev",
+			channel: "dev",
+			commit: "e8dd4fb5aa",
+			dirty: false,
+		}
+		const resolve = vi.fn(async () => detached)
+		const mock = createExtensionApi()
+		const extension = createBuildInfoExtension(resolve)
+		extension(mock.api)
+
+		await mock.emit("session_start", { reason: "startup" })
+		await extension.settled()
+		await mock.emit("session_start", { reason: "new" })
+		await extension.settled()
+
+		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([detached, detached])
+		expect(resolve).toHaveBeenCalledTimes(1)
+	})
 })

@@ -43,9 +43,17 @@ entry's `version` field.
 
 ## Timing and failures
 
-Build info is resolved once per process. On a failure it's tried again at the
-next `session_start`. The `session_start` handler doesn't wait for it: the entry is
-appended when git answers (at most 2 s per git call), so it may come a few
-entries after `session_start`, and session startup never waits on git. A field
-git can't answer is left out. If the session is replaced before the answer
-arrives, no entry is written for it; its successor gets its own.
+Build info is resolved once per process. A rejected resolve is tried again at
+the next `session_start`, and so is a partial one: when a git read fails the
+entry is still written with the fields git did answer (a field git can't
+answer is left out), but it isn't cached — the next `session_start` retries
+git. A complete entry is cached; a dev entry missing only `branch` is still
+complete (a detached HEAD legitimately has none). The `session_start` handler
+doesn't wait for the resolve: the entry is appended when git answers (at most
+2 s per git call), so it may come a few entries after `session_start`, and
+session startup never waits on git. A `session_shutdown` handler holds the
+shutdown until the pending append settles, so a short-lived session still
+gets its entry — the ACP server awaits shutdown handlers before disposing
+the session. A session replaced before the answer arrives (its ctx is
+invalidated without an awaited shutdown) gets no entry; its successor gets
+its own.
