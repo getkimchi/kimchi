@@ -2,7 +2,16 @@
 // session install at a time (see docs/auto-update.md). The seam is the
 // lock file on disk: observable, not implementation detail.
 
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -128,6 +137,22 @@ describe("acquireUpdaterLock", () => {
 		expect(readFileSync(lockPath, "utf-8")).toBe(stolen)
 		first?.release()
 		second?.release()
+	})
+
+	it("keeps heartbeating after a rival's failed claim moves the lock aside and restores it", async () => {
+		const lock = acquireUpdaterLock({ lockPath, heartbeatMs: 20 })
+		const aside = `${lockPath}.aside`
+		renameSync(lockPath, aside)
+		await new Promise((resolve) => setTimeout(resolve, 60))
+		// A beat during the window must not recreate the file: the rival is
+		// still deciding whose lock this is.
+		expect(existsSync(lockPath)).toBe(false)
+		renameSync(aside, lockPath)
+		const restoredAt = (JSON.parse(readFileSync(lockPath, "utf-8")) as { at: number }).at
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		const laterAt = (JSON.parse(readFileSync(lockPath, "utf-8")) as { at: number }).at
+		expect(laterAt).toBeGreaterThan(restoredAt)
+		lock?.release()
 	})
 
 	it("does not evict a rival that won the takeover after we judged the lock stale", () => {

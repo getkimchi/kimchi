@@ -266,6 +266,10 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 
 	const current = getVersion()
 
+	// A dry run installs nothing, so it needs no lock, and holding one would make
+	// a background tick skip.
+	if (flags.dryRun) return checkAndInstall(flags, current)
+
 	// Share the updater lock with the background ticks: a session mid-install
 	// and a CLI install would race on the share-directory swap (applyUpdate is
 	// atomic for the binary but not for vendor/bridge copies).
@@ -275,13 +279,13 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 		return 1
 	}
 	try {
-		return await updateSelfLocked(flags, current)
+		return await checkAndInstall(flags, current)
 	} finally {
 		lock.release()
 	}
 }
 
-async function updateSelfLocked(
+async function checkAndInstall(
 	flags: Pick<UpdateFlags, "canary" | "dryRun" | "force" | "version">,
 	current: string,
 ): Promise<number> {

@@ -144,9 +144,10 @@ async function computeTick(deps: TickDeps & { store: TickStore }): Promise<TickR
 	// session. Compare against the recorded last-installed tag instead, and
 	// confirm it against the files on disk: an external installer can put an
 	// older version back, and the record alone would then block this release.
+	const targetVersion = checkResult.tag.replace(/^v/, "")
 	const alreadyInstalled =
-		store.loadLastInstalled()?.tag === checkResult.tag &&
-		(installedVersion === null || installedVersion.replace(/^v/, "") === checkResult.tag.replace(/^v/, ""))
+		store.loadLastInstalled()?.tag.replace(/^v/, "") === targetVersion &&
+		(installedVersion === null || installedVersion.replace(/^v/, "") === targetVersion)
 	if (alreadyInstalled) return { outcome: "no-update" }
 
 	try {

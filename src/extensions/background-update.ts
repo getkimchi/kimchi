@@ -96,6 +96,17 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 		type: "boolean",
 	})
 
+	let stopActiveLoop: (() => void) | undefined
+
+	// Registered at load, not from session_start: native-compat hands the runner a
+	// copy of the handler map, so a first handler for an event added after load
+	// never fires. A loop that survives its session reaches `ctx.ui` on the
+	// replaced session, which throws and kills the process.
+	pi.on("session_shutdown", () => {
+		stopActiveLoop?.()
+		stopActiveLoop = undefined
+	})
+
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
 		// Background updates are a TUI-session concern only: protocol modes
 		// (ACP/JSON/RPC/print/export) neither show notices nor own updates
@@ -183,8 +194,6 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 			if (interval !== undefined) clearInterval(interval)
 		}
 
-		pi.on("session_shutdown", () => {
-			stopTimers()
-		})
+		stopActiveLoop = stopTimers
 	})
 }

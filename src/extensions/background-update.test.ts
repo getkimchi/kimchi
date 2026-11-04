@@ -126,7 +126,6 @@ describe("backgroundUpdateExtension", () => {
 		const setStatus = vi.fn()
 		const ctx = createContext({ mode, hasUI: mode === "tui" || mode === "rpc", ui: { setStatus } })
 		await getHandler("session_start")({}, ctx)
-		// Early-bail paths (no UI, static gate) register no shutdown handler.
 		return { shutdown: getHandlers("session_shutdown")[0], setStatus }
 	}
 
@@ -286,6 +285,16 @@ describe("backgroundUpdateExtension", () => {
 		loadAutoUpdateSettingMock.mockReturnValue(false)
 		await vi.advanceTimersByTimeAsync(90 * 60_000)
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
+	})
+
+	it("registers its shutdown handler at load, since a first handler added later never fires", async () => {
+		const { api, getHandler, getHandlers } = createExtensionApi()
+		backgroundUpdateExtension(api)
+		expect(getHandlers("session_shutdown")).toHaveLength(1)
+
+		await getHandler("session_start")({}, createContext({ mode: "tui", hasUI: true, ui: { setStatus: vi.fn() } }))
+
+		expect(getHandlers("session_shutdown")).toHaveLength(1)
 	})
 
 	it("clears timers on session shutdown", async () => {

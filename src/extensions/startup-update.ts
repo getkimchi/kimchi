@@ -87,9 +87,15 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 				// opt out. Excluded in ACP (see the extension comment above) —
 				// IS_ACP_MODE is checked first so ACP sessions never even read
 				// the notice flag.
-				// --no-auto-update skips it too: nothing updates this session, so the
-				// announcement waits for one where it's true.
-				if (!IS_ACP_MODE && getParsedCliArgs().options["no-auto-update"] !== true && !loadAutoUpdateNoticeShown()) {
+				// --no-auto-update and KIMCHI_NO_UPDATE_CHECK skip it too: nothing
+				// updates in the background, so the announcement waits for a session
+				// where it's true.
+				if (
+					!IS_ACP_MODE &&
+					!isUpdateCheckDisabled() &&
+					getParsedCliArgs().options["no-auto-update"] !== true &&
+					!loadAutoUpdateNoticeShown()
+				) {
 					pi.appendEntry(AUTO_UPDATE_NOTICE_ENTRY, AUTO_UPDATE_NOTICE)
 					markAutoUpdateNoticeShown()
 				}

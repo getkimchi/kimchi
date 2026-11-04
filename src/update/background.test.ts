@@ -168,6 +168,23 @@ describe("runUpdateTick", () => {
 		expect(store2.saveLastInstalled).toHaveBeenCalledWith("canary")
 	})
 
+	it.each([
+		{ recorded: "0.0.23", tag: "v0.0.23" },
+		{ recorded: "v0.0.23", tag: "0.0.23" },
+	])("dedups a recorded tag $recorded against release tag $tag", async ({ recorded, tag }) => {
+		const apply = vi.fn()
+		const { store } = makeStore(recorded, "v0.0.23")
+		const result = await runUpdateTick({
+			currentVersion: "0.0.22",
+			acquireLock: () => makeLock(),
+			checkForUpdate: async () => hasUpdate(tag),
+			applyUpdate: apply,
+			store,
+		})
+		expect(result).toEqual({ outcome: "no-update" })
+		expect(apply).not.toHaveBeenCalled()
+	})
+
 	it("installs and records the applied version when the tag is new", async () => {
 		const lock = makeLock()
 		const apply = vi.fn().mockResolvedValue(undefined)

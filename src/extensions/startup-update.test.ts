@@ -256,6 +256,28 @@ describe("startupUpdateExtension", () => {
 			expect(setStatus).not.toHaveBeenCalled()
 		})
 
+		it("shows no notice and leaves the flag unmarked with KIMCHI_NO_UPDATE_CHECK, since nothing updates in the background", async ({
+			onTestFinished,
+		}) => {
+			vi.stubEnv("KIMCHI_NO_UPDATE_CHECK", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			getVersionMock.mockReturnValue("0.0.22")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
+			const { handlers, appendEntry, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx } = makeCtx({ hasUI: true })
+			await handler({}, ctx)
+
+			expect(appendEntry).not.toHaveBeenCalled()
+			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
+		})
+
 		it("shows no notice and leaves the flag unmarked with --no-auto-update, since nothing updates this session", async () => {
 			cliOptions.current = { "no-auto-update": true }
 			getVersionMock.mockReturnValue("0.0.22")

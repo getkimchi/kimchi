@@ -39,6 +39,9 @@ export const FAKE_PROVIDER = "fake"
 
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
+/** Directory name a `seedHome` hook must use for a private copy of the binary
+ *  (see SeedHomeResult.binaryPath), so teardown recognises it as ours. */
+export const THROWAWAY_INSTALL_DIR = "kimchi-e2e-install"
 
 // Per-launch pidfile so teardown can kill a kimchi that ignored Ctrl-C/SIGINT
 // (e.g. a process stuck in a synchronous loop, where signal handlers starve).
@@ -58,6 +61,8 @@ export interface KimchiFixture {
 	seedResult?: unknown
 	/** Env vars returned by `seedHome`, merged into the launched process env. */
 	seedEnv: Record<string, string>
+	/** Binary returned by `seedHome`, launched instead of BINARY_PATH. */
+	binaryPath?: string
 	/** The test's trustWorkDir option — consulted by launchKimchi (see CreateKimchiFixtureOptions). */
 	trustWorkDir?: boolean
 	providerId: string
@@ -90,6 +95,9 @@ export interface SeedHomeResult {
 	env?: Record<string, string>
 	/** Exposed on the fixture as `seedResult` for the test body to read. */
 	data?: unknown
+	/** Launch this binary instead of BINARY_PATH. Must live under a
+	 *  THROWAWAY_INSTALL_DIR directory. */
+	binaryPath?: string
 }
 
 export interface CreateKimchiFixtureOptions {
@@ -244,7 +252,9 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		const seedIsResult =
 			rawSeed !== null &&
 			typeof rawSeed === "object" &&
-			("env" in (rawSeed as SeedHomeResult) || "data" in (rawSeed as SeedHomeResult))
+			("env" in (rawSeed as SeedHomeResult) ||
+				"data" in (rawSeed as SeedHomeResult) ||
+				"binaryPath" in (rawSeed as SeedHomeResult))
 		const seedEnv = {
 			// Keep the /v1/me identity lookup (telemetry pre-session) on the fake
 			// server; otherwise it would reach the real app API.
@@ -278,6 +288,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			mcp,
 			seedResult,
 			seedEnv,
+			binaryPath: seedIsResult ? (rawSeed as SeedHomeResult).binaryPath : undefined,
 			trustWorkDir: options.trustWorkDir,
 			providerId,
 			initialModel,
@@ -384,7 +395,7 @@ export function launchKimchi(
 		...((fixture.ollama ? [`OLLAMA_HOST=${sh(fixture.ollama.baseUrl)}`] : []) as string[]),
 		...envEntries,
 		"TERM=xterm-256color",
-		sh(BINARY_PATH),
+		sh(fixture.binaryPath ?? BINARY_PATH),
 		...(fixture.initialModel === false
 			? []
 			: [`--provider ${sh(fixture.providerId)}`, `--model ${sh(fixture.initialModel)}`]),
@@ -491,7 +502,7 @@ function reapLaunchedKimchi(terminal: Terminal): void {
 			if (alive) {
 				// Guard against PID reuse: only kill when the process is our binary.
 				const line = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" })
-				if (line.includes(BINARY_PATH)) process.kill(pid, "SIGKILL")
+				if (line.includes(BINARY_PATH) || line.includes(`/${THROWAWAY_INSTALL_DIR}/`)) process.kill(pid, "SIGKILL")
 			}
 		}
 	} catch {

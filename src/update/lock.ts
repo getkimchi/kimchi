@@ -195,8 +195,8 @@ function publishExclusive(
  * we read it. A plain delete can't tell the two apart: rename moves whatever is
  * there now aside, then we compare it to what we judged. A mismatch means we
  * took a live lock, so it goes back and we lose the race. The holder's heartbeat
- * could read the file as missing during that instant and go quiet; its lock
- * stays valid for the staleness window, far longer than any install step.
+ * can read the file as missing during that instant; it skips that beat and
+ * resumes once the file is back.
  *
  * Returns true when the caller may retry the create.
  */
@@ -252,7 +252,13 @@ function startHeartbeat(lockPath: string, owner: LockContents, now: () => number
 	const timer = setInterval(() => {
 		try {
 			const current = readLock(lockPath)
-			if (current === null || current.pid !== owner.pid || current.nonce !== owner.nonce) {
+			// Missing or unparseable doesn't prove a theft: a rival's claim moves the
+			// file aside for an instant and may restore it, and a rival's fallback
+			// create can briefly show an empty file. Writing now could overwrite the
+			// rival, and stopping would let a lock we still hold age out. Wait for
+			// the next beat.
+			if (current === null) return
+			if (current.pid !== owner.pid || current.nonce !== owner.nonce) {
 				// Stolen: go quiet — refreshing would overwrite the usurper's record.
 				clearInterval(timer)
 				return

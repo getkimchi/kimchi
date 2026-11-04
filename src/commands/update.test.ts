@@ -453,6 +453,15 @@ describe("self-update takes the updater lock", () => {
 		expect(applyUpdateMock).not.toHaveBeenCalled()
 	})
 
+	it("--dry-run checks without the updater lock, so it can't make a background tick skip", async () => {
+		acquireUpdaterLockMock.mockReturnValue(null)
+		const code = await runUpdate(["self", "--dry-run"])
+		expect(code).toBe(0)
+		expect(acquireUpdaterLockMock).not.toHaveBeenCalled()
+		expect(checkForUpdateMock).toHaveBeenCalledOnce()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
 	it("does not let an unwritable lock file block a manual update", async () => {
 		await runUpdate(["self", "--force"])
 		expect(acquireUpdaterLockMock).toHaveBeenCalledWith({ allowUnavailable: true })
