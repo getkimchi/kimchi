@@ -231,7 +231,7 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
-		it("includes bash_control wherever bash is (the pair moves as one tool)", () => {
+		it("includes bash_control wherever bash is (the pair moves together)", () => {
 			expect(names).toContain("bash_control")
 			// The ferment implementation profile keeps the pair too.
 			expect(namesOf(getToolsForProfile("implementation-ferment"))).toContain("bash_control")

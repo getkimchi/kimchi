@@ -179,7 +179,8 @@ describe("coupleBashControlToolArg", () => {
 	})
 
 	it("honors --exclude-tools by extending it to the whole pair", () => {
-		// Excluding the control tool removes bash too — they are one tool.
+		// Excluding the control tool removes bash too — they are always
+		// enabled and disabled together.
 		expect(coupleBashControlToolArg(["--tools", "read,bash", "--exclude-tools", "bash_control"])).toEqual([
 			"--tools",
 			"read,bash",

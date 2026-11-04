@@ -222,9 +222,10 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	// session construction (initialActiveToolNames); every snapshot must
 	// respect it, otherwise unioning `pi.getAllTools()` or the catalog
 	// re-surfaces tools (e.g. `write`) the user deactivated. `bash_control` is
-	// part of the bash tool, not a separately-configured builtin: it is kept
-	// exactly when `bash` is kept, so a `defaultTools` list that does not name
-	// it (it never can — it is not a builtin) cannot split the pair.
+	// not a separately-configured builtin — it exists to manage `bash`'s
+	// background processes, so it is kept exactly when `bash` is kept: a
+	// `defaultTools` list that does not name it (it never can — it is not a
+	// builtin) cannot split the pair.
 	allowedNames = allowedNames.filter(
 		(name) =>
 			isDefaultToolEnabled(name) ||

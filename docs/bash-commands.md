@@ -49,7 +49,7 @@ The watcher's exit is delivered like any other exit result. Include failure patt
 
 ## Tool-set restrictions
 
-`bash` and `bash_control` are one tool. Allowing `bash` — via `--tools` — also allows `bash_control`, and excluding either member (`--exclude-tools`) excludes the whole tool: a session that can start background commands can always stop, inspect, or wait on them, and a session without the control tool has no `bash` at all. Plan mode keeps the pair too (`bash` stays gated per-command by the read-only gate; `bash_control` manages only processes the session itself started).
+`bash` and `bash_control` are two separate tools that are always enabled and disabled together. Allowing `bash` — via `--tools` — also allows `bash_control`, and excluding either member (`--exclude-tools`) excludes both: a session that can start background commands can always stop, inspect, or wait on them, and a session without the control tool has no `bash` at all. Plan mode keeps the pair too (`bash` stays gated per-command by the read-only gate; `bash_control` manages only processes the session itself started).
 
 If a session ever ends up with live background commands and no callable `bash_control` anyway, two safety nets apply: `bash` executions fall back to plain blocking mode with a deterministic 120-second timeout (reporting `Command timed out after N seconds`), and the completion guard resolves the cohort itself at task completion — it stops the session's processes, delivers their results, and reports what it stopped, so the run ends instead of re-prompting for a disposition the session cannot make.
 

@@ -1,5 +1,6 @@
 /**
- * CLI tool-allowlist coupling: `bash` and `bash_control` are ONE tool.
+ * CLI tool-allowlist coupling: `bash` and `bash_control` are always enabled
+ * and disabled together.
  *
  * The background `bash` tool and its `bash_control` companion are
  * registered together (src/cli.ts), but upstream pi's `--tools` and
@@ -18,9 +19,10 @@
  *  - a `--tools` allowlist that admits `bash` but not `bash_control` gets
  *    `bash_control` appended;
  *  - `--exclude-tools` naming either member (`bash` or `bash_control`,
- *    exact name or pattern) gets the other appended, so the whole tool
- *    goes away — `bash_control` cannot be excluded separately from `bash`
- *    because it is part of the bash tool.
+ *    exact name or pattern) gets the other appended, so both tools go
+ *    away — `bash_control` cannot be excluded separately from `bash`,
+ *    because background `bash` without its control tool is the runaway
+ *    state this coupling exists to prevent.
  *
  * (pi applies `--exclude-tools` over the allowlist, so the extended
  * denylist is authoritative: `--tools bash --exclude-tools bash_control`
@@ -109,8 +111,9 @@ export function createToolNameMatcher(entries: readonly string[]): (name: string
 /**
  * The pair coupling decision for one parsed argv: what to append to the
  * `--tools` allowlist and to the `--exclude-tools` denylist so `bash` and
- * `bash_control` move as ONE tool (they are registered together, and the
- * control tool is part of the bash tool's contract).
+ * `bash_control` are enabled and disabled together (they are registered
+ * together, and the control tool exists to manage the bash tool's
+ * background processes — neither tool is useful without the other).
  */
 export interface BashControlCoupling {
 	/** Entries to append to the `--tools` allowlist. */

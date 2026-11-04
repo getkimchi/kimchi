@@ -8,7 +8,8 @@
  * run terminates once the command finishes.
  *
  * Scenario B (the repro): excluding `bash_control` removes the whole bash
- * tool — they are one unit — so the model cannot even start a command it
+ * tool — they are always enabled and disabled together — so the model
+ * cannot even start a command it
  * could never stop, and the run terminates instead of looping on the
  * completion guard. Pre-fix, the same invocation handed `sleep 600` to the
  * background with no control tool and ran away (hundreds of turns polling
@@ -179,7 +180,7 @@ it("couples an allowlist that names bash with bash_control, so a headless run ca
 	)
 })
 
-it("removes the whole bash tool when bash_control is excluded, so a headless run whose command never ends terminates", {
+it("removes both bash tools when bash_control is excluded, so a headless run whose command never ends terminates", {
 	timeout: 60_000,
 }, async () => {
 	await withFakeServer(
