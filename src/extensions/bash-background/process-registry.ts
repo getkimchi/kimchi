@@ -58,6 +58,19 @@ export const DEFAULT_BASH_PROCESS_LIMIT_SECONDS = 3600
 /** Reason recorded when the harness safety limit kills a process. */
 export const SAFETY_LIMIT_REASON = "safety-limit"
 
+/**
+ * Inline output budget for terminal results. Output beyond either limit is
+ * cut to its tail inline, and the complete output is kept in the process
+ * log file (created as soon as output exceeds the budget, or at handoff).
+ * Sized from trace data: the 99th-percentile bash result is ~6 KB, so the
+ * budget leaves nearly every result untouched while making unfiltered
+ * output safe to request (no need to pipe through head/tail).
+ */
+export const INLINE_OUTPUT_MAX_BYTES = 8 * 1024
+
+/** Inline line budget for terminal results (see INLINE_OUTPUT_MAX_BYTES). */
+export const INLINE_OUTPUT_MAX_LINES = 200
+
 /** Bounded display history for completed commands. */
 export const MAX_COMPLETED_PROCESSES = 100
 
@@ -115,6 +128,8 @@ export interface IncrementalSnapshot {
 	omittedBytes: number
 	/** Total stream bytes appended since spawn. */
 	totalBytes: number
+	/** Path of the complete output log, once one exists (see `persistOutput`). */
+	logPath?: string
 	state: ProcessState
 	exitCode: number | null
 	reason: string | null
@@ -173,6 +188,19 @@ function defaultTempFilePath(prefix: string): string {
 
 function byteLength(text: string): number {
 	return Buffer.byteLength(text, "utf-8")
+}
+
+/**
+ * Index where the last `maxLines` lines of `text` begin (0 when it already
+ * fits). A trailing newline terminates the last line; it does not start one.
+ */
+export function tailLinesStart(text: string, maxLines: number): number {
+	let newlines = 0
+	const end = text.endsWith("\n") ? text.length - 1 : text.length
+	for (let i = end - 1; i >= 0; i--) {
+		if (text[i] === "\n" && ++newlines === maxLines) return i + 1
+	}
+	return 0
 }
 
 /**
@@ -255,6 +283,19 @@ class OutputAccumulator {
 		return { content: truncation.content, truncation, fullOutputPath: this.tempFilePath }
 	}
 
+	/** Path of the complete output log, or undefined while output is still memory-only. */
+	get path(): string | undefined {
+		return this.tempFilePath
+	}
+
+	/**
+	 * Start the complete output log now (idempotent): buffered chunks are
+	 * written first, so the log holds every byte from the start.
+	 */
+	persist(): string {
+		return this.ensureTempFile()
+	}
+
 	async closeTempFile(): Promise<void> {
 		if (!this.tempFileStream) {
 			if (this.tempFileError) throw this.tempFileError
@@ -331,16 +372,18 @@ class OutputAccumulator {
 		)
 	}
 
-	private ensureTempFile(): void {
-		if (this.tempFilePath) return
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix)
+	private ensureTempFile(): string {
+		if (this.tempFilePath) return this.tempFilePath
+		const path = defaultTempFilePath(this.tempFilePrefix)
+		this.tempFilePath = path
 		mkdirSync(tmpdir(), { recursive: true })
-		this.tempFileStream = createWriteStream(this.tempFilePath)
+		this.tempFileStream = createWriteStream(path)
 		this.tempFileStream.on("error", (error) => {
 			this.tempFileError ??= error
 		})
 		for (const chunk of this.rawChunks) this.writeTempFile(chunk)
 		this.rawChunks = []
+		return path
 	}
 
 	private writeTempFile(data: Buffer): void {
@@ -507,17 +550,24 @@ export interface ProcessRegistry {
 	snapshotTail(handle: string, maxBytes?: number): TailSnapshot
 	/**
 	 * Incremental snapshot of unseen output since the entry's delivered
-	 * cursor, capped at `maxBytes` of retained text. Pure: does NOT advance
+	 * cursor, capped at `maxBytes` of retained text and its last `maxLines`
+	 * lines (both default to the inline output budget). Pure: does NOT advance
 	 * the cursor — call `markDelivered` once the snapshot is part of an
 	 * authoritative result or message.
 	 */
-	snapshotSince(handle: string, maxBytes?: number): IncrementalSnapshot
+	snapshotSince(handle: string, maxBytes?: number, maxLines?: number): IncrementalSnapshot
 	/** Advance the entry's delivered cursor after an authoritative delivery. */
 	markDelivered(handle: string, cursor: number): void
 	displaySnapshot(handle: string, maxBytes?: number): ProcessDisplaySnapshot | undefined
 	listDisplaySnapshots(maxBytes?: number): readonly ProcessDisplaySnapshot[]
 	/** Initial + settled terminal snapshots; removal/shutdown detach observers. */
 	observeDisplay(handle: string, listener: (snapshot: ProcessDisplaySnapshot) => void, maxBytes?: number): () => void
+	/**
+	 * Start the process's complete output log now (idempotent) and return
+	 * its path. Called at handoff so every backgrounded command has a
+	 * greppable log from the moment the model receives its handle.
+	 */
+	persistOutput(handle: string): string | undefined
 	/** Full output snapshot (truncated + temp-file spill, like upstream). */
 	finalSnapshot(handle: string, fullOutput?: boolean): FinalSnapshot | undefined
 	/** Final result for a recently removed command, until eviction or session shutdown. */
@@ -542,6 +592,13 @@ export interface ProcessRegistry {
 	releaseTerminal(handle: string): void
 	/** Remove an entry, keeping any reported spill file readable until shutdown. */
 	remove(handle: string): Promise<void>
+	/** Number of tracked processes still running. */
+	runningCount(): number
+	/**
+	 * Observe the running-process count: `listener` fires with the new count
+	 * whenever a spawn, kill, or exit changes it. Returns an unsubscribe.
+	 */
+	onRunningCountChange(listener: (count: number) => void): () => void
 	/** Kill every still-running entry and clear the registry. */
 	shutdown(): Promise<void>
 	/** Number of entries currently tracked. */
@@ -577,11 +634,39 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	const runningCountListeners = new Set<(count: number) => void>()
+	let lastRunningCount = 0
+
+	function runningCount(): number {
+		let count = 0
+		for (const entry of entries.values()) if (entry.state === "running") count++
+		return count
+	}
+
+	function notifyRunningCount(): void {
+		const count = runningCount()
+		if (count === lastRunningCount) return
+		lastRunningCount = count
+		for (const listener of [...runningCountListeners]) {
+			try {
+				listener(count)
+			} catch {
+				// A broken observer must never affect process lifecycle.
+			}
+		}
+	}
+
+	function onRunningCountChange(listener: (count: number) => void): () => void {
+		runningCountListeners.add(listener)
+		return () => runningCountListeners.delete(listener)
+	}
+
 	function killInternal(entry: ProcessEntry, reason: string): void {
 		if (entry.state !== "running") return
 		entry.state = "stopped"
 		entry.reason = reason
 		clearDeadlineTimer(entry)
+		notifyRunningCount()
 		// Aborting triggers upstream `killProcessTree` inside `exec`.
 		try {
 			entry.controller.abort()
@@ -618,9 +703,9 @@ export function createProcessRegistry(): ProcessRegistry {
 		const controller = new AbortController()
 		const buffer = new OutputRingBuffer(opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES)
 		const accumulator = new OutputAccumulator({
-			maxLines: 2000,
-			maxBytes: 50_000,
-			tempFilePrefix: "pi-bash",
+			maxLines: INLINE_OUTPUT_MAX_LINES,
+			maxBytes: INLINE_OUTPUT_MAX_BYTES,
+			tempFilePrefix: "kimchi-bash",
 		})
 
 		// Declared before the exec callbacks so the onData/settlement closures
@@ -661,6 +746,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				accumulator.finish()
 				entry.finishedAt = Date.now()
 				notifyDisplay(handle)
+				notifyRunningCount()
 			})
 
 		entry = {
@@ -687,6 +773,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 		entries.set(handle, entry)
 		armDeadline(entry)
+		notifyRunningCount()
 		return handle
 	}
 
@@ -766,7 +853,11 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
-	function snapshotSince(handle: string, maxBytes: number = DEFAULT_TAIL_BYTES): IncrementalSnapshot {
+	function snapshotSince(
+		handle: string,
+		maxBytes: number = DEFAULT_TAIL_BYTES,
+		maxLines: number = INLINE_OUTPUT_MAX_LINES,
+	): IncrementalSnapshot {
 		const entry = entries.get(handle)
 		if (!entry) {
 			return {
@@ -791,6 +882,7 @@ export function createProcessRegistry(): ProcessRegistry {
 				newBytes,
 				omittedBytes: 0,
 				totalBytes: appendedTotal,
+				logPath: entry.accumulator.path,
 				state: entry.state,
 				exitCode: entry.exitCode,
 				reason: entry.reason,
@@ -828,7 +920,15 @@ export function createProcessRegistry(): ProcessRegistry {
 				textByteLength -= dropped
 			}
 		}
-		const { text } = entry.buffer.snapshotRange(textStart, textByteLength)
+		let { text } = entry.buffer.snapshotRange(textStart, textByteLength)
+		// Apply the inline line budget too: thousands of short lines fit the
+		// byte cap but not the documented 200-line budget. Dropped leading
+		// lines count as omitted, so the model is pointed at the log.
+		const keepFrom = tailLinesStart(text, maxLines)
+		if (keepFrom > 0) {
+			textStart += byteLength(text.slice(0, keepFrom))
+			text = text.slice(keepFrom)
+		}
 		const skippedUnseen = Math.max(0, textStart - unseenStart)
 		return {
 			text,
@@ -836,6 +936,7 @@ export function createProcessRegistry(): ProcessRegistry {
 			newBytes,
 			omittedBytes: evictedUnseen + skippedUnseen,
 			totalBytes: appendedTotal,
+			logPath: entry.accumulator.path,
 			state: entry.state,
 			exitCode: entry.exitCode,
 			reason: entry.reason,
@@ -898,6 +999,10 @@ export function createProcessRegistry(): ProcessRegistry {
 		}
 	}
 
+	function persistOutput(handle: string): string | undefined {
+		return entries.get(handle)?.accumulator.persist()
+	}
+
 	async function closeOutput(entry: ProcessEntry): Promise<void> {
 		await entry.accumulator.closeTempFile().catch(() => {})
 		const path = entry.accumulator.snapshot().fullOutputPath
@@ -931,6 +1036,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		displayObservers.clear()
 		entries.clear()
 		completed.clear()
+		notifyRunningCount()
+		runningCountListeners.clear()
 		await Promise.allSettled([...spillPaths].map((p) => rm(p, { force: true })))
 		spillPaths.clear()
 	}
@@ -943,6 +1050,7 @@ export function createProcessRegistry(): ProcessRegistry {
 		snapshotTail,
 		snapshotSince,
 		markDelivered,
+		persistOutput,
 		finalSnapshot,
 		completedSnapshot: (handle) => completed.get(handle),
 		kill,
@@ -951,6 +1059,8 @@ export function createProcessRegistry(): ProcessRegistry {
 		releaseTerminal,
 		getEntry,
 		remove,
+		runningCount,
+		onRunningCountChange,
 		shutdown,
 		get size() {
 			return entries.size

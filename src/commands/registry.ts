@@ -26,7 +26,7 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "setup", summary: "Run the interactive setup wizard", run: runSetup },
 	{
 		name: "login",
-		summary: "Log in via browser — or to a self-hosted console URL — and update your API key",
+		summary: "Log in to Kimchi (SSO, account, or API key) — or to a self-hosted console URL",
 		run: runLogin,
 	},
 	{ name: "setup-tools", summary: "Configure coding tools in one pass", run: runSetupTools },
@@ -36,7 +36,11 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "openclaw", summary: "Configure OpenClaw to use Kimchi", run: runOpenClaw },
 	{ name: "gsd2", summary: "Install / configure GSD2 with Kimchi", run: runGsd2 },
 	{ name: "codex", summary: "Configure Codex to use Kimchi (and launch it)", run: runCodex },
-	{ name: "bridge", summary: "Manage the Kimchi work-reporting plugin (setup|disable|remove|status)", run: runBridge },
+	{
+		name: "bridge",
+		summary: "Manage the Kimchi work-reporting plugin (setup|enable|disable|remove|status)",
+		run: runBridge,
+	},
 	{ name: "update", summary: "Check for and install Kimchi/package updates", run: runUpdate },
 	{ name: "config", summary: "Inspect or change kimchi config (e.g. telemetry)", run: runConfig },
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },

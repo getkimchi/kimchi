@@ -8,11 +8,13 @@
  *  1. Spawn the command under the session process registry (no model-set
  *     timeout — the registry applies the harness-owned safety limit).
  *  2. Wait for natural exit or the command's ONE-TIME initial handoff
- *     deadline (bounded, ≤ 2s), whichever comes first.
+ *     deadline (bounded, ≤ 15s), whichever comes first. In user-facing
+ *     sessions a queued user message hands off early.
  *  3. If it exits, return the normal final result with no live handle.
- *  4. If it is still running, resolve with the handle, identity/activity
- *     facts, and unseen output; the process stays tracked and its exit is
- *     delivered automatically.
+ *  4. If it is still running, start its complete output log, then resolve
+ *     with the handle, identity/activity facts, the log path, and unseen
+ *     output; the process stays tracked and its exit is delivered
+ *     automatically.
  *
  * The model-facing schema advertises `{ command, description? }`. Legacy
  * `timeout`/`checkin_interval` fields from resumed sessions and ACP
@@ -34,7 +36,7 @@ import {
 } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
-import { handoffGuidanceText, runningResultText, terminalResultText } from "./status-text.js"
+import { handoffGuidanceText, outputLogNoticeText, runningResultText, terminalResultText } from "./status-text.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 import { throwIfTerminal } from "./terminal-status.js"
 
@@ -84,6 +86,9 @@ function fallbackState(
 		coordinator: createReviewCoordinator({ registry }),
 		delivery: createTerminalDelivery(),
 		limitSeconds,
+		// Isolated fallback (no session owning the state): default to the
+		// strictest policy — unattended keeps waits and the completion guard.
+		sessionKind: "unattended",
 		cwd,
 	}
 	return { state, registry }
@@ -148,7 +153,8 @@ export function createBackgroundBashToolDefinition(
 			: undefined
 		let outcome: Awaited<ReturnType<typeof coordinator.awaitInitialHandoff>>
 		try {
-			outcome = await coordinator.awaitInitialHandoff(handle, signal)
+			const pendingUserInput = state.sessionKind === "user-facing" ? () => ctx.hasPendingMessages() : undefined
+			outcome = await coordinator.awaitInitialHandoff(handle, signal, pendingUserInput)
 		} catch (error) {
 			unsubscribe?.()
 			throw error
@@ -189,9 +195,12 @@ export function createBackgroundBashToolDefinition(
 				},
 			})
 			await registry.remove(handle).catch(() => {})
-			throwIfTerminal(snapshot, fullOutput, deadlineSeconds)
-
 			const truncated = final?.truncation?.truncated === true
+			// A failing command is exactly when the agent needs to search its
+			// output: the error carries the log notice too.
+			const logNotice = outputLogNoticeText(truncated, final?.fullOutputPath)
+			throwIfTerminal(snapshot, logNotice ? `${fullOutput}\n${logNotice}` : fullOutput, deadlineSeconds)
+
 			return {
 				content: [
 					{
@@ -224,9 +233,11 @@ export function createBackgroundBashToolDefinition(
 
 		unsubscribe?.()
 
-		// Still running at the handoff — deliver identity, activity facts,
-		// and unseen output; the process stays tracked and its exit is
-		// delivered automatically (no recurring clock while the agent works).
+		// Still running at the handoff — start the complete output log, then
+		// deliver identity, activity facts, the log path, and unseen output;
+		// the process stays tracked and its exit is delivered automatically
+		// (no recurring clock while the agent works).
+		const logPath = registry.persistOutput(handle)
 		const incremental = registry.snapshotSince(handle)
 		const entry = registry.getEntry(handle)
 		const elapsed = elapsedSecondsSince(entry?.spawnedAtMs ?? Date.now())
@@ -239,7 +250,7 @@ export function createBackgroundBashToolDefinition(
 		}
 
 		return {
-			content: [{ type: "text", text: `${body}\n\n${handoffGuidanceText()}` }],
+			content: [{ type: "text", text: `${body}\n\n${handoffGuidanceText(state.sessionKind, logPath)}` }],
 			details: {
 				handle,
 				exited: false,

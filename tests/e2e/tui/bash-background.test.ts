@@ -1,12 +1,12 @@
 import { expect, test } from "@microsoft/tui-test"
-import { STREAM_TIMEOUT_MS, waitForText, waitForTurnToSettle } from "./support/assertions.js"
+import { STREAM_TIMEOUT_MS, viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { chatRequests, systemPromptOf } from "./support/wire-requests.js"
 
 test.use(TUI_TEST_CONFIG)
 
 // Deterministic long-running command: prints a line, then sleeps well past
-// the ~2s initial handoff so the first result yields a background handle,
+// the initial handoff (2s under the e2e fixture) so the first result yields a background handle,
 // and exits on its own shortly after.
 const LONG_COMMAND = "echo started && sleep 15"
 
@@ -96,6 +96,10 @@ test("background bash: slow command + independent read + final outcome via one b
 				messages.some((m) => textOf(m.content).includes(needle) && (role === undefined || m.role === role))
 			expect(contains("[Background bash process ended", "tool")).toBe(true)
 			expect(contains("[Background bash process ended", "user")).toBe(false)
+			// The handoff result names the live log and teaches the watch
+			// pattern, so the model can grep instead of polling or re-running.
+			expect(contains(" full log: ", "tool")).toBe(true)
+			expect(contains("until grep -qE", "tool")).toBe(true)
 			// 4 LLM requests: spawn, concurrent read, wait, final.
 			expect(fixture.fake.requests.length).toBeGreaterThanOrEqual(4)
 		},
@@ -103,11 +107,12 @@ test("background bash: slow command + independent read + final outcome via one b
 })
 
 // Workflow 4: the model attempts to finish with a live background process.
-// The FIRST unresolved stop gets a prompt continuation; a second unresolved
-// stop inside the reminder interval does NOT (production rate: 30 s) - the
-// run settles instead of spinning back-to-back turns. Exits stay immediate,
-// which the other bash-background workflows cover.
-test("background bash: the first unresolved stop gets a continuation; a second inside the interval settles the run", async ({
+// A user-facing session (the TUI) queues NO forced-disposition reminder —
+// the run settles immediately with the process still running, and no
+// reminder spin is possible. The unattended rate-limit contract stays
+// covered at unit level (bash-control-extension.test.ts) and through the
+// headless contract session (agent-session-contract.test.ts).
+test("background bash: an unresolved stop settles the run without a forced reminder (user-facing session)", async ({
 	terminal,
 }) => {
 	await runKimchiSession(
@@ -128,59 +133,101 @@ test("background bash: the first unresolved stop gets a continuation; a second i
 						},
 					],
 				},
-				// Turn 2: the model attempts to finish WITHOUT resolving the
-				// process - the guard queues its prompt (first) continuation.
+				// Turn 2: the model attempts to finish WITHOUT resolving the process —
+				// a user-facing session queues no reminder, so the run settles with
+				// the process still running.
 				{ stream: ["All done!"] },
-				// Turn 3 (driven by the first continuation): the model stops
-				// again, still without resolving. Inside the 30 s interval no
-				// further reminder fires, so the run settles with the process
-				// still running.
-				{ stream: ["Still done - nothing else is needed."] },
 			],
 		},
 		async (fixture, trace) => {
-			terminal.submit("Run a long command then finish twice without stopping it")
+			terminal.submit("Run a long command then finish without stopping it")
 
-			// First completion attempt with a tracked process.
+			// Completion attempt with a tracked process.
 			await waitForText(terminal, "All done!", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("first completion attempt with a tracked process")
+			trace.step("completion attempt with a tracked process")
 
-			// The continuation fires; the model tries to finish AGAIN without
-			// resolving - and this time the run SETTLES (interval-limited).
-			await waitForText(terminal, "Still done", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("second unresolved completion attempt")
-
+			// The run settles straight away — no continuation, no reminder spin.
 			await waitForText(terminal, "ask anything or type", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("run settled after the interval-limited stop (no reminder spin)")
+			trace.step("run settled with the process still running (no reminder)")
 
-			// Exactly one continuation reached the conversation, and the run
-			// settled after the second stop instead of spinning (the
-			// unthrottled guard drove 18+ requests here before).
+			// No reminder was ever queued for the provider.
 			await waitForTurnToSettle(fixture.fake.requests)
 			// The last request may be a title-generation side request (no
 			// conversation history): count in the last AGENT request.
 			const agentRequests = fixture.fake.requests.filter((r) =>
 				JSON.stringify((r.body as { messages?: unknown[] } | undefined)?.messages ?? []).includes(
-					"Run a long command then finish twice",
+					"Run a long command then finish without stopping it",
 				),
 			)
 			const lastMessages = (agentRequests.at(-1)?.body as { messages?: unknown[] } | undefined)?.messages ?? []
 			const lastHistory = JSON.stringify(lastMessages)
 			expect(
 				lastHistory.split("Task completion requires a disposition for unresolved background bash processes").length - 1,
-			).toBe(1)
-			expect(lastHistory).toContain("Still running")
-			// No reminder spin: only the scripted agent turns (spawn, unresolved
-			// stop, continuation-driven stop) hit the main queue. The unthrottled
-			// guard drove 15+ main requests here; side traffic (title, catalog,
-			// classifiers) is excluded because it is identical on master.
+			).toBe(0)
+			// No reminder spin: only the scripted agent turns (spawn,
+			// unresolved stop) hit the main queue. Side traffic (title, catalog,
+			// classifiers) is excluded because it carries no tools.
 			const mainRequests = fixture.fake.requests.filter((r) =>
 				Array.isArray(((r as { body?: { tools?: unknown[] } }).body ?? (r as { tools?: unknown[] }))?.tools),
 			)
-			expect(mainRequests.length).toBeLessThanOrEqual(5)
+			expect(mainRequests.length).toBeLessThanOrEqual(3)
 		},
 	)
 })
 
 // Cohort workflows (multi-command staggering, streaming-safe exit delivery,
 // bounded checkpoints, wait cancellation) live in ./bash-background-cohort.test.ts.
+
+// Workflow: the footer shows a running-shell count while a managed command
+// runs in the background, and the segment disappears once it is stopped.
+test("background bash: the footer shows '1 shell' while a command runs and hides it once stopped", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "bash-background-footer-shell-count",
+			responses: [
+				// Turn 1: start a long command; the turn settles while it runs.
+				{
+					stream: ["Started the command."],
+					toolCalls: [
+						{
+							id: "call_bash",
+							function: { name: "bash", arguments: JSON.stringify({ command: "echo alive && sleep 90" }) },
+						},
+					],
+				},
+				{ stream: ["It keeps running in the background."] },
+				// Turn 2 (user asks to stop): stop it.
+				{
+					stream: ["Stopping it."],
+					toolCalls: [
+						{
+							id: "call_stop",
+							function: {
+								name: "bash_control",
+								arguments: JSON.stringify({ stop_handles: ["__BASH_HANDLE__"] }),
+							},
+						},
+					],
+				},
+				{ stream: ["The command is stopped."] },
+			],
+		},
+		async (_fixture, trace) => {
+			// The footer is the bottom of the visible screen.
+			const footer = () => viewText(terminal).trimEnd().split("\n").slice(-2).join("\n")
+
+			terminal.submit("Start a long command in the background")
+			await waitForText(terminal, "It keeps running in the background", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, () => /\b1 shell\b/.test(footer()), { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("footer shows the running shell")
+
+			terminal.submit("Stop the command")
+			await waitForText(terminal, "The command is stopped", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, () => !/\bshells?\b/.test(footer()), { timeoutMs: STREAM_TIMEOUT_MS })
+			trace.step("footer segment hidden once no command runs")
+		},
+	)
+})

@@ -61,6 +61,28 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		expect(getSessionState(sessionId)).toBeUndefined()
 	})
 
+	it("publishes the running-command count to the footer and clears it at zero", async () => {
+		const ctx = createContext({ cwd: "/tmp" })
+		const id = ctx.sessionManager.getSessionId()
+		const { api, emit } = createExtensionApi()
+		bashBackgroundExtension(api)
+		await emit("session_start", {}, ctx)
+		const state = getSessionState(id)
+		if (!state) throw new Error("expected session state")
+		const setStatus = vi.mocked(ctx.ui.setStatus)
+		// A fresh session starts with no lingering count.
+		expect(setStatus).toHaveBeenLastCalledWith("shells", undefined)
+
+		const ops = createFakeOps(0)
+		const handle = state.registry.spawn(ops, "sleep 60", "/tmp", undefined, { limitSeconds: 60 })
+		expect(setStatus).toHaveBeenLastCalledWith("shells", "1")
+		await ops.exit(0)
+		await state.registry.whenExited(handle)
+		expect(setStatus).toHaveBeenLastCalledWith("shells", undefined)
+
+		await emit("session_shutdown", {}, ctx)
+	})
+
 	it("session_start installs fresh state that callers can resolve", async () => {
 		const { api, emit } = createExtensionApi()
 		bashBackgroundExtension(api)
