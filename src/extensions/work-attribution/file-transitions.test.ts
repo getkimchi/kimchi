@@ -151,7 +151,8 @@ afterEach(async () => {
 	closeBackends()
 	useBackendFactory(null)
 	vi.restoreAllMocks()
-	vi.resetAllMocks()
+	vi.mocked(childProcess.execFileSync).mockReset()
+	vi.mocked(childProcess.execFile).mockReset()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
 })
@@ -769,7 +770,8 @@ describe("manual commit reconciliation", () => {
 		expect(contributions()).toEqual([])
 
 		vi.restoreAllMocks()
-		vi.resetAllMocks()
+		vi.mocked(childProcess.execFileSync).mockReset()
+		vi.mocked(childProcess.execFile).mockReset()
 		await reconcileFileTransitions(context("retry"))
 		await reconcileFileTransitions(context("repeat"))
 		expect(contributions()).toEqual([

@@ -1,16 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getMe } from "../../../api/me.js"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
+import { getActiveFerment } from "../../ferment/index.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
 import { emitSessionStartEvent, handleSessionShutdown, handleSessionStart } from "./session.js"
 
 vi.mock("../../ferment/index.js", () => ({
-	getActiveFerment: vi.fn(() => undefined),
+	getActiveFerment: vi.fn(),
 }))
 
 vi.mock("../../../api/me.js", () => ({
-	getMe: vi.fn().mockResolvedValue({ id: "test-user", email: "test@example.com" }),
+	getMe: vi.fn(),
 }))
+
+beforeEach(() => {
+	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)
+	vi.mocked(getMe).mockReset().mockResolvedValue({ id: "test-user", email: "test@example.com" })
+})
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
@@ -39,7 +46,6 @@ describe("handleSessionStart", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
-		vi.resetAllMocks()
 	})
 
 	it("resets context and starts flush timer without emitting session.start", async () => {
@@ -77,7 +83,6 @@ describe("handleSessionShutdown", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
-		vi.resetAllMocks()
 	})
 
 	it("emits kimchi.session.end with duration_ms and ended_by attributes", async () => {
@@ -183,7 +188,6 @@ describe("emitSessionStartEvent", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
-		vi.resetAllMocks()
 	})
 
 	it("emits session.start with correct model attribute", async () => {
