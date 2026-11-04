@@ -49,6 +49,7 @@ async function callExecute(
 
 afterEach(() => {
 	vi.useRealTimers()
+	vi.unstubAllEnvs()
 })
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -388,5 +389,198 @@ describe("background visibility", () => {
 			display: { state: "exited", exitCode: 7, finishedAt: expect.any(Number) },
 		})
 		expect(vi.getTimerCount()).toBe(0)
+	})
+})
+
+describe("createBackgroundBashToolDefinition — blocking fallback (bash_control unavailable)", () => {
+	it("blocks to natural exit even past the handoff deadline: no handle, no handoff, no bash_control guidance", async () => {
+		vi.useFakeTimers()
+		const state = makeState(2)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		const execPromise = callExecute(tool, { command: "sleep 30" })
+		await Promise.resolve()
+		ops.emit("partial\n")
+		// Past the handoff deadline the background mode would have resolved
+		// with a live handle; blocking mode must still be waiting.
+		await vi.advanceTimersByTimeAsync(3_000)
+		let settled = false
+		void execPromise.then(
+			() => {
+				settled = true
+			},
+			() => {
+				settled = true
+			},
+		)
+		expect(settled).toBe(false)
+		await ops.exit(0)
+		const result = await execPromise
+		const text = (result.content[0] as { text: string }).text
+		expect(text).toContain("partial")
+		expect(text).toContain("Process exited")
+		expect(text).not.toContain("bash_control")
+		expect(result.details?.exited).toBe(true)
+		expect(result.details?.handoff).toBeFalsy()
+		expect(result.details?.handle).toBeUndefined()
+		expect(state.registry.size).toBe(0)
+		expect(state.coordinator.size).toBe(0)
+	})
+
+	it("kills at the deterministic timeout and reports the upstream timeout error", async () => {
+		vi.stubEnv("KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS", "1")
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		const execPromise = callExecute(tool, { command: "sleep 600" })
+		await Promise.resolve()
+		ops.emit("partial output\n")
+		const failure = expect(execPromise).rejects.toThrow("Command timed out after 1 seconds")
+		await vi.advanceTimersByTimeAsync(1_100)
+		await failure
+		// The timeout killed the process tree and removed the handle.
+		expect(ops.execs[0].aborted).toBe(true)
+		expect(state.registry.size).toBe(0)
+		expect(state.coordinator.size).toBe(0)
+	})
+
+	it("throws on a non-zero blocking exit (upstream error parity)", async () => {
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		const execPromise = callExecute(tool, { command: "false" })
+		await Promise.resolve()
+		ops.emit("boom\n")
+		await ops.exit(3)
+		await expect(execPromise).rejects.toThrow("Command exited with code 3")
+	})
+
+	it("abort during blocking kills the process and throws", async () => {
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		const controller = new AbortController()
+		const execPromise = callExecute(tool, { command: "sleep 600" }, controller.signal)
+		await Promise.resolve()
+		const failure = expect(execPromise).rejects.toThrow("Command aborted")
+		controller.abort()
+		await failure
+		expect(ops.execs[0].aborted).toBe(true)
+		expect(state.registry.size).toBe(0)
+	})
+
+	it("degrades to blocking when the availability check itself throws", async () => {
+		vi.useFakeTimers()
+		const state = makeState(2)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => {
+				throw new Error("boom")
+			},
+		})
+		const execPromise = callExecute(tool, { command: "sleep 30" })
+		await Promise.resolve()
+		// Past the handoff deadline: a throwing check must fail safe into
+		// blocking mode, never hand off an undispositionable process.
+		await vi.advanceTimersByTimeAsync(3_000)
+		let settled = false
+		void execPromise.then(
+			() => {
+				settled = true
+			},
+			() => {
+				settled = true
+			},
+		)
+		expect(settled).toBe(false)
+		await ops.exit(0)
+		const result = await execPromise
+		expect(result.details?.handoff).toBeFalsy()
+		expect(result.details?.handle).toBeUndefined()
+	})
+
+	it("a timeout kill that fails keeps the live process registered instead of fabricating a terminal result", async () => {
+		vi.stubEnv("KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS", "1")
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		// Simulate a kill that fails outright: the process stays alive.
+		state.registry.kill = async () => {
+			throw new Error("kill boom")
+		}
+		const execPromise = callExecute(tool, { command: "sleep 600" })
+		await Promise.resolve()
+		const failure = expect(execPromise).rejects.toThrow("Command timed out after 1 seconds but could not be stopped")
+		await vi.advanceTimersByTimeAsync(1_100)
+		await failure
+		// The live process stays registered — the harness safety limit and
+		// the shutdown drain own its lifecycle; nothing is silently untracked.
+		expect(state.registry.size).toBe(1)
+	})
+
+	it("re-checks availability on every execution (tool-set changes apply immediately)", async () => {
+		vi.useFakeTimers()
+		const state = makeState(2)
+		const ops = createFakeOps()
+		let available = true
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => available,
+		})
+		// Background mode: resolves at the handoff deadline with a live handle.
+		const first = callExecute(tool, { command: "sleep 30" })
+		await Promise.resolve()
+		await vi.advanceTimersByTimeAsync(2_500)
+		const firstResult = await first
+		expect(firstResult.details?.handoff).toBe(true)
+		expect(firstResult.details?.handle).toBeDefined()
+
+		// The same session later drops bash_control: the next execution
+		// blocks instead of handing off a process the model cannot disposition.
+		available = false
+		const second = callExecute(tool, { command: "sleep 30" })
+		await Promise.resolve()
+		await vi.advanceTimersByTimeAsync(2_500)
+		let settled = false
+		void second.then(
+			() => {
+				settled = true
+			},
+			() => {
+				settled = true
+			},
+		)
+		expect(settled).toBe(false)
+		await ops.exit(0)
+		const secondResult = await second
+		expect(secondResult.details?.handoff).toBeFalsy()
+		expect(secondResult.details?.handle).toBeUndefined()
 	})
 })

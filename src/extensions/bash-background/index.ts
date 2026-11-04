@@ -26,6 +26,7 @@ import { SHELLS_STATUS_KEY } from "../../components/status-line.js"
 import { bashToolDescription } from "../bash-tool-guard.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
+import { BASH_CONTROL_TOOL_NAME } from "./bash-control-tool.js"
 import { CommandsPanel } from "./commands-panel.js"
 import { createProcessRegistry, DEFAULT_BASH_PROCESS_LIMIT_SECONDS } from "./process-registry.js"
 import { createReviewCoordinator } from "./review-coordinator.js"
@@ -108,6 +109,13 @@ export function bashBackgroundExtension(pi: ExtensionAPI): void {
 		// though our registration wins the tool-name slot.
 		const tool = createBackgroundBashToolDefinition(sessionCtx.cwd, {
 			state,
+			// Live availability of the companion tool: a session whose tool set
+			// drops bash_control (an allowlist the CLI coupling could not extend,
+			// an explicit --exclude-tools, or a plan-mode tool-profile snapshot)
+			// must never background a command the model cannot disposition —
+			// those executions fall back to plain blocking bash with a
+			// deterministic timeout. Re-checked on every bash call.
+			controlToolAvailable: () => pi.getActiveTools().includes(BASH_CONTROL_TOOL_NAME),
 		})
 		const toolWithSteering = {
 			...tool,

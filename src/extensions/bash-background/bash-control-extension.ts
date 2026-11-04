@@ -137,6 +137,12 @@ function completionReminderIntervalMs(): number {
 export const BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE = "bash-background-concurrency"
 /** Custom message type for the completion-continuation follow-up. */
 export const BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE = "bash-background-completion"
+/**
+ * Custom message type for the guard's own resolution of unresolved work:
+ * when `bash_control` is not callable, the harness stops the session's
+ * processes and reports what it did (see the turn_end handler).
+ */
+export const BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE = "bash-background-guard-resolution"
 
 export interface BashControlExtensionOptions {
 	/** Override the state accessor (tests inject a controllable fake). */
@@ -316,6 +322,65 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// carry it in typed details so a stale message from a replaced session
 	// cannot clear this session's outstanding flag.
 	let sessionGenerationId = randomUUID()
+	/**
+	 * Whether `bash_control` is declared to the model RIGHT NOW. The guard
+	 * must never demand a disposition the session cannot make — without the
+	 * tool, the harness resolves unresolved work itself (see
+	 * resolveUnresolvedWithoutControl). Re-checked at every guard boundary so
+	 * tool-set changes (allowlist tweaks, plan-mode profiles) apply
+	 * immediately.
+	 */
+	const isControlToolActive = (): boolean => pi.getActiveTools().includes(BASH_CONTROL_TOOL_NAME)
+	/**
+	 * Resolve unresolved background work when `bash_control` is NOT
+	 * callable: stop every running session-owned process (their automatic
+	 * exit notifications deliver the terminal results) and flush recorded
+	 * outcomes that never reached the conversation, then report what the
+	 * harness did — instead of demanding a disposition the model cannot
+	 * make (which would re-prompt forever: the runaway this guard change
+	 * exists to close).
+	 */
+	async function resolveUnresolvedWithoutControl(
+		running: readonly string[],
+		awaitingDelivery: ReadonlySet<string>,
+	): Promise<void> {
+		const state = getState()
+		if (!state) return
+		const stopped: string[] = []
+		for (const handle of running) {
+			try {
+				// Reason "stop" — the exit notifications render "stopped on
+				// request" and carry each process's final output.
+				await state.registry.kill(handle)
+				stopped.push(handle)
+			} catch {
+				// A failed kill leaves the handle tracked; the harness safety
+				// limit still bounds it and the next guard pass retries.
+			}
+		}
+		for (const handle of awaitingDelivery) {
+			// Queued notifications already continue the run on their own.
+			if (state.delivery.getPending(handle)?.phase === "queued") continue
+			deliverUnattendedExit(state, handle)
+		}
+		if (stopped.length === 0) return
+		const plural = stopped.length !== 1
+		pi.sendMessage(
+			{
+				customType: BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE,
+				content: [
+					{
+						type: "text",
+						text: markHarnessSteer(
+							`bash_control is not available in this session, so the harness stopped the remaining background bash process${plural ? "es" : ""} (${stopped.join(", ")}) at task completion. Their results were delivered by the exit notifications. Do not restart them; report accurately what remains unfinished.`,
+						),
+					},
+				],
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: "steer" },
+		)
+	}
 	// Exits pending delivery in the current scheduling boundary. Flushed as
 	// one coalesced message per trailing window (see EXIT_BATCH_WINDOW_MS)
 	// — prompt notification with no multi-second delay and no recurring
@@ -799,10 +864,13 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// the call is a known write/execute tool (per the shared taxonomy), enqueue
 	// ONE concurrency steer per session as reinforcement. The advisory lists
 	// only registry-verified running handles — a stale tracked entry whose
-	// process is gone is never asserted to be running.
+	// process is gone is never asserted to be running. Skipped entirely when
+	// bash_control is not callable: the advisory's remedy (stop via
+	// bash_control) would name a tool missing from the session's tool set.
 	pi.on("tool_call", (event) => {
 		if (trackedHandles.size === 0) return { block: false }
 		if (event.toolName === BASH_CONTROL_TOOL_NAME) return { block: false }
+		if (!isControlToolActive()) return { block: false }
 		const category = classifyTool(event.toolName)
 		if (category !== "write" && category !== "execute") return { block: false }
 		if (concurrencyAdvisorySent) return { block: false }
@@ -839,7 +907,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// elapsed. Terminal results whose notification is already queued will
 	// resolve the state by themselves, so they do not queue a redundant
 	// reminder.
-	pi.on("turn_end", (event, _ctx: ExtensionContext) => {
+	pi.on("turn_end", async (event, _ctx: ExtensionContext) => {
 		if (disposed) return
 		const message = event.message
 		if (message?.role !== "assistant") return
@@ -889,6 +957,16 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 			running.length === 0 &&
 			[...awaitingDelivery].every((handle) => state?.delivery.getPending(handle)?.phase === "queued")
 		if (onlyQueuedNotifications) return
+		// The guard must never demand a disposition the session cannot
+		// make: with bash_control not declared to the model, the harness
+		// resolves the cohort itself — stopping session-owned processes and
+		// flushing undelivered outcomes — so a headless run whose model gave
+		// its final answer terminates in bounded time instead of being
+		// re-prompted on every stop (the documented runaway).
+		if (!isControlToolActive()) {
+			await resolveUnresolvedWithoutControl(running, awaitingDelivery)
+			return
+		}
 		// One outstanding reminder per session: a queued-but-unconsumed
 		// reminder makes this attempt redundant (the loop will drain it
 		// before the run settles, and its contents are revalidated then).
@@ -939,7 +1017,7 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 	// reminder can keep demanding dispositions for already-resolved work.
 	// Unrelated queued messages are untouched (only this customType is
 	// ever replaced).
-	pi.on("message_end", (event, _ctx: ExtensionContext) => {
+	pi.on("message_end", async (event, _ctx: ExtensionContext) => {
 		const message = event.message
 		if (message?.role !== "custom") return undefined
 		if (message.customType !== BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE) return undefined
@@ -966,6 +1044,33 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 							type: "text",
 							text: markHarnessSteer(
 								"[Background bash completion reminder was suppressed: this session has a human available, so the turn may settle while commands keep running — their exit results arrive on their own. Continue with the task.]",
+							),
+						},
+					],
+					display: false,
+					details: message.details,
+					timestamp: message.timestamp,
+				},
+			}
+		}
+		// Availability revalidation (the same decision the turn_end guard
+		// applies): bash_control may have left the active tool set after the
+		// reminder was queued (tool-profile snapshot, allowlist change). The
+		// harness resolves the remaining work itself, and the reminder is
+		// replaced with the resolution report instead of a demand the model
+		// cannot satisfy.
+		if (!isControlToolActive()) {
+			const { running, awaitingDelivery } = unresolvedProcesses()
+			await resolveUnresolvedWithoutControl(running, awaitingDelivery)
+			return {
+				message: {
+					role: "custom",
+					customType: BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
+					content: [
+						{
+							type: "text",
+							text: markHarnessSteer(
+								"[Background bash completion reminder was resolved by the harness: bash_control is not available in this session, so the remaining background processes were stopped and their results delivered. Do not restart them; report accurately what remains unfinished.]",
 							),
 						},
 					],

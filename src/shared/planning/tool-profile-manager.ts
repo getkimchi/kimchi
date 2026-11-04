@@ -35,7 +35,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-
+import { BASH_CONTROL_TOOL_NAME } from "../../extensions/bash-background/bash-control-tool.js"
 import { isFermentOnlyToolName } from "../../extensions/ferment/tool-names.js"
 import { getDisabledToolNames } from "../../extensions/prompt-construction/tool-visibility.js"
 import { isDefaultToolEnabled } from "../../settings-watcher.js"
@@ -221,8 +221,16 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	// The `defaultTools` setting (`-name` modifiers) deactivates builtins at
 	// session construction (initialActiveToolNames); every snapshot must
 	// respect it, otherwise unioning `pi.getAllTools()` or the catalog
-	// re-surfaces tools (e.g. `write`) the user deactivated.
-	allowedNames = allowedNames.filter((name) => isDefaultToolEnabled(name))
+	// re-surfaces tools (e.g. `write`) the user deactivated. `bash_control` is
+	// not a separately-configured builtin — it exists to manage `bash`'s
+	// background processes, so it is kept exactly when `bash` is kept: a
+	// `defaultTools` list that does not name it (it never can — it is not a
+	// builtin) cannot split the pair.
+	allowedNames = allowedNames.filter(
+		(name) =>
+			isDefaultToolEnabled(name) ||
+			(name === BASH_CONTROL_TOOL_NAME && allowedNames.includes("bash") && isDefaultToolEnabled("bash")),
+	)
 
 	debugToolSurface(() => {
 		// Diff sampled only when logging is on, so gated-off runs pay nothing.
