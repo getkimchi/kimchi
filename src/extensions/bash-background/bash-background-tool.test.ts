@@ -536,9 +536,7 @@ describe("createBackgroundBashToolDefinition — blocking fallback (bash_control
 		}
 		const execPromise = callExecute(tool, { command: "sleep 600" })
 		await Promise.resolve()
-		const failure = expect(execPromise).rejects.toThrow(
-			"Command timed out after 1 seconds but could not be stopped",
-		)
+		const failure = expect(execPromise).rejects.toThrow("Command timed out after 1 seconds but could not be stopped")
 		await vi.advanceTimersByTimeAsync(1_100)
 		await failure
 		// The live process stays registered — the harness safety limit and
