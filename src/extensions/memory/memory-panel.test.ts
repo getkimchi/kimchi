@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, type Mock, vi } from "vitest"
 import { computeMemoryWindow, MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 
 const fact = (id: string, memory: string, scopeId = "personal"): MemoryPanelFact => ({
@@ -17,8 +17,8 @@ const plain = (lines: string[]): string[] =>
 
 interface Harness {
 	panel: MemoryPanel
-	done: ReturnType<typeof vi.fn>
-	deleteFact: ReturnType<typeof vi.fn>
+	done: Mock
+	deleteFact: Mock
 }
 
 function makePanel(facts: MemoryPanelFact[], deleteFact?: Harness["deleteFact"]): Harness {

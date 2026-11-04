@@ -9,7 +9,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setResourceOverride } from "../../resources/store.js"
@@ -53,7 +53,7 @@ function makeConfig(): TelemetryConfig {
 describe("pii-redaction → telemetry OTLP pipeline (shared bus)", () => {
 	let codingAgentDir: string
 	let originalFetch: typeof globalThis.fetch
-	let fetchMock: ReturnType<typeof vi.fn>
+	let fetchMock: Mock
 
 	beforeEach(() => {
 		codingAgentDir = mkdtempSync(join(tmpdir(), "pii-pipeline-"))

@@ -1,8 +1,9 @@
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
@@ -28,6 +29,13 @@ vi.mock("./admin.js", async (importOriginal) => {
 // "everything off". Gate-logic tests inject their own decision dep, which
 // bypasses the env entirely.
 vi.stubEnv("KIMCHI_MEMORY_DECISION_GATE", "off")
+
+beforeEach(() => {
+	vi.mocked(runAdminCommand).mockReset()
+	vi.mocked(adminListFacts).mockReset()
+	vi.mocked(adminSearchFacts).mockReset()
+	vi.mocked(adminDeleteFacts).mockReset()
+})
 
 const BASE_PROMPT = "You are kimchi."
 

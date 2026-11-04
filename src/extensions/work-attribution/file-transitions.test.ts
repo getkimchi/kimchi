@@ -151,6 +151,8 @@ afterEach(async () => {
 	closeBackends()
 	useBackendFactory(null)
 	vi.restoreAllMocks()
+	vi.mocked(childProcess.execFileSync).mockReset()
+	vi.mocked(childProcess.execFile).mockReset()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
 })
@@ -768,6 +770,8 @@ describe("manual commit reconciliation", () => {
 		expect(contributions()).toEqual([])
 
 		vi.restoreAllMocks()
+		vi.mocked(childProcess.execFileSync).mockReset()
+		vi.mocked(childProcess.execFile).mockReset()
 		await reconcileFileTransitions(context("retry"))
 		await reconcileFileTransitions(context("repeat"))
 		expect(contributions()).toEqual([
@@ -811,7 +815,7 @@ describe("manual commit reconciliation", () => {
 
 	it("records native edit evidence without blocking on synchronous Git calls", async () => {
 		baseline()
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		await edit("one", "first")
 		expect(syncGit).not.toHaveBeenCalled()
 		expect(rows().filter((row) => row.type === "file_transition")).toEqual([
@@ -838,7 +842,7 @@ describe("manual commit reconciliation", () => {
 					void gate.then(() => (callback as (...values: unknown[]) => void)(...result))
 			return execute(...args)
 		}) as typeof execute)
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		const child = createExtensionApi()
 		createWorkAttributionExtension(workId)(child.api)
 		try {

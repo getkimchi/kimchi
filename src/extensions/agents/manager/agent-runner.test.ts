@@ -24,9 +24,12 @@ afterEach(async () => {
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
 	return {
-		DefaultResourceLoader: vi.fn().mockImplementation(() => ({
-			reload: vi.fn().mockResolvedValue(undefined),
-		})),
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		DefaultResourceLoader: vi.fn().mockImplementation(function () {
+			return {
+				reload: vi.fn().mockResolvedValue(undefined),
+			}
+		}),
 		SessionManager: {
 			inMemory: vi.fn().mockReturnValue({}),
 			open: vi.fn().mockReturnValue({}),
@@ -2262,7 +2265,8 @@ describe("runAgent — parent session ID env ordering", () => {
 		const envSnapshots: Array<{ phase: string; value: string | undefined }> = []
 
 		// Capture env when DefaultResourceLoader is instantiated
-		mockDefaultResourceLoader.mockImplementation(() => {
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		mockDefaultResourceLoader.mockImplementation(function () {
 			envSnapshots.push({
 				phase: "resource-loader-created",
 				value: process.env[PARENT_SESSION_ID_ENV_KEY],
