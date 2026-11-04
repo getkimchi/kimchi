@@ -121,3 +121,39 @@ export function getVersion(): string {
 	}
 	return cachedVersion ?? "unknown"
 }
+
+/** Root of the tree this module was loaded from: the repo root for source runs; inside the bundle for binaries. */
+export const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+
+/** `dev` when `sourceRoot` is a kimchi source checkout (unreleased placeholder version), else the reported version. */
+export function detectVersion(sourceRoot: string, reportedVersion: string): string {
+	try {
+		const pkg = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8")) as {
+			name?: string
+			version?: string
+		}
+		// The placeholder version is load-bearing: real versions are stamped at
+		// build time in CI (canary as 0.0.0-canary.<date>.<sha>, releases from the
+		// tag via scripts/set-version.js), so the in-tree package.json must stay
+		// 0.0.0. A committed bump would silently classify every source run from
+		// that tree as a release — losing commit/branch/dirty and naming a version
+		// whose tag may not exist.
+		if (pkg.name === "@kimchi-dev/cli" && pkg.version === "0.0.0") return "dev"
+	} catch {
+		// No readable package.json here: a bundled binary.
+	}
+	return reportedVersion
+}
+
+let cachedDetectedVersion: string | undefined
+
+/**
+ * `getVersion()` with source-run detection applied: a run from a kimchi source checkout
+ * reports `dev` even when `PI_PACKAGE_DIR` points at an installed release's share dir
+ * (which makes `getVersion()` report that release). The `kimchi_build` session entry
+ * and telemetry both report this value; see docs/session-build-entry.md.
+ */
+export function getDetectedVersion(): string {
+	cachedDetectedVersion ??= detectVersion(SOURCE_ROOT, getVersion())
+	return cachedDetectedVersion
+}

@@ -3,7 +3,7 @@ import * as path from "node:path"
 import type { TelemetryConfig } from "../../config.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { fetchWithRetry } from "../../utils/http.js"
-import { getVersion } from "../../utils.js"
+import { getDetectedVersion } from "../../utils.js"
 import { nowNano, strAttr } from "./helpers.js"
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ function logEventToFile(event: string, properties: Record<string, unknown>): voi
 }
 
 function resourceAttributes() {
-	return [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getVersion()}`)]
+	return [strAttr("service.name", "kimchi"), strAttr("user_agent.original", `kimchi/${getDetectedVersion()}`)]
 }
 
 export interface MetricData {

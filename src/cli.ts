@@ -76,6 +76,7 @@ import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import bugReportDestinationExtension from "./extensions/bug-report.js"
+import buildInfoExtension from "./extensions/build-info.js"
 import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -847,6 +848,7 @@ async function cliMain(): Promise<void> {
 				packageInstallGuardExtension,
 				sessionNameExtension(),
 				shutdownMarkerExtension,
+				buildInfoExtension,
 				// skill_view must always be present: the skills catalog in the system
 				// prompt directs the model to load skills through it. skill_manage
 				// (the write side) stays disabled — #235 turned it off because its

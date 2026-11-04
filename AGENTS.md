@@ -51,6 +51,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
 - [docs/response-language.md](docs/response-language.md) — reply-language rule and the `language` pin (`kimchi config set language`, `/language`)
+- [docs/session-build-entry.md](docs/session-build-entry.md) — `kimchi_build` session entry: which harness build (version/commit/dirty) produced a session
 - [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on declared `triggers.prompt` (extensions/keywords)
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)

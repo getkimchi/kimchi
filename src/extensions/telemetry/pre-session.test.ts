@@ -15,6 +15,7 @@ vi.mock("../../posthog-device.js", () => ({
 
 vi.mock("../../utils.js", () => ({
 	getVersion: vi.fn(() => "1.0.0-test"),
+	getDetectedVersion: vi.fn(() => "1.0.0-test"),
 }))
 
 vi.mock("../../api/me.js", () => ({
@@ -30,7 +31,7 @@ vi.mock("./transport.js", () => ({
 import { getMe } from "../../api/me.js"
 import { ensureDeviceId } from "../../posthog-device.js"
 import * as osMetadata from "../../utils/os-metadata.js"
-import { getVersion } from "../../utils.js"
+import { getDetectedVersion, getVersion } from "../../utils.js"
 import { _resetUserCache, drain, sendPreSessionEvent } from "./pre-session.js"
 import { sendLog } from "./transport.js"
 
@@ -77,6 +78,7 @@ describe("sendPreSessionEvent", () => {
 		vi.clearAllMocks()
 		vi.mocked(ensureDeviceId).mockReturnValue(testDeviceId)
 		vi.mocked(getVersion).mockReturnValue("1.0.0-test")
+		vi.mocked(getDetectedVersion).mockReturnValue("1.0.0-test")
 		vi.mocked(getMe).mockResolvedValue({ id: "user-123", email: "alice@cast.ai", name: "Alice" })
 		vi.mocked(sendLog).mockResolvedValue(undefined)
 	})
@@ -120,6 +122,19 @@ describe("sendPreSessionEvent", () => {
 		expect(attrs["telemetry.arch"]).toBe(expectedArch)
 		expect(attrs["telemetry.host_os"]).toBe(process.platform) // non-WSL by default in test env
 		expect(attrs["telemetry.is_wsl"]).toBe(false)
+	})
+
+	it("reports the detected version, not the package-dir version", async () => {
+		// A source run whose package dir points at an installed release: the raw
+		// version says 1.2.3, the detected version must win (see getDetectedVersion).
+		vi.mocked(getVersion).mockReturnValue("1.2.3")
+		vi.mocked(getDetectedVersion).mockReturnValue("9.9.9-dev")
+
+		sendPreSessionEvent(makeConfig(), "app_started")
+		await drain()
+
+		const { attrs } = lastSendLogCall()
+		expect(attrs["telemetry.cli_version"]).toBe("9.9.9-dev")
 	})
 
 	it("includes all four OS metadata keys including host_os and is_wsl", async () => {
@@ -315,6 +330,7 @@ describe("sendPreSessionEvent OS metadata under WSL", () => {
 		vi.clearAllMocks()
 		vi.mocked(ensureDeviceId).mockReturnValue(testDeviceId)
 		vi.mocked(getVersion).mockReturnValue("1.0.0-test")
+		vi.mocked(getDetectedVersion).mockReturnValue("1.0.0-test")
 		vi.mocked(getMe).mockResolvedValue({ id: "user-123", email: "alice@cast.ai", name: "Alice" })
 		vi.mocked(sendLog).mockResolvedValue(undefined)
 		// Force WSL metadata — under WSL, os stays "linux" but host_os becomes "win32".
@@ -361,6 +377,7 @@ describe("drain", () => {
 		vi.clearAllMocks()
 		vi.mocked(ensureDeviceId).mockReturnValue(testDeviceId)
 		vi.mocked(getVersion).mockReturnValue("1.0.0-test")
+		vi.mocked(getDetectedVersion).mockReturnValue("1.0.0-test")
 		vi.mocked(getMe).mockResolvedValue({ id: "user-123", email: "alice@cast.ai", name: "Alice" })
 		vi.mocked(sendLog).mockResolvedValue(undefined)
 	})
