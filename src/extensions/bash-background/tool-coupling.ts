@@ -1,28 +1,36 @@
 /**
- * CLI tool-allowlist coupling: allowing `bash` also allows `bash_control`.
+ * CLI tool-allowlist coupling: `bash` and `bash_control` are ONE tool.
  *
  * The background `bash` tool and its `bash_control` companion are
- * registered together (src/cli.ts), but upstream pi's `--tools` flag
- * filters tools BY NAME at registration: an allowlist that names `bash`
- * without `bash_control` keeps the background tool while dropping its
- * control tool. The model then receives handoff results that reference a
- * tool it cannot call, and the completion guard demands dispositions it
- * cannot make — the runaway documented in the background-bash bug report
- * (models polling /proc/<pid> and `sleep` loops for hundreds of turns).
+ * registered together (src/cli.ts), but upstream pi's `--tools` and
+ * `--exclude-tools` flags filter tools BY NAME at registration — so an
+ * allowlist that names `bash` without `bash_control` keeps the background
+ * tool while dropping its control tool, and a denylist naming only one
+ * member splits the pair the same way. The model then receives handoff
+ * results that reference a tool it cannot call, and the completion guard
+ * demands dispositions it cannot make — the runaway documented in the
+ * background-bash bug report (models polling /proc/<pid> and `sleep`
+ * loops for hundreds of turns).
  *
- * This module rewrites the `--tools` value BEFORE pi's `main()` parses it:
- * an allowlist that admits `bash` but not `bash_control` gets
- * `bash_control` appended, so the pair behaves like one tool.
+ * This module rewrites the flag values BEFORE pi's `main()` parses them,
+ * making the pair atomic — either both are available or neither is:
  *
- * Exclusions are honored as an explicit opt-out: when `--exclude-tools`
- * names `bash_control` (exact name or pattern), nothing is appended and
- * the session's `bash` falls back to plain blocking execution with a
- * deterministic timeout instead (see ./bash-background-tool.ts — the
- * execute-time availability check is authoritative; this coupling is the
- * capability-preserving path).
+ *  - a `--tools` allowlist that admits `bash` but not `bash_control` gets
+ *    `bash_control` appended;
+ *  - `--exclude-tools` naming either member (`bash` or `bash_control`,
+ *    exact name or pattern) gets the other appended, so the whole tool
+ *    goes away — `bash_control` cannot be excluded separately from `bash`
+ *    because it is part of the bash tool.
+ *
+ * (pi applies `--exclude-tools` over the allowlist, so the extended
+ * denylist is authoritative: `--tools bash --exclude-tools bash_control`
+ * disables both.) The execute-time availability check in
+ * ./bash-background-tool.ts stays as the safety net for restriction paths
+ * that bypass this rewrite (dynamic tool-set changes, custom extensions).
  *
  * Matching semantics mirror upstream pi exactly, because the decision must
- * match what `AgentSessionConfig.allowedToolNames` will do with the list:
+ * match what `AgentSessionConfig.allowedToolNames`/`excludedToolNames` will
+ * do with the lists:
  *
  *  - list entries are comma-separated, trimmed, empties dropped
  *    (cli/args.js `--tools` branch);
@@ -99,27 +107,59 @@ export function createToolNameMatcher(entries: readonly string[]): (name: string
 }
 
 /**
- * Resolve the coupling for one parsed `--tools` list: the entries to append
- * so `bash`'s companion control tool is callable. Empty when the list
- * needs no coupling (no allowlist, `bash` not admitted, `bash_control`
- * already admitted) or when `--exclude-tools` explicitly opts out.
+ * The pair coupling decision for one parsed argv: what to append to the
+ * `--tools` allowlist and to the `--exclude-tools` denylist so `bash` and
+ * `bash_control` move as ONE tool (they are registered together, and the
+ * control tool is part of the bash tool's contract).
+ */
+export interface BashControlCoupling {
+	/** Entries to append to the `--tools` allowlist. */
+	appendTools: string[]
+	/** Entries to append to the `--exclude-tools` denylist. */
+	appendExclusions: string[]
+}
+
+/** The empty coupling (nothing to rewrite). */
+
+/**
+ * Resolve the pair coupling for parsed `--tools`/`--exclude-tools` values:
+ *
+ *  - Allowlist: a list that admits `bash` but not `bash_control` gets the
+ *    companion appended, so a session that can start background commands
+ *    can always stop, inspect, or wait on them.
+ *  - Denylist: `bash_control` cannot be excluded separately from `bash`.
+ *    Excluding either member excludes both — the pair is all-or-nothing.
+ *    (pi applies `--exclude-tools` over the allowlist, so extending the
+ *    denylist is authoritative.)
  */
 export function resolveBashControlCoupling(
 	tools: readonly string[] | undefined,
 	excludeTools: readonly string[] | undefined,
-): string[] {
-	// No explicit list, an empty list (nothing is allowed — including bash),
-	// or a list pi rejects / treats as modifiers: no allowlist to couple.
-	if (!tools || tools.length === 0 || isInvalidToolList(tools)) return []
-	const allowed = createToolNameMatcher(tools)
-	if (!allowed(BASH_TOOL_NAME)) return []
-	if (allowed(BASH_CONTROL_TOOL_NAME)) return []
-	// Explicit exclusion is an intentional opt-out: honor it — the session
-	// runs the blocking-bash fallback instead of background execution.
-	if (excludeTools && excludeTools.length > 0 && createToolNameMatcher(excludeTools)(BASH_CONTROL_TOOL_NAME)) {
-		return []
+): BashControlCoupling {
+	const excluded = excludeTools && excludeTools.length > 0 ? createToolNameMatcher(excludeTools) : undefined
+	const bashExcluded = excluded?.(BASH_TOOL_NAME) === true
+	const controlExcluded = excluded?.(BASH_CONTROL_TOOL_NAME) === true
+
+	// Denylist coupling: excluding one member excludes the whole tool.
+	const appendExclusions: string[] = []
+	if (controlExcluded && !bashExcluded) appendExclusions.push(BASH_TOOL_NAME)
+	if (bashExcluded && !controlExcluded) appendExclusions.push(BASH_CONTROL_TOOL_NAME)
+
+	// Allowlist coupling: only when the allowlist itself is in play (an
+	// explicit non-modifier list) and the pair is not being excluded anyway.
+	// No list, an empty list (nothing is allowed — including bash), or a list
+	// pi rejects / treats as modifiers: no allowlist to couple.
+	if (!tools || tools.length === 0 || isInvalidToolList(tools)) {
+		return { appendTools: [], appendExclusions }
 	}
-	return [BASH_CONTROL_TOOL_NAME]
+	const allowed = createToolNameMatcher(tools)
+	if (!allowed(BASH_TOOL_NAME) || allowed(BASH_CONTROL_TOOL_NAME)) {
+		return { appendTools: [], appendExclusions }
+	}
+	// An exclusion of either member removes the whole pair, so there is
+	// nothing left for the allowlist to couple.
+	if (bashExcluded || controlExcluded) return { appendTools: [], appendExclusions }
+	return { appendTools: [BASH_CONTROL_TOOL_NAME], appendExclusions }
 }
 
 /**
@@ -162,6 +202,7 @@ const PI_VALUE_FLAGS = new Set([
 export function coupleBashControlToolArg(args: readonly string[]): string[] {
 	let toolsValueIndex = -1
 	let tools: string[] | undefined
+	let excludeValueIndex = -1
 	let excludeTools: string[] | undefined
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]
@@ -175,6 +216,7 @@ export function coupleBashControlToolArg(args: readonly string[]): string[] {
 				toolsValueIndex = i
 				tools = parseToolListValue(value)
 			} else if (arg === "--exclude-tools" || arg === "-xt") {
+				excludeValueIndex = i
 				excludeTools = parseToolListValue(value)
 			}
 			continue
@@ -195,10 +237,15 @@ export function coupleBashControlToolArg(args: readonly string[]): string[] {
 		// Single-dash unknowns, `@file` args, and bare positionals consume
 		// no value in pi's parser.
 	}
-	if (toolsValueIndex < 0 || !tools) return args as string[]
-	const append = resolveBashControlCoupling(tools, excludeTools)
-	if (append.length === 0) return args as string[]
+	if ((toolsValueIndex < 0 || !tools) && excludeValueIndex < 0) return args as string[]
+	const { appendTools, appendExclusions } = resolveBashControlCoupling(tools, excludeTools)
+	if (appendTools.length === 0 && appendExclusions.length === 0) return args as string[]
 	const coupled = [...args]
-	coupled[toolsValueIndex] = `${args[toolsValueIndex]},${append.join(",")}`
+	if (toolsValueIndex >= 0 && tools && appendTools.length > 0) {
+		coupled[toolsValueIndex] = `${args[toolsValueIndex]},${appendTools.join(",")}`
+	}
+	if (excludeValueIndex >= 0 && appendExclusions.length > 0) {
+		coupled[excludeValueIndex] = `${args[excludeValueIndex]},${appendExclusions.join(",")}`
+	}
 	return coupled
 }

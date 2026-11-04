@@ -63,37 +63,86 @@ describe("isInvalidToolList", () => {
 
 describe("resolveBashControlCoupling", () => {
 	it("appends bash_control when the allowlist admits bash but not its companion", () => {
-		expect(resolveBashControlCoupling(["read", "bash", "write", "grep", "find", "ls"], undefined)).toEqual([
-			"bash_control",
-		])
+		expect(resolveBashControlCoupling(["read", "bash", "write", "grep", "find", "ls"], undefined)).toEqual({
+			appendTools: ["bash_control"],
+			appendExclusions: [],
+		})
 	})
 
 	it("does not couple without an explicit allowlist (no --tools, modifier lists, rejected lists)", () => {
-		expect(resolveBashControlCoupling(undefined, undefined)).toEqual([])
-		expect(resolveBashControlCoupling([], undefined)).toEqual([])
-		expect(resolveBashControlCoupling(["+bash"], undefined)).toEqual([])
-		expect(resolveBashControlCoupling(["bash", "+codemode"], undefined)).toEqual([])
+		expect(resolveBashControlCoupling(undefined, undefined)).toEqual({ appendTools: [], appendExclusions: [] })
+		expect(resolveBashControlCoupling([], undefined)).toEqual({ appendTools: [], appendExclusions: [] })
+		expect(resolveBashControlCoupling(["+bash"], undefined)).toEqual({ appendTools: [], appendExclusions: [] })
+		expect(resolveBashControlCoupling(["bash", "+codemode"], undefined)).toEqual({
+			appendTools: [],
+			appendExclusions: [],
+		})
 	})
 
 	it("does not couple when bash itself is not admitted", () => {
-		expect(resolveBashControlCoupling(["read", "write"], undefined)).toEqual([])
+		expect(resolveBashControlCoupling(["read", "write"], undefined)).toEqual({ appendTools: [], appendExclusions: [] })
 	})
 
 	it("does not couple when the allowlist already admits bash_control (exact or pattern)", () => {
-		expect(resolveBashControlCoupling(["read", "bash", "bash_control"], undefined)).toEqual([])
-		expect(resolveBashControlCoupling(["read", "bash*"], undefined)).toEqual([])
+		expect(resolveBashControlCoupling(["read", "bash", "bash_control"], undefined)).toEqual({
+			appendTools: [],
+			appendExclusions: [],
+		})
+		expect(resolveBashControlCoupling(["read", "bash*"], undefined)).toEqual({ appendTools: [], appendExclusions: [] })
 	})
 
-	it("honors an explicit exclusion of bash_control as an opt-out", () => {
-		expect(resolveBashControlCoupling(["read", "bash"], ["bash_control"])).toEqual([])
-		// Pattern exclusions are honored too.
-		expect(resolveBashControlCoupling(["read", "bash"], ["bash_*"])).toEqual([])
-		// An exclusion of something else does not suppress the coupling.
-		expect(resolveBashControlCoupling(["read", "bash"], ["write"])).toEqual(["bash_control"])
+	it("excluding bash_control also excludes bash — the pair is all-or-nothing", () => {
+		// With an allowlist: nothing is appended to it; bash joins the denylist.
+		expect(resolveBashControlCoupling(["read", "bash"], ["bash_control"])).toEqual({
+			appendTools: [],
+			appendExclusions: ["bash"],
+		})
+		// Without an allowlist (default tools): the denylist still extends.
+		expect(resolveBashControlCoupling(undefined, ["bash_control"])).toEqual({
+			appendTools: [],
+			appendExclusions: ["bash"],
+		})
+		// Pattern exclusions are coupled the same way.
+		expect(resolveBashControlCoupling(undefined, ["bash_c*"])).toEqual({
+			appendTools: [],
+			appendExclusions: ["bash"],
+		})
+	})
+
+	it("excluding bash also excludes bash_control", () => {
+		expect(resolveBashControlCoupling(["read", "bash"], ["bash"])).toEqual({
+			appendTools: [],
+			appendExclusions: ["bash_control"],
+		})
+		expect(resolveBashControlCoupling(undefined, ["bash"])).toEqual({
+			appendTools: [],
+			appendExclusions: ["bash_control"],
+		})
+	})
+
+	it("excluding the whole pair at once needs no extension", () => {
+		expect(resolveBashControlCoupling(undefined, ["bash", "bash_control"])).toEqual({
+			appendTools: [],
+			appendExclusions: [],
+		})
+		expect(resolveBashControlCoupling(undefined, ["bash*"])).toEqual({
+			appendTools: [],
+			appendExclusions: [],
+		})
+	})
+
+	it("an unrelated exclusion does not suppress the allowlist coupling", () => {
+		expect(resolveBashControlCoupling(["read", "bash"], ["write"])).toEqual({
+			appendTools: ["bash_control"],
+			appendExclusions: [],
+		})
 	})
 
 	it("keeps the coupling when the allowlist also filters MCP tools", () => {
-		expect(resolveBashControlCoupling(["read", "bash", "mcp__srv__*"], undefined)).toEqual(["bash_control"])
+		expect(resolveBashControlCoupling(["read", "bash", "mcp__srv__*"], undefined)).toEqual({
+			appendTools: ["bash_control"],
+			appendExclusions: [],
+		})
 	})
 })
 
@@ -129,9 +178,22 @@ describe("coupleBashControlToolArg", () => {
 		])
 	})
 
-	it("honors --exclude-tools as an opt-out", () => {
-		const args = ["--tools", "bash", "--exclude-tools", "bash_control"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+	it("honors --exclude-tools by extending it to the whole pair", () => {
+		// Excluding the control tool removes bash too — they are one tool.
+		expect(coupleBashControlToolArg(["--tools", "read,bash", "--exclude-tools", "bash_control"])).toEqual([
+			"--tools",
+			"read,bash",
+			"--exclude-tools",
+			"bash_control,bash",
+		])
+		// And the reverse: excluding bash removes bash_control.
+		expect(coupleBashControlToolArg(["--exclude-tools", "bash"])).toEqual(["--exclude-tools", "bash,bash_control"])
+		// A denylist alone (no --tools) is coupled too.
+		expect(coupleBashControlToolArg(["--print", "-xt", "bash_control"])).toEqual([
+			"--print",
+			"-xt",
+			"bash_control,bash",
+		])
 	})
 
 	it("does not rewrite tokens after -- (prompt messages)", () => {

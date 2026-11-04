@@ -49,9 +49,9 @@ The watcher's exit is delivered like any other exit result. Include failure patt
 
 ## Tool-set restrictions
 
-Background execution and its control tool are one unit. Allowing `bash` — via `--tools` — also allows `bash_control`, so a session that can start background commands can always stop, inspect, or wait on them. Explicitly excluding `bash_control` (`--exclude-tools`) is the opt-out: those sessions run `bash` in plain blocking mode with a deterministic 120-second timeout instead of the background cohort, and a command killed by that limit reports `Command timed out after N seconds`. The check is live, so tool profiles that drop `bash_control` mid-session (for example plan mode) get the same blocking behavior on their next `bash` call.
+`bash` and `bash_control` are one tool. Allowing `bash` — via `--tools` — also allows `bash_control`, and excluding either member (`--exclude-tools`) excludes the whole tool: a session that can start background commands can always stop, inspect, or wait on them, and a session without the control tool has no `bash` at all. Plan mode keeps the pair too (`bash` stays gated per-command by the read-only gate; `bash_control` manages only processes the session itself started).
 
-If a session ever ends up with live background commands and no callable `bash_control` anyway, the harness resolves it at task completion: it stops the session's own processes, delivers their results, and reports what it stopped — the run ends instead of re-prompting for a disposition the session cannot make.
+If a session ever ends up with live background commands and no callable `bash_control` anyway, two safety nets apply: `bash` executions fall back to plain blocking mode with a deterministic 120-second timeout (reporting `Command timed out after N seconds`), and the completion guard resolves the cohort itself at task completion — it stops the session's processes, delivers their results, and reports what it stopped, so the run ends instead of re-prompting for a disposition the session cannot make.
 
 E2E rigs shorten the handoff with `KIMCHI_E2E_BASH_HANDOFF_SECONDS` (honored only inside test harnesses). The TUI and ACP e2e fixtures set it to 2. The blocking-mode timeout has the same kind of seam: `KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS`.
 

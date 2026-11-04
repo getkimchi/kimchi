@@ -7,13 +7,13 @@
  * gets `bash_control` appended, so the model can wait on the cohort and the
  * run terminates once the command finishes.
  *
- * Scenario B (explicit exclusion / the repro): `--exclude-tools
- * bash_control` opts out of the cohort — bash runs in plain blocking mode
- * with a deterministic timeout, the timeout is reported to the model, and the
- * run terminates in bounded time even though the command never ends.
- * Pre-fix, this scenario loops forever on the completion guard (the
- * documented runaway: hundreds of turns polling a process the model cannot
- * stop) and is only ended by the test timeout.
+ * Scenario B (the repro): excluding `bash_control` removes the whole bash
+ * tool — they are one unit — so the model cannot even start a command it
+ * could never stop, and the run terminates instead of looping on the
+ * completion guard. Pre-fix, the same invocation handed `sleep 600` to the
+ * background with no control tool and ran away (hundreds of turns polling
+ * a process it cannot stop); the test timeout is the only thing that ended
+ * it.
  */
 import { spawn } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
@@ -179,16 +179,16 @@ it("couples an allowlist that names bash with bash_control, so a headless run ca
 	)
 })
 
-it("runs plain blocking bash with a deterministic timeout when bash_control is excluded, terminating a headless run whose command never ends", {
+it("removes the whole bash tool when bash_control is excluded, so a headless run whose command never ends terminates", {
 	timeout: 60_000,
 }, async () => {
 	await withFakeServer(
 		[
-			// 1. A command that never ends: blocking mode kills it at the
-			//    (seam-shortened) deterministic timeout.
+			// 1. The model tries the never-ending command — but bash is gone
+			//    with its control tool, so the call fails outright.
 			bashCall("sleep 600"),
-			// 2. Final answer after the reported timeout.
-			finalAnswer("Nothing left running; run complete."),
+			// 2. Final answer after the failed call.
+			finalAnswer("Nothing to run; run complete."),
 		],
 		async (fake, dirs) => {
 			const result = await runPrint({
@@ -198,10 +198,6 @@ it("runs plain blocking bash with a deterministic timeout when bash_control is e
 				prompt: "Run the sleep, then finish.",
 				args: ["--tools", "read,bash", "--exclude-tools", "bash_control"],
 				env: {
-					// Handoff seam stays large enough to prove NO handoff happened;
-					// blocking mode ignores it entirely.
-					KIMCHI_E2E_BASH_HANDOFF_SECONDS: "1",
-					KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS: "2",
 					// Pre-fix, the completion guard re-prompts on every stop —
 					// shrink its pacing so the runaway is visible inside the
 					// test budget instead of hidden behind the 30s default.
@@ -211,19 +207,20 @@ it("runs plain blocking bash with a deterministic timeout when bash_control is e
 			const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 			const requests = chatRequests(fake)
 
-			// The explicit exclusion is honored: no bash_control in the manifest.
+			// The exclusion removed the WHOLE pair: neither bash nor
+			// bash_control is declared to the model.
 			expect(requests.length, failure).toBeGreaterThanOrEqual(1)
-			expect(manifestNames(requests[0] as never), failure).not.toContain("bash_control")
+			const manifest = manifestNames(requests[0] as never)
+			expect(manifest, failure).not.toContain("bash")
+			expect(manifest, failure).not.toContain("bash_control")
 			// The run terminated in bounded time with the final answer…
 			expect(result.timedOut, failure).toBe(false)
 			expect(result.code, failure).toBe(0)
-			expect(result.stdout, failure).toContain("Nothing left running; run complete.")
-			// …and the model saw the deterministic blocking timeout — not a
-			// background handoff it cannot disposition (the handoff guidance
-			// is the distinctive marker: it only appears on a live handle).
+			expect(result.stdout, failure).toContain("Nothing to run; run complete.")
+			// …and the bash call failed as an unavailable tool — no handoff,
+			// no handle, nothing left for the completion guard to demand.
 			expect(requests.length, failure).toBeGreaterThanOrEqual(2)
 			const lastBody = JSON.stringify(requests[requests.length - 1]?.body)
-			expect(lastBody, failure).toContain("Command timed out after 2 seconds")
 			expect(lastBody, failure).not.toContain("This process now continues by default")
 		},
 	)
