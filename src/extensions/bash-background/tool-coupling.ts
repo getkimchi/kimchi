@@ -232,7 +232,10 @@ export function coupleBashControlToolArg(args: readonly string[]): string[] {
 		}
 		if (arg.startsWith("--")) {
 			// Unknown long flags: `--flag=value` is self-contained; a bare
-			// `--flag` consumes a follower that is not `-`/`@`-prefixed.
+			// `--flag` consumes a follower that is not `-`/`@`-prefixed. Note
+			// `--tools=value` lands HERE, not in the coupling: pi's parser only
+			// accepts the space-separated form, so the equals form creates no
+			// allowlist at all (documented in tool-coupling.test.ts).
 			if (arg.includes("=")) continue
 			const next = args[i + 1]
 			if (next !== undefined && !next.startsWith("-") && !next.startsWith("@")) i++

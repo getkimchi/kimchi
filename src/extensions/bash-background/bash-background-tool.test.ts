@@ -488,6 +488,64 @@ describe("createBackgroundBashToolDefinition — blocking fallback (bash_control
 		expect(state.registry.size).toBe(0)
 	})
 
+	it("degrades to blocking when the availability check itself throws", async () => {
+		vi.useFakeTimers()
+		const state = makeState(2)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => {
+				throw new Error("boom")
+			},
+		})
+		const execPromise = callExecute(tool, { command: "sleep 30" })
+		await Promise.resolve()
+		// Past the handoff deadline: a throwing check must fail safe into
+		// blocking mode, never hand off an undispositionable process.
+		await vi.advanceTimersByTimeAsync(3_000)
+		let settled = false
+		void execPromise.then(
+			() => {
+				settled = true
+			},
+			() => {
+				settled = true
+			},
+		)
+		expect(settled).toBe(false)
+		await ops.exit(0)
+		const result = await execPromise
+		expect(result.details?.handoff).toBeFalsy()
+		expect(result.details?.handle).toBeUndefined()
+	})
+
+	it("a timeout kill that fails keeps the live process registered instead of fabricating a terminal result", async () => {
+		vi.stubEnv("KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS", "1")
+		vi.useFakeTimers()
+		const state = makeState(60)
+		const ops = createFakeOps()
+		const tool = createBackgroundBashToolDefinition("/test/cwd", {
+			operations: ops,
+			state,
+			controlToolAvailable: () => false,
+		})
+		// Simulate a kill that fails outright: the process stays alive.
+		state.registry.kill = async () => {
+			throw new Error("kill boom")
+		}
+		const execPromise = callExecute(tool, { command: "sleep 600" })
+		await Promise.resolve()
+		const failure = expect(execPromise).rejects.toThrow(
+			"Command timed out after 1 seconds but could not be stopped",
+		)
+		await vi.advanceTimersByTimeAsync(1_100)
+		await failure
+		// The live process stays registered — the harness safety limit and
+		// the shutdown drain own its lifecycle; nothing is silently untracked.
+		expect(state.registry.size).toBe(1)
+	})
+
 	it("re-checks availability on every execution (tool-set changes apply immediately)", async () => {
 		vi.useFakeTimers()
 		const state = makeState(2)

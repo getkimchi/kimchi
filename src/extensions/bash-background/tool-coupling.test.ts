@@ -239,6 +239,17 @@ describe("coupleBashControlToolArg", () => {
 		expect(coupleBashControlToolArg(args)).toBe(args)
 	})
 
+	it("treats the --tools=value equals form as inert, matching pi's parser", () => {
+		// pi's cli/args.js only matches the space-separated form
+		// ("--tools"/"-t" followed by a value token); `--tools=read,bash`
+		// falls through to unknownFlags and creates NO allowlist at all, so
+		// there is nothing to couple. This is a documented decision, not an
+		// accident — and the execute-time availability check keeps such a
+		// session safe regardless (blocking bash, no runaway).
+		const args = ["--print", "--tools=read,bash"]
+		expect(coupleBashControlToolArg(args)).toBe(args)
+	})
+
 	it("preserves spacing inside the value (pi trims on split)", () => {
 		expect(coupleBashControlToolArg(["--tools", "read, bash"])).toEqual(["--tools", "read, bash,bash_control"])
 	})

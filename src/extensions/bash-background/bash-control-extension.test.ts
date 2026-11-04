@@ -1409,6 +1409,29 @@ describe("completion guard without bash_control (allowlist or profile drops the 
 		).toHaveLength(1)
 	})
 
+	it("user-facing sessions never resolve live commands on their own, even without bash_control", async () => {
+		// Reviewer check: the session-policy early return must precede the
+		// availability resolution, or an interactive session that drops the
+		// control tool would get its live commands killed at every turn end —
+		// breaking the documented interactive contract.
+		state.sessionKind = "user-facing"
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+		harness.setActiveTools(["bash"])
+
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+
+		// No reminder and no harness resolution — a human can still send a
+		// message, and exit notifications wake the agent on their own.
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		expect(
+			messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE),
+		).toHaveLength(0)
+		// The command keeps running untouched.
+		expect(registry.getEntry(a)?.state).toBe("running")
+	})
+
 	it("suppresses the concurrency advisory while bash_control is unavailable, and resumes when it returns", async () => {
 		const harness = makePiWithState()
 		const a = spawnRunning("a")

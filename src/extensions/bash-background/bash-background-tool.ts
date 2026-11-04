@@ -78,13 +78,14 @@ export interface CreateBackgroundBashToolOptions extends BashToolOptions {
 	limitSeconds?: number
 	/**
 	 * Whether `bash_control` is callable by the model RIGHT NOW. When false
-	 * (or when the check itself is unavailable), commands run in plain
-	 * blocking mode with a deterministic timeout instead of handing off to
-	 * the background cohort — a session must never hold background
-	 * processes the model cannot disposition. Evaluated on every execution
-	 * so tool-set changes (plan-mode profiles, allowlist tweaks) apply
-	 * immediately. Default: background semantics (isolated callers own their
-	 * own cohort contract).
+	 * — or when the check itself throws — commands run in plain blocking
+	 * mode with a deterministic timeout instead of handing off to the
+	 * background cohort: a session must never hold background processes the
+	 * model cannot disposition. Evaluated on every execution so tool-set
+	 * changes (plan-mode profiles, allowlist tweaks) apply immediately.
+	 * When OMITTED, background semantics stand — the caller owns its own
+	 * cohort contract (isolated/test callers); the production registration
+	 * (./index.ts) always wires the check against the live active tool set.
 	 */
 	controlToolAvailable?: () => boolean
 }
@@ -163,9 +164,16 @@ export function createBackgroundBashToolDefinition(
 		const { registry, coordinator } = state
 
 		// Blocking fallback (see module docstring): without a callable
-		// bash_control, no command is ever backgrounded. A failed/absent
-		// availability check degrades to blocking — never the reverse.
-		const controlAvailable = options?.controlToolAvailable?.() ?? true
+		// bash_control, no command is ever backgrounded. When the option is
+		// omitted the caller owns its cohort contract (isolated/test callers)
+		// and background semantics stand; a check that THROWS degrades to
+		// blocking — the fail-safe direction for the documented runaway.
+		let controlAvailable = true
+		try {
+			controlAvailable = options?.controlToolAvailable?.() ?? true
+		} catch {
+			controlAvailable = false
+		}
 		if (!controlAvailable) {
 			return executeBlocking(toolCallId, params, signal, onUpdate, ctx)
 		}
@@ -396,7 +404,16 @@ export function createBackgroundBashToolDefinition(
 			}
 			if (outcome === "timeout") {
 				// kill() awaits exec settlement, so the final snapshot below is
-				// complete. The reason renders as `killed (timeout)` in the facts
+				// complete — unless the kill itself failed and the process is
+				// still alive. Fabricating a terminal result for a live process
+				// would untrack it silently (no output capture, no guard
+				// visibility), so the entry stays registered and the harness
+				// safety limit / shutdown drain still bound it.
+				await registry.kill(handle, "timeout").catch(() => {})
+				if (registry.getEntry(handle)?.state === "running") {
+					throw new Error(`Command timed out after ${timeoutSeconds} seconds but could not be stopped`)
+				}
+				// The reason renders as `killed (timeout)` in the facts
 				// header; the error text carries the upstream timeout spelling so
 				// bash-timeout-guidance steers compose unchanged.
 				await registry.kill(handle, "timeout").catch(() => {})
@@ -458,8 +475,13 @@ export function createBackgroundBashToolDefinition(
 			}
 		} finally {
 			unsubscribe?.()
-			coordinator.handleRemoved(handle)
-			await registry.remove(handle).catch(() => {})
+			// Remove only a settled entry: a timeout kill that failed leaves a
+			// live process that must stay registered (the harness safety limit
+			// and the shutdown drain own its lifecycle).
+			if (registry.getEntry(handle)?.state !== "running") {
+				coordinator.handleRemoved(handle)
+				await registry.remove(handle).catch(() => {})
+			}
 		}
 	}
 
