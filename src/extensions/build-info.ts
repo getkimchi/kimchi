@@ -13,7 +13,8 @@
  * entry is appended when git answers, so session startup never waits on git.
  * A session_shutdown handler holds the shutdown until pending appends settle,
  * so a short-lived session (the ACP server disposes sessions after the
- * awaited shutdown) still gets its entry. A partial entry (a git read failed)
+ * awaited shutdown) still gets its entry. A partial answer (a git read failed —
+ * including a failed branch read, unlike a detached HEAD, which git answers)
  * is appended but not cached — the next session_start retries git.
  */
 
@@ -61,11 +62,20 @@ async function bestEffort<T>(read: () => Promise<T>): Promise<T | undefined> {
 	}
 }
 
-/** Reads commit, branch and dirty state of the checkout at `dir`; each field is omitted when git can't answer. */
-export async function readGitState(
-	dir: string,
-	git: GitRunner,
-): Promise<Pick<KimchiBuildEntry, "commit" | "branch" | "dirty">> {
+/** Git's answer for the checkout at `dir`: the fields git could answer, and
+ *  whether every read succeeded. */
+export interface GitState {
+	state: Pick<KimchiBuildEntry, "commit" | "branch" | "dirty">
+	/** False when a git read failed (missing binary, lock, timeout): the answer
+	 *  is transient — append it best-effort, but don't cache it. */
+	complete: boolean
+}
+
+/** Reads commit, branch and dirty state of the checkout at `dir`; each field is
+ *  omitted when git can't answer, and `complete` reports whether every read
+ *  succeeded. A detached HEAD is a successful branch read (git answers `HEAD`),
+ *  so it is complete; a failed branch read is not, and the caller retries. */
+export async function readGitState(dir: string, git: GitRunner): Promise<GitState> {
 	const [commit, branch, status] = await Promise.all([
 		bestEffort(() => git(["rev-parse", "HEAD"], dir)),
 		bestEffort(() => git(["rev-parse", "--abbrev-ref", "HEAD"], dir)),
@@ -76,15 +86,26 @@ export async function readGitState(
 	const branchName = branch?.trim()
 	if (branchName && branchName !== "HEAD") state.branch = branchName
 	if (status !== undefined) state.dirty = status.trim().length > 0
-	return state
+	return { state, complete: commit !== undefined && branch !== undefined && status !== undefined }
 }
 
-export async function resolveBuildInfo(version: string, packageDir: string, git: GitRunner): Promise<KimchiBuildEntry> {
+/** The resolved build entry plus whether git answered every field it can. */
+export interface ResolvedBuild {
+	entry: KimchiBuildEntry
+	/** False when a git read failed: the entry is appended best-effort (the fields
+	 *  git did answer are kept) but must not be cached — the next session_start
+	 *  retries git. True for release/canary channels and complete dev answers. */
+	complete: boolean
+}
+
+export async function resolveBuildInfo(version: string, packageDir: string, git: GitRunner): Promise<ResolvedBuild> {
 	const { channel, commit } = classifyVersion(version)
 	const entry: KimchiBuildEntry = { schemaVersion: KIMCHI_BUILD_SCHEMA_VERSION, version, channel }
 	if (commit) entry.commit = commit
-	if (channel === "dev") Object.assign(entry, await readGitState(packageDir, git))
-	return entry
+	if (channel !== "dev") return { entry, complete: true }
+	const { state, complete } = await readGitState(packageDir, git)
+	Object.assign(entry, state)
+	return { entry, complete }
 }
 
 const execFileAsync = promisify(execFile)
@@ -106,25 +127,20 @@ export const runGit: GitRunner = async (args, cwd) => {
 }
 
 /**
- * @param resolve produces the build info; called once per process (again when it rejects or yields a partial entry).
+ * @param resolve produces the build info; called once per process (again when it rejects or yields a partial answer).
  * @returns the extension, plus `settled()` — resolves once every pending append has run (for tests).
  */
-export function createBuildInfoExtension(resolve: () => Promise<KimchiBuildEntry>) {
+export function createBuildInfoExtension(resolve: () => Promise<ResolvedBuild>) {
 	let buildInfo: Promise<KimchiBuildEntry> | undefined
 	const pending = new Set<Promise<void>>()
-
-	/** A complete entry is cached for the process. A dev entry missing `commit` or
-	 *  `dirty` had a git read fail — that answer is transient (a missing binary, a
-	 *  lock, a timeout), so it must not be cached: the next session_start retries.
-	 *  A missing `branch` is legitimate (detached HEAD) and still complete. */
-	const complete = (entry: KimchiBuildEntry): boolean =>
-		entry.channel !== "dev" || (entry.commit !== undefined && entry.dirty !== undefined)
 
 	const load = (): Promise<KimchiBuildEntry> => {
 		if (buildInfo) return buildInfo
 		const resolving = resolve().then(
-			(entry) => {
-				if (!complete(entry)) buildInfo = undefined // partial: retry git on the next session_start
+			({ entry, complete }) => {
+				// A partial answer (a git read failed) is appended for this session
+				// but not cached — the next session_start retries git.
+				if (!complete) buildInfo = undefined
 				return entry
 			},
 			(err: unknown) => {

@@ -47,8 +47,9 @@ Build info is resolved once per process. A rejected resolve is tried again at
 the next `session_start`, and so is a partial one: when a git read fails the
 entry is still written with the fields git did answer (a field git can't
 answer is left out), but it isn't cached — the next `session_start` retries
-git. A complete entry is cached; a dev entry missing only `branch` is still
-complete (a detached HEAD legitimately has none). The `session_start` handler
+git. A complete entry is cached. A detached HEAD is a complete answer — the
+branch read succeeded, git answered `HEAD` — while a failed branch read marks
+the answer partial, so later sessions retry it. The `session_start` handler
 doesn't wait for the resolve: the entry is appended when git answers (at most
 2 s per git call), so it may come a few entries after `session_start`, and
 session startup never waits on git. A `session_shutdown` handler holds the

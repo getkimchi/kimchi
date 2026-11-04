@@ -11,6 +11,7 @@ import {
 	gitFreeEnv,
 	KIMCHI_BUILD_ENTRY_TYPE,
 	type KimchiBuildEntry,
+	type ResolvedBuild,
 	readGitState,
 	resolveBuildInfo,
 	runGit,
@@ -44,20 +45,40 @@ describe("readGitState", () => {
 			"rev-parse --abbrev-ref HEAD": "master\n",
 			"status --porcelain --untracked-files=no": "",
 		})
-		expect(await readGitState("/repo", git)).toEqual({ commit: "e8dd4fb5aa", branch: "master", dirty: false })
+		expect(await readGitState("/repo", git)).toEqual({
+			state: { commit: "e8dd4fb5aa", branch: "master", dirty: false },
+			complete: true,
+		})
 	})
 
-	it("reports a dirty tree and omits the branch when HEAD is detached", async () => {
+	it("reports a dirty tree and omits the branch when HEAD is detached — still complete", async () => {
 		const git = fakeGit({
 			"rev-parse HEAD": "e8dd4fb5aa\n",
 			"rev-parse --abbrev-ref HEAD": "HEAD\n",
 			"status --porcelain --untracked-files=no": " M src/cli.ts\n",
 		})
-		expect(await readGitState("/repo", git)).toEqual({ commit: "e8dd4fb5aa", dirty: true })
+		// git ANSWERED `HEAD`: a successful read, not a failure — the answer is complete.
+		expect(await readGitState("/repo", git)).toEqual({
+			state: { commit: "e8dd4fb5aa", dirty: true },
+			complete: true,
+		})
+	})
+
+	it("marks the answer incomplete when only the branch read fails", async () => {
+		const git = fakeGit({
+			"rev-parse HEAD": "e8dd4fb5aa\n",
+			"status --porcelain --untracked-files=no": "",
+		})
+		// The failed branch read must not look like a detached HEAD: the answer
+		// is partial, so a later session retries the lookup.
+		expect(await readGitState("/repo", git)).toEqual({
+			state: { commit: "e8dd4fb5aa", dirty: false },
+			complete: false,
+		})
 	})
 
 	it("omits every field git cannot answer", async () => {
-		expect(await readGitState("/not-a-repo", fakeGit({}))).toEqual({})
+		expect(await readGitState("/not-a-repo", fakeGit({}))).toEqual({ state: {}, complete: false })
 	})
 })
 
@@ -65,9 +86,8 @@ describe("resolveBuildInfo", () => {
 	it("does not consult git for a release", async () => {
 		const git = vi.fn<GitRunner>()
 		expect(await resolveBuildInfo("1.27.0", "/repo", git)).toEqual({
-			schemaVersion: 1,
-			version: "1.27.0",
-			channel: "release",
+			entry: { schemaVersion: 1, version: "1.27.0", channel: "release" },
+			complete: true,
 		})
 		expect(git).not.toHaveBeenCalled()
 	})
@@ -75,10 +95,13 @@ describe("resolveBuildInfo", () => {
 	it("takes the commit from a canary version", async () => {
 		const git = vi.fn<GitRunner>()
 		expect(await resolveBuildInfo("0.0.0-canary.20261103.e8dd4fb", "/repo", git)).toEqual({
-			schemaVersion: 1,
-			version: "0.0.0-canary.20261103.e8dd4fb",
-			channel: "canary",
-			commit: "e8dd4fb",
+			entry: {
+				schemaVersion: 1,
+				version: "0.0.0-canary.20261103.e8dd4fb",
+				channel: "canary",
+				commit: "e8dd4fb",
+			},
+			complete: true,
 		})
 		expect(git).not.toHaveBeenCalled()
 	})
@@ -90,12 +113,35 @@ describe("resolveBuildInfo", () => {
 			"status --porcelain --untracked-files=no": "",
 		})
 		expect(await resolveBuildInfo("dev", "/repo", git)).toEqual({
-			schemaVersion: 1,
-			version: "dev",
-			channel: "dev",
-			commit: "e8dd4fb5aa",
-			branch: "feat/x",
-			dirty: false,
+			entry: {
+				schemaVersion: 1,
+				version: "dev",
+				channel: "dev",
+				commit: "e8dd4fb5aa",
+				branch: "feat/x",
+				dirty: false,
+			},
+			complete: true,
+		})
+	})
+
+	it("reports an incomplete dev answer when a branch read fails", async () => {
+		const git = fakeGit({
+			"rev-parse HEAD": "e8dd4fb5aa\n",
+			"status --porcelain --untracked-files=no": "",
+		})
+		// The entry keeps the fields git answered; the answer is partial, so the
+		// extension appends it but retries on the next session_start — a failed
+		// branch read is not a detached HEAD.
+		expect(await resolveBuildInfo("dev", "/repo", git)).toEqual({
+			entry: {
+				schemaVersion: 1,
+				version: "dev",
+				channel: "dev",
+				commit: "e8dd4fb5aa",
+				dirty: false,
+			},
+			complete: false,
 		})
 	})
 })
@@ -144,9 +190,12 @@ describe("runGit", () => {
 		process.env.GIT_OBJECT_DIRECTORY = join(other, ".git", "objects")
 		try {
 			expect(await readGitState(repo, runGit)).toEqual({
-				commit: git(repo, "rev-parse", "HEAD"),
-				branch: "main",
-				dirty: false,
+				state: {
+					commit: git(repo, "rev-parse", "HEAD"),
+					branch: "main",
+					dirty: false,
+				},
+				complete: true,
 			})
 		} finally {
 			delete process.env.GIT_OBJECT_DIRECTORY
@@ -158,9 +207,12 @@ describe("runGit", () => {
 		writeFileSync(join(repo, "file.txt"), "two\n")
 
 		expect(await readGitState(repo, runGit)).toEqual({
-			commit: git(repo, "rev-parse", "HEAD"),
-			branch: "main",
-			dirty: true,
+			state: {
+				commit: git(repo, "rev-parse", "HEAD"),
+				branch: "main",
+				dirty: true,
+			},
+			complete: true,
 		})
 	})
 })
@@ -169,7 +221,7 @@ describe("build-info extension", () => {
 	const entry: KimchiBuildEntry = { schemaVersion: 1, version: "1.27.0", channel: "release" }
 
 	it("records the build on every session start, resolving it once", async () => {
-		const resolve = vi.fn(async () => entry)
+		const resolve = vi.fn(async () => ({ entry, complete: true }))
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(resolve)
 		extension(mock.api)
@@ -183,7 +235,7 @@ describe("build-info extension", () => {
 	})
 
 	it("does not hold up session_start while the build is being resolved", async () => {
-		let finish: (value: KimchiBuildEntry) => void = () => {}
+		let finish: (value: ResolvedBuild) => void = () => {}
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(() => new Promise((resolve) => (finish = resolve)))
 		extension(mock.api)
@@ -191,7 +243,7 @@ describe("build-info extension", () => {
 		await mock.emit("session_start", { reason: "startup" })
 		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([])
 
-		finish(entry)
+		finish({ entry, complete: true })
 		await extension.settled()
 		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry])
 	})
@@ -199,9 +251,9 @@ describe("build-info extension", () => {
 	it("retries on the next session start after a failed resolve", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const resolve = vi
-			.fn<() => Promise<KimchiBuildEntry>>()
+			.fn<() => Promise<ResolvedBuild>>()
 			.mockRejectedValueOnce(new Error("boom"))
-			.mockResolvedValue(entry)
+			.mockResolvedValue({ entry, complete: true })
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(resolve)
 		extension(mock.api)
@@ -222,7 +274,7 @@ describe("build-info extension", () => {
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(async () => {
 			mock.invalidate()
-			return entry
+			return { entry, complete: true }
 		})
 		extension(mock.api)
 
@@ -235,7 +287,7 @@ describe("build-info extension", () => {
 	})
 
 	it("holds session_shutdown until a pending append settles, so a short-lived session keeps its entry", async () => {
-		let finish: (value: KimchiBuildEntry) => void = () => {}
+		let finish: (value: ResolvedBuild) => void = () => {}
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(() => new Promise((resolve) => (finish = resolve)))
 		extension(mock.api)
@@ -250,7 +302,7 @@ describe("build-info extension", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10))
 		expect(shutdownDone).toBe(false)
 
-		finish(entry)
+		finish({ entry, complete: true })
 		await shutdown
 		// dispose() runs only after the awaited shutdown: the entry landed while the ctx was live.
 		expect(mock.getAppendedEntries(KIMCHI_BUILD_ENTRY_TYPE)).toEqual([entry])
@@ -266,7 +318,10 @@ describe("build-info extension", () => {
 			branch: "feat/x",
 			dirty: false,
 		}
-		const resolve = vi.fn().mockResolvedValueOnce(partial).mockResolvedValueOnce(completeEntry)
+		const resolve = vi
+			.fn<() => Promise<ResolvedBuild>>()
+			.mockResolvedValueOnce({ entry: partial, complete: false })
+			.mockResolvedValueOnce({ entry: completeEntry, complete: true })
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(resolve)
 		extension(mock.api)
@@ -291,7 +346,7 @@ describe("build-info extension", () => {
 			commit: "e8dd4fb5aa",
 			dirty: false,
 		}
-		const resolve = vi.fn(async () => detached)
+		const resolve = vi.fn(async () => ({ entry: detached, complete: true }))
 		const mock = createExtensionApi()
 		const extension = createBuildInfoExtension(resolve)
 		extension(mock.api)
