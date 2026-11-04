@@ -1,6 +1,6 @@
 import type { AgentSession, AgentSessionEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { SideChatSink } from "./controller.js"
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest"
+import type { SideChatDeps, SideChatSink } from "./controller.js"
 import { SideChatController } from "./controller.js"
 import type { SideChatRecord } from "./records.js"
 import type { SideChatSession } from "./session.js"
@@ -96,9 +96,9 @@ function fakeSideSession(overrides?: { contextLength?: number; messages?: SideTh
 
 interface TestDeps {
 	appendEntry: (customType: string, data: unknown) => void
-	sendUserMessage: ReturnType<typeof vi.fn>
+	sendUserMessage: Mock<SideChatDeps["sendUserMessage"]>
 	getThinkingLevel: () => "off"
-	notify: ReturnType<typeof vi.fn>
+	notify: Mock<SideChatDeps["notify"]>
 	entries: Array<Record<string, unknown>>
 }
 
