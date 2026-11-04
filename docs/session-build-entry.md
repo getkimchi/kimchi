@@ -26,22 +26,40 @@ back after a fix.
 ## Source runs
 
 A run counts as `dev` when the code is loaded from a kimchi source checkout: the
-checkout root (`../..` from `src/extensions/`) holds the `@kimchi-dev/cli`
-`package.json` with the unreleased `0.0.0` version. Git then
-reads that checkout (the harness, not the session's project), with every `GIT_*`
-variable removed from its environment so nothing redirects it.
+checkout root (`SOURCE_ROOT` in `src/utils.ts`, resolved from the module's own
+location) holds the `@kimchi-dev/cli` `package.json` with the unreleased
+`0.0.0` version. That constant is load-bearing: real versions are stamped at
+build time in CI (canary as `0.0.0-canary.<date>.<sha>`, releases from the tag
+via `scripts/set-version.js`), so the in-tree version must stay `0.0.0` — a
+committed bump would misclassify every source run from that tree as a
+`release`, losing commit/branch/dirty and naming a version whose tag may not
+exist. Git then reads that checkout (the harness, not the session's
+project), with every `GIT_*` variable removed from its environment so nothing
+redirects it.
 
-The entry doesn't use `PI_PACKAGE_DIR` or `getVersion()` for this. When the
-checkout's resources aren't built, `entry.ts` points the package dir at an
-installed release's share dir, and `kimchi --version` then reports that release
-(e.g. `1.27.0`) even though the code is running from source. The entry records
-`dev` in that case.
+The detection (`detectVersion`/`getDetectedVersion` in `src/utils.ts`) doesn't
+use `PI_PACKAGE_DIR` or `getVersion()`. When the checkout's resources aren't
+built, `entry.ts` points the package dir at an installed release's share dir,
+and `kimchi --version` then reports that release (e.g. `1.27.0`) even though
+the code is running from source. The entry records `dev` in that case — and so
+does telemetry: `telemetry.cli_version` and the OTLP resource attribute
+`user_agent.original` report `getDetectedVersion()`, the same value as this
+entry's `version` field.
 
 ## Timing and failures
 
-Build info is resolved once per process. On a failure it's tried again at the
-next `session_start`. The `session_start` handler doesn't wait for it: the entry is
-appended when git answers (at most 2 s per git call), so it may come a few
-entries after `session_start`, and session startup never waits on git. A field
-git can't answer is left out. If the session is replaced before the answer
-arrives, no entry is written for it; its successor gets its own.
+Build info is resolved once per process. A rejected resolve is tried again at
+the next `session_start`, and so is a partial one: when a git read fails the
+entry is still written with the fields git did answer (a field git can't
+answer is left out), but it isn't cached — the next `session_start` retries
+git. A complete entry is cached. A detached HEAD is a complete answer — the
+branch read succeeded, git answered `HEAD` — while a failed branch read marks
+the answer partial, so later sessions retry it. The `session_start` handler
+doesn't wait for the resolve: the entry is appended when git answers (at most
+2 s per git call), so it may come a few entries after `session_start`, and
+session startup never waits on git. A `session_shutdown` handler holds the
+shutdown until the pending append settles, so a short-lived session still
+gets its entry — the ACP server awaits shutdown handlers before disposing
+the session. A session replaced before the answer arrives (its ctx is
+invalidated without an awaited shutdown) gets no entry; its successor gets
+its own.

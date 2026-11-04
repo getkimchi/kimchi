@@ -101,7 +101,7 @@ Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endp
 | `tool_configured` | Tool enabled in setup wizard | `tool_name` |
 | `setup_completed` | Setup wizard finished | `tools_count`, `scope` |
 
-All pre-session events also carry base resource attributes: `telemetry.cli_version`, `telemetry.os`, `telemetry.arch`, and optionally `user.account_uuid` / `userEmail`.
+All pre-session events also carry base resource attributes: `telemetry.cli_version`, `telemetry.os`, `telemetry.arch`, and optionally `user.account_uuid` / `userEmail`. `telemetry.cli_version` reports the detected version (`getDetectedVersion()` in `src/utils.ts`): a run from a kimchi source checkout reports `dev` even when the package dir points at an installed release.
 
 ## In-Session Log Events
 
@@ -219,7 +219,7 @@ Example: `write|accept|TypeScript|auto`
 | Log flush interval | 5 000 ms |
 | Metrics flush interval | 30 000 ms |
 | Drain timeout | 5 000 ms (in-session) / 3 000 ms (pre-session) |
-| Resource attributes | `service.name="kimchi"`, `user_agent.original="kimchi/{version}"` |
+| Resource attributes | `service.name="kimchi"`, `user_agent.original="kimchi/{detected version}"` (same `getDetectedVersion()` value as `telemetry.cli_version`) |
 | Scope | `name="kimchi"`, `version="1.0.0"` |
 | Endpoints | `config.endpoint` (logs), `config.metricsEndpoint` (metrics) |
 

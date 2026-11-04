@@ -218,7 +218,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "PII redaction",
 		description:
-			"Redact emails, phone numbers, financial identifiers, and secrets from prompts, tool results, and stored sessions.",
+			"Redact PII and secrets from prompts, tool results, and stored sessions. Tier policy: checksum-validated and prefixed detectors on; bare-shape detectors (dates, national IDs, unsigned secrets) off unless context-anchored. Tune locally via settings.json: redaction.excludedEntities.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

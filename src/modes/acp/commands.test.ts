@@ -24,6 +24,13 @@ describe("AVAILABLE_COMMANDS — ACP advertisement", () => {
 		expect(bug?.description).toBe(SLASH_COMMANDS.bug.hint)
 	})
 
+	it("advertises /language with an input hint so IDE users can pin the reply language", () => {
+		const language = AVAILABLE_COMMANDS.find((c) => c.name === "language")
+		expect(language).toBeDefined()
+		expect(language?.description).toBe(SLASH_COMMANDS.language.hint)
+		expect(language?.input?.hint).toContain("auto")
+	})
+
 	it("every advertised name is a real slash command", () => {
 		for (const cmd of AVAILABLE_COMMANDS) {
 			expect(SLASH_COMMANDS).toHaveProperty(cmd.name)
@@ -68,7 +75,7 @@ describe("composeAvailableCommands", () => {
 	})
 
 	it("returns only the static palette when a session has no skills", () => {
-		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug"])
+		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "language"])
 	})
 })
 

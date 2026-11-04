@@ -22,6 +22,7 @@ import {
 	entriesAssistantUsageTotals,
 	renderFittedLine,
 	type SegmentId,
+	SHELLS_STATUS_KEY,
 	SHORTCUT_TAIL,
 	StatusLine,
 	StatusLineScript,
@@ -938,6 +939,49 @@ describe("StatusLine segment coverage", () => {
 		})
 	})
 
+	describe("shells segment", () => {
+		function shellsData(count: string | undefined) {
+			const data = createMockStatusLineData()
+			vi.mocked(data.getExtensionStatuses).mockReturnValue(
+				new Map(count === undefined ? [] : [[SHELLS_STATUS_KEY, count]]),
+			)
+			return data
+		}
+
+		it("shows the running count with singular and plural forms", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData("1")), 200)).toContain("1 shell")
+			expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData("1")), 200)).not.toContain("1 shells")
+			expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData("3")), 200)).toContain("3 shells")
+		})
+
+		it("is hidden when no command runs, or when the user hides it", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData(undefined)), 200)).not.toContain(
+				"shell",
+			)
+			expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData("0")), 200)).not.toContain("shell")
+			withHidden(["shells"], () => {
+				expect(renderVisible(new StatusLine(createMockContext(), theme, shellsData("2")), 200)).not.toContain("shell")
+			})
+		})
+
+		it("renders agents then shells last, after the pinned group", () => {
+			withPinned(["thinking", "agents", "context", "usage"], () => {
+				vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
+				const visible = renderVisible(new StatusLine(createMockContext(), theme, shellsData("1")), 200)
+				const content = visible.replace(/\s+\/ for commands\s*$/, "").trimEnd()
+				expect(content.endsWith("2 agents · 1 shell")).toBe(true)
+				expect(visible.indexOf("ctx")).toBeLessThan(visible.indexOf("2 agents"))
+			})
+		})
+
+		it("never pushes the line past a narrow terminal", () => {
+			const sl = new StatusLine(createMockContext(), theme, shellsData("4"))
+			for (const width of [1, 20, 40]) {
+				for (const line of sl.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	})
+
 	it("agents segment is hidden when count is zero", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())
@@ -1263,11 +1307,11 @@ describe("status line pinning", () => {
 		})
 	})
 
-	it("pinned agents shows '0 agents' when count is zero", () => {
+	it("pinned agents is hidden when count is zero", () => {
 		withPinned(["agents"], () => {
 			const sl = makeStatusLine()
 			const visible = stripAnsi(sl.render(200)[0])
-			expect(visible).toContain("0 agents")
+			expect(visible).not.toContain("agent")
 		})
 	})
 

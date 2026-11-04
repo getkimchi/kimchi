@@ -25,6 +25,13 @@ import { CAST_AI_SSO_CALLBACK_PORT, generateOAuthState, startCallbackServer } fr
 
 export { generateOAuthState }
 
+/**
+ * Cancel vocabulary across the SSO/OAuth pipeline: thrown when the user aborts
+ * (Esc/Ctrl-C via the AbortSignal, or declining the organization prompt).
+ * Classifiers compare against THIS constant — never substring-match.
+ */
+export const LOGIN_CANCELLED_MESSAGE = "Login cancelled"
+
 import { clearPendingOAuthRegion, type KimchiOAuthConfig, resolveOAuthLoginConfig } from "../oauth-config.js"
 import type { RegionId } from "../regions.js"
 
@@ -178,7 +185,7 @@ async function postTokenRequest(
 			signal: AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)]),
 		})
 	} catch (err) {
-		if (signal.aborted) throw new Error("Login cancelled")
+		if (signal.aborted) throw new Error(LOGIN_CANCELLED_MESSAGE)
 		if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
 			throw new OAuthTokenError(`Token request to ${tokenUrl} timed out after ${TOKEN_REQUEST_TIMEOUT_MS / 1000}s`)
 		}
@@ -310,7 +317,7 @@ export async function listUserOrganizations(
 			signal: AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)]),
 		})
 	} catch (err) {
-		if (signal.aborted) throw new Error("Login cancelled")
+		if (signal.aborted) throw new Error(LOGIN_CANCELLED_MESSAGE)
 		const detail = err instanceof Error ? err.message : String(err)
 		throw new Error(`Fetching organizations failed: ${detail}`)
 	}
@@ -366,7 +373,7 @@ export async function selectOrganization(
 			options,
 		})
 		if (selectedId === undefined) {
-			throw new Error("Login cancelled")
+			throw new Error(LOGIN_CANCELLED_MESSAGE)
 		}
 		if (selectedId === MORE_ORGANIZATIONS_ID) continue
 		const selected = organizations.find((org) => org.id === selectedId)
@@ -469,7 +476,7 @@ export async function loginWithCastAiOauth(
 		const organization = await selectOrganization(organizations, callbacks)
 		return { ...credential, orgId: organization.id, orgName: organization.name }
 	} catch (error) {
-		if (signal.aborted) throw new Error("Login cancelled")
+		if (signal.aborted) throw new Error(LOGIN_CANCELLED_MESSAGE)
 		throw error
 	} finally {
 		callbackServer.close()

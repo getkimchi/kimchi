@@ -106,6 +106,7 @@ import {
 import { applyInteractiveModelSessionPatch } from "./extensions/interactive-model-session.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
+import languageCommandExtension from "./extensions/language-command.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
@@ -959,6 +960,7 @@ async function cliMain(): Promise<void> {
 				helpExtension,
 				themeSelectorExtension,
 				customizeStatusLineExtension,
+				languageCommandExtension,
 				inputHistoryExtension,
 				bugReportDestinationExtension,
 				tagsExtension,

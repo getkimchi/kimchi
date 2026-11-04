@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
@@ -90,7 +92,7 @@ async function waitForToolContextRequest(
 	)
 }
 
-test("redacts email and phone from user prompt before LLM receives it", async ({ terminal }) => {
+test("redacts email from user prompt; bare-shape phone passes through by default", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		withRedactionEnabled({
@@ -105,8 +107,12 @@ test("redacts email and phone from user prompt before LLM receives it", async ({
 			const request = firstChatRequest(fixture)
 			const userText = lastUserMessage(request as { body: unknown })
 
+			// Email is checksum-validated — redacted regardless of context.
 			expect(userText).not.toContain("alice@example.com")
-			expect(userText).not.toContain("555-867-5309")
+			// Phone is a bare-shape detector: off by default under the tier
+			// policy (digit runs collide with order numbers and account IDs).
+			// The email's marker must still appear.
+			expect(userText).toContain("555-867-5309")
 			expect(userText).toContain("[REDACTED")
 		},
 	)
@@ -319,6 +325,182 @@ test("redacts PII in tool results before LLM sees them in context", async ({ ter
 			expect(serialized).not.toContain("john.doe@example.com")
 			expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE")
 			expect(serialized).toContain("[REDACTED")
+
+			const rawEmail = "john.doe@example.com"
+			const sessionsRoot = join(fixture.agentDir, "sessions")
+			const listSessionFiles = (root: string): string[] => {
+				if (!existsSync(root)) return []
+				const out: string[] = []
+				for (const entry of readdirSync(root)) {
+					const entryPath = join(root, entry)
+					if (entry.endsWith(".jsonl")) {
+						out.push(entryPath)
+					} else {
+						try {
+							out.push(...listSessionFiles(entryPath))
+						} catch {
+							// a non-directory entry — nothing to descend into
+						}
+					}
+				}
+				return out
+			}
+			const findToolResultRecord = (): string | undefined => {
+				for (const sessionFile of listSessionFiles(sessionsRoot)) {
+					for (const line of readFileSync(sessionFile, "utf8").split("\n")) {
+						if (!line.includes("call_bash_2") || !line.includes("toolResult")) continue
+						try {
+							JSON.parse(line)
+							return line
+						} catch {
+							// partially written line — keep polling
+						}
+					}
+				}
+				return undefined
+			}
+			const deadline = Date.now() + 10_000
+			let toolResultLine: string | undefined
+			do {
+				toolResultLine = findToolResultRecord()
+				if (toolResultLine === undefined) {
+					await new Promise((resolve) => setTimeout(resolve, 250))
+				}
+			} while (toolResultLine === undefined && Date.now() < deadline)
+			expect(toolResultLine).toBeDefined()
+			const stored = JSON.parse(toolResultLine ?? "") as { message?: { details?: unknown } }
+			const detailsJson = JSON.stringify(stored.message?.details ?? null)
+			expect(detailsJson).not.toContain(rawEmail)
+			expect(detailsJson).toContain("[REDACTED")
+		},
+	)
+})
+
+// ---------------------------------------------------------------------------
+// OTLP telemetry — the pii_redaction.* records the console consumes
+// ---------------------------------------------------------------------------
+
+interface OtlpLogRecord {
+	eventName?: string
+	attributes?: Array<{ key: string; value?: { stringValue?: string } }>
+}
+
+/** Flatten every log record POSTed to the fake /logs endpoint into {eventName, attrs}. */
+function collectRecords(fixture: { fake: { requests: Array<{ url: string; body: unknown }> } }): Array<{
+	eventName: string
+	attrs: Record<string, string>
+}> {
+	const out: Array<{ eventName: string; attrs: Record<string, string> }> = []
+	for (const request of fixture.fake.requests.filter((r) => r.url.startsWith("/logs"))) {
+		const body = request.body as {
+			resourceLogs?: Array<{ scopeLogs?: Array<{ logRecords?: OtlpLogRecord[] }> }>
+		} | null
+		for (const rl of body?.resourceLogs ?? []) {
+			for (const sl of rl.scopeLogs ?? []) {
+				for (const record of sl.logRecords ?? []) {
+					const attrs: Record<string, string> = {}
+					for (const attr of record.attributes ?? []) attrs[attr.key] = attr.value?.stringValue ?? ""
+					out.push({ eventName: record.eventName ?? "", attrs })
+				}
+			}
+		}
+	}
+	return out
+}
+
+test("emits per-entity pii_redaction.redacted + session_affected OTLP records when redaction fires", async ({
+	terminal,
+}) => {
+	await runKimchiSession(
+		terminal,
+		withRedactionEnabled({
+			artifactName: "pii-redaction-events-telemetry",
+			responses: [{ stream: ["OK"] }],
+			seedHome(home, _cwd, fakeBaseUrl) {
+				const configPath = join(home, ".config", "kimchi", "config.json")
+				const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
+				config.telemetry = {
+					enabled: true,
+					endpoint: `${fakeBaseUrl}/logs`,
+					metricsEndpoint: `${fakeBaseUrl}/metrics`,
+				}
+				writeFileSync(configPath, `${JSON.stringify(config, null, "\t")}\n`)
+			},
+		}),
+		async (fixture) => {
+			// Fixture value assembled at runtime: a literal card number here would
+			// itself be redacted to a marker on disk by any agent pipeline that
+			// edits this file (CREDIT_CARD is Luhn-validated, always on).
+			const card = ["4532", "0151", "1283", "0366"].join("")
+			terminal.submit(`Contact me at alice@example.com or pay with CC: ${card}`)
+
+			await expect(terminal.getByText("OK", { full: true })).toBeVisible()
+
+			// Telemetry flushes in 5s batches — poll until both record kinds land.
+			const deadline = Date.now() + 20_000
+			let records: ReturnType<typeof collectRecords> = []
+			while (Date.now() < deadline) {
+				records = collectRecords(fixture)
+				const names = records.map((r) => r.eventName)
+				if (names.includes("pii_redaction.redacted") && names.includes("pii_redaction.session_affected")) break
+				await new Promise((resolve) => setTimeout(resolve, 250))
+			}
+
+			// Exactly one session_affected latch record.
+			const sessionAffected = records.filter((r) => r.eventName === "pii_redaction.session_affected")
+			if (sessionAffected.length !== 1) {
+				throw new Error(
+					`expected 1 session_affected record, got ${sessionAffected.length}. Event names seen: ${JSON.stringify(
+						records.map((r) => r.eventName),
+					)}. Requests logged: ${fixture.fake.requests.length}`,
+				)
+			}
+
+			// One record per redacted entity type on the user_input surface.
+			const redacted = records.filter((r) => r.eventName === "pii_redaction.redacted")
+			expect(redacted.map((r) => r.attrs.entity_type).sort()).toEqual(["CREDIT_CARD", "EMAIL_ADDRESS"])
+			for (const record of redacted) {
+				expect(record.attrs.surface).toBe("user_input")
+				expect(record.attrs.count).toBe("1")
+			}
+
+			// Privacy: neither the raw PII values nor the surrounding scan
+			// context ever reach the OTLP endpoint.
+			for (const request of fixture.fake.requests.filter((r) => r.url.startsWith("/logs"))) {
+				const serialized = JSON.stringify(request.body)
+				expect(serialized).not.toContain("alice@example.com")
+				expect(serialized).not.toContain(card)
+				expect(serialized).not.toContain("Contact me at")
+			}
+		},
+	)
+})
+
+test("emits no pii_redaction OTLP records when the resource is off", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "pii-redaction-events-disabled",
+			responses: [{ stream: ["OK"] }],
+			seedHome(home, _cwd, fakeBaseUrl) {
+				const configPath = join(home, ".config", "kimchi", "config.json")
+				const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
+				config.telemetry = {
+					enabled: true,
+					endpoint: `${fakeBaseUrl}/logs`,
+					metricsEndpoint: `${fakeBaseUrl}/metrics`,
+				}
+				writeFileSync(configPath, `${JSON.stringify(config, null, "\t")}\n`)
+			},
+		},
+		async (fixture) => {
+			terminal.submit("Contact alice@example.com")
+			await expect(terminal.getByText("OK", { full: true })).toBeVisible()
+
+			// Give one flush window a chance; then assert absence.
+			await new Promise((resolve) => setTimeout(resolve, 6_000))
+			expect(collectRecords(fixture).map((r) => r.eventName)).not.toContain("pii_redaction.redacted")
+			expect(collectRecords(fixture).map((r) => r.eventName)).not.toContain("pii_redaction.session_affected")
 		},
 	)
 })
