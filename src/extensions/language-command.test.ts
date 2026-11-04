@@ -92,6 +92,19 @@ describe("/language", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('.kimchi/config.json pins "fr"'), "warning")
 	})
 
+	it('names the project value "auto" when a trusted project config unpins over the global write', async () => {
+		// Project sets "auto": loadConfig resolves it to unset, so the effective
+		// value is undefined — the warning must say "auto", not "undefined".
+		mockedLoadConfig.mockReturnValue(config(undefined))
+		const ctx = createCommandContext()
+
+		await handleLanguageCommand("ko", ctx)
+
+		expect(writeLanguage).toHaveBeenCalledWith("ko")
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('.kimchi/config.json pins "auto"'), "warning")
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("undefined"), expect.anything())
+	})
+
 	it("registers the command with argument completions", async () => {
 		const registerCommand = vi.fn()
 		const on = vi.fn()

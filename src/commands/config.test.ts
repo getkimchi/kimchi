@@ -546,6 +546,15 @@ describe("kimchi config set/get language", () => {
 		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "fr"'))
 	})
 
+	it('names the project value "auto" when a trusted project config unpins over the global write', async () => {
+		// Project sets "auto" → loadConfig resolves to unset; the warning must not say "undefined".
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+
+		expect(await runConfig(["set", "language", "ko"])).toBe(0)
+		expect(console.error).toHaveBeenCalledWith(expect.stringContaining('pins language "auto"'))
+		expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("undefined"))
+	})
+
 	it.each(["", "   ", "x".repeat(41)])("rejects invalid value %j (exit 2, no write)", async (raw) => {
 		const exit = await runConfig(["set", "language", raw])
 
