@@ -26,8 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: split
+        # One entry per line: "SHA [LABEL]". The optional label names the
+        # artifact, so the same SHA can appear several times (repeat jobs).
         run: |
-          LIST=$(grep -v '^#' backtest-shas.txt | grep -v '^$' | jq -R . | jq -cs .)
+          LIST=$(grep -v '^#' backtest-shas.txt | grep -v '^$' \
+            | jq -R 'split(" ") | map(select(. != "")) | {sha: .[0], label: (.[1] // .[0])}' | jq -cs .)
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
   backtest:
@@ -37,11 +40,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sha: ${{ fromJSON(needs.shas.outputs.list) }}
+        entry: ${{ fromJSON(needs.shas.outputs.list) }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.sha }}
+          ref: ${{ matrix.entry.sha }}
           fetch-depth: 0
 
       - name: Overlay the gate harness from the PR head
@@ -87,7 +90,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-${{ matrix.sha }}
+          name: backtest-${{ matrix.entry.label }}
           path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
           if-no-files-found: ignore
 
