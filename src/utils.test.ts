@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { detectVersion } from "./utils.js"
 
 describe("getVersion", () => {
 	beforeEach(() => {
@@ -34,6 +35,60 @@ describe("getVersion", () => {
 		const { getVersion } = await import("./utils.js")
 		const v1 = getVersion()
 		const v2 = getVersion()
+		expect(v1).toBe(v2)
+	})
+})
+
+describe("detectVersion", () => {
+	let dir: string
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-build-version-"))
+	})
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("reports dev for a source checkout, whatever version the package dir reports", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
+		expect(detectVersion(dir, "1.27.0")).toBe("dev")
+	})
+
+	it("uses the reported version for a stamped build", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "1.27.0" }))
+		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
+	})
+
+	it("uses the reported version when there is no package.json (bundled binary)", () => {
+		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
+	})
+})
+
+describe("getDetectedVersion", () => {
+	beforeEach(() => {
+		vi.resetModules()
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
+	it("reports dev for a source run even when the package dir reports a release", async () => {
+		// entry.ts points PI_PACKAGE_DIR at an installed release's share dir when the
+		// checkout's resources aren't built: getVersion() then reports that release
+		// while the code runs from source (this test runs from the kimchi checkout).
+		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-test-"))
+		writeFileSync(resolve(tmpDir, "package.json"), JSON.stringify({ name: "kimchi-test", version: "1.2.3" }))
+		vi.stubEnv("PI_PACKAGE_DIR", tmpDir)
+		const { getDetectedVersion, getVersion } = await import("./utils.js")
+		expect(getVersion()).toBe("1.2.3")
+		expect(getDetectedVersion()).toBe("dev")
+	})
+
+	it("memoizes the result (returns the same value on repeated calls)", async () => {
+		vi.stubEnv("PI_PACKAGE_DIR", "")
+		const { getDetectedVersion } = await import("./utils.js")
+		const v1 = getDetectedVersion()
+		const v2 = getDetectedVersion()
 		expect(v1).toBe(v2)
 	})
 })

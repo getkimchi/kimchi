@@ -7,7 +7,6 @@ import { createExtensionApi } from "./__mocks__/extension-api.js"
 import {
 	classifyVersion,
 	createBuildInfoExtension,
-	detectVersion,
 	type GitRunner,
 	gitFreeEnv,
 	KIMCHI_BUILD_ENTRY_TYPE,
@@ -27,30 +26,6 @@ describe("classifyVersion", () => {
 		["0.0.0-canary.20261103.not-a-sha", { channel: "unknown" }],
 	])("%s", (version, expected) => {
 		expect(classifyVersion(version)).toEqual(expected)
-	})
-})
-
-describe("detectVersion", () => {
-	let dir: string
-	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "kimchi-build-version-"))
-	})
-	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true })
-	})
-
-	it("reports dev for a source checkout, whatever version the package dir reports", () => {
-		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
-		expect(detectVersion(dir, "1.27.0")).toBe("dev")
-	})
-
-	it("uses the reported version for a stamped build", () => {
-		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@kimchi-dev/cli", version: "1.27.0" }))
-		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
-	})
-
-	it("uses the reported version when there is no package.json (bundled binary)", () => {
-		expect(detectVersion(dir, "1.27.0")).toBe("1.27.0")
 	})
 })
 

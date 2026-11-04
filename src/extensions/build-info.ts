@@ -3,22 +3,20 @@
  * `session_start`. The entry's contract (fields, channels, how source runs are
  * detected) is documented in docs/session-build-entry.md.
  *
- * Source runs are detected from where this module lives, not from
- * `PI_PACKAGE_DIR`/`getVersion()`: `entry.ts` may point the package dir at an
- * installed release's share dir when the checkout lacks built resources, and
- * `getVersion()` then reports that release's version.
+ * Source-run detection lives in `src/utils.ts` (`detectVersion`/`getDetectedVersion`):
+ * it looks at where the code is loaded from, not at `PI_PACKAGE_DIR`/`getVersion()` —
+ * `entry.ts` may point the package dir at an installed release's share dir when the
+ * checkout lacks built resources, and `getVersion()` then reports that release's
+ * version. The entry records `dev` in that case.
  *
  * Build info is resolved once per process, off the session_start path: the
  * entry is appended when git answers, so session startup never waits on git.
  */
 
 import { execFile } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { getVersion } from "../utils.js"
+import { getDetectedVersion, SOURCE_ROOT } from "../utils.js"
 import { isStaleCtxError } from "./stale-ctx.js"
 
 export const KIMCHI_BUILD_ENTRY_TYPE = "kimchi_build"
@@ -103,23 +101,6 @@ export const runGit: GitRunner = async (args, cwd) => {
 	return stdout
 }
 
-/** Root of the tree this module was loaded from: the repo root for source runs; inside the bundle for binaries. */
-const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
-
-/** `dev` when `sourceRoot` is a kimchi source checkout (unreleased placeholder version), else the reported version. */
-export function detectVersion(sourceRoot: string, reportedVersion: string): string {
-	try {
-		const pkg = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8")) as {
-			name?: string
-			version?: string
-		}
-		if (pkg.name === "@kimchi-dev/cli" && pkg.version === "0.0.0") return "dev"
-	} catch {
-		// No readable package.json here: a bundled binary.
-	}
-	return reportedVersion
-}
-
 /**
  * @param resolve produces the build info; called once per process (again only if it rejected).
  * @returns the extension, plus `settled()` — resolves once every pending append has run (for tests).
@@ -154,6 +135,4 @@ export function createBuildInfoExtension(resolve: () => Promise<KimchiBuildEntry
 	return Object.assign(extension, { settled: () => Promise.all([...pending]).then(() => undefined) })
 }
 
-export default createBuildInfoExtension(() =>
-	resolveBuildInfo(detectVersion(SOURCE_ROOT, getVersion()), SOURCE_ROOT, runGit),
-)
+export default createBuildInfoExtension(() => resolveBuildInfo(getDetectedVersion(), SOURCE_ROOT, runGit))

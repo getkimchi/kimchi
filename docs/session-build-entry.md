@@ -26,16 +26,20 @@ back after a fix.
 ## Source runs
 
 A run counts as `dev` when the code is loaded from a kimchi source checkout: the
-checkout root (`../..` from `src/extensions/`) holds the `@kimchi-dev/cli`
-`package.json` with the unreleased `0.0.0` version. Git then
-reads that checkout (the harness, not the session's project), with every `GIT_*`
-variable removed from its environment so nothing redirects it.
+checkout root (`SOURCE_ROOT` in `src/utils.ts`, resolved from the module's own
+location) holds the `@kimchi-dev/cli` `package.json` with the unreleased
+`0.0.0` version. Git then reads that checkout (the harness, not the session's
+project), with every `GIT_*` variable removed from its environment so nothing
+redirects it.
 
-The entry doesn't use `PI_PACKAGE_DIR` or `getVersion()` for this. When the
-checkout's resources aren't built, `entry.ts` points the package dir at an
-installed release's share dir, and `kimchi --version` then reports that release
-(e.g. `1.27.0`) even though the code is running from source. The entry records
-`dev` in that case.
+The detection (`detectVersion`/`getDetectedVersion` in `src/utils.ts`) doesn't
+use `PI_PACKAGE_DIR` or `getVersion()`. When the checkout's resources aren't
+built, `entry.ts` points the package dir at an installed release's share dir,
+and `kimchi --version` then reports that release (e.g. `1.27.0`) even though
+the code is running from source. The entry records `dev` in that case — and so
+does telemetry: `telemetry.cli_version` and the OTLP resource attribute
+`user_agent.original` report `getDetectedVersion()`, the same value as this
+entry's `version` field.
 
 ## Timing and failures
 
