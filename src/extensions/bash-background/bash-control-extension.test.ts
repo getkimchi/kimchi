@@ -21,6 +21,7 @@ import bashControlExtension, {
 	BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 	BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+	BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE,
 	COMPLETION_REMINDER_INTERVAL_MS,
 	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
@@ -1330,6 +1331,100 @@ describe("completion continuation", () => {
 		// Cleanup: end the owning call (its backstop delivers the exit).
 		await fireToolExecutionEnd(harness, "call-y", "bash_control", true)
 		await flush()
+	})
+})
+
+describe("completion guard without bash_control (allowlist or profile drops the control tool)", () => {
+	it("stops session-owned handles itself and reports, instead of demanding a disposition the model cannot satisfy", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false, exitCode: null },
+		})
+		// The session's tool set drops bash_control (e.g. a `--tools`
+		// allowlist that omits it, or a plan-mode profile snapshot).
+		harness.setActiveTools(["bash"])
+
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+
+		// No demand reminder is queued — the model cannot satisfy it.
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		// The harness stopped both processes and reported what it did.
+		const resolutions = messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE)
+		expect(resolutions).toHaveLength(1)
+		const resolutionText = resolutions[0]?.content[0]?.text ?? ""
+		expect(resolutionText).toContain(a)
+		expect(resolutionText).toContain(b)
+		expect(resolutionText).toContain("bash_control is not available")
+
+		// The exit notifications deliver the stopped processes' results
+		// (coalesced), so the model can account for them and finish.
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const exitText = exits[0]?.content[0]?.text ?? ""
+		expect(exitText).toContain("stopped on request")
+		expect(exitText).toContain(a)
+		expect(exitText).toContain(b)
+		expect(registry.getEntry(a)).toBeUndefined()
+		expect(registry.getEntry(b)).toBeUndefined()
+
+		// The run can settle: a later stop queues no further demand.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+	})
+
+	it("replaces an already-queued reminder with the harness resolution when availability drops before consumption", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+		// The guard fires while bash_control is still available…
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+
+		// …but the tool set drops it before the loop drains the reminder.
+		harness.setActiveTools(["bash"])
+		const replacements = await consumeFollowUp(harness, guards[0] as SentMessage)
+		expect(replacements).toHaveLength(1)
+		const replacedText = (replacements[0]?.message as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? ""
+		expect(replacedText).toContain("bash_control is not available")
+		expect(replacedText).toContain("stopped")
+		// The reminder never names a disposition the model cannot make.
+		expect(replacedText).not.toContain("stop_handles")
+
+		// The process was stopped by the harness resolution.
+		await flush()
+		expect(registry.getEntry(a)).toBeUndefined()
+		expect(
+			messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE),
+		).toHaveLength(1)
+	})
+
+	it("suppresses the concurrency advisory while bash_control is unavailable, and resumes when it returns", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+
+		// The advisory's remedy (stop via bash_control) would name a tool
+		// missing from the session's tool set: suppressed entirely.
+		harness.setActiveTools(["bash"])
+		await fireToolCall(harness, "write", { file_path: "/x", content: "y" })
+		expect(followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)).toHaveLength(0)
+
+		// With the control tool back in the set, the once-per-session
+		// advisory fires (the suppressed attempt did not consume it).
+		harness.setActiveTools(["bash", "bash_control"])
+		await fireToolCall(harness, "edit", { file_path: "/x", old_string: "a", new_string: "b" })
+		expect(followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)).toHaveLength(1)
 	})
 })
 

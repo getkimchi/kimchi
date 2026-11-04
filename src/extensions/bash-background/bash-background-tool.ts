@@ -25,6 +25,8 @@
 import type { BashOperations, BashToolDetails, BashToolOptions, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { createBashToolDefinition, createLocalBashOperations } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../agents/subagent-bash-clamp.js"
+import { readE2eSeam } from "../e2e-seam.js"
 import { createWorkCommitTrackingOperations } from "../work-attribution/commits.js"
 import { createBashRenderers } from "./bash-display.js"
 import {
@@ -38,7 +40,7 @@ import { createReviewCoordinator } from "./review-coordinator.js"
 import type { BashSessionState } from "./session-registry.js"
 import { handoffGuidanceText, outputLogNoticeText, runningResultText, terminalResultText } from "./status-text.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
-import { throwIfTerminal } from "./terminal-status.js"
+import { appendStatus, throwIfTerminal } from "./terminal-status.js"
 
 /** Details returned in background-mode results (adds the handle). */
 export interface BackgroundBashToolDetails extends BashToolDetails {
@@ -74,6 +76,37 @@ export interface CreateBackgroundBashToolOptions extends BashToolOptions {
 	state?: BashSessionState
 	/** Safety limit used by this tool's isolated fallback when `state` is omitted. */
 	limitSeconds?: number
+	/**
+	 * Whether `bash_control` is callable by the model RIGHT NOW. When false
+	 * (or when the check itself is unavailable), commands run in plain
+	 * blocking mode with a deterministic timeout instead of handing off to
+	 * the background cohort — a session must never hold background
+	 * processes the model cannot disposition. Evaluated on every execution
+	 * so tool-set changes (plan-mode profiles, allowlist tweaks) apply
+	 * immediately. Default: background semantics (isolated callers own their
+	 * own cohort contract).
+	 */
+	controlToolAvailable?: () => boolean
+}
+
+/**
+ * Deterministic blocking-mode timeout (seconds), matching the subagent
+ * bash clamp default (./../agents/subagent-bash-clamp.ts): a session
+ * without `bash_control` gets the same plain-blocking bash bound so a
+ * long command can never hang the turn or leak an unmanaged process.
+ */
+export const BLOCKING_FALLBACK_TIMEOUT_SECONDS = DEFAULT_BASH_TIMEOUT_SECONDS
+
+/**
+ * E2E seam override for the blocking-mode timeout
+ * (KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS), honored inside test harnesses
+ * only: smoke rigs script commands that must time out quickly. Production
+ * always uses BLOCKING_FALLBACK_TIMEOUT_SECONDS.
+ */
+export function e2eBlockingTimeoutSeconds(): number | undefined {
+	const seam = readE2eSeam("KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS")
+	const parsed = seam === undefined || seam.trim() === "" ? Number.NaN : Number(seam)
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
 function fallbackState(
@@ -128,6 +161,14 @@ export function createBackgroundBashToolDefinition(
 	}> {
 		const { command } = params
 		const { registry, coordinator } = state
+
+		// Blocking fallback (see module docstring): without a callable
+		// bash_control, no command is ever backgrounded. A failed/absent
+		// availability check degrades to blocking — never the reverse.
+		const controlAvailable = options?.controlToolAvailable?.() ?? true
+		if (!controlAvailable) {
+			return executeBlocking(toolCallId, params, signal, onUpdate, ctx)
+		}
 
 		const handle = registry.spawn(
 			options?.operations ?? createWorkCommitTrackingOperations(ctx, toolCallId, defaultLocalOps(options)),
@@ -260,6 +301,165 @@ export function createBackgroundBashToolDefinition(
 				reason: null,
 				elapsedSeconds: elapsed,
 			},
+		}
+	}
+
+	/** Outcome of the blocking-mode exit race. */
+	type BlockingOutcome = "exited" | "timeout" | "aborted"
+
+	/**
+	 * Race natural exit, the deterministic blocking timeout, and abort.
+	 * Mirrors the abort semantics of `awaitInitialHandoff` (the caller kills
+	 * the process on abort) and the subagent clamp's timeout bound.
+	 */
+	function awaitExitOrTimeout(
+		handle: string,
+		timeoutSeconds: number,
+		signal: AbortSignal | undefined,
+	): Promise<BlockingOutcome> {
+		return new Promise<BlockingOutcome>((resolve) => {
+			let settled = false
+			let timer: NodeJS.Timeout | undefined
+			const finish = (outcome: BlockingOutcome) => {
+				if (settled) return
+				settled = true
+				if (timer) clearTimeout(timer)
+				signal?.removeEventListener("abort", onAbort)
+				resolve(outcome)
+			}
+			const onAbort = () => finish("aborted")
+			if (signal) {
+				if (signal.aborted) {
+					resolve("aborted")
+					return
+				}
+				signal.addEventListener("abort", onAbort, { once: true })
+			}
+			timer = setTimeout(() => finish("timeout"), timeoutSeconds * 1000)
+			void state.registry
+				.whenExited(handle)
+				.then(() => finish("exited"))
+				.catch(() => finish("exited"))
+		})
+	}
+
+	/**
+	 * Plain blocking execution for sessions without a callable
+	 * `bash_control`: spawn under the registry (output capture, work
+	 * attribution, kill-on-abort), wait for the exit, and return the final
+	 * result — the deterministic timeout kills the process and reports the
+	 * upstream `Command timed out after N seconds` error so timeout guidance
+	 * and retry steering compose unchanged. No handle is ever returned, so
+	 * the completion guard and exit watchers stay out of the picture.
+	 */
+	async function executeBlocking(
+		toolCallId: string,
+		params: BackgroundBashInput,
+		signal: AbortSignal | undefined,
+		onUpdate: Parameters<ToolDefinition["execute"]>[3] | undefined,
+		ctx: Parameters<ToolDefinition["execute"]>[4],
+	): Promise<{
+		content: { type: "text"; text: string }[]
+		details: BackgroundBashToolDetails | undefined
+	}> {
+		const { command } = params
+		const { registry, coordinator } = state
+		const timeoutSeconds = e2eBlockingTimeoutSeconds() ?? BLOCKING_FALLBACK_TIMEOUT_SECONDS
+		const handle = registry.spawn(
+			options?.operations ?? createWorkCommitTrackingOperations(ctx, toolCallId, defaultLocalOps(options)),
+			command,
+			cwd,
+			undefined,
+			{
+				limitSeconds: state.limitSeconds,
+				toolCallId,
+				description: params.description,
+			},
+		)
+		coordinator.handleSpawned(handle)
+
+		// Display updates never advance the model's delivered-output cursor.
+		const unsubscribe = onUpdate
+			? registry.observeDisplay(handle, (display) => {
+					onUpdate({
+						content: [{ type: "text", text: display.output }],
+						details: { handle, exited: display.state !== "running", exitCode: display.exitCode, display },
+					})
+				})
+			: undefined
+
+		try {
+			const outcome = await awaitExitOrTimeout(handle, timeoutSeconds, signal)
+			if (outcome === "aborted") {
+				await registry.kill(handle, "aborted")
+				throw new Error("Command aborted")
+			}
+			if (outcome === "timeout") {
+				// kill() awaits exec settlement, so the final snapshot below is
+				// complete. The reason renders as `killed (timeout)` in the facts
+				// header; the error text carries the upstream timeout spelling so
+				// bash-timeout-guidance steers compose unchanged.
+				await registry.kill(handle, "timeout").catch(() => {})
+			}
+
+			const entry = registry.getEntry(handle)
+			const elapsed = elapsedSecondsSince(entry?.spawnedAtMs ?? Date.now())
+			const deadlineSeconds = entry?.deadlineSeconds ?? state.limitSeconds
+			const final = registry.finalSnapshot(handle)
+			const snapshot = registry.snapshotTail(handle)
+			const display = registry.displaySnapshot(handle)
+			const fullOutput = final?.content ?? snapshot.text
+			const truncated = final?.truncation?.truncated === true
+			onUpdate?.({
+				content: [{ type: "text", text: fullOutput }],
+				details: {
+					handle,
+					exited: true,
+					exitCode: snapshot.exitCode,
+					reason: snapshot.reason,
+					display,
+					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
+				},
+			})
+
+			if (outcome === "timeout") {
+				const logNotice = outputLogNoticeText(truncated, final?.fullOutputPath)
+				const text = logNotice ? `${fullOutput}\n${logNotice}` : fullOutput
+				throw new Error(appendStatus(text, `Command timed out after ${timeoutSeconds} seconds`))
+			}
+
+			// Natural exit: mirror upstream's error behavior (non-zero exit,
+			// abort, safety-limit kill) and the shared terminal contract.
+			const logNotice = outputLogNoticeText(truncated, final?.fullOutputPath)
+			throwIfTerminal(snapshot, logNotice ? `${fullOutput}\n${logNotice}` : fullOutput, deadlineSeconds)
+			return {
+				content: [
+					{
+						type: "text",
+						text: terminalResultText({
+							elapsedSeconds: elapsed,
+							state: snapshot.state,
+							exitCode: snapshot.exitCode,
+							reason: snapshot.reason,
+							deadlineSeconds,
+							output: fullOutput,
+							truncated,
+							fullOutputPath: final?.fullOutputPath,
+						}),
+					},
+				],
+				details: {
+					...(truncated ? { truncation: final?.truncation, fullOutputPath: final?.fullOutputPath } : {}),
+					exited: true,
+					exitCode: snapshot.exitCode,
+					display,
+					elapsedSeconds: elapsed,
+				},
+			}
+		} finally {
+			unsubscribe?.()
+			coordinator.handleRemoved(handle)
+			await registry.remove(handle).catch(() => {})
 		}
 	}
 
