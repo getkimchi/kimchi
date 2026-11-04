@@ -92,6 +92,20 @@ describe("/language", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining('.kimchi/config.json pins "fr"'), "warning")
 	})
 
+	it("does not warn on /language auto when nothing is pinned anywhere", async () => {
+		// Unpin maps to `value === undefined`, and an unset effective value is
+		// undefined too, so the shadow guard must not fire (and must never
+		// claim a project pins "auto" on a machine with no project config).
+		mockedLoadConfig.mockReturnValue(config(undefined))
+		const ctx = createCommandContext()
+
+		await handleLanguageCommand("auto", ctx)
+
+		expect(writeLanguage).toHaveBeenCalledWith(undefined)
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Reply language: auto"), "info")
+		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning")
+	})
+
 	it('names the project value "auto" when a trusted project config unpins over the global write', async () => {
 		// Project sets "auto": loadConfig resolves it to unset, so the effective
 		// value is undefined — the warning must say "auto", not "undefined".
