@@ -113,6 +113,7 @@ import {
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
 import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
+import { onSideChatBridgeRegistered } from "../../extensions/side-chat/registry.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -135,7 +136,12 @@ import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { emitAgentActivityUpdate } from "./activity-updates.js"
 import { TurnArtifactBuffer } from "./artifact-links.js"
-import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, kimchiDevMetaOf } from "./capabilities.js"
+import {
+	ADVERTISED_CAPABILITIES,
+	AVAILABLE_EXT_METHODS,
+	AVAILABLE_EXT_NOTIFICATIONS,
+	kimchiDevMetaOf,
+} from "./capabilities.js"
 import { composeAvailableCommands, createCommandsRefresher, discoverSkillCommandsMap } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleCompact } from "./ext-methods/compact.js"
@@ -155,7 +161,17 @@ import {
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import {
+	handleSideChatClose,
+	handleSideChatHistory,
+	handleSideChatOpen,
+	handleSideChatPrompt,
+	handleSideChatResume,
+	handleSideChatSendToMain,
+	handleSideChatWrap,
+} from "./ext-methods/side-chat.js"
 import { handleSteering } from "./ext-methods/steering.js"
+import { emitExtNotification } from "./ext-notifications.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
@@ -526,6 +542,20 @@ export class KimchiAcpAgent implements Agent {
 			agentDir: options.agentDir,
 			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
 			requestRefresh: () => this.commandsRefresher.request(),
+		})
+
+		// Side-chat bridges register during session creation (the extension's
+		// session_start), before this.sessions.set() — attach immediately and
+		// gate each update on the session still being known.
+		onSideChatBridgeRegistered((sessionId, bridge) => {
+			bridge.subscribe((update) => {
+				if (!this.sessions.has(sessionId)) return
+				emitExtNotification(this.conn, AVAILABLE_EXT_NOTIFICATIONS.side_chat_update, {
+					sessionId,
+					sideChatId: bridge.lastSideChatId ?? "",
+					update,
+				})
+			})
 		})
 	}
 
@@ -1414,6 +1444,27 @@ export class KimchiAcpAgent implements Agent {
 				// Session-scoped: flip the session's runtime memory toggle — the
 				// memory extension reads it at its next agent start.
 				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.side_chat_open:
+				// Session-scoped: open (or focus/replace) the side chat; the returned
+				// snapshot seeds the client's split view (see docs/acp-side-chat.md).
+				return handleSideChatOpen(params)
+			case AVAILABLE_EXT_METHODS.side_chat_prompt:
+				// Session-scoped: ask the side chat; the answer streams via
+				// side_chat_update notifications.
+				return handleSideChatPrompt(params)
+			case AVAILABLE_EXT_METHODS.side_chat_wrap:
+				// Session-scoped: draft the steering message from the side thread.
+				return handleSideChatWrap(params)
+			case AVAILABLE_EXT_METHODS.side_chat_send_to_main:
+				// Session-scoped: steer/inject the draft into the main session and
+				// close the side chat.
+				return handleSideChatSendToMain(params)
+			case AVAILABLE_EXT_METHODS.side_chat_close:
+				return handleSideChatClose(params)
+			case AVAILABLE_EXT_METHODS.side_chat_history:
+				return handleSideChatHistory(params)
+			case AVAILABLE_EXT_METHODS.side_chat_resume:
+				return handleSideChatResume(params)
 			case AVAILABLE_EXT_METHODS.memory_list:
 				// Sessionless store op: paginated facts across the selected scopes.
 				return handleMemoryList({}, params)
