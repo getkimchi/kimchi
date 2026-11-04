@@ -17,6 +17,8 @@
 
 import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
+import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
+import { throwIfTerminal } from "../../bash-background/terminal-status.js"
 import fixtures from "./tool-error-classification.fixtures.json" with { type: "json" }
 import { classifyToolError } from "./tool-error-classification.js"
 
@@ -145,6 +147,20 @@ describe("classifyToolError — bash terminal status precedence", () => {
 		expect(c.exitCode).toBeUndefined()
 	})
 
+	it("classifies a harness safety-limit kill as a termination, not an error", () => {
+		const bare = classifyToolError("bash", "Process killed by the harness safety limit (30s)")
+		expect(bare.kind).toBe("command_outcome")
+		const outcome = asCommandOutcome(bare)
+		expect(outcome.commandOutcome).toBe("terminated")
+		expect(outcome.message).toBe("Command killed by harness safety limit")
+		expect(outcome.exitCode).toBeUndefined()
+
+		// After verbose output, like every other terminal status.
+		const verbose = classifyToolError("bash", `${"x".repeat(400)}\n\nProcess killed by the harness safety limit (120s)`)
+		expect(verbose.kind).toBe("command_outcome")
+		expect(asCommandOutcome(verbose).commandOutcome).toBe("terminated")
+	})
+
 	it("resolves abort after verbose output", () => {
 		const c = classifyToolError("bash", "partial output\n\nCommand aborted")
 		expect(c.kind).toBe("aborted")
@@ -271,5 +287,21 @@ describe("classifyToolError — producer contract (ferment FSM)", () => {
 		const c = classifyToolError("start_ferment_step", result.error ?? "")
 		expect(c.kind).toBe("blocked")
 		expect(c.message).toBe("Ferment state guard")
+	})
+})
+
+describe("classifyToolError — producer contract (bash-background terminal status)", () => {
+	it("classifies the real safety-limit kill thrown by throwIfTerminal", () => {
+		let thrown: unknown
+		try {
+			throwIfTerminal({ reason: SAFETY_LIMIT_REASON, exitCode: null }, "partial output", 120)
+		} catch (err) {
+			thrown = err
+		}
+		expect(thrown).toBeInstanceOf(Error)
+		const c = classifyToolError("bash", (thrown as Error).message)
+		expect(c.kind).toBe("command_outcome")
+		expect(asCommandOutcome(c).commandOutcome).toBe("terminated")
+		expect(c.message).toBe("Command killed by harness safety limit")
 	})
 })

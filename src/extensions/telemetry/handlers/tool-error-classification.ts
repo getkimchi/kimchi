@@ -53,6 +53,9 @@ interface ToolErrorClassificationBase {
 	exitCode?: number
 }
 
+/** The kinds routed to the `tool_outcome` event. */
+export type ToolOutcomeKind = "blocked" | "declined" | "model_mistake"
+
 export type ToolErrorClassification =
 	| (ToolErrorClassificationBase & {
 			kind: "command_outcome"
@@ -62,8 +65,17 @@ export type ToolErrorClassification =
 			commandOutcome: "nonzero_exit" | "timeout" | "terminated"
 	  })
 	| (ToolErrorClassificationBase & {
-			kind: Exclude<ToolErrorKind, "command_outcome">
+			kind: "failure"
 	  })
+	| (ToolErrorClassificationBase & {
+			kind: "aborted"
+	  })
+	| (ToolErrorClassificationBase & {
+			kind: ToolOutcomeKind
+	  })
+
+/** A classification routed to the `tool_outcome` event (see ToolOutcomeKind). */
+export type ToolOutcomeClassification = Extract<ToolErrorClassification, { kind: ToolOutcomeKind }>
 
 /** Bounded length for free-form diagnostic attributes (model/tool identifiers). */
 const MAX_DIAGNOSTIC_STR_LEN = 64
@@ -125,6 +137,16 @@ function classifyBashTerminalStatus(fullMsg: string): ToolErrorClassification | 
 		return {
 			kind: "command_outcome",
 			message: "Command terminated without an exit code",
+			commandOutcome: "terminated",
+		}
+	}
+	// Harness safety limit (bash-background terminal-status.ts): the process
+	// ran and was killed by the session's own safety limit — an execution
+	// outcome, not an anomaly.
+	if (/^Process killed by the harness safety limit \(\d+s\)$/.test(last)) {
+		return {
+			kind: "command_outcome",
+			message: "Command killed by harness safety limit",
 			commandOutcome: "terminated",
 		}
 	}

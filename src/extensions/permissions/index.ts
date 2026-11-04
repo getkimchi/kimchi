@@ -1426,6 +1426,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			modeChangeSources.push(reasons.shift() as ModeChangeReason)
 			if (reasons.length === 0) pendingModeChangeDismissals.delete(dismissalKey)
 		}
+		/** Prompt settlement, shared by all three prompt sites: a prompt
+		 *  dismissed by a mode change resolves "aborted" — consume the recorded
+		 *  dismissal source and report that the loop should re-evaluate under
+		 *  the new mode. Keeping this in one place is what makes the per-site
+		 *  handling unable to drift. The type predicate preserves the
+		 *  not-aborted narrowing the inline checks used to provide. */
+		const promptAbortedByModeChange = (result: PromptOutcome): result is "aborted" => {
+			if (result !== "aborted") return false
+			consumeModeChangeDismissal()
+			return true
+		}
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
 			const { mode } = getRuntimePermissionMode()
 
@@ -1606,10 +1617,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					allRules,
 					permissionMode: mode,
 				})
-				if (result === "aborted") {
-					consumeModeChangeDismissal()
-					continue // mode changed, re-evaluate
-				}
+				if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 				return result
 			}
 
@@ -1629,10 +1637,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							allRules,
 							permissionMode: mode,
 						})
-						if (result === "aborted") {
-							consumeModeChangeDismissal()
-							continue // mode changed, re-evaluate
-						}
+						if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 						return result
 					}
 				}
@@ -1646,10 +1651,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				allRules,
 				permissionMode: mode,
 			})
-			if (result === "aborted") {
-				consumeModeChangeDismissal()
-				continue // mode changed, re-evaluate
-			}
+			if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 			return result
 		}
 
@@ -1682,6 +1684,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus,
 	})
 }
+
+/** What a permission prompt settles to: a decision to apply, "aborted"
+ *  (dismissed by a mode change — re-evaluate), or undefined (allow). */
+type PromptOutcome = { block: true; reason: string } | "aborted" | undefined
 
 interface ConfirmOptions {
 	ctx: ExtensionContext

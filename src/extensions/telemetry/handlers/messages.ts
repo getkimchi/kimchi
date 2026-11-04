@@ -4,7 +4,7 @@ import { getAvailableModels } from "../../../startup-context.js"
 import { isAgentWorker } from "../../agent-worker-context.js"
 import type { TelemetryContext } from "../session-context.js"
 import { classifyToolError } from "./tool-error-classification.js"
-import { extractToolResultText } from "./tools.js"
+import { emitToolOutcome, extractToolResultText } from "./tools.js"
 import { handleTransportError } from "./transport-errors.js"
 
 /** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
@@ -212,22 +212,12 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 		)
 	} else {
 		// Gates, declines, and recognized model mistakes at the end of a run:
-		// outcome signal, not a run-final anomaly.
-		tm.emit(
-			"tool_outcome",
-			{
-				outcome_kind: classification.kind,
-				message: classification.message,
-				tool_name: last.toolName,
-				turn_index: tm.turnIndex,
-				tool_use_id: last.toolCallId,
-				canonicalization: "v1",
-				...(classification.attrs ?? {}),
-				...tm.getTraceAttributes(),
-			},
-			ctx,
-			tm.lastRoutedModel ? { routed_model: tm.lastRoutedModel } : undefined,
-		)
+		// outcome signal, not a run-final anomaly. The per-call handler already
+		// emitted one for every result it observed — re-emitting here would
+		// count the run's final outcome twice. The residual path (a result the
+		// per-call handler never saw) still emits via the shared helper.
+		if (tm.toolOutcomeCallIds.has(last.toolCallId)) return
+		emitToolOutcome(tm, ctx, classification, { toolName: last.toolName, toolCallId: last.toolCallId })
 	}
 }
 

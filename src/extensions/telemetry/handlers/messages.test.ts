@@ -5,6 +5,7 @@ import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
 import { _resetSharedAccumulators, type TelemetryAttributes, TelemetryContext } from "../session-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./messages.js"
+import { handleToolExecutionEnd, handleToolExecutionStart } from "./tools.js"
 
 const BASE_TS = new Date("2026-06-02T10:00:00.000Z").getTime()
 
@@ -620,6 +621,65 @@ describe("handleAgentEnd", () => {
 		expect(attrs.outcome_kind).toBe("blocked")
 		expect(attrs.tool_name).toBe("edit")
 		expect(attrs.revision).toBe(4)
+	})
+
+	it("does not re-emit a run-final tool_outcome the per-call handler already recorded", async () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+
+		// Full flow: the per-call path sees the blocked bash call first…
+		const toolCallId = "tc-final-gate"
+		handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "rm -rf /" } })
+		handleToolExecutionEnd(ctx, piCtx, {
+			toolCallId,
+			isError: true,
+			result: {
+				content: [{ type: "text", text: "Declined by user" }],
+			},
+		})
+		expect(ctx.toolOutcomeCallIds.has(toolCallId)).toBe(true)
+
+		// …and when that same result ends the run, the run-final path must not
+		// count it a second time.
+		const emitSpy = vi.spyOn(ctx, "emit")
+		emitSpy.mockClear()
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId,
+					isError: true,
+					content: [{ type: "text", text: "Declined by user" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("still emits a run-final tool_outcome the per-call handler never observed (residual path)", async () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		// No tool_execution_start/end ran for this call id (e.g. the result
+		// predates the telemetry context) — the run-final emission is the only
+		// record of the outcome.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "edit",
+					toolCallId: "tc-unseen-gate",
+					isError: true,
+					content: [{ type: "text", text: "Declined by user" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("tool_outcome")
+		expect(attrs.outcome_kind).toBe("declined")
 	})
 
 	it("emits tool_outcome for a run ending on a recognized model mistake", () => {

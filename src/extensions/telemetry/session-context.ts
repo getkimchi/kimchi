@@ -135,6 +135,10 @@ export class TelemetryContext {
 	 * session's ferment identity into every other session's records).
 	 */
 	fermentV2Context: TelemetryFermentV2Context | undefined
+	/** Tool call ids whose errored result already produced its `tool_outcome`
+	 *  record via the per-call handler. The run-final path (messages.ts)
+	 *  checks this set so a result that ends the run is not counted twice. */
+	toolOutcomeCallIds = new Set<string>()
 	inFlight = new Set<Promise<void>>()
 	shuttingDown = false
 	flushTimer: NodeJS.Timeout | undefined
@@ -202,6 +206,7 @@ export class TelemetryContext {
 		this.lastRoutedModel = undefined
 		this.steerFiredCount = 0
 		this.lastSteer = undefined
+		this.toolOutcomeCallIds.clear()
 		// Session-scoped tracking state and enrichment context: a session_start
 		// on this instance means a fresh session — ferment maps, guard counters,
 		// and the ferment v2 identity must not carry over.

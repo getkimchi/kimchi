@@ -10,7 +10,11 @@ import {
 	type ToolArgs,
 } from "../helpers.js"
 import type { TelemetryContext } from "../session-context.js"
-import { classifyToolError, type ToolErrorClassification } from "./tool-error-classification.js"
+import {
+	classifyToolError,
+	type ToolErrorClassification,
+	type ToolOutcomeClassification,
+} from "./tool-error-classification.js"
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -30,6 +34,34 @@ export function extractToolResultText(result: unknown): string {
 		.filter((c) => c.type === "text")
 		.map((c) => c.text ?? "")
 		.join("\n")
+}
+
+/** Emit the `tool_outcome` record for a classified non-failure result. Shared
+ *  by the per-call path (below) and the run-final path (messages.ts) so the
+ *  payload cannot drift between them; the call id is recorded so the run-final
+ *  path can tell an already-counted outcome from a residual one. */
+export function emitToolOutcome(
+	tm: TelemetryContext,
+	ctx: ExtensionContext | undefined,
+	classification: ToolOutcomeClassification,
+	call: { toolName: string; toolCallId: string },
+): void {
+	tm.emit(
+		"tool_outcome",
+		{
+			outcome_kind: classification.kind,
+			message: classification.message,
+			tool_name: call.toolName,
+			turn_index: tm.turnIndex,
+			tool_use_id: call.toolCallId,
+			canonicalization: "v1",
+			...(classification.attrs ?? {}),
+			...tm.getTraceAttributes(),
+		},
+		ctx,
+		tm.lastRoutedModel ? { routed_model: tm.lastRoutedModel } : undefined,
+	)
+	tm.toolOutcomeCallIds.add(call.toolCallId)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,21 +314,7 @@ export function handleToolExecutionEnd(
 				)
 			}
 		} else {
-			tm.emit(
-				"tool_outcome",
-				{
-					outcome_kind: classification.kind,
-					message: classification.message,
-					tool_name: toolName,
-					turn_index: tm.turnIndex,
-					tool_use_id: event.toolCallId,
-					canonicalization: "v1",
-					...(classification.attrs ?? {}),
-					...traceAttrs,
-				},
-				ctx,
-				modelOverrides,
-			)
+			emitToolOutcome(tm, ctx, classification, { toolName, toolCallId: event.toolCallId })
 		}
 	}
 }

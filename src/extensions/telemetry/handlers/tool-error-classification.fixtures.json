@@ -384,6 +384,14 @@
 		}
 	},
 	{
+		"tool": "bash",
+		"message": "partial output\n\nProcess killed by the harness safety limit (30s)",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command killed by harness safety limit"
+		}
+	},
+	{
 		"tool": "multiedit",
 		"message": "No changes made to /src/app.ts. The replacements produced identical content.",
 		"expect": {
