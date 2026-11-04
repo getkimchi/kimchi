@@ -24,6 +24,15 @@ export function createMemoryRecords(): RecordBackend {
 	const batches = new Map<string, OutboxBatch>()
 	const noteKey = (workId: string, name: string) => `${workId}\u0000${name}`
 	let inTx = false
+	/**
+	 * Counter fed by every mutator; the double's stand-in for SQLite data_version. Unlike the real
+	 * SQLite pragma it ALSO bumps for this process's own commits (SQLite never does), so a gate that
+	 * wrongly tracks own writes stays hidden here — keep the asymmetry in mind when adding probes.
+	 */
+	let version = 0
+	const touch = () => {
+		version++
+	}
 
 	const workLogs = (workId: string): Map<LogName, Map<string, { pos: number; body: Row }>> => {
 		let found = logs.get(workId)
@@ -104,18 +113,25 @@ export function createMemoryRecords(): RecordBackend {
 		},
 		insertRecord: (row) => {
 			if (records.has(row.recordHash)) return false
+			touch()
 			records.set(row.recordHash, row)
 			order.push(row)
 			return true
 		},
-		upsertMarker: (recordHash, workId, type) => markers.set(recordHash, { workId, type }),
+		upsertMarker: (recordHash, workId, type) => {
+			touch()
+			markers.set(recordHash, { workId, type })
+		},
 		pendingTranslations: (after, through, limit) =>
 			order
 				.slice(after, through)
 				.map((row, index) => ({ ...row, position: after + index + 1 }))
 				.filter((row) => markers.has(row.recordHash))
 				.slice(0, limit),
-		clearTranslation: (recordHash) => markers.delete(recordHash),
+		clearTranslation: (recordHash) => {
+			touch()
+			markers.delete(recordHash)
+		},
 		markedRecords: () => [...markers].map(([recordHash, { workId, type }]) => ({ recordHash, workId, type })),
 		latestOutboxEvent: (accountKey, entityId) =>
 			structuredClone(
@@ -133,6 +149,7 @@ export function createMemoryRecords(): RecordBackend {
 			),
 		insertOutboxEvent: (event) => {
 			if (events.has(event.id)) throw new Error("Duplicate outbox event")
+			touch()
 			events.set(event.id, structuredClone(event))
 		},
 		pendingOutboxEvents: (accountKey, limit) =>
@@ -190,11 +207,13 @@ export function createMemoryRecords(): RecordBackend {
 			),
 		insertOutboxBatch: (batch) => {
 			if (batches.has(batch.id)) throw new Error("Duplicate outbox batch")
+			touch()
 			batches.set(batch.id, structuredClone(batch))
 		},
 		ackOutboxEvent: (accountKey, id, hash, at) => {
 			const event = events.get(id)
 			if (!event || event.accountKey !== accountKey || event.hash !== hash || event.ackedAt !== null) return false
+			touch()
 			event.ackedAt = at
 			return true
 		},
@@ -202,15 +221,27 @@ export function createMemoryRecords(): RecordBackend {
 			const event = events.get(id)
 			if (!event || event.accountKey !== accountKey || event.hash !== hash || event.ackedAt !== null || event.blocked)
 				return false
+			touch()
 			event.blocked = reason
 			return true
 		},
-		deleteOutboxBatch: (accountKey, id) => batches.get(id)?.accountKey === accountKey && batches.delete(id),
-		markDirty: (workId) => dirty.add(workId),
-		clearDirty: (workId) => dirty.delete(workId),
+		deleteOutboxBatch: (accountKey, id) => {
+			const removed = batches.get(id)?.accountKey === accountKey && batches.delete(id)
+			if (removed) touch()
+			return removed
+		},
+		markDirty: (workId) => {
+			touch()
+			dirty.add(workId)
+		},
+		clearDirty: (workId) => {
+			touch()
+			dirty.delete(workId)
+		},
 		dirtyWorks: () => [...dirty],
 		getRow: (workId, log, key) => workLogs(workId).get(log)?.get(key)?.body,
 		putRow: (workId, log, key, body, pos) => {
+			touch()
 			const byLog = workLogs(workId)
 			let byKey = byLog.get(log)
 			if (!byKey) {
@@ -226,11 +257,15 @@ export function createMemoryRecords(): RecordBackend {
 				.sort((left, right) => left.pos - right.pos)
 				.map((entry) => entry.body),
 		clearProjection: (workId) => {
+			touch()
 			logs.delete(workId)
 			heads.delete(workId)
 		},
 		getHead: (workId) => heads.get(workId),
-		putHead: (head) => heads.set(head.workId, head),
+		putHead: (head) => {
+			touch()
+			heads.set(head.workId, head)
+		},
 		allHeads: () => [...heads.values()],
 		readRecords: (opts, checkBudget) =>
 			order.filter((row) => {
@@ -266,17 +301,29 @@ export function createMemoryRecords(): RecordBackend {
 				.slice(0, limit)
 				.map(([key, body]) => ({ name: key.slice(prefix.length), body }))
 		},
-		putNote: (workId, name, body) => notes.set(noteKey(workId, name), body),
+		putNote: (workId, name, body) => {
+			touch()
+			notes.set(noteKey(workId, name), body)
+		},
 		deleteNote: (workId, name) => {
+			touch()
 			notes.delete(noteKey(workId, name))
 		},
-		diagnostic: (code) => diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1),
+		diagnostic: (code) => {
+			touch()
+			diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1)
+		},
 		getJournalCursor: (path) => cursors.get(path),
-		putJournalCursor: (cursor) => cursors.set(cursor.path, { ...cursor }),
+		putJournalCursor: (cursor) => {
+			touch()
+			cursors.set(cursor.path, { ...cursor })
+		},
 		deleteJournalCursor: (path) => {
+			touch()
 			cursors.delete(path)
 		},
 		listJournalCursors: () => [...cursors.values()],
+		dataVersion: () => version,
 		close: () => {},
 	}
 }

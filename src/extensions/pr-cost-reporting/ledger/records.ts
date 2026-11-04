@@ -138,6 +138,11 @@ export interface RecordBackend {
 	getJournalCursor(path: string): JournalCursor | undefined
 	putJournalCursor(cursor: JournalCursor): void
 	deleteJournalCursor(path: string): void
+	/** Monotonic commit marker for pass-gate signatures: the current connection's own commits never bump
+	 *  it (SQLite `PRAGMA data_version`), so an idle pass sees it stable; another process committing
+	 *  any row bumps it on the next read. The memory double bumps it on every mutator instead — the
+	 *  same "changed since last probe" contract from the caller's side. */
+	dataVersion(): number
 	/** Every cursor on record, so import can report files removed since the last pass. */
 	listJournalCursors(): JournalCursor[]
 	close(): void
@@ -646,10 +651,21 @@ function sqliteBackend(agentDir: string): RecordBackend {
 	const bumpDiagnostic = db.query(
 		"INSERT INTO diagnostics (code, count, updated_at) VALUES (?, 1, ?) ON CONFLICT (code) DO UPDATE SET count = count + 1, updated_at = excluded.updated_at",
 	)
+	const dataVersionStmt = db.query<{ data_version: number }, []>("PRAGMA data_version")
+	// Own commits feed the count in addition to PRAGMA data_version: Bun:sqlite does NOT bump the
+	// pragma for same-connection commits (standard SQLite semantics, verified empirically), so own
+	// writes are tracked explicitly and both signals are summed — the probe just needs change
+	// detection. Autocommit mutators outside tx() (e.g. diagnostic counters below) touch neither
+	// signal and that is intentional: observability writes must not wake an idled gate.
+	let ownCommits = 0
 	const rowsOf = (workId: string, log: LogName): Row[] =>
 		readLog.all(workId, log).map((row) => JSON.parse(row.body) as Row)
 	return {
-		tx: <T>(fn: () => T): T => store.tx(fn),
+		tx: <T>(fn: () => T): T => {
+			const result = store.tx(fn)
+			ownCommits++
+			return result
+		},
 		insertRecord: (row) =>
 			insertRecord.run(
 				row.recordHash,
@@ -781,6 +797,7 @@ function sqliteBackend(agentDir: string): RecordBackend {
 			deleteNote.run(workId, name)
 		},
 		diagnostic: (code) => bumpDiagnostic.run(code, Date.now()),
+		dataVersion: () => (dataVersionStmt.get()?.data_version ?? 0) + ownCommits,
 		getJournalCursor: (path) => getCursor.get(path) ?? undefined,
 		putJournalCursor: (cursor) =>
 			putCursor.run(

@@ -28,7 +28,9 @@ import {
 	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
+	reportingOwnWrites,
 	reportingProducer,
+	runWithReportingOwnWrites,
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
@@ -127,6 +129,34 @@ describe("org usage-reporting policy", () => {
 		)
 		const state = await readReportingState(directory)
 		expect(state.enabled).toBe(true)
+	})
+})
+
+describe("reconcile pass own-write tracking", () => {
+	it("counts only writes issued from inside the pass's own async context", async () => {
+		await setReportingEnabled(directory, true) // preexisting content: enable=true
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false) // in-pass bookkeeping: true -> false, counted
+			expect(reportingOwnWrites(directory)).toBe(1)
+		})
+		// The /pr-reporting command's handler world: launched outside any tracking context, its
+		// write must never be absorbed into a pass's own-write count — or its content could be
+		// silently slept over once the on-disk version matched the pass stamp.
+		await setReportingEnabled(directory, true)
+		expect(reportingOwnWrites(directory)).toBe(1)
+		// A later pass for the same directory adds its own writes on top; the supervisor
+		// subtracts the pass-start baseline, so the counter is cumulative per directory.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
+		const state = await readReportingState(directory)
+		expect(state.enabled).toBe(false)
+		// An identical-content write bumps nothing — absorption could never hide it anyway.
+		await runWithReportingOwnWrites(directory, async () => {
+			await setReportingEnabled(directory, false)
+			expect(reportingOwnWrites(directory)).toBe(2)
+		})
 	})
 })
 
@@ -1362,5 +1392,64 @@ describe("server limits", () => {
 		saved.paused = { [accountKey(account)]: { limit: { scope: "organization", at: 1 }, retryAt: "soon" } }
 		await writeFile(path, JSON.stringify(saved))
 		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
+	it("rejects a settled entry whose recorded reason runs past the validator's cap", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 404, reason: "x".repeat(257) }
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).rejects.toThrow("unreadable")
+	})
+	it("reads back a settled entry whose reason was clamped at write time", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 404, reason: "x".repeat(256) }
+		await writeFile(path, JSON.stringify(saved))
+		await expect(readReportingState(directory)).resolves.toMatchObject({
+			entries: { [key]: { dead: { status: 404 } } },
+		})
+	})
+	it("backfills a legacy hold's horizon once instead of resetting it every sweep", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		// A hold written before the heldAt clock existed (or by an older build): held=true,
+		// no timestamp. The freeze sweep must stamp the horizon start exactly once.
+		saved.entries[key].held = true
+		delete saved.entries[key].heldAt
+		await writeFile(path, JSON.stringify(saved))
+		// Empty sweeps keep the claims current-looking, so the hold survives untouched —
+		// only the freeze sweep's backfill may write the timestamp.
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const first = JSON.parse(await readFile(path, "utf8"))
+		expect(first.entries[key].heldAt).toBeTypeOf("number")
+		await new Promise((resolve) => setTimeout(resolve, 5))
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const second = JSON.parse(await readFile(path, "utf8"))
+		expect(second.entries[key].heldAt).toBe(first.entries[key].heldAt)
+	})
+	it("never re-parks a settled entry whose evidence gap persists", async () => {
+		await setReportingEnabled(directory, true)
+		await queueSnapshots(directory, [snapshot([requestId])])
+		const read = async () => (await readReportingState(directory)).entries[key]
+		// Settle the entry on disk by hand. Without the dead check in the re-park branch,
+		// the entry's outstanding claims would start a fresh hold from here.
+		const path = join(directory, "pr-cost-reporting", "state.json")
+		const saved = JSON.parse(await readFile(path, "utf8"))
+		saved.entries[key].dead = { at: Date.now(), status: 410, reason: "gone" }
+		expect(saved.entries[key].held).toBeUndefined()
+		expect(saved.entries[key].requestHashes.length).toBeGreaterThan(0)
+		await writeFile(path, JSON.stringify(saved))
+		// Empty capture sweep: evidence for the claims never arrives, no current replacement —
+		// the conditions that re-park a living entry, which a settled entry must dodge.
+		await queueSnapshots(directory, [], true, 0, () => {})
+		const state = JSON.parse(await readFile(path, "utf8"))
+		expect(state.entries[key].held).toBeUndefined()
+		expect(state.entries[key].heldAt).toBeUndefined()
 	})
 })

@@ -1,4 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
@@ -63,8 +65,20 @@ export interface AccountPause {
 	noticeShown?: true
 }
 
+/** A permanent refusal this entry cannot outgrow by retrying; retry bookkeeping stops at the mark. */
+export interface DeadMark {
+	/** When the entry was settled. */
+	at: number
+	/** The refusal class — an HTTP status when one is known. */
+	status?: number
+	/** Short machine-stable reason; never free server prose. */
+	reason: string
+}
+
 /** Ordinary changes upload at most once in this window per repository. */
 export const UPLOAD_INTERVAL_MS = 5 * 60_000
+/** Evidence that stays incomplete this long releases the hold, so the entry attempts or settles. */
+export const HOLD_EXPIRY_MS = 7 * 24 * 60 * 60_000
 /** A limit learned from the server is retried at the normal limits after a week. */
 const LEARNED_LIMIT_MS = 7 * 24 * 60 * 60_000
 /** The local queue's size limit; a replacement that would cross it waits instead of blocking every repository. */
@@ -79,6 +93,10 @@ export interface PendingRepository {
 	/** Membership that may still exist on the server; only a matching ACK can shrink it. */
 	requestHashes: string[]
 	held?: boolean
+	/** When the current hold was taken; released and reset when the hold expires or evidence arrives. */
+	heldAt?: number
+	/** A permanent refusal; the entry keeps its claims for the record but is never attempted again. */
+	dead?: DeadMark
 	acceptedDigest?: string
 	pendingDigest?: string
 	pending?: WireSnapshot
@@ -144,6 +162,13 @@ function validEntryExtras(entry: PendingRepository): boolean {
 	const learned = entry.learned
 	return (
 		(entry.uploadedAt === undefined || Number.isFinite(entry.uploadedAt)) &&
+		(entry.heldAt === undefined || (entry.held === true && Number.isFinite(entry.heldAt))) &&
+		(entry.dead === undefined ||
+			(object(entry.dead) &&
+				Number.isFinite(entry.dead.at) &&
+				(entry.dead.status === undefined || (count(entry.dead.status) && entry.dead.status >= 100)) &&
+				typeof entry.dead.reason === "string" &&
+				entry.dead.reason.length <= 256)) &&
 		(entry.urgent === undefined || entry.urgent === true) &&
 		(entry.markers === undefined ||
 			(Array.isArray(entry.markers) &&
@@ -253,6 +278,43 @@ function validateEntry(key: string, entry: PendingRepository, producerId: string
 	}
 }
 
+/** The sidecar version file; bumped once per real state.json change, so it stays tiny to read. */
+export function reportingStateVersionPath(agentDir: string): string {
+	return join(reportingDirectory(agentDir), "state.version")
+}
+
+/** Monotonic version of state.json without parsing it; pass gates read freshness through this. */
+export function reportingStateVersion(agentDir: string): number {
+	try {
+		const text = readFileSync(reportingStateVersionPath(agentDir), "utf8").trim()
+		const version = Number(text)
+		return Number.isSafeInteger(version) && version >= 0 ? version : 0
+	} catch (error) {
+		if (!object(error) || error.code !== "ENOENT") throw error
+		return 0
+	}
+}
+
+/** Sidecar bumps THIS process recorded while a pass was tracking them — never anyone else's. */
+const ownReportingWrites = new Map<string, number>()
+// The async-context scoping is load-bearing: a write from a command handler or another session
+// racing the pass mid-flight must NOT be absorbed — its content could otherwise be silently slept
+// over once its version matched the stamp.
+const reportingPassContext = new AsyncLocalStorage<string>()
+
+/**
+ * Bracket a reconcile pass's own queue writes: only writes issued from inside this async context
+ * (and only for this agentDir) are absorbed into the pass stamp, so a same-process write from
+ * anywhere else still re-opens the next tick.
+ */
+export function runWithReportingOwnWrites<T>(agentDir: string, fn: () => Promise<T>): Promise<T> {
+	return reportingPassContext.run(agentDir, fn)
+}
+
+export function reportingOwnWrites(agentDir: string): number {
+	return ownReportingWrites.get(agentDir) ?? 0
+}
+
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
 async function loadReportingState(agentDir: string): Promise<{ state: ReportingState; text?: string }> {
 	try {
@@ -340,6 +402,10 @@ async function update(
 		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
 		if (body === text) return state
 		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
+		// The sidecar moves first: a crash between the two writes leaves a phantom version bump (one
+		// extra pass) rather than a moved state.json that a stale version would hide forever.
+		await writeFileDurably(reportingStateVersionPath(agentDir), `${reportingStateVersion(agentDir) + 1}\n`, check)
+		if (reportingPassContext.getStore() === agentDir) ownReportingWrites.set(agentDir, reportingOwnWrites(agentDir) + 1)
 		await writeFileDurably(reportingStatePath(agentDir), body, check)
 
 		const parent = await open(directory, "r")
@@ -412,9 +478,14 @@ export async function queueSnapshots(
 			if (!state.enabled) return
 			if (machine && state.machine && machine !== state.machine)
 				throw new Error("PR reporting snapshots from another machine must drain unchanged")
+			const now = Date.now()
+			// The freeze sweep's own hold release clears heldAt without telling this pass: remember
+			// the expired keys first, so neither sweep re-parks them below with a fresh horizon.
+			const expired = new Set<string>()
+			for (const [key, entry] of Object.entries(state.entries))
+				if (entry.heldAt !== undefined && entry.heldAt <= now - HOLD_EXPIRY_MS) expired.add(key)
 			// Legacy callers retain their queue contract; the current reporter freezes under this same lock.
 			if (assertCurrent) freezeState(agentDir, state, assertCurrent)
-			const now = Date.now()
 			const invalid = new Set<string>()
 			const current = new Map<string, RepositorySnapshot>()
 			for (const snapshot of snapshots) {
@@ -447,8 +518,19 @@ export async function queueSnapshots(
 
 			let held = 0
 			const withdrawals = new Set<string>()
+			const released = new Set<string>()
 			for (const [key, entry] of Object.entries(state.entries)) {
 				if (entry.learned && entry.learned.until <= now) entry.learned = undefined
+				// A hold waiting on evidence that never arrives releases after the horizon: this pass
+				// delivers or settles the entry instead of parking it again with a fresh hold.
+				if (expired.has(key)) {
+					entry.held = undefined
+					entry.heldAt = undefined
+					released.add(key)
+					// The freeze sweep already logged this release when assertCurrent ran it
+					// above; emitting here too would double-count one logical expiry.
+					if (!assertCurrent) diagnostic(agentDir, "hold-expired")
+				}
 				// An acknowledged withdrawal left no claims; rebuilding it would only send it again.
 				if (!current.has(key) && (entry.requestHashes.length || entry.pending)) {
 					if (
@@ -465,8 +547,11 @@ export async function queueSnapshots(
 							},
 						})
 						withdrawals.add(key)
-					} else {
+					} else if (!released.has(key) && entry.dead === undefined) {
+						// A settled entry can never deliver from a re-park: skip it so a
+						// dead row with claims does not re-hold every expiry cycle.
 						entry.held = true
+						entry.heldAt ??= now
 						// An invalid replacement is reported as invalid, not also as missing evidence.
 						if (!invalid.has(key)) held++
 					}
@@ -480,14 +565,19 @@ export async function queueSnapshots(
 				const entry = state.entries[key]
 				if (
 					entry &&
+					!released.has(key) &&
 					(snapshot.incomplete ||
 						entry.requestHashes.some((member) => !reported.get(accountKey(entry.account))?.has(member)))
 				) {
 					entry.held = true
+					entry.heldAt ??= now
 					held++
 					continue
 				}
-				if (entry) entry.held = undefined
+				if (entry) {
+					entry.held = undefined
+					entry.heldAt = undefined
+				}
 				if (entry?.pendingDigest === digest || (!entry?.pending && entry?.acceptedDigest === digest)) continue
 				// History that is all outside the upload window has nothing to send and no earlier upload to replace.
 				if (!entry && !snapshot.content.requests.length && !snapshot.content.pullRequests.length) continue
@@ -540,12 +630,20 @@ export async function queueSnapshots(
 						]),
 					].sort(),
 					held: undefined,
+					heldAt: undefined,
+					// A fresh capture starts a new lifecycle; a settled refusal never follows it.
+					// Retry bookkeeping follows the same rule: a dead entry's attempts and backoff
+					// belong to the settled body, not the evidence that replaces it. For living
+					// entries, pacing (attempts, retryAt) must carry over — resetting it would
+					// let repeated captures hammer a refusing server with first-attempt delays.
+					dead: undefined,
 					pendingDigest: digest,
 					pending,
 					urgent: urgent || undefined,
 					trimmed: snapshot.content.coverage.trimmedRequests || undefined,
-					attempts: entry?.attempts ?? 0,
-					retryAt: entry?.retryAt ?? 0,
+					attempts: entry?.dead ? 0 : (entry?.attempts ?? 0),
+					retryAt: entry?.dead ? 0 : (entry?.retryAt ?? 0),
+					lastError: entry?.dead ? undefined : entry?.lastError,
 				}
 
 				const grown =
@@ -935,6 +1033,15 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 	backend.tx(() => {
 		assertCurrent()
 		for (const [key, entry] of entries) {
+			// A hold whose evidence never arrived releases on any passing sweep, with or without a
+			// fresh capture: delivery then uploads the parked body or settles it for good. Holds
+			// predating the heldAt clock get their horizon start backfilled once.
+			if (entry.held === true && entry.heldAt === undefined) entry.heldAt = Date.now()
+			else if (entry.heldAt !== undefined && entry.heldAt <= Date.now() - HOLD_EXPIRY_MS) {
+				entry.held = undefined
+				entry.heldAt = undefined
+				diagnostic(agentDir, "hold-expired")
+			}
 			// The queue's size limit applies to new frozen bodies whatever built them; the live entry keeps
 			// the trimmed body so the next pass freezes the same id instead of another full copy. An
 			// unchanged body leaves the entry alone: an acknowledged receipt clears `pending` here.
@@ -1109,6 +1216,37 @@ export function acknowledgeFrozenSnapshot(
 				delete state.paused[accountKey(frozen.entry.account)]
 				if (!Object.keys(state.paused).length) state.paused = undefined
 			}
+		},
+		assertCurrent,
+	)
+}
+
+/**
+ * A refusal no retry can change (gone resources, size the floor cannot fix): the mark settles the
+ * body — attempts stop, booking keeps its claims for the record, and delivery never selects it
+ * again. Nothing resurrects a marked entry; a fresh capture of the same key starts a new one.
+ */
+export function deadLetterFrozenSnapshot(
+	agentDir: string,
+	sent: FrozenSnapshot,
+	status: number | undefined,
+	reason: string,
+	assertCurrent: () => void,
+): Promise<ReportingState> {
+	return updateFrozen(
+		agentDir,
+		sent,
+		(_state, frozen, live) => {
+			// The reason can carry server text; validEntryExtras rejects entries whose dead.reason
+			// exceeds 256 chars, so the writer must clamp here rather than violate the reader's invariant.
+			const mark: DeadMark = {
+				at: Date.now(),
+				...(status === undefined ? {} : { status }),
+				reason: reason.slice(0, 256),
+			}
+			frozen.entry.dead = mark
+			if (live) live.dead = mark
+			diagnostic(agentDir, "pr-cost-dead-letter")
 		},
 		assertCurrent,
 	)
