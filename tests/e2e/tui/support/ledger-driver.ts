@@ -1769,7 +1769,7 @@ async function knownRecordRegressions(agent: string, recordJson: string): Promis
 					["diagnostics", "diagnostics"],
 				].map(([name, table]) => [
 					name,
-					store.db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM " + table).get()?.count ?? -1,
+					store.db.query<{ count: number }, []>(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count ?? -1,
 				]),
 			)
 		} finally {
@@ -1952,7 +1952,7 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		child.once("error", reject)
 	})
 	const readVersion = new Promise<void>((resolve, reject) => {
-		timer = setTimeout(() => reject(new Error("schema opener never read version 0: " + errors)), 10_000)
+		timer = setTimeout(() => reject(new Error(`schema opener never read version 0: ${errors}`)), 10_000)
 		child.stdout.on("data", (chunk: Buffer) => {
 			output += chunk.toString()
 			if (output.includes('"versionRead":0')) {
@@ -1965,7 +1965,7 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		})
 		child.once("error", reject)
 		child.once("exit", () => {
-			if (!sawVersion) reject(new Error("schema opener exited before stale read: " + output + errors))
+			if (!sawVersion) reject(new Error(`schema opener exited before stale read: ${output}${errors}`))
 		})
 	})
 	try {
@@ -1973,7 +1973,7 @@ async function knownSchemaRace(agent: string): Promise<void> {
 		writer.exec("COMMIT")
 		committed = true
 		const code = await exited
-		if (code !== 0) throw new Error("schema opener failed: " + errors)
+		if (code !== 0) throw new Error(`schema opener failed: ${errors}`)
 		const result = JSON.parse(output.trim().split("\n").at(-1) ?? "{}") as Record<string, unknown>
 		out({
 			...result,

@@ -23,11 +23,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		SettingsManager: {
 			create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
 		},
-		DefaultPackageManager: vi.fn().mockImplementation(() => ({
-			listConfiguredPackages: listConfiguredPackagesMock,
-			setProgressCallback: setProgressCallbackMock,
-			update: packageUpdateMock,
-		})),
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		DefaultPackageManager: vi.fn().mockImplementation(function () {
+			return {
+				listConfiguredPackages: listConfiguredPackagesMock,
+				setProgressCallback: setProgressCallbackMock,
+				update: packageUpdateMock,
+			}
+		}),
 	}
 })
 

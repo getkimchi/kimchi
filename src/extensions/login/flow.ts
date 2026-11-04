@@ -629,7 +629,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	const modelsPath = resolve(agentDir, "models.json")
 
 	const credential = readStoredCredential(KIMCHI_PROVIDER_ID, authPath)
-	if (!credential || credential.type !== "oauth") {
+	if (credential?.type !== "oauth") {
 		return false
 	}
 
