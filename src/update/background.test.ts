@@ -27,7 +27,7 @@ function makeLock() {
 	return { release: vi.fn() }
 }
 
-function makeStore(lastInstalledTag: string | null = null) {
+function makeStore(lastInstalledTag: string | null = null, installedVersion: string | null = null) {
 	const calls: string[] = []
 	const store: TickStore = {
 		saveUpdateResult: vi.fn(() => {
@@ -37,6 +37,7 @@ function makeStore(lastInstalledTag: string | null = null) {
 			calls.push("saveLastInstalled")
 		}),
 		loadLastInstalled: () => (lastInstalledTag === null ? null : { tag: lastInstalledTag }),
+		loadInstalledVersion: () => installedVersion,
 	}
 	return { store, calls }
 }
@@ -85,6 +86,50 @@ describe("runUpdateTick", () => {
 		const result = await runUpdateTick({
 			currentVersion: "1.0.0",
 			acquireLock: () => lock,
+			checkForUpdate: async () => hasUpdate("v2.0.0"),
+			applyUpdate: apply,
+			store,
+		})
+		expect(result).toEqual({ outcome: "no-update" })
+		expect(apply).not.toHaveBeenCalled()
+	})
+
+	it("does not reinstall when the record and the installed files agree", async () => {
+		const apply = vi.fn()
+		const { store } = makeStore("v2.0.0", "2.0.0")
+		const result = await runUpdateTick({
+			currentVersion: "1.0.0",
+			acquireLock: () => makeLock(),
+			checkForUpdate: async () => hasUpdate("v2.0.0"),
+			applyUpdate: apply,
+			store,
+		})
+		expect(result).toEqual({ outcome: "no-update" })
+		expect(apply).not.toHaveBeenCalled()
+	})
+
+	it("installs when the record is stale because the files on disk are an older version", async () => {
+		// v2.0.0 was recorded, then install.sh put 1.5.0 back. The record alone
+		// would block v2.0.0 until a newer release shipped.
+		const apply = vi.fn().mockResolvedValue(undefined)
+		const { store } = makeStore("v2.0.0", "1.5.0")
+		const result = await runUpdateTick({
+			currentVersion: "1.5.0",
+			acquireLock: () => makeLock(),
+			checkForUpdate: async () => hasUpdate("v2.0.0"),
+			applyUpdate: apply,
+			store,
+		})
+		expect(result).toEqual({ outcome: "installed", version: "v2.0.0" })
+		expect(apply).toHaveBeenCalledOnce()
+	})
+
+	it("never overwrites a canary the user installed while this stable session stayed open", async () => {
+		const apply = vi.fn()
+		const { store } = makeStore("canary", "0.0.0-canary.20260601.def5678")
+		const result = await runUpdateTick({
+			currentVersion: "1.0.0",
+			acquireLock: () => makeLock(),
 			checkForUpdate: async () => hasUpdate("v2.0.0"),
 			applyUpdate: apply,
 			store,

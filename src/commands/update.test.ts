@@ -453,6 +453,11 @@ describe("self-update takes the updater lock", () => {
 		expect(applyUpdateMock).not.toHaveBeenCalled()
 	})
 
+	it("does not let an unwritable lock file block a manual update", async () => {
+		await runUpdate(["self", "--force"])
+		expect(acquireUpdaterLockMock).toHaveBeenCalledWith({ allowUnavailable: true })
+	})
+
 	it("records the installed tag after a successful update", async () => {
 		// Otherwise concurrent sessions (and this session's background tick)
 		// reinstall the release the user just installed.

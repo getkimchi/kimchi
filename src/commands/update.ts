@@ -269,7 +269,7 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	// Share the updater lock with the background ticks: a session mid-install
 	// and a CLI install would race on the share-directory swap (applyUpdate is
 	// atomic for the binary but not for vendor/bridge copies).
-	const lock = acquireUpdaterLock()
+	const lock = acquireUpdaterLock({ allowUnavailable: true })
 	if (lock === null) {
 		console.error("kimchi update: an update is already in progress. Retry in a moment.")
 		return 1

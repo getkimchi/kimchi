@@ -2,6 +2,7 @@
 // update notice, and tick-loop lifecycle. runUpdateTick itself is covered in
 // src/update/background.test.ts — here we observe the extension boundary.
 
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TickResult } from "../update/background.js"
 import { createContext } from "./__mocks__/context.js"
@@ -12,6 +13,7 @@ const getVersionMock = vi.fn(() => "0.0.22")
 const isHomebrewInstallMock = vi.fn(() => false)
 const loadAutoUpdateSettingMock = vi.fn(() => true)
 const loadAutoUpdateNoticeShownMock = vi.fn(() => true)
+const readInstalledVersionMock = vi.fn<() => string | null>(() => null)
 const cliArgsMock = vi.fn<() => { options: Record<string, unknown>; positionals: string[] }>(() => ({
 	options: {},
 	positionals: [],
@@ -33,6 +35,10 @@ vi.mock("../update/paths.js", async (importOriginal) => {
 		isHomebrewInstall: () => isHomebrewInstallMock(),
 	}
 })
+vi.mock(import("../update/workflow.js"), async (importOriginal) => ({
+	...(await importOriginal()),
+	readInstalledVersion: () => readInstalledVersionMock(),
+}))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
@@ -105,6 +111,7 @@ describe("backgroundUpdateExtension", () => {
 		loadAutoUpdateSettingMock.mockReturnValue(true)
 		loadAutoUpdateNoticeShownMock.mockReturnValue(true)
 		cliArgsMock.mockReturnValue({ options: {}, positionals: [] })
+		readInstalledVersionMock.mockReturnValue(null)
 		vi.spyOn(process, "execPath", "get").mockReturnValue("/usr/local/bin/kimchi")
 	})
 
@@ -113,11 +120,11 @@ describe("backgroundUpdateExtension", () => {
 		vi.restoreAllMocks()
 	})
 
-	async function startSession(hasUI = true) {
+	async function startSession(mode: ExtensionContext["mode"] = "tui") {
 		const { api, getHandler, getHandlers } = createExtensionApi()
 		backgroundUpdateExtension(api)
 		const setStatus = vi.fn()
-		const ctx = createContext({ hasUI, ui: { setStatus } })
+		const ctx = createContext({ mode, hasUI: mode === "tui" || mode === "rpc", ui: { setStatus } })
 		await getHandler("session_start")({}, ctx)
 		// Early-bail paths (no UI, static gate) register no shutdown handler.
 		return { shutdown: getHandlers("session_shutdown")[0], setStatus }
@@ -130,8 +137,55 @@ describe("backgroundUpdateExtension", () => {
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
 	})
 
+	it("registers --no-auto-update as a boolean flag so pi accepts it at launch", () => {
+		const { api } = createExtensionApi()
+		backgroundUpdateExtension(api)
+		expect(api.registerFlag).toHaveBeenCalledWith("no-auto-update", expect.objectContaining({ type: "boolean" }))
+	})
+
+	it("does nothing in RPC mode, which is also how ACP binds extensions, despite having a UI", async () => {
+		await startSession("rpc")
+		await vi.advanceTimersByTimeAsync(60_000)
+		expect(runUpdateTickMock).not.toHaveBeenCalled()
+	})
+
+	it("shows the update notice at session start when a newer release is already installed", async () => {
+		// Covers /new: pi clears statuses on session replacement, and the notice
+		// must not wait for a tick (which needs the lock and possibly the network).
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		const { setStatus } = await startSession()
+		expect(setStatus).toHaveBeenCalledWith(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
+	})
+
+	it.each([
+		["no-update", { outcome: "no-update" }],
+		["skipped-lock", { outcome: "skipped-lock" }],
+	] as const)("shows the update notice when another session installed during a %s tick", async (_name, result) => {
+		const { setStatus } = await startSession()
+		expect(setStatus).not.toHaveBeenCalled()
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		runUpdateTickMock.mockResolvedValue(result)
+		await vi.advanceTimersByTimeAsync(10_000)
+		expect(setStatus).toHaveBeenCalledWith(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
+	})
+
+	it("keeps ticking after another session's install, so a later release is still installed", async () => {
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		await startSession()
+		await vi.advanceTimersByTimeAsync(10_000)
+		await vi.advanceTimersByTimeAsync(30 * 60_000)
+		expect(runUpdateTickMock).toHaveBeenCalledTimes(2)
+	})
+
+	it("shows no notice when the installed version matches the running one", async () => {
+		readInstalledVersionMock.mockReturnValue("0.0.22")
+		const { setStatus } = await startSession()
+		await vi.advanceTimersByTimeAsync(10_000)
+		expect(setStatus).not.toHaveBeenCalled()
+	})
+
 	it("does nothing when the session has no UI", async () => {
-		await startSession(false)
+		await startSession("print")
 		await vi.advanceTimersByTimeAsync(60_000)
 		expect(runUpdateTickMock).not.toHaveBeenCalled()
 	})

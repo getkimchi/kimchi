@@ -11,7 +11,8 @@ decision record.
 Each interactive TUI session runs **update ticks**: the first ~10 seconds
 after session start, then every 30 minutes for as long as the session lives.
 Nothing runs in ACP/JSON/RPC/print/export modes — ACP clients own harness
-updates themselves.
+updates themselves. The gate is `ctx.mode === "tui"`, because `ctx.hasUI` is
+also true in RPC, which is how ACP binds extensions.
 
 One tick (`runUpdateTick`, `src/update/background.ts`):
 
@@ -21,10 +22,13 @@ One tick (`runUpdateTick`, `src/update/background.ts`):
 2. **Check** GitHub releases via `checkForUpdate`, honoring the shared
    30-minute cache, so N open sessions still mean at most one check per
    machine per 30 minutes.
-3. **Dedup** against the last-installed release tag written by any session:
-   a session that installed stays on its old version at runtime (the install
-   applies to the *next* launch), so without this record concurrent sessions
-   would reinstall the same release every tick.
+3. **Dedup** against the last-installed release tag written by any session,
+   confirmed against the version of the installed files: a session that
+   installed stays on its old version at runtime (the install applies to the
+   *next* launch), so without this record concurrent sessions would reinstall
+   the same release every tick. The files on disk win over the record, so an
+   external install of an older version can't block a release. A canary on
+   disk is never replaced, even by a stable session that was already open.
 4. **Install** via `applyUpdate` — download → checksum → extract →
    smoke-test → atomic in-place rename. Binary *and* share dir
    (`vendor`/`bridge`) swap mid-session; Windows rotates `kimchi.exe.old`.
@@ -54,12 +58,17 @@ Ticks never run on:
 
 ## UX
 
-The only thing ever shown is one line on the status bar, after an install
-completes mid-session:
+The only thing ever shown is one line on the status bar, once the installed
+version is newer than the one this session is running:
 
 ```text
 ✔ Update installed · Restart to update
 ```
+
+Every session on the old version shows it, not just the one that installed.
+It comes from the version of the installed files, checked at session start and
+after each tick, so other sessions pick it up within one tick interval and it
+survives `/new`, `/resume` and `/fork`.
 
 No progress while checking or downloading, no failure messages, no
 release-note summary at the next launch. Opt-out users (auto-update off, or
@@ -79,7 +88,9 @@ install (or a user thinking at the `kimchi update` prompt) can't age past
 the staleness escape. The escape itself — a 15-minute staleness window —
 stills exists for kill -9, where the OS can recycle the owner's pid and make
 a dead holder look alive. Release only deletes its own lock (nonce match),
-so a holder whose lock was stolen cannot evict the usurper. A kill mid-copy
+so a holder whose lock was stolen cannot evict the usurper. Takeover renames
+the stale file aside and compares it to what was judged stale, so a session
+racing the same takeover cannot evict the winner either. A kill mid-copy
 can leave a mixed install (new binary, stale share) that nothing recorded;
 the design accepts this: the residual window is seconds, and the next
 successful update repairs it.
@@ -89,7 +100,9 @@ successful update repairs it.
 `kimchi update` (and `/update` → "Update kimchi now") works as before and
 remains the way to update immediately, with two differences: it takes the
 updater lock like ticks do and refuses while an install is in progress —
-two concurrent installers would race on the share-directory swap — and a
+two concurrent installers would race on the share-directory swap. If the lock
+file can't be written at all (a read-only or root-owned cache), it goes ahead
+without the lock rather than reporting an install that isn't happening. And a
 successful install records the last-installed tag, so other sessions (and
 this session's next tick) dedup the release instead of reinstalling it.
 
@@ -120,6 +133,10 @@ Consequences accepted:
   running session may still read files from it. This is brief, already
   possible today across terminals, and accepted in exchange for keeping one
   atomic install and no launch-path work.
+- Codesign and the smoke test run asynchronously, with a timeout, so they don't
+  stall the TUI. The swap and share-directory copy stay synchronous, which can
+  stall it briefly, because yielding there would let a quit leave a new binary
+  without its share directory.
 - A failed background update is invisible to the user; visibility comes
   from the update result file.
 - Diagnostics keep their own files (`update-result.json`,
@@ -154,8 +171,8 @@ _Avoid_: log, error state
 
 **Update notice**:
 The quiet status-line message about update state. Only an outcome
-("✔ Update installed · Restart to update") is ever shown — never progress,
-never failures.
+("✔ Update installed · Restart to update") is ever shown, in every session
+still on the old version — never progress, never failures.
 _Avoid_: progress indicator, toast
 
 **Auto-update notice**:

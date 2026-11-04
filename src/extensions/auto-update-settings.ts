@@ -50,7 +50,7 @@ export async function runManualUpdate(): Promise<ManualUpdateResult> {
 	// Share the updater lock with the background ticks: two concurrent
 	// installers would race on the share-directory swap (applyUpdate is
 	// atomic for the binary but not for vendor/bridge copies).
-	const lock = acquireUpdaterLock()
+	const lock = acquireUpdaterLock({ allowUnavailable: true })
 	if (lock === null) {
 		return { ok: false, message: "An update is already in progress. Retry in a moment." }
 	}

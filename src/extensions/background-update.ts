@@ -1,9 +1,10 @@
 // The background updater (docs/auto-update.md).
 // Each interactive TUI session runs update ticks: the first ~10 seconds after
 // session start, then every 30 minutes. A successful install is announced on
-// the status line ("✔ Update installed · Restart to update") and nothing else
-// ever surfaces — checks, downloads and failures stay silent, recorded in the
-// update result (update-result.json).
+// the status line ("✔ Update installed · Restart to update") in every session
+// still running the old version, and nothing else ever surfaces — checks,
+// downloads and failures stay silent, recorded in the update result
+// (update-result.json).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../cli-args.js"
@@ -11,7 +12,7 @@ import { runUpdateTick, type TickResult } from "../update/background.js"
 import { isHomebrewInstall, isPackagedBinaryExecPath } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting } from "../update/settings.js"
 import { isUpdateCheckDisabled } from "../update/state.js"
-import { parseCanarySha7 } from "../update/workflow.js"
+import { isRestartPending, parseCanarySha7, readInstalledVersion } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
 export const FIRST_TICK_DELAY_MS = 10_000
@@ -82,11 +83,19 @@ function unref<T extends { unref?: () => void }>(timer: T): T {
 }
 
 export default function backgroundUpdateExtension(pi: ExtensionAPI) {
+	// Pi rejects unknown flags at launch, so the flag must be registered here as
+	// well as declared in CLI_OPTIONS (the kimchi-side parser and help text).
+	pi.registerFlag("no-auto-update", {
+		description: "Skip background updates for this session",
+		type: "boolean",
+	})
+
 	pi.on("session_start", (_event, ctx: ExtensionContext) => {
 		// Background updates are a TUI-session concern only: protocol modes
 		// (ACP/JSON/RPC/print/export) neither show notices nor own updates
-		// (ACP clients own harness updates themselves).
-		if (!ctx.hasUI) return
+		// (ACP clients own harness updates themselves). Check the mode, not
+		// ctx.hasUI: that is also true in RPC, which is how ACP binds extensions.
+		if (ctx.mode !== "tui") return
 
 		const gate = evaluateGates(readGateEnv())
 		// Dynamic gates don't block scheduling; the tick re-checks before running.
@@ -94,6 +103,15 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 
 		let stopped = false
 		const shutdownAbort = new AbortController()
+
+		// Read from disk, so it also covers an install by another session and a
+		// status cleared by session replacement (/new, /resume, /fork).
+		const showNoticeIfRestartPending = (): void => {
+			if (isRestartPending(getVersion(), readInstalledVersion())) {
+				ctx.ui.setStatus(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
+			}
+		}
+		showNoticeIfRestartPending()
 
 		const tick = async (): Promise<void> => {
 			// Re-read the gates that can change mid-session: `/update` can flip
@@ -130,6 +148,7 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 			ticking = true
 			try {
 				await tick()
+				if (!stopped) showNoticeIfRestartPending()
 			} finally {
 				ticking = false
 			}

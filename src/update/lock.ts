@@ -37,6 +37,13 @@ export interface AcquireOptions {
 	now?: () => number
 	/** Heartbeat interval; ≤0 disables it. */
 	heartbeatMs?: number
+	/** Hard-link primitive; injectable to simulate filesystems without hard links. */
+	linkFile?: (existingPath: string, newPath: string) => void
+	/** Return a no-op handle instead of null when the lock file cannot be
+	 *  written (e.g. a root-owned cache dir). For manual updates: the user asked
+	 *  for this install, and a broken cache must not read as "update in progress".
+	 *  A lock held by a live session still returns null. */
+	allowUnavailable?: boolean
 }
 
 /** Default probe: signal 0 checks existence without delivering a signal.
@@ -60,9 +67,27 @@ interface LockContents {
 	nonce?: string
 }
 
-function readLock(lockPath: string): LockContents | null {
+/** Link errors meaning "this filesystem has no hard links", not "the lock exists". */
+const HARD_LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EPERM"])
+
+/** The lock file's contents, or null when there is no file. A file that exists
+ *  but can't be read reads as empty, which parses as a corrupt lock. */
+function readRawLock(lockPath: string): string | null {
 	try {
-		const parsed: unknown = JSON.parse(readFileSync(lockPath, "utf-8"))
+		return readFileSync(lockPath, "utf-8")
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "ENOENT" ? null : ""
+	}
+}
+
+function readLock(lockPath: string): LockContents | null {
+	const raw = readRawLock(lockPath)
+	return raw === null ? null : parseLock(raw)
+}
+
+function parseLock(raw: string): LockContents | null {
+	try {
+		const parsed: unknown = JSON.parse(raw)
 		if (parsed && typeof parsed === "object") {
 			const pid = (parsed as { pid?: unknown }).pid
 			if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
@@ -76,7 +101,7 @@ function readLock(lockPath: string): LockContents | null {
 			}
 		}
 	} catch {
-		// Missing or unparseable — treated as an abandoned lock.
+		// Unparseable — treated as an abandoned lock.
 	}
 	return null
 }
@@ -84,12 +109,12 @@ function readLock(lockPath: string): LockContents | null {
 /**
  * Try to take the updater lock. Returns a handle when acquired, null when
  * another live session holds it. A lock whose owner is dead — or whose
- * contents are unparseable — is taken over: the stale file is removed and the
- * create is retried once. If two sessions race for the takeover, the O_EXCL
- * create decides; the loser gets null.
+ * contents are unparseable — is taken over: the stale file is claimed (see
+ * claimStaleLock) and the create is retried once. If two sessions race for the
+ * takeover, one wins and the loser gets null.
  *
  * Never throws: a broken filesystem must not stop the calling tick from
- * launching normally (callers treat null as "skip this tick" anyway).
+ * launching normally. It returns null, or a no-op handle with `allowUnavailable`.
  *
  * Note: killing a session mid-acquire can strand an `*.tmp` file in the
  * cache dir; callers ignore it (it is never linked into place).
@@ -100,19 +125,27 @@ export function acquireUpdaterLock(opts: AcquireOptions = {}): UpdaterLock | nul
 	const now = opts.now ?? Date.now
 
 	const heartbeatMs = opts.heartbeatMs ?? LOCK_HEARTBEAT_MS
+	const linkFile = opts.linkFile ?? linkSync
 
 	const tmpPath = `${lockPath}.${process.pid}.tmp`
 	for (let attempt = 0; attempt < 2; attempt++) {
+		// Kept apart from the publish below: mkdir also throws EEXIST when a file
+		// blocks the path, and only the publish's EEXIST means "the lock exists".
+		const owner: LockContents = { pid: process.pid, at: now(), nonce: randomUUID() }
+		const content = JSON.stringify(owner)
 		try {
 			mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 })
+			writeFileSync(tmpPath, content, { mode: 0o600 })
+		} catch {
+			return opts.allowUnavailable ? { release: () => {} } : null
+		}
+		try {
 			// Publish atomically: a bare create-then-write would leave an empty
 			// or truncated file a rival could read as an abandoned lock. Write a
 			// temp file, then hard-link it into place — link fails with EEXIST
 			// when the target exists, which is the same atomic O_EXCL guarantee
 			// but the file never appears half-written.
-			const owner: LockContents = { pid: process.pid, at: now(), nonce: randomUUID() }
-			writeFileSync(tmpPath, JSON.stringify(owner), { mode: 0o600 })
-			linkSync(tmpPath, lockPath)
+			publishExclusive(tmpPath, lockPath, content, linkFile)
 			rmSync(tmpPath, { force: true })
 			const stopHeartbeat = startHeartbeat(lockPath, owner, now, heartbeatMs)
 			return { release: () => releaseLock(lockPath, owner, stopHeartbeat) }
@@ -122,23 +155,78 @@ export function acquireUpdaterLock(opts: AcquireOptions = {}): UpdaterLock | nul
 			} catch {
 				// Best-effort cleanup.
 			}
-			if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null
-			const contents = readLock(lockPath)
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") return opts.allowUnavailable ? { release: () => {} } : null
+			const observed = readRawLock(lockPath)
+			// Gone already (the holder just released): the retry below decides.
+			if (observed === null) continue
+			const contents = parseLock(observed)
 			const held =
 				contents !== null &&
 				isPidAlive(contents.pid) &&
 				contents.at !== undefined &&
 				now() - contents.at < LOCK_STALE_MS
 			if (held) return null
-			// Stale (dead owner), corrupt, or aged out: remove and retry once.
-			try {
-				rmSync(lockPath, { force: true })
-			} catch {
-				return null
-			}
+			// Stale (dead owner), corrupt, or aged out: claim it and retry once.
+			if (!claimStaleLock(lockPath, observed, linkFile)) return null
 		}
 	}
 	return null
+}
+
+/** Create `lockPath` from `tmpPath`, failing with EEXIST if it already exists.
+ *  Filesystems without hard links fall back to an exclusive create, which keeps
+ *  the exclusion but can briefly expose an empty file to a rival's read. */
+function publishExclusive(
+	tmpPath: string,
+	lockPath: string,
+	content: string,
+	linkFile: NonNullable<AcquireOptions["linkFile"]>,
+): void {
+	try {
+		linkFile(tmpPath, lockPath)
+	} catch (err) {
+		if (!HARD_LINK_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) throw err
+		writeFileSync(lockPath, content, { flag: "wx", mode: 0o600 })
+	}
+}
+
+/**
+ * Remove a lock judged stale, without evicting a rival that replaced it after
+ * we read it. A plain delete can't tell the two apart: rename moves whatever is
+ * there now aside, then we compare it to what we judged. A mismatch means we
+ * took a live lock, so it goes back and we lose the race. The holder's heartbeat
+ * could read the file as missing during that instant and go quiet; its lock
+ * stays valid for the staleness window, far longer than any install step.
+ *
+ * Returns true when the caller may retry the create.
+ */
+function claimStaleLock(
+	lockPath: string,
+	observed: string,
+	linkFile: NonNullable<AcquireOptions["linkFile"]>,
+): boolean {
+	const claimPath = `${lockPath}.${process.pid}.${randomUUID()}.stale`
+	try {
+		renameSync(lockPath, claimPath)
+	} catch (err) {
+		// Already gone: a rival claimed it, and the create decides between us.
+		return (err as NodeJS.ErrnoException).code === "ENOENT"
+	}
+	try {
+		const claimed = readRawLock(claimPath)
+		if (claimed === observed) return true
+		if (claimed !== null) publishExclusive(claimPath, lockPath, claimed, linkFile)
+		return false
+	} catch {
+		// The restore lost to yet another session, which now holds the lock.
+		return false
+	} finally {
+		try {
+			rmSync(claimPath, { force: true })
+		} catch {
+			// Best-effort cleanup.
+		}
+	}
 }
 
 function releaseLock(lockPath: string, owner: LockContents, stopHeartbeat: () => void): void {

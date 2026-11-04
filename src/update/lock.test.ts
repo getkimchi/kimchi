@@ -2,10 +2,10 @@
 // session install at a time (see docs/auto-update.md). The seam is the
 // lock file on disk: observable, not implementation detail.
 
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { acquireUpdaterLock, LOCK_STALE_MS } from "./lock.js"
 
 let dir: string
@@ -69,6 +69,14 @@ describe("acquireUpdaterLock", () => {
 		lock?.release()
 	})
 
+	it("takes over a lock file it cannot read, such as one left by a sudo run", () => {
+		writeFileSync(lockPath, JSON.stringify({ pid: 12345, at: Date.now() }))
+		chmodSync(lockPath, 0o000)
+		const lock = acquireUpdaterLock({ lockPath, heartbeatMs: 0 })
+		expect(lock).not.toBeNull()
+		lock?.release()
+	})
+
 	it("release removes the lock file", () => {
 		const lock = acquireUpdaterLock({ lockPath })
 		lock?.release()
@@ -120,5 +128,69 @@ describe("acquireUpdaterLock", () => {
 		expect(readFileSync(lockPath, "utf-8")).toBe(stolen)
 		first?.release()
 		second?.release()
+	})
+
+	it("does not evict a rival that won the takeover after we judged the lock stale", () => {
+		writeFileSync(lockPath, JSON.stringify({ pid: 12345 }))
+		const rival = JSON.stringify({ pid: 67890, at: Date.now(), nonce: "rival" })
+		const lock = acquireUpdaterLock({
+			lockPath,
+			heartbeatMs: 0,
+			// The liveness probe runs between our read and our removal: the rival
+			// finishes its takeover in exactly that window.
+			isPidAlive: () => {
+				rmSync(lockPath)
+				writeFileSync(lockPath, rival)
+				return false
+			},
+		})
+		expect(lock).toBeNull()
+		expect(readFileSync(lockPath, "utf-8")).toBe(rival)
+		expect(readdirSync(dir)).toEqual(["updater.lock"])
+	})
+
+	it("leaves no claim files behind after taking over a stale lock", () => {
+		writeFileSync(lockPath, JSON.stringify({ pid: 12345 }))
+		const lock = acquireUpdaterLock({ lockPath, isPidAlive: () => false, heartbeatMs: 0 })
+		expect(lock).not.toBeNull()
+		expect(readdirSync(dir)).toEqual(["updater.lock"])
+		lock?.release()
+	})
+
+	it("still excludes rivals on a filesystem without hard links", () => {
+		const unsupported = vi.fn(() => {
+			throw Object.assign(new Error("link not supported"), { code: "ENOTSUP" })
+		})
+		const first = acquireUpdaterLock({ lockPath, linkFile: unsupported, heartbeatMs: 0 })
+		expect(first).not.toBeNull()
+		expect(unsupported).toHaveBeenCalledOnce()
+		expect(readdirSync(dir)).toEqual(["updater.lock"])
+		expect(acquireUpdaterLock({ lockPath, linkFile: unsupported, heartbeatMs: 0 })).toBeNull()
+		first?.release()
+	})
+})
+
+describe("acquireUpdaterLock when the lock file cannot be written", () => {
+	/** A path whose parent is a regular file, so every write fails with ENOTDIR. */
+	function unwritableLockPath(): string {
+		const blocker = join(dir, "blocker")
+		writeFileSync(blocker, "")
+		return join(blocker, "updater.lock")
+	}
+
+	it("returns null by default, so a tick skips", () => {
+		expect(acquireUpdaterLock({ lockPath: unwritableLockPath() })).toBeNull()
+	})
+
+	it("returns a usable handle with allowUnavailable, so a manual update can proceed", () => {
+		const lock = acquireUpdaterLock({ lockPath: unwritableLockPath(), allowUnavailable: true })
+		expect(lock).not.toBeNull()
+		expect(() => lock?.release()).not.toThrow()
+	})
+
+	it("still refuses with allowUnavailable when a live session holds the lock", () => {
+		const first = acquireUpdaterLock({ lockPath, heartbeatMs: 0 })
+		expect(acquireUpdaterLock({ lockPath, allowUnavailable: true })).toBeNull()
+		first?.release()
 	})
 })

@@ -271,6 +271,11 @@ describe("runManualUpdate — updater lock", () => {
 		expect(mockCheckForUpdate).not.toHaveBeenCalled()
 	})
 
+	it("does not let an unwritable lock file block a manual update", async () => {
+		await runManualUpdate()
+		expect(mockAcquireUpdaterLock).toHaveBeenCalledWith({ allowUnavailable: true })
+	})
+
 	it("releases the lock on the success path", async () => {
 		const release = vi.fn()
 		mockAcquireUpdaterLock.mockReturnValue({ release })

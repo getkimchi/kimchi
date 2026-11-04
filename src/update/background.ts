@@ -11,7 +11,7 @@ import {
 	type UpdateOutcome,
 	type UpdateResultRecord,
 } from "./state.js"
-import { applyUpdate, type CheckResult, checkForUpdate } from "./workflow.js"
+import { applyUpdate, type CheckResult, checkForUpdate, parseCanarySha7, readInstalledVersion } from "./workflow.js"
 
 export type TickOutcome = UpdateOutcome
 
@@ -33,6 +33,8 @@ export interface TickStore {
 	saveUpdateResult: (rec: Omit<UpdateResultRecord, "at">) => void
 	saveLastInstalled: (tag: string) => void
 	loadLastInstalled: () => { tag: string } | null
+	/** Version of the installed files on disk; null when unknown. */
+	loadInstalledVersion: () => string | null
 }
 
 export interface TickDeps {
@@ -72,7 +74,12 @@ function errorMessage(err: unknown): string {
  * meaningful outcome anyway.
  */
 export async function runUpdateTick(deps: TickDeps): Promise<TickResult> {
-	const store: TickStore = deps.store ?? { saveUpdateResult, saveLastInstalled, loadLastInstalled }
+	const store: TickStore = deps.store ?? {
+		saveUpdateResult,
+		saveLastInstalled,
+		loadLastInstalled,
+		loadInstalledVersion: readInstalledVersion,
+	}
 	const acquire = deps.acquireLock ?? (() => acquireUpdaterLock())
 	const lock = acquire()
 	if (lock === null) return { outcome: "skipped-lock" }
@@ -109,6 +116,11 @@ function safeSave(store: TickStore, result: TickResult): void {
 
 async function computeTick(deps: TickDeps & { store: TickStore }): Promise<TickResult> {
 	const store = deps.store
+	// The gates only see this session's running version. A stable session left
+	// open must not replace a canary the user has since installed elsewhere.
+	const installedVersion = store.loadInstalledVersion()
+	if (installedVersion !== null && parseCanarySha7(installedVersion) !== null) return { outcome: "no-update" }
+
 	const check = deps.checkForUpdate ?? checkForUpdate
 	let checkResult: CheckResult
 	try {
@@ -129,8 +141,13 @@ async function computeTick(deps: TickDeps & { store: TickStore }): Promise<TickR
 	// Dedup: this session's own version is process-lifetime cached (the
 	// install applies to the NEXT launch), so hasUpdate stays true even
 	// right after this machine installed exactly this release in another
-	// session. Compare against the recorded last-installed tag instead.
-	if (store.loadLastInstalled()?.tag === checkResult.tag) return { outcome: "no-update" }
+	// session. Compare against the recorded last-installed tag instead, and
+	// confirm it against the files on disk: an external installer can put an
+	// older version back, and the record alone would then block this release.
+	const alreadyInstalled =
+		store.loadLastInstalled()?.tag === checkResult.tag &&
+		(installedVersion === null || installedVersion.replace(/^v/, "") === checkResult.tag.replace(/^v/, ""))
+	if (alreadyInstalled) return { outcome: "no-update" }
 
 	try {
 		await (deps.applyUpdate ?? applyUpdate)({ tag: checkResult.tag, signal: deps.signal })

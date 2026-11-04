@@ -2,10 +2,12 @@ import { homedir } from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
+import { getParsedCliArgs } from "../cli-args.js"
 import { IS_ACP_MODE } from "../modes/acp/state.js"
 import { refreshBridge } from "../update/install.js"
 import { isHomebrewInstall, stableExecutablePath } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting, markAutoUpdateNoticeShown } from "../update/settings.js"
+import { isUpdateCheckDisabled } from "../update/state.js"
 import { checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 
@@ -57,7 +59,14 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 		// side effect of the old on-launch path must survive: brew upgrade swaps
 		// the binary without `kimchi update`, which refreshes the bundled
 		// work-reporting plugins elsewhere. Idempotent — a no-op once they match.
-		if (isHomebrewInstall()) {
+		// Same exclusions as that path: TUI sessions only, and not when updates
+		// are switched off.
+		if (
+			isHomebrewInstall() &&
+			ctx.mode === "tui" &&
+			!isUpdateCheckDisabled() &&
+			getParsedCliArgs().options["no-auto-update"] !== true
+		) {
 			try {
 				refreshBridge(resolveAuxiliaryFilesDir(process.env, homedir(), process.execPath), stableExecutablePath())
 			} catch (err) {
@@ -78,7 +87,9 @@ export default function startupUpdateExtension(pi: ExtensionAPI) {
 				// opt out. Excluded in ACP (see the extension comment above) —
 				// IS_ACP_MODE is checked first so ACP sessions never even read
 				// the notice flag.
-				if (!IS_ACP_MODE && !loadAutoUpdateNoticeShown()) {
+				// --no-auto-update skips it too: nothing updates this session, so the
+				// announcement waits for one where it's true.
+				if (!IS_ACP_MODE && getParsedCliArgs().options["no-auto-update"] !== true && !loadAutoUpdateNoticeShown()) {
 					pi.appendEntry(AUTO_UPDATE_NOTICE_ENTRY, AUTO_UPDATE_NOTICE)
 					markAutoUpdateNoticeShown()
 				}
