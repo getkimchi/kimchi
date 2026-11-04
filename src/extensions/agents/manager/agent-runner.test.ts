@@ -126,6 +126,8 @@ vi.mock("../../../config.js", () => ({
 		apiKey: "",
 	}),
 	resolveEndpoints: vi.fn(() => ({ platformApiUrl: "https://policy.test" })),
+	// agent-runner reads the pinned `language` for replace-mode prompts.
+	loadConfig: vi.fn(() => ({})),
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
