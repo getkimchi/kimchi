@@ -41,16 +41,16 @@
  },
  "resume": {
   "load_instr": {
-   "budget_note": "resume of a large compacted session (v1.11 was 3-9x)",
-   "limit": 47471764770
+   "budget_note": "resume of a large compacted session (v1.11 was 3-9x) \u2014 INTERIM: ~55G measured with expanded-thinking history in the 31MB session; INTERIM, chunk 6 recalibrates",
+   "limit": 80000000000.0
   },
   "peak_mem_mb": {
-   "budget_note": "retained-history memory (whole tree)",
-   "limit": 750
+   "budget_note": "retained-history memory (whole tree) \u2014 INTERIM: ~990MB measured with expanded-thinking history; INTERIM, chunk 6 recalibrates",
+   "limit": 1200.0
   },
   "turn_instr": {
-   "budget_note": "first turn after resume; render of pre-compaction history",
-   "limit": 3845128019
+   "budget_note": "first turn after resume; render of pre-compaction history \u2014 INTERIM: ~47G measured: first-turn render carries the expanded thinking view of the large session; INTERIM, chunk 6 recalibrates",
+   "limit": 80000000000.0
   }
  },
  "session": {
@@ -63,8 +63,8 @@
    "limit": 500000000000
   },
   "peak_mem_mb": {
-   "budget_note": "memory ceiling of one ordinary session (whole tree)",
-   "limit": 287
+   "budget_note": "memory ceiling of one ordinary session (whole tree) \u2014 INTERIM: ~500MB measured with the expanded-thinking fixture (hideThinkingBlock=false from the THINK lane); INTERIM above measured master-era, chunk 6 recalibrates",
+   "limit": 600.0
   },
   "think_instr": {
    "budget_note": "renderer work for a streaming step-shaped thinking turn (#1645 class); INTERIM = generous head above measured master-era ~172G until #1645 merges; chunk 6 tightens",
