@@ -160,6 +160,16 @@ export interface PermissionToolDecisionPayload {
 	}
 }
 
+/** Compile-time exhaustiveness guard: a ModeChangeReason union member that is
+ *  not listed in MODE_CHANGE_REASON_VALUES fails this assignment — the
+ *  telemetry filter can never silently drop a new reason. */
+const _ALL_MODE_CHANGE_REASONS_LISTED: Exclude<
+	ModeChangeReason,
+	(typeof MODE_CHANGE_REASON_VALUES)[number]
+> extends never
+	? true
+	: never = true
+
 /** Runtime-validated ModeChangeReason vocabulary — consumers (telemetry)
  *  use it to drop out-of-contract values before export. */
 export const MODE_CHANGE_REASON_VALUES: readonly ModeChangeReason[] = [

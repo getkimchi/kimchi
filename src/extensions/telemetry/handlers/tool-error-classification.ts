@@ -85,19 +85,32 @@ function cap(value: string): string {
 }
 
 const EDIT_TOOLS = new Set(["edit", "multiedit", "patch"])
+/** write + edit — the tools the plan-persona and bundled-skills gates serve. */
+const WRITE_EDIT_TOOLS = new Set(["write", "edit", "multiedit", "patch"])
 const PATH_TOOLS = new Set(["find", "grep", "ls"])
 
 // ---------------------------------------------------------------------------
 // Bash terminal status
 // ---------------------------------------------------------------------------
 
-/** Last non-empty line of the result text — where upstream bash appends the
- *  terminal status after the command output (separated by blank lines). */
-function lastNonEmptyLine(msg: string): string {
+/**
+ * Terminal-status candidate line: the last non-empty line, skipping the
+ * subagent budget-clamp's annotation note. The clamp appends its note as an
+ * extra text block AFTER the terminal status (subagent-bash-clamp.ts), so
+ * the note — not the status — is the text's last line. Both note variants
+ * are harness-owned openers (verified against budgetNote/BUDGET_EXHAUSTED_NOTE):
+ * "You have reached your wall-clock time budget…" / "You are close to your
+ * wall-clock time budget…".
+ */
+const CLAMP_NOTE_PATTERN = /^You (?:have reached|are close to) your wall-clock time budget/
+
+function statusCandidateLine(msg: string): string {
 	const lines = msg.split("\n")
 	for (let i = lines.length - 1; i >= 0; i--) {
 		const t = lines[i].trim()
-		if (t) return t
+		if (!t) continue
+		if (CLAMP_NOTE_PATTERN.test(t)) continue
+		return t
 	}
 	return ""
 }
@@ -109,9 +122,17 @@ function lastNonEmptyLine(msg: string): string {
  * exit code is classified by its execution result, never by its output. A
  * command can print arbitrary gate text; we never infer a block from output
  * when a real terminal status is present.
+ *
+ * Residual ambiguity (documented, not fixable from strings): a command whose
+ * output ends with a status-shaped line (e.g. `echo "Command exited with code
+ * 42"`) on a throw path where the harness appended no real status is
+ * attributed that code. The last-line anchor trusts harness-appended statuses
+ * in both directions — a real appended status always wins, but echoed status
+ * text can fabricate an exit code. The error direction is safe: a real error
+ * is never dropped, it is merely mislabeled as a command outcome.
  */
 function classifyBashTerminalStatus(fullMsg: string): ToolErrorClassification | undefined {
-	const last = lastNonEmptyLine(fullMsg)
+	const last = statusCandidateLine(fullMsg)
 	if (!last) return undefined
 	const exit = last.match(/^Command exited with code (\d+)$/)
 	if (exit) {
@@ -161,13 +182,21 @@ function classifyBashTerminalStatus(fullMsg: string): ToolErrorClassification | 
  * blocked call produced no output.
  */
 function classifyBashGate(fullMsg: string): ToolErrorClassification | undefined {
+	// Current guard (bash-tool-guard.ts BLOCK_REASON_BASE); the matched
+	// command segment is dropped from the canonical message.
+	if (fullMsg.startsWith("Bash-tool guard: blocked backgrounding")) {
+		return { kind: "blocked", message: "Bash guard: backgrounding" }
+	}
+	// Old-format guard from pre-rename builds (kept for mixed-version traffic).
 	if (fullMsg.startsWith("Blocked: this Bash call contains ")) {
 		return { kind: "blocked", message: "Bash guard: complex command" }
 	}
 	if (
 		fullMsg.startsWith("Command blocked by rule: ") ||
 		fullMsg.startsWith("Hard-blocked program in command: ") ||
-		fullMsg.startsWith("Denied by rule ")
+		fullMsg.startsWith("Denied by rule ") ||
+		fullMsg.startsWith("Subcommand blocked by rule: ") ||
+		fullMsg === "Subcommand denied"
 	) {
 		return { kind: "blocked", message: "Bash command blocked by rule" }
 	}
@@ -178,17 +207,22 @@ function classifyBashGate(fullMsg: string): ToolErrorClassification | undefined 
 // Classifier fail-closed gate
 // ---------------------------------------------------------------------------
 
-const CLASSIFIER_PREFIX = "Classifier: classifier "
+const CLASSIFIER_PREFIX = "Classifier: "
 const NO_UI_SUFFIX = " (no UI to confirm)"
 
 /**
  * The auto-mode classifier's fail-closed rejection (permissions/index.ts):
- * `Classifier: <reason> (no UI to confirm)` where reason comes from
- * permissions/classifier.ts — `classifier error: <msg> (model=X [tool=Y])`,
- * `classifier timeout (model=X [tool=Y])`, or `classifier budget exhausted`.
+ * `Classifier: <reason> (no UI to confirm)` — the wrapper is matched via its
+ * harness-owned prefix AND suffix, so ANY reason text is covered, not just the
+ * ones that start with "classifier": provider errors, timeouts, budget
+ * exhaustion, invalid/unparseable output, free-text model reasons
+ * (classifier.ts json.reason), and "no model available for classifier".
  *
  * The rate-limit window timestamp embedded in provider error text is dropped;
- * availability stays observable via the bounded `failure_code`.
+ * availability stays observable via the bounded `failure_code`. Model/tool
+ * attribution is extracted only from the strict "(model=X [tool=Y])" tail —
+ * ids never contain spaces, so diagnostic-laden reasons yield no attr
+ * rather than a polluted one.
  */
 function classifyClassifierGate(fullMsg: string): ToolErrorClassification | undefined {
 	if (!fullMsg.startsWith(CLASSIFIER_PREFIX)) return undefined
@@ -196,14 +230,18 @@ function classifyClassifierGate(fullMsg: string): ToolErrorClassification | unde
 	if (reason.endsWith(NO_UI_SUFFIX)) reason = reason.slice(0, -NO_UI_SUFFIX.length)
 
 	const attrs: Record<string, string | number> = {}
-	const modelTool = reason.match(/\(model=([^()]*?)(?: tool=([^()]*?))?\)\s*$/)
+	const modelTool = reason.match(/\(model=([^\s()]+)(?: tool=([^\s()]+))?\)\s*$/)
 	if (modelTool) {
 		if (modelTool[1]) attrs.classifier_model = cap(modelTool[1])
 		if (modelTool[2]) attrs.classifier_tool = cap(modelTool[2])
 	}
+	// Bounded failure code from the reason's leading phrase (the structured
+	// reasons carry a "classifier " head word; free-text and no-candidates
+	// reasons do not — both map to "other").
 	let failureCode: "rate_limited" | "timeout" | "budget_exhausted" | "other"
-	if (reason.startsWith("budget exhausted")) failureCode = "budget_exhausted"
-	else if (reason.startsWith("timeout")) failureCode = "timeout"
+	const body = reason.startsWith("classifier ") ? reason.slice("classifier ".length) : reason
+	if (body.startsWith("budget exhausted")) failureCode = "budget_exhausted"
+	else if (body.startsWith("timeout")) failureCode = "timeout"
 	else if (/rate limited/i.test(reason)) failureCode = "rate_limited"
 	else failureCode = "other"
 	attrs.failure_code = failureCode
@@ -257,7 +295,9 @@ function classifyReadError(fullMsg: string): ToolErrorClassification | undefined
 function classifyPathError(fullMsg: string): ToolErrorClassification | undefined {
 	const m = fullMsg.match(/^(?:Path not found|Not a directory): (.+)$/)
 	if (!m) return undefined
-	return { kind: "model_mistake", message: "Read path not found", attrs: { file_hash: hashFilePath(m[1]) } }
+	// Distinct from the read family's canonical message — these producers
+	// (find/grep/ls path probing) are not the read tool.
+	return { kind: "model_mistake", message: "Path not found", attrs: { file_hash: hashFilePath(m[1]) } }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +356,18 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 		return { kind: "blocked", message: "Background bash decision pending" }
 	}
 
+	// Headless fail-closed: no prompter surface exists (permissions handleConfirm
+	// / handleCompoundConfirm).
+	if (msg === "No UI to confirm permission") {
+		return { kind: "blocked", message: "No UI to confirm" }
+	}
+
+	// Resource-disabled gate (resources/tool-blocker.ts) — the tool name and
+	// resource id are dropped; the canonical message is the signal.
+	if (/ is disabled in Kimchi resources\. Enable /.test(msg)) {
+		return { kind: "blocked", message: "Resource disabled" }
+	}
+
 	const classifier = classifyClassifierGate(msg)
 	if (classifier) return classifier
 
@@ -348,7 +400,16 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 	}
 
 	// Tool-scoped families.
-	if (EDIT_TOOLS.has(toolName)) {
+	if (WRITE_EDIT_TOOLS.has(toolName)) {
+		// Plan persona path-scope gate (permissions/index.ts): the rejected
+		// absolute path is dropped.
+		if (msg.startsWith("Plan persona: ")) {
+			return { kind: "blocked", message: "Plan persona gate" }
+		}
+		// Bundled skills directory write deny (permissions/index.ts).
+		if (msg.startsWith("Blocked: ") && msg.includes(" inside the bundled skills directory")) {
+			return { kind: "blocked", message: "Bundled skills directory gate" }
+		}
 		const edit = classifyEditError(msg)
 		if (edit) return edit
 	}

@@ -29,10 +29,12 @@ export const METRICS_FLUSH_INTERVAL_MS = 30_000
 export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
 // Attributes dropped from AMBIENT events while a ferment v2 is active: the
-// ferment's message content is not exported for v2 sessions. Covers the
-// raw error heads (`error_message`/`error.message`) and the tool_outcome
-// `message` so no alternate raw attribute bypasses the suppression.
-const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message", "message"])
+// ferment's message content is not exported for v2 sessions. The raw error
+// heads (`error_message`/`error.message`) drop from every event (historical
+// behavior); the tool_outcome `message` (classification-derived, raw on the
+// fallback path) is scoped to that event name only, so a future event using a
+// top-level `message` attribute is not silently stripped.
+const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
 
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators
@@ -312,7 +314,12 @@ export class TelemetryContext {
 		const fermentV2 = this.fermentV2Context
 		const eventAttrs: TelemetryAttributes =
 			fermentV2 && attrs
-				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
+				? Object.fromEntries(
+						Object.entries(attrs).filter(
+							([key]) =>
+								!V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key) && !(eventName === "tool_outcome" && key === "message"),
+						),
+					)
 				: { ...(attrs ?? {}) }
 		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
 		const parentAttr = this.getParentSessionAttribute()

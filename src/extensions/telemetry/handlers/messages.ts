@@ -197,6 +197,14 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 	if (classification.kind === "command_outcome" || classification.kind === "aborted") return
 
 	if (classification.kind === "failure") {
+		// Deliberate asymmetry vs the tool_outcome path below: a failure is
+		// still emitted twice when it ends the run — per-call `tool_failure`
+		// plus this run-final `agent_error` — matching pre-PR behavior. They
+		// are distinguishable downstream via error_type, and agent_error is a
+		// run-shape signal ("the run ended badly"), not a second count of the
+		// same error. tool_outcome had to be deduped because both paths emit
+		// the identical event name; deduping here too is a follow-up if the
+		// funnel wants single-count failures.
 		tm.emit(
 			"error",
 			{

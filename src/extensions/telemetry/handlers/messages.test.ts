@@ -596,6 +596,34 @@ describe("handleAgentEnd", () => {
 		expect(emitSpy).not.toHaveBeenCalled()
 	})
 
+	it("emits no agent_error for a run ending on a clamp-annotated timeout", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		// Realistic clamped-timeout text: terminal status followed by the
+		// clamp's budget-note block. The run-final path must treat it as the
+		// execution outcome it is — not a raw agent_error with the note text.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId: "tc-clamp-final",
+					isError: true,
+					content: [
+						{ type: "text", text: "Command timed out after 1 seconds" },
+						{
+							type: "text",
+							text: "You have reached your wall-clock time budget. The command above was killed by the harness time limit — not because the command was slow. Do not retry commands.",
+						},
+					],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
 	it("emits tool_outcome (not agent_error) for a run ending on a gate", () => {
 		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
 		const emitSpy = vi.spyOn(ctx, "emit")

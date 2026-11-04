@@ -305,3 +305,126 @@ describe("classifyToolError — producer contract (bash-background terminal stat
 		expect(c.message).toBe("Command killed by harness safety limit")
 	})
 })
+
+describe("classifyToolError — clamp-annotated terminal statuses", () => {
+	it("resolves the timeout status when the budget note follows it (real note text)", () => {
+		const c = classifyToolError(
+			"bash",
+			"npm test\n\nCommand timed out after 1 seconds\nYou have reached your wall-clock time budget. The command above was killed by the harness time limit — not because the command was slow. Run only commands that finish within a second (commit your work, write out results) or reply with your final summary now. Do not retry commands.",
+		)
+		expect(c.kind).toBe("command_outcome")
+		const outcome = asCommandOutcome(c)
+		expect(outcome.commandOutcome).toBe("timeout")
+		expect(c.attrs?.timeout_seconds).toBe(1)
+		expect(c.exitCode).toBeUndefined()
+	})
+
+	it("resolves the timeout status under the close-to-budget note variant", () => {
+		const c = classifyToolError(
+			"bash",
+			"output\n\nCommand timed out after 5 seconds\nYou are close to your wall-clock time budget — roughly 30s remain. Commands that take longer will be killed. Finish the change in progress or summarize your progress for the orchestrator now.",
+		)
+		expect(c.kind).toBe("command_outcome")
+		expect(asCommandOutcome(c).commandOutcome).toBe("timeout")
+		expect(c.attrs?.timeout_seconds).toBe(5)
+	})
+})
+
+describe("classifyToolError — classifier gate free-text variants", () => {
+	it("canonicalizes a free-text model reason wrapped by the no-UI gate", () => {
+		const c = classifyToolError(
+			"bash",
+			"Classifier: this command appears to modify files outside the workspace (no UI to confirm)",
+		)
+		expect(c.kind).toBe("blocked")
+		expect(c.message).toBe("Classifier unavailable — fail closed")
+		expect(c.attrs?.failure_code).toBe("other")
+		expect(c.attrs?.classifier_model).toBeUndefined()
+	})
+
+	it("canonicalizes the no-candidates reason", () => {
+		const c = classifyToolError(
+			"bash",
+			"Classifier: no model available for classifier (no_candidates) (no UI to confirm)",
+		)
+		expect(c.kind).toBe("blocked")
+		expect(c.attrs?.failure_code).toBe("other")
+	})
+
+	it("omits the model attribute when the tail is diagnostic-laden rather than a model id", () => {
+		const c = classifyToolError(
+			"bash",
+			"Classifier: classifier returned unparseable output (model=kimi stopReason=stop text=garbage) (no UI to confirm)",
+		)
+		expect(c.kind).toBe("blocked")
+		expect(c.message).toBe("Classifier unavailable — fail closed")
+		// The strict (model=X tool=Y) extractor refuses space-laden tails:
+		// no attr is better than a polluted one.
+		expect(c.attrs?.classifier_model).toBeUndefined()
+		expect(c.attrs?.failure_code).toBe("other")
+	})
+})
+
+describe("classifyToolError — current-version gates", () => {
+	it("canonicalizes the current bash-tool-guard backgrounding block (segment dropped)", () => {
+		const c = classifyToolError(
+			"bash",
+			"Bash-tool guard: blocked backgrounding (sleep 60 &) after a warning in this session. Use bash_control stop_handles. To override, disable the bash-tool-guard extension in resource settings.",
+		)
+		expect(c.kind).toBe("blocked")
+		expect(c.message).toBe("Bash guard: backgrounding")
+		expect(JSON.stringify(c)).not.toContain("sleep 60")
+	})
+
+	it("canonicalizes subcommand rule blocks and the bare fallback", () => {
+		const blocked = classifyToolError("bash", "Subcommand blocked by rule: rm -rf /tmp/scratch")
+		expect(blocked.kind).toBe("blocked")
+		expect(blocked.message).toBe("Bash command blocked by rule")
+		const denied = classifyToolError("bash", "Subcommand denied")
+		expect(denied.kind).toBe("blocked")
+		expect(denied.message).toBe("Bash command blocked by rule")
+	})
+
+	it("canonicalizes the plan-persona and bundled-skills write gates (path dropped)", () => {
+		const persona = classifyToolError(
+			"edit",
+			'Plan persona: edit is restricted to .kimchi/plans/ files. The path "/Users/me/src/app.ts" is outside that scope.',
+		)
+		expect(persona.kind).toBe("blocked")
+		expect(persona.message).toBe("Plan persona gate")
+		expect(JSON.stringify(persona)).not.toContain("/Users/me")
+
+		const skills = classifyToolError(
+			"write",
+			"Blocked: write inside the bundled skills directory is not allowed — it is the trust anchor for auto-allowed skill commands.",
+		)
+		expect(skills.kind).toBe("blocked")
+		expect(skills.message).toBe("Bundled skills directory gate")
+	})
+
+	it("does not apply the write/edit gates to other tools", () => {
+		const c = classifyToolError(
+			"bash",
+			'Plan persona: edit is restricted to .kimchi/plans/ files. The path "/Users/me/src/app.ts" is outside that scope.',
+		)
+		expect(c.kind).toBe("failure")
+	})
+
+	it("canonicalizes the resource-disabled and no-UI gates", () => {
+		const resource = classifyToolError(
+			"codemode",
+			"codemode is disabled in Kimchi resources. Enable codemode from /resources.",
+		)
+		expect(resource.kind).toBe("blocked")
+		expect(resource.message).toBe("Resource disabled")
+
+		const noUi = classifyToolError("bash", "No UI to confirm permission")
+		expect(noUi.kind).toBe("blocked")
+		expect(noUi.message).toBe("No UI to confirm")
+	})
+
+	it("uses a tool-neutral canonical message for the find/grep/ls path family", () => {
+		const c = classifyToolError("find", "Path not found: /Users/me/missing")
+		expect(c.message).toBe("Path not found")
+	})
+})

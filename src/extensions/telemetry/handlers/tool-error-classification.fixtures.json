@@ -300,7 +300,7 @@
 		"message": "Path not found: /Users/dainius/.local/shared",
 		"expect": {
 			"kind": "model_mistake",
-			"message": "Read path not found"
+			"message": "Path not found"
 		}
 	},
 	{
@@ -308,7 +308,7 @@
 		"message": "Not a directory: /Users/anand.v/Workspace/Checks/Checks.xcodeproj/project.xcproj",
 		"expect": {
 			"kind": "model_mistake",
-			"message": "Read path not found"
+			"message": "Path not found"
 		}
 	},
 	{
@@ -381,6 +381,102 @@
 		"expect": {
 			"kind": "blocked",
 			"message": "Background bash decision pending"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "output\n\nCommand timed out after 1 seconds\nYou have reached your wall-clock time budget. The command above was killed by the harness time limit — not because the command was slow. Run only commands that finish within a second (commit your work, write out results) or reply with your final summary now. Do not retry commands.",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command timed out"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "output\n\nCommand timed out after 5 seconds\nYou are close to your wall-clock time budget — roughly 30s remain. Commands that take longer will be killed. Finish the change in progress or summarize your progress for the orchestrator now.",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command timed out"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Bash-tool guard: blocked backgrounding (sleep 60 &) after a warning in this session. Use bash_control stop_handles. To override, disable the bash-tool-guard extension in resource settings.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash guard: backgrounding"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Subcommand blocked by rule: rm -rf /tmp/scratch",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash command blocked by rule"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Subcommand denied",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash command blocked by rule"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Plan persona: edit is restricted to .kimchi/plans/ files. The path \"/Users/me/src/app.ts\" is outside that scope.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Plan persona gate"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Blocked: write inside the bundled skills directory is not allowed — it is the trust anchor for auto-allowed skill commands.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bundled skills directory gate"
+		}
+	},
+	{
+		"tool": "codemode",
+		"message": "codemode is disabled in Kimchi resources. Enable codemode from /resources.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Resource disabled"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "No UI to confirm permission",
+		"expect": {
+			"kind": "blocked",
+			"message": "No UI to confirm"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Classifier: this command appears to modify files outside the workspace (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Classifier: no model available for classifier (no_candidates) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Classifier: classifier returned unparseable output (model=kimi stopReason=stop text=garbage) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
 		}
 	},
 	{

@@ -401,11 +401,21 @@ describe("handlers/tools", () => {
 			// The clamp channel handler records the id before the tool executes.
 			ctx.clampedBashCalls.add(toolCallId)
 
+			// The clamp appends its budget note AFTER the terminal status (an extra
+			// text block), so this is the text telemetry actually receives.
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 5" } })
 			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: true,
-				result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
+				result: {
+					content: [
+						{ type: "text", text: "Command timed out after 1 seconds" },
+						{
+							type: "text",
+							text: "You have reached your wall-clock time budget. The command above was killed by the harness time limit — not because the command was slow. Run only commands that finish within a second (commit your work, write out results) or reply with your final summary now. Do not retry commands.",
+						},
+					],
+				},
 			})
 
 			ctx.flushLogBuffer()
@@ -420,6 +430,7 @@ describe("handlers/tools", () => {
 			const cmdExec = events.find((e) => e.eventName === "command_executed")
 			expect(cmdExec).toBeDefined()
 			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
+			expect(cmdExec?.attrs.timeout_seconds).toBe("1")
 			expect(cmdExec?.attrs.exit_code).toBeUndefined()
 			// …but not as an error — subagent.bash_clamped already reports the clamp.
 			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
@@ -434,15 +445,24 @@ describe("handlers/tools", () => {
 			ctx.clampedBashCalls.add(toolCallId)
 
 			// Upstream appends the timeout status AFTER the command output; a
-			// verbose command pushes it past the 300-char telemetry truncation.
-			// The clamp match must run against the full text, not the truncated
-			// message, or this emits a spurious tool_failure.
+			// verbose command pushes it past the 300-char telemetry truncation,
+			// and the clamp appends its budget note after the status. The match
+			// must run against the full text, not the truncated message, or this
+			// emits a spurious tool_failure.
 			const verboseOutput = "x".repeat(400)
 			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "verbose" } })
 			handleToolExecutionEnd(ctx, piCtx, {
 				toolCallId,
 				isError: true,
-				result: { content: [{ type: "text", text: `${verboseOutput}\n\nCommand timed out after 1 seconds` }] },
+				result: {
+					content: [
+						{ type: "text", text: `${verboseOutput}\n\nCommand timed out after 1 seconds` },
+						{
+							type: "text",
+							text: "You are close to your wall-clock time budget — roughly 30s remain. Commands that take longer will be killed. Finish the change in progress or summarize your progress for the orchestrator now.",
+						},
+					],
+				},
 			})
 
 			ctx.flushLogBuffer()
@@ -450,6 +470,8 @@ describe("handlers/tools", () => {
 			const events = parseLogEvents(fetchMock)
 
 			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
 		})
 
 		it("still emits the error record for a non-timeout failure on a clamped call", async () => {
