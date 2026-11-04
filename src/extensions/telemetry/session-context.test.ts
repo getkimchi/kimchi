@@ -22,6 +22,14 @@ vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
 }))
 
+// Partial mock: only the version seam differs from the real module, so the
+// cli_version assertions can distinguish the detected version from the
+// package-dir version ("dev" in this environment).
+vi.mock("../../utils.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../utils.js")>()),
+	getDetectedVersion: vi.fn(() => "9.9.9-dev"),
+}))
+
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
 	return {
 		enabled: true,
@@ -391,6 +399,29 @@ describe("SessionContext", () => {
 		expect(changeAttrs.previous_session_type).toBe("coding")
 		expect(changeAttrs.ferment_id).toBe("f-1")
 		expect(changeAttrs.source).toBe("cli")
+		// the type_changed record reports the detected version, not the package-dir one
+		expect(changeAttrs["telemetry.cli_version"]).toBe("9.9.9-dev")
+	})
+
+	it("reports the detected version on every emitted event's telemetry.cli_version", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const record = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		const attrs = Object.fromEntries(
+			record.attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		// the detected version — not the package-dir version (the real
+		// getVersion() reports "dev" in this environment)
+		expect(attrs["telemetry.cli_version"]).toBe("9.9.9-dev")
 	})
 
 	it("prefers active Ferment V2 attribution over legacy Ferment on ambient events", async () => {
