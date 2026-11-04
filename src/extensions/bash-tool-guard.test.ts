@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pure-function unit tests for bash-tool-guard.ts: command classification,
  * the BashToolGuard class, and description-override helpers.
@@ -888,3 +893,4 @@ describe("bashToolGuardExtension — stat-gated settings reads", () => {
 		expect(settingsReads.count).toBe(2)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

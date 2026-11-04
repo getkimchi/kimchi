@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { reconstructToolMetadata, serializeTools } from "pi-mcp-adapter/metadata-cache"
 import type { McpTool, ServerCacheEntry, ServerEntry, ToolPrefix } from "pi-mcp-adapter/types"
 import { describe, expect, it } from "vitest"
@@ -84,3 +89,4 @@ describe("MCP UI disable: discovery and cache", () => {
 		expect(metadata.some((tool) => tool.originalName === "plain")).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

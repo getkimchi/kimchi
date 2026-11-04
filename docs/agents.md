@@ -287,3 +287,4 @@ to work still running on the worker, or restores a saved result and its completi
 menu. Finished output is persisted as `remote_run:state` with `completionPending`
 and `result` until the menu is handled. Plain remote sessions are retired after
 the menu, or after returning a foreground result; PR-intent sessions follow their review, steer, and terminal-action lifecycle.
+<!-- DUMB TEST CHANGE (LLM-4329) — filler comment -->

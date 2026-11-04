@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import "../integrations/gsd2.js" // side-effect: register integration
 import { byId } from "../integrations/registry.js"
 import { popScope, prepareTool } from "./_helpers.js"
@@ -21,3 +26,6 @@ export async function runGsd2(args: string[]): Promise<number> {
 		return 1
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

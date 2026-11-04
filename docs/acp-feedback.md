@@ -151,3 +151,4 @@ at the same 300-character boundary on both channels.
   in-memory window a fresh settle arms, so a reloaded conversation rates
   without waiting for a new turn; the TUI's resume arms the same window, so
   its rating shortcuts work for the restored reply.
+<!-- DUMB TEST CHANGE (LLM-4329) — filler comment -->

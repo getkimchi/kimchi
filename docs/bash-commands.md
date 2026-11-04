@@ -68,3 +68,4 @@ The Bash tool accepts an optional short `description` alongside `command`. The d
 Automatic exit results arrive as one compact notification per delivery boundary: exits landing within a short window of each other batch into a single message that carries every terminal result, error, and output. A notice reports only what ended — cohort status belongs to inspection — and an outcome reads as pending until its notification has been acknowledged in the conversation.
 
 See the [design research](research/bash-visibility.md) for the prior behavior, alternatives and integration rationale.
+<!-- DUMB TEST CHANGE (LLM-4329) — filler comment -->

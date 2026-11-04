@@ -110,3 +110,6 @@ Semantics:
 - Unit tests: `src/modes/acp/server.test.ts`
   ("KimchiAcpAgent post-compaction usage_update"); e2e:
   `tests/e2e/acp/compaction.test.ts`
+
+
+

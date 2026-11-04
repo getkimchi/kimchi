@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Persistence for the harness auto-update toggle.
 //
 // Auto-update state lives in its OWN file (auto-update.json), separate
@@ -86,3 +91,4 @@ export function markAutoUpdateNoticeShown(): void {
 	const next = { ...readState(path), autoUpdateNoticeShown: true }
 	writeJson(path, next)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
