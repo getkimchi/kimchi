@@ -3,7 +3,7 @@
 b641e0244c7cce95729e20ebf291a9a1926b0c02
 
 # #1645 head — the thinking-stall fix.
-26d7b39841980fc9b3219b8e25dfdf8d52aa64f2
+288112f759d54c7ce3921f4070e3ba8880c4fb47
 
 # resume-turn drift hunt (C..G, 6 commits): does the +11% start at
 # redaction events telemetry or the redact rework?
