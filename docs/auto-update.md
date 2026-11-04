@@ -16,7 +16,8 @@ updates themselves.
 One tick (`runUpdateTick`, `src/update/background.ts`):
 
 1. **Take the updater lock.** If another session holds it, the tick returns
-   `skipped-lock` — the winner's in-place install covers the whole machine.
+   `skipped-lock` and persists nothing — the winner records the meaningful
+   outcome, and a lock-less write could clobber the winner's record.
 2. **Check** GitHub releases via `checkForUpdate`, honoring the shared
    30-minute cache, so N open sessions still mean at most one check per
    machine per 30 minutes.
@@ -29,8 +30,7 @@ One tick (`runUpdateTick`, `src/update/background.ts`):
    (`vendor`/`bridge`) swap mid-session; Windows rotates `kimchi.exe.old`.
 5. **Record** the outcome (the update result) and, after a successful
    install, the last-installed tag — both persisted while the lock is still
-   held. Each finished tick also emits an `update:tick-finished` fact on the
-   internal events bus (the OTLP translation lives in the telemetry stack).
+   held.
 
 A successful install stops the session's tick loop: this session has nothing
 more to do — the next launch is the new version.
@@ -69,18 +69,29 @@ Homebrew) keep the existing `Update available! Run kimchi update` /
 ## Failures
 
 A failed tick is invisible by design. It is written to the **update result**
-in `~/.cache/kimchi/state.json`, emitted as telemetry, and retried plainly
-on the next 30-minute tick — no backoff, and a later success simply
-replaces the failed state. The updater lock has a 15-minute staleness
-escape so an install interrupted by kill -9 (or a recycled PID) cannot
-strand the lock forever.
+file `~/.cache/kimchi/update-result.json` and retried plainly on the next
+30-minute tick — no backoff, and a later success simply replaces the failed
+state.
+
+The updater lock carries the holder's pid, timestamp, and a random ownership
+nonce. The holder heartbeats its timestamp every 5 minutes, so a long
+install (or a user thinking at the `kimchi update` prompt) can't age past
+the staleness escape. The escape itself — a 15-minute staleness window —
+stills exists for kill -9, where the OS can recycle the owner's pid and make
+a dead holder look alive. Release only deletes its own lock (nonce match),
+so a holder whose lock was stolen cannot evict the usurper. A kill mid-copy
+can leave a mixed install (new binary, stale share) that nothing recorded;
+the design accepts this: the residual window is seconds, and the next
+successful update repairs it.
 
 ## Manual update
 
 `kimchi update` (and `/update` → "Update kimchi now") works as before and
-remains the way to update immediately, with one difference: it takes the
+remains the way to update immediately, with two differences: it takes the
 updater lock like ticks do and refuses while an install is in progress —
-two concurrent installers would race on the share-directory swap.
+two concurrent installers would race on the share-directory swap — and a
+successful install records the last-installed tag, so other sessions (and
+this session's next tick) dedup the release instead of reinstalling it.
 
 ## Why background updates
 
@@ -110,7 +121,11 @@ Consequences accepted:
   possible today across terminals, and accepted in exchange for keeping one
   atomic install and no launch-path work.
 - A failed background update is invisible to the user; visibility comes
-  from the update result and telemetry.
+  from the update result file.
+- Diagnostics keep their own files (`update-result.json`,
+  `last-installed.json`) beside the shared check cache (`state.json`),
+  because the cache's unlocked read-modify-write saves race too often to
+  trust them with records written under the updater lock.
 
 ## Vocabulary
 
@@ -127,12 +142,14 @@ _Avoid_: poll, heartbeat
 
 **Updater lock**:
 The machine-wide exclusion that lets only one session install at a time.
-A session that finds it held skips its tick.
+A session that finds it held skips its tick. Keyed by pid + nonce, kept
+fresh by a heartbeat, taken over only after a staleness window.
 _Avoid_: mutex, install lock
 
 **Update result**:
-The recorded outcome of the most recent check or install, kept for
-diagnosis because a failed background update is never shown to the user.
+The recorded outcome of the most recent background tick that ran
+(skipped-lock ticks record nothing), kept for diagnosis because a failed
+background update is never shown to the user.
 _Avoid_: log, error state
 
 **Update notice**:

@@ -3,13 +3,12 @@
 // session start, then every 30 minutes. A successful install is announced on
 // the status line ("✔ Update installed · Restart to update") and nothing else
 // ever surfaces — checks, downloads and failures stay silent, recorded in the
-// update result (state.json) and reported as telemetry events.
+// update result (update-result.json).
 
-import { basename, win32 } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs } from "../cli-args.js"
 import { runUpdateTick, type TickResult } from "../update/background.js"
-import { isHomebrewInstall } from "../update/paths.js"
+import { isHomebrewInstall, isPackagedBinaryExecPath } from "../update/paths.js"
 import { loadAutoUpdateNoticeShown, loadAutoUpdateSetting } from "../update/settings.js"
 import { isUpdateCheckDisabled } from "../update/state.js"
 import { parseCanarySha7 } from "../update/workflow.js"
@@ -25,9 +24,6 @@ export const UPDATE_INSTALLED_STATUS = {
 	text: "✔ Update installed · Restart to update",
 } as const
 
-/** Domain bus channel: one event per finished tick, payload is the tick result. */
-export const UPDATE_TICK_CHANNEL = "update:tick-finished"
-
 export interface GateEnv {
 	/** --no-auto-update, from parsed CLI args (never scanned by hand). */
 	noAutoUpdate: boolean
@@ -41,27 +37,29 @@ export interface GateEnv {
 	updatesDisabled: boolean
 }
 
-/** The consent notice is a dynamic gate: startup-update marks it during the
- *  very same session_start in a fresh install, so a schedule-time block here
- *  would silently disable updates for first-ever sessions. The tick re-reads
- *  it before every run; start the loop and let the tick decide. */
-const DYNAMIC_GATE_REASON = "notice-not-shown"
+/** A blocking gate. `dynamic` marks the consent-notice gate: startup-update
+ *  marks it during the very same session_start in a fresh install, so a
+ *  schedule-time block here would silently disable updates for first-ever
+ *  sessions. The tick re-reads it before every run; start the loop and let
+ *  the tick decide. */
+export interface GateBlock {
+	reason: string
+	dynamic: boolean
+}
 
-/** `null` when gates pass; a reason string otherwise. */
-export function evaluateGates(env: GateEnv): string | null {
-	if (env.updatesDisabled) return "KIMCHI_NO_UPDATE_CHECK"
-	if (env.noAutoUpdate) return "--no-auto-update"
-	if (env.isHomebrew) return "homebrew"
-	if (parseCanarySha7(env.version) !== null) return "canary"
-	if (env.version === "dev" || env.version === "unknown") return "dev"
+/** `null` when gates pass; the blocking gate otherwise. */
+export function evaluateGates(env: GateEnv): GateBlock | null {
+	if (env.updatesDisabled) return { reason: "KIMCHI_NO_UPDATE_CHECK", dynamic: false }
+	if (env.noAutoUpdate) return { reason: "--no-auto-update", dynamic: false }
+	if (env.isHomebrew) return { reason: "homebrew", dynamic: false }
+	if (parseCanarySha7(env.version) !== null) return { reason: "canary", dynamic: false }
+	if (env.version === "dev" || env.version === "unknown") return { reason: "dev", dynamic: false }
 	// Guard against non-packaged binaries (e.g. `pnpm dev`): applyUpdate would
-	// try to install the release binary over the interpreter. The basename is
-	// platform-aware so the gate is also testable from a POSIX host.
-	const isWin = env.platform === "win32"
-	const base = isWin ? win32.basename(env.execPath) : basename(env.execPath)
-	if (base !== (isWin ? "kimchi.exe" : "kimchi")) return "non-packaged-binary"
-	if (!env.autoUpdateEnabled) return "auto-update-off"
-	if (!env.noticeShown) return DYNAMIC_GATE_REASON
+	// try to install the release binary over the interpreter.
+	if (!isPackagedBinaryExecPath(env.execPath, env.platform as NodeJS.Platform))
+		return { reason: "non-packaged-binary", dynamic: false }
+	if (!env.autoUpdateEnabled) return { reason: "auto-update-off", dynamic: false }
+	if (!env.noticeShown) return { reason: "notice-not-shown", dynamic: true }
 	return null
 }
 
@@ -90,10 +88,9 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 		// (ACP clients own harness updates themselves).
 		if (!ctx.hasUI) return
 
-		const reason = evaluateGates(readGateEnv())
-		// The notice gate is dynamic (see DYNAMIC_GATE_REASON): don't let it
-		// block scheduling; the tick re-checks before running.
-		if (reason !== null && reason !== DYNAMIC_GATE_REASON) return
+		const gate = evaluateGates(readGateEnv())
+		// Dynamic gates don't block scheduling; the tick re-checks before running.
+		if (gate !== null && !gate.dynamic) return
 
 		let stopped = false
 		const shutdownAbort = new AbortController()
@@ -115,11 +112,8 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 			}
 
 			// Side effects only when the session is still alive: a tick whose
-			// download outlived session_shutdown must not touch the disposed UI
-			// or emit after telemetry flushed.
+			// download outlived session_shutdown must not touch the disposed UI.
 			if (stopped) return
-
-			pi.events.emit(UPDATE_TICK_CHANNEL, { outcome: result.outcome, version: result.version, error: result.error })
 
 			if (result.outcome === "installed") {
 				ctx.ui.setStatus(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)

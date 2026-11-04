@@ -4,6 +4,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TickResult } from "../update/background.js"
+import { createContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 
 const runUpdateTickMock = vi.fn<() => Promise<TickResult>>()
 const getVersionMock = vi.fn(() => "0.0.22")
@@ -22,9 +24,15 @@ vi.mock("../update/settings.js", () => ({
 	loadAutoUpdateSetting: () => loadAutoUpdateSettingMock(),
 	loadAutoUpdateNoticeShown: () => loadAutoUpdateNoticeShownMock(),
 }))
-vi.mock("../update/paths.js", () => ({
-	isHomebrewInstall: () => isHomebrewInstallMock(),
-}))
+vi.mock("../update/paths.js", async (importOriginal) => {
+	// isPackagedBinaryExecPath is pure (no I/O): keep the real one so the
+	// packaged-binary gate tests exercise it; mock only the Homebrew probe.
+	const actual = await importOriginal<typeof import("../update/paths.js")>()
+	return {
+		...actual,
+		isHomebrewInstall: () => isHomebrewInstallMock(),
+	}
+})
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
 }))
@@ -36,32 +44,7 @@ const {
 	default: backgroundUpdateExtension,
 	evaluateGates,
 	UPDATE_INSTALLED_STATUS,
-	UPDATE_TICK_CHANNEL,
 } = await import("./background-update.js")
-
-type Handler = (event: unknown, ctx: unknown) => unknown
-
-function createMockApi() {
-	const handlers = new Map<string, Handler>()
-	const events: Array<{ channel: string; payload: unknown }> = []
-	const api = {
-		on: (event: string, handler: Handler) => {
-			handlers.set(event, handler)
-		},
-		events: {
-			emit: (channel: string, payload: unknown) => {
-				events.push({ channel, payload })
-			},
-			on: () => {},
-		},
-	}
-	return { handlers, events, api: api as unknown as Parameters<typeof backgroundUpdateExtension>[0] }
-}
-
-function makeCtx(hasUI = true) {
-	const setStatus = vi.fn()
-	return { ctx: { hasUI, ui: { setStatus } }, setStatus }
-}
 
 function goodEnv(): Parameters<typeof evaluateGates>[0] {
 	return {
@@ -90,9 +73,15 @@ describe("evaluateGates", () => {
 		["unknown version", { version: "unknown" }],
 		["non-packaged binary", { execPath: "/usr/local/bin/node" }],
 		["autoUpdate setting off", { autoUpdateEnabled: false }],
-		["consent notice not yet shown", { noticeShown: false }],
-	])("blocks when %s", (_reason, patch) => {
-		expect(evaluateGates({ ...goodEnv(), ...patch })).not.toBeNull()
+	] as const)("blocks with a static gate when %s", (_reason, patch) => {
+		const gate = evaluateGates({ ...goodEnv(), ...patch })
+		expect(gate).not.toBeNull()
+		expect(gate?.dynamic).toBe(false)
+	})
+
+	it("blocks with a dynamic gate when the consent notice is not yet shown", () => {
+		const gate = evaluateGates({ ...goodEnv(), noticeShown: false })
+		expect(gate?.dynamic).toBe(true)
 	})
 
 	it("accepts a packaged binary on Windows paths", () => {
@@ -100,9 +89,9 @@ describe("evaluateGates", () => {
 	})
 
 	it("blocks a non-packaged binary on Windows paths", () => {
-		expect(evaluateGates({ ...goodEnv(), platform: "win32", execPath: "C:\\Program Files\\nodejs\\node.exe" })).toBe(
-			"non-packaged-binary",
-		)
+		expect(
+			evaluateGates({ ...goodEnv(), platform: "win32", execPath: "C:\\Program Files\\nodejs\\node.exe" })?.reason,
+		).toBe("non-packaged-binary")
 	})
 })
 
@@ -125,13 +114,13 @@ describe("backgroundUpdateExtension", () => {
 	})
 
 	async function startSession(hasUI = true) {
-		const { handlers, events, api } = createMockApi()
+		const { api, getHandler, getHandlers } = createExtensionApi()
 		backgroundUpdateExtension(api)
-		const onStart = handlers.get("session_start")
-		if (!onStart) throw new Error("no session_start handler")
-		const { ctx, setStatus } = makeCtx(hasUI)
-		await onStart({}, ctx)
-		return { shutdown: handlers.get("session_shutdown"), setStatus, events }
+		const setStatus = vi.fn()
+		const ctx = createContext({ hasUI, ui: { setStatus } })
+		await getHandler("session_start")({}, ctx)
+		// Early-bail paths (no UI, static gate) register no shutdown handler.
+		return { shutdown: getHandlers("session_shutdown")[0], setStatus }
 	}
 
 	it("runs the first tick ~10 seconds after session start", async () => {
@@ -164,7 +153,7 @@ describe("backgroundUpdateExtension", () => {
 	it("schedules on a first-ever session and lets the tick decide (notice gate is dynamic)", async () => {
 		// startup-update marks the notice DURING this same session_start; the
 		// background handler may run before that mark, so the schedule-time
-		// check must tolerate the notice gate. At tick time it is marked.
+		// check must tolerate the dynamic gate. At tick time it is marked.
 		loadAutoUpdateNoticeShownMock.mockReturnValue(false)
 		await startSession()
 		loadAutoUpdateNoticeShownMock.mockReturnValue(true)
@@ -188,28 +177,19 @@ describe("backgroundUpdateExtension", () => {
 
 	it("shows the update notice after a successful install and stops ticking", async () => {
 		runUpdateTickMock.mockResolvedValue({ outcome: "installed", version: "v0.0.23" })
-		const { setStatus, events } = await startSession()
+		const { setStatus } = await startSession()
 		await vi.advanceTimersByTimeAsync(10_000)
 		expect(setStatus).toHaveBeenCalledWith(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
-		expect(events).toContainEqual({
-			channel: UPDATE_TICK_CHANNEL,
-			payload: expect.objectContaining({ outcome: "installed", version: "v0.0.23" }),
-		})
 		// Session already installed this version; checking again would reinstall it.
 		await vi.advanceTimersByTimeAsync(120 * 60_000)
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
 	})
 
-	it("stays silent on failure but emits the telemetry event", async () => {
+	it("stays silent on failure and retries on schedule", async () => {
 		runUpdateTickMock.mockResolvedValue({ outcome: "install-failed", version: "v0.0.23", error: "boom" })
-		const { setStatus, events } = await startSession()
+		const { setStatus } = await startSession()
 		await vi.advanceTimersByTimeAsync(10_000)
 		expect(setStatus).not.toHaveBeenCalled()
-		expect(events).toContainEqual({
-			channel: UPDATE_TICK_CHANNEL,
-			payload: expect.objectContaining({ outcome: "install-failed" }),
-		})
-		// failures retry on schedule
 		await vi.advanceTimersByTimeAsync(30 * 60_000)
 		expect(runUpdateTickMock).toHaveBeenCalledTimes(2)
 	})
@@ -228,23 +208,22 @@ describe("backgroundUpdateExtension", () => {
 		await vi.advanceTimersByTimeAsync(10_000)
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
 		if (!shutdown) throw new Error("no session_shutdown handler")
-		await shutdown({}, {})
+		await shutdown({}, createContext())
 		await vi.advanceTimersByTimeAsync(90 * 60_000)
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
 	})
 
-	it("emits nothing and sets no status when the session shut down mid-tick", async () => {
+	it("sets no status when the session shut down mid-tick", async () => {
 		let resolveTick: ((r: TickResult) => void) | undefined
 		runUpdateTickMock.mockReturnValue(new Promise((resolve) => (resolveTick = resolve)))
-		const { shutdown, setStatus, events } = await startSession()
+		const { shutdown, setStatus } = await startSession()
 		await vi.advanceTimersByTimeAsync(10_000)
 		expect(runUpdateTickMock).toHaveBeenCalledOnce()
 		if (!shutdown) throw new Error("no session_shutdown handler")
-		await shutdown({}, {})
+		await shutdown({}, createContext())
 		// The in-flight tick settles after shutdown.
 		resolveTick?.({ outcome: "installed", version: "v0.0.23" })
 		await vi.advanceTimersByTimeAsync(0)
 		expect(setStatus).not.toHaveBeenCalled()
-		expect(events).toHaveLength(0)
 	})
 })

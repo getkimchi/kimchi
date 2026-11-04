@@ -8,11 +8,12 @@
 
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, resolve } from "node:path"
+import { resolve } from "node:path"
 import { pickPackageDirForBinary, resolveValidatedAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { installProxyAgent } from "./http/proxy.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
 import { isProxyMode, runProxy } from "./ssh-proxy.js"
+import { isPackagedBinaryExecPath } from "./update/paths.js"
 
 // Must happen before installPasteInterceptor / installProxyAgent touch stdin/stdout.
 // SSH ProxyCommand wires stdin/stdout as a raw binary pipe — any bytes written
@@ -92,8 +93,7 @@ async function main(): Promise<void> {
 	// The binary name gate keeps an externally-set env var from being honored in
 	// dev/source launches (same packaged-binary guard as the background updater).
 	// Dynamic import: pi-mono must not load before PI_PACKAGE_DIR is set above.
-	const compiledBinName = process.platform === "win32" ? "kimchi.exe" : "kimchi"
-	if (process.env.KIMCHI_QUICKJS_WASM_PATH && basename(process.execPath) === compiledBinName) {
+	if (process.env.KIMCHI_QUICKJS_WASM_PATH && isPackagedBinaryExecPath(process.execPath)) {
 		const { setEmbeddedQuickJSWasmPath } = await import("@earendil-works/pi-coding-agent")
 		setEmbeddedQuickJSWasmPath(process.env.KIMCHI_QUICKJS_WASM_PATH)
 	}

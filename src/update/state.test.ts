@@ -39,8 +39,19 @@ describe("update state cache", () => {
 		return join(tmp, "kimchi", "state.json")
 	}
 
+	function updateResultPathFor(): string {
+		return join(tmp, "kimchi", "update-result.json")
+	}
+
+	function lastInstalledPathFor(): string {
+		return join(tmp, "kimchi", "last-installed.json")
+	}
+
 	function writeRawState(json: unknown): void {
-		const path = statePathFor()
+		writeRawFile(statePathFor(), json)
+	}
+
+	function writeRawFile(path: string, json: unknown): void {
 		mkdirSync(join(tmp, "kimchi"), { recursive: true })
 		writeFileSync(path, JSON.stringify(json, null, 2))
 	}
@@ -192,20 +203,21 @@ describe("update state cache", () => {
 			expect(loadUpdateResult()).toMatchObject({ outcome: "check-failed", error: "network down" })
 		})
 
-		it("does not clobber the per-repo cache entries", () => {
-			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
+		it("persists in its own file, immune to repo-cache save races", () => {
+			// Diagnostics keep their own file: a repo-cache writer holding an
+			// older load of shared state can no longer clobber them.
 			saveUpdateResult({ outcome: "no-update" })
-			expect(loadRepoState("a", "b")?.latest_version).toBe("1.0.0")
-		})
+			const raw = JSON.parse(readFileSync(updateResultPathFor(), "utf-8")) as { outcome?: unknown }
+			expect(raw.outcome).toBe("no-update")
 
-		it("keeps the per-repo cache when writing a result first", () => {
-			saveUpdateResult({ outcome: "no-update" })
 			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
 			expect(loadUpdateResult()?.outcome).toBe("no-update")
+			const state = JSON.parse(readFileSync(statePathFor(), "utf-8")) as Record<string, unknown>
+			expect("update_result" in state).toBe(false)
 		})
 
-		it("returns null for an unparseable result entry", () => {
-			writeRawState({ update_result: 42 })
+		it("returns null for an unparseable result file", () => {
+			writeRawFile(updateResultPathFor(), 42)
 			expect(loadUpdateResult()).toBeNull()
 		})
 	})
@@ -222,17 +234,20 @@ describe("update state cache", () => {
 			expect(Date.parse(got?.at ?? "")).not.toBeNaN()
 		})
 
-		it("does not clobber the repo cache or the update result", () => {
+		it("persists in its own file beside the repo cache and update result", () => {
+			saveLastInstalled("v2.0.0")
+			const raw = JSON.parse(readFileSync(lastInstalledPathFor(), "utf-8")) as { tag?: unknown }
+			expect(raw.tag).toBe("v2.0.0")
+
 			saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
 			saveUpdateResult({ outcome: "installed", version: "v2.0.0" })
-			saveLastInstalled("v2.0.0")
 			expect(loadRepoState("a", "b")?.latest_version).toBe("1.0.0")
 			expect(loadUpdateResult()?.outcome).toBe("installed")
 			expect(loadLastInstalled()?.tag).toBe("v2.0.0")
 		})
 
 		it("returns null for an unparseable entry", () => {
-			writeRawState({ last_installed: "v2.0.0" })
+			writeRawFile(lastInstalledPathFor(), "v2.0.0")
 			expect(loadLastInstalled()).toBeNull()
 		})
 	})

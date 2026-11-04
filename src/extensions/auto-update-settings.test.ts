@@ -18,6 +18,7 @@ const mockGetVersion = vi.fn(() => "1.0.0")
 
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
 const mockAcquireUpdaterLock = vi.fn()
+const mockSaveLastInstalled = vi.fn()
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
@@ -35,6 +36,9 @@ vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: mockCheckForUpdate,
 	applyUpdate: mockApplyUpdate,
 	parseCanarySha7: mockParseCanarySha7,
+}))
+vi.mock("../update/state.js", () => ({
+	saveLastInstalled: mockSaveLastInstalled,
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: mockGetVersion,
@@ -68,6 +72,7 @@ function resetMocks(): void {
 	mockParseCanarySha7.mockReturnValue(null)
 	mockAcquireUpdaterLock.mockReset()
 	mockAcquireUpdaterLock.mockReturnValue({ release: vi.fn() })
+	mockSaveLastInstalled.mockReset()
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -199,6 +204,25 @@ describe("runManualUpdate — happy path", () => {
 		expect(result.message).toContain("1.1.0")
 		expect(result.message).toContain("Restart your terminal")
 	})
+
+	it("records the installed tag so background ticks dedup the same release", async () => {
+		// Without this record the session's next tick would reinstall what the
+		// user just installed: its own version check stays stale for the whole
+		// process lifetime (the install applies to the NEXT launch).
+		mockCheckForUpdate.mockResolvedValue({
+			currentVersion: "1.0.0",
+			latestVersion: "1.1.0",
+			tag: "v1.1.0",
+			releaseUrl: "",
+			hasUpdate: true,
+			cached: false,
+		})
+		mockApplyUpdate.mockResolvedValue({ from: "1.0.0", to: "1.1.0", backupPath: undefined })
+
+		const result = await runManualUpdate()
+		expect(result.ok).toBe(true)
+		expect(mockSaveLastInstalled).toHaveBeenCalledWith("v1.1.0")
+	})
 })
 
 describe("runManualUpdate — failure paths", () => {
@@ -217,6 +241,7 @@ describe("runManualUpdate — failure paths", () => {
 		const result = await runManualUpdate()
 		expect(result.ok).toBe(false)
 		expect(result.message).toBe("Update failed: smoke test failed")
+		expect(mockSaveLastInstalled).not.toHaveBeenCalled()
 		// We should have written a log line so the failure is visible.
 		expect(warnSpy).toHaveBeenCalled()
 		const written = warnSpy.mock.calls.map((c) => String(c[0])).join("")

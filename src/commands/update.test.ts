@@ -14,6 +14,8 @@ const listConfiguredPackagesMock = vi.fn((): ConfiguredPackageFixture[] => [])
 const packageUpdateMock = vi.fn(async (_source?: string): Promise<void> => {})
 const setProgressCallbackMock = vi.fn()
 const settingsManagerCreateMock = vi.fn((_cwd: unknown, _agentDir: unknown) => ({}))
+const acquireUpdaterLockMock = vi.fn((..._args: unknown[]): { release: () => void } | null => ({ release: vi.fn() }))
+const saveLastInstalledMock = vi.fn()
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
@@ -37,6 +39,12 @@ vi.mock("../update/paths.js", () => ({
 vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: (...args: unknown[]) => checkForUpdateMock(...args),
 	applyUpdate: (...args: unknown[]) => applyUpdateMock(...args),
+}))
+vi.mock("../update/lock.js", () => ({
+	acquireUpdaterLock: (...args: unknown[]) => acquireUpdaterLockMock(...args),
+}))
+vi.mock("../update/state.js", () => ({
+	saveLastInstalled: (...args: unknown[]) => saveLastInstalledMock(...args),
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: () => getVersionMock(),
@@ -408,5 +416,58 @@ describe("runUpdate package targets", () => {
 
 		expect(code).toBe(0)
 		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+})
+
+describe("self-update takes the updater lock", () => {
+	let logSpy: ReturnType<typeof vi.spyOn>
+	let errSpy: ReturnType<typeof vi.spyOn>
+
+	beforeEach(() => {
+		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
+		errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		isHomebrewInstallMock.mockReset()
+		isHomebrewInstallMock.mockReturnValue(false)
+		checkForUpdateMock.mockReset()
+		checkForUpdateMock.mockResolvedValue({ hasUpdate: true, latestVersion: "0.0.24", tag: "v0.0.24", releaseUrl: "" })
+		applyUpdateMock.mockReset()
+		applyUpdateMock.mockResolvedValue(undefined)
+		listConfiguredPackagesMock.mockReset()
+		listConfiguredPackagesMock.mockReturnValue([])
+		acquireUpdaterLockMock.mockClear()
+		acquireUpdaterLockMock.mockReturnValue({ release: vi.fn() })
+		saveLastInstalledMock.mockClear()
+	})
+
+	afterEach(() => {
+		logSpy.mockRestore()
+		errSpy.mockRestore()
+	})
+
+	it("refuses when another session holds the updater lock", async () => {
+		acquireUpdaterLockMock.mockReturnValue(null)
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		expect(errSpy.mock.calls.map((c) => String(c[0] ?? "")).join("\n")).toContain("already in progress")
+		expect(checkForUpdateMock).not.toHaveBeenCalled()
+		expect(applyUpdateMock).not.toHaveBeenCalled()
+	})
+
+	it("records the installed tag after a successful update", async () => {
+		// Otherwise concurrent sessions (and this session's background tick)
+		// reinstall the release the user just installed.
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(0)
+		expect(saveLastInstalledMock).toHaveBeenCalledWith("v0.0.24")
+	})
+
+	it("releases the lock even when the install fails", async () => {
+		const release = vi.fn()
+		acquireUpdaterLockMock.mockReturnValue({ release })
+		applyUpdateMock.mockRejectedValue(new Error("boom"))
+		const code = await runUpdate(["self", "--force"])
+		expect(code).toBe(1)
+		expect(release).toHaveBeenCalledOnce()
+		expect(saveLastInstalledMock).not.toHaveBeenCalled()
 	})
 })

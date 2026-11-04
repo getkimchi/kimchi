@@ -14,6 +14,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { acquireUpdaterLock } from "../update/lock.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateSetting, saveAutoUpdateSetting } from "../update/settings.js"
+import { saveLastInstalled } from "../update/state.js"
 import { applyUpdate, checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 import { createAutoUpdateTipProvider } from "./auto-update/tips.js"
@@ -64,6 +65,10 @@ export async function runManualUpdate(): Promise<ManualUpdateResult> {
 		}
 		try {
 			await applyUpdate({ tag: check.tag })
+			// Record it (still under the lock) so this and other sessions'
+			// background ticks dedup the release the user just installed —
+			// their version check stays stale for the process lifetime.
+			saveLastInstalled(check.tag)
 			return { ok: true, message: `Updated to ${check.latestVersion}. Restart your terminal.` }
 		} catch (err) {
 			const message = (err as Error).message

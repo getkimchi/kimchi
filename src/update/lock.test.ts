@@ -2,7 +2,7 @@
 // session install at a time (see docs/auto-update.md). The seam is the
 // lock file on disk: observable, not implementation detail.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -73,5 +73,52 @@ describe("acquireUpdaterLock", () => {
 		const lock = acquireUpdaterLock({ lockPath })
 		lock?.release()
 		expect(() => readFileSync(lockPath)).toThrow()
+	})
+
+	it("stamps the lock with an ownership nonce and leaves no temp litter", () => {
+		const lock = acquireUpdaterLock({ lockPath })
+		const contents = JSON.parse(readFileSync(lockPath, "utf-8")) as { nonce?: unknown }
+		expect(typeof contents.nonce).toBe("string")
+		expect((contents.nonce as string).length).toBeGreaterThan(0)
+		// Publication is atomic (tmp + link/rename); no partial writes.
+		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([])
+		lock?.release()
+	})
+
+	it("release is ignored once the lock was stolen by a takeover", () => {
+		const first = acquireUpdaterLock({ lockPath, isPidAlive: () => true })
+		// A rival session found our lock abandoned (dead owner / stale) and
+		// took it over; we keep running our slow install in the background.
+		const second = acquireUpdaterLock({ lockPath, isPidAlive: () => false, heartbeatMs: 0 })
+		expect(second).not.toBeNull()
+		first?.release()
+		// The rival's lock survives our stale release: a third session still
+		// sees the lock as held instead of racing the rival's install.
+		expect(acquireUpdaterLock({ lockPath })).toBeNull()
+		second?.release()
+	})
+
+	it("heartbeats keep the timestamp fresh during a long install", async () => {
+		const lock = acquireUpdaterLock({ lockPath, heartbeatMs: 20 })
+		const at0 = (JSON.parse(readFileSync(lockPath, "utf-8")) as { at: number }).at
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		const at1 = (JSON.parse(readFileSync(lockPath, "utf-8")) as { at: number }).at
+		expect(at1).toBeGreaterThan(at0)
+		// Heartbeats publish atomically: no truncated reads, no tmp litter.
+		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([])
+		lock?.release()
+	})
+
+	it("stops heartbeating once the lock is stolen", async () => {
+		const first = acquireUpdaterLock({ lockPath, heartbeatMs: 20 })
+		const second = acquireUpdaterLock({ lockPath, isPidAlive: () => false, heartbeatMs: 0 })
+		expect(second).not.toBeNull()
+		const stolen = readFileSync(lockPath, "utf-8")
+		await new Promise((resolve) => setTimeout(resolve, 80))
+		// The first owner's heartbeat must notice the changed ownership and
+		// go quiet, not overwrite the rival's lock record.
+		expect(readFileSync(lockPath, "utf-8")).toBe(stolen)
+		first?.release()
+		second?.release()
 	})
 })

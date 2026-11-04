@@ -17,15 +17,18 @@ export type TickOutcome = UpdateOutcome
 
 export interface TickResult {
 	outcome: TickOutcome
-	/** Target version when the tick resolved one (installed/install-failed). */
+	/** Target release tag when the tick resolved one (installed/install-failed).
+	 *  The tag — not the display version — because dedup and the last-installed
+	 *  record key on it, as do the manual update paths. */
 	version?: string
 	/** Truncated failure reason for failure outcomes. */
 	error?: string
 }
 
 /** Persisted-state hooks, injectable so ticks stay off the real ~/.cache in
- *  tests. All three write/read under the updater lock the tick already holds,
- *  so concurrent sessions can't lose these diagnostics to a load/save race. */
+ *  tests. The tick already holds the updater lock when it writes these, and
+ *  each diagnostic keeps its own file on disk, so concurrent sessions can't
+ *  lose these diagnostics to a load/save race. */
 export interface TickStore {
 	saveUpdateResult: (rec: Omit<UpdateResultRecord, "at">) => void
 	saveLastInstalled: (tag: string) => void
@@ -51,7 +54,7 @@ export interface TickDeps {
 	signal?: AbortSignal
 }
 
-/** Telemetry and result-file privacy convention: errors are truncated. */
+/** Result-file privacy convention: errors are truncated. */
 const MAX_ERROR_LEN = 300
 
 function errorMessage(err: unknown): string {
@@ -64,16 +67,15 @@ function errorMessage(err: unknown): string {
  * BEFORE the lock is released, so a concurrent session can never overwrite
  * the record with a racy load/save. A tick that finds another live holder
  * returns `skipped-lock` — the winner's in-place install covers this machine.
+ * Skipped ticks are deliberately NOT persisted: the write would race the
+ * lock holder's record (we hold no lock), and the winner persists the
+ * meaningful outcome anyway.
  */
 export async function runUpdateTick(deps: TickDeps): Promise<TickResult> {
 	const store: TickStore = deps.store ?? { saveUpdateResult, saveLastInstalled, loadLastInstalled }
 	const acquire = deps.acquireLock ?? (() => acquireUpdaterLock())
 	const lock = acquire()
-	if (lock === null) {
-		const result: TickResult = { outcome: "skipped-lock" }
-		safeSave(store, result)
-		return result
-	}
+	if (lock === null) return { outcome: "skipped-lock" }
 
 	let result: TickResult = { outcome: "check-failed", error: "unexpected tick failure" }
 	try {
@@ -132,11 +134,11 @@ async function computeTick(deps: TickDeps & { store: TickStore }): Promise<TickR
 
 	try {
 		await (deps.applyUpdate ?? applyUpdate)({ tag: checkResult.tag, signal: deps.signal })
-		return { outcome: "installed", version: checkResult.latestVersion }
+		return { outcome: "installed", version: checkResult.tag }
 	} catch (err) {
 		return {
 			outcome: "install-failed",
-			version: checkResult.latestVersion,
+			version: checkResult.tag,
 			error: errorMessage(err),
 		}
 	}

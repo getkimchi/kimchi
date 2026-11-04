@@ -42,7 +42,7 @@ function makeStore(lastInstalledTag: string | null = null) {
 }
 
 describe("runUpdateTick", () => {
-	it("skips without checking when the updater lock is unavailable", async () => {
+	it("skips without checking — and without persisting — when the updater lock is unavailable", async () => {
 		const check = vi.fn()
 		const apply = vi.fn()
 		const { store } = makeStore()
@@ -56,11 +56,10 @@ describe("runUpdateTick", () => {
 		expect(result.outcome).toBe("skipped-lock")
 		expect(check).not.toHaveBeenCalled()
 		expect(apply).not.toHaveBeenCalled()
-		expect(store.saveUpdateResult).toHaveBeenCalledWith({
-			outcome: "skipped-lock",
-			version: undefined,
-			error: undefined,
-		})
+		// Not persisted: a skipped-lock write without the lock could clobber
+		// the winner's concurrently-recorded outcome, and the winner persists
+		// the meaningful record anyway.
+		expect(store.saveUpdateResult).not.toHaveBeenCalled()
 	})
 
 	it("reports no-update when the remote is not newer", async () => {
@@ -92,6 +91,36 @@ describe("runUpdateTick", () => {
 		})
 		expect(result).toEqual({ outcome: "no-update" })
 		expect(apply).not.toHaveBeenCalled()
+	})
+
+	it("dedups and records by release tag, not the display version", async () => {
+		// latestVersion is display text (e.g. a canary title); tag is what
+		// applyUpdate downloads and what the manual paths record. Mixing the
+		// two would break the dedup on channels where they differ.
+		const lock = makeLock()
+		const apply = vi.fn()
+		const { store } = makeStore("canary")
+		const check = { ...noUpdate(), hasUpdate: true, latestVersion: "0.0.0-canary.20260601.def5678", tag: "canary" }
+		const result = await runUpdateTick({
+			currentVersion: "1.0.0",
+			acquireLock: () => lock,
+			checkForUpdate: async () => check,
+			applyUpdate: apply,
+			store,
+		})
+		expect(result).toEqual({ outcome: "no-update" })
+		expect(apply).not.toHaveBeenCalled()
+
+		const { store: store2 } = makeStore()
+		const applied = await runUpdateTick({
+			currentVersion: "1.0.0",
+			acquireLock: () => makeLock(),
+			checkForUpdate: async () => check,
+			applyUpdate: async () => undefined,
+			store: store2,
+		})
+		expect(applied.outcome).toBe("installed")
+		expect(store2.saveLastInstalled).toHaveBeenCalledWith("canary")
 	})
 
 	it("installs and records the applied version when the tag is new", async () => {

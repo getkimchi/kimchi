@@ -39,6 +39,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/acp-model-attribution.md](docs/acp-model-attribution.md) — per-message model/provider attribution on ACP blocks
 - [docs/agents.md](docs/agents.md) — agent infrastructure (workers, subagents, ferment planning pipeline)
 - [docs/artifacts.md](docs/artifacts.md) — generated-file artifacts: declaring them from tools (`details.artifacts`), detection, emission and replay
+- [docs/auto-update.md](docs/auto-update.md) — background auto-update: ticks, gates, updater lock, update result, manual path
 - [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
 - [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
