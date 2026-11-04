@@ -35,6 +35,9 @@ export interface PromptExtras {
 	contextFiles?: ContextFile[]
 	/** Tool names this subagent is expected to have available. */
 	activeToolNames?: string[]
+	/** Pinned reply-language section (`language` config). Only used in
+	 *  "replace" mode; "append" mode inherits it from the parent prompt. */
+	languageBlock?: string
 }
 
 /**
@@ -117,7 +120,8 @@ ${envBlock}`
 	const coreGuidelines = config.includeCoreGuidelines
 		? `\n\n${buildCoreGuidelinesSections(extras?.activeToolNames, hasUserLoop())}`
 		: ""
-	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${extrasSuffix}`
+	const languageSection = extras?.languageBlock ? `\n\n${extras.languageBlock}` : ""
+	return `${replaceHeader}${toolSection}\n\n${config.systemPrompt}${coreGuidelines}${languageSection}${extrasSuffix}`
 }
 
 export function formatTokenBudget(tokens: number): string {
