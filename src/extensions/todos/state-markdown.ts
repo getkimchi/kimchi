@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { parseTodoScopeKey } from "./scope.js"
 import { getTodoState } from "./store.js"
@@ -139,3 +144,4 @@ export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined 
 }
 
 export { renderTodoStateMarkdown as __test_renderTodoStateMarkdown }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

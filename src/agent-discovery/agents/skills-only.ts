@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { AgentDefinition, DirCandidate } from "../index.js"
@@ -47,3 +52,4 @@ const SKILLS_ONLY_DIRS: ReadonlyArray<{ id: string; displayName: string; dir: st
 export const SKILLS_ONLY_AGENTS: readonly AgentDefinition[] = SKILLS_ONLY_DIRS.map((a) =>
 	makeSkillsOnlyAgent(a.id, a.displayName, a.dir),
 )
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pure geometry for the deck writer: palette resolution, element height
  * estimation, and the vertical flow allocator. No pptxgenjs imports — the
@@ -369,3 +374,4 @@ export function estimateOverflow(slide: SlideSpec, theme: DeckTheme): number {
 	const layout = computeSlideLayout(slide, theme)
 	return layout.contentBottom - bottom
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

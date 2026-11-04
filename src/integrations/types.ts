@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ConfigScope } from "../config/scope.js"
 import type { ModelMetadata } from "../models.js"
 
@@ -33,3 +38,4 @@ export interface ToolDefinition {
 		options?: { telemetryEnabled?: boolean },
 	) => Promise<void>
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

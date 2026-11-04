@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { SessionNotification } from "@agentclientprotocol/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetCheckinGate, markCheckinPending, reconcileCheckinScope } from "../../extensions/todos/checkin-gate.js"
@@ -326,3 +331,4 @@ describe("AcpPlanTracker", () => {
 		expect(error).toHaveBeenCalledOnce()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -32,3 +37,4 @@ describe("resolveClassifierCandidates", () => {
 		expect(resolveClassifierCandidates(registry)).toEqual({ candidates, missingRefs })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

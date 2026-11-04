@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { PromptMode } from "../../../prompt-construction/system-prompt.js"
 import type { ModelRoles } from "../../model-roles.js"
 import { orchestratorShouldReceivePhaseGuidelines } from "../../orchestrator-roles.js"
@@ -46,3 +51,4 @@ export function buildOrchestrationGuidelinesSection(modelId: string | undefined,
 	if (!guideline) return ""
 	return `### Orchestration Guidelines\n\n${guideline}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

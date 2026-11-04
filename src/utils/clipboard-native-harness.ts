@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Native clipboard NAPI-RS addon loader.
 //
 // Upstream pi-coding-agent has `utils/clipboard-native.js` which does:
@@ -144,3 +149,4 @@ export function getNativeClipboard(): { clipboard: NativeClipboard | null; error
 
 	return { clipboard: cached, error: loadError }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

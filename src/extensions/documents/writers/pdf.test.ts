@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -111,3 +116,4 @@ A paragraph with **bold words** inside.
 		expect(doc.getPage(0).getWidth()).toBeCloseTo(612, 0)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

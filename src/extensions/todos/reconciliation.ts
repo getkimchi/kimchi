@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Feature-local reconciliation bookkeeping shared by the closure steer
  * (index.ts) and the check-in gate (checkin-gate.ts).
@@ -133,3 +138,4 @@ export function __resetReconciliationBookkeeping(): void {
 	inputRevisions.clear()
 	admittedInputRevisions.clear()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

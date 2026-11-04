@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { stripTerminalSequences, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { testTheme } from "../__mocks__/theme.js"
@@ -76,3 +81,4 @@ describe("PanelHeader", () => {
 		expect(onAction).not.toHaveBeenCalled()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

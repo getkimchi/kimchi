@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -403,3 +408,4 @@ export async function runSetupWizard(options: {
 	clack.outro("Setup complete.")
 	return { cancelled: false, skillPaths, migrationState }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

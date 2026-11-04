@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 
 export interface FermentV2PlanExecution {
@@ -68,3 +73,4 @@ export function isApprovedPlanObjective(objective: string): boolean {
 function isFermentV2PlanExecutorLookup(value: unknown): value is FermentV2PlanExecutorLookup {
 	return typeof value === "object" && value !== null && "resolve" in value && typeof value.resolve === "function"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

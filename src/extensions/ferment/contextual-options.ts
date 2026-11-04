@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Helpers for interactive question dropdowns.
  *
@@ -105,3 +110,6 @@ function extractFinalQuestionBlock(text: string): string | undefined {
 	if (blockStart === -1) return trimmed
 	return trimmed.slice(blockStart + 2)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

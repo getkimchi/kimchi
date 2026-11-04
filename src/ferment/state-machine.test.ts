@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pure transition tests for the ferment state machine.
  *
@@ -1276,3 +1281,4 @@ describe("applyCommand: purity", () => {
 		expect(result.updatedAt).toBe(NOW)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

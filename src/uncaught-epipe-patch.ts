@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Makes broken-pipe errors (EPIPE / ECONNRESET) from the process's uncaught
  * exception path non-fatal.
@@ -60,3 +65,4 @@ export function installUncaughtEpipePatch(
 
 // Apply patch on module load
 installUncaughtEpipePatch()
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export const FERMENT_TOOLS = {
 	PROPOSE_SCOPING: "propose_ferment_scoping",
 	LIST: "list_ferments",
@@ -76,3 +81,6 @@ export function isClassifiedFermentToolName(name: string): boolean {
 /** Shared message: there is no `create_ferment` tool. Explains the canonical creation/scoping paths. */
 export const CREATE_FERMENT_REDIRECT_MESSAGE =
 	'Ferment creation is host-owned. There is no `create_ferment` tool, no equivalent native or MCP tool, and no filesystem layout you can construct by hand. Do not search for, retry with, or invent variants like `new_ferment`, `start_ferment`, `make_ferment`, `begin_ferment`, `ferment_create`, etc.; none exist. Do NOT create directories, write status/manifest files, or run shell commands under `.kimchi/` to simulate a ferment — the host will not recognize them and the FSM will reject them. If a draft ferment is already active, call `propose_ferment_scoping` for draft scoping. If no ferment is active, you may call `propose_ferment_scoping` without a `ferment_id` to create a new draft ferment directly. Otherwise tell the user to run `/ferment`, `/ferment new "..."` or `/ferment one-shot "..."` themselves and wait for the host to create the ferment before resuming.'
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

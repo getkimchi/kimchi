@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Preserve the original provider error message on an assistant message before
  * it is mutated for display purposes (e.g. replaced with "Retrying…").
@@ -55,3 +60,4 @@ export function getRawErrorMessage(message: ErrorMessageHolder): string | undefi
 export function hasPreservedRawErrorMessage(message: ErrorMessageHolder): boolean {
 	return RAW_ERROR_SYMBOL in message
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** What a GitHub PR or GitLab MR must look like, from a provider response or a saved journal row, and how lookups fail. */
 
 import { branchIssueKeys, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "../../shared/issue-keys.js"
@@ -210,3 +215,4 @@ export function storedPullRequests(value: unknown): WorkPullRequest[] {
 		}
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

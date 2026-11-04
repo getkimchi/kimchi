@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import * as undici from "undici"
 
 // NOTE: proxy.ts is statically imported by entry.ts BEFORE PI_PACKAGE_DIR is
@@ -88,3 +93,4 @@ export function installProxyAgent(): void {
 	// binary at startup), and under Bun there is nothing to unify anyway.
 	undici.install?.()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

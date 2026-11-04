@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Unit tests for the `bash_control` companion tool (cohort inspection,
  * stopping, bounded waits).
@@ -1214,3 +1219,4 @@ describe("bash_control — pending terminal delivery state", () => {
 		expect(textOf(result).split("[Background bash process ended").length - 1).toBe(1)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

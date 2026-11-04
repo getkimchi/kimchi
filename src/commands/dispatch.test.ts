@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
 import { ECHO_MODULE, installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
@@ -134,3 +139,4 @@ describe("dispatchSubcommand", () => {
 		expect(await dispatchSubcommand(["install"])).toEqual({ kind: "fallthrough" })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { MODEL_CAPABILITIES } from "./builtin-models.js"
 import type { ModelCapabilities } from "./types.js"
@@ -90,3 +95,4 @@ describe("builtin-models — new default models", () => {
 		expect(caps.description).toContain("reasoning effort")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

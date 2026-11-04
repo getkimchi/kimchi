@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -384,3 +389,4 @@ function recordFinalWrites(configPath: string): string[] | undefined {
 	}
 	return warnings.length > 0 ? warnings : undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

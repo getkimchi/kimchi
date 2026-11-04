@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { resetOrgPolicyForTests } from "../org-policy.js"
@@ -76,3 +81,4 @@ describe("runSetup telemetry policy", () => {
 		expect(mockDrain).toHaveBeenCalledOnce()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

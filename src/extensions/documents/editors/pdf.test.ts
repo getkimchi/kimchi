@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { PDFDocument, StandardFonts } from "@cantoo/pdf-lib"
 import { describe, expect, it } from "vitest"
 import { extractPdf } from "../extractors/pdf.js"
@@ -130,3 +135,4 @@ describe("forms", () => {
 		expect(result.ignored[0].reason).toContain("free")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

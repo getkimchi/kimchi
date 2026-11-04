@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // OSC color queries: ask the terminal for its current foreground (OSC 10)
 // and background (OSC 11) colors.
 // Response shape: \x1b]<10|11>;rgb:RRRR/GGGG/BBBB(\x07|\x1b\\) — channels are
@@ -285,3 +290,4 @@ export function hexToBgAnsi(hex: string, mode: "truecolor" | "256color"): string
 	if (mode === "truecolor") return `\x1b[48;2;${r};${g};${b}m`
 	return `\x1b[48;5;${rgbTo256(r, g, b)}m`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
@@ -395,3 +400,4 @@ describe("contextCompactorExtension", () => {
 		expect(entries).toHaveLength(0)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

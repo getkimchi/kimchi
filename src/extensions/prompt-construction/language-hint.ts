@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { LANGUAGE_HINT_CUSTOM_TYPE, pinnedLanguageTurnHint } from "./system-prompt.js"
@@ -42,3 +47,4 @@ export function applyLanguageHint(messages: OrchestratorMessages, language: stri
 	} as unknown as Message
 	return [...stripped.slice(0, lastUserIdx + 1), hint, ...stripped.slice(lastUserIdx + 1)]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

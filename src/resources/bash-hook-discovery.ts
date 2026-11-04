@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, extname, join, resolve } from "node:path"
@@ -70,3 +75,4 @@ function slug(value: string): string {
 		.replace(/^-+|-+$/g, "")
 	return normalized || "hook"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

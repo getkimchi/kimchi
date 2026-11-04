@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { CustomEntry, ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent"
 import { getParsedCliArgs, MULTI_MODEL_ID } from "../cli-args.js"
 import { readConfigSetting } from "../config/settings.js"
@@ -131,3 +136,4 @@ export function setAndPersistMultiModelEnabled(
 
 	return resolution
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

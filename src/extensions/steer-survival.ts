@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Post-compaction steer survival check, shared by behaviours
  * (extensions/behaviours/wiring.ts) and skill auto-load
@@ -46,3 +51,4 @@ export function survivingSteerNames(
 	}
 	return names
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

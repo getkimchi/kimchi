@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { latestRunTailIsAborted } from "./aborted-run.js"
 
@@ -259,3 +264,4 @@ export function registerStateBlockPersistence(pi: ExtensionAPI, options: StateBl
 		return { messages: stripped }
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

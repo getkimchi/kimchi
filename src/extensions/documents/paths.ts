@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared path-identity helpers for the document CLIs. `sameFile` backs the
  * "never write in place" guarantees: a plain `resolve()` compare misses
@@ -40,3 +45,4 @@ export function sameFile(a: string, b: string): boolean {
 	if (CASE_INSENSITIVE_PLATFORM) return ra.toLowerCase() === rb.toLowerCase()
 	return false
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

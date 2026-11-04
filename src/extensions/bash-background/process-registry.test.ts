@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Unit tests for the background bash process registry.
  *
@@ -829,3 +834,4 @@ describe("tailLinesStart", () => {
 		expect("a\nb\nc".slice(tailLinesStart("a\nb\nc", 1))).toBe("c")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

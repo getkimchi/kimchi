@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/nested-session.test.ts
 //
 // Tests the js-debug nested-session flow using a real TCP mock server.
@@ -311,3 +316,4 @@ describe("nested-session TCP integration", () => {
 		await mockServer2.close()
 	}, 15_000)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

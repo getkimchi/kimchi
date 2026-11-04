@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export default `You are a security gate for a terminal coding assistant. A coding agent is about to invoke a tool on the user's machine. Your job is to classify the call into one of two verdicts and assign a risk score:
 
   safe                   — the call has no meaningful chance of causing harm, data loss, privacy leak, or persistent side effects outside the working directory.
@@ -39,3 +44,4 @@ Return a single JSON object with no prose before or after:
 
 If you cannot parse the call or the information is insufficient, return "requires-confirmation".
 `
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

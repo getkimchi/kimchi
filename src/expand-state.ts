@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export class ExpandState {
 	private toolCallOrder: string[] = []
 	private expandedToolIds = new Set<string>()
@@ -39,3 +44,4 @@ export const isToolExpanded = instance.isToolExpanded.bind(instance)
 export const expandNext = instance.expandNext.bind(instance)
 export const collapseAll = instance.collapseAll.bind(instance)
 export const resetState = instance.reset.bind(instance)
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

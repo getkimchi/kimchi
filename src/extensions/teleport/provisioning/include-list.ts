@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type ChildProcess, spawn as defaultSpawn, type spawn } from "node:child_process"
 import type { Dirent } from "node:fs"
 import { readdir, stat } from "node:fs/promises"
@@ -383,3 +388,4 @@ function runGitLogLocalOnly(cwd: string, signal: AbortSignal | undefined, spawne
 		})
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { expect, it, vi } from "vitest"
 import { registerInteractiveModelSession, startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 
@@ -33,3 +38,4 @@ it("starts a fresh interactive session before selecting the requested model", as
 	expect(showStatus).toHaveBeenCalledWith("Started a new session with kimchi-dev/minimax-m2.7.")
 	vi.useRealTimers()
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

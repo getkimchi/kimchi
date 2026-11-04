@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared planning process guidance for both ferment and plan modes.
  * This is the canonical five-step Orient→Interview→Criteria→Explore→Plan process
@@ -126,3 +131,4 @@ Common plan anti-patterns to avoid:
 - Every chunk depending on the previous one when some could be parallel
 - Exploration or discovery as an implementation chunk — that belongs in Steps 1/4, not in the plan
 - Verification Strategy that is identical for every chunk instead of chunk-specific`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

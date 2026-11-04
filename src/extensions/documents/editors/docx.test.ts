@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { extractDocx } from "../extractors/docx.js"
 import { makeCustomDocx, makeOfficeShapedDocx, makeSimpleDocx } from "../fixtures/builders.js"
@@ -277,3 +282,4 @@ describe("applyDocxOps", () => {
 		expect(doc.window({ start: 1, end: Math.min(doc.totalBlocks, 10) }).markdown.length).toBeGreaterThan(0)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

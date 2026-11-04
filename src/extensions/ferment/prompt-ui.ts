@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import type { ScopingQuestionType } from "../../ferment/types.js"
@@ -289,3 +294,4 @@ function parseMultiChoiceInput(input: string, options: ReadonlyArray<PromptChoic
 	}
 	return out
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

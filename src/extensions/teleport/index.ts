@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
@@ -68,3 +73,4 @@ export default function teleportExtension(pi: ExtensionAPI): void {
 		handler: makeHandler(runSshConfig),
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

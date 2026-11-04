@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { tagDisplayEntries } from "./display-entries.js"
 
@@ -47,3 +52,4 @@ describe("tagDisplayEntries", () => {
 		expect(tagged.map((t) => t.compactedBefore)).toEqual([true, true, true, false, false, false])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

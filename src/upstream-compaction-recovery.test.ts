@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { getRawErrorMessage, preserveRawErrorMessage } from "./extensions/error-preservation.js"
@@ -343,3 +348,4 @@ describe("resume path: raw error recovered from session audit entries", () => {
 		expect(original.mock.calls[0][0]).toBe(msg)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

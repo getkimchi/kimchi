@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Curated-aware thinking-level selection: the single source of truth for
  * which thinking levels are selectable for a model, shared by the status
@@ -144,3 +149,6 @@ export function __uninstallThinkingLevelAdvisorForTest(): void {
 		process as typeof process & { __kimchiThinkingLevelAdvisor?: KimchiThinkingLevelAdvisor | undefined }
 	).__kimchiThinkingLevelAdvisor = undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

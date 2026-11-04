@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { CUSTOM_OPTION_ID, CUSTOM_OPTION_LABEL } from "./constants.js"
 import type { Answer, Question, QuestionOption } from "./questionnaire-reducer.js"
@@ -228,3 +233,4 @@ export async function promptQuestionnaireFallback(
 
 	return { questions, answers, cancelled: false }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

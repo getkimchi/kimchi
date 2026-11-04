@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Spawn a kimchi subprocess for one-shot agent work. Handles dev (tsx) vs bun-binary vs node-binary invocation.
 // Currently the only consumer is curator review (src/extensions/curator/review.ts), but the deleted subagent.ts also had this logic — keep it shared so future consumers don't re-duplicate.
 
@@ -57,3 +62,4 @@ export function spawnKimchiSubprocess(opts: SpawnKimchiOptions): ChildProcess {
 		env: { ...process.env, KIMCHI_API_KEY: loadConfig().apiKey, ...opts.env },
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

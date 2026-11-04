@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("../provisioning/proxy-command.js", () => ({
@@ -90,3 +95,4 @@ describe("renderSshConfig", () => {
 		expect(a.indexOf("kimchi-alpha")).toBeLessThan(a.indexOf("kimchi-zeta"))
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

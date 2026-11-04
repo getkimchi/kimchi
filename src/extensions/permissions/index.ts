@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
@@ -2025,3 +2030,4 @@ export function checkCompoundCommand(command: string, rules: Rule[]): CompoundCh
 
 	return { decision: "prompt", subcommands }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

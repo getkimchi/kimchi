@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 let rawInputCaptureCount = 0
 
 /**
@@ -44,3 +49,4 @@ export async function withRawInputCapture<T>(fn: () => Promise<T>): Promise<T> {
 		release()
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -2717,3 +2722,4 @@ describe("settings watcher lifecycle (bound to the session)", () => {
 		expect(changed?.attrs.value).toBe("dark")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

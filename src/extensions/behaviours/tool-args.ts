@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Map of tool name → tool argument type, for the typed `tool<TName>` overload.
  *
@@ -63,3 +68,4 @@ export const BUILTIN_TOOL_NAMES: readonly (keyof BuiltinToolArgs)[] = [
 	"find",
 	"ls",
 ]
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

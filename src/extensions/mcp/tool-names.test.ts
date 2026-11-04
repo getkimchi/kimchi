@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { namespaceProxyName } from "pi-mcp-adapter"
 import { formatToolName, getServerPrefix, isToolExcluded, MAX_TOOL_NAME_LENGTH } from "pi-mcp-adapter/types"
 import { describe, expect, it, vi } from "vitest"
@@ -181,3 +186,4 @@ describe("namespace proxy tool names", () => {
 		expect(name).toContain("_mcpns_") // exotic names must be encoded, never raw
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

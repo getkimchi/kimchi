@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * group-join.ts — Manages grouped background agent completion notifications.
  */
@@ -134,3 +139,4 @@ export class GroupJoinManager {
 		this.agentToGroup.clear()
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

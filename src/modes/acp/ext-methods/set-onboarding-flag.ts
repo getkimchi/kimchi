@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handler for marking Studio onboarding complete.
 //
 // Wire name: `_kimchi.dev/set_onboarding_flag` — the vendor-namespaced method
@@ -82,3 +87,6 @@ function resolveSeenAt(seenAt: unknown): string {
 	}
 	return seenAt
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

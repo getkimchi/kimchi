@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Bun-runtime acceptance check for the memory backend. Not a vitest file —
  * vitest runs on Node, where bun:sqlite (through shims/better-sqlite3)
@@ -163,3 +168,4 @@ main().catch((err: unknown) => {
 	console.error("memory check crashed:", err)
 	process.exitCode = 1
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/integration.test.ts
 //
 // Integration tests: prove the DAP composed tools work against REAL adapters.
@@ -429,3 +434,4 @@ afterAll(() => {
 	// significantly (leaked adapter subprocesses would inflate it).
 	expect(childCount).toBeLessThanOrEqual(baselineChildCount + 2)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

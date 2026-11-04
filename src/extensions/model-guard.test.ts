@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
 import type {
 	CompactionResult,
@@ -2070,3 +2075,4 @@ describe("session_compact → model_select integration", () => {
 		expect(result.content[0].text).toContain("Switched to model kimchi-dev/minimax-m2.7")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

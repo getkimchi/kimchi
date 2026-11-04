@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Region registry: single source of truth for the supported regions and every
  * external endpoint the CLI talks to.
@@ -294,3 +299,4 @@ export function regionEndpoints(r: KimchiRegion): RegionEndpoints {
 		telemetryMetricsUrl: telemetryMetricsUrl(r),
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

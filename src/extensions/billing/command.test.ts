@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -159,3 +164,4 @@ describe("budget command", () => {
 		expect(notify).toHaveBeenCalledWith("No budget is configured for this API key owner.", "info")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

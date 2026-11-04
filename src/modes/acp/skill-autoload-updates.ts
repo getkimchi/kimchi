@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Mirror the skills-manager auto-loader's `skill_autoload_loaded` entries to
 // ACP clients as a `_kimchi.dev/skill_autoload` ext notification, so IDE
 // clients can surface "skill auto-loaded" the way the TUI transcript entry
@@ -28,3 +33,4 @@ export function emitSkillAutoloadUpdate(conn: AgentSideConnection, sessionId: st
 		origin: data.origin,
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

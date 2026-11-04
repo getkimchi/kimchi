@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1474,3 +1479,4 @@ function linkedToolMessages(
 function longTranscript(count: number, size = 3_000): AgentEndEvent["messages"][number][] {
 	return Array.from({ length: count }, (_, i) => transcriptMessage("user", `MSG_${i}-${"x".repeat(size)}`))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

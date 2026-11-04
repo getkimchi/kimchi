@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * End-to-end integration test: runScopingFlow → propose_ferment_scoping → planned.
  *
@@ -295,3 +300,4 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		expect(getPendingScope(ferment.id)).toBeUndefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Deprecation state for models, mirroring the deprecation contract served
  * by the model metadata API:
@@ -284,3 +289,4 @@ export function writeModelDeprecations(
 	writeFileSync(tmp, `${JSON.stringify(Object.fromEntries(merged), null, "\t")}\n`, "utf-8")
 	renameSync(tmp, target)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

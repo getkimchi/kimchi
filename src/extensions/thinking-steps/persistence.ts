@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -105,3 +110,4 @@ export async function clearThinkingStepsModePreference(
 ): Promise<void> {
 	await clearModeFile(getPreferencePath(scope, cwd))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

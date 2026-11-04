@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handler for steering a running turn.
 //
 // Wire name: `_kimchi.dev/steering` — the vendor-namespaced name from the
@@ -132,3 +137,4 @@ export async function handleSteering(
 		throw err
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

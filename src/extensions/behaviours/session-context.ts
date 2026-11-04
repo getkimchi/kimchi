@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * SessionContext — immutable snapshot of session-time facts probed once at
  * session start. Subsequent reads by trigger predicates are pure lookups.
@@ -193,3 +198,4 @@ export function resolveSessionContext(
 	const lspServes = lspExtensions.size > 0 ? io.detectLspExtensions(cwd) : new Set<string>()
 	return { cliPresent, gitRemoteHost, inGitRepo, pathMatches, lspServes }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

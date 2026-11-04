@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export type TipScope = "contextual" | "general"
 export type TipTone = "default" | "warning" | "error"
 
@@ -30,3 +35,4 @@ export interface TipCandidate extends Tip {
 export function tipPriority(tip: Pick<Tip, "priority">): number {
 	return typeof tip.priority === "number" ? tip.priority : 0
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

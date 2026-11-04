@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { formatCount } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import { deriveFermentV2Name } from "./name.js"
@@ -115,3 +120,4 @@ function formatFermentV2Tokens(fermentV2: SessionFermentV2): string {
 	const used = formatCount(fermentV2.tokensUsed)
 	return fermentV2.tokenBudget === undefined ? `${used} tokens` : `${used}/${formatCount(fermentV2.tokenBudget)} tokens`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

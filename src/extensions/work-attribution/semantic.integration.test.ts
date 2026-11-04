@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
@@ -719,3 +724,4 @@ it.each([
 	if (["new-input", "extension-input", "new-session", "shutdown"].includes(change))
 		expect(vi.mocked(classifyWorkIntent).mock.calls[0][2]?.aborted).toBe(true)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

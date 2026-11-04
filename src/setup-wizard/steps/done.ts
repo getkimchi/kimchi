@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { resolve } from "node:path"
 import { log, note, outro, spinner } from "@clack/prompts"
 import { byId } from "../../integrations/registry.js"
@@ -59,3 +64,4 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 	outro(outcome.failures.length === 0 ? "Done." : "Done with errors. Check above for details.")
 	return outcome
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

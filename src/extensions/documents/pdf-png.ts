@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Core page rendering: PDF page → PNG in-process via PDFium (WASM), so the
  * visual check works on any fresh install — no pdftoppm, gs or pymupdf.
@@ -164,3 +169,6 @@ function writeChunk(type: string, data: Buffer): Buffer {
 	footer.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])) >>> 0, 0)
 	return Buffer.concat([header, data, footer])
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

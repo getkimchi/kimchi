@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { collectResourceViolations, resolveWorkspaceResources } from "./resources.js"
 import type { EgressPolicyConfig, WorkspaceSpecConfig } from "./types.js"
 import type { WorkspaceFileConfig } from "./workspace-file.js"
@@ -134,3 +139,4 @@ function egressPolicyViolations(policy: EgressPolicyConfig | undefined): string[
 	}
 	return violations
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type ChildProcess, spawn } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import { join, dirname as nodePathDirname, posix } from "node:path"
@@ -640,3 +645,4 @@ export function handleLine(line: string, stats: RsyncStats, onProgress?: (pct: n
 		stats.totalBytes = Math.round(raw * multiplier)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

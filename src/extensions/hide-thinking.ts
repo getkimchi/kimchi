@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Hides <think></think> text tags from the UI without affecting LLM context.
  *
@@ -406,3 +411,4 @@ export default function hideThinkingExtension(pi: ExtensionAPI): void {
 		if (modified) return { messages }
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

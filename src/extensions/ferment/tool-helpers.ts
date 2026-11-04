@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Tool result builders + entity resolvers shared across tool implementations.
  *
@@ -260,3 +265,4 @@ export function applyAndPersist(fermentId: string, cmd: Command): ApplyOutcome {
 export function failedToolResult(error: { message: string }, ferment: Ferment | undefined, multiModelEnabled: boolean) {
 	return toolErr(withNextActionHint(error.message, ferment, multiModelEnabled))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

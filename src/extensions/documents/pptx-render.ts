@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `pptx.mjs render` — optional visual QA for decks: LibreOffice converts the
  * PPTX to PDF, then a PDF rasterizer (pdftoppm, ghostscript, or python3 with
@@ -307,3 +312,4 @@ async function convertAndRasterize(
 	const { images } = rasterizePdf(deps, pdf, { outDir: opts.outDir, pages: opts.slides, format: "pptx" })
 	return { pdf, images }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

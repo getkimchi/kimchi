@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * PDF structural edits for pdf.mjs — merge, split (page extract), reorder,
  * rotate, and AcroForm inspection/fill — on @cantoo/pdf-lib. All functions
@@ -220,3 +225,4 @@ export async function fillForm(
 	}
 	return { bytes: new Uint8Array(await doc.save()), filled, ignored }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

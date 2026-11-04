@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Watch theme JSON files for changes and fire callbacks when the active theme
 // is modified. Used for hot-reloading: editing a theme file while kimchi-dev
 // is running immediately reflects the changes (after pi's internal reload).
@@ -93,3 +98,4 @@ export function checkAndNotifyThemeChange(): void {
 		}
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

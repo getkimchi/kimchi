@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { EventEmitter } from "node:events"
 import { describe, expect, it, vi } from "vitest"
 import {
@@ -177,3 +182,4 @@ describe("estimateTerminalBackground", () => {
 		restore()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Model resolution: exact match ("provider/modelId") with fuzzy fallback.
  *
@@ -83,3 +88,4 @@ export function resolveModel(input: string, registry: ModelRegistry): unknown | 
 		.join("\n")
 	return `Model not found: "${input}".\n\nAvailable models:\n${modelList}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

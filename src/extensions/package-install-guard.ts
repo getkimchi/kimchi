@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { consumePackageInstallFailures } from "./pi-package-lookup/native-compat.js"
 
@@ -21,3 +26,6 @@ export default function packageInstallGuardExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify(message, "warning")
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

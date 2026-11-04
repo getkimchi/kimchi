@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ImageContent } from "@earendil-works/pi-ai"
 
 export const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
@@ -28,3 +33,4 @@ export function requestWithAbort<T>(request: Promise<T>, signal: AbortSignal | u
 		request.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Worktree validation: confirm the user is in the directory and on the branch
  * that the ferment was created against.
@@ -41,3 +46,4 @@ export function checkWorktree(f: Ferment, cwd: string): WorktreeCheck {
 	}
 	return { severity: "ok" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** Normalized deck model: what the deck-Markdown parser produces and both
  * the pitfalls guards and the pptxgenjs writer consume. The shape is the
  * contract in deck-markdown.md, not pptxgenjs's API. */
@@ -85,3 +90,4 @@ export interface DeckSpec {
 	meta: DeckMeta
 	warnings: string[]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

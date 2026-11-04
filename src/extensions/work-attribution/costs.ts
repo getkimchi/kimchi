@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
@@ -982,3 +987,6 @@ export function calculatePullRequestCosts(
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

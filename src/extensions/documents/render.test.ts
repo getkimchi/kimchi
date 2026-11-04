@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import type { ExtractedDocument } from "./model.js"
 import { parseUnitRange, renderDocument, renderOutline, sliceSheetRows } from "./render.js"
@@ -79,3 +84,4 @@ describe("renderOutline", () => {
 		expect(text).toContain('read_document: { path: "/big/deck.pdf", pages: "1-5" }')
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

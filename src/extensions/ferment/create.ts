@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Ferment } from "../../ferment/types.js"
 import type { FermentRuntime } from "./runtime.js"
 import { continuationPolicyForNewFerment } from "./state.js"
@@ -17,3 +22,4 @@ export function createFerment(runtime: FermentRuntime, options: CreateFermentOpt
 	runtime.setContinuationPolicy(continuationPolicyForNewFerment(options.hasUI, options.isOneShot))
 	return ferment
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

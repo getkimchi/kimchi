@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import {
 	confirm as clackConfirm,
 	multiselect as clackMultiselect,
@@ -142,3 +147,4 @@ export async function password(opts: {
 	if (result.kind !== "next") return result
 	return { kind: "next", value: result.value ?? "" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `bash_control` extension — cohort tracking, immediate exits, completion guard.
  *
@@ -1010,3 +1015,4 @@ export default function bashControlExtension(pi: ExtensionAPI, options?: BashCon
 		lastReminderQueuedAt = 0
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -624,3 +629,4 @@ describe("import_apply", () => {
 		expect(ADVERTISED_CAPABILITIES.import_apply).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

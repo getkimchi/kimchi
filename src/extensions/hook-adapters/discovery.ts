@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 
@@ -213,3 +218,4 @@ function shortHash(value: string): string {
 function expandPluginRoot(command: string, pluginRoot: string): string {
 	return command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|%CLAUDE_PLUGIN_ROOT%/g, pluginRoot)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

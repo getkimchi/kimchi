@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import * as fs from "node:fs"
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
@@ -345,3 +350,4 @@ it("interrupts preparation of an unchanged large prefix without advancing its cu
 	chunk.mockRestore()
 	expect(readWorkRecords(agentDir)).toHaveLength(1)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

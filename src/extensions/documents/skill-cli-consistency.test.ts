@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Doc-vs-CLI consistency: every command the skills' SKILL.md files advertise
  * must be a real command in the corresponding CLI, and every `--flag` they
@@ -114,3 +119,4 @@ describe("skill SKILL.md ↔ CLI contract", () => {
 		})
 	}
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

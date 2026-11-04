@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { initTheme, type ToolDefinition, ToolExecutionComponent } from "@earendil-works/pi-coding-agent"
 import { ProcessTerminal, stripTerminalSequences, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
@@ -415,3 +420,4 @@ describe("Bash display", () => {
 		expect(bashStatus({ ...display, state: "exited", exitCode: null })).toContain("Outcome unavailable")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

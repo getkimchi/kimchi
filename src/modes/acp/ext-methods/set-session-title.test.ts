@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
 import { AVAILABLE_EXT_METHODS } from "../capabilities.js"
@@ -110,3 +115,4 @@ describe("KimchiAcpAgent extMethod set_session_title", () => {
 		expect(meta?.set_session_title).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

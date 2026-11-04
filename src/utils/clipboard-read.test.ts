@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // vi.hoisted so mocks are available at module evaluation time (before vi.mock runs)
@@ -98,3 +103,4 @@ describe("readClipboardImage", () => {
 		})
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

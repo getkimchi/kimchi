@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Regression tests for the prompt lifecycle Kimchi's
  * prompt-enrichment extensions rely on.
@@ -133,3 +138,4 @@ describe("upstream forced-prompt projection (replaces the _systemPromptOverride 
 		expect(await transform(input)).toEqual(input)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

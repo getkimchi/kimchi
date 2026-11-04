@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { CompactionResult } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { BaseFakeAgentSession, makeAcpConn, makeAcpSessionFactory } from "../__mocks__/fake-agent-session.js"
@@ -195,3 +200,4 @@ describe("KimchiAcpAgent prompt gating during compaction", () => {
 		expect(await promptPromise).toEqual({ stopReason: "end_turn" })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

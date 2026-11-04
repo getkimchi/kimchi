@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, vi } from "vitest"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -84,3 +89,4 @@ describe("side chat extension errors", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith("No side chats in this session yet. Start one with /btw.", "info")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

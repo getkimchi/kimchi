@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFileSync } from "node:fs"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
@@ -135,3 +140,4 @@ it("pins the PR totals that /work and the console must agree on", () => {
 	const committed = JSON.parse(readFileSync(new URL("./client-agreement.json", import.meta.url), "utf8"))
 	expect(fixture).toEqual(committed)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

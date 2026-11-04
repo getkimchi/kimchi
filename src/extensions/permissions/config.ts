@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -157,3 +162,4 @@ export function appendToConfig(path: string, toAdd: { allow?: string[]; deny?: s
 function dedupe(items: string[]): string[] {
 	return Array.from(new Set(items.map((s) => s.trim()).filter(Boolean)))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

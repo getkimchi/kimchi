@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { deriveBaseUrl } from "../worker/client.js"
 import type { WaitForWorkspaceReadyOptions } from "./types.js"
 import { RemoteNetworkError } from "./types.js"
@@ -125,3 +130,4 @@ export async function waitForWorkspaceReady(options: WaitForWorkspaceReadyOption
 		await sleep(pollIntervalMs, signal)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Unit tests for the `_kimchi.dev/memory_*` ACP extension method handlers —
 // the client-built /memory surface. Store operations run against fake
 // backends in a temp memory root (the admin.test.ts harness pattern); the
@@ -598,3 +603,4 @@ describe("KimchiAcpAgent extMethod memory", () => {
 		expect(search.results).toEqual([])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

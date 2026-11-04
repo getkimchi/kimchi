@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { readOutboxStatus } from "./ledger/outbox.js"
 import {
@@ -160,3 +165,4 @@ export function statusText(
 	]
 	return { text: sections.map((lines) => lines.join("\n")).join("\n\n"), warning: problems.length > 0 }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

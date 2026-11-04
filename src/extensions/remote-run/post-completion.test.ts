@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir as osTmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -1643,3 +1648,4 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Push declined — nothing was pushed"), "info")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

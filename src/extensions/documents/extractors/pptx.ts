@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * PPTX extractor on the shared OOXML layer (jszip + xmldom). Reads slides in
  * sldIdLst order (reordered decks read correctly), honors hidden slides
@@ -205,3 +210,4 @@ function firstTable(frame: Element): Element | undefined {
 	for (const tbl of byTag(frame, "tbl")) return tbl
 	return undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

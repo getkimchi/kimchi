@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { FERMENT_V2_CONTEXT_MESSAGE_TYPE, GET_FERMENT_V2_TOOL_NAME } from "./constants.js"
 import type { FermentV2Lesson } from "./lessons.js"
@@ -161,3 +166,4 @@ function isFermentV2ContextMessage(value: unknown): boolean {
 		value.customType === FERMENT_V2_CONTEXT_MESSAGE_TYPE
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

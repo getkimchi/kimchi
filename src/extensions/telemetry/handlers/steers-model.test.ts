@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Regression tests for the "unknown model" steer-telemetry gap (Chunk 2,
  * trailing-SSoT chunk): steer events fired before the first assistant message, or under
@@ -78,3 +83,4 @@ describe("handlers/steers — model resolution", () => {
 		expect(attrs).toMatchObject({ model: "auto", routed_model: "kimi-k3" })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

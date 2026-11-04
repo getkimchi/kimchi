@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Minimal JSONC parser: strips // line comments and /* … */ block comments,
 // but respects string literals so "//" inside "https://…" survives.
 // Does not support trailing commas (matches JSON.parse constraint).
@@ -50,3 +55,4 @@ export function parseJsonc(raw: string): unknown {
 
 	return JSON.parse(result)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

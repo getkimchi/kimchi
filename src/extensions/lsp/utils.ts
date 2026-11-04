@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/lsp/utils.ts
 import { realpathSync } from "node:fs"
 import { homedir } from "node:os"
@@ -132,3 +137,4 @@ export function formatDiagnostic(d: Diagnostic): string {
 	const code = d.code !== undefined ? ` [${d.code}]` : ""
 	return `${line}:${col} ${sev}${code}: ${d.message}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

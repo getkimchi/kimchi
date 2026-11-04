@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared env-var integer parsing for extension knobs.
  */
@@ -10,3 +15,4 @@ export function parseEnvInt(name: string, fallback: number): number {
 	if (!Number.isFinite(value) || value < 0) return fallback
 	return Math.floor(value)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

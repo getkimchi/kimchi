@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import type { WorkerClient } from "./client.js"
 import type { CreateSessionRequest, Session } from "./types.js"
@@ -31,3 +36,4 @@ export async function createSession(
 export async function deleteSession(client: WorkerClient, name: string, signal?: AbortSignal): Promise<void> {
 	await client.del(`/api/session/${encodeURIComponent(name)}`, signal)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

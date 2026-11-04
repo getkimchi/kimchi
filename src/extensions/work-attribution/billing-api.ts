@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { isWorkId } from "../../shared/work-id.js"
 import { boundedResponse } from "../../utils/http.js"
 import type { BillingSelector } from "./billing-source.js"
@@ -213,3 +218,6 @@ export async function lookupRows(
 	}
 	throw new Error("Billing lookup exceeded the page limit")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

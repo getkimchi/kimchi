@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Rollout flags + verbatim decision criteria for the memory gates.
  *
@@ -166,3 +171,4 @@ export function consolidateQuestion(fact: string, index: number): ChoiceQuestion
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

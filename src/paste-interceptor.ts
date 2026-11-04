@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Heuristic fallback for terminals that don't honor bracketed-paste mode (ESC[?2004h).
 // Without bracketed paste, a pasted multi-line block arrives as raw \r-separated keystrokes — every \r matches the Editor's Enter keybinding and submits the first line as a message. The intent (a single multi-line prompt) is lost.
 // This interceptor watches process.stdin and, when a chunk looks like a paste burst, rewrites \r → \n in place so the Editor treats the bytes as newlines (tui.input.newLine matches \n) instead of submits (tui.input.submit matches \r). A 100 ms trailing-fragment window catches chunk-boundary tails (e.g. the trailing "\rZ" that follows a large paste's main chunk after kernel TTY scheduling, tmux forwarding, or SSH transport latency).
@@ -59,3 +64,4 @@ export function installPasteInterceptor(stdin: NodeJS.ReadStream = process.stdin
 	wrapped.installed = true
 	stdin.emit = wrapped
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Patches the upstream pi SDK's `/login` slash command to offer Kimchi browser
  * authentication first, while preserving upstream subscription login.
@@ -608,3 +613,4 @@ function hasModelsAfterStartupAuth(im: InteractiveMode): boolean {
 
 // Apply patch on module load
 applyLoginCommandPatch()
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

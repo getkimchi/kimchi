@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
 
 /**
@@ -9,3 +14,4 @@ export function requireModelRuntime(registry: ModelRegistry): ModelRuntime {
 	if (!runtime) throw new Error("Pi model registry runtime is unavailable")
 	return runtime
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

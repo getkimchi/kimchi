@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * OS font discovery for the pdf skill. Nothing ships with kimchi: the CLI
  * scans the host's font directories for a known-good Unicode TTF family in
@@ -131,3 +136,4 @@ export function findPdfFonts(dirs: string[]): PdfFontPaths | undefined {
 	}
 	return undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

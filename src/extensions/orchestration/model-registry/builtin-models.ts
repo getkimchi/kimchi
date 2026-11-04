@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { DEFAULT_ORCHESTRATION_GUIDELINES } from "./guidelines/default-orchestration-guidelines.js"
 import {
 	DEFAULT_BUILD_GUIDELINES,
@@ -340,3 +345,4 @@ export const MODEL_CAPABILITIES: ReadonlyMap<string, ModelCapabilities | "ignore
 	["claude-sonnet-4-6", "ignored"],
 	["claude-sonnet-4-5", "ignored"],
 ])
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

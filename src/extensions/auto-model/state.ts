@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { isAutoRoutedModel } from "./constants.js"
@@ -57,3 +62,4 @@ export function resolveEffectiveModel<TApi extends string>(
 	if (state.status !== "resolved") return model
 	return state.requestedId === model.id ? (state.model as Model<TApi>) : model
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import {
 	makeCustomXlsx,
@@ -195,3 +200,4 @@ describe("CSV", () => {
 		expect(w.markdown).toContain("| 3 | bob | 25 |")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import micromatch from "micromatch"
 import {
 	bashSegmentForms,
@@ -222,3 +227,4 @@ function stableStringify(value: unknown): string {
 	const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))
 	return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

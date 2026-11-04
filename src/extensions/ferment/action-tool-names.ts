@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import { FERMENT_TOOLS } from "./tool-names.js"
 
@@ -23,3 +28,4 @@ export function publicToolNameForActionKind(kind: DeclarativeAction["kind"]): st
 export function formatActionNudgeLine(action: DeclarativeAction): string {
 	return `${publicToolNameForActionKind(action.kind)}: ${action.reason}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

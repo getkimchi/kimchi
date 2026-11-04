@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { basename } from "node:path"
 import { FALLBACK_TARGET_NAME, SANDBOX_HOME } from "./constants.js"
 
@@ -52,3 +57,6 @@ export function repoBasename(repoUrl: string): string {
 export function deriveSandboxDestFromRepoUrl(repoUrl: string): string {
 	return `${SANDBOX_HOME}/${repoBasename(repoUrl)}/`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai"
 import { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "../../utils.js"
@@ -346,3 +351,4 @@ export function withNativeUsage(create: typeof ModelRuntime.create): typeof Mode
 export function installNativeUsageCapture(): void {
 	ModelRuntime.create = withNativeUsage(ModelRuntime.create.bind(ModelRuntime))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

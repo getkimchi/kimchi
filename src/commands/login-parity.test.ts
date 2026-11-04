@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Outcome-parity suite: `kimchi login` (CLI) and `/login` (TUI) drive the
  * same flow functions (src/extensions/login/flow.ts), so for equal choices
@@ -350,3 +355,4 @@ describe("CLI ↔ /login outcome parity", () => {
 		expect(cli.files).toEqual(tui.files)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

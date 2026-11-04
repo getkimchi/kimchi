@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Deterministic remote git execution for the PR-first flow.
  *
@@ -559,3 +564,4 @@ export function pullBranchLocally(opts: {
 		return { kind: "failed", reason: stderr.trim().split("\n")[0] ?? "unknown git error", command }
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

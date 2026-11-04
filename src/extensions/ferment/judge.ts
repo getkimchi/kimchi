@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createNativeUsageCapture } from "../work-attribution/native-usage.js"
 import { getWorkId, recordProviderRequest, tryWorkAttribution } from "../work-attribution.js"
 /**
@@ -1184,3 +1189,4 @@ function buildJourneyGraderPrompt(input: JudgeJourneyGradeInput): string {
 	}
 	return parts.join("\n")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

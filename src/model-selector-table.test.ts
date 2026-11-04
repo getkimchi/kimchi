@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Rendered-behavior tests for the /model selector capability table patch
  * (MODEL | PROVIDER | CONTEXT | VISION | DESCRIPTION columns).
@@ -468,3 +473,4 @@ describe("/model selector capability table (installed patch)", () => {
 
 // Keep vi referenced for the future use of mocks in this file's helpers.
 void vi
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
 import { isHarnessSteer } from "../steer-marker.js"
@@ -100,3 +105,4 @@ describe("applyLanguageHint", () => {
 		expect(applyLanguageHint(messages, "ko")).toEqual(messages)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

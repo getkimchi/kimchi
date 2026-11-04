@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 
 export const AGENT_END_ENTRY_TYPE = "agent_end"
@@ -59,3 +64,4 @@ export default function shutdownMarkerExtension(pi: ExtensionAPI): void {
 		marker.onSessionShutdown(cause, (type, data) => pi.appendEntry(type, data))
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

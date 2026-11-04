@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Translates steer/nudge domain events (steer:fired / steer:outcome) into
  * OTLP log records.
@@ -98,3 +103,4 @@ export const STEER_TELEMETRY_ATTR_ALLOWLIST = {
 	"steer:outcome": OUTCOME_ATTR_KEYS,
 	"steer:aborted": ABORTED_ATTR_KEYS,
 } as const
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

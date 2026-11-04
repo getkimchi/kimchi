@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, vi } from "vitest"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { deriveBaseUrl, WorkerClient } from "./client.js"
@@ -154,3 +159,4 @@ describe("WorkerClient", () => {
 		await expect(client.get("/api/status")).rejects.toThrow()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

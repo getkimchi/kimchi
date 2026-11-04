@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { RST, TRUECOLOR } from "../ansi.js"
 import { formatModelPair } from "../integrations/models.js"
 import type { ToolId } from "../integrations/types.js"
@@ -72,3 +77,4 @@ export function renderBanner(summary: BannerSummary): string {
 export function printBanner(summary: BannerSummary): void {
 	process.stdout.write(renderBanner(summary))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

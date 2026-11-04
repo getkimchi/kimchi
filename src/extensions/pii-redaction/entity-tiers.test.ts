@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { getDefaultExcludedEntities, getEntityTier, isKnownEntity } from "./entity-tiers.js"
@@ -157,3 +162,4 @@ describe("entity tier registry", () => {
 		}
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

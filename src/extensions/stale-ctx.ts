@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Helper for detecting the "stale extension ctx" error thrown by pi-coding-agent's
 // `assertActive()` when an event handler runs against a torn-down session
 // (e.g. an in-flight provider request still firing `before_provider_request` after `/new`).
@@ -17,3 +22,6 @@ export const STALE_CTX_MESSAGE_PREFIX = "This extension ctx is stale"
 export function isStaleCtxError(err: unknown): boolean {
 	return err instanceof Error && err.message.startsWith(STALE_CTX_MESSAGE_PREFIX)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

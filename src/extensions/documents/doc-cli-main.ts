@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `kimchi doc-cli <skill> <command> …` — the hidden in-binary route the
  * bundled document skills drive. The binary resolves the staged CLI bundle
@@ -99,3 +104,4 @@ export async function runDocCliMain(args: string[], deps: DocCliDeps = {}): Prom
 		return 2
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

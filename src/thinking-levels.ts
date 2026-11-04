@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Canonical thinking levels and the display cell shared by the `list_models`
  * tool (src/extensions/model-list.ts) and the /model selector table
@@ -49,3 +54,4 @@ export function thinkingColumnValue(levels: readonly string[] | undefined, reaso
 	if (normalized.length > 0) return normalized.join(", ")
 	return reasoning ? "on" : "off"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

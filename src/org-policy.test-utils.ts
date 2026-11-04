@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Test-only seeding for the org-policy holder.
 //
 // Lives outside src/org-policy.ts so the production module carries no
@@ -44,3 +49,4 @@ export async function setOrgPolicyForTests(policy: OrgPolicy | undefined): Promi
 	)
 	await initOrgPolicy(SEED_API_KEY, { cachePath, fetch: unreachableFetch })
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

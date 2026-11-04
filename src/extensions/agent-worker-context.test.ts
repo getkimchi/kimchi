@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, describe, expect, it } from "vitest"
 import { isAgentWorker, runAsAgentWorker } from "./agent-worker-context.js"
 import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
@@ -29,3 +34,4 @@ describe("agent worker context", () => {
 		expect(isSubagent()).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { emitRedactionFacts, KIMCHI_DISABLE_REDACTION_EVENTS, PII_REDACTION_EVENTS } from "./redaction-events.js"
@@ -109,3 +114,4 @@ describe("emitRedactionFacts", () => {
 		).not.toThrow()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

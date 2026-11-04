@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // CLI logic — imported dynamically by entry.ts after PI_PACKAGE_DIR is set.
 // All static imports here (extensions, pi-mono) are safe because the env is already configured.
 
@@ -1048,3 +1053,4 @@ async function cliMain(): Promise<void> {
 }
 
 void cliMain()
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

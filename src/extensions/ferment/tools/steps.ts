@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Step tools: start_ferment_step, complete_ferment_step, verify_ferment_step, skip_ferment_step, fail_ferment_step.
  *
@@ -921,3 +926,4 @@ ${renderGateGuidance("complete_ferment_step")}`,
 		},
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

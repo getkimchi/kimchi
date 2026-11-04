@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ferment Finite State Machine — pure transitions + guards.
  *
@@ -464,3 +469,4 @@ export function isTerminalState(state: FsmState): boolean {
 export function getValidEvents(state: FsmState): FsmEvent[] {
 	return Object.keys(TRANSITIONS[state]) as FsmEvent[]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

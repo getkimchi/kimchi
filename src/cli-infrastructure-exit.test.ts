@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { type InfrastructureFailure, KIMCHI_INFRA_ERROR_EXIT_CODE } from "./infrastructure-error.js"
@@ -72,3 +77,4 @@ describe("post-main CLI infrastructure exit policy", () => {
 		expect(exitProcess).not.toHaveBeenCalled()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

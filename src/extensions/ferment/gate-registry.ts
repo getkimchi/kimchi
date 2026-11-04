@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ferment gate registry — single source of truth for structured quality gates.
  *
@@ -356,3 +361,4 @@ export function hasBlockingFlag(verdicts: ReadonlyArray<{ verdict: string }> | u
 export function flaggedVerdicts<V extends { verdict: string }>(verdicts: ReadonlyArray<V> | undefined): V[] {
 	return Array.isArray(verdicts) ? verdicts.filter((v) => v.verdict === "flag") : []
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

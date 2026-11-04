@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { closeSync, existsSync, fstatSync, openSync, readFileSync } from "node:fs"
@@ -228,3 +233,4 @@ export async function captureWorkAccount(cwd: string): Promise<WorkAccountSnapsh
 		// Unknown identity disables cross-work inference; ordinary local tracking can continue.
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

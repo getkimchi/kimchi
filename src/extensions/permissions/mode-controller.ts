@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { CustomEntry, SessionManager } from "@earendil-works/pi-coding-agent"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import type { LoadedConfig } from "./config.js"
@@ -183,3 +188,4 @@ export function resolveInitialPermissionModeDetailed(
 	// config default) starts clamped to the nearest allowed mode.
 	return { state: { ...resolved, mode: clampMode(resolved.mode), initiatedBy: "user" }, requested: resolved.mode }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

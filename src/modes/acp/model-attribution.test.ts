@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Unit tests for the ACP per-message model attribution contract: ref
 // composition from the assistant message tuple (requested vs served ids) and
 // the first-chunk-per-messageId dedup that keeps `_meta` off repeated chunks.
@@ -95,3 +100,4 @@ describe("modelMetaFor", () => {
 		expect(modelMetaFor(undefined, "km.0", routed)).toEqual({ [CAPABILITIES_KEY]: routed })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Mirror the auto-router's routed-model resolution entries to ACP clients as
 // a `_kimchi.dev/routed_model` ext notification. The auto-model extension
 // appends a `kimchi_routed_model_resolution` entry only when the backend's
@@ -34,3 +39,4 @@ export function emitRoutedModelUpdate(conn: AgentSideConnection, sessionId: stri
 		sessionId,
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

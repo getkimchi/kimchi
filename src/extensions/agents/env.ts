@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * env.ts — Detect environment info (git, platform) for subagent system prompts.
  */
@@ -31,3 +36,4 @@ export async function detectEnv(pi: ExtensionAPI, cwd: string): Promise<EnvInfo>
 		platform: process.platform,
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

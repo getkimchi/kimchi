@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** The gateway's limit on combined body and header tags, counted before deduplication. */
 export const GATEWAY_TAG_LIMIT = 10
 /** Kimchi's usage tags always add model and phase tags, and the billing tag needs one more slot. */
@@ -29,3 +34,4 @@ export function prepareBillingTag(
 	const billingTag = `kimchi-request:${requestId}`
 	return { billingTag, header: [...retained, billingTag].join(",") }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

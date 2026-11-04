@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { TriggerEngine } from "./engine.js"
 import type { SessionContext } from "./session-context.js"
@@ -405,3 +410,4 @@ describe("TriggerEngine.evaluateToolTriggers — gate (probe-as-veto on the tool
 		expect(engine.isLoaded("session-then-gated")).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

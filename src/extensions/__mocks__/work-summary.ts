@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
 import { readWorkSummary, seedProjectionRows, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import type { Collection, Row, WorkSummaryView } from "../work-attribution/row-log.js"
@@ -33,3 +38,4 @@ export function savedWorkSummary(agentDir: string, workId: string): WorkSummaryV
 	if (!view) throw new Error(`No saved work summary for ${workId}`)
 	return view
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

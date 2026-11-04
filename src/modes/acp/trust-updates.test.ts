@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Unit tests for the ACP project-trust surfacing payloads (LLM-3628):
 // coarse blocked-category computation, push payload shape, and the
 // set_project_trust decision parsing contract.
@@ -242,3 +247,4 @@ describe("CATEGORY_PATHS vs TRUST_REQUIRING_PROJECT_RESOURCES", () => {
 		}
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
 import { Container, Spacer, Text } from "@earendil-works/pi-tui"
@@ -317,3 +322,4 @@ export default function promptSummaryExtension(pi: ExtensionAPI) {
 		setTimeout(trySend, 0).unref()
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

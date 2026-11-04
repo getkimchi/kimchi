@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `docx.mjs` — the command-line entry the bundled docx skill drives. Runs
  * under the kimchi binary's embedded Bun runtime (`BUN_BE_BUN=1 kimchi
@@ -353,3 +358,4 @@ export async function applyTemplate(
 }
 
 runCliScript(import.meta.url, runDocxCli)
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

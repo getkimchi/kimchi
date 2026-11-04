@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { classifyLLMGatewayError, type LLMGatewayErrorReason, type ModelRetiredInfo } from "./llm-gateway-error.js"
 
 /**
@@ -219,3 +224,4 @@ export function isRetryableErrorStillPending(rawError: string, signals: RetryPen
 	// Indeterminate: default to surfacing (sanitized) rather than swallowing.
 	return false
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

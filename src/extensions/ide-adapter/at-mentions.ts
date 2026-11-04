@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AtMentionNotification, SelectionChangedNotification } from "./types.js"
 
 /** Pending at-mention queue. The harness prepends these to the next user input. */
@@ -42,3 +47,4 @@ export function setLatestSelection(selection: SelectionChangedNotification): voi
 export function getLatestSelection(): SelectionChangedNotification | null {
 	return latestSelection
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

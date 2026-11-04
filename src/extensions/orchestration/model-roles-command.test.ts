@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 /**
  * Tests for the pure helper functions in model-roles-command.ts.
@@ -415,3 +420,4 @@ describe("modelRefTags", () => {
 		expect(modelRefTags("kimchi-dev/auto", apiSlugs, deprecatedSlugs)).toEqual([])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

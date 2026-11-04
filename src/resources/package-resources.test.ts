@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
@@ -232,3 +237,4 @@ describe("package resources", () => {
 		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("package manager exploded"))
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

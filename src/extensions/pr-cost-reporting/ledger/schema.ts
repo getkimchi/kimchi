@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * SQLite DDL and store constants for the PR-cost ledger. Pure data — importable from
  * any runtime (Node/vitest included); nothing here opens a database.
@@ -116,3 +121,4 @@ CREATE TABLE IF NOT EXISTS work_dirty (
 export const META_PROJECTION_VERSION = "projectionVersion"
 /** Current derived-projection format; bump when the projection layout changes (forces rebuild). */
 export const PROJECTION_VERSION = 1
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

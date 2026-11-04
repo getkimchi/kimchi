@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { makeCustomXlsx, makeOfficeShapedXlsx, makePrefixedNsXlsx, makeSimpleXlsx } from "./fixtures/builders.js"
 import { type CliIo, runXlsxCli } from "./xlsx-cli.js"
@@ -243,3 +248,4 @@ describe("typed errors and new commands", () => {
 		expect(err[0]).toContain("recalc of .xlsm loses macros")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

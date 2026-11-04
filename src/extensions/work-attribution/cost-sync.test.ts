@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
@@ -2398,3 +2403,4 @@ describe("empty billing settlement", () => {
 		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { spawn, spawnSync } from "node:child_process"
 import {
 	chmodSync,
@@ -353,3 +358,4 @@ export async function reportBridgeRefresh(
 		`kimchi update: work reporting plugin update did not complete (bridge ${bundled}, receipts on ${current}) — rerun "kimchi update"; details: ${bridgeRefreshLogPath(prefix)}`,
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

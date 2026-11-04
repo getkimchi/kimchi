@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // `cacheRead` was historically omitted from this shape because the original
 // callers (agent-widget headline, prompt-summary) only treated cache-write as
 // the "expensive" line. Once Agent results started flowing into prompt-summary
@@ -50,3 +55,4 @@ export function getSessionContextPercent(session: SessionLike | undefined): numb
 		return null
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

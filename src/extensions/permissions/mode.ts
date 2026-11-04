@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { DANGEROUS_BYPASS_FLAG, PERMISSION_MODES } from "./constants.js"
 import type { PermissionMode, PermissionModeSource, PermissionModeState } from "./types.js"
 export interface ModeResolution {
@@ -52,3 +57,6 @@ export function resolveMode(input: ModeResolutionInput): PermissionModeState {
 }
 
 export const PERMISSION_MODE_SESSION_ENTRY_TYPE = "permission_mode"
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

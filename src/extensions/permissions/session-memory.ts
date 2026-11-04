@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import {
 	extractBashProgram,
 	FILE_TOOLS,
@@ -161,3 +166,4 @@ function dirGlob(path: string): string | null {
 	if (idx <= 0) return path
 	return `${path.slice(0, idx)}/**`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Content converter — transforms raw HTML into the requested output format.
  *
@@ -186,3 +191,4 @@ function convertToMarkdown(doc: Document): string {
 	const bodyHTML = doc.body?.innerHTML ?? doc.documentElement?.innerHTML ?? ""
 	return td.turndown(bodyHTML)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

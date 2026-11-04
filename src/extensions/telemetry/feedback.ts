@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import { resolveSessionTelemetryCtx } from "./index.js"
 import type { TelemetryContext } from "./session-context.js"
@@ -142,3 +147,4 @@ export function trackModelSwitchFeedback(args: {
 		},
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

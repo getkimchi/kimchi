@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { DIGEST_MAX_FACTS, DIGEST_MAX_TOKENS, TURN_RECALL_MAX_FACT_CHARS, TURN_RECALL_MAX_FACTS } from "./config.js"
 import { buildMemoryDigest, buildTurnRecall, digestCandidateTexts, digestSection, factKey } from "./inject.js"
@@ -195,3 +200,4 @@ describe("buildTurnRecall (progressive-recall value gate)", () => {
 		expect(buildTurnRecall([{ memory: "weak", score: 0.1 }], new Set())).toBeUndefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

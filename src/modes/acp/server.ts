@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
 
@@ -3837,3 +3842,4 @@ export async function runAcpMode(options: RunAcpOptions): Promise<void> {
 		process.exit(exitCode)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

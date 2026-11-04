@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash, randomUUID } from "node:crypto"
 import { mkdir, open } from "node:fs/promises"
 import { join } from "node:path"
@@ -1286,3 +1291,4 @@ export async function takeLimitNotices(agentDir: string): Promise<LimitNotices> 
 	})
 	return notices
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

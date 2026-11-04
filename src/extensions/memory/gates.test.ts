@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { EXTRACTION_SYSTEM_PROMPT } from "./capture-worker.js"
 import {
@@ -139,3 +144,4 @@ describe("gate criteria (verbatim, taxonomy-sync)", () => {
 		expect(consolidateState(["a", "b"])).toContain("1. a\n2. b")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

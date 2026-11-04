@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Artifact recorder: persists artifact detection as a session custom
 // entry, one row per prompt, so any client that replays the session
 // log can re-emit exactly the artifacts the live run produced instead of
@@ -150,3 +155,4 @@ export function artifactRecorderExtension(pi: ExtensionAPI) {
 		pi.appendEntry(ARTIFACTS_ENTRY_TYPE, entry)
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

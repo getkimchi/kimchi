@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Shared CLI mode detection — a leaf module with **zero imports**.
 //
 // This file is loaded very early (entry.ts dynamically imports
@@ -33,3 +38,4 @@ export const hasPrintFlag = (argv: readonly string[]): boolean => argv.includes(
 /** True when argv contains `--export` or `--export=<file>`. */
 export const hasExportFlag = (argv: readonly string[]): boolean =>
 	argv.includes("--export") || argv.some((a) => a.startsWith("--export="))
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

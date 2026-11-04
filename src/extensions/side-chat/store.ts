@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Side chat transcripts: each side chat's own messages live in their own
  * JSONL file next to the main session, so the main session only carries a
@@ -154,3 +159,4 @@ function endsWithNewline(file: string): boolean {
 		closeSync(fd)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { isResourceEnabled, readResourceSettings } from "./store.js"
@@ -107,3 +112,4 @@ function firstLine(value: string | undefined): string | undefined {
 	const line = value?.trim().split(/\r?\n/).find(Boolean)
 	return line || undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

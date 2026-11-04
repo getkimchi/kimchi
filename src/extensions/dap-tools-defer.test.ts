@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap-tools-defer.test.ts
 //
 // Phase 1 Chunk 3+: all session-scoped DAP tools AND the five entry tools
@@ -371,3 +376,4 @@ describe("DAP session-tool deferral", () => {
 		}
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

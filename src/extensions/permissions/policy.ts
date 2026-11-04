@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { getOrgPolicy } from "../../org-policy.js"
 import { PERMISSION_MODES } from "./constants.js"
 import type { PermissionMode } from "./types.js"
@@ -81,3 +86,4 @@ export function releaseTargetForPlanApproval(): PermissionMode | undefined {
 	if (!hasOrgPolicyRestrictions()) return "auto"
 	return highestAllowedHighMode() ?? (getAllowedModes().has("default") ? "default" : undefined)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

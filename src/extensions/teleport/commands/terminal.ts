@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { basename } from "node:path"
 import { readGitToken } from "../../../config.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
@@ -95,3 +100,4 @@ export async function runTerminal(
 		warn(ctx, `ssh exited with code ${code}.`)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

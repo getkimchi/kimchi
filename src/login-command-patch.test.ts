@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { getModels } from "@earendil-works/pi-ai/compat"
 import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
@@ -1298,3 +1303,4 @@ it("keeps real no-model warnings when no model became available", () => {
 		warningDelegate.original = saved
 	}
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

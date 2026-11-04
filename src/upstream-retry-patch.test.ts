@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { preserveRawErrorMessage } from "./extensions/error-preservation.js"
@@ -442,3 +447,4 @@ describe("infrastructure breaker", () => {
 		expect(isInfrastructureBreakerTripped()).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

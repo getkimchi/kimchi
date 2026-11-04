@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * A1-style cell/sheet reference helpers shared by the XLSX extractor,
  * writer, editor and formula lint. All indices are 1-based like the UI.
@@ -223,3 +228,4 @@ export function splitSheetRef(token: string): { sheet: string | undefined; ref: 
 	if (plain) return { sheet: plain[1], ref: plain[2] }
 	return { sheet: undefined, ref: token }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

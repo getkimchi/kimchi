@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/tools.ts
 //
 // Layer 1 DAP primitive tools — TypeBox schemas + execute handlers + renderCall.
@@ -865,3 +870,6 @@ function formatStop(session: DapSession, event: { reason: string; description?: 
 	const desc = event.description ? ` — ${event.description}` : ""
 	return `Stopped: ${event.reason}${desc} (thread ${threadId})`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

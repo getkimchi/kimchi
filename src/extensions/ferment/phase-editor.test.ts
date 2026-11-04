@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
@@ -170,3 +175,4 @@ describe("editPhaseProposal", () => {
 		expect(runtime.markHumanInput.mock.calls.length).toBeGreaterThanOrEqual(3)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

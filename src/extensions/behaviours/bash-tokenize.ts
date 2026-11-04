@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pragmatic shell tokeniser — extracts the *executable* of every command
  * stage in a Bash one-liner, the way an agent might emit one.
@@ -270,3 +275,4 @@ function walk(s: string, start: number, closer: ")" | "`" | undefined, out: stri
 	endStage()
 	return i
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

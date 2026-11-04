@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Regression test for the Windows home-leak bug: unit tests must never touch
  * the developer's real home. tests/setup/isolated-home.ts redirects
@@ -36,3 +41,4 @@ describe("unit test home isolation", () => {
 		expect(isInsideDir(homedir(), getAgentConfigDir())).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

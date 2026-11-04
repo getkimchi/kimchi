@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * High-level matchers built on top of `tool(...)`.
  *
@@ -67,3 +72,4 @@ function testString(condition: StringCondition, value: string): boolean {
 function escapeRegex(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

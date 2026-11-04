@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { McpConfig, ServerEntry } from "pi-mcp-adapter/types"
 import { gatewayAuthHeaders, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { getEnvironmentApiKey, readApiKeyFromConfigFile, resolveEndpoints } from "../../config.js"
@@ -116,3 +121,4 @@ export function hasGatewayAddress(config: McpConfig, addresses: readonly string[
 	}
 	return false
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

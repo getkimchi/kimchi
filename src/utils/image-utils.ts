@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFileSync } from "node:fs"
 import { extname } from "node:path"
 
@@ -36,3 +41,6 @@ export function readImageFileFromDisk(path: string): { bytes: Uint8Array; mimeTy
 	if (buf.length === 0 || buf.length > MAX_IMAGE_FILE_BYTES) return null
 	return { bytes: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), mimeType }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

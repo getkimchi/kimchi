@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * In-panel list of the session's side chats, opened from the header's ≡.
  *
@@ -90,3 +95,4 @@ function selectListTheme(theme: Theme): SelectListTheme {
 		noMatch: (text) => theme.fg("muted", text),
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

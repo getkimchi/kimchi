@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Trigger primitives for behaviour discovery.
  *
@@ -181,3 +186,4 @@ export function walkLeaves(spec: ProbeSpec, visit: (leaf: ProbeSpec) => void): v
 	}
 	visit(spec)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

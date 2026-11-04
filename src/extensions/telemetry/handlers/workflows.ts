@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Translates workflow domain events (@kimchi-dev/kimchi-workflows) into OTLP log records.
  *
@@ -37,3 +42,4 @@ export function handleWorkflowEvent(ctx: TelemetryContext, raw: unknown): void {
 
 	ctx.emit(`workflow.${event.replaceAll("_", ".")}`, attrs)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

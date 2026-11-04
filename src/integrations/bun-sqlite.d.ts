@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Minimal ambient typings for `bun:sqlite`, used at runtime in the
  * Bun-compiled binary (cursor.ts, the PR-cost ledger). Pulling all of
@@ -28,3 +33,4 @@ declare module "bun:sqlite" {
 		close(): void
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Dispatch the compiled recovery process before normal startup touches stdio,
 // validates auxiliary files, or checks for updates.
 //
@@ -31,3 +36,4 @@ async function main(): Promise<void> {
 }
 
 void main()
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

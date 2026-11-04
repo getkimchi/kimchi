@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Format a byte count in decimal SI units (KB = 1000 B, MB = 1_000_000 B, …).
  * Decimal so the rendered units agree with the workspace-size thresholds
@@ -81,3 +86,4 @@ function mantissa(scaled: number): string {
 export function formatMillicores(millicores: number): string {
 	return `${millicores}m`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

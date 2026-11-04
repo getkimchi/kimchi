@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Sandbox-ssh: the single owner of how local processes ssh into a sandbox
  * over the WS proxy tunnel (see CONTEXT.md). Every ssh/rsync/git invocation
@@ -129,3 +134,4 @@ export async function withSshSession<T>(run: (session: SshSession) => Promise<T>
 		await rm(dir, { recursive: true, force: true }).catch(() => {})
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

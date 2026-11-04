@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { appendToConfig, type LoadedConfig, projectConfigPath, userConfigPath } from "./config.js"
 import { parseModeString } from "./mode.js"
@@ -240,3 +245,4 @@ function saveSessionRules(ctx: ExtensionContext, deps: CommandDeps, target: "use
 function formatRule(rule: Rule): string {
 	return `${rule.behavior} ${stringifyRule(rule)} [${rule.source}]`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

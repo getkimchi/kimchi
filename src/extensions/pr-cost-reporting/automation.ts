@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { INFRA_BREAKER_THRESHOLD_ENV, resolveInfrastructureBreakerThreshold } from "../../upstream-retry-patch.js"
 
@@ -28,3 +33,4 @@ export function uploadSkipReason(mode: ExtensionContext["mode"], env = process.e
 	if (resolveInfrastructureBreakerThreshold(env) > 0) return `benchmark run (${INFRA_BREAKER_THRESHOLD_ENV})`
 	return undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

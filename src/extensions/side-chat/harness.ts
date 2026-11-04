@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Harness seams for the side chat (TUI fullscreen only).
  *
@@ -458,3 +463,4 @@ export function getSideChatHost(): SideChatHost | undefined {
 		requestRender: () => mode.ui.requestRender(),
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

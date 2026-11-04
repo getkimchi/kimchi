@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { QuotaUsage, ResourceUsage } from "../../../sandbox/cloud/types.js"
 import { formatK8sBytesPair, formatMillicores } from "./format-bytes.js"
 
@@ -77,3 +82,4 @@ export function quotaLines(quota: QuotaUsage | undefined): [string | undefined, 
 	const org = quota?.orgUsage ? scope(quota.orgUsage) : undefined
 	return [user ? `you: ${user}` : undefined, org ? `org: ${org}` : undefined]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

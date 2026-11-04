@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { resolveEndpoints } from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 
@@ -35,3 +40,4 @@ function openCodeModelEntry(model: ModelMetadata): Record<string, unknown> {
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * In-place PDF text editing via LibreOffice Draw (the only engine that can
  * edit positioned text runs; pdf-lib cannot modify content streams). The
@@ -176,3 +181,4 @@ function defaultRun(
 		signal: result.signal ?? undefined,
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

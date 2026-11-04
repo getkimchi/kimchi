@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Post-completion handler for remote plan execution.
  *
@@ -1158,3 +1163,4 @@ function formatReviewComments(summary: string | undefined, comments: ReviewComme
 	parts.push("Address every comment above. The server-side workflow (commit, artifacts) stays exactly the same.")
 	return parts.join("\n")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

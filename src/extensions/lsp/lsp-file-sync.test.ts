@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Regression tests for the "LSP file sync failed" code-frame dump observed in
 // worktree sessions: a server that fails to start (e.g. typescript-language-server
 // with no resolvable tsserver.js) must be reported once as a one-line message
@@ -392,3 +397,4 @@ describe("lsp file sync failure handling", () => {
 		expect(setStatus.mock.lastCall).toEqual(["lsp", "LSP: typescript-language-server failed to start, gopls"])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

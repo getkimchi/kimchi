@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/tools.test.ts
 //
 // Verifies the Layer 1 DAP tool schemas, parameter validation, and sessionId
@@ -345,3 +350,4 @@ describe("Layer 1 DAP tools", () => {
 		})
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

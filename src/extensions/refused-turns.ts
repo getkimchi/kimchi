@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Handles refused turns: detects them from the provider's response fields,
  * tells the user why, and keeps them out of the model context.
@@ -97,3 +102,4 @@ export default function refusedTurnsExtension(pi: ExtensionAPI): void {
 		return { messages }
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

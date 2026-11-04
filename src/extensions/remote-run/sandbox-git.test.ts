@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ChildProcess, execFileSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { describe, expect, it, vi } from "vitest"
@@ -510,3 +515,4 @@ describe("pullBranchLocally", () => {
 		if (result.kind === "failed") expect(result.reason).toContain("does not appear to be a git repository")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

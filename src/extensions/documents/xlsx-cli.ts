@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `xlsx.mjs` — command-line entry for the bundled xlsx skill, same posture
  * as docx.mjs: runs under the kimchi binary (Bun) and plain node.
@@ -406,3 +411,4 @@ function parseXlsxOps(raw: unknown): XlsxOp[] {
 }
 
 runCliScript(import.meta.url, runXlsxCli)
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

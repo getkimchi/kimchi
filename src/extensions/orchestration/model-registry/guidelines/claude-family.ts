@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Claude family phase-guideline overrides.
  *
@@ -47,3 +52,4 @@ export const CLAUDE_OPUS_46_PLAN = `During **plan** phase (claude-opus-4-6 speci
 
 export const CLAUDE_OPUS_46_EXPLORE = ""
 export const CLAUDE_OPUS_46_REVIEW = ""
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

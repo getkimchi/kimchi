@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { SessionPermissionFlagController } from "./types.js"
 
 /**
@@ -46,3 +51,4 @@ export function getSessionPermissionFlagController(sessionId: string): SessionPe
 export function hasSessionPermissionFlagController(sessionId: string): boolean {
 	return bySessionId.has(sessionId)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

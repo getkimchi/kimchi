@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Clock/ID seam for deterministic writer output (Phase 2+; writers are not
  * allowed to call Date.now()/Math.random() directly). With everything pinned,
@@ -34,3 +39,4 @@ function cryptoRandomHex(bytes: number): string {
 	globalThis.crypto.getRandomValues(arr)
 	return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

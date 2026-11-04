@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AgentCreatedSkillReport, SkillState } from "../skills-manager/usage.js"
 import { agentCreatedReport, UsageTracker } from "../skills-manager/usage.js"
 
@@ -54,3 +59,4 @@ export async function runAutoTransitions(skillsDir: string, now: Date = new Date
 
 	return result
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

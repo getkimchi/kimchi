@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Integration: unattended background-bash exit delivery against the REAL
  * installed agent loop.
@@ -677,3 +682,4 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		expect(harness.state.delivery.hasPending()).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

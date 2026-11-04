@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared outcome watcher for steer/nudge events.
  *
@@ -177,3 +182,4 @@ export function resetSteerOutcomeWatches(): void {
 export function _watcherPiForTest(): ExtensionAPI | undefined {
 	return extensionPi
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

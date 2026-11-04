@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { openAsBlob } from "node:fs"
 import type { WorkspaceCredentials } from "../cloud/types.js"
 import { WorkerError } from "./types.js"
@@ -210,3 +215,4 @@ async function checkResponse(resp: Response, url: string): Promise<void> {
 	}
 	throw new WorkerError(`HTTP ${resp.status} from ${url}${text ? `: ${text}` : ""}`, resp.status, body || undefined)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

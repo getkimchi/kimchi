@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { resolve } from "node:path"
 import type { ConfigScope } from "../config/scope.js"
 import { readApiKeyFromConfigFile } from "../config.js"
@@ -116,3 +121,4 @@ export async function prepareTool(
 	printBanner({ toolId, gsdActive: byId("gsd2")?.isInstalled() ?? false, mode, availableModels: models })
 	return { apiKey, tool, models }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

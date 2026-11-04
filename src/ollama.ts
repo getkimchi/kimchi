@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Native Ollama provider support — probe a locally-running Ollama server,
  * persist discovered models into models.json, expose them through the existing
@@ -493,3 +498,4 @@ export function augmentModelRolesWithOllama(
 
 	return next
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

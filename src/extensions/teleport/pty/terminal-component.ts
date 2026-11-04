@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type Component, CURSOR_MARKER, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import type { CellData, XtermCore } from "./xterm-core.js"
 
@@ -292,3 +297,4 @@ export class TerminalComponent implements Component {
 		this.session.close()
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

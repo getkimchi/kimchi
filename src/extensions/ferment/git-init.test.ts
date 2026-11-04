@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execSync } from "node:child_process"
 import { mkdtempSync, rmdirSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -144,3 +149,4 @@ describe("autoInitFromEnv", () => {
 		expect(autoInitFromEnv()).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

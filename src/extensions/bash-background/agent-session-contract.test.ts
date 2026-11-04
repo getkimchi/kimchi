@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * SDK contract tests: background-bash exit delivery through the REAL
  * `AgentSession`.
@@ -615,3 +620,4 @@ describe("background bash delivery contract (real AgentSession)", () => {
 		await harness.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 	}, 20_000)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Decide once per session whether a human is reachable ("user loop"), so the
  * system prompt can drop interactive-session-only sections (Consent, Harness
@@ -110,3 +115,4 @@ export function isTuiSession(): boolean {
 export function backgroundNotificationsReachUser(mode: ExtensionContext["mode"]): boolean {
 	return mode === "tui"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

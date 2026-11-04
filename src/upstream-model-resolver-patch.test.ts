@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // The package exports map does not expose dist/core/model-resolver.js; load
 // the module by file URL like the other upstream contract tests do.
 const resolverModuleUrl = new URL(
@@ -112,3 +117,4 @@ describe("upstream patch contract — model resolver multi-segment provider ids"
 		if (r.status === "resolved") expect(r.model.id).toBe("auto")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

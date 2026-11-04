@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Extracts the comma-separated tool-name line from the `## Available Tools`
  * section of a rendered system prompt, or throws when the section is absent.
@@ -10,3 +15,4 @@ export function toolNamesFromSection(systemPrompt: string): string {
 	if (after === undefined) throw new Error("## Available Tools section missing from system prompt")
 	return after.split("\n")[0]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

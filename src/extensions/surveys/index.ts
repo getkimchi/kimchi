@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
 import { getActiveFerment } from "../ferment/index.js"
@@ -112,3 +117,4 @@ function isStandardCodingUserPrompt(event: InputEvent): boolean {
 	const text = event.text.trimStart()
 	return text.length > 0 && !text.startsWith("/")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

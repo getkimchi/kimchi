@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Headless-browser enhancer: styled HTML → PDF via Chrome / Chromium /
  * Edge. Detection lives here, not in the model — the skill CLI reports
@@ -176,3 +181,4 @@ function defaultRun(cmd: string, args: string[]): { code: number; stderr: string
 		signal: result.signal ?? undefined,
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

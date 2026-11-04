@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 
 // Test that the Grader agent type is registered and has the correct config.
@@ -76,3 +81,4 @@ describe("Grader agent registration", () => {
 		expect(cfg.systemPrompt).toContain("Do not write a second check if the first passes")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Focused formatter tests for the model-visible status and result text of
  * the background-bash cohort: checkpoint evidence, headers, no-output
@@ -264,3 +269,4 @@ describe("formatBytes", () => {
 		expect(formatBytes(3 * 1024 * 1024)).toBe("3.0 MB")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

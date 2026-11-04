@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, type vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "./git-workflow.js"
@@ -195,3 +200,4 @@ describe("buildRemoteSteerPrompt", () => {
 		expect(prompt).not.toContain("Do NOT push")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

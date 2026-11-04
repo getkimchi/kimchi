@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { OrchestratorWriteGuard } from "./review-write-guard.js"
@@ -319,3 +324,4 @@ describe("OrchestratorWriteGuard — threshold order assertions", () => {
 		expect(() => new OrchestratorWriteGuard(createContext())).not.toThrow()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

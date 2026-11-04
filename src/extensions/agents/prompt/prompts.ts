@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * prompts.ts — System prompt builder for agents.
  */
@@ -198,3 +203,4 @@ const genericBase = `# Role
 You are a general-purpose coding agent for complex, multi-step tasks.
 You have full access to read, write, edit files, and execute commands.
 Do what has been asked; nothing more, nothing less.`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

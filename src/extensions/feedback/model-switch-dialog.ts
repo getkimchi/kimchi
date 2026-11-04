@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { Container, Key, matchesKey } from "@earendil-works/pi-tui"
@@ -101,3 +106,4 @@ export class ModelSwitchComponent extends Container {
 		this.editor.handleInput(data)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

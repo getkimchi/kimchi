@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap.ts
 /**
  * DAP (Debug Adapter Protocol) Extension
@@ -570,3 +575,4 @@ export default function (pi: ExtensionAPI) {
 		return session
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

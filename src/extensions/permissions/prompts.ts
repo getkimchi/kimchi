@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import { ERROR_FG, ORANGE_FG, RST, RST_FG, SUCCESS_FG } from "../../ansi.js"
@@ -322,3 +327,6 @@ export function formatRiskBadge(score: RiskScore): string {
 	const color = score === "low" ? SUCCESS_FG : score === "medium" ? ORANGE_FG : ERROR_FG
 	return `${color}\u25CF ${score} risk${RST_FG}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

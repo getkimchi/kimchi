@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Memory capture worker — a detached process that turns session messages
  * into stored memories without blocking the harness.
@@ -1528,3 +1533,4 @@ if (isWorkerMain) {
 		},
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

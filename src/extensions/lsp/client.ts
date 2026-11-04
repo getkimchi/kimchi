@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/lsp/client.ts
 import { debuglog } from "node:util"
 import {
@@ -797,3 +802,4 @@ export function waitForDiagnostics(
 		waiters.add(waiter)
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

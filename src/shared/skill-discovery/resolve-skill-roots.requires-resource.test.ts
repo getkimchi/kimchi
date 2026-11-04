@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `requires-resource:` frontmatter gating for bundled skills: a skill that
  * declares one is advertised only while that resource toggle is enabled.
@@ -71,3 +76,4 @@ describe("requires-resource bundled skill gating", () => {
 		expect(on?.dir).toBe(bundledDir)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

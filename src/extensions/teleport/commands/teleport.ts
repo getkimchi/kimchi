@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync } from "node:fs"
 import { open, readFile, stat } from "node:fs/promises"
 import { platform } from "node:os"
@@ -663,3 +668,4 @@ class SyncFailure extends Error {}
  * non-abort reason. Routed through `refuse()` as "Could not list sessions".
  */
 class ListFailure extends Error {}
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

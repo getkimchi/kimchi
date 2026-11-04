@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mergePullRequestLinks } from "../pull-request-status/links.js"
 
 /*
@@ -158,3 +163,4 @@ export function summaryLatest(
 	for (const collection of COLLECTIONS) for (const row of rows(collection)) observeLatest(latest, collection, row)
 	return { latest, pullRequests: commitPullRequests(rows("commits")) }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

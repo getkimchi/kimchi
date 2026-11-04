@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Document intake: binary documents never reach the model as decoded UTF-8
  * garbage. Upstream `read` and the @file pipeline special-case images only —
@@ -231,3 +236,4 @@ export default function documentIntakeExtension(pi: ExtensionAPI): void {
 		return { action: "transform" as const, text }
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
