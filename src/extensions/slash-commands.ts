@@ -11,6 +11,7 @@ export const SLASH_COMMANDS = {
 	agents: { hint: "Manage background agents" },
 	permissions: { hint: "View or change permission mode and rules" },
 	phase: { hint: "Show or change the current work phase" },
+	language: { hint: "Show or pin the language Kimchi replies in" },
 	bug: { hint: "Report a bug — opens GitHub issue form" },
 	stats: { hint: "View coding analytics and metrics" },
 	mcp: { hint: "Show MCP server status" },

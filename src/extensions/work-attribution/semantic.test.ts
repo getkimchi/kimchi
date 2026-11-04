@@ -408,7 +408,7 @@ it("bounds stalled authentication by the shared deadline", async () => {
 
 it.each(["success", "failure"])("respects configured redaction on %s", async (outcome) => {
 	const server = await provider(JSON.stringify({ decision: "same" }))
-	vi.spyOn(redactionConfig, "getRedactionConfig").mockReturnValue({ enabled: true })
+	vi.spyOn(redactionConfig, "isRedactionEnabled").mockReturnValue(true)
 	if (outcome === "success") vi.mocked(redactTextOrThrow).mockResolvedValue("Redacted task text")
 	else vi.mocked(redactTextOrThrow).mockRejectedValue(new Error("Redaction failed"))
 	const decision = await classifyWorkIntent(server.ctx, {

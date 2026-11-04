@@ -33,9 +33,12 @@ describe("package resources", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mocks.SettingsManager.create.mockReturnValue({})
-		mocks.DefaultPackageManager.mockImplementation(() => ({
-			listConfiguredPackages: vi.fn(() => []),
-		}))
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		mocks.DefaultPackageManager.mockImplementation(function () {
+			return {
+				listConfiguredPackages: vi.fn(() => []),
+			}
+		})
 		piLookupMocks.getOriginalPiConfiguredPackages.mockReturnValue([])
 		piLookupMocks.isOriginalPiPackageLookupEnabled.mockReturnValue(true)
 	})
@@ -60,19 +63,19 @@ describe("package resources", () => {
 	})
 
 	it("surfaces configured packages as plugin resources", () => {
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => [
-						{
-							source: "npm:context-mode",
-							scope: "user" as const,
-							filtered: true,
-							installedPath: "/tmp/context-mode",
-						},
-					]),
-				}) as unknown as DefaultPackageManager,
-		)
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		vi.mocked(DefaultPackageManager).mockImplementationOnce(function () {
+			return {
+				listConfiguredPackages: vi.fn(() => [
+					{
+						source: "npm:context-mode",
+						scope: "user" as const,
+						filtered: true,
+						installedPath: "/tmp/context-mode",
+					},
+				]),
+			} as unknown as DefaultPackageManager
+		})
 
 		expect(discoverPackageResources("/repo")).toEqual([
 			{
@@ -219,14 +222,14 @@ describe("package resources", () => {
 
 	it("returns [] and logs a warning when package discovery fails", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-		vi.mocked(DefaultPackageManager).mockImplementationOnce(
-			() =>
-				({
-					listConfiguredPackages: vi.fn(() => {
-						throw new Error("package manager exploded")
-					}),
-				}) as unknown as DefaultPackageManager,
-		)
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		vi.mocked(DefaultPackageManager).mockImplementationOnce(function () {
+			return {
+				listConfiguredPackages: vi.fn(() => {
+					throw new Error("package manager exploded")
+				}),
+			} as unknown as DefaultPackageManager
+		})
 
 		expect(discoverPackageResources("/repo")).toEqual([])
 		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("package manager exploded"))

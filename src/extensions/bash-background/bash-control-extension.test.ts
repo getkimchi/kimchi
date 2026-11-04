@@ -13,7 +13,7 @@
  */
 import type { ToolCallEventResult } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createBackgroundBashToolDefinition } from "./bash-background-tool.js"
@@ -21,6 +21,7 @@ import bashControlExtension, {
 	BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE,
 	BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE,
 	BASH_BACKGROUND_EXIT_MESSAGE_TYPE,
+	BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE,
 	COMPLETION_REMINDER_INTERVAL_MS,
 	EXIT_BATCH_WINDOW_MS,
 } from "./bash-control-extension.js"
@@ -76,6 +77,11 @@ function followUps(harness: ReturnType<typeof createExtensionApi>, customType: s
 	return messages(harness).filter((m) => m.customType === customType)
 }
 
+/** Concatenated text blocks of one sent message. */
+function textOfMessage(sent: SentMessage | undefined): string {
+	return sent?.content.map((block) => block.text ?? "").join("\n") ?? ""
+}
+
 /** Fire the message_end event for a queued custom message (consumption). */
 async function consumeFollowUp(
 	harness: ReturnType<typeof createExtensionApi>,
@@ -106,7 +112,14 @@ beforeEach(() => {
 	ops = createFakeOps()
 	registry = createProcessRegistry()
 	coordinator = createReviewCoordinator({ registry, handoffSeconds: 1 })
-	state = { registry, coordinator, delivery: createTerminalDelivery(), limitSeconds: 600, cwd: "/test/cwd" }
+	state = {
+		registry,
+		coordinator,
+		delivery: createTerminalDelivery(),
+		limitSeconds: 600,
+		sessionKind: "unattended",
+		cwd: "/test/cwd",
+	}
 	currentState = state
 })
 
@@ -460,7 +473,7 @@ describe("unattended exits", () => {
 			{ wait: false } as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		const inspectText = (inspect.content[0] as { text?: string }).text ?? ""
 		expect(inspectText).toContain("queued for automatic delivery and not yet acknowledged")
@@ -476,7 +489,7 @@ describe("unattended exits", () => {
 			stopArgs as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		await fireToolExecutionEnd(harness, "stop-survivor", "bash_control")
 		await fireToolResult(harness, {
@@ -572,7 +585,7 @@ describe("unattended exits", () => {
 		expect(registry.getEntry(handle)).toBeDefined()
 		currentState = state
 		const tool = createBashControlToolDefinition(() => state)
-		const result = await tool.execute("call-retry", { wait: false } as never, undefined, undefined, undefined as never)
+		const result = await tool.execute("call-retry", { wait: false } as never, undefined, undefined, createToolContext())
 		expect(result.details.exitedHandles).toEqual([handle])
 		expect((result.content[0] as { text?: string }).text ?? "").toContain("exited (exit code 0)")
 	})
@@ -1074,12 +1087,13 @@ describe("completion continuation", () => {
 		// tool, and the chain that failed live (tool_result details →
 		// exitedHandles → trackedHandles removal) is asserted end to end.
 		const handoffRegistry = createProcessRegistry()
-		const handoffCoordinator = createReviewCoordinator({ registry: handoffRegistry })
+		const handoffCoordinator = createReviewCoordinator({ registry: handoffRegistry, handoffSeconds: 2 })
 		const handoffState: BashSessionState = {
 			registry: handoffRegistry,
 			coordinator: handoffCoordinator,
 			delivery: createTerminalDelivery(),
 			limitSeconds: 600,
+			sessionKind: "unattended",
 			cwd: "/test/cwd",
 		}
 		currentState = handoffState
@@ -1091,8 +1105,8 @@ describe("completion continuation", () => {
 		})
 		const startedAt = Date.now()
 		const [first, second] = await Promise.all([
-			bashTool.execute("bash-1", { command: "sleep-long-first" }, undefined, undefined, undefined as never),
-			bashTool.execute("bash-2", { command: "sleep-long-second" }, undefined, undefined, undefined as never),
+			bashTool.execute("bash-1", { command: "sleep-long-first" }, undefined, undefined, createToolContext()),
+			bashTool.execute("bash-2", { command: "sleep-long-second" }, undefined, undefined, createToolContext()),
 		])
 		// Both commands were still running at the real one-time handoff
 		// deadline (2s), not before it.
@@ -1128,7 +1142,7 @@ describe("completion continuation", () => {
 			stopArgs as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		await fireToolExecutionEnd(harness, "stop-call", "bash_control")
 		await fireToolResult(harness, {
@@ -1161,7 +1175,7 @@ describe("completion continuation", () => {
 			{ wait: false } as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		expect((inspect.content[0] as { text?: string }).text ?? "").toContain(
 			"No background processes or pending results remain",
@@ -1171,7 +1185,7 @@ describe("completion continuation", () => {
 			{ wait: true } as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		expect((wait.content[0] as { text?: string }).text ?? "").toContain(
 			"No background processes or pending results remain",
@@ -1232,7 +1246,7 @@ describe("completion continuation", () => {
 			stopArgs as never,
 			undefined,
 			undefined,
-			undefined as never,
+			createToolContext(),
 		)
 		await fireToolExecutionEnd(harness, "stop-call", "bash_control")
 		await fireToolResult(harness, {
@@ -1317,6 +1331,212 @@ describe("completion continuation", () => {
 		// Cleanup: end the owning call (its backstop delivers the exit).
 		await fireToolExecutionEnd(harness, "call-y", "bash_control", true)
 		await flush()
+	})
+})
+
+describe("completion guard without bash_control (allowlist or profile drops the control tool)", () => {
+	it("stops session-owned handles itself and reports, instead of demanding a disposition the model cannot satisfy", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: { command: "long" },
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false, exitCode: null },
+		})
+		// The session's tool set drops bash_control (e.g. a `--tools`
+		// allowlist that omits it, or a plan-mode profile snapshot).
+		harness.setActiveTools(["bash"])
+
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+
+		// No demand reminder is queued — the model cannot satisfy it.
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		// The harness stopped both processes and reported what it did.
+		const resolutions = messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE)
+		expect(resolutions).toHaveLength(1)
+		const resolutionText = resolutions[0]?.content[0]?.text ?? ""
+		expect(resolutionText).toContain(a)
+		expect(resolutionText).toContain(b)
+		expect(resolutionText).toContain("bash_control is not available")
+
+		// The exit notifications deliver the stopped processes' results
+		// (coalesced), so the model can account for them and finish.
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		const exitText = exits[0]?.content[0]?.text ?? ""
+		expect(exitText).toContain("stopped on request")
+		expect(exitText).toContain(a)
+		expect(exitText).toContain(b)
+		expect(registry.getEntry(a)).toBeUndefined()
+		expect(registry.getEntry(b)).toBeUndefined()
+
+		// The run can settle: a later stop queues no further demand.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+	})
+
+	it("replaces an already-queued reminder with the harness resolution when availability drops before consumption", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+		// The guard fires while bash_control is still available…
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+
+		// …but the tool set drops it before the loop drains the reminder.
+		harness.setActiveTools(["bash"])
+		const replacements = await consumeFollowUp(harness, guards[0] as SentMessage)
+		expect(replacements).toHaveLength(1)
+		const replacedText = (replacements[0]?.message as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? ""
+		expect(replacedText).toContain("bash_control is not available")
+		expect(replacedText).toContain("stopped")
+		// The reminder never names a disposition the model cannot make.
+		expect(replacedText).not.toContain("stop_handles")
+
+		// The process was stopped by the harness resolution.
+		await flush()
+		expect(registry.getEntry(a)).toBeUndefined()
+		expect(
+			messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE),
+		).toHaveLength(1)
+	})
+
+	it("user-facing sessions never resolve live commands on their own, even without bash_control", async () => {
+		// Reviewer check: the session-policy early return must precede the
+		// availability resolution, or an interactive session that drops the
+		// control tool would get its live commands killed at every turn end —
+		// breaking the documented interactive contract.
+		state.sessionKind = "user-facing"
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+		harness.setActiveTools(["bash"])
+
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+
+		// No reminder and no harness resolution — a human can still send a
+		// message, and exit notifications wake the agent on their own.
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		expect(
+			messages(harness).filter((m) => m.customType === BASH_BACKGROUND_GUARD_RESOLUTION_MESSAGE_TYPE),
+		).toHaveLength(0)
+		// The command keeps running untouched.
+		expect(registry.getEntry(a)?.state).toBe("running")
+	})
+
+	it("suppresses the concurrency advisory while bash_control is unavailable, and resumes when it returns", async () => {
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		await startTrackedSession(harness, a)
+
+		// The advisory's remedy (stop via bash_control) would name a tool
+		// missing from the session's tool set: suppressed entirely.
+		harness.setActiveTools(["bash"])
+		await fireToolCall(harness, "write", { file_path: "/x", content: "y" })
+		expect(followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)).toHaveLength(0)
+
+		// With the control tool back in the set, the once-per-session
+		// advisory fires (the suppressed attempt did not consume it).
+		harness.setActiveTools(["bash", "bash_control"])
+		await fireToolCall(harness, "edit", { file_path: "/x", old_string: "a", new_string: "b" })
+		expect(followUps(harness, BASH_BACKGROUND_CONCURRENCY_MESSAGE_TYPE)).toHaveLength(1)
+	})
+})
+
+describe("user-facing completion guard (session policy)", () => {
+	it("user-facing turns settle with live commands — no reminder, work stays accountable, notifications still fire", async () => {
+		state.sessionKind = "user-facing"
+		const harness = makePiWithState()
+		const a = spawnRunning("a")
+		const b = spawnRunning("b")
+		await startTrackedSession(harness, a)
+		await fireToolResult(harness, {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "c2",
+			input: {},
+			content: [],
+			isError: false,
+			details: { handle: b, handoff: true, exited: false },
+		})
+
+		// A normal stop with live commands: no forced wait/stop reminder.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		// Repeated settling stays silent too (no rate-limited re-arm either).
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+
+		// The work was never marked complete or discarded: an unattended
+		// exit still delivers its notification and wakes the settled agent.
+		await ops.exitMatching("a", 0)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		expect((exits[0]?.options as { triggerTurn?: boolean } | undefined)?.triggerTurn).toBe(true)
+		expect(textOfMessage(exits[0])).toContain(` handle: ${a}`)
+		// The survivor is still tracked (a later disposition is still possible).
+		expect(registry.getEntry(b)?.state).toBe("running")
+	})
+
+	it("unattended runs under the same wiring still receive the continuation reminder", async () => {
+		// Default state: sessionKind "unattended".
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+		expect(guards[0]?.content[0]?.text ?? "").toContain("Do ONE of")
+	})
+
+	it("pending terminal outcomes remain accountable in user-facing sessions", async () => {
+		state.sessionKind = "user-facing"
+		const harness = makePiWithState()
+		const dead = spawnRunning("dead")
+		await startTrackedSession(harness, dead)
+		// The process exits unattended: its outcome is queued for the
+		// automatic notification.
+		await ops.exitMatching("dead", 3)
+		await flush()
+		const exits = followUps(harness, BASH_BACKGROUND_EXIT_MESSAGE_TYPE)
+		expect(exits).toHaveLength(1)
+		// Settling with only that pending outcome queues no reminder.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(0)
+		// The outcome is still pending until its notification is
+		// acknowledged in the conversation — nothing was discarded.
+		expect(state.delivery.getPending(dead)?.phase).toBe("queued")
+	})
+
+	it("a queued reminder revalidated against the user-facing policy is suppressed", async () => {
+		// A reminder queued while the session was unattended…
+		const harness = makePiWithState()
+		const handle = spawnRunning()
+		await startTrackedSession(harness, handle)
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		const guards = followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)
+		expect(guards).toHaveLength(1)
+		// …reaches a session whose policy is now user-facing (stale
+		// cross-policy message): consuming it must not restart waiting.
+		state.sessionKind = "user-facing"
+		const replacements = await consumeFollowUp(harness, guards[0] as SentMessage)
+		expect(replacements).toHaveLength(1)
+		const replaced = (replacements[0] as { message: { content: { text?: string }[] } }).message
+		expect(replaced.content[0]?.text ?? "").toContain("suppressed")
+		expect(replaced.content[0]?.text ?? "").toContain("human available")
+		expect(replaced.content[0]?.text ?? "").not.toContain("Do ONE of")
+		// The slot is free: a later user-facing stop still queues nothing.
+		await fireTurnEnd(harness, { role: "assistant", stopReason: "stop" })
+		expect(followUps(harness, BASH_BACKGROUND_COMPLETION_MESSAGE_TYPE)).toHaveLength(1)
 	})
 })
 
@@ -1662,7 +1882,7 @@ describe("cancellation-aware delivery", () => {
 		expect(state.delivery.getPending(handle)?.phase).toBe("available")
 		// An explicit inspection can still claim and deliver the payload.
 		const tool = harness.getRegisteredTool("bash_control")
-		const result = await tool.execute("call-r2", { wait: false } as never, undefined, undefined, undefined as never)
+		const result = await tool.execute("call-r2", { wait: false } as never, undefined, undefined, createToolContext())
 		const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("")
 		expect(text).toContain("output-from-0")
 	})
@@ -1676,9 +1896,10 @@ describe("cancellation-aware delivery", () => {
 		const replacementRegistry = createProcessRegistry()
 		const replacement: BashSessionState = {
 			registry: replacementRegistry,
-			coordinator: createReviewCoordinator({ registry: replacementRegistry }),
+			coordinator: createReviewCoordinator({ registry: replacementRegistry, handoffSeconds: 2 }),
 			delivery: createTerminalDelivery(),
 			limitSeconds: 600,
+			sessionKind: "unattended",
 			cwd: "/test/cwd",
 		}
 		const swappedState: BashSessionState = {
@@ -1705,7 +1926,7 @@ describe("terminal display metadata", () => {
 	it("restores thrown-result details through the supported result hook and then clears them", async () => {
 		const pi = createExtensionApi()
 		bashControlExtension(pi.api, { getState: () => undefined })
-		await pi.emit("session_start", {})
+		await pi.emit("session_start", {}, ctx)
 		const details = {
 			handle: "h1",
 			exited: true,
@@ -1739,7 +1960,7 @@ describe("terminal display metadata", () => {
 			toolCallId: "old",
 			partialResult: { details: { handle: "h1", exited: true, display: { state: "exited" } } },
 		})
-		await pi.emit("session_start", {})
+		await pi.emit("session_start", {}, ctx)
 		expect(await pi.emit("tool_result", { toolName: "bash", toolCallId: "old", details: {}, isError: true })).toEqual([
 			undefined,
 		])

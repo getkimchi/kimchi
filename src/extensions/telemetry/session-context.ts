@@ -5,7 +5,7 @@ import type { TelemetryConfig } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
-import { getVersion } from "../../utils.js"
+import { getDetectedVersion } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { getActiveFerment } from "../ferment/index.js"
@@ -315,7 +315,7 @@ export class TelemetryContext {
 				previous_session_type: this.lastSessionType,
 				source,
 				...fermentTelemetryAttributes(ferment?.id, fermentV2),
-				"telemetry.cli_version": getVersion(),
+				"telemetry.cli_version": getDetectedVersion(),
 				...(parentAttr ?? {}),
 			})
 			this.logBuffer.push(buildLogRecord(this.resolveSessionId(), "session.type_changed", changeAttrs))
@@ -366,7 +366,7 @@ export class TelemetryContext {
 			source: IS_ACP_MODE ? "acp" : "cli",
 			session_type: getSessionType(this.fermentV2Context),
 			model: this.currentModel,
-			"telemetry.cli_version": getVersion(),
+			"telemetry.cli_version": getDetectedVersion(),
 			...getAcpAttributes(),
 			...(ctx ? getPiSessionAttributes(ctx) : {}),
 		}

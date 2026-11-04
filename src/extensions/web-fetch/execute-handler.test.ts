@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, type MockInstance, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 
 vi.mock("./cache.js", () => ({
-	cacheGet: vi.fn(() => undefined),
+	cacheGet: vi.fn(),
 	cacheSet: vi.fn(),
 }))
 
@@ -19,26 +19,41 @@ vi.mock("./page-fetcher.js", () => ({
 }))
 
 vi.mock("./browser-pool.js", () => ({
-	getBrowser: vi.fn().mockResolvedValue(null),
+	getBrowser: vi.fn(),
 }))
 
 vi.mock("./url-validator.js", () => ({
-	validateURL: vi.fn(() => ({ valid: true, url: new URL("https://example.com/") })),
+	validateURL: vi.fn(),
 }))
 
 vi.mock("./content-converter.js", () => ({
-	convertContent: vi.fn((html: string) => html),
+	convertContent: vi.fn(),
 }))
 
+import { getBrowser } from "./browser-pool.js"
 import { cacheGet, cacheSet } from "./cache.js"
 import { convertContent } from "./content-converter.js"
 import { executeWebFetch } from "./execute-handler.js"
 import { fetchPage } from "./page-fetcher.js"
+import { validateURL } from "./url-validator.js"
 
 const cacheGetMock = cacheGet as unknown as MockInstance
 const cacheSetMock = cacheSet as unknown as MockInstance
 const fetchPageMock = fetchPage as unknown as MockInstance
 const convertContentMock = convertContent as unknown as MockInstance
+
+beforeEach(() => {
+	vi.mocked(cacheGet).mockReset().mockReturnValue(undefined)
+	vi.mocked(cacheSet).mockReset()
+	vi.mocked(fetchPage).mockReset()
+	vi.mocked(getBrowser).mockReset().mockResolvedValue(null)
+	vi.mocked(validateURL)
+		.mockReset()
+		.mockReturnValue({ valid: true, url: new URL("https://example.com/") })
+	vi.mocked(convertContent)
+		.mockReset()
+		.mockImplementation((html: string) => html)
+})
 
 afterEach(() => {
 	vi.restoreAllMocks()

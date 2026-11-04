@@ -14,6 +14,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { loadConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
@@ -29,6 +30,7 @@ import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { pinnedLanguageSection } from "../../prompt-construction/system-prompt.js"
 import requestTimingExtension from "../../request-timing.js"
 import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
@@ -390,9 +392,13 @@ async function runAgentInner(
 	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
 	const skills = options.isolated ? false : config.skills
 
+	const pinnedLanguage = loadConfig({ cwd: effectiveCwd }).language
 	const extras: PromptExtras = {
 		contextFiles:
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
+		// "replace"-mode agents do not inherit the parent prompt, so the pinned
+		// language rule has to be carried explicitly; "append" mode inherits it.
+		languageBlock: pinnedLanguage === undefined ? undefined : pinnedLanguageSection(pinnedLanguage),
 	}
 
 	let toolNames = getToolNamesForType(type)

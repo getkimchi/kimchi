@@ -101,14 +101,14 @@ describe("Ferment V2 extension", () => {
 
 	beforeEach(async () => {
 		__resetTodoStore()
-		evaluateFermentV2Mock.mockResolvedValue({
+		evaluateFermentV2Mock.mockReset().mockResolvedValue({
 			verdict: "continue",
 			reason: "More work is required.",
 			model: "test/evaluator",
 			usage: EVALUATOR_USAGE,
 			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
-		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
+		fermentV2SettingsMock.mockReset().mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
 		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
 		// The harness writes and reads .kimchi/plans objective files in cwd —
 		// project-scoped, so trusted for these tests.

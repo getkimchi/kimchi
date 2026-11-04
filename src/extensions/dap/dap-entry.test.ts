@@ -59,27 +59,33 @@ const clientState = vi.hoisted(() => ({
 }))
 
 vi.mock("./client.js", () => ({
-	DapClientRegistry: vi.fn().mockImplementation(() => ({
-		getOrCreate: vi.fn(async () => ({}) as unknown),
-		shutdownAll: vi.fn(() => {
-			clientState.shutdownAllCalled = true
-		}),
-		getAll: vi.fn(() => []),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	DapClientRegistry: vi.fn().mockImplementation(function () {
+		return {
+			getOrCreate: vi.fn(async () => ({}) as unknown),
+			shutdownAll: vi.fn(() => {
+				clientState.shutdownAllCalled = true
+			}),
+			getAll: vi.fn(() => []),
+		}
+	}),
 }))
 
 vi.mock("./session.js", () => ({
-	DapSessionRegistry: vi.fn().mockImplementation(() => ({
-		create: vi.fn(() => clientState.sessionAfterCreate ?? { id: "test-session" }),
-		get: vi.fn(() => undefined),
-		remove: vi.fn((id: string) => {
-			clientState.removedSessionId = id
-		}),
-		clearAll: vi.fn(() => {
-			clientState.clearAllCalled = true
-		}),
-		getActive: vi.fn(() => []),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	DapSessionRegistry: vi.fn().mockImplementation(function () {
+		return {
+			create: vi.fn(() => clientState.sessionAfterCreate ?? { id: "test-session" }),
+			get: vi.fn(() => undefined),
+			remove: vi.fn((id: string) => {
+				clientState.removedSessionId = id
+			}),
+			clearAll: vi.fn(() => {
+				clientState.clearAllCalled = true
+			}),
+			getActive: vi.fn(() => []),
+		}
+	}),
 }))
 
 // Capture the createSystemPromptBlocks registration so we can invoke render().

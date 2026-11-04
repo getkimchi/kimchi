@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
@@ -38,7 +38,7 @@ function parseLogEvents(
 
 describe("handlers/tools", () => {
 	let originalFetch: typeof globalThis.fetch
-	let fetchMock: ReturnType<typeof vi.fn>
+	let fetchMock: Mock
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch

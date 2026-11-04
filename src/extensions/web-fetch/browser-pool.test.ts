@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 
 // We test the browser pool by mocking the playwright import.
 // Use dynamic import reset to control what import("playwright") returns.
@@ -9,7 +9,7 @@ let mockBrowser: {
 	on: ReturnType<typeof vi.fn>
 }
 
-let launchMock: ReturnType<typeof vi.fn>
+let launchMock: Mock
 let playwrightImportFails: boolean
 
 vi.mock("playwright", () => {

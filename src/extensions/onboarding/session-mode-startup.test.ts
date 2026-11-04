@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { writeSessionModeWizardSeenAt } from "../../config.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
@@ -35,7 +35,7 @@ function createHarness(options: {
 	stdoutIsTTY?: boolean
 	configPath: string
 	now: () => Date
-	startFerment?: ReturnType<typeof vi.fn>
+	startFerment?: Mock
 }) {
 	const handlers = new Map<string, SessionStartHandler>()
 	const api = {
