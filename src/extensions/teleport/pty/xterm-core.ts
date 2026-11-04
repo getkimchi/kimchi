@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { copyToClipboard } from "@earendil-works/pi-coding-agent"
 import { Terminal } from "@xterm/headless"
 
@@ -161,3 +166,4 @@ export class XtermCore {
 export function createXtermCore(cols = 80, rows = 24): XtermCore {
 	return new XtermCore(cols, rows)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

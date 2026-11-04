@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -20,3 +25,4 @@ it.each([1, 2])("keeps seeded Node history across %i module resets without openi
 	}
 	expect(existsSync(join(agentDir, "pr-cost-reporting", "ledger.db"))).toBe(false)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

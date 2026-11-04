@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { isHomebrewInstall } from "../../update/paths.js"
 import { loadAutoUpdateSetting } from "../../update/settings.js"
 import type { Tip, TipProvider } from "../tips/types.js"
@@ -24,3 +29,4 @@ export function createAutoUpdateTipProvider(): TipProvider {
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

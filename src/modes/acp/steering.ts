@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AgentSideConnection, SessionUpdate } from "@agentclientprotocol/sdk"
 
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
@@ -93,3 +98,4 @@ export function reconcileQueue(
 
 	return { previousQueue: [...next], sessionUpdates }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

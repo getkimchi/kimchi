@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { Console } from "node:console"
 import { mkdirSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -106,3 +111,4 @@ export function installTuiConsoleLogging(): () => void {
 	}
 	return uninstall
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

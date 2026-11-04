@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * PDF text extraction for the bundled pdf.mjs CLI. In-process via unpdf
  * (pdf.js). Per-page text becomes a `Page N` unit; per-page notes name
@@ -253,3 +258,4 @@ export async function pdfInfo(data: Uint8Array): Promise<{ pageCount: number; en
 		throw new DocumentError("corrupt", `PDF failed to parse: ${(err as Error).message ?? err}`, "pdf")
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

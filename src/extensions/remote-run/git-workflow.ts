@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Git intent capture for remote plan execution (PR-first flow).
  *
@@ -201,3 +206,4 @@ export async function promptForRemoteBranch(
 	const resolve = opts._resolveBaseBranch ?? resolveBaseBranch
 	return { branch, baseBranch: resolve(ctx) }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

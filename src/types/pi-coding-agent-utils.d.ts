@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Upstream deep imports are not exported from the main package, but they
 // are on disk in node_modules after install. We use them via deep-module
 // paths to avoid duplicating upstream logic.
@@ -28,3 +33,4 @@ declare module "@earendil-works/pi-coding-agent/dist/cli/file-processor.js" {
 		images: Array<{ type: "image"; mimeType: string; data: string }>
 	}>
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

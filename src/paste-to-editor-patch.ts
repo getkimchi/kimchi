@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Patches the upstream pi SDK's `createExtensionUIContext` so that
  * `pasteToEditor` routes through `ui.handleTerminalInput` instead of `editor.handleInput`.
@@ -25,3 +30,4 @@ export function applyPasteToEditorPatch(): void {
 
 // Apply patch on module load
 applyPasteToEditorPatch()
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

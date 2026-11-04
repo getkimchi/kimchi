@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { mergePullRequestLinks } from "./links.js"
 
@@ -30,3 +35,4 @@ it.each([false, true])("keeps the valid PR observation when a timestamp is damag
 	// Recovery can replay records in either order.
 	expect(mergePullRequestLinks(rows)).toEqual([valid])
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

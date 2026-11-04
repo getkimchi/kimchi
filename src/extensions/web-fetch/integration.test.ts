@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as browserPool from "./browser-pool.js"
@@ -618,3 +623,4 @@ describe("integration: native fetch fallback when Playwright is unavailable", ()
 		expect(result.fallbackWarning).toBeDefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

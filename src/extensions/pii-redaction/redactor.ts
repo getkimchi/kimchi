@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * PII redactor built on @bulkhead-ai/core.
  *
@@ -761,3 +766,4 @@ export async function redactMessages(messages: unknown[]): Promise<unknown[]> {
 		}),
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

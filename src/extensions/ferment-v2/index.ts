@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import type { ToolCall } from "@earendil-works/pi-ai"
 import type {
@@ -2447,3 +2452,4 @@ function assistantTurnInterruption(event: TurnEndEvent): "aborted" | "error" | u
 function timestamp(now = Date.now()): string {
 	return new Date(now).toISOString()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

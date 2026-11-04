@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Startup context shared between cli.ts and extensions.
  *
@@ -21,3 +26,4 @@ export function setAvailableModels(models: readonly ModelMetadata[]): void {
 export function getAvailableModels(): readonly ModelMetadata[] {
 	return _availableModels
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

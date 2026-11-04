@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Check-in gate: pending todo reconciliation per session and scope.
  *
@@ -353,3 +358,4 @@ export function disposeCheckinGateSession(sessionId: string): void {
 export function __resetCheckinGate(): void {
 	gateStates.clear()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

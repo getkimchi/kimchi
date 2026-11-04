@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { OrgPolicy } from "./api/org-settings.js"
 import { readTelemetryConfig, type TelemetryConfig } from "./config.js"
 import { getOrgPolicy } from "./org-policy.js"
@@ -58,3 +63,4 @@ export function isTelemetryEnabled(): boolean {
 export function readEffectiveTelemetryConfig(): TelemetryConfig {
 	return applyTelemetryPolicy(readTelemetryConfig())
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { installUncaughtEpipePatch } from "./uncaught-epipe-patch.js"
@@ -41,3 +46,4 @@ describe("uncaught EPIPE patch", () => {
 		expect(typeof proto.uncaughtCrash).toBe("function")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

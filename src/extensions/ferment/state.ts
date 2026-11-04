@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ferment shared module state.
  *
@@ -891,3 +896,4 @@ export function clearFermentState(fermentId: string): void {
 export function getStorage(): FermentEventStore {
 	return new FermentEventStore()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

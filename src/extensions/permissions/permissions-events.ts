@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Permission domain event channels published via pi.events.
  *
@@ -170,3 +175,4 @@ export interface PermissionConfigLoadedPayload {
 	ruleCount: number
 	errors: string[]
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

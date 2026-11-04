@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { DeclarativeAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
@@ -280,3 +285,4 @@ export function scheduleFermentWakeUp(
 		)
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

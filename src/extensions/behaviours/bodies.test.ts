@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * The PR and MR bodies ask the agent to label each new PR/MR with one category, so PR costs can later be split into
  * features, bug fixes, maintenance and exploration. The bodies are read from disk: vitest cannot load Bun's
@@ -27,3 +32,4 @@ describe("PR category labels", () => {
 		})
 	}
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

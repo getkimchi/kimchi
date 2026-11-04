@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Slash-command hints for the side chat editor.
  *
@@ -51,3 +56,4 @@ export function sideChatAutocomplete(mode: SidePanelMode, cwd: string): Autocomp
 	const commands: SlashCommand[] = mode === "chat" ? [WRAP_COMMAND, CLOSE_COMMAND] : [CLOSE_COMMAND]
 	return new CombinedAutocompleteProvider(commands, cwd)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

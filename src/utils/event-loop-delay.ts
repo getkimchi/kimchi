@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Event-loop delay monitor: a heartbeat interval whose late firings measure
  * how long the event loop was blocked between ticks.
@@ -41,3 +46,4 @@ export function startEventLoopDelayMonitor(intervalMs = 10): EventLoopDelayMonit
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

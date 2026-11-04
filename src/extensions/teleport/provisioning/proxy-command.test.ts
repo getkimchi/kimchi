@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { parse } from "shell-quote"
 import { afterEach, expect, it, vi } from "vitest"
 import { getAgentInvocation } from "../../../utils/spawn-kimchi-subprocess.js"
@@ -19,3 +24,4 @@ it("routes development SSH through Kimchi without embedding credentials in the s
 	expect(command).not.toContain("KIMCHI_API_KEY")
 	expect(command).not.toContain("private-environment-key")
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 import { isHarnessSteer } from "../steer-marker.js"
@@ -1185,3 +1190,4 @@ describe("brandUnmarkedSteers", () => {
 		expect(twice).toBe(once)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

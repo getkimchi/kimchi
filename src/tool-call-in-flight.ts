@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** Detect an in-flight tool call in Pi's active session messages. */
 
 import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent"
@@ -49,3 +54,4 @@ export function isToolCallInFlight(messages: ReadonlyArray<SessionMessage>): boo
 	}
 	return false
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

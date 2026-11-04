@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export type CombinedStatus = "active" | "idle" | "disconnected" | "completed" | "unreachable"
 
 export interface SessionRow {
@@ -24,3 +29,4 @@ export function formatRelativeTime(d: Date, now: Date = new Date()): string {
 	if (days === 1) return "yesterday"
 	return `${days}d ago`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

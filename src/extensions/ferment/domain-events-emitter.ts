@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Emits ferment domain events via pi.events based on command type and
  * the resulting ferment state after applyAndPersist succeeds.
@@ -274,3 +279,4 @@ export function emitFermentDomainEvent(events: EventBus, cmd: Command, post: Fer
 			return
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

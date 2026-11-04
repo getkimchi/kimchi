@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, vi } from "vitest"
 import { getOrganization, verifyApiKey } from "./organizations.js"
 
@@ -86,3 +91,4 @@ describe("getOrganization", () => {
 		await expect(getOrganization("key", "org-1", { fetch: fetchImpl })).rejects.toThrow("HTTP 404")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

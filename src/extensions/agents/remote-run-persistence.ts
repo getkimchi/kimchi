@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Session-entry persistence for remote cloud runs.
  *
@@ -110,3 +115,4 @@ export function findResumableRemoteRuns(sessionManager: { getBranch: () => unkno
 			(state.status === "completed" && state.completionPending === true && typeof state.result === "string"),
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

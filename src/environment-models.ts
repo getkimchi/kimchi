@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
 import { resolveEndpoints } from "./config.js"
@@ -128,3 +133,4 @@ export function installEnvironmentModels(
 ): void {
 	ModelRuntime.create = withEnvironmentModels(ModelRuntime.create.bind(ModelRuntime), apiKey, providers, rediscover)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared rating-recording seam for both feedback surfaces (TUI dialog flow
  * and the ACP `_kimchi.dev/feedback` ext-method). Records what a rating
@@ -67,3 +72,4 @@ export function recordRating(opts: RecordRatingOptions): RecordRatingResult {
 	}
 	return { status: "recorded" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

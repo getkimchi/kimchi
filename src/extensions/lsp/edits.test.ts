@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // src/extensions/lsp/edits.test.ts
 import { describe, expect, it } from "vitest"
 import { applyTextEditsToString } from "./edits.js"
@@ -67,3 +72,4 @@ describe("applyTextEditsToString", () => {
 		expect(applyTextEditsToString(content, [])).toBe("unchanged\n")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

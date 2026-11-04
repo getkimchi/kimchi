@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import {
 	LANGUAGE_AUTO,
 	loadConfig,
@@ -301,3 +306,4 @@ function handleRegion(args: string[]): number {
 	console.log('To switch regions, run "kimchi login" again.')
 	return 0
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

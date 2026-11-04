@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Cloudflare 520-522 (origin failures) are transient for the
 // Cloudflare-fronted gateway, alongside 524 (origin timeout).
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 520, 521, 522, 524])
@@ -152,3 +157,4 @@ export async function boundedResponse(
 		void reader.cancel().catch(() => {})
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Persistence for agents extension operational settings.
 // - Global:  ~/.config/kimchi/harness/agents.json (via getAgentDir()) — manual defaults, never written here
 // - Project: <cwd>/.kimchi/agents.json — written by /agents → Settings; overrides global on load
@@ -165,3 +170,4 @@ export function saveAndEmitChanged(
 	emit("subagents:settings_changed", { settings: snapshot, persisted })
 	return persistToastFor(successMsg, persisted)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

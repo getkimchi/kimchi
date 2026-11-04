@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import { quotaLines } from "./quota-footer.js"
@@ -57,3 +62,4 @@ describe("quotaLines", () => {
 		expect(org).toBeUndefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

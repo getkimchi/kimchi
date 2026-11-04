@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import type * as Fs from "node:fs"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
@@ -110,3 +115,4 @@ it("resolves only the plan records that name a deleted plan", async () => {
 	expect(await owned(`Implement ${join(cwd, ".kimchi/plans/deleted.md")}`)).toBe(true)
 	expect(realpathSync).toHaveBeenCalledOnce()
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

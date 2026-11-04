@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import planModeSupplement from "./plan-mode-supplement.js"
@@ -63,3 +68,4 @@ describe("plan-mode-supplement", () => {
 		})
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

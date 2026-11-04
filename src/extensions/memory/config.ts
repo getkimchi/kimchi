@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Memory extension configuration: scope, digest value bar, storage paths.
  * Pure — unit-testable under Node.
@@ -153,3 +158,4 @@ export function tokensEstimated(chars: number): number {
 export function digestDbPath(): string {
 	return memoryDbPath(MEMORY_SCOPE_ID)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

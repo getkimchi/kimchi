@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Tip, TipCandidate, TipProvider, TipScope } from "./types.js"
 
 interface ProviderRecord {
@@ -67,3 +72,4 @@ export const globalTipRegistry = new TipRegistry()
 export function registerTipProvider(provider: TipProvider): () => void {
 	return globalTipRegistry.registerProvider(provider)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

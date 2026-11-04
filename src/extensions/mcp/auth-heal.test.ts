@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Post-auth session healing regression: when an OAuth grant lands for a server
  * (auth-complete, /mcp-auth, a same-process probe, or an out-of-band write), a
@@ -340,3 +345,4 @@ describe("MCP post-auth session healing (lazy: heal at next tool call)", () => {
 		expect(status.details?.connectedCount).toBe(1)
 	}, 60_000)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

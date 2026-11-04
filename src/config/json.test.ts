@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -215,3 +220,4 @@ describe("readJson / writeJson", () => {
 		expect(readFileSync(path, "utf-8")).toBe("FOO=bar\n")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

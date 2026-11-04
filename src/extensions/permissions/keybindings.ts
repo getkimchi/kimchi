@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 
@@ -89,3 +94,4 @@ export function writeKimchiKeybindingDefaults(agentDir: string): void {
 
 // Keep old name as deprecated alias for backwards compatibility
 export const reserveShiftTabForPermissions = writeKimchiKeybindingDefaults
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

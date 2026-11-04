@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { basename } from "node:path"
 import { quote } from "shell-quote"
 import { getAgentInvocation } from "../../../utils/spawn-kimchi-subprocess.js"
@@ -25,3 +30,4 @@ export function buildProxyCommand(target = "%h"): string {
 	const invocation = getAgentInvocation(["--ssh-proxy", target])
 	return quote([invocation.command, ...invocation.args])
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

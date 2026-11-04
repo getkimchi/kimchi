@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pre-session telemetry for CLI-level events that fire before the agent
  * session (and its SessionContext) are created.
@@ -133,3 +138,4 @@ async function doSend(
 		// Swallow all errors — telemetry must never affect CLI operation.
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

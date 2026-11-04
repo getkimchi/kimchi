@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Per-message model attribution for ACP clients: every agent response chunk
 // stream carries, on the FIRST chunk emitted for each messageId, a `_meta`
 // payload naming the model that produced the response. Composed purely from
@@ -76,3 +81,4 @@ export function modelMetaFor(
 export function spreadModelMeta(modelMeta: ModelMeta | undefined): { _meta?: ModelMeta } {
 	return modelMeta === undefined ? {} : { _meta: modelMeta }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

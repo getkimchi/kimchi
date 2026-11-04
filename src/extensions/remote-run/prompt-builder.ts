@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Prompt builder for remote plan execution.
  *
@@ -127,3 +132,4 @@ export function buildRemoteSteerPrompt(opts: { feedback: string; gitWorkflow?: R
 		`[Commit discipline] ${reminder}`,
 	].join("\n")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

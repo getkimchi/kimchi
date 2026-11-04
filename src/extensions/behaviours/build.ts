@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pure builder for the bundled behaviour registry — no markdown imports here
  * so it can be loaded by vitest without a `.md` text-import plugin.
@@ -71,3 +76,4 @@ export function buildBehaviours(sources: readonly BehaviourSource[]): Behaviour[
 	}
 	return result
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

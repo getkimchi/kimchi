@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { drain as drainPreSessionTelemetry, sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
 import { runWizard } from "../setup-wizard/index.js"
 import { readEffectiveTelemetryConfig } from "../telemetry-policy.js"
@@ -26,3 +31,4 @@ export async function runSetup(_args: string[]): Promise<number> {
 	await drainPreSessionTelemetry()
 	return 0
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `pptx.mjs inspect` — the deck's edit vocabulary: slide layouts (with their
  * placeholders) and, per slide, every shape's exact `[shape "..."]` name,
@@ -171,3 +176,4 @@ export function renderInspection(deck: InspectedDeck): string {
 	}
 	return lines.join("\n")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { spawnSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -141,3 +146,4 @@ export function removeShellProfileApiKey(profile: ShellProfile): void {
 		rmSync(tmp, { force: true })
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

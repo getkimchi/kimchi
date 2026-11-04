@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP-side ExtensionUIContext. pi routes every `ctx.ui.*` call from extensions
 // through whatever object was last passed to
 // `session.bindExtensions({ uiContext, mode })`.
@@ -448,3 +453,4 @@ function logError(method: string, err: unknown): void {
 	const message = err instanceof Error ? err.message : String(err)
 	process.stderr.write(`acp ui ${method}: ${message}\n`)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Open/guard logic for the PR-cost ledger (src/extensions/pr-cost-reporting/ledger/).
  *
@@ -187,3 +192,4 @@ export function ensureProjectionVersion(store: LedgerStore): boolean {
 	})
 	return true
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

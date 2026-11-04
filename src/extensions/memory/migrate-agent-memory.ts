@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * One-time migration from the legacy agent-memory system into the personal
  * memory store.
@@ -137,3 +142,4 @@ function writeMarker(memoryDir: string): void {
 		// dedupe check keeps that harmless.
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

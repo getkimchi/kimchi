@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it, vi } from "vitest"
 import { claimTodoCrowding } from "../../todos/widget.js"
 import type { AgentManager } from "../manager/agent-manager.js"
@@ -160,3 +165,4 @@ describe("AgentWidget todo crowding", () => {
 		expect(release).toHaveBeenCalledTimes(1)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

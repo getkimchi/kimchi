@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Component } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it } from "vitest"
 import { frameBox, frameOf } from "../__mocks__/side-chat-host.js"
@@ -205,3 +210,4 @@ describe("focus guards", () => {
 		expect(focused()).toBe(dialog)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

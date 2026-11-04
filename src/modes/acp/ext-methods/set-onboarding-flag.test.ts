@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Unit tests for the `_kimchi.dev/set_onboarding_flag` ACP extension method
 // handler (kimchi-studio ADR-0043). All writes go through a temp config path so the real
 // shared config is never touched.
@@ -117,3 +122,4 @@ describe("handleSetOnboardingFlag", () => {
 		).toBe(-32603)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

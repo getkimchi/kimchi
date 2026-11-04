@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { invalidateJsonCache, readJson, readJsonCached, writeJson } from "./json.js"
@@ -234,3 +239,4 @@ export function toggleStatusLineElement(element: StatusLineElement): void {
 		setStatusLineElementPinned(element.id, !config.pinned.includes(element.id))
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

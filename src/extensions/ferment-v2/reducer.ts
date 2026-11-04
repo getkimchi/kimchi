@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { deriveFermentV2Name } from "./name.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
@@ -373,3 +378,4 @@ function nonNegativeInteger(value: number, label: string): number {
 	if (!isNonNegativeInteger(value)) throw new Error(`Ferment V2 ${label} must be a non-negative integer.`)
 	return value
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

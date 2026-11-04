@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomBytes } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { oauthErrorHtml, oauthSuccessHtml } from "../utils/oauth-page.js"
@@ -238,3 +243,4 @@ export function generateState(): string {
  * way as the key-handoff flow).
  */
 export const generateOAuthState = generateState
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

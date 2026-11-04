@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Markdown → Block[] via the marked lexer. The common front-end for every
  * writer: DOCX/PPTX/PDF creators consume this IR (Phase 2+), and rounding
@@ -157,3 +162,4 @@ function inlineOf(tokens: Token[]): Inline[] {
 		return acc
 	}, [])
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

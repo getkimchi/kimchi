@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Format detection by magic bytes first, extension second.
  *
@@ -117,3 +122,4 @@ export function isDocumentPath(path: string): boolean {
 	const extension = ext(path)
 	return DOC_SKILL_EXTENSIONS[extension] !== undefined || NON_SKILL_DOCUMENT_EXTENSIONS.includes(extension)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

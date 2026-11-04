@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Transactional DOCX editor — surgical edits on the OOXML package. The
  * document.xml string is scanned into body-block spans (extractors/docx.ts)
@@ -555,3 +560,4 @@ function ensureDocumentRel(pkg: OoxmlPackage, type: string, target: string): voi
 		),
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

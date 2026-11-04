@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared fake `BashOperations` for background-bash tests.
  *
@@ -117,3 +122,4 @@ export function createFakeOps(_exitCode: number | null = 0): FakeOps {
 	}
 	return ops
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

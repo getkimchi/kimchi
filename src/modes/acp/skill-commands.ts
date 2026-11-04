@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFile } from "node:fs/promises"
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
@@ -136,3 +141,4 @@ export function buildSkillCommandPrompt(rewrite: SkillCommandRewrite): string {
 	const prefix = [header, "", skillContent].join("\n")
 	return remainingText ? `${prefix}\n\n${remainingText}` : prefix
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

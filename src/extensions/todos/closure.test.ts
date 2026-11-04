@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { SessionManager } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it } from "vitest"
 import { createContext } from "../__mocks__/context.js"
@@ -482,3 +487,4 @@ describe("bounded todo cleanup", () => {
 		expect(h.closure()).toHaveLength(status === FERMENT_V2_STATUS.COMPLETE ? 1 : 0)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

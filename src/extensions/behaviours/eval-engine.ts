@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Eval engine — pure state machine that scores tool-call events against the
  * `evals.observed` / `evals.violated` matchers of currently-loaded behaviours.
@@ -102,3 +107,4 @@ export class EvalEngine {
 function cloneCounters(c: EvalCounters | undefined): EvalCounters {
 	return c ? { ...c } : { observed: 0, violated: 0 }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

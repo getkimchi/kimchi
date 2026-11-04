@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { getTodoScopeKey, normalizeTodoScope } from "./scope.js"
 import {
 	TODO_STATUSES,
@@ -153,3 +158,4 @@ export function reduceReplaceList(
 export function reduceTodos(state: TodosSliceState, params: WriteTodosParams): ReplaceListResult {
 	return reduceReplaceList(state, params)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

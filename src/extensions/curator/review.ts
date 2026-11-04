@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { appendFileSync, closeSync, openSync, readFileSync, unlinkSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -458,3 +463,4 @@ export function spawnSessionReview(opts: RunSessionReviewOptions): void {
 
 	debugLog(`review agent spawned pid=${proc.pid ?? "unknown"}`)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

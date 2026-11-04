@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Shared compaction threshold constants.
  *
@@ -29,3 +34,4 @@ export const EXPECTED_COMPACTION_ERROR_MESSAGES = [
 export function isExpectedCompactionError(message: string): boolean {
 	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((expected) => message.includes(expected))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

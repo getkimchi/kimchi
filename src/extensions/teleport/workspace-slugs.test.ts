@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import type { Workspace } from "../../sandbox/cloud/types.js"
 import { assignWorkspaceSlugs, slugify } from "./workspace-slugs.js"
@@ -59,3 +64,4 @@ describe("assignWorkspaceSlugs", () => {
 		expect(map.get("w-2")).toBe("beta")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

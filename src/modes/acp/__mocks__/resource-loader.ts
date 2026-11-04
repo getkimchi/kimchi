@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 // Shared fake ResourceLoader for ACP palette tests: a fixed skill list plus
@@ -30,3 +35,4 @@ export function makeResourceLoader(opts: {
 		},
 	} as unknown as ResourceLoader
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

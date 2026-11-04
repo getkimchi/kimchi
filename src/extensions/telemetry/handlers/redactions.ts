@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Translates pii-redaction domain events (pii_redaction:redacted /
  * pii_redaction:engine_degraded) into OTLP log records.
@@ -116,3 +121,4 @@ export function createRedactionHandlers() {
 }
 
 export type RedactionHandlers = ReturnType<typeof createRedactionHandlers>
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

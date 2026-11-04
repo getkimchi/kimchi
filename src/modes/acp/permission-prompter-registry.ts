@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 
 const bySessionId = new Map<string, ToolPermissionPrompter>()
@@ -15,3 +20,4 @@ export function unregisterAcpPrompter(sessionId: string): void {
 export function getAcpPrompter(sessionId: string): ToolPermissionPrompter | undefined {
 	return bySessionId.get(sessionId)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

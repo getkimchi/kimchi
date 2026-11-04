@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handler for reporting harness auth state.
 //
 // Wire name: `_kimchi.dev/auth_status` — the vendor-namespaced method for
@@ -68,3 +73,4 @@ export async function handleAuthStatus(paths: AuthStatusPaths): Promise<AuthStat
 	const credentials = await modelRuntime.listCredentials()
 	return { authenticated: credentials.some((credential) => credential.providerId === KIMCHI_PROVIDER_ID) }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

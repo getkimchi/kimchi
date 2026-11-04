@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { visibleWidth } from "@earendil-works/pi-tui"
 import type { Ferment, FermentStatus } from "../../ferment/types.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -59,3 +64,4 @@ export function formatFermentStatusLineDisplay(
 		prefixWidth: visibleWidth(prefix),
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

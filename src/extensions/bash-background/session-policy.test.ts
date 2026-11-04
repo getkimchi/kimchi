@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Policy matrix for the background-bash session classification
  * (./session-policy.ts): which sessions may yield waits/turns to a human
@@ -41,3 +46,4 @@ describe("resolveBashSessionKind — policy matrix", () => {
 		expect(resolveBashSessionKind({ mode: "rpc", isWorker: true })).toBe("unattended")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

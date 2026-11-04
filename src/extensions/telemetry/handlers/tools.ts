@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { BASH_TIMEOUT_STATUS_PATTERN } from "../../agents/subagent-bash-clamp.js"
 import { accumulateToolUsage, handleBashCumulativeMetrics, handleEditCumulativeMetrics } from "../accumulator.js"
@@ -214,3 +219,4 @@ export function handleToolExecutionEnd(
 		}
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

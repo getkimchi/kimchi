@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * output-file.ts — Streaming JSONL output file for agent transcripts.
  *
@@ -90,3 +95,4 @@ export function streamToOutputFile(session: AgentSession, path: string, agentId:
 		unsubscribe()
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

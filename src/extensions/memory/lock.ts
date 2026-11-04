@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * The capture drain lock — serializes capture workers and management
  * resets against the memory root. proper-lockfile resolves the target with
@@ -36,3 +41,4 @@ export async function acquireCaptureLock(memoryRoot: string): Promise<() => Prom
 		}
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

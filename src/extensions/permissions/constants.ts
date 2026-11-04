@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { PermissionMode, PermissionModeMeta, PermissionsConfig } from "./types.js"
 
 export const PERMISSIONS_ENV_KEY = "KIMCHI_PERMISSIONS"
@@ -62,3 +67,4 @@ export const BUILTIN_DENY: string[] = [
 	"edit(.env)",
 	"edit(.env.*)",
 ]
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

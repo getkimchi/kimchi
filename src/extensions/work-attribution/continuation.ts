@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { readdir, readFile, realpath } from "node:fs/promises"
@@ -253,3 +258,4 @@ export async function findWorkContinuation(
 	const verified = current && sameWorkScope(current.scope, captured.scope) && captured.isCurrent()
 	return { match: verified ? match : undefined, owned }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

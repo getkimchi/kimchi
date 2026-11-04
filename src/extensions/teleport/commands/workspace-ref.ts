@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
 import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
@@ -139,3 +144,4 @@ export async function resolveWorkspaceRef(
 	const picked = workspaces.find((w) => w.id === choice.row.id)
 	return { id: choice.row.id, name: picked?.name, isNew: false }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

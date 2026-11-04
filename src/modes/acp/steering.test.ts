@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AgentSideConnection, ContentChunk, SessionUpdate } from "@agentclientprotocol/sdk"
 import { describe, expect, it, vi } from "vitest"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
@@ -180,3 +185,4 @@ describe("notifyDroppedQueue", () => {
 		stderrSpy.mockRestore()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

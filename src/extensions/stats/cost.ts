@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * /session-costs: billed cost from the backend's cost breakdown. Unlike the catalog prices a session's own messages carry,
  * billing prices every request the session sent: compaction summaries, its subagents and Auto requests, which bill
@@ -179,3 +184,4 @@ export function formatWorkspaceCosts(response: GenerateBreakdownResponse, days: 
 	lines.push(totalLine(response.totals))
 	return lines
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

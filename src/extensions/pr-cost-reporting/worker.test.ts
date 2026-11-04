@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
@@ -1758,3 +1763,4 @@ describe("journals with a torn final append", () => {
 		expect(posts()).toEqual([])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

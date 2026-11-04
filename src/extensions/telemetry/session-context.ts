@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import crypto from "node:crypto"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
@@ -495,3 +500,4 @@ function fermentTelemetryAttributes(
 	}
 	return { ferment_id: fermentId ?? "" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

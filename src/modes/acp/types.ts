@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { PromptResponse } from "@agentclientprotocol/sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { TurnArtifactBuffer } from "./artifact-links.js"
@@ -142,3 +147,4 @@ export interface FileChange {
  * single source of truth for the write oldText.
  */
 export type PendingFileChange = FileChange | { operation: "write"; path: string; newText: string }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * ExtractedDocument → the Markdown block the model actually sees. Handles:
  *   - unit selection (pages/slides/sheets; 1-based)
@@ -125,3 +130,4 @@ function headerFor(doc: ExtractedDocument, path: string | undefined, selected: n
 	const where = selected === doc.units.length ? `${doc.units.length}` : `${selected} of ${doc.units.length}`
 	return `# ${name} (${doc.format} — ${where} ${doc.unitKind}${doc.units.length === 1 ? "" : "s"})`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

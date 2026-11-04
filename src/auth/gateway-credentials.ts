@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * One credential resolution for every call the harness makes to the Kimchi
  * LLM gateway or the CAST AI API. Mirrors the startup models-refresh
@@ -109,3 +114,4 @@ export function gatewayAuthHeaders(
 	if (credentials.organizationId) headers[GATEWAY_ORGANIZATION_HEADER] = credentials.organizationId
 	return headers
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

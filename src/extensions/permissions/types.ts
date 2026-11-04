@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export type PermissionMode = "default" | "plan" | "auto" | "yolo"
 
 export interface PermissionModeMeta {
@@ -99,3 +104,4 @@ export interface PermissionModeState {
 	/** Set only on persisted session entries; runtime state may omit it. */
 	reason?: ModeChangeReason
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

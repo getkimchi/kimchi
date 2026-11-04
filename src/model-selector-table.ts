@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
@@ -123,3 +128,4 @@ export function installModelTableRenderer(): void {
 	const globals = process as typeof process & { __kimchiRenderModelTable?: typeof renderModelTable }
 	globals.__kimchiRenderModelTable = renderModelTable
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

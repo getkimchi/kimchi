@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -18,3 +23,4 @@ export function resolveToolPath(input: string, cwd: string): string {
 	if (/^file:\/\//.test(p)) p = fileURLToPath(p)
 	return isAbsolute(p) ? resolve(p) : resolve(cwd, p)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

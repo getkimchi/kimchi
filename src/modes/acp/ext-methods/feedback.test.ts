@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { RatingWindow } from "../../../extensions/feedback/rating-window.js"
 import { armRatingWindow, clearRatingWindow, getRatingWindow } from "../../../extensions/feedback/rating-window.js"
@@ -417,3 +422,4 @@ describe("KimchiAcpAgent extMethod feedback", () => {
 		expect(meta?.feedback).toBeUndefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

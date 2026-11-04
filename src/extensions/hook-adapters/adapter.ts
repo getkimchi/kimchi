@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { spawn } from "node:child_process"
 import type {
 	AgentEndEvent,
@@ -848,3 +853,4 @@ function firstLine(value: string | undefined): string | undefined {
 function isProtocolMarkerLine(line: string): boolean {
 	return /^__[A-Z0-9_]+__:\d+$/.test(line)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

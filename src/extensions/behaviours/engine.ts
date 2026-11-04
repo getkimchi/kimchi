@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Trigger engine — pure state machine that decides when triggered behaviours
  * load and tracks pending one-shot injections for the in-turn steer path.
@@ -139,3 +144,4 @@ export class TriggerEngine {
 		this.pending.clear()
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

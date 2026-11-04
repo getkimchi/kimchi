@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, Key, matchesKey, Spacer, Text, type TUI } from "@earendil-works/pi-tui"
 
@@ -98,3 +103,4 @@ export async function promptTeleportHelp(ui: ExtensionCommandContext["ui"]): Pro
 		(tui, theme, keybindings, done): Component => new TeleportHelpComponent(tui, theme as Theme, keybindings, done),
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

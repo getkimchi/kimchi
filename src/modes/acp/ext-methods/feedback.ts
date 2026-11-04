@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handler for rating the settled response.
 // Vendor contract: docs/acp-feedback.md. Wire name: `_kimchi.dev/feedback` —
 // advertised via _meta["kimchi.dev"].feedback. Action-discriminated for
@@ -83,3 +88,4 @@ export async function handleFeedback(
 		throw RequestError.internalError(undefined, `failed to record rating: ${detail}`)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

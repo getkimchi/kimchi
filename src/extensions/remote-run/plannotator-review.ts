@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Plannotator-backed interactive browser review for the remote-run
  * completion menu.
@@ -146,3 +151,4 @@ function numberField(value: unknown): number | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

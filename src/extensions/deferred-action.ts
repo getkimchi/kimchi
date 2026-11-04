@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 const RUNTIME_NOT_INITIALIZED = "Extension runtime not initialized"
 const STALE_EXTENSION_CONTEXT = "This extension ctx is stale after session replacement or reload"
 
@@ -46,3 +51,4 @@ export function deferExtensionAction(
 
 	setTimeout(run, 0)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

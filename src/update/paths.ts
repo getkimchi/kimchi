@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, normalize } from "node:path"
@@ -126,3 +131,4 @@ export function resolveDataDir(): string {
 	if (xdg && xdg.length > 0) return join(xdg, APP_DIR)
 	return join(homedir(), ".local", "share", APP_DIR)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

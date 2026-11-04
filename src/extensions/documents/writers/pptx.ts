@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Deck writer: deck Markdown → .pptx bytes via pptxgenjs.
  *
@@ -1336,3 +1341,4 @@ export async function writePptx(spec: DeckSpec, options: WriteOptions = {}): Pro
 	const buffer = (await pptx.write({ outputType: "nodebuffer" })) as Buffer
 	return sanitizeForExport(new Uint8Array(buffer))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

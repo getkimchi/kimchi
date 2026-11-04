@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Smoke test asserting that `BUILTIN_TOOL_NAMES` matches the names produced
  * by pi-coding-agent's per-tool factories. If upstream renames a built-in
@@ -32,3 +37,4 @@ describe("BUILTIN_TOOL_NAMES", () => {
 		expect(new Set(BUILTIN_TOOL_NAMES)).toEqual(upstream)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

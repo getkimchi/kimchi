@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
@@ -111,3 +116,4 @@ describe("normalizeKimiToolCallIds", () => {
 		expect(JSON.stringify([user, assistant])).toBe(before)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

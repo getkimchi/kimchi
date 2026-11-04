@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type ControlOperator, type ParseEntry, parse as parseShell } from "shell-quote"
 import type { ToolCategory } from "./types.js"
 
@@ -722,3 +727,4 @@ export function parseCommandSegments(command: string): Segment[] {
 function firstSegmentTokens(command: string): string[] {
 	return parseCommandSegments(command)[0]?.tokens ?? []
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

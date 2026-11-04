@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type FSWatcher, watch } from "node:fs"
 import { resolve } from "node:path"
 import { CONFIG_DIR_NAME, getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
@@ -352,3 +357,4 @@ export function onThemeChange(listener: ThemeChangeListener): () => void {
 		listeners.delete(listener)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

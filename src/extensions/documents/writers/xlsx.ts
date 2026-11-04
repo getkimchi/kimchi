@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Own-code XLSX writer on jszip (no ExcelJS, per the workstream decision).
  * Writes the smallest complete, Office-valid workbook:
@@ -363,3 +368,4 @@ ${spec.sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas
 	const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 	return { bytes, warnings, formulas }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

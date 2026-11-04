@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Markdown → DOCX via the `docx` library, on the shared Block IR.
  *
@@ -338,3 +343,4 @@ async function repackDeterministic(data: Buffer | Uint8Array, date: Date): Promi
 	}
 	return out.generateAsync({ type: "uint8array", compression: "DEFLATE" })
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

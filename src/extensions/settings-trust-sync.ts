@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { setProjectScopeTrusted } from "../project-scope-trust.js"
 import { invalidateResourceDefinitionsCache } from "../resources/definitions.js"
@@ -53,3 +58,4 @@ export default function settingsTrustSyncExtension(pi: ExtensionAPI): void {
 		}
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

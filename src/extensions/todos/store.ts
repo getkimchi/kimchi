@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { isAgentWorker } from "../agent-worker-context.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { getOrCreateInnerMap } from "./nested-maps.js"
@@ -354,3 +359,4 @@ export function __resetTodoStore(): void {
 	todoListEverUpdated.clear()
 	scopeWriteVersions.clear()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

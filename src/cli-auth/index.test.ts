@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const openMock = vi.hoisted(() => vi.fn<(_url: string) => Promise<void>>())
@@ -124,3 +129,4 @@ describe("authenticateViaBrowser", () => {
 		expect((rejection as Error).message).toMatch(/User cancelled/)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

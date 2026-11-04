@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AvailableCommand } from "@agentclientprotocol/sdk"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
@@ -217,3 +222,6 @@ export function createCommandsRefresher(opts: {
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

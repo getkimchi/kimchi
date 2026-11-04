@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { TodoItem } from "../todos/types.js"
 
 export const MAX_FERMENT_V2_LESSONS = 5
@@ -42,3 +47,4 @@ function normalizeKind(value: string): FermentV2LessonKind {
 	if (normalized === "evidence") return "evidence"
 	return "dead-end"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

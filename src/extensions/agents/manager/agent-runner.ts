@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
@@ -1131,3 +1136,4 @@ export function getAgentConversation(session: AgentSession): string {
 export function shouldRegisterDapForTools(toolNames: readonly string[]): boolean {
 	return isResourceEnabled("extensions.dap") && toolNames.some((n) => n.startsWith("debug_") || n.startsWith("step_"))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

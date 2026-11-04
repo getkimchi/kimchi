@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { DefaultResourceLoader, type Extension, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
 
@@ -103,3 +108,4 @@ describe("extension flag conflict diagnostics (pi patch)", () => {
 		expect(typeof result.errors[0].error).toBe("string")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * The bundled document skills that ship a `scripts/<skill>.mjs` CLI — the
  * closed set both the doc-cli launcher (src/extensions/documents/doc-cli-main.ts)
@@ -34,3 +39,4 @@ export const DOC_SKILL_EXTENSIONS: Readonly<Record<string, DocCliSkill>> = {
 	pptx: "pptx",
 	pptm: "pptx",
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handler for aborting an in-flight compaction.
 //
 // Wire name: `_kimchi.dev/compact_abort`, advertised via
@@ -50,3 +55,4 @@ export async function handleCompactAbort(
 	session.abortCompaction()
 	return { status: "aborted" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

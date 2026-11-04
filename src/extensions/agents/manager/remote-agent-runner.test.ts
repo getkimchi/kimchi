@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 // All external dependencies are mocked at the module level.
@@ -2027,3 +2032,4 @@ describe("deleteRemoteSession", () => {
 		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), KEEP_META.sessionName)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

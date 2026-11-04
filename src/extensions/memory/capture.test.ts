@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type ChildProcess, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import {
@@ -2034,3 +2039,4 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		expect(existsSync(failedDir())).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

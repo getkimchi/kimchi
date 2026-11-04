@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * FSM Adapter — shared validation helper for ferment tool handlers.
  *
@@ -110,3 +115,4 @@ function formatNextActionSuggestion(action: DeclarativeAction | undefined): stri
 	const refSuffix = refs.length ? ` (${refs.join(", ")})` : ""
 	return `Recommended next action: ${publicToolNameForActionKind(action.kind)}${refSuffix} — ${action.reason}.`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { CAPABILITIES_KEY } from "./capabilities.js"
 
 /** Minimal options shape needed by {@link resolveAcpAppendSystemPrompt}. */
@@ -34,3 +39,4 @@ export function resolveAcpAppendSystemPrompt(
 	const combined = [...(options.appendSystemPrompt ?? []), ...metaEntries]
 	return combined.length > 0 ? combined : undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

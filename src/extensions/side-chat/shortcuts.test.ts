@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { SIDE_CHAT_SHORTCUTS, sideChatFocusHint } from "./shortcuts.js"
@@ -41,3 +46,4 @@ describe("sideChatFocusHint", () => {
 		expect(sideChatFocusHint()).toBeUndefined()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

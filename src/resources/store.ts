@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import type { ResourcePolicy } from "../api/org-settings.js"
@@ -163,3 +168,4 @@ function assertResourceId(value: string): asserts value is ResourceId {
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

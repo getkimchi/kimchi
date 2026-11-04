@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { GATEWAY_ORGANIZATION_HEADER } from "../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../config.js"
 import { fetchWithRetry } from "../utils/http.js"
@@ -62,3 +67,4 @@ export async function getMe(apiKey: string, options?: GetMeOptions): Promise<MeR
 
 	return data as MeResponse
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

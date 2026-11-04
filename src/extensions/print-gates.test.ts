@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Behavior tests for the Chunk 7 print-mode registration gates
 // (token-optimization Phase 1). Each owning extension skips its
 // interactive/ferment-only tool registrations when the gate says so; the
@@ -127,3 +132,4 @@ describe("set_model interactive gate (cost-parity consolidation)", () => {
 		}
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

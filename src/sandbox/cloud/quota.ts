@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
 import { parseInt64 } from "./parse.js"
@@ -78,3 +83,4 @@ function parseResourceUsage(raw: unknown): ResourceUsage | undefined {
 		maxPvcSizeBytes: parseInt64(r.maxPvcSizeBytes),
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

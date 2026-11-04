@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ClientCapabilities } from "@agentclientprotocol/sdk"
 
 export const CAPABILITIES_KEY = "kimchi.dev"
@@ -105,3 +110,4 @@ export function kimchiDevMetaOf<T>(payload: T): KimchiDevMeta<T> {
 export function getClientSupportsElicitation(capabilities: ClientCapabilities | undefined): boolean {
 	return capabilities?.elicitation?.form != null
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

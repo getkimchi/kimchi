@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /*
  * Jira issue keys, read by the same rules as the backend's lib/jira: a project key of at least two characters (an
  * uppercase letter, then uppercase letters, digits or underscores, at most 255 in all), a dash and an issue number of
@@ -73,3 +78,6 @@ export function savedBranchIssueKeys(value: unknown): string[] {
 		? value
 		: []
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Integration tests for the reviewWriteGuardExtension wiring.
  * Tests the event handler registration (session_start, tool_call, tool_result)
@@ -452,3 +457,4 @@ describe("reviewWriteGuardExtension wiring", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

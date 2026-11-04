@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type DeclarativeAction, determineNextAction } from "../../ferment/engine.js"
 import type { Ferment } from "../../ferment/types.js"
 import type { ContinuationPolicy } from "./state.js"
@@ -91,3 +96,4 @@ export function isManualPhaseBoundary(ferment: Ferment, action: ActivatePhaseAct
 			(phase.status === "completed" || phase.status === "skipped" || phase.status === "failed"),
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

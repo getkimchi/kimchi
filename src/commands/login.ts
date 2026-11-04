@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `kimchi login` — the CLI mirror of the interactive `/login` command
  * (src/login-command-patch.ts + src/extensions/login/flow.ts).
@@ -456,3 +461,4 @@ export function getLoginHelp(): string {
 	]
 	return lines.join("\n")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

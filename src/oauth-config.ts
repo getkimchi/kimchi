@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Per-region OAuth (Authorization Code + PKCE) metadata for CAST AI SSO login.
  *
@@ -148,3 +153,4 @@ export function resolveOAuthLoginConfig(storedRegion: RegionId | undefined): Kim
 export function clearPendingOAuthRegion(): void {
 	pendingOAuthRegion = undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

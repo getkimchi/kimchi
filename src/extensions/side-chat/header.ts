@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Side chat header: focus marker, title, and clickable ≡ (history) and ✕
  * (close) buttons pinned to the right edge. The burger is "≡" rather than
@@ -72,3 +77,4 @@ export function actionAt(x: number, width: number): HeaderAction | undefined {
 	if (offset < 0 || offset >= BUTTONS_WIDTH) return undefined
 	return BUTTONS[Math.floor(offset / BUTTON_WIDTH)]?.action
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

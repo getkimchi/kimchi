@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Contract test for the pi-coding-agent patch hunk in
  * `patches/@earendil-works__pi-coding-agent@1.3.0.patch` that makes
@@ -36,3 +41,4 @@ describe("patch: bug-report zip archives are owner-only (mode 0600)", () => {
 		expect(statSync(dest).mode & 0o777).toBe(0o600)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash, type Hash } from "node:crypto"
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -500,3 +505,4 @@ export function importJournalSlice(agentDir: string, checkBudget?: () => void): 
 export function importSessionJournal(agentDir: string, path: string): void {
 	for (;;) if (!importJournalFiles(agentDir, [path], {}, false).pending) return
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

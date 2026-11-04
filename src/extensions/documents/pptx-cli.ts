@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `pptx.mjs` — the command-line entry the bundled pptx skill drives. It runs
  * under the kimchi binary's embedded Bun runtime (`BUN_BE_BUN=1 kimchi
@@ -267,3 +272,4 @@ export async function runPptxCli(argv: string[], io: CliIo): Promise<number> {
 }
 
 runCliScript(import.meta.url, runPptxCli)
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent"
 
 export interface BehaviourFrontmatter {
@@ -20,3 +25,4 @@ export function parseBehaviourBody(raw: string): ParsedBehaviourBody {
 	if (!description) throw new Error(`behaviour ${name} frontmatter is missing required field: description`)
 	return { frontmatter: { name, description }, content: body.trim() }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

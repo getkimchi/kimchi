@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Feature-local session policy for background bash: is a human reachable
  * while the agent works ("user-facing"), or is this run unattended?
@@ -53,3 +58,4 @@ export function resolveBashSessionKind(inputs: BashSessionKindInputs): BashSessi
 export function bashSessionKindFromContext(ctx: ExtensionContext): BashSessionKind {
 	return resolveBashSessionKind({ mode: ctx.mode, isWorker: isAgentWorker() })
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

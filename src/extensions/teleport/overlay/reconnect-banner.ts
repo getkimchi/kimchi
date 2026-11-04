@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type Component, visibleWidth } from "@earendil-works/pi-tui"
 
 export type BannerPhase = "connecting" | "reconnecting" | "lost" | "fatal"
@@ -67,3 +72,4 @@ function truncate(plain: string, styled: string, width: number): { plain: string
 	const cut = `${plain.slice(0, width - 1)}…`
 	return { plain: cut, styled: cut }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

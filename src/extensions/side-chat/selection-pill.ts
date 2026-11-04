@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Floating "Add to side chat" pill under a settled transcript selection.
  *
@@ -82,3 +87,4 @@ export class SelectionPill {
 		return theme.bg("selectedBg", theme.fg("accent", theme.bold(" + Add to side chat ")))
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

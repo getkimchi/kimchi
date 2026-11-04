@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { printMergedHelp } from "./help.js"
 import { installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
@@ -65,3 +70,4 @@ describe("printMergedHelp", () => {
 		expect(output).toContain("(from @fake/help)")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

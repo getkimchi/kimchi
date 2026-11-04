@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Side-effect imports register each integration. Import order doesn't matter
 // — the registry is a Map keyed by ToolId — but the imports themselves do,
 // otherwise byId() returns undefined for an unimported tool.
@@ -103,3 +108,4 @@ function previousActiveStep(state: WizardState, from: number): number {
 	}
 	return -1
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

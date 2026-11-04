@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Subagent bash-clamp domain event channel published via pi.events.
  *
@@ -39,3 +44,4 @@ export interface SubagentBashClampedPayload {
 	/** Wall-clock ms of budget remaining at clamp time (≤ 0 when exhausted). */
 	remainingMs: number
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

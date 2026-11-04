@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { refuse } from "../commands/errors.js"
 import type { TeleportContext } from "../types.js"
 import { gitWorkingTreeDirty } from "./git.js"
@@ -48,3 +53,4 @@ export function runPreflight(ctx: TeleportContext, args: PreflightArgs, deps: Pr
 		refuse(ctx, "Working tree has uncommitted changes. Re-run with --allow-dirty to ship them.")
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

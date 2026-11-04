@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -153,3 +158,4 @@ describe("org resource policy", () => {
 		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

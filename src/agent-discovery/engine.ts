@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
@@ -253,3 +258,4 @@ function countMarkdownFiles(dir: string): number {
 	}
 	return count
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

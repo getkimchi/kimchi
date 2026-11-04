@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Cross-site integration tests for the steer-outcome watcher adoptions
  * (Chunk 3): each kind that lacked a comply signal now emits one
@@ -128,3 +133,4 @@ describe("steer outcome watcher — site adoptions", () => {
 		])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

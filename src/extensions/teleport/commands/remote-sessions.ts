@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { basename, isAbsolute, join } from "node:path"
 import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
@@ -296,3 +301,4 @@ async function syncSession(session: RemoteSessionNode, ctx: TeleportContext): Pr
 		ctx,
 	)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

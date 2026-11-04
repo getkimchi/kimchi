@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { warn } from "../commands/errors.js"
@@ -89,3 +94,4 @@ export function applyIncludeBlock(existing: string, block: string): string {
 	const sep = existing.startsWith("\n") ? "" : "\n"
 	return `${block}\n${sep}${existing}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

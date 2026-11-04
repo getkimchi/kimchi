@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { makeCustomDocx, makeOfficeShapedDocx, makeSimpleDocx } from "../fixtures/builders.js"
 import { DocumentError } from "../model.js"
@@ -168,3 +173,4 @@ describe("extractDocx — adversarial", () => {
 		expect(doc.outline[200]).toContain("capped at 200")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

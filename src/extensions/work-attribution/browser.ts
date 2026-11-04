@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readdir, readFile, stat } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { stripTerminalSequences } from "@earendil-works/pi-tui"
@@ -299,3 +304,4 @@ async function readPlanTitle(folder: string, head: WorkHead): Promise<string | u
 	const title = text === undefined ? undefined : derivePlanTitle(text)
 	return title === DEFAULT_SLUG ? undefined : title
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

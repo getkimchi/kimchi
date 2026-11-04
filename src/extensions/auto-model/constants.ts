@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Model } from "@earendil-works/pi-ai"
 
 export const AUTO_MODEL_PROVIDER = "kimchi-dev"
@@ -82,3 +87,4 @@ export function splitModelDisplayName(name: string): { name: string; description
 	if (sep === -1) return { name }
 	return { name: name.slice(0, sep), description: name.slice(sep + 3) }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

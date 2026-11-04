@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Pending scoping-proposal persistence — disk-backed sidecar for the
  * in-memory `pendingScope` / `pendingPlanReview` state that drives the
@@ -144,3 +149,4 @@ export function deletePendingProposal(fermentId: string, root?: string): void {
 		// Silent — cleanup failures shouldn't propagate.
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

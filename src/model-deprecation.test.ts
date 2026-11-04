@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -279,3 +284,4 @@ describe("model-deprecations sidecar", () => {
 		expect(read.get("kimi-k2.7")).toEqual({ deprecated_at: "2026-10-15T00:00:00Z" })
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

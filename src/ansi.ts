@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Theme } from "@earendil-works/pi-coding-agent"
 
 export const TRUECOLOR = process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit"
@@ -50,3 +55,4 @@ export const ANSI = {
 	accent: "38;2;138;190;183",
 	dim: tc("102;102;102", "242"),
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

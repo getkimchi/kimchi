@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Re-introduces user bash hook processing that was previously wired by the
  * deleted `rtk-rewrite` extension. This adapter intentionally performs only
@@ -54,3 +59,4 @@ export default function bashHooksAdapterExtension(pi: ExtensionAPI): void {
 		return { operations }
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

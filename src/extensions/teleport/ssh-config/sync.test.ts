@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -168,3 +173,4 @@ describe("applyIncludeBlock", () => {
 		expect(result).toContain("Host x")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

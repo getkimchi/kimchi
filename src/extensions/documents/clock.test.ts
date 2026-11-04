@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { createPinnedClock, RealClock } from "./clock.js"
 
@@ -15,3 +20,4 @@ describe("clock seam", () => {
 		expect(clock.now().toISOString()).toBe("1980-01-01T00:00:00.000Z")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

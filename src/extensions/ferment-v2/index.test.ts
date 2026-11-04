@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import {
 	existsSync,
@@ -4879,3 +4884,4 @@ function requireFermentV2(fermentV2: SessionFermentV2 | undefined): SessionFerme
 	if (!fermentV2) throw new Error("expected current Ferment V2")
 	return fermentV2
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

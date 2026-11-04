@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Narrow-terminal width-invariant fuzz for the remaining main-screen
  * components: user messages, assistant Markdown, and thinking steps.
@@ -80,3 +85,4 @@ describe("main-screen narrow-terminal width invariant", () => {
 		})
 	}
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

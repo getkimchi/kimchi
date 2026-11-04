@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import {
 	buildFermentV2Continuation,
@@ -135,3 +140,4 @@ Persistent objective continuation is enabled.
 		expect(text).toContain("Persistent objective continuation is disabled while status is paused.")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { Value } from "typebox/value"
 import { describe, expect, it } from "vitest"
 import { ProposeScopingParams } from "./tool-schemas.js"
@@ -135,3 +140,4 @@ describe("Ferment scoping benchmark cases", () => {
 		expect(schemaText).not.toContain("at least 3 phases")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

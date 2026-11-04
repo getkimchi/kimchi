@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { Type } from "typebox"
 import { describe, expect, it } from "vitest"
 import { createCaptureApi } from "./context-budget-tools.js"
@@ -44,3 +49,4 @@ describe("context-budget capture flags", () => {
 		expect(second.api.getFlag("enabled")).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

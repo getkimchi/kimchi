@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { readConfigSetting, writeConfigSetting } from "../config/settings.js"
@@ -158,3 +163,4 @@ describe("shell profile migration extension", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Shell profile migration failed: Permission denied", "warning")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { stripOuterQuotes } from "./text.js"
 
 const MAX_TITLE_LENGTH = 60
@@ -26,3 +31,4 @@ export function normalizeFermentTitle(value: string | undefined): string | undef
 export function deriveDraftFermentTitle(rawIntent: string): string {
 	return normalizeFermentTitle(rawIntent) ?? "Untitled Ferment"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

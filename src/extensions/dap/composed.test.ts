@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/composed.test.ts
 //
 // Verifies the Layer 2 composed tools' orchestration logic: each tool's
@@ -748,3 +753,4 @@ describe("output capture + truncation", () => {
 		expect(result.stdout).toContain(small)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

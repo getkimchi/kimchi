@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Markdown → PDF writer for pdf.mjs create. Consumes the shared block IR
  * (markdown/blocks.ts — same input shape as the PPTX writer) and draws with
@@ -482,3 +487,4 @@ export async function renderBlocksToPdf(
 		translateErr(err)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

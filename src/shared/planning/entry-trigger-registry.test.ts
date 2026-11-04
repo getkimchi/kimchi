@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { EntryTrigger, EntryTriggerEvent } from "./entry-trigger-registry.js"
 import { clear, dispatch, has, register, size } from "./entry-trigger-registry.js"
@@ -425,3 +430,4 @@ describe("entry-trigger-registry", () => {
 		})
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

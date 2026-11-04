@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Capture wiring: turns session content into capture jobs and spawns the
  * detached capture worker. Capture never blocks or breaks the session —
@@ -202,3 +207,4 @@ export function spawnCaptureWorker(jobFile: string, dbPath: string): void {
 	})
 	child.unref()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

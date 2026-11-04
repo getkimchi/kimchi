@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -99,3 +104,4 @@ it("falls back to a minimal unbranded page when the template dir is unreadable",
 	expect(html).not.toContain(KIMCHI_LOGO_ORANGE)
 	expect(html).not.toContain("M165.29 165.29")
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

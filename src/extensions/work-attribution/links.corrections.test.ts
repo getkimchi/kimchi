@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -179,3 +184,4 @@ it("still fails closed on a damaged line that is not a cut-off record", () => {
 	readWorkRecords(dir, undefined, undefined, invalid)
 	expect(invalid).toHaveBeenCalledOnce()
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

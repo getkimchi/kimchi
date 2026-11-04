@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import llmResponseLogExtension from "./llm-response-log.js"
@@ -198,3 +203,4 @@ describe("llmResponseLogExtension", () => {
 		consoleErrorSpy.mockRestore()
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

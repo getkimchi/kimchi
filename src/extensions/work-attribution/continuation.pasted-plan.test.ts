@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { randomUUID } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -78,3 +83,4 @@ it.each([
 	// verified plan are its instructions, not additional work selections."
 	expect(await findWorkContinuation({ cwd }, prompt, captured)).toEqual({ owned: true })
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

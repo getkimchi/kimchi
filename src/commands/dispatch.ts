@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { printMergedHelp } from "./help.js"
 import { findPackageCommand, runPackageCommand } from "./package-commands.js"
 import { findCommand, isKnownCommand } from "./registry.js"
@@ -50,3 +55,4 @@ export async function dispatchSubcommand(args: string[]): Promise<DispatchResult
 
 	return { kind: "fallthrough" }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

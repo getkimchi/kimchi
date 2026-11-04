@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { note } from "@clack/prompts"
 import { writeTelemetryEnabled } from "../../config.js"
 import { isTelemetryPolicyEnforced, usageReportingPolicy } from "../../telemetry-policy.js"
@@ -53,3 +58,4 @@ export async function runTelemetryStep(state: WizardState, opts: { backable: boo
 	}
 	state.telemetryEnabled = r.value
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

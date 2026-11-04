@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { getRawErrorMessage, hasPreservedRawErrorMessage } from "./extensions/error-preservation.js"
@@ -342,3 +347,4 @@ async function waitForRateLimitDeadline(
 	}
 	return true
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

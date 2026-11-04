@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
 import { REVIEW_HANDOFF_TOOL_NAMES, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
@@ -907,3 +912,4 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		disposeSessionReconciliation(sessionId)
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

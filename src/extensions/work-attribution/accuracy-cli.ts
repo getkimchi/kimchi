@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFileSync, realpathSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -156,3 +161,4 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
 	for (const line of outcome.stderr) console.error(line)
 	process.exitCode = outcome.code
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

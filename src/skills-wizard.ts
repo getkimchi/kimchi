@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import * as clack from "@clack/prompts"
 import { AGENT_DEFINITIONS, discoverAgent } from "./agent-discovery/index.js"
 import { buildSkillPathOptions } from "./config.js"
@@ -42,3 +47,4 @@ export async function runSkillsWizard(): Promise<string[]> {
 	clack.outro(`Saved ${paths.length} skill path(s).`)
 	return paths
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

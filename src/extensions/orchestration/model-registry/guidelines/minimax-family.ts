@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * MiniMax family phase-guideline overrides.
  *
@@ -66,3 +71,4 @@ export const MINIMAX_M27_BUILD = `During **build** phase (minimax-m2.7 specific)
 /** M2.7 review: flag Go-specific concurrency issues. */
 export const MINIMAX_M27_REVIEW = `During **review** phase (minimax-m2.7 specific):
 - Flag inappropriate concurrency choices (e.g. mutex spam in Go where none was requested).`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

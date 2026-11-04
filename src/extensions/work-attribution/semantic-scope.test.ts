@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
@@ -434,3 +439,4 @@ it("does not save an intent under an account that changed during verification", 
 	await pending
 	expect(existsSync(workIntentPath(WORK))).toBe(false)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

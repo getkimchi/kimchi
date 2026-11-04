@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `dispatch_to_cloud_agent` tool — dispatches a self-contained task briefing
  * to a remote cloud agent via `runCloudAgent`.
@@ -134,3 +139,4 @@ export function registerDispatchToCloudAgentTool(pi: ExtensionAPI): void {
 		},
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

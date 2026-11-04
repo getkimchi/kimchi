@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handlers for MCP-related operations.
 //
 // Extracted from server.ts so the agent class stays focused on session
@@ -118,3 +123,4 @@ export async function handleProbeMcpServer(
 	const serverName = (params.serverName as string | undefined) ?? "probe"
 	return runSerializedProbe(() => mcpProbe.probeTools(serverName, server, { authenticate: params.skipAuth !== true }))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

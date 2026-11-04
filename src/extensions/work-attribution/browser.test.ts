@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import * as asyncFs from "node:fs/promises"
@@ -653,3 +658,4 @@ describe("work browser rows", () => {
 		expect(details(second)).toContain("Last billing refresh failed for 1 request: Billing lookup unavailable.")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

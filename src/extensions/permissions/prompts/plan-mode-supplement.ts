@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { generatePlanPersistenceNote } from "../../../shared/planning/plan-markdown.js"
 import { SHARED_PLANNING_PROCESS } from "../../../shared/planning/shared-planning-process.js"
 
@@ -36,3 +41,4 @@ STEP 5 (Plan):
 ## Plan File Persistence
 
 ${generatePlanPersistenceNote({ persistence: "harness" })}`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { reconcileCheckinScope, reportConfirmMismatch } from "./checkin-gate.js"
@@ -557,3 +562,4 @@ export function registerTodosTool(pi: ExtensionAPI): void {
 		execute: executeConfirmTodos,
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * xmldom helpers + the OOXML namespace map. One parsing façade so every
  * consumer (PPTX reader now, OOXML editors later) gets the same DOM that
@@ -184,3 +189,4 @@ export function setTextPreservingSpace(el: Element, text: string): void {
 	el.textContent = text
 	if (/^\s|\s$/.test(text)) el.setAttribute("xml:space", "preserve")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

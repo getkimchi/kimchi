@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { getActiveFerment } from "../ferment/index.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 
@@ -10,3 +15,4 @@ export function getSessionType(fermentV2?: TelemetryFermentV2Context): "ferment"
 	if (fermentV2) return "ferment"
 	return getActiveFerment() ? "ferment" : "coding"
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

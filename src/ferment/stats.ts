@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ferment computed stats — derived views over the Ferment snapshot.
  *
@@ -332,3 +337,4 @@ export function computeStats(ferment: Ferment): FermentStats {
 export function serializeStats(stats: FermentStats): string {
 	return JSON.stringify(stats, null, 2)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

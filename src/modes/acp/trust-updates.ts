@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Project-trust surfacing over ACP (LLM-3628 follow-up).
 //
 // ACP sessions are headless: `resolveHeadlessProjectTrust()` fail-closes to
@@ -226,3 +231,4 @@ export function isPathWithin(child: string, ancestor: string): boolean {
 	if (isAbsolute(rel)) return false
 	return rel !== ".." && !rel.startsWith(`..${sep}`)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

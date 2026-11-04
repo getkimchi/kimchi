@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { SHARED_PLANNING_PROCESS } from "../../shared/planning/shared-planning-process.js"
 
 export const SCOPING_EXPLORE_TOKEN_BUDGET = 120_000
@@ -70,3 +75,4 @@ Step shape contract: describe every step as one cohesive, verifiable change (a
   in one wave; order scaffolding first so later steps integrate against a stable
   surface.
 </scoping_sequence>`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

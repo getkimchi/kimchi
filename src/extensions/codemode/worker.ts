@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Entrypoint for the codemode sandbox worker in compiled binaries.
 //
 // pi's `getCodemodeWorkerSpecifier()` (dist/config.js) returns the
@@ -15,3 +20,4 @@
 // re-export of pi-codemode's worker module. See
 // src/extensions/codemode/worker-entrypoint.test.ts for the contract.
 import "@earendil-works/pi-codemode/worker"
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

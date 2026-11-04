@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Forward the pi-mono session events that describe WHY a turn is stalled.
 // From the client's point of view an outstanding session/prompt with no
 // updates is indistinguishable from a hang — but under the hood the agent may
@@ -38,3 +43,4 @@ export function emitAgentActivityUpdate(conn: AgentSideConnection, sessionId: st
 	const { type, ...fields } = event as { type: string } & Record<string, unknown>
 	emitExtNotification(conn, AVAILABLE_EXT_NOTIFICATIONS.agent_activity, { ...fields, sessionId, kind: type })
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

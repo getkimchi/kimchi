@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Resolves attachment paths the same way pi's @file loader does, so kimchi accepts anything pi would accept.
 // Ported from pi-mono: packages/coding-agent/src/core/tools/path-utils.ts — keep in sync manually if pi's rules evolve.
 // The macOS-specific variants below exist because typing a screenshot's filename rarely produces the exact bytes the filesystem stored; see findExistingFile.
@@ -110,3 +115,4 @@ export function normalizeAtFileArgs(
 	})
 	return { args: normalized, directoryArgs }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

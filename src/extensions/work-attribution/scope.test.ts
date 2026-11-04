@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
@@ -130,3 +135,4 @@ it("never answers another key with a verified identity", async () => {
 	expect((await captureWorkAccount(root))?.account.userId).toBe(OTHER_USER)
 	expect(verify).toHaveBeenLastCalledWith(key, expect.objectContaining({ endpoint: "https://account.example/api" }))
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

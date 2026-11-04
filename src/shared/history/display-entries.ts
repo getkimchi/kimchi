@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Display-entry tagging for compaction-aware rendering.
  *
@@ -46,3 +51,4 @@ export function tagDisplayEntries<E extends PathEntry>(path: E[]): TaggedDisplay
 	const cutIndex = firstKeptIndex === -1 ? compactionIndex : firstKeptIndex
 	return path.map((entry, i) => ({ entry, compactedBefore: i < cutIndex }))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

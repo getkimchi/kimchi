@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Unit tests for readStatusLineCommand — the footer factory's lookup of a
  * custom status-line command from the harness settings.json. Covers the
@@ -84,3 +89,4 @@ describe("readStatusLineCommand", () => {
 		expect(readStatusLineCommand()).toBe("fallback-cmd")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

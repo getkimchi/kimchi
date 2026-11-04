@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export type WorkspaceStatus = "active" | "idle" | "completed"
 
 export interface Workspace {
@@ -190,3 +195,4 @@ export class RemoteQuotaError extends RemoteNetworkError {
 		this.name = "RemoteQuotaError"
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

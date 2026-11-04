@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { findSoffice, libreOfficeInstallHint, sofficeCandidates } from "./soffice.js"
 
@@ -105,3 +110,4 @@ describe("sofficeCandidates", () => {
 		expect(libreOfficeInstallHint("darwin")).not.toContain("winget")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

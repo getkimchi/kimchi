@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Memory extension: persistent personal memory for chat sessions, backed by
  * Mem0 OSS with the SQLite store and remote embeddings (see backend.ts).
@@ -649,3 +654,4 @@ function lastAssistantText(ctx: ExtensionContext): string {
 	}
 	return ""
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

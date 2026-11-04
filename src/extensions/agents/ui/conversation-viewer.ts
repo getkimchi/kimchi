@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * conversation-viewer.ts — Live conversation overlay for viewing agent sessions.
  */
@@ -259,3 +264,4 @@ export class ConversationViewer implements Component {
 		return lines.map((l) => truncateToWidth(l, width))
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** Compute the content a `write`/`edit` tool call would produce, so the
  * ide-adapter can send it to the IDE's diff viewer *before* the tool runs.
  * Semantics mirror `getEditOperations` in `src/extensions/tool-rendering.ts`. */
@@ -51,3 +56,4 @@ export function applyEdits(original: string, operations: Array<EditOperation>): 
 export function applyEditInput(original: string, input: Parameters<typeof normaliseEditOperations>[0]): string | null {
 	return applyEdits(original, normaliseEditOperations(input))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Session-scoped background-bash state accessor.
  *
@@ -55,3 +60,6 @@ export function setSessionState(sessionId: string, state: BashSessionState | und
 	if (state) sessionStates.set(sessionId, state)
 	else sessionStates.delete(sessionId)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

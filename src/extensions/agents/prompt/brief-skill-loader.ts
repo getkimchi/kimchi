@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * brief-skill-loader.ts — Deterministic skill auto-load for subagent task briefs.
  *
@@ -229,3 +234,4 @@ export function renderBriefSkillBlock(match: MatchedBriefSkill): string {
 	const provenance = match.label ? provenanceSentence(match.label) : ""
 	return `${note}${provenance}\n\n${match.content}`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

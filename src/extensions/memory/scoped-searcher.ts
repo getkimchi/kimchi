@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Scoped retrieval: search the personal store plus the current project's
  * store, merge by score, hand the existing digest value gate a single list.
@@ -85,3 +90,4 @@ export async function createScopedSearcher(cwd: string, deps: ScopedSearcherDeps
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

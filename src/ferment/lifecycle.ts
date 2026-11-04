@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Ferment, Phase } from "./types.js"
 
 export function settleAfterPhaseTerminalPatch(phases: Phase[]): Pick<Ferment, "phases" | "status" | "activePhaseId"> {
@@ -33,3 +38,4 @@ export function activateSinglePhase(phases: Phase[], phaseId: string, timestamp:
 		return phase
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

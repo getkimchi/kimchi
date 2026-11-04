@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __clearModelThinkingLevelsForTest, getModelThinkingLevels, registerModelThinkingLevels } from "../models.js"
@@ -323,3 +328,4 @@ describe("modelListExtension", () => {
 		expect(modelRefFromModel(toModel({ id: "auto", provider: "kimchi-dev", name: "Auto" }))).toBe("kimchi-dev/auto")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { SessionFermentV2 } from "../ferment-v2/types.js"
 
 /**
@@ -12,3 +17,4 @@ import type { SessionFermentV2 } from "../ferment-v2/types.js"
  * subscribed on that instance's own event bus.
  */
 export type TelemetryFermentV2Context = Pick<SessionFermentV2, "id" | "revision" | "status">
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

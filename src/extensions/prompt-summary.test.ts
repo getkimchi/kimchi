@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
@@ -474,3 +479,4 @@ describe("prompt summary renderer", () => {
 		expect(text).toContain("- Rate response: ▲▼ (Ctrl+R)")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

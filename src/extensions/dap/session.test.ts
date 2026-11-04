@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // extensions/dap/session.test.ts
 //
 // Verifies DapSession's per-session debug state and primitive operations
@@ -666,3 +671,4 @@ describe("breakpoint source paths", () => {
 		expect(await session.waitForBreakpointBound(8, 50)).toBe(false)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

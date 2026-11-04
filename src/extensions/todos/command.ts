@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { runTodoCommandMutation } from "./command-mutation.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -288,3 +293,4 @@ export {
 	parseTodoArgs as __test_parseTodoArgs,
 	parseTodoIndex as __test_parseTodoIndex,
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

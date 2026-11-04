@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -199,3 +204,4 @@ describe("renderPptx", () => {
 		expect(result.images).toEqual([join(missing, "kimchi-1.png"), join(missing, "kimchi-2.png")])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

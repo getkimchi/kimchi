@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ModelMetadata } from "../../models.js"
 
 /**
@@ -70,3 +75,4 @@ export const TEST_SERVERLESS_MODELS = TEST_MODELS.filter((m) => m.is_serverless)
 
 /** Subset containing only Anthropic models — for opus/sonnet tests. */
 export const TEST_ANTHROPIC_MODELS = TEST_MODELS.filter((m) => m.provider === "anthropic")
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

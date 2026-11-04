@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import type { WorkSegment } from "../work-attribution.js"
 import { nowNano } from "./helpers.js"
@@ -33,3 +38,4 @@ export function trackPRCostMetric(metric: PRCostMetric): void {
 	} else if (metric.kind === "reconciliation") state.reconciliationStartedAt = Date.now()
 	else if (Number.isSafeInteger(metric.value) && metric.value >= 0) state[metric.kind] = metric.value
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

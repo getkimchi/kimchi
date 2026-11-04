@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 export interface ReconnectSupervisorOptions {
 	/** Initial backoff sequence in ms. Default [1000, 2000, 4000, 8000, 16000]. */
 	delays?: number[]
@@ -115,3 +120,4 @@ export class ReconnectSupervisor {
 		return this.retrying
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

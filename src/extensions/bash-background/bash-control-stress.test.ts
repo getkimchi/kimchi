@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -476,3 +481,4 @@ it("shutdown settles an active wait and kills the real process tree", async () =
 	expect(state.registry.size).toBe(0)
 	expect(state.coordinator.size).toBe(0)
 }, 10_000)
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

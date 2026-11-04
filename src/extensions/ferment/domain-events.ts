@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ferment domain event channels published via pi.events.
  *
@@ -166,3 +171,4 @@ export interface UserUnblockedPayload {
 	/** Wall-clock duration from prompt to first user input, in ms. */
 	durationMs: number
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

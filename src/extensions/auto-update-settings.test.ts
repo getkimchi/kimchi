@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Tests for src/extensions/auto-update-settings.ts.
 //
 // Strategy: focus on `runManualUpdate()` + the re-exports. The TUI menu
@@ -264,3 +269,4 @@ describe("default export — extension factory", () => {
 		expect(typeof commands[0]?.options.handler).toBe("function")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

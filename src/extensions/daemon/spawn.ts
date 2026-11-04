@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Detached daemon spawn + stop.
  *
@@ -244,3 +249,4 @@ export async function stopDaemon(record: DaemonRecord, stateDir: string): Promis
 	unregisterDaemon(stateDir, record.id)
 	return { stopped: true, note: `Daemon ${record.id} (pid ${pid}) stopped. Log kept at ${record.logFile}.` }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

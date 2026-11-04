@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { CURRENT_SESSION_VERSION, type CustomEntry, type SessionHeader } from "@earendil-works/pi-coding-agent"
@@ -45,3 +50,6 @@ export function prepareAgentSessionFile(
 	writeFileSync(sessionFile, `${JSON.stringify(header)}\n${JSON.stringify(role)}\n`, { mode: 0o600 })
 	return { sessionId, sessionFile }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

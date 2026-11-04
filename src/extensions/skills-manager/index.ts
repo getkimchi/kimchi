@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -122,3 +127,4 @@ function canonicalize(path: string): string {
 		return resolve(path)
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

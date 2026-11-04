@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Nemotron family phase-guideline overrides.
  *
@@ -58,3 +63,4 @@ export const NEMOTRON_3_ULTRA_BUILD = `During **build** phase (nemotron-3-ultra-
 - Stay strictly within the spec. Do NOT design, refactor, or expand scope. If the spec is ambiguous, stop and report — do not improvise.
 - Touch one file at a time when possible. Avoid multi-file refactors; your reliability drops sharply on those.
 - If a fix attempt fails twice, stop and report the error rather than retrying blindly.`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

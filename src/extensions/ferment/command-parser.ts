@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { stripOuterQuotes } from "../../ferment/text.js"
 
 export type FermentCommand =
@@ -50,3 +55,4 @@ export function parseFermentCommand(args: string): FermentCommand {
 	if (lo.startsWith("new ")) return { type: "new", title: stripOuterQuotes(raw.slice("new ".length)) }
 	return { type: "unknown", input: raw }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

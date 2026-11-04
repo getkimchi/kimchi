@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { __test_applyTodoAction, __test_parseTodoArgs, registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -115,3 +120,4 @@ describe("/todos command helpers", () => {
 		).toEqual(["show all"])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

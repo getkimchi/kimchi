@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Kimi family phase-guideline overrides.
  *
@@ -87,3 +92,4 @@ export const KIMI_K26_PLAN = `During **plan** phase (kimi-k2.6 specific):
 export const KIMI_K26_EXPLORE = `During **explore** phase (kimi-k2.6 specific):
 - Use your long-context strength: prefer reading 3–5 files in full over many partial reads.
 - Trust the built-in context compressor — do NOT manually summarise mid-exploration.`
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

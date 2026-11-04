@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -71,3 +76,4 @@ describe("unbranded fallback", () => {
 		expect(html).not.toContain(KIMCHI_LOGO_ORANGE)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

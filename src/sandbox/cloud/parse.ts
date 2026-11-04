@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Parse a proto-JSON integer field. gRPC-gateway encodes int64 as a JSON
  * *string* ("1500") while int32 arrives as a number — accept both so callers
@@ -15,3 +20,4 @@ export function parseInt64(raw: unknown): number | undefined {
 	}
 	return undefined
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

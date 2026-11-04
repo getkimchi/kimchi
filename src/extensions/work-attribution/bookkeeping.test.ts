@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -151,3 +156,4 @@ console.log(JSON.stringify({ source, outcome: runCli([source, ${JSON.stringify(r
 	if (legacy) expect(readFileSync(stalePath, "utf8")).toBe("stale legacy report")
 	else expect(files(agentDir).some((path) => path.endsWith("costs.json"))).toBe(false)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

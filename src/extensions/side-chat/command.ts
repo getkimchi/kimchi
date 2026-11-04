@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * `/btw` arguments: a question by default, or one of the actions below.
  * Actions are matched as exact lowercase words so a question that happens
@@ -33,3 +38,4 @@ export function btwCompletions(prefix: string) {
 	const matches = BTW_ACTIONS.filter((item) => item.value.startsWith(word))
 	return matches.length > 0 ? matches : null
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { isDeepStrictEqual } from "node:util"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import {
@@ -75,3 +80,4 @@ export async function resolveMcpProjectTrust(
 		return false
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

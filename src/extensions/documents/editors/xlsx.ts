@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Surgical XLSX editing on the shared OOXML layer.
  *
@@ -1016,3 +1021,6 @@ function addSheet(
 	pkg.putBytes(partName, new TextEncoder().encode(sheetXml))
 	return `add-sheet: ${JSON.stringify(op.name)} at position ${Math.min(afterIndex, sheetTags.length + 1)}${formulas > 0 ? `, ${formulas} formula(s)` : ""} (op)`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import type { TodoItem } from "../todos/types.js"
 import {
@@ -56,3 +61,4 @@ describe("Ferment V2 lessons", () => {
 		expect(lessons.map(({ text }) => text)).toEqual(["result 3", "result 4", "result 5", "result 6", "result 7"])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

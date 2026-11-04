@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import { calculatePullRequestCosts } from "../work-attribution/costs.js"
@@ -1262,3 +1267,4 @@ describe("first-linked narrowing", () => {
 		expect(snapshot.content).not.toHaveProperty("windowedPullRequestIds")
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** Discovers the PRs and MRs of recorded commits: lookup scheduling, the check cache and the journal updates. */
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
@@ -438,3 +443,4 @@ export function reconcileWorkPullRequests(
 		})
 	return state.running
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

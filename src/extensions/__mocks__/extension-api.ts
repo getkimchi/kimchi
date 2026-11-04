@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext, ExtensionHandler, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { vi } from "vitest"
 import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
@@ -190,3 +195,4 @@ export function createExtensionApi(): {
 		},
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

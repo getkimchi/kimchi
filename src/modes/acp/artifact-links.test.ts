@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -364,3 +369,4 @@ describe("TurnArtifactBuffer", () => {
 		expect(names.sort()).toEqual(["docs/report.md", "out/report.md", "solo.pdf"])
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

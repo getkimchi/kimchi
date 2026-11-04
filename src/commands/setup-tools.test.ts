@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { log } from "@clack/prompts"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -295,3 +300,4 @@ describe("runSetupTools", () => {
 		expect(vi.mocked(applyToolConfigs).mock.calls[0]?.[0].telemetryEnabled).toBe(true)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

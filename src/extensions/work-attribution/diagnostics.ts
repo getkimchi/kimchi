@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { appendFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { format } from "node:util"
@@ -23,3 +28,4 @@ export function debugWorkAttribution(message: string, ...details: unknown[]): vo
 		// Diagnostics cannot interrupt a request or fall back to terminal output.
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

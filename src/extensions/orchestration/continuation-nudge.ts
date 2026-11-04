@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Two complementary nudges for Kimi K2.x tool-calling quirks that each
  * leave the agent loop in a stuck-looking state. Both target the same failure
@@ -527,3 +532,6 @@ export function brandUnmarkedSteers(messages: OrchestratorMessages): Orchestrato
 
 	return changed ? result : messages
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

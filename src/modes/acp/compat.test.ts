@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Regression tests for the 0.19.2 → 1.9.0 SDK migration.
 //
 // Upstream removed model selectors from the schema (the `session/set_model`
@@ -168,3 +173,4 @@ describe("wire compat", () => {
 		expect(result).toEqual({})
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

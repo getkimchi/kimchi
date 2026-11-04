@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -85,3 +90,4 @@ describe("TRUST_REQUIRING_PROJECT_RESOURCES stays in sync with the pi patch", ()
 		expect([...embedded].sort()).toEqual([...TRUST_REQUIRING_PROJECT_RESOURCES].sort())
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

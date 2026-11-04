@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /** How thinking blocks render in the transcript. "none" suppresses them
  *  entirely — no live preview while active, no collapsed marker once settled. */
 export type ThinkingStepsMode = "collapsed" | "expanded" | "none"
@@ -55,3 +60,4 @@ export interface ThinkingThemeLike {
 	fg(color: string, text: string): string
 	bold(text: string): string
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

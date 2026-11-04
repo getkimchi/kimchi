@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { mkdirSync, readFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { writeFileAtomic, writeJson } from "../config/json.js"
@@ -234,3 +239,4 @@ register({
 	isInstalled: detectBinaryFactory("codex"),
 	write: writeCodex,
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

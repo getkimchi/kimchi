@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { describe, expect, it } from "vitest"
 import { DEFAULT_MAX_FILE_MB, MAX_FILE_MB_ENV, maxFileBytes } from "./limits.js"
 
@@ -13,3 +18,4 @@ describe("maxFileBytes", () => {
 		expect(maxFileBytes({ [MAX_FILE_MB_ENV]: "-5" })).toBe(DEFAULT_MAX_FILE_MB * 1024 * 1024)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

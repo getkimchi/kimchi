@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Transactional PPTX editor. EVERY op mutates one in-memory OoxmlPackage; a
  * typed DocumentError at any op aborts the edit (callers never write partial
@@ -485,3 +490,4 @@ function setCoreProperty(pkg: OoxmlPackage, name: DeckProperty, value: string): 
 	el.appendChild(doc.createTextNode(value))
 	pkg.putXml(path, doc)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

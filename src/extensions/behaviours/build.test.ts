@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Tests for `buildBehaviours` — the parse + uniqueness validator that the
  * bundled registry uses at module load.
@@ -148,3 +153,4 @@ body b
 		expect((result[0] as { triggers: { gate?: unknown } }).triggers.gate).toBe(gate)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

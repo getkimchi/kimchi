@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Side chat records: every side chat is referenced by a hidden custom entry
  * in the main session (latest entry per id wins), so `/btw history` can
@@ -112,3 +117,4 @@ export function historyLabel(record: SideChatRecord): string {
 	const outcome = record.outcome === "sent" ? " · sent to main" : ""
 	return `${when}  ${record.title}  (${questions} question${questions === 1 ? "" : "s"}${fresh}${outcome})`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

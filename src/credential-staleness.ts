@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Registry of credentials observed 401-rejected, so presence-based auth
 // surfaces can report validity, not just existence. On-disk store
 // (config.json apiKey, auth.json) answers "credential present?", never
@@ -74,3 +79,4 @@ export function isCredentialStale(apiKey: string | undefined, providerId: string
 export function resetCredentialStalenessForTests(): void {
 	stalenessByProvider.clear()
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // On-launch auto-update: decide whether to swap the binary in the background
 // and re-exec into the new version before any UI loads. See Phase 2 of
 // .kimchi/docs/auto-update-plan.md for the full decision matrix.
@@ -430,3 +435,6 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 // Re-exported for entry.ts so the timeout stays co-located with the module
 // it gates. Not part of the public API.
 export const DEFAULT_AUTO_UPDATE_TIMEOUT_MS = AUTO_UPDATE_DEFAULT_TIMEOUT_MS
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

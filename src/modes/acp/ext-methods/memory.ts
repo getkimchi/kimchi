@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // ACP extension method handlers for memory control — the client-built
 // interface that mirrors the /memory command grammar (admin.ts), so IDEs
 // render their own memory panels and toggles instead of driving the
@@ -325,3 +330,4 @@ function resolvePageParams(params: Record<string, unknown>): { limit: number | "
 	}
 	return { limit, offset }
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

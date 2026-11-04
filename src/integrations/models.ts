@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Static model catalogue used when writing tool config files. The runtime
  * model list served to the harness is fetched from the metadata API at
@@ -210,3 +215,4 @@ export function formatModelPair(models: readonly ModelMetadata[]): string {
 	if (!coding) return main.slug
 	return `${main.slug} (reasoning) / ${coding.slug} (coding)`
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

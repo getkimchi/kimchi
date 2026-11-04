@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { type ChildProcess, spawn as nodeSpawn } from "node:child_process"
 import { findBinary } from "./detect.js"
 
@@ -86,3 +91,6 @@ function signalToNumber(sig: NodeJS.Signals): number {
 			return 0
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

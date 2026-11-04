@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Discover project context files (AGENTS.md, CLAUDE.md) by walking up
  * the directory tree from cwd to root.
@@ -109,3 +114,4 @@ export function loadGlobalContextFiles(): ContextFile[] {
 	}
 	return []
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

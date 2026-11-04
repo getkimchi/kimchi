@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 // Branded OAuth callback pages shared by the browser-based auth flows
 // (Kimchi-account CLI login, MCP server OAuth authorization).
 //
@@ -100,3 +105,4 @@ export function oauthErrorHtml(message: string, details?: string, overrides: Pag
 		template: "error",
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

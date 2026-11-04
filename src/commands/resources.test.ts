@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Tests for the `kimchi resources` CLI subcommand's org-policy behavior:
  * org-locked resources refuse enable/disable/set/reset with a nonzero exit
@@ -70,3 +75,4 @@ describe("runResources org-policy refusals", () => {
 		expect(log).toHaveBeenCalledWith(expect.stringContaining("tools.web_search [org-locked]"))
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

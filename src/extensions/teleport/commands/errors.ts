@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { RemoteQuotaError } from "../../../sandbox/cloud/types.js"
 import { STATUS_KEY, type TeleportContext } from "../types.js"
 
@@ -36,3 +41,4 @@ export function info(ctx: TeleportContext, message: string) {
 export function status(ctx: TeleportContext, text: string | undefined) {
 	ctx.ui.setStatus(STATUS_KEY, text)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

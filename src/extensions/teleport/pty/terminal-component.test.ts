@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { TUI } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { TerminalComponent, type TerminalSink } from "./terminal-component.js"
@@ -328,3 +333,4 @@ describe("TerminalComponent setHeight", () => {
 		expect(lines.length).toBe(24)
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

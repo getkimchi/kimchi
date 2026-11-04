@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { McpServer } from "@agentclientprotocol/sdk"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 
@@ -37,3 +42,4 @@ export function convertAcpMcpServer(server: McpServer): ServerEntry {
 export function convertAcpMcpServers(servers: ReadonlyArray<McpServer>): Record<string, ServerEntry> {
 	return Object.fromEntries(servers.map((server) => [server.name, convertAcpMcpServer(server)]))
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

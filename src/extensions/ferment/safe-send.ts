@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Guarded wrappers around `pi` action methods that swallow stale-ctx errors.
  *
@@ -46,3 +51,4 @@ export function safeSendMessage(
 		pi.sendMessage(message, options)
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * kimchi `/update` slash command — exposes the auto-update toggle and a
  * manual "update now" action in the TUI.
@@ -153,3 +158,4 @@ export default function autoUpdateSettingsExtension(pi: ExtensionAPI) {
 		},
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

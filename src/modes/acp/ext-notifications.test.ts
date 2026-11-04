@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { emitExtNotification } from "./ext-notifications.js"
@@ -37,3 +42,4 @@ describe("emitExtNotification", () => {
 		expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("acp _kimchi.dev/routed_model notification failed"))
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
