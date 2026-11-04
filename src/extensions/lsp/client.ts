@@ -149,13 +149,31 @@ export function splitStderrLines(text: string): { lines: string[]; rest: string 
  *  corpse. Both death paths must behave identically (crash report v1.21.0:
  *  a dead server's EPIPE stayed unhandled and crashed the harness). */
 function closeDeadClient(client: LspClient, cause: unknown): void {
-	const closed = new Error(`LSP connection closed: ${cause}`)
+	const closed = new Error(`LSP connection closed: ${cause instanceof Error ? cause.message : String(cause)}`, {
+		cause,
+	})
 	for (const pending of client.pendingRequests.values()) {
 		pending.reject(closed)
 	}
 	client.pendingRequests.clear()
 	removeClientFromRegistries(client)
-	client.proc.kill()
+	// Fail creators parked on projectLoaded fast — shutdownAll rejects for
+	// exactly this reason ("awaiting creators must throw, not resolve with a
+	// dead chain"). Without this, a creator parked in the ≤15s init window
+	// stays on a dead, unregistered chain and later resolves with a corpse.
+	// No-op when creation already settled.
+	client.settleProjectLoaded(closed)
+	// kill() throwing must not escape teardown — in sendRequest's write-catch
+	// the timeout is already cleared, so an escaping throw would leave the
+	// caller's promise unsettled forever and surface as an unhandled
+	// rejection (fatal in Bun). kill() never throws in real Bun today
+	// (verified 2026-11-04: not on an exited process, not on double-kill);
+	// this is insurance against runtime/platform drift.
+	try {
+		client.proc.kill()
+	} catch (err) {
+		debug(`LSP kill failed during teardown [${client.name}]: ${err instanceof Error ? err.message : String(err)}`)
+	}
 }
 
 // =============================================================================
@@ -404,9 +422,14 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 			// took the registry slot. Deleting by key would drop A' from every
 			// registry while its process stays alive (leaked). Remove by identity.
 			removeClientFromRegistries(client)
-			client.settleProjectLoaded()
 			// biome-ignore lint/suspicious/noExplicitAny: Bun not typed without @types/bun
 			const err = new Error(`LSP server exited (code ${(proc as any).exitCode})`)
+			// A creator parked on projectLoaded must throw, not resolve with a
+			// dead chain — same invariant shutdownAll enforces. Small writes to
+			// dead pipes are silently swallowed in real Bun, so exit can be the
+			// only death signal mid-init. No-op when creation already settled
+			// (e.g. a normal shutdown after a successful session start).
+			client.settleProjectLoaded(err)
 			for (const pending of client.pendingRequests.values()) pending.reject(err)
 			client.pendingRequests.clear()
 		})
@@ -449,9 +472,9 @@ export async function getOrCreateClient(config: ServerConfig, cwd: string): Prom
 		// Init is a lifecycle span: after the `initialize` response resolves,
 		// nothing registers a pendingRequest until projectLoaded resolves (up to
 		// PROJECT_LOAD_TIMEOUT_MS). Without the span, the evictable filter and the
-		// reaper see a mid-startup chain as idle; evictClient then SIGTERMs it and
-		// its exited handler resolves projectLoaded, so the creating caller
-		// receives a dead client as a normal return.
+		// reaper see a mid-startup chain as idle; evictClient would then SIGTERM
+		// it mid-startup and the creating caller would get the death as an error
+		// instead of a working client.
 		const endInitWork = beginClientWork(client)
 
 		try {
