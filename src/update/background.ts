@@ -1,7 +1,7 @@
-// One background update tick (GLOSSARY.md): acquire the updater lock, check,
-// install, report. Never throws — a failed background update is invisible to
-// the user by design (recorded in the update result, retried on the next
-// tick). See docs/adr/0001-background-auto-update.md.
+// One background update tick (docs/auto-update.md): acquire the updater
+// lock, check, install, report. Never throws — a failed background update is
+// invisible to the user by design (recorded in the update result, retried on
+// the next tick).
 
 import { acquireUpdaterLock, type UpdaterLock } from "./lock.js"
 import {

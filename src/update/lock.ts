@@ -1,5 +1,5 @@
 // The updater lock — the machine-wide exclusion that lets only one session
-// install at a time (see GLOSSARY.md, docs/adr/0001-background-auto-update.md).
+// install at a time (see docs/auto-update.md).
 // A session that finds the lock held skips its update tick; the winner's
 // in-place install covers everyone. Because installs are global, skipping is
 // always safe — the loser retries on its own cadence or simply launches later.

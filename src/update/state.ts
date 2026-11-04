@@ -8,7 +8,7 @@ export interface RepoState {
 	release_url?: string
 }
 
-/** Tick outcomes of the background updater (GLOSSARY.md: update tick).
+/** Tick outcomes of the background updater (docs/auto-update.md: update tick).
  *  Owned here so the persisted record, the tick, and the telemetry handler
  *  share one vocabulary. */
 export type UpdateOutcome = "skipped-lock" | "no-update" | "installed" | "check-failed" | "install-failed"
@@ -30,7 +30,7 @@ export interface LastInstalledRecord {
 	at: string
 }
 
-/** The update result (GLOSSARY.md): outcome of the most recent background
+/** The update result (docs/auto-update.md): outcome of the most recent background
  *  tick, kept for diagnosis because failures are never shown to the user. */
 export interface UpdateResultRecord {
 	at: string

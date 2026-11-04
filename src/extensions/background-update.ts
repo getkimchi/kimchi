@@ -1,4 +1,4 @@
-// The background updater (GLOSSARY.md, docs/adr/0001-background-auto-update.md).
+// The background updater (docs/auto-update.md).
 // Each interactive TUI session runs update ticks: the first ~10 seconds after
 // session start, then every 30 minutes. A successful install is announced on
 // the status line ("✔ Update installed · Restart to update") and nothing else
@@ -18,7 +18,7 @@ import { getVersion } from "../utils.js"
 export const FIRST_TICK_DELAY_MS = 10_000
 export const TICK_INTERVAL_MS = 30 * 60_000
 
-/** The update notice (GLOSSARY.md). Only an install announces itself;
+/** The update notice (docs/auto-update.md). Only an install announces itself;
  *  no progress, no failures. */
 export const UPDATE_INSTALLED_STATUS = {
 	key: "update-installed",

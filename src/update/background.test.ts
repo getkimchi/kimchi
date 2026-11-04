@@ -1,5 +1,5 @@
 // Tests for the background update tick — one run of the periodic check
-// (GLOSSARY.md). The seam is runUpdateTick with injected collaborators;
+// (docs/auto-update.md). The seam is runUpdateTick with injected collaborators;
 // outcomes are observable in the returned TickResult and the injected store.
 
 import { describe, expect, it, vi } from "vitest"

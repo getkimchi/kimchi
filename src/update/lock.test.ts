@@ -1,5 +1,5 @@
 // Tests for the updater lock — the machine-wide exclusion that lets only one
-// session install at a time (see GLOSSARY.md / docs/adr/0001). The seam is the
+// session install at a time (see docs/auto-update.md). The seam is the
 // lock file on disk: observable, not implementation detail.
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
