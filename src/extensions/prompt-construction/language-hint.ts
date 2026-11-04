@@ -1,5 +1,5 @@
 import type { OrchestratorMessages } from "../orchestration/continuation-nudge.js"
-import { markHarnessSteer } from "../steer-marker.js"
+import { escapeClosingMarker, markHarnessSteer } from "../steer-marker.js"
 import { LANGUAGE_HINT_CUSTOM_TYPE, pinnedLanguageTurnHint } from "./system-prompt.js"
 
 type Message = OrchestratorMessages[number]
@@ -36,7 +36,9 @@ export function applyLanguageHint(messages: OrchestratorMessages, language: stri
 	const hint = {
 		role: "custom",
 		customType: LANGUAGE_HINT_CUSTOM_TYPE,
-		content: [{ type: "text", text: markHarnessSteer(pinnedLanguageTurnHint(language)) }],
+		// The value is user/config text: a literal "</system-reminder>" passes
+		// normalizeLanguageSetting, so neutralise it before wrapping.
+		content: [{ type: "text", text: markHarnessSteer(escapeClosingMarker(pinnedLanguageTurnHint(language))) }],
 		display: false,
 		timestamp: stripped[lastUserIdx].timestamp,
 	} as unknown as Message
