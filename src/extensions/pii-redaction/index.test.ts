@@ -251,6 +251,161 @@ describe("pii-redaction extension — event emission wiring", () => {
 		])
 	})
 
+	// Regression (double-reporting bug): a tool result's `details` mirrors the
+	// rendered content (e.g. details.display.output repeats content[].text).
+	// The tool_result hook redacts only content; the upstream runner keeps the
+	// original raw `details` when a handler returns no replacement, and the
+	// agent loop then fires message_end for the toolResult message — whose
+	// deep walk re-redacted `details` and emitted a SECOND tool_result fact for
+	// the same redaction. The hook must redact `details` in the same invocation
+	// so each copy is scanned and reported exactly once.
+	//
+	// PII is assembled at runtime (String.fromCharCode(64)) because a literal
+	// address in this file would itself be redacted on write.
+	it("tool_result redacts the details mirror; message_end then emits nothing extra", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const EMAIL = ["jane.doe", "example.com"].join(String.fromCharCode(64))
+		const PII_TEXT = `mail ${EMAIL} now`
+		const details = { display: { output: PII_TEXT }, raw: { output: PII_TEXT } }
+
+		const results = (await invoke("tool_result", {
+			content: [{ type: "text", text: PII_TEXT }],
+			details,
+		})) as unknown as Array<{ content: Array<{ type: string; text?: string }>; details?: typeof details }>
+		const hookResult = results[0]
+
+		// The hook redacts all copies in one invocation: one event, count = 3
+		// (one per scrubbed string copy — per-copy count semantics).
+		expect(emitted).toEqual([
+			{
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({
+					surface: "tool_result",
+					entity_type: "EMAIL_ADDRESS",
+					count: 3,
+					strings_scanned: 3,
+				}),
+			},
+		])
+		expect(hookResult?.content[0]?.text).not.toContain(EMAIL)
+		expect(hookResult?.details?.display.output).not.toContain(EMAIL)
+		expect(hookResult?.details?.raw.output).not.toContain(EMAIL)
+		// Shape survives — only the values are scrubbed.
+		expect(Object.keys(hookResult?.details ?? {})).toEqual(["display", "raw"])
+
+		// The host then fires message_end for the toolResult message built from
+		// the hook results — the storage walk must net to zero and emit nothing.
+		emitted.length = 0
+		await invoke("message_end", {
+			message: { role: "toolResult", content: hookResult?.content, details: hookResult?.details },
+		})
+		expect(emitted).toEqual([])
+	})
+
+	it("tool_result reports PII that lives only in details, once", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const EMAIL = ["sam.smith", "example.com"].join(String.fromCharCode(64))
+		const results = (await invoke("tool_result", {
+			content: [{ type: "text", text: "clean output" }],
+			details: { display: { output: `contact ${EMAIL}` } },
+		})) as unknown as Array<{ details?: { display?: { output?: string } } }>
+
+		expect(emitted).toEqual([
+			{
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({ surface: "tool_result", entity_type: "EMAIL_ADDRESS", count: 1 }),
+			},
+		])
+		expect(results[0]?.details?.display?.output).not.toContain(EMAIL)
+	})
+
+	it("tool_result without details returns no details key (runner keeps the original)", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+
+		const results = (await invoke("tool_result", {
+			content: [{ type: "text", text: "no secrets here" }],
+		})) as unknown as Array<Record<string, unknown>>
+
+		expect(results[0]).toBeDefined()
+		expect("details" in (results[0] ?? {})).toBe(false)
+	})
+
+	// A non-array `content` must not skip the details copy: this hook is the
+	// single emission owner for every tool result, whatever the content shape
+	// (the runner always passes an array today, but the hook is defensive for
+	// unknown hosts). Only the details key is returned — the runner keeps the
+	// original content when no replacement is given.
+	it("tool_result redacts details even when content is not an array", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const EMAIL = ["kai.lee", "example.com"].join(String.fromCharCode(64))
+		const results = (await invoke("tool_result", {
+			content: "not an array",
+			details: { display: { output: `contact ${EMAIL}` } },
+		})) as unknown as Array<{ content?: unknown; details?: { display?: { output?: string } } }>
+
+		expect(emitted).toEqual([
+			{
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({ surface: "tool_result", entity_type: "EMAIL_ADDRESS", count: 1 }),
+			},
+		])
+		expect("content" in (results[0] ?? {})).toBe(false) // runner keeps the original
+		expect(results[0]?.details?.display?.output).not.toContain(EMAIL)
+		expect(results[0]?.details?.display?.output).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	// A details-side scan failure must not discard the content redaction that
+	// succeeded: the details measurement is isolated, so the hook still
+	// returns redacted content and keeps the original details for message_end
+	// (the pre-fix failure behavior). The walker has no cycle guard — a
+	// self-referencing details object makes the deep walk throw.
+	it("a failing details scan keeps the content redaction and the original details", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const EMAIL = ["ann.fox", "example.com"].join(String.fromCharCode(64))
+		const cyclic: Record<string, unknown> = {}
+		cyclic.self = cyclic
+		const results = (await invoke("tool_result", {
+			content: [{ type: "text", text: `mail ${EMAIL} now` }],
+			details: cyclic,
+		})) as unknown as Array<{ content: Array<{ text?: string }>; details?: unknown }>
+
+		expect(results[0]?.content[0]?.text).not.toContain(EMAIL)
+		expect(results[0]?.content[0]?.text).toContain("[REDACTED-EMAIL_ADDRESS]")
+		// No details replacement: the runner keeps the original object.
+		expect("details" in (results[0] ?? {})).toBe(false)
+		// One event from the content scan; the failed details scan adds nothing.
+		expect(emitted).toEqual([
+			{
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({ surface: "tool_result", entity_type: "EMAIL_ADDRESS", count: 1 }),
+			},
+		])
+	})
+
+	// The `{}` return path (non-array content, no details): absent keys mean
+	// "not replaced" for the runner, so this must stay a true no-op with no
+	// emission — pinning the equivalence with the pre-fix early return.
+	it("tool_result with non-array content and no details returns an empty no-op", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const results = (await invoke("tool_result", {
+			content: "plain string",
+		})) as unknown as Array<Record<string, unknown>>
+
+		expect(results[0]).toEqual({})
+		expect(emitted).toEqual([])
+	})
+
 	it("emits nothing when the resource is off — zero I/O", async () => {
 		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
 		const { api, invoke, emitted } = makePi()
