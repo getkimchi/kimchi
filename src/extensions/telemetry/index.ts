@@ -4,7 +4,6 @@ import type { Message } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import type { TelemetryConfig } from "../../config.js"
 import { SUBAGENT_BASH_CLAMP_EVENTS, type SubagentBashClampedPayload } from "../agents/subagent-bash-clamp-events.js"
-import { UPDATE_TICK_CHANNEL } from "../background-update.js"
 import {
 	BASH_TOOL_GUARD_EVENTS,
 	type BashToolGuardAllowedByUserRequestPayload,
@@ -52,7 +51,6 @@ import {
 } from "./handlers/session.js"
 import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
-import { handleUpdateTick } from "./handlers/update.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
@@ -958,10 +956,6 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		// Workflow domain events (kimchi-workflows): one envelope channel covers the whole contract.
 		pi.events.on(WORKFLOW_TELEMETRY_CHANNEL, (raw) => onWorkflowTelemetry(telemetryCtx, raw))
-
-		// Background updater ticks: one fact per finished tick; translated into
-		// `update.tick` OTLP records (the update success/failure signal).
-		pi.events.on(UPDATE_TICK_CHANNEL, (raw) => handleUpdateTick(telemetryCtx, raw))
 
 		pi.on("session_start", async (_event, ctx) => {
 			conversationId = randomUUID()
