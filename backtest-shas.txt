@@ -1,6 +1,7 @@
-# Bisect the resume-mem bump (864MB at c31c60a7e .. 1010MB at 60afeb547).
-# Window after confidence-reducing samples: bracket with 1219aa438 and
-# 5663db336; also re-sample d27263c73 to split signal from noise.
-1219aa4382b267cf407484e3e64fb0a320b39113
-5663db336c44166761e6e9e9df03cbdd27276554
-0383adf965bec914bd7165d25258eb46348a17c5
+# Pre-thinking-steps state: e3153741c = parent of a82a59dad (#291, the
+# "richer tool rendering / thinking steps" overhaul). The rendering code
+# that #1645 fixes does not exist here yet.
+e3153741c9cae04c2892170e18b6ab6f5e2576ac
+
+# a82a59dad itself: the commit where the thinking-steps renderer enters.
+a82a59dadec39bcd6352e605620cbbd7a3c20ff8
