@@ -1,0 +1,442 @@
+[
+	{
+		"tool": "bash",
+		"message": "Command exited with code 1",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 1"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command exited with code 2",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 2"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command exited with code 127",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 127"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "/bin/bash: line 2: python3: command not found\n\n\nCommand exited with code 127",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 127"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "(no output)\n\nCommand exited with code 1",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 1"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command timed out after 120 seconds",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command timed out"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command timed out after 300 seconds",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command timed out"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "Operation aborted",
+		"expect": {
+			"kind": "aborted",
+			"message": "Operation aborted"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Operation aborted",
+		"expect": {
+			"kind": "aborted",
+			"message": "Operation aborted"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "⏸ Todo check-in pending (input revision 1). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, pa",
+		"expect": {
+			"kind": "blocked",
+			"message": "Todo check-in gate"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "⏸ Todo check-in pending (input revision 2). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, pa",
+		"expect": {
+			"kind": "blocked",
+			"message": "Todo check-in gate"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
+		"expect": {
+			"kind": "blocked",
+			"message": "Plan mode gate"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Blocked: the session is in plan mode (read-only) — tool edit is unavailable. Do not retry; present the plan to the user.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Plan mode gate"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Plan mode: bash command \"mkdir -p /Users/magicpin/magicpin_jobs/.kimchi/plans && ls /Users/magicpin/magicpin_jobs/.kimchi/plans/\" is not in the read-only allowlist. Use /permissions mode default (or auto) to run writes.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Plan mode gate"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Permission mode changed too many times during prompt",
+		"expect": {
+			"kind": "failure",
+			"message": "Permission mode flap"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Blocked: this Bash call contains (1) an output redirect `>` (2) a `;` command separator (also used by loops). Save the whole thing (including any pipes, redirects, echo/grep/tee, env vars or loops) to <repo-root>/tmp/<name>.sh or .py and run it from the repo root as a bare `bash tmp/<name>.sh [args]",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash guard: complex command"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command blocked by rule: cd \"/Users/michelle.beard/.config/kimchi/desktop/worktrees/gitops/518d859b-60fe-4738-9b5d-5d09ca7721ab/environments/eu-prd-es/system/agentgateway-internal\" && rm -rf /tmp/agw-chart-060 && mkdir -p /tmp/agw-chart-060 && tar -xzf charts/agentgateway-0.6.0.tgz -C /tmp/agw-chart",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash command blocked by rule"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Hard-blocked program in command: BK=/home/hannes/backups/govai-mono-dev_mongodb_8.0.4_20261027-050215.archive.gz; kubectl -n govai-mono cp govai-mongodb-0:/tmp/dump.archive.gz \"$BK\" -c mongod && echo \"cp ok\"; gzip -t \"$BK\" && echo \"gzip-integrität: OK\"; ls -lh \"$BK\"; rm -f /home/hannes/backups/gova",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash command blocked by rule"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Denied by rule bash(rm -rf /*) [builtin]",
+		"expect": {
+			"kind": "blocked",
+			"message": "Bash command blocked by rule"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Blocked bash: background bash process awaiting a continue/stop decision: d6db5891-1d36-4a28-bfd7-536032102122. Call the bash_control tool with one of these handles (action \"continue\" to keep it running, or \"stop\" to kill it). Other tools stay blocked until the process is resolved or exits on its own",
+		"expect": {
+			"kind": "blocked",
+			"message": "Background bash decision pending"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Classifier: classifier error: minimax-m3 model is rate limited until 2026-10-29T23:55:00Z (model=minimax-m3 tool=bash) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Classifier: classifier error: minimax-m3 model is rate limited until 2026-10-29T23:55:00Z (model=minimax-m3 tool=bash) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "start_ferment_step",
+		"message": "Cannot start new step — step \"step-3\" is already running (non-parallel). Recommended next action: complete_ferment_step (phaseId=phase-1, stepId=step-3) — mark the running step as complete.\n\nNext action: call `complete_ferment_step` with worker_agent_id after the linked worker for step 3/5 — \"",
+		"expect": {
+			"kind": "blocked",
+			"message": "Ferment state guard"
+		}
+	},
+	{
+		"tool": "complete_ferment_step",
+		"message": "Event \"complete_step\" is not valid in state \"PHASE_ACTIVE\". No step is currently running. Call start_ferment_step to begin a step before completing it. Recommended next action: start_ferment_step (phaseId=phase-1, stepId=step-4) — start the next pending step.\n\nNext action: call `start_ferment_step",
+		"expect": {
+			"kind": "blocked",
+			"message": "Ferment state guard"
+		}
+	},
+	{
+		"tool": "complete_ferment_phase",
+		"message": "Ferment not found.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Ferment state guard"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Declined by user",
+		"expect": {
+			"kind": "declined",
+			"message": "User declined"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "The user declined this action before execution and said: /home/rafa/oat/repos/devkit-lti1p3/docker/frankenphp that is the app",
+		"expect": {
+			"kind": "declined",
+			"message": "User declined with reason"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Denied by the connected client's permission policy (the request was cancelled without approval). Ask the user to approve this action in the client, or use an approach the client permits.",
+		"expect": {
+			"kind": "declined",
+			"message": "Client policy denied"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Could not find the exact text in /Users/pedrooat/OatProjects/tao-cloud-local/components/tao-neo-studio/frontend/src/features/library/content-library/files/components/FileCard.svelte. The old text must match exactly including all whitespace and newlines.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit oldText not found"
+		}
+	},
+	{
+		"tool": "multiedit",
+		"message": "Could not find edits[0] in .kimchi/docs/cpt-3968/generate.py. The oldText must match exactly including all whitespace and newlines.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit oldText not found"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Found 2 occurrences of the text in bitbucket-pipelines.yml. The text must be unique. Please provide more context to make it unique.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit oldText not unique"
+		}
+	},
+	{
+		"tool": "multiedit",
+		"message": "Found 2 occurrences of edits[0] in /Users/buritukas/tlt/bitbucket/tool/packages/api/index.ts. Each oldText must be unique. Please provide more context to make it unique.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit oldText not unique"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "No changes made to /Users/brian.andersen/code/basis_ai/aws/basis-ai-prod/us-west-2/production/agentcore-production-ext/CLAUDE.md. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit produced no changes"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Could not edit file: /Users/anand.v/Workspace/Checks/ChecksWidgets/LockScreenWidgets.swift. Error code: ENOENT.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit target missing"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "ENOENT: no such file or directory, access '/Users/dainius/.local/shared/preamble.md'",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Read path not found"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "Path is a directory; read only accepts files. List or search the directory instead.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Path is a directory; read only accepts files. List or search the directory instead."
+		}
+	},
+	{
+		"tool": "read",
+		"message": "Offset 1400 is beyond end of file (1342 lines total)",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Read offset beyond EOF"
+		}
+	},
+	{
+		"tool": "find",
+		"message": "Path not found: /Users/dainius/.local/shared",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Read path not found"
+		}
+	},
+	{
+		"tool": "ls",
+		"message": "Not a directory: /Users/anand.v/Workspace/Checks/Checks.xcodeproj/project.xcproj",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Read path not found"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Tool write not found",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Tool not found"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Tool {...} not found",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Tool not found"
+		}
+	},
+	{
+		"tool": "edit",
+		"message": "Validation failed for tool \"edit\":\n  - edits: must have required properties edits\n\nReceived arguments:\n{\n  \"newText\": \"COPY --chown=root:root --chmod=0755 ./lti-gateway/docker/rr-entrypoint.sh /usr/local/bin/rr-entrypoint.sh\",\n  \"oldText\": \"COPY --chown=root:root --chmod=0755 docker/rr-entrypoint.sh",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Tool arguments failed schema validation"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Invalid arguments for tool \"bash\": JSON Parse error: Unterminated string\n\nReceived arguments:\n{\"control\": \"bash_control}",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Tool arguments unparseable JSON"
+		}
+	},
+	{
+		"tool": "ask_user",
+		"message": "ask_user could not route the question (user_cancelled): User cancelled the prompt.",
+		"expect": {
+			"kind": "declined",
+			"message": "Question cancelled"
+		}
+	},
+	{
+		"tool": "write",
+		"message": "Classifier: classifier timeout (model=minimax-m3 tool=write) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Classifier: classifier budget exhausted (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Classifier: classifier error: request failed (model=minimax-m3) (no UI to confirm)",
+		"expect": {
+			"kind": "blocked",
+			"message": "Classifier unavailable — fail closed"
+		}
+	},
+	{
+		"tool": "read",
+		"message": "Blocked read: background bash process awaiting a continue/stop decision: 4f21e48d-37b6-47a3-bf5e-e1ebb18ba015. Call the bash_control tool with one of these handles.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Background bash decision pending"
+		}
+	},
+	{
+		"tool": "multiedit",
+		"message": "No changes made to /src/app.ts. The replacements produced identical content.",
+		"expect": {
+			"kind": "model_mistake",
+			"message": "Edit produced no changes"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "Command terminated without an exit code",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command terminated without an exit code"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n\nCommand timed out after 1 seconds",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command timed out"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "echo 'Blocked: the session is in plan mode (read-only)'\n\nCommand exited with code 0",
+		"expect": {
+			"kind": "command_outcome",
+			"message": "Command exited with code 0"
+		}
+	},
+	{
+		"tool": "bash",
+		"message": "some output\n\nCommand aborted",
+		"expect": {
+			"kind": "aborted",
+			"message": "Command aborted"
+		}
+	},
+	{
+		"tool": "start_ferment_step",
+		"message": "Event \"start_step\" is not valid in state \"PHASE_ACTIVE\". No step is currently running.",
+		"expect": {
+			"kind": "blocked",
+			"message": "Ferment state guard"
+		}
+	},
+	{
+		"tool": "add_ferment_memory",
+		"message": "Ferment not found: ferm-123",
+		"expect": {
+			"kind": "blocked",
+			"message": "Ferment state guard"
+		}
+	}
+]

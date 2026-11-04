@@ -148,7 +148,31 @@ export interface PermissionToolDecisionPayload {
 	sourceDetail: PermissionDecisionSourceDetail
 	/** Permission mode the decision was made under (for prompts: when the prompt opened). */
 	permissionMode: PermissionMode
+	/** Present only on `mode_flap` rejections: which mode changes dismissed the
+	 *  prompts of THIS tool call before the re-evaluation loop exhausted. Sources
+	 *  are recorded per dismissal (repeats included); telemetry serializes them
+	 *  as a sorted, deduplicated set. */
+	modeFlap?: {
+		/** Dismissal count, including repeated sources. */
+		modeChangeCount: number
+		/** Reason of each dismissal, in order. */
+		modeChangeSources: ModeChangeReason[]
+	}
 }
+
+/** Runtime-validated ModeChangeReason vocabulary — consumers (telemetry)
+ *  use it to drop out-of-contract values before export. */
+export const MODE_CHANGE_REASON_VALUES: readonly ModeChangeReason[] = [
+	"user_shift_tab",
+	"ferment_elevation",
+	"ferment_restore",
+	"plan_approval",
+	"questionnaire_promotion",
+	"cloud_spawn_failed",
+	"command",
+	"session_start",
+	"controller",
+] as const
 
 // ---------------------------------------------------------------------------
 // Plan approved

@@ -1,8 +1,10 @@
-import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai"
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getAvailableModels } from "../../../startup-context.js"
 import { isAgentWorker } from "../../agent-worker-context.js"
 import type { TelemetryContext } from "../session-context.js"
+import { classifyToolError } from "./tool-error-classification.js"
+import { extractToolResultText } from "./tools.js"
 import { handleTransportError } from "./transport-errors.js"
 
 /** Maps OAuth provider IDs to canonical names accepted by the telemetry backend. */
@@ -40,10 +42,15 @@ export async function handleMessageEnd(
 		// Under backend routing the virtual selection id stays in `model` and
 		// the concrete pick lands in `responseModel`. Track it so steer events
 		// (which fire on the handler path, not message_end) can carry
-		// routed_model alongside the virtual selection.
-		if (typeof assistant.responseModel === "string" && assistant.responseModel !== model) {
-			tm.lastRoutedModel = assistant.responseModel
-		}
+		// routed_model alongside the virtual selection. Refreshed on EVERY
+		// assistant message: a message without a differing responseModel (no
+		// routing, or an explicit selection after routing) clears the previous
+		// backend — otherwise later command/outcome records would attribute to
+		// a stale routed model.
+		tm.lastRoutedModel =
+			typeof assistant.responseModel === "string" && assistant.responseModel !== model
+				? assistant.responseModel
+				: undefined
 		const availableModels = getAvailableModels()
 		const meta = availableModels.find(
 			(m: { slug: string; provider?: string; limits?: { context_window?: number } }) => m.slug === model,
@@ -177,19 +184,51 @@ export function handleAgentEnd(tm: TelemetryContext, ctx: ExtensionContext, even
 	const last = messages[messages.length - 1]
 	if (last.role !== "toolResult" || !last.isError) return
 
-	const text = Array.isArray(last.content)
-		? ((last.content[0] as TextContent | undefined)?.text ?? "unknown error")
-		: "unknown error"
-	tm.emit(
-		"error",
-		{
-			error_type: "agent_error",
-			error_message: text.slice(0, 300),
-			turn_index: tm.turnIndex,
-			...tm.getTraceAttributes(),
-		},
-		ctx,
-	)
+	// Same extraction contract as the per-result handler: join ALL text
+	// content blocks (a status line can live in a later block).
+	const text = extractToolResultText(last)
+	const classification = classifyToolError(last.toolName, text)
+
+	// Recognized bash execution results are already recorded by the execution
+	// handler's command_executed signal — a run-final duplicate would
+	// double-count. Aborts belong to the interruption detector above; when it
+	// misses an abort-shaped result, emitting a residual error here would
+	// fabricate the wrong signal (it is not an agent_error either).
+	if (classification.kind === "command_outcome" || classification.kind === "aborted") return
+
+	if (classification.kind === "failure") {
+		tm.emit(
+			"error",
+			{
+				error_type: "agent_error",
+				error_message: classification.message || "unknown error",
+				turn_index: tm.turnIndex,
+				tool_use_id: last.toolCallId,
+				canonicalization: "v1",
+				...(classification.attrs ?? {}),
+				...tm.getTraceAttributes(),
+			},
+			ctx,
+		)
+	} else {
+		// Gates, declines, and recognized model mistakes at the end of a run:
+		// outcome signal, not a run-final anomaly.
+		tm.emit(
+			"tool_outcome",
+			{
+				outcome_kind: classification.kind,
+				message: classification.message,
+				tool_name: last.toolName,
+				turn_index: tm.turnIndex,
+				tool_use_id: last.toolCallId,
+				canonicalization: "v1",
+				...(classification.attrs ?? {}),
+				...tm.getTraceAttributes(),
+			},
+			ctx,
+			tm.lastRoutedModel ? { routed_model: tm.lastRoutedModel } : undefined,
+		)
+	}
 }
 
 /**

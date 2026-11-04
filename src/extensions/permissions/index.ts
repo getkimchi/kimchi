@@ -287,6 +287,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
+	/** Associates each open permission prompt's abort controller with its tool
+	 *  call, so mode changes that dismiss prompts can be attributed per call. */
+	const activePromptToolCalls = new Map<AbortController, string>()
+	/** Mode-change reasons queued per tool call whose prompt a mode change
+	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
+	 *  return; entries never survive the tool call's evaluation. */
+	const pendingModeChangeDismissals = new Map<string, ModeChangeReason[]>()
 	let unsubscribeTerminalInput: (() => void) | null = null
 	let unsubscribePermissionFlagController: (() => void) | undefined
 
@@ -433,9 +440,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
-		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
+		// Dismiss all active permission prompts so tool_call handlers re-evaluate
+		// under the new mode. Record the dismissal reason per open prompt's tool
+		// call — the re-evaluation loop attributes it to that call's mode-flap
+		// diagnostics when it observes the "aborted" return. Unrelated mode
+		// changes (no open prompts) record nothing.
+		for (const toolCallId of activePromptToolCalls.values()) {
+			const reasons = pendingModeChangeDismissals.get(toolCallId) ?? []
+			reasons.push(reason)
+			pendingModeChangeDismissals.set(toolCallId, reasons)
+		}
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
+		activePromptToolCalls.clear()
 		updateStatus(ctx)
 		maybeShowPolicyWarning(ctx)
 		appliedPermissionMode = next
@@ -1396,6 +1413,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// permissions:tool_decision event via emitToolDecision (the IDE diff-viewer
 		// deferral is the one documented exception). This is the per-call acceptance
 		// signal — do not add silent returns.
+		//
+		// Mode-flap diagnostics: each prompt dismissal by a mode change is
+		// recorded (source + count) and reported on the fail-closed mode_flap
+		// decision, so PostHog can distinguish controller flapping from
+		// stale pre-#1404 clients. Scoped to this tool call's evaluation.
+		const modeChangeSources: ModeChangeReason[] = []
+		const dismissalKey = event.toolCallId ?? ""
+		const consumeModeChangeDismissal = (): void => {
+			const reasons = pendingModeChangeDismissals.get(dismissalKey)
+			if (!reasons?.length) return
+			modeChangeSources.push(reasons.shift() as ModeChangeReason)
+			if (reasons.length === 0) pendingModeChangeDismissals.delete(dismissalKey)
+		}
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
 			const { mode } = getRuntimePermissionMode()
 
@@ -1572,10 +1602,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					riskScore: verdict.riskScore,
 					session,
 					activeAborts: activeAbortControllers,
+					promptToolCalls: activePromptToolCalls,
 					allRules,
 					permissionMode: mode,
 				})
-				if (result === "aborted") continue // mode changed, re-evaluate
+				if (result === "aborted") {
+					consumeModeChangeDismissal()
+					continue // mode changed, re-evaluate
+				}
 				return result
 			}
 
@@ -1590,11 +1624,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 							pi,
 							session,
 							activeAborts: activeAbortControllers,
+							promptToolCalls: activePromptToolCalls,
 							subcommands,
 							allRules,
 							permissionMode: mode,
 						})
-						if (result === "aborted") continue // mode changed, re-evaluate
+						if (result === "aborted") {
+							consumeModeChangeDismissal()
+							continue // mode changed, re-evaluate
+						}
 						return result
 					}
 				}
@@ -1604,16 +1642,24 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				pi,
 				session,
 				activeAborts: activeAbortControllers,
+				promptToolCalls: activePromptToolCalls,
 				allRules,
 				permissionMode: mode,
 			})
-			if (result === "aborted") continue // mode changed, re-evaluate
+			if (result === "aborted") {
+				consumeModeChangeDismissal()
+				continue // mode changed, re-evaluate
+			}
 			return result
 		}
 
 		// Exhausted re-evaluation attempts — fail closed.
 		console.warn("permissions: mode changed too many times during prompt, failing closed")
-		emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "mode_flap")
+		pendingModeChangeDismissals.delete(dismissalKey)
+		emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "mode_flap", {
+			modeChangeCount: modeChangeSources.length,
+			modeChangeSources: [...modeChangeSources],
+		})
 		return {
 			block: true,
 			reason: "Permission mode changed too many times during prompt",
@@ -1644,6 +1690,9 @@ interface ConfirmOptions {
 	/** Risk score from the classifier LLM, for display in the prompt. */
 	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
+	/** Associates open prompts with their tool call for mode-change dismissal
+	 *  attribution (mode-flap diagnostics). */
+	promptToolCalls: Map<AbortController, string>
 	allRules?: () => Rule[]
 	pi: ExtensionAPI
 	/** Permission mode the prompt is opened under (reported with the decision). */
@@ -1657,6 +1706,7 @@ async function handleConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) {
@@ -1706,6 +1756,7 @@ async function handleConfirm(
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
+		opts.promptToolCalls.delete(abort)
 	}
 }
 
@@ -1716,6 +1767,7 @@ export async function handleCompoundConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) {
@@ -1849,6 +1901,7 @@ export async function handleCompoundConfirm(
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
+		opts.promptToolCalls.delete(abort)
 	}
 }
 

@@ -28,7 +28,11 @@ export const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
 export const METRICS_FLUSH_INTERVAL_MS = 30_000
 export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
 export const LOG_BATCH_MAX_SIZE = 20
-const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
+// Attributes dropped from AMBIENT events while a ferment v2 is active: the
+// ferment's message content is not exported for v2 sessions. Covers the
+// raw error heads (`error_message`/`error.message`) and the tool_outcome
+// `message` so no alternate raw attribute bypasses the suppression.
+const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message", "message"])
 
 // ---------------------------------------------------------------------------
 // Process-level ID + shared accumulators

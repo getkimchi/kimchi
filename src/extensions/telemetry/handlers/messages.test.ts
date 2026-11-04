@@ -129,6 +129,37 @@ describe("handleMessageEnd", () => {
 		expect(attrs["request.span_id"]).toBe("1122334455667788")
 	})
 
+	it("refreshes routed-model attribution on every assistant message (no stale backend after leaving routing)", async () => {
+		const { ctx, piCtx } = makeCtx("auto")
+
+		// Routed assistant message: virtual id in `model`, concrete pick in
+		// `responseModel` — attribution is set.
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				responseId: "resp-routed",
+				model: "auto",
+				responseModel: "kimchi/glm-4.7",
+				provider: "kimchi-dev",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+			} as Message,
+		})
+		expect(ctx.lastRoutedModel).toBe("kimchi/glm-4.7")
+
+		// Explicit selection afterwards: no differing responseModel → the
+		// previous backend must not linger on later command/outcome records.
+		await handleMessageEnd(ctx, piCtx, {
+			message: {
+				role: "assistant",
+				responseId: "resp-explicit",
+				model: "claude-3-5-sonnet",
+				provider: "anthropic",
+				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+			} as Message,
+		})
+		expect(ctx.lastRoutedModel).toBeUndefined()
+	})
+
 	it("omits trace attributes from api_request when no provider request context exists", async () => {
 		const { ctx, piCtx } = makeCtx()
 		const emitSpy = vi.spyOn(ctx, "emit")
@@ -461,7 +492,7 @@ describe("handleAgentEnd", () => {
 		handleAgentEnd(ctx, piCtx, {
 			messages: [
 				{ role: "assistant", content: [{ text: "some output" }] },
-				{ role: "toolResult", isError: true, content: [{ text: "Error: something went wrong" }] },
+				{ role: "toolResult", isError: true, content: [{ type: "text", text: "Error: something went wrong" }] },
 			],
 		} as AgentEndEvent)
 
@@ -471,6 +502,210 @@ describe("handleAgentEnd", () => {
 		expect(eventName).toBe("error")
 		expect(attrs.error_type).toBe("agent_error")
 		expect(attrs.error_message).toContain("Error: something went wrong")
+		expect(attrs.canonicalization).toBe("v1")
+	})
+
+	it("emits a canonical agent_error for a run-final mode-flap failure", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "write",
+					toolCallId: "tc-flap",
+					isError: true,
+					content: [{ type: "text", text: "Permission mode changed too many times during prompt" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("error")
+		expect(attrs.error_type).toBe("agent_error")
+		expect(attrs.error_message).toBe("Permission mode flap")
+		expect(attrs.tool_use_id).toBe("tc-flap")
+	})
+
+	it("emits no agent_error for a run ending on a recognized bash non-zero exit", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId: "tc-exit",
+					isError: true,
+					content: [{ type: "text", text: "usage error\n\nCommand exited with code 2" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		// The execution handler's command_executed record already covers it;
+		// a run-final duplicate would double-count.
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("extracts the status across multiple text blocks", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId: "tc-multi",
+					isError: true,
+					content: [
+						{ type: "text", text: "partial output" },
+						{ type: "text", text: "\nCommand timed out after 5 seconds" },
+					],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("emits nothing for an abort-shaped result without a detectable assistant interruption", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		// The run ends on an aborted tool result, but the follow-up assistant
+		// message is missing (interruption detection can't attribute it). No
+		// fabricated agent.interrupted, no residual agent_error either.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "read",
+					toolCallId: "tc-abort",
+					isError: true,
+					content: [{ type: "text", text: "Operation aborted" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).not.toHaveBeenCalled()
+	})
+
+	it("emits tool_outcome (not agent_error) for a run ending on a gate", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "edit",
+					toolCallId: "tc-gate",
+					isError: true,
+					content: [
+						{ type: "text", text: "⏸ Todo check-in pending (input revision 4). Reconcile the todo list first." },
+					],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("tool_outcome")
+		expect(attrs.outcome_kind).toBe("blocked")
+		expect(attrs.tool_name).toBe("edit")
+		expect(attrs.revision).toBe(4)
+	})
+
+	it("emits tool_outcome for a run ending on a recognized model mistake", () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		const emitSpy = vi.spyOn(ctx, "emit")
+
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "edit",
+					toolCallId: "tc-miss",
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: "Could not find the exact text in /Users/me/app.ts. The old text must match exactly including all whitespace and newlines.",
+						},
+					],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		expect(emitSpy).toHaveBeenCalledOnce()
+		// biome-ignore lint/style/noNonNullAssertion: -
+		const [eventName, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
+		expect(eventName).toBe("tool_outcome")
+		expect(attrs.outcome_kind).toBe("model_mistake")
+		expect(attrs.message).toBe("Edit oldText not found")
+		expect(JSON.stringify(attrs)).not.toContain("/Users/me/app.ts")
+	})
+
+	it("drops raw message heads in ferment v2 sessions for both error and tool_outcome events", async () => {
+		const { ctx, piCtx } = makeCtx("claude-3-5-sonnet")
+		ctx.fermentV2Context = { id: "ferm-v2-1", revision: 3, status: "active" }
+
+		// Unknown failure (raw fallback message) — error event without error_message.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId: "tc-raw",
+					isError: true,
+					content: [{ type: "text", text: "Error: something proprietary went wrong in the ferment" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+		// Gate (canonical message) — outcome event without message.
+		handleAgentEnd(ctx, piCtx, {
+			messages: [
+				{
+					role: "toolResult",
+					toolName: "bash",
+					toolCallId: "tc-gate-v2",
+					isError: true,
+					content: [{ type: "text", text: "Declined by user" }],
+				},
+			],
+		} as unknown as AgentEndEvent)
+
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+		const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+		const records = fetchMock.mock.calls
+			.filter((call: unknown[]) => String(call[0]).includes("/logs"))
+			.flatMap((call: unknown[]) => {
+				const opts = call[1] as { body: string }
+				const body = JSON.parse(opts.body)
+				return body.resourceLogs[0].scopeLogs[0].logRecords.map(
+					(rec: { eventName: string; attributes: Array<{ key: string; value: { stringValue: string } }> }) => ({
+						eventName: rec.eventName,
+						attrs: Object.fromEntries(rec.attributes.map((a) => [a.key, a.value.stringValue])),
+					}),
+				)
+			})
+
+		const error = records.find((r) => r.eventName === "error")
+		expect(error).toBeDefined()
+		expect(error?.attrs.error_message).toBeUndefined()
+		// No alternate raw attribute (tool_outcome `message`) bypasses the v2
+		// message suppression.
+		const outcome = records.find((r) => r.eventName === "tool_outcome")
+		expect(outcome?.attrs.outcome_kind).toBe("declined")
+		expect(outcome?.attrs.message).toBeUndefined()
+		expect(JSON.stringify(records)).not.toContain("something proprietary")
 	})
 
 	it("does not emit when last toolResult has isError=false", () => {

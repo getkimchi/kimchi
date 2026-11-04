@@ -197,10 +197,145 @@ describe("handlers/tools", () => {
 			const cmdExec = events.find((e) => e.eventName === "command_executed")
 			expect(cmdExec).toBeDefined()
 			expect(cmdExec?.attrs.command_type).toBe("bash")
+			expect(cmdExec?.attrs.command_outcome).toBe("success")
 			expect(cmdExec?.attrs.exit_code).toBe("0")
+			expect(cmdExec?.attrs.canonicalization).toBe("v1")
 		})
 
-		it("emits kimchi.error on tool failure", async () => {
+		it("records a non-zero exit as a command outcome, not an error", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-exit-2"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "usage error\n\nCommand exited with code 2" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			// An ordinary non-zero exit is an execution result: exactly one
+			// command record with the real code, no error, no extra outcome.
+			const cmdExecs = events.filter((e) => e.eventName === "command_executed")
+			expect(cmdExecs).toHaveLength(1)
+			expect(cmdExecs[0].attrs.command_outcome).toBe("nonzero_exit")
+			expect(cmdExecs[0].attrs.exit_code).toBe("2")
+			expect(cmdExecs[0].attrs.tool_use_id).toBe(toolCallId)
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			expect(events.find((e) => e.eventName === "tool_outcome")).toBeUndefined()
+		})
+
+		it("records exit codes 22 and 127 without fabricating or dropping them", async () => {
+			for (const code of [22, 127]) {
+				const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+				const ctx = new TelemetryContext(makeConfig())
+				const toolCallId = `tc-bash-exit-${code}`
+
+				handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "curl" } })
+				handleToolExecutionEnd(ctx, piCtx, {
+					toolCallId,
+					isError: true,
+					result: { content: [{ type: "text", text: `Command exited with code ${code}` }] },
+				})
+
+				ctx.flushLogBuffer()
+				await Promise.allSettled([...ctx.inFlight])
+				// fetchMock accumulates across loop iterations — select this call's record.
+				const events = parseLogEvents(fetchMock).filter((e) => e.attrs.tool_use_id === toolCallId)
+				const cmdExec = events.find((e) => e.eventName === "command_executed")
+				expect(cmdExec?.attrs.exit_code).toBe(String(code))
+				expect(cmdExec?.attrs.command_outcome).toBe("nonzero_exit")
+				expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			}
+		})
+
+		it("records a timeout with timeout_seconds and no fabricated exit code", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-timeout"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 5", timeout: 1 } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
+			expect(cmdExec?.attrs.timeout_seconds).toBe("1")
+			expect(cmdExec?.attrs.exit_code).toBeUndefined()
+			// A model-requested timeout is an execution outcome, not an anomaly.
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("records a fractional timeout with its real value and no fabricated exit code", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-frac-timeout"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 1", timeout: 0.5 } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				// Upstream reports the timeout value raw — fractional included.
+				result: { content: [{ type: "text", text: "Command timed out after 0.5 seconds" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
+			expect(cmdExec?.attrs.timeout_seconds).toBe("0.5")
+			expect(cmdExec?.attrs.exit_code).toBeUndefined()
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("stamps the request trace context on command_executed for successful and failed commands", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			ctx.lastTraceContext = { traceId: "aaaabbbbccccddddeeeeffff00001111", spanId: "1122334455667788" }
+
+			handleToolExecutionStart(ctx, { toolCallId: "tc-cmd-trace-ok", toolName: "bash", args: { command: "true" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: "tc-cmd-trace-ok", isError: false })
+
+			handleToolExecutionStart(ctx, { toolCallId: "tc-cmd-trace-fail", toolName: "bash", args: { command: "false" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId: "tc-cmd-trace-fail",
+				isError: true,
+				result: { content: [{ type: "text", text: "Command exited with code 1" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const commands = parseLogEvents(fetchMock).filter(
+				(e) => e.eventName === "command_executed" && (e.attrs.tool_use_id ?? "").startsWith("tc-cmd-trace"),
+			)
+
+			const ok = commands.find((e) => e.attrs.tool_use_id === "tc-cmd-trace-ok")
+			expect(ok?.attrs.command_outcome).toBe("success")
+			expect(ok?.attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
+			expect(ok?.attrs["request.span_id"]).toBe("1122334455667788")
+
+			// Ordinary non-zero exits no longer emit an error record — the
+			// command record is their only link to the provider request trace.
+			const failed = commands.find((e) => e.attrs.tool_use_id === "tc-cmd-trace-fail")
+			expect(failed?.attrs.command_outcome).toBe("nonzero_exit")
+			expect(failed?.attrs["request.trace_id"]).toBe("aaaabbbbccccddddeeeeffff00001111")
+			expect(failed?.attrs["request.span_id"]).toBe("1122334455667788")
+		})
+
+		it("emits kimchi.error for an unrecognized bash failure (fail-open fallback)", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-bash-err"
@@ -220,15 +355,19 @@ describe("handlers/tools", () => {
 			expect(toolResult).toBeDefined()
 			expect(toolResult?.attrs.success).toBe("false")
 
+			// Unknown bash error: conservative execution_error record with no
+			// fabricated exit code, plus the raw-slice error event (today's behavior).
 			const cmdExec = events.find((e) => e.eventName === "command_executed")
 			expect(cmdExec).toBeDefined()
-			expect(cmdExec?.attrs.exit_code).toBe("1")
+			expect(cmdExec?.attrs.command_outcome).toBe("execution_error")
+			expect(cmdExec?.attrs.exit_code).toBeUndefined()
 
 			const error = events.find((e) => e.eventName === "error")
 			expect(error).toBeDefined()
 			expect(error?.attrs.error_type).toBe("tool_failure")
 			expect(error?.attrs.error_message).toBe("command failed with exit code 1")
 			expect(error?.attrs.model).toBe("claude-3-5-sonnet")
+			expect(error?.attrs.canonicalization).toBe("v1")
 		})
 
 		it("stamps the request trace context on tool_failure error events", async () => {
@@ -273,13 +412,15 @@ describe("handlers/tools", () => {
 			await Promise.allSettled([...ctx.inFlight])
 			const events = parseLogEvents(fetchMock)
 
-			// The run is still recorded as a measurement…
+			// The run is still recorded as a measurement (a timeout outcome with
+			// no fabricated exit code)…
 			const toolResult = events.find((e) => e.eventName === "tool_result")
 			expect(toolResult).toBeDefined()
 			expect(toolResult?.attrs.success).toBe("false")
 			const cmdExec = events.find((e) => e.eventName === "command_executed")
 			expect(cmdExec).toBeDefined()
-			expect(cmdExec?.attrs.exit_code).toBe("1")
+			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
+			expect(cmdExec?.attrs.exit_code).toBeUndefined()
 			// …but not as an error — subagent.bash_clamped already reports the clamp.
 			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
 			// The clamp marker is released with the call.
@@ -333,7 +474,7 @@ describe("handlers/tools", () => {
 			expect(error?.attrs.error_type).toBe("tool_failure")
 		})
 
-		it("still emits the error record for a bash timeout that was NOT clamped (model-requested)", async () => {
+		it("records a model-requested (unclamped) timeout as an outcome without an error record", async () => {
 			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
 			const ctx = new TelemetryContext(makeConfig())
 			const toolCallId = "tc-bash-model-timeout"
@@ -349,9 +490,270 @@ describe("handlers/tools", () => {
 			await Promise.allSettled([...ctx.inFlight])
 			const events = parseLogEvents(fetchMock)
 
+			// Timeouts are execution outcomes, not harness anomalies — with or
+			// without a clamp marker.
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+	})
+
+	// -----------------------------------------------------------------------
+	// error taxonomy (tool_outcome vs error vs command_executed)
+	// -----------------------------------------------------------------------
+
+	describe("error taxonomy", () => {
+		it("emits tool_outcome (not error, not command_executed) for a pre-execution gate", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-bash-plan-gate"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "rm -rf /" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{
+							type: "text",
+							text: "Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user.",
+						},
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome).toBeDefined()
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.message).toBe("Plan mode gate")
+			expect(outcome?.attrs.tool_name).toBe("bash")
+			expect(outcome?.attrs.tool_use_id).toBe(toolCallId)
+			expect(outcome?.attrs.canonicalization).toBe("v1")
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			// Never ran — no misleading execution record.
+			expect(events.find((e) => e.eventName === "command_executed")).toBeUndefined()
+		})
+
+		it("emits tool_outcome for a todo check-in gate with the revision attribute", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-todo-gate"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "edit", args: { path: "/a.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{
+							type: "text",
+							text: "⏸ Todo check-in pending (input revision 3). Reconcile the todo list with the user's latest direction.",
+						},
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.message).toBe("Todo check-in gate")
+			expect(outcome?.attrs.revision).toBe("3")
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+		})
+
+		it("emits tool_outcome for a user decline, dropping the free-text reason", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-decline"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "deploy" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{ type: "text", text: "The user declined this action before execution and said: use staging instead" },
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("declined")
+			expect(outcome?.attrs.message).toBe("User declined with reason")
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			expect(events.find((e) => e.eventName === "command_executed")).toBeUndefined()
+			// The free-text reason must not survive anywhere on the record.
+			expect(JSON.stringify(events)).not.toContain("use staging instead")
+		})
+
+		it("emits tool_outcome for a recognized model mistake (edit oldText mismatch) with hashed path", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-edit-miss"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "edit", args: { path: "/Users/me/secret.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{
+							type: "text",
+							text: "Could not find the exact text in /Users/me/secret.ts. The old text must match exactly including all whitespace and newlines.",
+						},
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("model_mistake")
+			expect(outcome?.attrs.message).toBe("Edit oldText not found")
+			expect(outcome?.attrs.file_hash).toMatch(/^[0-9a-f]{12}$/)
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			expect(JSON.stringify(events)).not.toContain("/Users/me/secret.ts")
+		})
+
+		it("emits tool_outcome for a classifier fail-closed block with a bounded failure code", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-classifier"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "write", args: { path: "/a.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: {
+					content: [
+						{
+							type: "text",
+							text: "Classifier: classifier error: minimax-m3 model is rate limited until 2026-10-29T23:55:00Z (model=minimax-m3 tool=write) (no UI to confirm)",
+						},
+					],
+				},
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const outcome = events.find((e) => e.eventName === "tool_outcome")
+			expect(outcome?.attrs.outcome_kind).toBe("blocked")
+			expect(outcome?.attrs.message).toBe("Classifier unavailable — fail closed")
+			expect(outcome?.attrs.failure_code).toBe("rate_limited")
+			expect(outcome?.attrs.classifier_model).toBe("minimax-m3")
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			// The rate-limit window timestamp must not survive.
+			expect(JSON.stringify(events)).not.toContain("2026-10-29")
+		})
+
+		it("emits neither error nor tool_outcome for an aborted tool result", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-abort"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 60" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Command aborted" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
+			expect(events.find((e) => e.eventName === "tool_outcome")).toBeUndefined()
+			// The bash command metrics still carry the abort outcome.
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.command_outcome).toBe("aborted")
+			expect(cmdExec?.attrs.exit_code).toBeUndefined()
+		})
+
+		it("emits a canonical error for a mode-flap failure (operational, stays in the funnel)", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-mode-flap"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "write", args: { path: "/a.ts" } })
+			handleToolExecutionEnd(ctx, piCtx, {
+				toolCallId,
+				isError: true,
+				result: { content: [{ type: "text", text: "Permission mode changed too many times during prompt" }] },
+			})
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
 			const error = events.find((e) => e.eventName === "error")
 			expect(error).toBeDefined()
-			expect(error?.attrs.error_type).toBe("tool_failure")
+			expect(error?.attrs.error_message).toBe("Permission mode flap")
+			expect(error?.attrs.tool_use_id).toBe(toolCallId)
+			expect(events.find((e) => e.eventName === "tool_outcome")).toBeUndefined()
+		})
+
+		it("carries the routed model on command and outcome records under backend routing", async () => {
+			const piCtx = createContext({ model: { id: "auto" } })
+			const ctx = new TelemetryContext(makeConfig())
+			ctx.lastRoutedModel = "kimchi/glm-4.7"
+			const toolCallId = "tc-routed-outcome"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "true" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const cmdExec = events.find((e) => e.eventName === "command_executed")
+			expect(cmdExec?.attrs.routed_model).toBe("kimchi/glm-4.7")
+
+			// After the session leaves backend routing (message_end clears the
+			// slot), later records must not attribute to the stale backend.
+			ctx.lastRoutedModel = undefined
+			const laterId = "tc-unrouted-outcome"
+			handleToolExecutionStart(ctx, { toolCallId: laterId, toolName: "bash", args: { command: "true" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId: laterId, isError: false })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const later = parseLogEvents(fetchMock).find(
+				(e) => e.eventName === "command_executed" && e.attrs.tool_use_id === laterId,
+			)
+			expect(later?.attrs.routed_model).toBeUndefined()
+		})
+
+		it("emits the empty-message fallback for an error with no text blocks", async () => {
+			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
+			const ctx = new TelemetryContext(makeConfig())
+			const toolCallId = "tc-empty-error"
+
+			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "false" } })
+			handleToolExecutionEnd(ctx, piCtx, { toolCallId, isError: true, result: { content: [] } })
+
+			ctx.flushLogBuffer()
+			await Promise.allSettled([...ctx.inFlight])
+			const events = parseLogEvents(fetchMock)
+
+			const error = events.find((e) => e.eventName === "error")
+			expect(error).toBeDefined()
+			expect(error?.attrs.error_message).toBe("unknown tool error")
 		})
 	})
 
