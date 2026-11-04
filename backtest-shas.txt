@@ -3,10 +3,11 @@
 73be7d8431503fde20c99ac25a08214db424dd46
 
 # Fix candidate for the #1529 idle regression: pass-gated reconciliation.
-f194f3eadd37bb5619517098dbd052e5015cabd3
+344bbb5b2b19974625de7de3d77d79b34674a8ef
 
-# R2 on top of the gate: sleep between a stuck queue's retry deadlines
-# (version sidecar + post-attempt stamp). Healthy-queue lane only — the
-# synthetic fixture is too chatty to express the stuck regime, so this run
-# should show parity with f194f3ead, NOT a drop against it.
-6657472dae416c10324b0e8ee7a3806862e06efb
+# Dead-letter + hold-expiry on the gate: settle unrecoverable queue entries.
+aedb64bae81679855b9f11f79125928679f7726b
+
+# R2 attempt-pacing on the settled queue: sleep between a stuck queue's
+# retry deadlines, now applied over the dead-letter mechanics.
+4f8d68d2ed54fd1a90cb9ff61c290738a1a6bfe8
