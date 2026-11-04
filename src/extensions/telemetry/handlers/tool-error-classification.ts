@@ -180,6 +180,13 @@ function classifyBashTerminalStatus(fullMsg: string): ToolErrorClassification | 
  * running. These are whole-message prefixes (the block reason IS the result
  * text), anchored at the start — command output can never collide because a
  * blocked call produced no output.
+ *
+ * Residual (documented, not fixable from strings): bash-hook and PreToolUse
+ * hook blocks (resources/bash-hooks.ts, hook-adapters/adapter.ts) carry
+ * user-configured reason text with no harness-owned prefix — they stay on
+ * the raw fail-open fallback. Wrapping those reasons at the producer (e.g.
+ * a `Hook blocked: ` prefix) is the follow-up if hook blocks ever matter to
+ * the funnel.
  */
 function classifyBashGate(fullMsg: string): ToolErrorClassification | undefined {
 	// Current guard (bash-tool-guard.ts BLOCK_REASON_BASE); the matched
@@ -223,6 +230,13 @@ const NO_UI_SUFFIX = " (no UI to confirm)"
  * attribution is extracted only from the strict "(model=X [tool=Y])" tail —
  * ids never contain spaces, so diagnostic-laden reasons yield no attr
  * rather than a polluted one.
+ *
+ * Trade-off (documented): the match is prefix-only — the suffix is stripped
+ * when present but not required — so a NON-bash error result that happens to
+ * start with "Classifier: " is absorbed as this gate. For bash, a real
+ * terminal status always wins (resolved first), and no current producer
+ * collides with the prefix; accepted for the coverage it buys on free-text
+ * reasons.
  */
 function classifyClassifierGate(fullMsg: string): ToolErrorClassification | undefined {
 	if (!fullMsg.startsWith(CLASSIFIER_PREFIX)) return undefined
