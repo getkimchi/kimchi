@@ -84,8 +84,8 @@ function cap(value: string): string {
 	return value.length > MAX_DIAGNOSTIC_STR_LEN ? value.slice(0, MAX_DIAGNOSTIC_STR_LEN) : value
 }
 
-const EDIT_TOOLS = new Set(["edit", "multiedit", "patch"])
-/** write + edit — the tools the plan-persona and bundled-skills gates serve. */
+/** write + edit + their multiedit/patch siblings — the tools the
+ *  plan-persona/bundled-skills gates and the edit-error family serve. */
 const WRITE_EDIT_TOOLS = new Set(["write", "edit", "multiedit", "patch"])
 const PATH_TOOLS = new Set(["find", "grep", "ls"])
 

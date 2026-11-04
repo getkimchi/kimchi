@@ -171,8 +171,11 @@ const _ALL_MODE_CHANGE_REASONS_LISTED: Exclude<
 	: never = true
 
 /** Runtime-validated ModeChangeReason vocabulary — consumers (telemetry)
- *  use it to drop out-of-contract values before export. */
-export const MODE_CHANGE_REASON_VALUES: readonly ModeChangeReason[] = [
+ *  use it to drop out-of-contract values before export. The `satisfies` (not
+ *  a `: readonly ModeChangeReason[]` annotation) keeps the literal union —
+ *  an annotation widens it and silently disarms the exhaustiveness guard
+ *  below. */
+export const MODE_CHANGE_REASON_VALUES = [
 	"user_shift_tab",
 	"ferment_elevation",
 	"ferment_restore",
@@ -182,7 +185,7 @@ export const MODE_CHANGE_REASON_VALUES: readonly ModeChangeReason[] = [
 	"command",
 	"session_start",
 	"controller",
-] as const
+] as const satisfies readonly ModeChangeReason[]
 
 // ---------------------------------------------------------------------------
 // Plan approved
