@@ -234,8 +234,8 @@ beforeEach(() => {
 		// biome-ignore lint/suspicious/noExplicitAny: mock
 		return { close: vi.fn().mockResolvedValue(undefined) } as any
 	})
-	mockInitialize.mockResolvedValue(undefined)
-	mockPrompt.mockResolvedValue({
+	mockInitialize.mockReset().mockResolvedValue(undefined)
+	mockPrompt.mockReset().mockResolvedValue({
 		stopReason: "end_turn",
 		usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
 	})
@@ -1901,19 +1901,16 @@ describe("continueRemoteAgent", () => {
 
 	it("keeps the session when the steer is killed mid-prompt (retryable)", async () => {
 		const controller = new AbortController()
-		controller.abort()
 		const abortError = new Error("Aborted")
 		abortError.name = "AbortError"
 		mockPrompt.mockRejectedValueOnce(abortError)
 
 		await expect(continueRemoteAgent(makeContinueOptions({ signal: controller.signal }))).rejects.toThrow("Aborted")
+		expect(mockPrompt).toHaveBeenCalledOnce()
 		expect(deleteSession).not.toHaveBeenCalled()
 	})
 
-	// TODO(vitest-4): timing-sensitive retry flow — under vitest 4.1.12 the
-	// injected AbortError escapes the retry path instead of being retried
-	// (passed on vitest 3.2.7). Needs scheduler/timing investigation.
-	it.fails("retries the attach when loadSession times out on a just-woken sandbox", async () => {
+	it("retries the attach when loadSession times out on a just-woken sandbox", async () => {
 		mockInitialize
 			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
 			.mockRejectedValueOnce(new RemoteConnectionError("loadSession timed out after 30000ms"))
