@@ -132,6 +132,12 @@ export function detectVersion(sourceRoot: string, reportedVersion: string): stri
 			name?: string
 			version?: string
 		}
+		// The placeholder version is load-bearing: real versions are stamped at
+		// build time in CI (canary as 0.0.0-canary.<date>.<sha>, releases from the
+		// tag via scripts/set-version.js), so the in-tree package.json must stay
+		// 0.0.0. A committed bump would silently classify every source run from
+		// that tree as a release — losing commit/branch/dirty and naming a version
+		// whose tag may not exist.
 		if (pkg.name === "@kimchi-dev/cli" && pkg.version === "0.0.0") return "dev"
 	} catch {
 		// No readable package.json here: a bundled binary.

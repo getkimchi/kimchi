@@ -28,7 +28,12 @@ back after a fix.
 A run counts as `dev` when the code is loaded from a kimchi source checkout: the
 checkout root (`SOURCE_ROOT` in `src/utils.ts`, resolved from the module's own
 location) holds the `@kimchi-dev/cli` `package.json` with the unreleased
-`0.0.0` version. Git then reads that checkout (the harness, not the session's
+`0.0.0` version. That constant is load-bearing: real versions are stamped at
+build time in CI (canary as `0.0.0-canary.<date>.<sha>`, releases from the tag
+via `scripts/set-version.js`), so the in-tree version must stay `0.0.0` — a
+committed bump would misclassify every source run from that tree as a
+`release`, losing commit/branch/dirty and naming a version whose tag may not
+exist. Git then reads that checkout (the harness, not the session's
 project), with every `GIT_*` variable removed from its environment so nothing
 redirects it.
 
