@@ -124,6 +124,7 @@ describe("Ferment V2 extension", () => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 		rmSync(cwd, { recursive: true, force: true })
 	})
 

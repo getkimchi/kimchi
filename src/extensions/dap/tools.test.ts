@@ -10,7 +10,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent"
 import type { Container } from "@earendil-works/pi-tui"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { DapSession } from "./session.js"
 import type { DapToolDeps, LaunchSessionOptions } from "./tools.js"
 import { createLayer1Tools, dapRenderCall } from "./tools.js"
@@ -23,17 +23,17 @@ import type { Breakpoint, DapAdapterConfig, Scope, StackFrame, Variable } from "
 interface StubSession extends DapSession {
 	id: string
 	adapter: DapAdapterConfig
-	launch: ReturnType<typeof vi.fn>
-	setBreakpoint: ReturnType<typeof vi.fn>
-	continue: ReturnType<typeof vi.fn>
-	stepIn: ReturnType<typeof vi.fn>
-	stepOver: ReturnType<typeof vi.fn>
-	stepOut: ReturnType<typeof vi.fn>
-	getStackFrame: ReturnType<typeof vi.fn>
-	getScopes: ReturnType<typeof vi.fn>
-	getVariables: ReturnType<typeof vi.fn>
-	evaluate: ReturnType<typeof vi.fn>
-	terminate: ReturnType<typeof vi.fn>
+	launch: Mock
+	setBreakpoint: Mock
+	continue: Mock
+	stepIn: Mock
+	stepOver: Mock
+	stepOut: Mock
+	getStackFrame: Mock
+	getScopes: Mock
+	getVariables: Mock
+	evaluate: Mock
+	terminate: Mock
 	isLaunched: boolean
 	isTerminated: boolean
 	threadId: number | null

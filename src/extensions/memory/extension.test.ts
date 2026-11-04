@@ -65,6 +65,7 @@ async function setup(extension: (pi: ExtensionAPI) => void) {
 afterEach(() => {
 	populateCliArgs([])
 	vi.restoreAllMocks()
+	vi.resetAllMocks()
 })
 
 describe("memory extension", () => {

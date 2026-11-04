@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 import { printMergedHelp } from "./help.js"
 import { installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
 
 describe("printMergedHelp", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
 	let agentDir: string
 
 	// Isolate package-command discovery from the real machine state.

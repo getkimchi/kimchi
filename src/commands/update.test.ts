@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 
 const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
@@ -44,8 +44,8 @@ vi.mock("../utils.js", () => ({
 const { runUpdate } = await import("./update.js")
 
 describe("runUpdate flag parsing", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -226,8 +226,8 @@ describe("runUpdate flag parsing", () => {
 })
 
 describe("runUpdate Homebrew branch", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -288,8 +288,8 @@ describe("runUpdate Homebrew branch", () => {
 })
 
 describe("runUpdate non-interactive composition", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -340,8 +340,8 @@ describe("runUpdate non-interactive composition", () => {
 })
 
 describe("runUpdate package targets", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})

@@ -39,6 +39,7 @@ describe("handleSessionStart", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	it("resets context and starts flush timer without emitting session.start", async () => {
@@ -76,6 +77,7 @@ describe("handleSessionShutdown", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	it("emits kimchi.session.end with duration_ms and ended_by attributes", async () => {
@@ -181,6 +183,7 @@ describe("emitSessionStartEvent", () => {
 		globalThis.fetch = originalFetch
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	it("emits session.start with correct model attribute", async () => {

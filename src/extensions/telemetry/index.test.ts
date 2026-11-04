@@ -790,6 +790,7 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function setup() {
@@ -1352,6 +1353,7 @@ describe("edge case coverage", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function setup() {
@@ -1531,6 +1533,7 @@ describe("token accounting regression tests", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	it("ferment.completed carries non-zero token totals summed from phase deltas", async () => {
@@ -1872,6 +1875,7 @@ describe("bash-tool-guard telemetry via pi.events", () => {
 		// Reset bash-guard counters by emitting zeros via the reset hook
 		// (the counters reset on session_start; calling it clears state).
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 		// Force fresh state for next test by clearing module-level accumulators.
 		// Direct access is not exposed; reset via the public reset path.
 		expect(_getBashGuardCounts()).toBeDefined()
@@ -1995,6 +1999,7 @@ describe("loop-guard telemetry via pi.events", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function setup() {
@@ -2096,6 +2101,7 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function setup(events = createMockEventBus()) {
@@ -2253,6 +2259,7 @@ describe("workflow telemetry via pi.events", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function setup() {
@@ -2337,6 +2344,7 @@ describe("session isolation (concurrent instances)", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	/** Create an instance bound to a session (session_start dispatched). */
@@ -2650,6 +2658,7 @@ describe("settings watcher lifecycle (bound to the session)", () => {
 		const { _resetFermentTrackingState } = await import("./index.js")
 		_resetFermentTrackingState()
 		vi.restoreAllMocks()
+		vi.resetAllMocks()
 	})
 
 	async function createInstance(sessionId: string) {

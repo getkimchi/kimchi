@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, type Mock, vi } from "vitest"
 
 import { fetchOrgPolicy } from "../../api/org-settings.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
@@ -30,12 +30,7 @@ const { getPermissionMode } = await import("../permissions/mode-controller.js")
 const mockedGetPermissionMode = vi.mocked(getPermissionMode)
 const mockedFetchOrgPolicy = vi.mocked(fetchOrgPolicy)
 
-function ctxWith(overrides: {
-	hasUI?: boolean
-	select?: ReturnType<typeof vi.fn>
-	notify?: ReturnType<typeof vi.fn>
-	setStatus?: ReturnType<typeof vi.fn>
-}): ExtensionContext {
+function ctxWith(overrides: { hasUI?: boolean; select?: Mock; notify?: Mock; setStatus?: Mock }): ExtensionContext {
 	return createContext({
 		hasUI: overrides.hasUI ?? true,
 		sessionManager: { getSessionId: () => "sess-gate" },

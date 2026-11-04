@@ -56,6 +56,7 @@ afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
 	vi.useRealTimers()
 	vi.restoreAllMocks()
+	vi.resetAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(directory, { recursive: true, force: true })
 })

@@ -169,6 +169,7 @@ afterEach(async () => {
 
 beforeEach(() => {
 	vi.restoreAllMocks()
+	vi.resetAllMocks()
 })
 
 describe("buildFreeformScopingFeedbackMessage", () => {

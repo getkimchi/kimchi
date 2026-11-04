@@ -42,6 +42,7 @@ const convertContentMock = convertContent as unknown as MockInstance
 
 afterEach(() => {
 	vi.restoreAllMocks()
+	vi.resetAllMocks()
 })
 
 function mockFetchResult(
