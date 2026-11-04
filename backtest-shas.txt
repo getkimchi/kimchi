@@ -1,21 +1,16 @@
-# A. Healthy-world anchor: parent of the #1529 culprit commit.
-f918e7ee40be3c63fcc5c93991dc5737c611667d
-
-# B. Culprit commit: [5/5] feat(pr-costs) SQLite ledger (#1529) — the idle
-#    regression enters here (reconcile re-reads a growing state.json every 30s).
-c31c60a7e789046898687f7a5ff19ae5978fd61d
-
-# C. Master-era control (2026-10-30): post #1610/#1611, pre fix-stack.
-73be7d8431503fde20c99ac25a08214db424dd46
-
-# G. Latest master, drift check since C.
-b8371343aa47c74e1d259a93383ed893c316bfcd
-
-# D. #1634 pass-gated reconciliation (R1) — idle phase-1 cost should collapse.
-344bbb5b2b19974625de7de3d77d79b34674a8ef
-
-# E. #1638 dead-letter + spaced-404 settle (chunks 2+3) on top of D.
-aedb64bae81679855b9f11f79125928679f7726b
-
-# F. #1639 attempt-pacing (R2) current tip — stuck_instr collapse lands here.
+# Fix columns (final state of each line of work):
+# stack tip — all three pr-cost PRs collapse to one column.
 b641e0244c7cce95729e20ebf291a9a1926b0c02
+
+# #1645 head — the thinking-stall fix.
+26d7b39841980fc9b3219b8e25dfdf8d52aa64f2
+
+# resume-turn drift hunt (C..G, 6 commits): does the +11% start at
+# redaction events telemetry or the redact rework?
+f0312063b6a77ecd17d4aaa0d0e80ed5f4c0e278
+d27263c73c00d56984b21b9ac293c13b80f4152e
+
+# resume-mem bump hunt (B..C, 56 commits): bisect midpoint and
+# three-quarter point to bracket which merge added ~105MB peak mem.
+60afeb54738ce7f715d4afa7864a691f12d549c6
+486509b3d7952fe414a0dda1d823ffe55ef0edba
