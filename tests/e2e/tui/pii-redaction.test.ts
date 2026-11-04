@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -325,6 +325,53 @@ test("redacts PII in tool results before LLM sees them in context", async ({ ter
 			expect(serialized).not.toContain("john.doe@example.com")
 			expect(serialized).not.toContain("AKIAIOSFODNN7EXAMPLE")
 			expect(serialized).toContain("[REDACTED")
+
+			const rawEmail = "john.doe@example.com"
+			const sessionsRoot = join(fixture.agentDir, "sessions")
+			const listSessionFiles = (root: string): string[] => {
+				if (!existsSync(root)) return []
+				const out: string[] = []
+				for (const entry of readdirSync(root)) {
+					const entryPath = join(root, entry)
+					if (entry.endsWith(".jsonl")) {
+						out.push(entryPath)
+					} else {
+						try {
+							out.push(...listSessionFiles(entryPath))
+						} catch {
+							// a non-directory entry — nothing to descend into
+						}
+					}
+				}
+				return out
+			}
+			const findToolResultRecord = (): string | undefined => {
+				for (const sessionFile of listSessionFiles(sessionsRoot)) {
+					for (const line of readFileSync(sessionFile, "utf8").split("\n")) {
+						if (!line.includes("call_bash_2") || !line.includes("toolResult")) continue
+						try {
+							JSON.parse(line)
+							return line
+						} catch {
+							// partially written line — keep polling
+						}
+					}
+				}
+				return undefined
+			}
+			const deadline = Date.now() + 10_000
+			let toolResultLine: string | undefined
+			do {
+				toolResultLine = findToolResultRecord()
+				if (toolResultLine === undefined) {
+					await new Promise((resolve) => setTimeout(resolve, 250))
+				}
+			} while (toolResultLine === undefined && Date.now() < deadline)
+			expect(toolResultLine).toBeDefined()
+			const stored = JSON.parse(toolResultLine ?? "") as { message?: { details?: unknown } }
+			const detailsJson = JSON.stringify(stored.message?.details ?? null)
+			expect(detailsJson).not.toContain(rawEmail)
+			expect(detailsJson).toContain("[REDACTED")
 		},
 	)
 })

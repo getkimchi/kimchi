@@ -7,8 +7,10 @@
  * 1. `message_end` — redacts assistant messages before they are stored.
  *    One-time cost per message; the stored message is already clean.
  *
- * 2. `tool_result` — redacts tool result content before it is persisted.
- *    One-time cost per tool call; the stored result is already clean.
+ * 2. `tool_result` — redacts tool result content and its `details` mirror
+ *    before they are persisted. One-time cost per tool call; the stored
+ *    result is already clean, and message_end's later walk over the
+ *    toolResult message nets to zero (single emission per redaction).
  *
  * 3. `before_provider_request` — redacts user messages (the only un-redacted
  *    type) before the LLM request. Uses a WeakMap cache keyed by message
@@ -82,7 +84,15 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		return { message: redacted } as any
 	})
 
-	// 2. Redact tool result content before it is persisted.
+	// 2. Redact tool result content (and its `details` mirror) before it is
+	// persisted. The runner keeps the event's original `details` verbatim
+	// when a handler returns only `content`, so an un-redacted `details` copy
+	// would otherwise reach message_end's storage walk and emit a second
+	// tool_result fact for the same redaction. Redacting it here makes this
+	// hook the single emission owner for tool results: message_end's later
+	// deep walk finds only markers and nets to zero. Handlers registered
+	// after this one in the tool_result chain see redacted `details` — the
+	// same contract tool-output-externalizer documents for content.
 	pi.on("tool_result", async (event: unknown) => {
 		// Non-throwing gate: a broken settings block must not reject the hook
 		// (the extension runner discards rejected results — unredacted storage).
@@ -91,26 +101,64 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		const evt = event as Record<string, unknown> | null
 		if (!evt || typeof evt !== "object") return
 
+		// `details` is redacted regardless of the content shape: a non-array
+		// `content` must not skip the details copy (this hook is the single
+		// emission owner for every tool result). Presence is captured once —
+		// the merge below gates on it, never on the measurement's truthiness.
+		const hasDetails = evt.details !== undefined
 		const content = evt.content
-		if (!Array.isArray(content)) return
 
 		const aggregate = emptyRedactionReport()
-		const redactedContent = await Promise.all(
-			content.map(async (block: unknown) => {
-				if (block === null || typeof block !== "object") return block
-				const b = block as Record<string, unknown>
-				if (b.type === "text" && typeof b.text === "string") {
-					const { redacted, report } = await redactObjectStringsMeasured(b.text)
-					mergeReports(aggregate, report)
-					return { ...b, text: redacted }
-				}
-				return block
-			}),
-		)
+		// Content and details scan concurrently: each string scan is
+		// settle-bounded, so serializing the two groups would double the
+		// hook's worst-case stall under a degraded engine. Both merge into
+		// the same per-invocation aggregate before the single emission below.
+		// The details scan is isolated (failure resolves undefined): the hook
+		// still returns the content redaction, the original details is kept,
+		// and message_end's walk scrubs it — the pre-fix failure behavior, so
+		// a details-side failure never discards a content redaction that
+		// already succeeded.
+		const [redactedContent, detailsMeasured] = await Promise.all([
+			Array.isArray(content)
+				? Promise.all(
+						content.map(async (block: unknown) => {
+							if (block === null || typeof block !== "object") return block
+							const b = block as Record<string, unknown>
+							if (b.type === "text" && typeof b.text === "string") {
+								const { redacted, report } = await redactObjectStringsMeasured(b.text)
+								mergeReports(aggregate, report)
+								return { ...b, text: redacted }
+							}
+							return block
+						}),
+					)
+				: undefined,
+			hasDetails
+				? redactObjectStringsMeasured(evt.details).catch((err: unknown) => {
+						// Log here: the failure signal would otherwise only resurface
+						// (mis-attributed to message_end) when the later walk re-scrubs
+						// the kept original details — or not at all if redaction is
+						// toggled off in between.
+						console.error("PII redaction details scan failed, keeping original details:", err)
+						return undefined
+					})
+				: undefined,
+		])
+		// The `details` object mirrors the rendered content (e.g.
+		// details.display.output repeats content[].text) — redacted in the
+		// same invocation so each copy is scanned and reported exactly once.
+		// Both keys are returned only when they apply: the runner treats an
+		// absent key as "not replaced" and keeps the original.
+		const result: { content?: unknown; details?: unknown } = {}
+		if (redactedContent !== undefined) result.content = redactedContent
+		if (hasDetails && detailsMeasured) {
+			mergeReports(aggregate, detailsMeasured.report)
+			result.details = detailsMeasured.redacted
+		}
 		emitRedactionFacts(pi, "tool_result", aggregate)
 
 		// biome-ignore lint/suspicious/noExplicitAny: ToolResultEventResult.content type is (TextContent | ImageContent)[] but we operate on unknown
-		return { content: redactedContent } as any
+		return result as any
 	})
 
 	// 3. Redact user messages before the LLM request, using a cache so
