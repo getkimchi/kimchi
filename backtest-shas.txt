@@ -1,13 +1,21 @@
-# Does today's master (post #1610 unstick-queue, #1611 ledger-read-sharing)
-# still pay the #1529 idle regression? Expect ~25G if not addressed, ~8.6G if fixed.
+# A. Healthy-world anchor: parent of the #1529 culprit commit.
+f918e7ee4c6acbccd7cddb60b4c56a9f469c4644
+
+# B. Culprit commit: [5/5] feat(pr-costs) SQLite ledger (#1529) — the idle
+#    regression enters here (reconcile re-reads a growing state.json every 30s).
+c31c60a7e2f5a3caed8313b2c24fcd03c1be2abd
+
+# C. Master-era control (2026-10-30): post #1610/#1611, pre fix-stack.
 73be7d8431503fde20c99ac25a08214db424dd46
 
-# Fix candidate for the #1529 idle regression: pass-gated reconciliation.
+# G. Latest master, drift check since C.
+b8371343a75a3f4b0b2e872a2f7d7d95b2f5cd38
+
+# D. #1634 pass-gated reconciliation (R1) — idle phase-1 cost should collapse.
 344bbb5b2b19974625de7de3d77d79b34674a8ef
 
-# Dead-letter + hold-expiry on the gate: settle unrecoverable queue entries.
+# E. #1638 dead-letter + spaced-404 settle (chunks 2+3) on top of D.
 aedb64bae81679855b9f11f79125928679f7726b
 
-# R2 attempt-pacing on the settled queue: sleep between a stuck queue's
-# retry deadlines, now applied over the dead-letter mechanics.
-4f8d68d2ed54fd1a90cb9ff61c290738a1a6bfe8
+# F. #1639 attempt-pacing (R2) current tip — stuck_instr collapse lands here.
+b641e0244443f9b2b5bd72dca1e6a3a968a4aa00
