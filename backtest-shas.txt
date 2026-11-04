@@ -1,7 +1,9 @@
-# Pre-thinking-steps state: e3153741c = parent of a82a59dad (#291, the
-# "richer tool rendering / thinking steps" overhaul). The rendering code
-# that #1645 fixes does not exist here yet.
-e3153741c9cae04c2892170e18b6ab6f5e2576ac
+# Pre-#828 thinking render: 1010f45ac = parent of 6e7855b20 (#828,
+# "renders on all thinking block for preview and spinner tick" — the
+# change that made streaming render read the FULL accumulated thinking
+# text on every update, instead of a bounded window). Pre-#828 is the
+# era where the same renderer was cheap because it only saw tail text.
+1010f45ac835f62d5e870001a006fc80a041a4fc
 
-# a82a59dad itself: the commit where the thinking-steps renderer enters.
-a82a59dadec39bcd6352e605620cbbd7a3c20ff8
+# #828 itself: the point where the derivation becomes per-update-full-text.
+6e7855b2013d9a2d3b1d76c78c1b72d34620d214
