@@ -17,6 +17,12 @@ import { getVersion } from "../utils.js"
 
 export const FIRST_TICK_DELAY_MS = 10_000
 export const TICK_INTERVAL_MS = 30 * 60_000
+/** How often a session looks for an install finished by another session. One
+ *  small file read, with no lock or network, so it can run far more often than
+ *  a tick. Ticks alone would miss it: sessions started together tick together,
+ *  and the one that loses the lock reads the old version just before the
+ *  winner's install completes. */
+export const RESTART_CHECK_INTERVAL_MS = 60_000
 
 /** The update notice (docs/auto-update.md). Only an install announces itself;
  *  no progress, no failures. */
@@ -106,11 +112,14 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 
 		// Read from disk, so it also covers an install by another session and a
 		// status cleared by session replacement (/new, /resume, /fork).
+		let restartCheck: ReturnType<typeof setInterval> | undefined
 		const showNoticeIfRestartPending = (): void => {
 			if (isRestartPending(getVersion(), readInstalledVersion())) {
 				ctx.ui.setStatus(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
+				clearInterval(restartCheck)
 			}
 		}
+		restartCheck = unref(setInterval(showNoticeIfRestartPending, RESTART_CHECK_INTERVAL_MS))
 		showNoticeIfRestartPending()
 
 		const tick = async (): Promise<void> => {
@@ -170,6 +179,7 @@ export default function backgroundUpdateExtension(pi: ExtensionAPI) {
 			stopped = true
 			shutdownAbort.abort()
 			clearTimeout(timeout)
+			clearInterval(restartCheck)
 			if (interval !== undefined) clearInterval(interval)
 		}
 

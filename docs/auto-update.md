@@ -66,9 +66,11 @@ version is newer than the one this session is running:
 ```
 
 Every session on the old version shows it, not just the one that installed.
-It comes from the version of the installed files, checked at session start and
-after each tick, so other sessions pick it up within one tick interval and it
-survives `/new`, `/resume` and `/fork`.
+It comes from the version of the installed files, checked at session start,
+after each tick and once a minute, so other sessions pick it up within a minute
+and it survives `/new`, `/resume` and `/fork`. The minute check is a single file
+read, with no lock or network. Ticks alone would miss sessions started together:
+the one that loses the lock reads the old version just before the install ends.
 
 No progress while checking or downloading, no failure messages, no
 release-note summary at the next launch. Opt-out users (auto-update off, or

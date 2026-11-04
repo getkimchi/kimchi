@@ -169,6 +169,37 @@ describe("backgroundUpdateExtension", () => {
 		expect(setStatus).toHaveBeenCalledWith(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
 	})
 
+	it("shows the update notice within a minute when another session finishes installing between ticks", async () => {
+		// Two sessions started together tick together: the loser gets skipped-lock
+		// and reads the old version just before the winner's install completes.
+		runUpdateTickMock.mockResolvedValue({ outcome: "skipped-lock" })
+		const { setStatus } = await startSession()
+		await vi.advanceTimersByTimeAsync(10_000)
+		expect(setStatus).not.toHaveBeenCalled()
+
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		await vi.advanceTimersByTimeAsync(60_000)
+		expect(setStatus).toHaveBeenCalledWith(UPDATE_INSTALLED_STATUS.key, UPDATE_INSTALLED_STATUS.text)
+		expect(runUpdateTickMock).toHaveBeenCalledOnce()
+	})
+
+	it("stops checking the installed version after session shutdown", async () => {
+		const { shutdown, setStatus } = await startSession()
+		await shutdown({}, createContext())
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		await vi.advanceTimersByTimeAsync(5 * 60_000)
+		expect(setStatus).not.toHaveBeenCalled()
+	})
+
+	it("stops checking the installed version once the notice is showing", async () => {
+		readInstalledVersionMock.mockReturnValue("0.0.23")
+		await startSession()
+		const readsAtStart = readInstalledVersionMock.mock.calls.length
+		await vi.advanceTimersByTimeAsync(5 * 60_000)
+		// Only the first tick (at 10s) may read it again; no once-a-minute reads.
+		expect(readInstalledVersionMock.mock.calls.length).toBeLessThanOrEqual(readsAtStart + 1)
+	})
+
 	it("keeps ticking after another session's install, so a later release is still installed", async () => {
 		readInstalledVersionMock.mockReturnValue("0.0.23")
 		await startSession()
