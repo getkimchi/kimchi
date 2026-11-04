@@ -18,6 +18,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LONG_CHUNKS = 300
+# Thinking-turn fixture (thinking-stall lane): a long thinking block streamed as
+# small reasoning deltas, then a short answer. Any delta field of
+# reasoning_content/reasoning/reasoning_text maps to pi's thinking_delta events;
+# thinking_text is kept as plain content so the screen shows something grepable.
+THINK_CHUNKS = 400
+THINK_PIECE_CHARS = 900
+THINK_GAP_S = 0.04
 BASH_CMD = ("echo x >> mod0.ts && git add -A && git commit -qm bench && git status --short && "
             "git log --oneline -3 && git diff --stat HEAD~1 && echo BENCH_BASH_OK; echo EXIT=$?")
 
@@ -179,6 +186,19 @@ def make_handler(state: State):
                     chunk({"tool_calls": [{"index": i, "id": cid, "type": "function",
                                            "function": {"name": name, "arguments": json.dumps(args)}}]})
                 chunk({}, "tool_calls", {"prompt_tokens": 2000, "completion_tokens": 50})
+            elif "THINK" in user_text and last.get("role") == "user":
+                # Step-shaped thinking: the derivation/posting cost in the #1645
+                # class grows with the NUMBER of steps (newline-separated
+                # thoughts), not raw bytes, so the piece carries many short
+                # lines instead of one long one.
+                line = "thinking-" + _content_text(last.get("content"))[:20] + " lorem ipsum dolor\n"
+                piece = (line * (THINK_PIECE_CHARS // len(line) + 1))[:THINK_PIECE_CHARS]
+                for _ in range(THINK_CHUNKS):
+                    chunk({"reasoning_content": piece})
+                    time.sleep(THINK_GAP_S)
+                m = re.search(r"TOK(\w+)", user_text)
+                chunk({"content": f"\n\nBENCH_DONE_{m.group(1) if m else n}"})
+                chunk({}, "stop", {"prompt_tokens": 2000, "completion_tokens": 400})
             else:
                 for i in range(LONG_CHUNKS):
                     chunk({"content": f"word{i} " + ("\n" if i % 12 == 11 else "")})

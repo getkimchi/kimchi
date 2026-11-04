@@ -142,6 +142,62 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
                 res["screen_tail"] = tp.plain()[-1200:]
                 return res
             time.sleep(1)
+        # Thinking-stall turn (the #1645 class): while a ~360KB thinking block
+        # streams at a realistic cadence, the TUI must keep repainting between
+        # chunks. A renderer that re-derives the full accumulated thinking text
+        # per delta blocks the event loop for seconds; with output flowing at
+        # 25msgaps max ~40ms when healthy, the stall shows up directly as an
+        # inter-output gap. Keystroke-echo probes are NOT usable here: during
+        # continuous output they time background chunks, not the echo.
+        think_tok = f"{random.randrange(10**8):08d}"
+        start = len(tp.plain())
+        think_t0 = time.time()
+        sampler.sample()
+        think_instr0 = flatten_total(sampler.totals())["instr"] or 0
+        tp.send(f"THINK hard TOK{think_tok}")
+        time.sleep(0.3)
+        tp.send("\r")
+        gaps = []
+        last_n = tp.bytes_out()
+        last_t = time.perf_counter()
+        deadline = time.time() + 120
+        while True:
+            if f"BENCH_DONE_{think_tok}" in tp.plain()[start:]:
+                break
+            if time.time() > deadline:
+                res["error"] = "thinking turn marker not seen"
+                res["screen_tail"] = tp.plain()[-1200:]
+                return res
+            n = tp.bytes_out()
+            now = time.perf_counter()
+            if n != last_n:
+                gaps.append((now - last_t) * 1000)
+                last_n, last_t = n, now
+            time.sleep(0.008)  # ~2x finer than the healthiest chunk cadence
+        res["thinking_turn_s"] = time.time() - think_t0
+        # Work units spent only on the thinking turn: kernel counter delta
+        # sampled around the turn (same flatten_total shape as the session
+        # total, so cgroup tiers stay exact). The #1645 class costs ~11x a
+        # healthy turn on the same fixture (measured 183G vs 16G sampling
+        # tier, 386ms vs 68ms max inter-output gap).
+        sampler.sample()
+        res["think_instr"] = (flatten_total(sampler.totals())["instr"] or 0) - think_instr0
+        res["thinking_gaps"] = len(gaps)
+        if gaps:
+            lat = sorted(gaps)
+            res["thinking_gap_p95_ms"] = lat[max(0, int(len(lat) * 0.95) - 1)]
+            res["thinking_gap_max_ms"] = lat[-1]
+            print(f"session thinking output-gaps n={len(lat)} turn={res['thinking_turn_s']:.1f}s "
+                  f"instr={res['think_instr']/1e9:.2f}G "
+                  f"p95={res['thinking_gap_p95_ms']:.1f}ms max={lat[-1]:.1f}ms "
+                  # engagement evidence: if derivation runs per update, cost grows with
+                  # accumulated text — the last-decile window must beat the first one.
+                  f"first={sum(gaps[:50])/max(1,min(50,len(gaps))):.1f}ms "
+                  f"last={sum(gaps[-50:])/max(1,min(50,len(gaps))):.1f}ms", flush=True)
+        else:
+            res["thinking_gap_p95_ms"] = None
+            res["thinking_gap_max_ms"] = None
+            print("session thinking output-gaps n=0 (turn produced no output)", flush=True)
         time.sleep(idle_s)
         sampler.sample()  # last live sample: io bytes and counters, pre-quit
         # sampling stops here — a sample landing while kimchi is dying would

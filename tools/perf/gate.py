@@ -66,6 +66,20 @@ EXTRACTORS = {
                       "ledger/WAL/session churn (v1.22 wrote more)", (RATIO, BYTES)),
         "peak_mem_mb": (lambda r: ((r.get("total") or {}).get("peak_mem") or 0) / 1e6, "MB peak",
                         "memory ceiling of one ordinary session (whole tree)", (RATIO, WORK)),
+        # Work units spent on the step-shaped ~360KB thinking turn (fakellm
+        # THINK branch, expanded thinking view). The pre-#1645 renderer
+        # re-derives the full accumulated thinking text on every streaming
+        # delta; measured contrast on the same fixture: master-era ~172G vs
+        # the #1645 fix ~5.8G think-turn work (+30ms-vs-46ms decile growth in
+        # inter-output gaps, max ~375ms vs ~160ms). Keystroke-echo probes were
+        # tried first and do NOT work here: during continuous output they time
+        # background chunks, not the echo (flat ~30ms on both binaries).
+        # INTERIM abs=500G: above the measured master-era ~172G (both local
+        # tiers differ; generous head) so this branch's own lanes stay green
+        # until #1645 lands; chunk 6 recalibrates to ratio limits from the
+        # canonical runner.
+        "think_instr": (lambda r: r.get("think_instr") or 0, "work units",
+                        "renderer work for a streaming step-shaped thinking turn (#1645 class)", (ABS, 40e9)),
     },
     "resume": {
         "load_instr": (lambda r: _wu((r.get("load") or {}).get("instr"), (r.get("load") or {}).get("cycles"),
@@ -134,7 +148,8 @@ def run_selfcheck():
     rec_tpl = {
         "session": {"scenario": "session", "ok": True, "counter": "cgroup-instructions",
                     "total": {"instr": 100, "cycles": 0, "cpu_ms": 0, "disk_w": 2e6, "disk_r": 1e6,
-                              "logical_w": 0, "peak_mem": 100e6}},
+                              "logical_w": 0, "peak_mem": 100e6},
+                    "think_instr": 6e9},
         "resume": {"scenario": "resume", "ok": True, "counter": "cgroup-instructions",
                    "load": {"instr": 100, "cycles": 0, "cpu_ms": 0},
                    "turn": {"instr": 100, "cycles": 0, "cpu_ms": 0}, "peak_mem": 100e6},

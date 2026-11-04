@@ -113,11 +113,15 @@ def seed_clean_home(home, base_url):
            "onboarding": {"hideSessionModeDialog": True}, "telemetry": {"enabled": True},
            "telemetry_notice_shown": True}
     json.dump(cfg, open(os.path.join(cfg_dir, "config.json"), "w"), indent=1)
-    json.dump({"extensions": ["-builtin:mcp"], "quietStartup": False},
+    # hideThinkingBlock: false = the expanded thinking view, whose renderer is
+    # the expensive path in the streaming-stall class (#1645): it rebuilds the
+    # full thinking component per delta. The hidden view renders a cheap tail
+    # preview and would never trip the gap detector.
+    json.dump({"extensions": ["-builtin:mcp"], "quietStartup": False, "hideThinkingBlock": False},
               open(os.path.join(agent, "settings.json"), "w"), indent=1)
     models = {"providers": {"fake": {
         "baseUrl": f"{base_url}/openai/v1", "apiKey": "fake", "api": "openai-completions", "authHeader": True,
-        "models": [{"id": "basic", "name": "Fake Basic", "reasoning": False, "input": ["text"],
+        "models": [{"id": "basic", "name": "Fake Basic", "reasoning": True, "input": ["text"],
                     "contextWindow": 128000, "maxTokens": 4096,
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}}
     json.dump(models, open(os.path.join(agent, "models.json"), "w"), indent=1)
