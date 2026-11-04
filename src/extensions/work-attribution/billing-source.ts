@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { createHash } from "node:crypto"
 import { resolveEndpoints } from "../../config.js"
 import { canonicalPlatformApiUrl } from "../../regions.js"
@@ -107,3 +112,4 @@ export function isBillingSelector(value: unknown): value is BillingSelector {
 export function sameBillingSelector(left: BillingSelector, right: BillingSelector): boolean {
 	return left.tag === right.tag && left.startTime === right.startTime && left.endTime === right.endTime
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

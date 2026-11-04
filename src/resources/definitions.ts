@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
@@ -260,3 +265,6 @@ export function getResourceDefinition(id: string): ResourceDefinition | undefine
 export function getResourcesByKind(kind: ResourceKind): ResourceDefinition[] {
 	return getResourceDefinitions().filter((definition) => definition.kind === kind)
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
+
+export const DUMB_TEST_MARKER_LLM_4329 = "llm-4329-dumb-test-marker"

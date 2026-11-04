@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -55,3 +60,4 @@ it.each([
 	if (savedKey) expect(readFileSync(configPath, "utf-8")).toBe(originalConfig)
 	else expect(existsSync(configPath)).toBe(false)
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

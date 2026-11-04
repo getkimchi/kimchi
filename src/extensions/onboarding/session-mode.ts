@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 
 type EditorFactory = ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
@@ -362,3 +367,4 @@ function looksLikeInlinePrintPrompt(value: string | undefined): boolean {
 function isPotentialUnknownFlagValue(value: string | undefined): boolean {
 	return value !== undefined && !value.startsWith("-") && !value.startsWith("@")
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

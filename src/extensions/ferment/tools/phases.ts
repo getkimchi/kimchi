@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Phase tools: activate_ferment_phase, refine_ferment_phase, complete_ferment_phase, skip_ferment_phase, fail_ferment_phase.
  *
@@ -971,3 +976,4 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 		},
 	})
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

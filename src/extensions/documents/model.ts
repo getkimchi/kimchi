@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Document IR — the shared intermediate representation every extractor
  * produces and every consumer (read_document, read interception, @file,
@@ -64,3 +69,4 @@ export class DocumentError extends Error {
 export function isDocumentError(err: unknown): err is DocumentError {
 	return err instanceof DocumentError
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

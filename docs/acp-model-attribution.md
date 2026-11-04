@@ -98,3 +98,6 @@ status indicators that show the current pick. The `_meta` payload here is the
 **per-message** channel: suited to labeling each response. Neither deprecates
 the other. Both channels use the same id format: full `provider/modelId`
 refs, joinable against the session's model list.
+
+
+

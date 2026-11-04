@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Ask-user primitive — the single decision-point routing layer.
  *
@@ -618,3 +623,4 @@ export async function askUserForm(
 		detail: "No TUI attached and not in one-shot mode — cannot route the questions to any audience.",
 	}
 }
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker

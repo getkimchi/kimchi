@@ -1,3 +1,8 @@
+// ------------------------------------------------------------------
+// DUMB TEST CHANGE (LLM-4329) — no functional edit in this file.
+// Bulk-added filler comment; exists only to bloat the diff for
+// code-review automation testing. Do not merge — close this PR.
+// ------------------------------------------------------------------
 /**
  * Real-session delivery guarantee for behaviour re-steer after compaction.
  *
@@ -449,3 +454,4 @@ describe("behaviour resteer through a real AgentSession (overflow recovery)", ()
 		expect(steerEntries).toHaveLength(2) // one per behaviour, no duplicates
 	})
 })
+// DUMB TEST CHANGE (LLM-4329) — end-of-file filler marker
