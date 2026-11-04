@@ -1,9 +1,4 @@
-# Pre-#828 thinking render: 1010f45ac = parent of 6e7855b20 (#828,
-# "renders on all thinking block for preview and spinner tick" — the
-# change that made streaming render read the FULL accumulated thinking
-# text on every update, instead of a bounded window). Pre-#828 is the
-# era where the same renderer was cheap because it only saw tail text.
-1010f45ac835f62d5e870001a006fc80a041a4fc
-
-# #828 itself: the point where the derivation becomes per-update-full-text.
-6e7855b2013d9a2d3b1d76c78c1b72d34620d214
+# Earliest compatible-release test: v1.0.0 (2026-08-21) — has both
+# build:binary and the proxy-helper copy-for-dev rule. This is the lower
+# bound probe for the release-metrics database.
+a004771cf37520585edc3a399353c35094f2af7d
