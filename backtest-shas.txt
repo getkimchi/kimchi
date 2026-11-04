@@ -1,16 +1,6 @@
-# Fix columns (final state of each line of work):
-# stack tip — all three pr-cost PRs collapse to one column.
-b641e0244c7cce95729e20ebf291a9a1926b0c02
-
-# #1645 head — the thinking-stall fix.
-288112f759d54c7ce3921f4070e3ba8880c4fb47
-
-# resume-turn drift hunt (C..G, 6 commits): does the +11% start at
-# redaction events telemetry or the redact rework?
-f0312063b6a77ecd17d4aaa0d0e80ed5f4c0e278
-d27263c73c00d56984b21b9ac293c13b80f4152e
-
-# resume-mem bump hunt (B..C, 56 commits): bisect midpoint and
-# three-quarter point to bracket which merge added ~105MB peak mem.
-60afeb54738ce7f715d4afa7864a691f12d549c6
-486509b3d7952fe414a0dda1d823ffe55ef0edba
+# Bisect the resume-mem bump (864MB at c31c60a7e .. 1010MB at 60afeb547).
+# Window after confidence-reducing samples: bracket with 1219aa438 and
+# 5663db336; also re-sample d27263c73 to split signal from noise.
+1219aa4382b267cf407484e3e64fb0a320b39113
+5663db336c44166761e6e9e9df03cbdd27276554
+0383adf965bec914bd7165d25258eb46348a17c5
