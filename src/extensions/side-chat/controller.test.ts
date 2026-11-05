@@ -220,7 +220,7 @@ describe("SideChatController", () => {
 		expect(controller.isActive).toBe(true)
 		expect(captured.calls.focus).toBe(1)
 		expect(captured.calls.addInfo.some((text) => text.includes("Branched from the main session"))).toBe(true)
-		expect(captured.calls.addInfo.at(-1)).toContain("read-only tools")
+		expect(captured.calls.addInfo.at(-1)).toContain("answers only, no code changes")
 	})
 
 	it("quotes the opening selection and titles a fresh chat from it", async () => {

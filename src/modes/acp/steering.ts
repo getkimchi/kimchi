@@ -63,7 +63,7 @@ export function takeSteerEchoOriginal(rewrites: SteerEchoRewrite[], text: string
 export function reconcileQueue(
 	previous: string[],
 	next: readonly string[],
-): { previousQueue: string[]; sessionUpdates: SessionUpdate[] } {
+): { previousQueue: string[]; sessionUpdates: SessionUpdate[]; consumedFromFront: string[] } {
 	// FIFO assumption: consumed messages are removed from the front.
 	// Pure-left-shift check: `next` equals `previous` shifted left by `delta`
 	// → the first `delta` messages were consumed (injected into the turn).
@@ -91,5 +91,10 @@ export function reconcileQueue(
 		content: { type: "text", text },
 	}))
 
-	return { previousQueue: [...next], sessionUpdates }
+	// Only the left-shift branch GUARANTEES the text was consumed into the
+	// turn (its message_start follows this queue_update); the multiset
+	// fallback also matches removed-and-requeued texts that never deliver.
+	// Callers that suppress a later identical echo must key on this list,
+	// not the echoed chunks.
+	return { previousQueue: [...next], sessionUpdates, consumedFromFront: isShift ? consumed : [] }
 }

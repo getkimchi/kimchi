@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto"
 import type { AgentSession, AgentSessionEvent, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { formatRelativeTime } from "../../shared/relative-time.js"
 import { parseSideChatCommand } from "./autocomplete.js"
 import {
 	readSideChatHistory,
@@ -21,7 +22,6 @@ import {
 import {
 	createSideSession,
 	draftSteeringPrompt,
-	SIDE_CHAT_TOOLS,
 	type SideChatSession,
 	sideThreadMessages,
 	type WrapUpRun,
@@ -229,7 +229,7 @@ export class SideChatController {
 					const origin = record.fresh
 						? "↳ Fresh side chat — no main-session context"
 						: `↳ Branched from the main session with ${side.contextLength} messages of context`
-					chat.sink.addInfo(`${origin} · read-only tools: ${SIDE_CHAT_TOOLS.join(", ")}`)
+					chat.sink.addInfo(`${origin} · answers only, no code changes`)
 				}
 				chat.unsubscribe = side.session.subscribe((event) => {
 					chat.sink.handleEvent(event)
@@ -246,7 +246,7 @@ export class SideChatController {
 		)
 
 		if (resume) {
-			chat.sink.addInfo(`↺ Reopened side chat from ${new Date(record.startedAt).toLocaleString()}`)
+			chat.sink.addInfo(`↺ Reopened side chat from ${formatRelativeTime(new Date(record.startedAt))}`)
 			if (thread.length === 0 && resume.questions > 0) chat.sink.addInfo("Its transcript is no longer available.")
 			chat.sink.replay(thread)
 		}

@@ -433,6 +433,14 @@ type SessionRecord = {
 		followUp: string[]
 	}
 	/**
+	 * FIFO of queued user texts (steers/follow-ups) the queue_update reconcile
+	 * already echoed as user_message_chunk. pi-mono removes a consumed text
+	 * from its queue and emits queue_update immediately BEFORE the delivered
+	 * message's message_start, so that message_start pops its entry here
+	 * instead of echoing the text a second time.
+	 */
+	consumedQueueEchoes: string[]
+	/**
 	 * FIFO of steer texts the steering handler rewrote (e.g. `/skill:<name>`
 	 * expansion) — see takeSteerEchoOriginal. The queue echo and
 	 * cancel-drain hand queued text back to the client, which acknowledges
@@ -770,6 +778,7 @@ export class KimchiAcpAgent implements Agent {
 				unsubscribe: () => {},
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
+				consumedQueueEchoes: [],
 				contentIndexToBlockId: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
@@ -1081,6 +1090,7 @@ export class KimchiAcpAgent implements Agent {
 				// the session manager's cwd is the session's true cwd.
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
+				consumedQueueEchoes: [],
 				contentIndexToBlockId: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
@@ -1739,6 +1749,35 @@ export class KimchiAcpAgent implements Agent {
 		this.skillWatcher?.removeSession(entry)
 	}
 
+	/**
+	 * Echo a user message the client did not submit itself — a side-chat
+	 * send_to_main, a ferment freeform reply, or any other pi.sendUserMessage
+	 * injection — as a user_message_chunk, so the client sees the message that
+	 * woke the agent exactly like a composer prompt it typed itself. Skipped:
+	 * - prompt-owned turns: the client rendered its own session/prompt text;
+	 * - queue-consumed texts (steers/follow-ups): the queue_update reconcile
+	 *   already echoed them (they pop their entry here).
+	 */
+	private echoInjectedUserMessage(sessionId: string, entry: SessionRecord, content: unknown): void {
+		// Text-free injections (image-only) echo nothing, mirroring the replay
+		// path — the assistant turn streams without a preceding user message.
+		const text = userMessageText(content)
+		if (!text) return
+		const consumed = entry.consumedQueueEchoes.indexOf(text)
+		if (consumed >= 0) {
+			entry.consumedQueueEchoes.splice(consumed, 1)
+			return
+		}
+		if (entry.turn) return
+		this.send({
+			sessionId,
+			update: {
+				sessionUpdate: "user_message_chunk",
+				content: { type: "text", text },
+			},
+		})
+	}
+
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
@@ -1771,6 +1810,12 @@ export class KimchiAcpAgent implements Agent {
 					steering: steering.previousQueue,
 					followUp: followUp.previousQueue,
 				}
+				// Texts the reconcile is about to echo AND is guaranteed to deliver
+				// (left-shift consumption): the delivered message's message_start
+				// (immediately after this queue_update) must pop them instead of
+				// echoing them again. Multiset-fallback matches are excluded — a
+				// removed-and-requeued text would strand a suppression entry.
+				entry.consumedQueueEchoes.push(...steering.consumedFromFront, ...followUp.consumedFromFront)
 				// Echo the client's original text for rewritten steers:
 				// pending-steer acknowledgements match the submitted text exactly.
 				for (const update of steering.sessionUpdates) {
@@ -1802,6 +1847,11 @@ export class KimchiAcpAgent implements Agent {
 				// chained continue within the run, so an existing context is
 				// kept — only the run chain's first start allocates.
 				if (!entry.turn) entry.unsolicitedTurn ??= createTurnContext()
+				// A new run's first message_start is never the consumed queue entry
+				// it precedes (queue_update → message_start order holds per run), so
+				// leftovers here are echoes of texts cleared without delivery
+				// (cancel) — drop them rather than suppress a same-text echo later.
+				entry.consumedQueueEchoes.length = 0
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
@@ -1823,6 +1873,8 @@ export class KimchiAcpAgent implements Agent {
 				if (!entry.turn && entry.unsolicitedTurn) {
 					const unsolicited = entry.unsolicitedTurn
 					entry.unsolicitedTurn = undefined
+					// Same staleness bound as finalizeTurn for unused consumed-queue echoes.
+					entry.consumedQueueEchoes.length = 0
 					for (const update of unsolicited.artifactBuffer.flush(entry.emittedModelMeta)) {
 						this.send({ sessionId: entry.session.sessionId, update })
 					}
@@ -1842,6 +1894,9 @@ export class KimchiAcpAgent implements Agent {
 				// last session), so push the resolved label once per change so clients
 				// showing the selected model reflect what the auto model chose.
 				this.publishModelOptionIfChanged(sessionId, entry)
+				if (event.message.role === "user") {
+					this.echoInjectedUserMessage(sessionId, entry, event.message.content)
+				}
 				return
 			}
 			case "message_update": {
@@ -2950,6 +3005,11 @@ export class KimchiAcpAgent implements Agent {
 		const turn = entry.turn
 		if (!turn) return
 		entry.turn = undefined
+		// Unused consumed-queue echoes must not survive the turn they were
+		// recorded for (their message_start never arrived — e.g. an extension
+		// threw inside pi's message_start await window); a leftover would
+		// wrongly suppress a later identical injected echo.
+		entry.consumedQueueEchoes.length = 0
 		// Non-end_turn terminal outcomes (cancelled, refusal, …) never produce a
 		// rated settled response — clear the rating window armed at settle time.
 		// An end_turn settle keeps it: that is exactly when ratings are valid.
@@ -3011,6 +3071,8 @@ export class KimchiAcpAgent implements Agent {
 		// into a rate call for an error the client saw as a JSON-RPC failure.
 		clearRatingWindow(entry.session.sessionId)
 		entry.turn = undefined
+		// Same staleness bound as finalizeTurn for unused consumed-queue echoes.
+		entry.consumedQueueEchoes.length = 0
 		turn.reject(err)
 	}
 }
