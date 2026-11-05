@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
-import { statSync } from "node:fs"
-import { mkdir, open } from "node:fs/promises"
+import { readFileSync } from "node:fs"
+import { mkdir, open, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { lock } from "proper-lockfile"
@@ -98,7 +99,14 @@ export interface PendingRepository {
 	dead?: DeadMark
 	acceptedDigest?: string
 	pendingDigest?: string
+	/** Legacy on-disk shape: writers before pending-by-reference embedded the body inline. Kept
+	 * loadable so external writers' queues migrate through the freeze sweep, never written by the
+	 * current producer, and stripped once the body is frozen into its note. */
 	pending?: WireSnapshot
+	/** The frozen note holding this entry's pending body; the body itself never serializes into state.json. */
+	pendingId?: string
+	/** PR states and corrections of the pending body, so urgency checks never read the body. */
+	pendingMarkers?: string[]
 	attempts: number
 	retryAt: number
 	lastError?: string
@@ -180,7 +188,11 @@ function validEntryExtras(entry: PendingRepository): boolean {
 					(value) => value === undefined || (count(value) && value > 0),
 				))) &&
 		(entry.trimmed === undefined || count(entry.trimmed)) &&
-		(entry.limitNoticeShown === undefined || entry.limitNoticeShown === true)
+		(entry.limitNoticeShown === undefined || entry.limitNoticeShown === true) &&
+		(entry.pendingId === undefined || SHA256_HEX.test(entry.pendingId)) &&
+		(entry.pendingMarkers === undefined ||
+			(Array.isArray(entry.pendingMarkers) &&
+				entry.pendingMarkers.every((marker) => typeof marker === "string" && marker.length <= 256)))
 	)
 }
 
@@ -215,6 +227,81 @@ function empty(): ReportingState {
 
 export async function readReportingState(agentDir: string): Promise<ReportingState> {
 	return (await loadReportingState(agentDir)).state
+}
+
+/** Cheap fingerprint of the queue file: every durable write renames a fresh temporary into place.
+ * Residual collision: a same-millisecond rewrite of identical size with immediate inode reuse
+ * serves one stale parse for the rest of that pass; the guards it protects (enabled/held) lag
+ * by one write in that window, which is the same bound the pre-cache code had between its own
+ * read and the HTTP call. */
+export interface ReportingStateSignature {
+	mtimeMs: number
+	size: number
+	ino: number
+}
+
+export async function readReportingStateSignature(agentDir: string): Promise<ReportingStateSignature | undefined> {
+	try {
+		const file = await stat(reportingStatePath(agentDir))
+		return { mtimeMs: file.mtimeMs, size: file.size, ino: file.ino }
+	} catch {
+		return undefined
+	}
+}
+
+/** Content hash of the queue file. Stat slots cannot tell a content-identical rewrite (which must
+ * keep the pass gate asleep) from a same-size foreign edit (which must open it); the bytes can.
+ * Post pending-by-reference the file is KB-scale, so hashing per tick is noise. */
+export async function reportingStateContentHash(agentDir: string): Promise<string | undefined> {
+	try {
+		return createHash("sha256")
+			.update(await readFile(reportingStatePath(agentDir)))
+			.digest("hex")
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Pass-scoped cache for readReportingState: the caller keeps `signature` across calls and the file
+ * is re-parsed only when it was actually rewritten in between. A TOCTOU race is narrowed by re-statting
+ * after the read: a write landing between stat and read changes the post-read signature, so the cache
+ * re-reads on the next call instead of trusting torn state. Callers keep a bare object.
+ */
+export interface FreshReportingState {
+	state?: ReportingState
+	signature?: ReportingStateSignature
+}
+
+export async function readReportingStateFresh(
+	agentDir: string,
+	cached: FreshReportingState,
+): Promise<FreshReportingState & { state: ReportingState }> {
+	const signature = await readReportingStateSignature(agentDir)
+	if (
+		signature &&
+		cached.signature &&
+		cached.state &&
+		signature.mtimeMs === cached.signature.mtimeMs &&
+		signature.size === cached.signature.size &&
+		signature.ino === cached.signature.ino
+	) {
+		// Telemetry config lives outside state.json; re-derive the toggle on a cache hit.
+		if (cached.state.followsTelemetry) cached.state.enabled = isTelemetryEnabled()
+		return { state: cached.state, signature: cached.signature }
+	}
+	const state = await readReportingState(agentDir)
+	const after = await readReportingStateSignature(agentDir)
+	if (
+		after &&
+		signature &&
+		after.mtimeMs === signature.mtimeMs &&
+		after.size === signature.size &&
+		after.ino === signature.ino
+	)
+		return { state, signature: after }
+	// The file changed while we read it: trust the read for this call only and cache nothing.
+	return { state, signature: undefined }
 }
 
 /** The new reporting producer rotates independently; legacy pending uploads keep their original identity. */
@@ -277,15 +364,41 @@ function validateEntry(key: string, entry: PendingRepository, producerId: string
 	}
 }
 
-/** (mtime, size) of state.json without parsing; pass gates read freshness through this. */
-export function reportingStateFileSignature(agentDir: string): { mtimeMs: number; size: number } | undefined {
+/** The sidecar version file; bumped once per real state.json change, so it stays tiny to read. */
+export function reportingStateVersionPath(agentDir: string): string {
+	return join(reportingDirectory(agentDir), "state.version")
+}
+
+/** Monotonic version of state.json without parsing it; pass gates read freshness through this. */
+export function reportingStateVersion(agentDir: string): number {
 	try {
-		const file = statSync(reportingStatePath(agentDir))
-		return { mtimeMs: file.mtimeMs, size: file.size }
+		const text = readFileSync(reportingStateVersionPath(agentDir), "utf8").trim()
+		const version = Number(text)
+		return Number.isSafeInteger(version) && version >= 0 ? version : 0
 	} catch (error) {
 		if (!object(error) || error.code !== "ENOENT") throw error
-		return undefined
+		return 0
 	}
+}
+
+/** Sidecar bumps THIS process recorded while a pass was tracking them — never anyone else's. */
+const ownReportingWrites = new Map<string, number>()
+// The async-context scoping is load-bearing: a write from a command handler or another session
+// racing the pass mid-flight must NOT be absorbed — its content could otherwise be silently slept
+// over once its version matched the stamp.
+const reportingPassContext = new AsyncLocalStorage<string>()
+
+/**
+ * Bracket a reconcile pass's own queue writes: only writes issued from inside this async context
+ * (and only for this agentDir) are absorbed into the pass stamp, so a same-process write from
+ * anywhere else still re-opens the next tick.
+ */
+export function runWithReportingOwnWrites<T>(agentDir: string, fn: () => Promise<T>): Promise<T> {
+	return reportingPassContext.run(agentDir, fn)
+}
+
+export function reportingOwnWrites(agentDir: string): number {
+	return ownReportingWrites.get(agentDir) ?? 0
 }
 
 /** The validated state and, when the file exists, its text, so an unchanged update can skip the write. */
@@ -330,7 +443,7 @@ async function loadReportingState(agentDir: string): Promise<{ state: ReportingS
 		if (value.followsTelemetry) value.enabled = isTelemetryEnabled()
 		trackPRCostMetric({
 			kind: "queueDepth",
-			value: Object.values(value.entries).filter((entry) => entry.pending).length,
+			value: Object.values(value.entries).filter((entry) => entry.pending || entry.pendingId).length,
 		})
 		return { state: value, text }
 	} catch (error) {
@@ -375,6 +488,10 @@ async function update(
 		// Passes run every 30 seconds; an unchanged queue is not rewritten or synced.
 		if (body === text) return state
 		if (Buffer.byteLength(body) > MAX_STATE_BYTES) throw new Error("PR reporting queue exceeds its local size limit")
+		// The sidecar moves first: a crash between the two writes leaves a phantom version bump (one
+		// extra pass) rather than a moved state.json that a stale version would hide forever.
+		await writeFileDurably(reportingStateVersionPath(agentDir), `${reportingStateVersion(agentDir) + 1}\n`, check)
+		if (reportingPassContext.getStore() === agentDir) ownReportingWrites.set(agentDir, reportingOwnWrites(agentDir) + 1)
 		await writeFileDurably(reportingStatePath(agentDir), body, check)
 
 		const parent = await open(directory, "r")
@@ -385,7 +502,7 @@ async function update(
 		}
 		trackPRCostMetric({
 			kind: "queueDepth",
-			value: Object.values(state.entries).filter((entry) => entry.pending).length,
+			value: Object.values(state.entries).filter((entry) => entry.pending || entry.pendingId).length,
 		})
 		return state
 	} finally {
@@ -501,7 +618,7 @@ export async function queueSnapshots(
 					if (!assertCurrent) diagnostic(agentDir, "hold-expired")
 				}
 				// An acknowledged withdrawal left no claims; rebuilding it would only send it again.
-				if (!current.has(key) && (entry.requestHashes.length || entry.pending)) {
+				if (!current.has(key) && (entry.requestHashes.length || entry.pending || entry.pendingId)) {
 					if (
 						!invalid.has(key) &&
 						entry.requestHashes.every((member) => reported.get(accountKey(entry.account))?.has(member))
@@ -558,7 +675,11 @@ export async function queueSnapshots(
 			const corrected = new Set<string>()
 			for (const [key, snapshot] of changes) {
 				const entry = state.entries[key]
-				const seen = new Set([...(entry?.markers ?? []), ...(entry?.pending ? snapshotMarkers(entry.pending) : [])])
+				const seen = new Set([
+					...(entry?.markers ?? []),
+					// A frozen entry carries its markers inline; a not-yet-frozen legacy body still does.
+					...(entry?.pendingMarkers ?? (entry?.pending ? snapshotMarkers(entry.pending) : [])),
+				])
 				if (snapshotMarkers(snapshot.content).some((marker) => marker.startsWith("correction:") && !seen.has(marker)))
 					corrected.add(accountKey(snapshot.account))
 			}
@@ -607,7 +728,11 @@ export async function queueSnapshots(
 					// let repeated captures hammer a refusing server with first-attempt delays.
 					dead: undefined,
 					pendingDigest: digest,
+					// Legacy-writer contract: the body rides inline here and the reporter's freeze
+					// sweep moves it to its note and swaps it for a pendingId reference.
 					pending,
+					pendingId: undefined,
+					pendingMarkers: undefined,
 					urgent: urgent || undefined,
 					trimmed: snapshot.content.coverage.trimmedRequests || undefined,
 					attempts: entry?.dead ? 0 : (entry?.attempts ?? 0),
@@ -664,28 +789,36 @@ function validateAck(sentRevision: string, ack: SnapshotAck): void {
 		throw new Error("Invalid PR reporting acknowledgement")
 }
 
-function applyAck(state: ReportingState, entry: PendingRepository, sentRevision: string, ack: SnapshotAck): void {
-	if (!entry.pending || entry.pending.revision !== sentRevision) return
+function applyAck(
+	state: ReportingState,
+	entry: PendingRepository,
+	body: WireSnapshot | undefined,
+	sentRevision: string,
+	ack: SnapshotAck,
+): void {
+	if (!body || body.revision !== sentRevision) return
 	validateAck(sentRevision, ack)
 	if (ack.status !== "stale") {
-		const acked = entry.pending.requests.map((request) => requestHash(request.requestId)).sort()
+		const acked = body.requests.map((request) => requestHash(request.requestId)).sort()
 		// A trimmed body keeps the server's earlier claims under the same revision, so only a
 		// complete inventory shrinks membership; an incomplete one keeps what it may still hold.
-		entry.requestHashes = entry.pending.coverage.historyComplete
+		entry.requestHashes = body.coverage.historyComplete
 			? acked
 			: [...new Set([...entry.requestHashes, ...acked])].sort()
 		entry.acceptedDigest = entry.pendingDigest
 		entry.lastAcknowledgedAt = ack.receivedAt
-		entry.markers = snapshotMarkers(entry.pending)
+		entry.markers = snapshotMarkers(body)
 		entry.limit = undefined
 		// Only an upload that adds claims proves an account limit no longer blocks; withdrawals pass it.
-		if (state.paused && (entry.pending.requests.length || entry.pending.pullRequests.length)) {
+		if (state.paused && (body.requests.length || body.pullRequests.length)) {
 			delete state.paused[accountKey(entry.account)]
 			if (!Object.keys(state.paused).length) state.paused = undefined
 		}
 	} else entry.acceptedDigest = undefined
 	entry.revision = ack.revision
 	entry.pending = undefined
+	entry.pendingId = undefined
+	entry.pendingMarkers = undefined
 	entry.pendingDigest = undefined
 	entry.urgent = undefined
 	entry.lastError = undefined
@@ -702,7 +835,7 @@ export function acknowledgeSnapshot(
 ): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		const entry = state.entries[key]
-		if (state.enabled && entry) applyAck(state, entry, sentRevision, ack)
+		if (state.enabled && entry) applyAck(state, entry, readPendingBody(agentDir, entry), sentRevision, ack)
 	})
 }
 
@@ -722,7 +855,8 @@ export function deferSnapshot(
 ): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		const entry = state.entries[key]
-		if (!state.enabled || entry?.pending?.revision !== sentRevision) return
+		if (!state.enabled || !entry?.revision || entry.revision !== sentRevision) return
+		if (!entry.pending && !entry.pendingId) return
 		applyDefer(entry, retryAt, message)
 	})
 }
@@ -757,8 +891,14 @@ export function learnedLimit(pending: WireSnapshot, limit: ServerLimit): number 
  * A PR_COST_LIMIT rejection is quota, not an outage. Account-wide limits pause every repository of the
  * account; a repository limit waits on its own counter, and a snapshot limit also teaches a smaller cap.
  */
-function applyLimit(state: ReportingState, entry: PendingRepository, limit: ServerLimit, retryAt: number): void {
-	if (!entry.pending) return
+function applyLimit(
+	state: ReportingState,
+	entry: PendingRepository,
+	body: WireSnapshot | undefined,
+	limit: ServerLimit,
+	retryAt: number,
+): void {
+	if (!entry.pending && !entry.pendingId) return
 	entry.uploadedAt = Date.now()
 	entry.lastError = undefined
 	if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) {
@@ -772,7 +912,7 @@ function applyLimit(state: ReportingState, entry: PendingRepository, limit: Serv
 	}
 	entry.limit = limit
 	entry.retryAt = retryAt
-	const learned = limit.scope === "snapshot" ? learnedLimit(entry.pending, limit) : undefined
+	const learned = body && limit.scope === "snapshot" ? learnedLimit(body, limit) : undefined
 	if (learned && limit.limit)
 		entry.learned = {
 			...(entry.learned && entry.learned.until > limit.at ? entry.learned : {}),
@@ -790,7 +930,8 @@ export function limitSnapshot(
 ): Promise<ReportingState> {
 	return update(agentDir, (state) => {
 		const entry = state.entries[key]
-		if (state.enabled && entry?.pending?.revision === sentRevision) applyLimit(state, entry, limit, retryAt)
+		if (state.enabled && entry?.revision === sentRevision)
+			applyLimit(state, entry, readPendingBody(agentDir, entry), limit, retryAt)
 	})
 }
 
@@ -995,8 +1136,46 @@ function refreshFrozenSchedule(agentDir: string, frozen: FrozenSnapshot): void {
 	frozen.entry.retryAt = 0
 }
 
+/** Freeze one body into its content-addressed note and point the entry at it by reference. The body
+ * leaves state.json here: the entry keeps the id and the small marker list, and never the bytes. */
+function freezePending(
+	backend: ReturnType<typeof backendFor>,
+	agentDir: string,
+	key: string,
+	entry: PendingRepository,
+	pending: WireSnapshot,
+	state: ReportingState,
+): void {
+	const body = JSON.stringify(pending)
+	const id = frozenId(entry.account, body)
+	// Point the entry at its note before the note is written, so the stored entry copy is
+	// self-consistent; the inline copy a legacy writer left is dropped with it.
+	entry.pendingId = id
+	entry.pendingMarkers = snapshotMarkers(pending)
+	entry.pending = undefined
+	const frozen = storedFrozen(agentDir, id)
+	if (frozen === undefined) {
+		const value: FrozenSnapshot = { version: 1, id, key, body, entry, resume: frozenResume(agentDir) }
+		backend.putNote(FROZEN_SNAPSHOTS, id, encodeFrozen(value))
+		indexFrozen(backend, agentDir, key, id, Buffer.byteLength(body), entry.held)
+	} else {
+		if (frozen.key !== key || frozen.body !== body) throw new Error("Frozen PR snapshot identity mismatch")
+		if (state.enabled && frozen.ack) applyAck(state, entry, frozen.entry.pending, entry.revision, frozen.ack)
+	}
+}
+
+/** The pending body of an entry: the frozen note when referenced, the legacy inline copy otherwise. */
+export function readPendingBody(agentDir: string, entry: PendingRepository | undefined): WireSnapshot | undefined {
+	if (entry === undefined) return undefined
+	if (entry.pending !== undefined) return entry.pending
+	if (entry.pendingId === undefined) return undefined
+	return storedFrozen(agentDir, entry.pendingId)?.entry.pending
+}
+
 function freezeState(agentDir: string, state: ReportingState, assertCurrent: () => void): void {
-	const entries = Object.entries(state.entries).filter(([, entry]) => entry.pending)
+	const entries = Object.entries(state.entries).filter(
+		([, entry]) => entry.pending !== undefined || entry.pendingId !== undefined,
+	)
 	if (!entries.length) return
 	const backend = backendFor(agentDir)
 	backend.tx(() => {
@@ -1011,24 +1190,27 @@ function freezeState(agentDir: string, state: ReportingState, assertCurrent: () 
 				entry.heldAt = undefined
 				diagnostic(agentDir, "hold-expired")
 			}
-			// The queue's size limit applies to new frozen bodies whatever built them; the live entry keeps
-			// the trimmed body so the next pass freezes the same id instead of another full copy. An
-			// unchanged body leaves the entry alone: an acknowledged receipt clears `pending` here.
+			// A pendingId whose note is already a receipt means the acknowledgement raced ahead of
+			// the live entry: resync it now instead of retrying an upload the server already has. A
+			// missing note (the frozen-queue cap evicted it while other bodies of the key filled the
+			// budget) is not an error but a drop: clear the reference so the next capture re-queues
+			// the content instead of holding a digest that can never deliver again.
+			if (entry.pendingId !== undefined && entry.pending === undefined) {
+				const frozen = storedFrozen(agentDir, entry.pendingId)
+				if (frozen?.ack && state.enabled) applyAck(state, entry, frozen.entry.pending, entry.revision, frozen.ack)
+				else if (frozen === undefined) {
+					entry.pendingId = undefined
+					entry.pendingMarkers = undefined
+					entry.pendingDigest = undefined
+					entry.lastError = undefined
+				}
+				continue
+			}
+			// Legacy inline bodies freeze into their note and lose their inline copy; the trimmed body
+			// decides the id, so the next sweep of the same content finds the same note.
 			const original = entry.pending
 			if (!original) continue
-			const pending = trimLegacySnapshot(original)
-			const body = JSON.stringify(pending)
-			const id = frozenId(entry.account, body)
-			const frozen = storedFrozen(agentDir, id)
-			if (frozen === undefined) {
-				const value: FrozenSnapshot = { version: 1, id, key, body, entry, resume: frozenResume(agentDir) }
-				backend.putNote(FROZEN_SNAPSHOTS, id, encodeFrozen(value))
-				indexFrozen(backend, agentDir, key, id, Buffer.byteLength(body), entry.held)
-			} else {
-				if (frozen.key !== key || frozen.body !== body) throw new Error("Frozen PR snapshot identity mismatch")
-				if (state.enabled && frozen.ack) applyAck(state, entry, entry.revision, frozen.ack)
-			}
-			if (pending !== original) entry.pending = pending
+			freezePending(backend, agentDir, key, entry, trimLegacySnapshot(original), state)
 		}
 		assertCurrent()
 	})
@@ -1146,7 +1328,13 @@ function updateFrozen(
 				if (frozen.ack) return
 				refreshFrozenSchedule(agentDir, frozen)
 				const entry = state.entries[frozen.key]
-				const live = entry?.pending && JSON.stringify(entry.pending) === frozen.body ? entry : undefined
+				// The live entry matches the note it points at — unless a legacy writer replaced the
+				// body inline since, in which case the bytes are the truth (the replacement clears the id).
+				const live =
+					entry !== undefined &&
+					(entry.pending !== undefined ? JSON.stringify(entry.pending) === frozen.body : entry.pendingId === frozen.id)
+						? entry
+						: undefined
 				mutate(state, frozen, live)
 				if (frozen.ack) {
 					backend.putNote(SNAPSHOT_RECEIPTS, frozen.id, encodeFrozen(frozen))
@@ -1175,7 +1363,7 @@ export function acknowledgeFrozenSnapshot(
 			frozen.entry.attempts = 0
 			frozen.entry.retryAt = 0
 			frozen.entry.lastError = undefined
-			if (live) applyAck(state, live, live.revision, ack)
+			if (live) applyAck(state, live, frozen.entry.pending, live.revision, ack)
 			else if (
 				ack.status !== "stale" &&
 				frozen.entry.pending &&
@@ -1317,8 +1505,13 @@ export async function trimFrozenSnapshot(
 				indexFrozen(backend, agentDir, frozen.key, replacement.id, Buffer.byteLength(body), frozen.entry.held)
 				// The live entry must not hold the rejected body: the next freeze would recreate its note.
 				const live = state.entries[frozen.key]
-				if (live?.pending && JSON.stringify(live.pending) === frozen.body) {
-					live.pending = next
+				if (
+					live &&
+					(live.pendingId === sent.id || (live.pending !== undefined && JSON.stringify(live.pending) === sent.body))
+				) {
+					live.pendingId = replacement.id
+					live.pendingMarkers = snapshotMarkers(next)
+					live.pending = undefined
 					live.attempts = 0
 					live.retryAt = 0
 					live.uploadedAt = undefined
@@ -1342,8 +1535,8 @@ export function limitFrozenSnapshot(
 		agentDir,
 		sent,
 		(state, frozen, live) => {
-			applyLimit(state, frozen.entry, limit, retryAt)
-			if (live) applyLimit(state, live, limit, retryAt)
+			applyLimit(state, frozen.entry, frozen.entry.pending, limit, retryAt)
+			if (live) applyLimit(state, live, frozen.entry.pending, limit, retryAt)
 		},
 		assertCurrent,
 	)
