@@ -23,6 +23,16 @@ let authorizationCodeGrants = 0
 // a fresh authorization-code flow, which clears both flags).
 let oauthManualRevoked = false
 const transportKind = process.env.KIMCHI_MCP_FIXTURE_TRANSPORT ?? "stdio"
+// MCP 2026-07-28 (stateless, modern era): no initialize handshake, per-request
+// `_meta` envelope, `server/discover`, cacheable list results, and an MRTR
+// (SEP-2322) elicitation round on tools/call. Hand-rolled on raw HTTP because
+// the pinned legacy SDK cannot speak this revision.
+const modernEra = transportKind === "modern-http"
+const MODERN_PROTOCOL_VERSION = "2026-07-28"
+const MODERN_META_KEYS = {
+	protocolVersion: "io.modelcontextprotocol/protocolVersion",
+	serverInfo: "io.modelcontextprotocol/serverInfo",
+}
 const expectedBearerToken = process.env.KIMCHI_MCP_FIXTURE_BEARER_TOKEN
 const oauthEnabled = process.env.KIMCHI_MCP_FIXTURE_OAUTH === "1"
 const oauthPreauthorized = process.env.KIMCHI_MCP_FIXTURE_OAUTH_PREAUTHORIZED === "1"
@@ -64,6 +74,35 @@ const googleLikeIssuedRefreshTokens = new Set()
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
+
+// Shared tool catalog entry for both the legacy SDK server and the modern-era
+// stateless handler, so the two transports cannot drift.
+const ECHO_TOOL = {
+	name: "echo",
+	title: "Fixture echo",
+	description: "Echo deterministic text for Kimchi MCP end-to-end tests",
+	inputSchema: {
+		type: "object",
+		properties: {
+			message: { type: "string", description: "Text returned by the fixture" },
+		},
+		required: ["message"],
+		additionalProperties: false,
+	},
+	annotations: { readOnlyHint: true },
+}
+
+function unconfiguredToolError(name, args) {
+	return {
+		isError: true,
+		content: [
+			{
+				type: "text",
+				text: `No MCP fixture response configured for ${name} with arguments ${JSON.stringify(args ?? {})}`,
+			},
+		],
+	}
+}
 
 function findToolBehavior(name, args) {
 	return fixtureBehavior.tools?.find(
@@ -108,20 +147,7 @@ function createFixtureServer() {
 				: []
 		return {
 			tools: [
-				{
-					name: "echo",
-					title: "Fixture echo",
-					description: "Echo deterministic text for Kimchi MCP end-to-end tests",
-					inputSchema: {
-						type: "object",
-						properties: {
-							message: { type: "string", description: "Text returned by the fixture" },
-						},
-						required: ["message"],
-						additionalProperties: false,
-					},
-					annotations: { readOnlyHint: true },
-				},
+				ECHO_TOOL,
 				{
 					name: "fail",
 					description: "Return a deterministic MCP tool error for Kimchi end-to-end tests",
@@ -228,18 +254,167 @@ function createFixtureServer() {
 			}
 		}
 
-		return {
-			isError: true,
-			content: [
-				{
-					type: "text",
-					text: `No MCP fixture response configured for ${name} with arguments ${JSON.stringify(args ?? {})}`,
-				},
-			],
-		}
+		return unconfiguredToolError(name, args)
 	})
 
 	return server
+}
+
+// Stateless 2026-07-28 (modern era) fixture. Every request is self-describing:
+// no initialize handshake, `server/discover` advertises the modern revision,
+// list results carry cache hints, and tools/call can answer with an MRTR
+// input_required round (elicitation) driven by `behavior.mrtr`.
+async function runModernHttpFixture() {
+	// Opaque MRTR round tokens minted per input_required answer cycle.
+	const mrtrRequestStates = new Map()
+	const httpServer = createServer(async (request, response) => {
+		try {
+			const url = new URL(request.url ?? "/", "http://fixture.invalid")
+			if (request.method !== "POST" || url.pathname !== "/mcp") {
+				sendJson(response, 405, { error: "modern fixture answers POST /mcp only" })
+				return
+			}
+			const message = await readJsonBody(request)
+			const { id, method, params } = message ?? {}
+			const metaVersion = params?._meta?.[MODERN_META_KEYS.protocolVersion] ?? null
+			record("modern_request", {
+				method,
+				protocolVersion: metaVersion,
+				hasInputResponses: params?.inputResponses !== undefined,
+			})
+
+			const reply = (result) => sendJson(response, 200, { jsonrpc: "2.0", id, result })
+			const replyError = (code, errorMessage) =>
+				sendJson(response, 200, { jsonrpc: "2.0", id, error: { code, message: errorMessage } })
+			const complete = (result) =>
+				reply({
+					resultType: "complete",
+					_meta: { [MODERN_META_KEYS.serverInfo]: { name: "kimchi-mcp-e2e-fixture", version: "1.0.0" } },
+					...result,
+				})
+
+			// A 2026-07-28-only server rejects every legacy-era request: the per-request
+			// envelope is what carries the protocol version. An envelope-less
+			// `initialize` is the legacy handshake - answer method-not-found so legacy
+			// clients see the expected signal - while any other envelope-less method
+			// gets the unsupported-version error.
+			if (metaVersion === null && method !== "initialize") {
+				replyError(
+					-32022,
+					`Unsupported protocol version: ${String(method)} carries no io.modelcontextprotocol/protocolVersion _meta envelope`,
+				)
+				return
+			}
+
+			switch (method) {
+				case "server/discover": {
+					record("modern_discover_served")
+					complete({ supportedVersions: [MODERN_PROTOCOL_VERSION], capabilities: { tools: {} } })
+					return
+				}
+				case "tools/list": {
+					record("tools_listed")
+					complete({
+						ttlMs: 300_000,
+						cacheScope: "private",
+						tools: [
+							ECHO_TOOL,
+							...(fixtureBehavior.catalogTools ?? []),
+							...(fixtureBehavior.mrtr
+								? [
+										{
+											name: fixtureBehavior.mrtr.name,
+											title: "Fixture MRTR confirmation",
+											description: "Requires an MRTR elicitation round before completing",
+											inputSchema: { type: "object", properties: {}, additionalProperties: true },
+										},
+									]
+								: []),
+						],
+					})
+					return
+				}
+				case "tools/call": {
+					const { name, arguments: args } = params ?? {}
+					record("tool_called", { name, arguments: args ?? {} })
+					const mrtr = fixtureBehavior.mrtr
+					if (mrtr && name === mrtr.name) {
+						// Opaque per-round token minted by the fixture and looked up on the
+						// retry, so an argument reorder can never silently re-trigger the
+						// elicitation round (failures stay observable, not timeout-shaped).
+						const confirm = params?.inputResponses?.confirm
+						const accepted =
+							confirm && typeof confirm === "object" && confirm.action === "accept" && confirm.content?.confirm === true
+						const minted = mrtrRequestStates.get(params?.requestState)
+						if (minted?.name === name && accepted && minted.open) {
+							minted.open = false
+							record("modern_tool_completed", { name, requestStateVerified: true })
+							complete({ ...mrtr.result })
+							return
+						}
+						const requestState = randomUUID()
+						mrtrRequestStates.set(requestState, { name, open: true })
+						record("modern_tool_input_required", { name })
+						reply({
+							resultType: "input_required",
+							inputRequests: {
+								confirm: {
+									method: "elicitation/create",
+									params: {
+										message: mrtr.message,
+										requestedSchema: {
+											type: "object",
+											properties: { confirm: { type: "boolean", description: "Confirm to continue" } },
+											required: ["confirm"],
+										},
+									},
+								},
+							},
+							requestState,
+						})
+						return
+					}
+					const behavior = findToolBehavior(name, args)
+					if (behavior?.response.type === "result") {
+						complete({ ...behavior.response.value })
+						return
+					}
+					complete(unconfiguredToolError(name, args))
+					return
+				}
+				default: {
+					// A modern-only server implements no initialize handshake and no
+					// legacy-only methods: everything unknown is method-not-found.
+					if (method === "initialize") record("modern_initialize_rejected")
+					replyError(-32601, `Method not found: ${String(method)}`)
+				}
+			}
+		} catch (error) {
+			record("http_error", { message: error instanceof Error ? error.message : String(error) })
+			if (!response.headersSent) sendJson(response, 500, { error: "fixture server error" })
+			else response.end()
+		}
+	})
+
+	await new Promise((resolve, reject) => {
+		httpServer.once("error", reject)
+		httpServer.listen(0, "127.0.0.1", resolve)
+	})
+	const address = httpServer.address()
+	if (!address || typeof address === "string") throw new Error("Fixture HTTP server did not get a TCP address")
+	const origin = `http://127.0.0.1:${address.port}`
+	record("http_listening", { url: `${origin}/mcp` })
+
+	const shutdown = async (signal) => {
+		record("process_stopping", { signal })
+		// Idle keep-alive sockets would hold close() past the runner's SIGKILL
+		// grace; drop them so teardown is deterministic.
+		httpServer.closeIdleConnections()
+		await new Promise((resolve) => httpServer.close(resolve))
+		process.exit(0)
+	}
+	process.once("SIGTERM", () => void shutdown("SIGTERM"))
+	process.once("SIGINT", () => void shutdown("SIGINT"))
 }
 
 async function readBody(request) {
@@ -657,4 +832,5 @@ else if (fixtureBehavior.startup?.type === "hang") {
 	process.stdin.once("end", () => process.exit(0))
 	process.once("SIGTERM", () => process.exit(0))
 } else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
+else if (modernEra) await runModernHttpFixture()
 else await createFixtureServer().connect(new StdioServerTransport())

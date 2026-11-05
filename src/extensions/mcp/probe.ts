@@ -13,6 +13,7 @@ import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
+import { DEFAULT_MCP_PROTOCOL_VERSION } from "./config.js"
 import {
 	inspectMcpCredentialAccount,
 	installKeyringRequireBridge,
@@ -472,7 +473,7 @@ export class UpstreamMcpProbe implements McpProbe {
 			process.env.KIMCHI_MANAGES_MCP_PROJECT_TRUST = "1"
 			// `mcp probe` opens the same authorize URLs; see oauth-offline-access.ts.
 			installOfflineAccessAuthorizationUrlTransform()
-			createMcpAdapter({ config })(host.api)
+			createMcpAdapter({ config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION })(host.api)
 			await Promise.race([emitHandlers(host, "session_start"), aborted])
 			signal.throwIfAborted()
 			// For servers that 401 at connect, upstream's attemptAutoAuth opens the
