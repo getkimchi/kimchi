@@ -60,6 +60,18 @@ cannot return a wrong value — worst case it renders the token verbatim.
 | Thinking blocks (visible) | markers | tokens | the patched thinking renderer does not substitute; collapse in v1 |
 | After process restart | markers | tokens (viewport verbatim) | vault gone; degraded, never wrong |
 
+## Vault lifetime
+
+The vault lives as long as its session: it is deleted when the extension
+runner emits `session_shutdown` — on an explicit session close, on client
+disconnect, and on server shutdown; ACP prompt-cancel is not a teardown
+(the session stays alive and keeps its vault). One documented exception:
+a text block still in flight when its session dies finishes substituting
+against its (now dead) vault — the stream holds a desanitizer reference
+until the block ends. That is presentation-only, to the same client that
+already saw the session's originals, and it extends past vault deletion
+by at most one turn's remainder.
+
 ## Failure modes (all degrade toward the token, never toward PII)
 
 - No vault for a session (unknown id, markers mode, settings typo degrading

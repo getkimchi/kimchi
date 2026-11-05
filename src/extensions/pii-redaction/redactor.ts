@@ -862,7 +862,7 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
  * EMAIL_ADDRESS (lazy growth stops at the first `]`-terminated suffix), not
  * `EMAIL_ADDRESS_1`.
  */
-const REDACTION_MARKER_RE = /\[(?:REDACTED-)?([A-Z0-9_]+?)(?:_\d+)?\]/g
+const REDACTION_SHAPE_RE = /\[(?:REDACTED-)?([A-Z0-9_]+?)(?:_\d+)?\]/g
 
 /**
  * Tally markers INTRODUCED by a single string's redaction pass. Markers
@@ -875,10 +875,10 @@ const REDACTION_MARKER_RE = /\[(?:REDACTED-)?([A-Z0-9_]+?)(?:_\d+)?\]/g
 function tallyMarkersNet(input: string, output: string, entities: Record<string, number>): void {
 	// Cheap path first: most strings contain no markers at all — one output
 	// sweep, and only when markers exist do we pay for the input multiset.
-	const outMarkers = [...output.matchAll(REDACTION_MARKER_RE)]
+	const outMarkers = [...output.matchAll(REDACTION_SHAPE_RE)]
 	if (outMarkers.length === 0) return
 	const available = new Map<string, number>()
-	for (const match of input.matchAll(REDACTION_MARKER_RE)) {
+	for (const match of input.matchAll(REDACTION_SHAPE_RE)) {
 		available.set(match[1], (available.get(match[1]) ?? 0) + 1)
 	}
 	for (const match of outMarkers) {

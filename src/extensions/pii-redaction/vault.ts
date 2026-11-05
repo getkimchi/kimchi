@@ -112,25 +112,37 @@ const SEED_RE = /\[([A-Z][A-Z0-9_]{0,40})_(\d+)\]/g
  * DIFFERENT value — the transcript would then substitute a wrong
  * original over old occurrences. Over-seeding is harmless (tokens stay
  * unique); under-seeding is a wrong-value substitution.
+ *
+ * Returns the observed per-entity maxima so the caller can log them —
+ * seeding is the resume-safety backbone, and it should be visible when it
+ * ran and what it found.
  */
-export function seedTokenCountersFromTexts(texts: Iterable<string>): void {
+export function seedTokenCountersFromTexts(texts: Iterable<string>): Map<string, number> {
+	const observed = new Map<string, number>()
 	for (const text of texts) {
 		SEED_RE.lastIndex = 0
 		let match = SEED_RE.exec(text)
 		while (match !== null) {
 			const entity = match[1]
 			const suffix = Number.parseInt(match[2], 10)
-			if (entity !== undefined && Number.isSafeInteger(suffix) && (tokenCounters.get(entity) ?? 0) < suffix) {
-				tokenCounters.set(entity, suffix)
+			if (entity !== undefined && Number.isSafeInteger(suffix)) {
+				if ((observed.get(entity) ?? 0) < suffix) observed.set(entity, suffix)
+				if ((tokenCounters.get(entity) ?? 0) < suffix) tokenCounters.set(entity, suffix)
 			}
 			match = SEED_RE.exec(text)
 		}
 	}
+	return observed
 }
 
-/** Yield every string reachable inside `value` (entries are JSON-shaped). Depth-capped. */
+/**
+ * Yield every string reachable inside `value`. Session entries are JSON
+ * parsed — acyclic by construction — so no cycle guard is needed; the
+ * depth cap is generous (24) to catch tokens nested in tool-call input
+ * objects while still bounding adversarial input.
+ */
 export function* deepStrings(value: unknown, depth = 0): Generator<string> {
-	if (depth > 6 || value === null || value === undefined) return
+	if (depth > 24 || value === null || value === undefined) return
 	if (typeof value === "string") {
 		yield value
 		return

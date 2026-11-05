@@ -1043,7 +1043,7 @@ export class KimchiAcpAgent implements Agent {
 			// fail with "unknown sessionId" while the file is still held open.
 			// Reject up front and dispose so we don't quietly diverge.
 			if (sessionId !== params.sessionId) {
-				session.dispose()
+				await this.disposeOrphanSession(session)
 				throw RequestError.invalidParams(
 					undefined,
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
@@ -1124,7 +1124,7 @@ export class KimchiAcpAgent implements Agent {
 				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
-			session.dispose()
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1723,6 +1723,23 @@ export class KimchiAcpAgent implements Agent {
 				},
 			})
 		}
+	}
+
+	/**
+	 * Dispose a session that was never (or is no longer) registered in
+	 * `sessions` — early attach-fail paths. The vault lifecycle (and every
+	 * extension teardown keyed on it) listens for the session_shutdown
+	 * event, so disposing without emitting it would leak extension state
+	 * (token vaults, etc.) for a session that did start.
+	 */
+	private async disposeOrphanSession(session: SessionRecord["session"]): Promise<void> {
+		try {
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		} catch {
+			// Teardown must not fail the caller: extension shutdown handlers
+			// are fail-quiet (matching disposeSessionRecord's contract).
+		}
+		session.dispose()
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {

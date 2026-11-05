@@ -196,6 +196,33 @@ describe("session lifecycle", () => {
 		)
 	})
 
+	it("seed returns the observed per-entity maxima (resume observability)", () => {
+		const observed = seedTokenCountersFromTexts([
+			"a [EMAIL_ADDRESS_2] b [EMAIL_ADDRESS_5] c [IP_ADDRESS_3]",
+			"d [EMAIL_ADDRESS_4]",
+		])
+		expect(observed.get("EMAIL_ADDRESS")).toBe(5)
+		expect(observed.get("IP_ADDRESS")).toBe(3)
+		// Non-token bracket text is not seeded.
+		expect(observed.has("TODO")).toBe(false)
+	})
+
+	it("deepStrings reaches tokens nested in tool-call input objects", () => {
+		const entries = [
+			{
+				message: {
+					content: [
+						{
+							type: "toolCall",
+							input: { args: { nested: { command: `write '[PERSON_7]'` } } },
+						},
+					],
+				},
+			},
+		]
+		expect([...deepStrings(entries)].some((s) => s.includes("[PERSON_7]"))).toBe(true)
+	})
+
 	it("start seeds counters from persisted session entries (deep text walk)", async () => {
 		const { start } = startShutdownPair(() => true)
 		const entries = [
