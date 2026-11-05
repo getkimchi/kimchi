@@ -130,10 +130,7 @@ describe("ACP integration — side chat over the wire", () => {
 
 			// The chat stays open in review mode; a snapshot re-fetch carries the
 			// reviewable draft so a freshly attached client can render it.
-			const reviewSnapshot = (await fixture.conn.extMethod(METHODS.open, { sessionId })) as Record<
-				string,
-				unknown
-			>
+			const reviewSnapshot = (await fixture.conn.extMethod(METHODS.open, { sessionId })) as Record<string, unknown>
 			expect(reviewSnapshot).toMatchObject({ mode: "review", draft: "do the thing", closed: false })
 
 			await fixture.conn.extMethod(METHODS.sendToMain, { sessionId, text: draft })
@@ -156,11 +153,7 @@ describe("ACP integration — side chat over the wire", () => {
 			process.env.KIMCHI_ENABLE_RESOURCES = "extensions.side-chat"
 			fixture = await startAcpFixture({
 				artifactName: "side-chat-resume",
-				responses: [
-					{ stream: ["remembered answer"] },
-					{ stream: ["after-resume answer"] },
-					{ stream: ["spare"] },
-				],
+				responses: [{ stream: ["remembered answer"] }, { stream: ["after-resume answer"] }, { stream: ["spare"] }],
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 
