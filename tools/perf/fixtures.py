@@ -108,14 +108,13 @@ def js(obj):
 
 # ---------------------------------------------------------------- clean HOME
 # kimchi's one-time initial survey (src/extensions/surveys/survey.ts) opens a
-# selector after the third coding prompt and takes keyboard focus; a lane that
-# sends more prompts must start from a HOME where it was already seen, like any
-# returning user. Not seeded for the gated lanes: their measured numbers include
-# it and must stay comparable with the release history.
+# selector after the third coding prompt and takes keyboard focus. Every
+# lane starts from a HOME where it was already seen, like any returning
+# user: a popup is a test artifact, not a measured user path.
 INITIAL_SURVEY_ID = "019e87cc-5033-0000-d9bd-5e6501640b6e"
 
 
-def seed_clean_home(home, base_url, survey_seen=False):
+def seed_clean_home(home, base_url):
     """A minimal, migration-complete kimchi HOME against the fake provider."""
     cfg_dir = os.path.join(home, ".config", "kimchi")
     agent = os.path.join(cfg_dir, "harness")
@@ -124,9 +123,8 @@ def seed_clean_home(home, base_url, survey_seen=False):
         g.write("[user]\n\tname = bench\n\temail = bench@example.com\n[init]\n\tdefaultBranch = main\n")
     cfg = {"apiKey": "fake", "llmEndpoint": base_url, "skillPaths": [], "migrationState": "done",
            "onboarding": {"hideSessionModeDialog": True}, "telemetry": {"enabled": True},
-           "telemetry_notice_shown": True}
-    if survey_seen:
-        cfg["surveys"] = {INITIAL_SURVEY_ID: {"seenAt": _iso(BASE_MS)}}
+           "telemetry_notice_shown": True,
+           "surveys": {INITIAL_SURVEY_ID: {"seenAt": _iso(BASE_MS)}}}
     json.dump(cfg, open(os.path.join(cfg_dir, "config.json"), "w"), indent=1)
     # hideThinkingBlock: false = the expanded thinking view, whose renderer is
     # the expensive path in the streaming-stall class (#1645): it rebuilds the
@@ -266,8 +264,10 @@ def _wire_snapshot(repo_i, producer_id, pulls=40, windowed_ids=800, requests=400
         merged = n % 2 == 0
         pr = {"id": str(50000 + repo_i * 100 + n), "number": 100 + n,
               "url": f"https://github.com/bench/repo{repo_i}/pull/{100 + n}",
-              "state": "merged" if merged else "closed",
-              "title": " ".join(f"title{repo_i}-{n}-{w}" for w in range(12))}
+              "state": "merged" if merged else "closed"}
+        # No title/author: releases before v1.13.0 reject snapshot PRs that
+        # carry them, newer releases accept both as optional — omitting keeps
+        # one fixture valid across the whole release history.
         # Optional keys must be absent (not null): the validators check !== undefined.
         if merged:
             pr["mergedAt"] = _iso(BASE_MS + n * 60000)
@@ -378,8 +378,9 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
     (mirrored into legacy journals, as real installs keep both), bookkeeping
     costs notes, frozen snapshot queues under the 'legacy-pr-cost-snapshots'
     work id, and pr-cost-reporting/state.json whose queue entries hold
-    pending snapshots the endpoint keeps rejecting (413), so every pass
-    re-reads and re-serializes them.
+    pending snapshots the endpoint keeps refusing (403: the key verifies
+    but lacks upload permission), so every pass re-reads and re-serializes
+    them.
     """
     producer_id = producer_id or str(uuid.uuid5(NS, "producer"))
     seed_clean_home(home, base_url)

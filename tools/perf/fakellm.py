@@ -9,14 +9,18 @@ Chat behaviour (keyed on the latest user message):
   - otherwise: stream LONG_CHUNKS text chunks then a marker "BENCH_DONE_<n>".
 Every request is counted per route (to spot background polling).
 
-Platform behaviour (default, "stuck"): pr-cost snapshot uploads get HTTP 413 at
-every size and event batches get an empty 200 the client rejects, so the
-reporting queue keeps retrying its pending work every pass instead of draining
-(the idle-cost regime the gate must catch when it regresses).
-
-With State.accept_uploads ("healthy"): uploads are acknowledged the way a
-working server does — snapshots echo their revision, event batches get one
-accepted receipt per event — so the queue drains and idle settles.
+Platform behaviour, keyed on State.upload_failure / State.accept_uploads:
+  - "forbidden" (default): the API key verifies as the account the aged queue
+    was recorded under, but every upload is refused with HTTP 403 — a user
+    whose key lacks the upload permission. The client backs off 4xx for
+    hours, so the queue sits full and idle work is the aged-install steady
+    state (the regime the gate measures).
+  - "verify-empty" (reference only; no lane runs it): the legacy stuck
+    regime — the key check returns an empty account the client rejects, so
+    the worker fails before any upload is attempted.
+  - accept_uploads ("healthy"): uploads acknowledged the way a working
+    server does — snapshots echo their revision, event batches get one
+    accepted receipt per event — so the queue drains and idle settles.
 """
 import json
 import os
@@ -48,6 +52,9 @@ class State:
         self.chat_count = 0
         self.tool_results = []  # bash tool outputs seen in follow-up requests
         self.accept_uploads = False
+        # "forbidden": key verifies, uploads refused with 403 (default)
+        # "verify-empty": legacy regime, key check fails before any upload
+        self.upload_failure = "forbidden"
         self.uploads_accepted = 0
         self.reset_tool_stats()
 
@@ -153,11 +160,13 @@ def make_handler(state: State):
                     return self._chat(body or {})
                 except (BrokenPipeError, ConnectionResetError, ConnectionError):
                     return  # client vanished mid-stream; nothing to answer
-            if "api-keys:verify" in self.path and state.accept_uploads:
-                # Healthy mode: the key belongs to the account the aged queue was
-                # recorded under, so the worker proceeds to upload. Default mode
-                # keeps the empty answer the gated lane has always measured (the
-                # worker never passes this check there).
+            if "api-keys:verify" in self.path and (state.accept_uploads or state.upload_failure == "forbidden"):
+                # The key belongs to the account the aged queue was recorded
+                # under, so the worker proceeds to upload. In healthy mode the
+                # server acknowledges (below); in "forbidden" mode it is
+                # refused with 403 — a valid key without upload permission.
+                # "verify-empty" keeps the legacy behaviour: the empty answer
+                # fails the account check before any upload is attempted.
                 return self._json(200, {"organizationId": fixtures.HEALTHY_ACCOUNT["organizationId"],
                                         "userId": fixtures.HEALTHY_ACCOUNT["userId"]})
             if "/pr-cost-snapshots" in self.path:
@@ -166,18 +175,26 @@ def make_handler(state: State):
                         state.uploads_accepted += 1
                     return self._json(200, {"status": "accepted", "revision": str(body["revision"]),
                                             "receivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
-                # The server-side body limit real deployments enforce; keeps the
-                # reporting queue in its retry regime so per-pass cost is measured.
+                if state.upload_failure == "forbidden":
+                    # No upload permission: a permanent client-side failure —
+                    # the queue stays full and the worker backs off for hours.
+                    return self._json(403, {"error": {"code": "PERMISSION_DENIED"}})
+                # "verify-empty" reference regime: the server-side body limit
+                # real deployments enforce; keeps the reporting queue in its
+                # retry regime so per-pass cost is measured.
                 return self._json(413, {"error": {"code": "PR_COST_LIMIT", "scope": "snapshot",
                                                  "limit": "bytes", "maximum": 10485760}})
-            if "pr-cost-events:batchIngest" in self.path and state.accept_uploads and isinstance(body, dict):
-                events = body.get("events") if isinstance(body.get("events"), list) else []
-                with state.lock:
-                    state.uploads_accepted += 1
-                return self._json(200, {"batchId": body.get("id"),
-                                        "receiveTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                        "receipts": [{"id": e.get("id"), "status": "accepted", "revision": e.get("revision")}
-                                                     for e in events if isinstance(e, dict)]})
+            if "pr-cost-events:batchIngest" in self.path:
+                if state.upload_failure == "forbidden" and not state.accept_uploads:
+                    return self._json(403, {"error": {"code": "PERMISSION_DENIED"}})
+                if state.accept_uploads and isinstance(body, dict):
+                    events = body.get("events") if isinstance(body.get("events"), list) else []
+                    with state.lock:
+                        state.uploads_accepted += 1
+                    return self._json(200, {"batchId": body.get("id"),
+                                            "receiveTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                            "receipts": [{"id": e.get("id"), "status": "accepted", "revision": e.get("revision")}
+                                                         for e in events if isinstance(e, dict)]})
             return self._json(200, {})
 
         def _sse(self, obj):

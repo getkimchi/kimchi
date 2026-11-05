@@ -237,12 +237,22 @@ def run_selfcheck():
 
 
 ADVISORY = {  # reported, never gated: wall-clock is contention noise
-    "session": {"ready_s": lambda r: r.get("ready_s")},
-    "resume": {"ready_s": lambda r: r.get("ready_s"), "turn_s": lambda r: r.get("turn_s")},
+    "session": {
+        "ready_s": lambda r: r.get("ready_s"),
+        "startup_instr": lambda r: ((r.get("startup") or {}).get("instr")
+                                    or (r.get("startup") or {}).get("cycles")
+                                    or (r.get("startup") or {}).get("cpu_ms")),
+        "startup_rss_mb": lambda r: ((r.get("startup") or {}).get("rss") or 0) / 1e6,
+        "home_mb": lambda r: ((r.get("home_bytes") or {}).get("total") or 0) / 1e6,
+    },
+    "resume": {"ready_s": lambda r: r.get("ready_s"), "turn_s": lambda r: r.get("turn_s"),
+               "home_mb": lambda r: ((r.get("home_bytes") or {}).get("total") or 0) / 1e6},
     "idle": {"ready_s": lambda r: r.get("ready_s"),
               "keylat_p50_ms": lambda r: r.get("keylat_p50_ms"),
               "keylat_max_ms": lambda r: r.get("keylat_max_ms"),
-              "keylat_over_100ms": lambda r: r.get("keylat_over_100ms")},
+              "keylat_over_100ms": lambda r: r.get("keylat_over_100ms"),
+              "home_mb": lambda r: ((r.get("home_bytes") or {}).get("total") or 0) / 1e6,
+              "state_json_mb": lambda r: (r.get("state_json_bytes") or 0) / 1e6},
 }
 
 

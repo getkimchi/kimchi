@@ -169,6 +169,15 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
             res["screen_tail"] = tp.plain()[-1200:]
             return res
         res["ready_s"] = time.time() - t_spawn
+        # Startup work and memory at the moment the prompt appears: catches
+        # bundled-skill/extension loading growth that ready_s (wall-clock)
+        # only shows as noise. Cumulative snapshot, recorded before any
+        # counted window — shifts nothing measured later.
+        sampler.sample()
+        su = sampler.totals()
+        su_c = pick_counters(su)
+        res["startup"] = {"instr": su_c["instr"], "cycles": su_c["cycles"], "cpu_ms": su_c["cpu_ms"],
+                          "rss": rss_now(su), "mem_current": (su.get("cg") or {}).get("mem_current")}
         time.sleep(3)
         for kind, prompt in (("text", "hello there TOK{tok}"), ("tools", "TOOLS run them TOK{tok}")):
             tok = f"{random.randrange(10**8):08d}"
@@ -268,6 +277,7 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
         res["counter"] = counter_tier(tot)
     finally:
         cleanup(tp, pid, sampler, cg)
+    res["home_bytes"] = home_footprint(env["HOME"])
     return res
 
 
@@ -342,12 +352,14 @@ def run_resume(binary, env, cwd, srv_state, settle_s=5):
                             "(session fixture drift?)")
     finally:
         cleanup(tp, pid, sampler, cg)
+    res["home_bytes"] = home_footprint(env["HOME"])
     return res
 
 
 # Advisory idle lanes (never gated). The gated "idle" lane measures an aged
-# install whose upload queue never drains (the fake server refuses every
-# upload) -- a specific, likely uncommon state. These two give the common case:
+# install whose upload queue cannot drain: the key verifies, but every upload
+# is refused with 403 (no upload permission) — a permanent failure the client
+# backs off from for hours. These two give the other states:
 #   idle_healthy: same aged install, uploads acknowledged, the queue drains
 #   idle_fresh:   clean install, nothing queued
 IDLE_VARIANTS = ("idle_healthy", "idle_fresh")
@@ -392,6 +404,29 @@ def mirror_bytes(tmpdir):
         if os.path.basename(root).startswith("kimchi-tool-outputs-"):
             total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
     return total
+
+
+def home_footprint(home):
+    """Disk footprint of the kimchi config tree at lane end: total bytes,
+    plus bytes per top-level entry under harness/ (the pr-cost-reporting
+    dir's growth is where state.json bloat shows up — the number the bulk-
+    out-of-state.json work will be judged on)."""
+    cfg = os.path.join(home, ".config", "kimchi")
+    agent = os.path.join(cfg, "harness")
+    out = {"total": 0}
+    for root, _dirs, files in os.walk(cfg):
+        for f in files:
+            try:
+                n = os.path.getsize(os.path.join(root, f))
+            except OSError:
+                continue
+            out["total"] += n
+            if root == agent:
+                out["(harness)"] = out.get("(harness)", 0) + n
+            elif root.startswith(agent + os.sep):
+                top = os.path.relpath(root, agent).split(os.sep)[0]
+                out[top] = out.get(top, 0) + n
+    return out
 
 
 def run_bigtools(binary, env, cwd, srv_state, turns=BIGTOOLS_TURNS, reads=BIGTOOLS_READS):
@@ -454,8 +489,18 @@ def run_bigtools(binary, env, cwd, srv_state, turns=BIGTOOLS_TURNS, reads=BIGTOO
             res["error"] = f"model saw {res.get('tool_results_seen', 0)} tool results, expected {expected}"
             return res
         res["ok"] = True
+        # Post-idle tail: #1405's adaptive GC fires after KIMCHI_IDLE_GC_DELAY_MS
+        # (default 120 s) of idle; sample again past it. Pre-#1405 builds have
+        # no idle GC — the retained-memory contrast between the two variants
+        # (with and without the tool-output store) is the point of this wait.
+        time.sleep(130)
+        sampler.sample()
+        tail = sampler.totals()
+        res["rss_after_idle"] = rss_now(tail)
+        res["instr_idle_tail"] = (flatten_total(tail)["instr"] or 0) - (res["total"]["instr"] or 0)
     finally:
         cleanup(tp, pid, sampler, cg)
+    res["home_bytes"] = home_footprint(env["HOME"])
     return res
 
 
@@ -515,9 +560,9 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
     pass blocking the event loop shows up directly as echo latency.
 
     Two phases, tagged per bucket via `"p"`:
-    1. the aged state as seeded — a stuck queue whose entries keep failing
-       (endpoint 413s them), so a reconcile schedule occupied by real due
-       work is the measured steady state;
+    1. the aged state as seeded — a queue whose uploads are refused with
+       403 (the key verifies but lacks upload permission), so a reconcile
+       schedule occupied by real due work is the measured steady state;
     2. `retire_queue_retries` moves every retry deadline past the window —
        the queue is still full and the endpoint still refuses, but nothing
        is due. A gate that honours the retry schedule shows background work
@@ -576,6 +621,12 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
             res["state_at_retire"] = hashlib.sha256(open(sp, "rb").read()).hexdigest() if os.path.exists(sp) else None
             fixtures.retire_queue_retries(env["HOME"])
             window(2, stuck_s)
+        # Wall-clock length of what the gated sums actually cover: the
+        # extractors skip each phase's first bucket (startup / the
+        # change-absorbing pass), so per-minute normalisation must use the
+        # same span — bucket count minus one, times the bucket length.
+        res["window_s"] = {str(p): max(0, len([b for b in res["buckets"] if b.get("p", 1) == p]) - 1) * bucket_s
+                            for p in (1, 2)}
         res["uploads_accepted"] = srv_state.uploads_accepted  # healthy lane: proof the queue drained
         res["peak_mem"] = peak_mem(prev)
         res["pids_peak"] = (prev.get("cg") or {}).get("pids_peak", 0)
@@ -590,6 +641,9 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
         res["ok"] = True
     finally:
         cleanup(tp, pid, sampler, cg)
+    res["home_bytes"] = home_footprint(env["HOME"])
+    sj = os.path.join(env["HOME"], ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
+    res["state_json_bytes"] = os.path.getsize(sj) if os.path.exists(sj) else None
     return res
 
 
@@ -659,8 +713,7 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
         fixtures.aged_home(home, base_url, repos)
         wd = make_workdir(os.path.join(root, "wdroot"))
     else:
-        # bigtools sends 10 prompts: the one-time survey after the third would take focus
-        fixtures.seed_clean_home(home, base_url, survey_seen=scenario in BIGTOOLS_VARIANTS)
+        fixtures.seed_clean_home(home, base_url)
         wd = make_workdir(os.path.join(root, "wdroot"))
         if scenario == "resume":
             sdir = session_dir(home, wd)
@@ -734,13 +787,15 @@ def selfcheck(binary, session_mb=2, idle_s=20):
             p = subprocess.run(["bun", "run", validator, pc], capture_output=True, text=True)
             if p.returncode != 0:
                 failures.append(f"product validators rejected the fixture: {p.stdout} {p.stderr}")
-        # 4. one short rep per scenario
+        # 4. one short rep per scenario (gated three + the healthy idle lane:
+        #    its queue must drain within the window, proving the accept regime)
         srv, state, base = fakellm.start()
         try:
-            for sc in ("session", "resume", "idle"):
+            for sc in ("session", "resume", "idle", "idle_healthy"):
                 rep_root = os.path.join(root, f"smoke-{sc}")
                 os.makedirs(rep_root)
                 state_before = None
+                routes_before = None
                 env, cwd = prepare(rep_root, sc, base, session_mb, binary=binary)
                 if not check_version(binary, env, cwd):
                     failures.append(f"{sc}: binary reports no version")
@@ -752,14 +807,28 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                 else:
                     sp = os.path.join(rep_root, "home", ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
                     state_before = open(sp, "rb").read() if os.path.exists(sp) else None
-                    r = run_idle(binary, env, cwd, state, idle_s)
+                    routes_before, _ = state.snapshot()
+                    # healthy idle: uploads acknowledged; a short window is enough
+                    # to prove the queue drains. Gated idle keeps its phases.
+                    state.accept_uploads = sc == "idle_healthy"
+                    r = (run_idle(binary, env, cwd, state, 20, stuck_s=0) if sc == "idle_healthy"
+                         else run_idle(binary, env, cwd, state, idle_s))
+                    state.accept_uploads = False
                 if not r.get("ok", False):
                     failures.append(f"{sc}: {r.get('error')}\n{r.get('screen_tail', '')[-400:]}")
+                # new advisory fields must be present in every green record
+                if r.get("ok", False):
+                    if "home_bytes" not in r:
+                        failures.append(f"{sc}: record lacks home_bytes")
+                    if sc == "session" and "startup" not in r:
+                        failures.append("session: record lacks startup")
+                    if sc in ("idle", "idle_healthy") and "window_s" not in r:
+                        failures.append(f"{sc}: record lacks window_s")
                 # engagement: the aged reporting queue must actually run — its
-                # state file is rewritten (413 backoff) when the pass engages.
-                # Compare against the state captured BEFORE the retire step:
-                # retirement itself rewrites state.json, so post-run content can
-                # no longer prove engagement.
+                # state file is rewritten (upload-refusal backoff) when the pass
+                # engages. Compare against the state captured BEFORE the retire
+                # step: retirement itself rewrites state.json, so post-run
+                # content can no longer prove engagement.
                 if sc == "idle" and state_before is not None:
                     sp = os.path.join(rep_root, "home", ".config", "kimchi", "harness", "pr-cost-reporting", "state.json")
                     after = open(sp, "rb").read() if os.path.exists(sp) else None
@@ -767,6 +836,19 @@ def selfcheck(binary, session_mb=2, idle_s=20):
                     unchanged = (engaged == hashlib.sha256(state_before).hexdigest()) if engaged is not None else (after == state_before)
                     if unchanged:
                         failures.append("idle: reporting queue never engaged before retire (state.json unchanged; fixture drift?)")
+                    # forbidden regime: the worker passes the account check, so a
+                    # snapshot upload must have reached the server (and been refused)
+                    routes_after, _ = state.snapshot()
+                    posted = sum(n for k, n in routes_after.items()
+                                 if k.startswith("POST ") and "/pr-cost-snapshots" in k)
+                    posted_before = sum(n for k, n in (routes_before or {}).items()
+                                         if k.startswith("POST ") and "/pr-cost-snapshots" in k)
+                    if posted - posted_before < 1:
+                        failures.append("idle: no snapshot upload reached the server "
+                                        "(worker never passed the account check?)")
+                if sc == "idle_healthy":
+                    if r.get("uploads_accepted", 0) < 1:
+                        failures.append("idle_healthy: no upload accepted (queue did not drain?)")
         finally:
             srv.shutdown()
             srv.server_close()
@@ -813,8 +895,11 @@ def main():
         raise SystemExit("--scenario and --out are required (or use --selfcheck)")
 
     srv, state, base = fakellm.start()
-    # healthy idle: the platform acknowledges uploads, so the aged queue drains
+    # Healthy idle: the platform acknowledges uploads, so the aged queue drains.
+    # Every lane runs the default "forbidden" upload regime (key verifies,
+    # uploads get 403); session/resume never reach the upload routes either way.
     state.accept_uploads = args.scenario == "idle_healthy"
+    state.upload_failure = "forbidden"
     git_version = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout.strip()
     root = os.path.realpath(args.workroot or tempfile.mkdtemp(prefix="kperf-"))
     os.makedirs(root, exist_ok=True)
