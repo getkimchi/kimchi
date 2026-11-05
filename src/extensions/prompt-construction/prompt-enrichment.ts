@@ -985,11 +985,15 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 		})
 
 		// A shut-down session's capture becomes evictable in the bounded store.
-		// A resource "reload" keeps the same session alive and must not mark it;
-		// quit/new/resume/fork all end it in this process.
+		// Whitelist the ending reasons (quit/new/resume/fork): a resource "reload"
+		// keeps the same session alive, and any unknown future reason must default
+		// to keeping the capture live — the worst case of a missed end is bounded
+		// memory, while wrongly marking a live session evictable reintroduces the
+		// wrong-prompt export bug this module fixes.
 		pi.on("session_shutdown", async (event, ctx) => {
-			if (event.reason === "reload") return
-			markSessionSystemPromptEnded(ctx.sessionManager.getSessionId())
+			if (event.reason === "quit" || event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+				markSessionSystemPromptEnded(ctx.sessionManager.getSessionId())
+			}
 		})
 	}
 }

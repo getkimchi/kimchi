@@ -14,8 +14,10 @@ test.use(TUI_TEST_CONFIG)
  * per-run forceSystemPrompt projection that is never recorded in the
  * transcript — so both export surfaces (JSONL header, HTML payload) used to
  * snapshot pi's base prompt ("You are an expert coding assistant operating
- * inside pi, a coding agent harness…"). The fix captures the prompt
- * per-session at before_agent_start and injects it at export time; this test
+ * inside pi, a coding agent harness…"). The fix captures the finalized
+ * prompt per-session at agent_start (via ctx.getSystemPrompt(), after all
+ * before_agent_start handlers — including hook-adapter appends — have
+ * merged into the run options) and injects it at export time; this test
  * fails if a future pi upgrade changes prompt persistence again.
  */
 test("exported sessions carry Kimchi's system prompt, not pi's base prompt", async ({ terminal }) => {

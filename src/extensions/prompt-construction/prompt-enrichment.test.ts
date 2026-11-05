@@ -875,6 +875,46 @@ describe("export prompt capture", () => {
 		}
 		expect(getSessionSystemPrompt("reload-session")).toBe("RELOADED SESSION PROMPT")
 	})
+
+	it("session_shutdown with an unknown future reason keeps the capture live", async () => {
+		// The ending reasons are whitelisted: an unrecognized reason must default
+		// to keeping the capture live (worst case: bounded memory), never make a
+		// potentially live session's capture evictable (worst case: the
+		// wrong-prompt export bug this module fixes).
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		const sessionShutdown = handlers.get("session_shutdown")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+		if (!sessionShutdown) throw new Error("session_shutdown handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "UNKNOWN REASON SESSION PROMPT",
+				sessionManager: { getSessionId: () => "unknown-reason-session" },
+			}),
+		)
+		await sessionShutdown(
+			{ reason: "some-future-reason" },
+			createContext({
+				hasUI: false,
+				sessionManager: { getSessionId: () => "unknown-reason-session" },
+			}),
+		)
+
+		for (let i = 0; i < 64; i++) {
+			await agentStart(
+				{},
+				createContext({
+					hasUI: false,
+					getSystemPrompt: () => `filler ${i}`,
+					sessionManager: { getSessionId: () => `filler-${i}` },
+				}),
+			)
+		}
+		expect(getSessionSystemPrompt("unknown-reason-session")).toBe("UNKNOWN REASON SESSION PROMPT")
+	})
 })
 
 describe("model role startup warnings", () => {
