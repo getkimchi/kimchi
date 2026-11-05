@@ -13,7 +13,12 @@ import type { SessionPermissionFlagController } from "./types.js"
  * - Ferment yolo mode
  */
 
-const bySessionId = new Map<string, SessionPermissionFlagController>()
+// MULTI-OWNER slots: concurrent same-id attaches (load+resume coalesce
+// separately) can both register before either installs its record — a
+// plain Map.set could displace a LIVE winner's entry, after which the
+// loser's legitimately identity-checked teardown would evict it.
+// Registrations push; identity-checked removals pop only their own object.
+const bySessionId = new Map<string, SessionPermissionFlagController[]>()
 
 /**
  * Register a mode controller for a specific session.
@@ -22,31 +27,47 @@ export function registerSessionPermissionFlagController(
 	sessionId: string,
 	controller: SessionPermissionFlagController,
 ): void {
-	bySessionId.set(sessionId, controller)
+	const list = bySessionId.get(sessionId) ?? []
+	list.push(controller)
+	bySessionId.set(sessionId, list)
 }
 
 /**
  * Unregister a session's mode controller. Called by ACP when closing a
  * session. Id keys recycle across concurrent attaches (load+resume of one
  * id coalesce separately), respawns, and failed loads, so callers that
- * registered a SPECIFIC controller pass it back for an identity check — a
- * by-key delete could otherwise evict a LIVE session's controller (e.g.
- * loading a corrupted duplicate of a running session's file). Returns
- * whether the entry was actually evicted, so env cleanup stays paired.
+ * registered a SPECIFIC controller pass it back for an identity check —
+ * removing by key alone could evict a LIVE session's controller (e.g.
+ * loading a corrupted duplicate of a running session's file). Without
+ * `expected` the whole slot is dropped. Returns whether the requested
+ * removal left the slot EMPTY, so env cleanup stays paired.
  */
 export function unregisterSessionPermissionFlagController(
 	sessionId: string,
 	expected?: SessionPermissionFlagController,
 ): boolean {
-	if (expected !== undefined && bySessionId.get(sessionId) !== expected) return false
-	return bySessionId.delete(sessionId)
+	const list = bySessionId.get(sessionId)
+	if (!list) return true
+	if (expected === undefined) {
+		bySessionId.delete(sessionId)
+		return true
+	}
+	const idx = list.lastIndexOf(expected)
+	if (idx < 0) return list.length === 0
+	list.splice(idx, 1)
+	if (list.length === 0) {
+		bySessionId.delete(sessionId)
+		return true
+	}
+	return false
 }
 
 /**
- * Get a session's mode controller if one exists.
+ * Get a session's mode controller if one exists (the latest registration).
  */
 export function getSessionPermissionFlagController(sessionId: string): SessionPermissionFlagController | undefined {
-	return bySessionId.get(sessionId)
+	const list = bySessionId.get(sessionId)
+	return list?.[list.length - 1]
 }
 
 /**

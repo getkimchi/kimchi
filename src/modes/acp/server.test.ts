@@ -678,6 +678,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		sessionId = res.sessionId
 	})
 
+	afterEach(async () => {
+		// Every beforeEach attaches a FRESH agent under the same id; the
+		// multi-owner registry stacks otherwise accumulate one entry per
+		// test. Close after every test (no-ops when the test closed already).
+		try {
+			await agent.unstable_closeSession({ sessionId })
+		} catch {
+			// already closed
+		}
+		try {
+			await agent.shutdown()
+		} catch {
+			// already down
+		}
+	})
+
 	it("publishes todos written during extension startup before the plan subscription exists", async () => {
 		const startup = new FakeAgentSession("startup-todos")
 		const updates: SessionNotification[] = []
@@ -3131,12 +3147,16 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	})
 
 	it("closes a live session and unregisters its ACP permission prompter", async () => {
-		expect(getAcpPrompter(sessionId)).toBeDefined()
+		const ownPrompter = getAcpPrompter(sessionId)
+		expect(ownPrompter).toBeDefined()
 
 		await agent.unstable_closeSession({ sessionId })
 
 		expect(fake.disposed).toBe(true)
-		expect(getAcpPrompter(sessionId)).toBeUndefined()
+		// The OWN prompter is unwound from the multi-owner slot; what's
+		// visible afterwards may be ANOTHER same-id attach's object (only
+		// test-suite id reuse produces that here) — but never ours.
+		expect(getAcpPrompter(sessionId)).not.toBe(ownPrompter)
 		await expect(
 			agent.prompt({
 				sessionId,
@@ -11277,6 +11297,46 @@ describe("KimchiAcpAgent loadSession", () => {
 		await liveAgent.closeSession({ sessionId: "session-alive" })
 		expect(getAcpPrompter("session-alive")).toBeUndefined()
 		expect(getSessionPermissionFlagController("session-alive")).toBeUndefined()
+	})
+
+	it("a late-failing concurrent attach evicts only its own registrations (winner stays intact)", async () => {
+		// failure-006: load + resume of the same id coalesce separately and
+		// race; here the loser registers AFTER the winner installed its
+		// record. Registry slots are multi-owner stacks: the loser's
+		// identity-checked unwind evicts exactly its own objects, and the
+		// winner's triad (record, prompter, mode controller) stays intact.
+		const conn = makeConn()
+		const winner = new FakeAgentSession("session-raced")
+		const loser = new FakeAgentSession("session-raced")
+		loser.bindExtensionsImpl = async () => {
+			throw new Error("bind boom")
+		}
+		let gateLoser: (s: FakeAgentSession) => void = () => {}
+		const loserGate = new Promise<FakeAgentSession>((resolve) => {
+			gateLoser = resolve
+		})
+		let loaderCalls = 0
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused-x")),
+			sessionLoader: async () => {
+				loaderCalls += 1
+				return asSession(loaderCalls === 1 ? winner : await loserGate)
+			},
+		})
+		const winnerPromise = agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		const loserPromise = agent.resumeSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		await winnerPromise
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		gateLoser(loser)
+		await expect(loserPromise).rejects.toThrow(/bind boom/)
+		// Loser unwound exactly its own registrations; the winner lives on.
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-raced")).toBeDefined()
+		// The winner's record is still the registered, re-loadable session.
+		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject({}
+		)
 	})
 
 	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {
