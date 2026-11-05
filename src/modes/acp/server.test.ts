@@ -386,14 +386,17 @@ class FakeAgentSession {
 	// on it. The real AgentSession exposes this via its extensionRunner
 	// getter; the fake keeps it on the session root for simpler test wiring.
 	setUIContextCalls: unknown[] = []
+	// Ordered lifecycle tape (event emits + disposal) so tests can assert
+	// that session_shutdown precedes dispose on every teardown path — the
+	// vault lifecycle evicts on shutdown, so losing the emit-or-order
+	// regresses vault eviction for orphan/early-fail sessions.
+	lifecycleEvents: string[] = []
 	extensionRunner = {
 		setUIContext: (ui: unknown) => {
 			this.setUIContextCalls.push(ui)
 		},
-		emit: async (_event: unknown) => {
-			// Real runner exposes emit for session lifecycle events; the fake
-			// just resolves so disposeSessionRecord's session_shutdown hook
-			// doesn't throw.
+		emit: async (event: unknown) => {
+			this.lifecycleEvents.push((event as { type?: string })?.type ?? "unknown")
 		},
 	}
 
@@ -489,6 +492,7 @@ class FakeAgentSession {
 
 	dispose(): void {
 		this.disposed = true
+		this.lifecycleEvents.push("disposed")
 		this.listeners.clear()
 	}
 }
@@ -2998,6 +3002,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/subscribe boom/)
 		expect(leaky.disposed).toBe(true)
+		// Extensions bind before subscribe fails, so the failure path must
+		// still emit session_shutdown before dispose (vault eviction).
+		expect(leaky.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
 	})
 
 	it("unregisters the ACP permission prompter if bindExtensions throws during newSession", async () => {
@@ -11231,6 +11238,9 @@ describe("KimchiAcpAgent loadSession", () => {
 			code: -32602,
 		})
 		expect(fake.disposed).toBe(true)
+		// Orphan teardown must emit session_shutdown BEFORE dispose so
+		// extension state keyed on it (the token vault) is evicted.
+		expect(fake.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
 	})
 
 	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {

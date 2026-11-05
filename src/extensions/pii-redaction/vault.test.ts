@@ -104,7 +104,18 @@ describe("substituteTokens", () => {
 })
 
 describe("session lifecycle", () => {
-	const ctxFor = (sessionId: string) => createContext({ sessionManager: { getSessionId: () => sessionId } })
+	// One context (and thus one sessionManager object identity) per session
+	// id: the vault lifecycle deletes by exact-OWNER identity, so each test
+	// session must keep a stable manager across its own start/shutdown.
+	const contexts = new Map<string, ReturnType<typeof createContext>>()
+	const ctxFor = (sessionId: string) => {
+		const cached = contexts.get(sessionId)
+		if (cached) return cached
+		const created = createContext({ sessionManager: { getSessionId: () => sessionId } })
+		contexts.set(sessionId, created)
+		return created
+	}
+	beforeEach(() => contexts.clear())
 
 	const startShutdownPair = (enabled: () => boolean) => {
 		const { api, getHandler } = createExtensionApi()
@@ -149,6 +160,22 @@ describe("session lifecycle", () => {
 		expect(vaultForSession("s2")).toBe(vault2)
 		// The paint pointer was s2's; s1's shutdown must not clear it.
 		expect(vaultForPaint()).toBe(vault2)
+	})
+
+	it("shutdown deletes only the mapping its own session owns (respawn race-safe)", async () => {
+		// Respawn of the same id lands BEFORE the old session's shutdown is
+		// emitted (close aborts first): the respawn retains the vault and
+		// ownership transfers to it — the OLD session's shutdown must not
+		// evict the live mapping (a by-key delete would orphan the respawn).
+		const { start, shutdown } = startShutdownPair(() => true)
+		const oldCtx = ctxFor("s1")
+		await start({}, oldCtx)
+		await start({}, createContext({ sessionManager: { getSessionId: () => "s1" } }))
+		const vault = vaultForSession("s1")
+		expect(vault).toBeDefined()
+		await shutdown({}, oldCtx)
+		expect(vaultForSession("s1")).toBe(vault)
+		expect(vaultForPaint()).toBe(vault)
 	})
 
 	it("shutdown clears the paint pointer only when it owns it", async () => {
@@ -205,6 +232,22 @@ describe("session lifecycle", () => {
 		expect(observed.get("IP_ADDRESS")).toBe(3)
 		// Non-token bracket text is not seeded.
 		expect(observed.has("TODO")).toBe(false)
+	})
+
+	it("ignores crafted seed suffixes beyond the cap — no token collision, never a wrong substitution", () => {
+		// Security: 2**53+1 rounds back to 2**53 in IEEE-754, so WITHOUT the
+		// cap a crafted persisted token like the one below seeds the counter to
+		// 2**53-1 and the next TWO allocations would both render
+		// [EMAIL_ADDRESS_9007199254740992] — the second overwriting the first
+		// vault mapping, substituting one person's original over another's.
+		const observed = seedTokenCountersFromTexts(["[EMAIL_ADDRESS_9007199254740991]"])
+		expect(observed.size).toBe(0)
+		const vault = createTokenVault()
+		const first = tokenFor(vault, "EMAIL_ADDRESS", "one@example.com")
+		const second = tokenFor(vault, "EMAIL_ADDRESS", "two@example.com")
+		expect(first).not.toBe(second)
+		expect(substituteTokens(vault, first)).toBe("one@example.com")
+		expect(substituteTokens(vault, second)).toBe("two@example.com")
 	})
 
 	it("deepStrings reaches tokens nested in tool-call input objects", () => {

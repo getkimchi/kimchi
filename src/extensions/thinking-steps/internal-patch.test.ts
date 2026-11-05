@@ -14,13 +14,13 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent, initTheme } from "@earendil-works/pi-coding-agent"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { testTheme } from "../__mocks__/theme.js"
 import { retainThinkingStepsPatch } from "./internal-patch.js"
 import { resetThinkingStepsViewState } from "./state.js"
 
-const theme = {
-	fg: (_color: string, text: string) => text,
-	bold: (text: string) => text,
-}
+// Real kimchi theme styling wraps runs in SGR codes; strip them for text asserts.
+const ANSI_RE = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, "g")
+const stripAnsi = (s: string) => s.replace(ANSI_RE, "")
 
 function makeMessage(content: unknown): AssistantMessage {
 	return { role: "assistant", timestamp: 1000, content } as AssistantMessage
@@ -38,14 +38,14 @@ function renderJoined(component: any, message: AssistantMessage, isStreaming?: b
 	component.updateContent(message, isStreaming)
 	const children = (component as any).contentContainer.children.filter((c: any) => c?.options?.transform)
 	expect(children.length).toBeGreaterThan(0)
-	return children.map((child: any) => child.render(120).join("\n")).join("\n")
+	return stripAnsi(children.map((child: any) => child.render(120).join("\n")).join("\n"))
 }
 
 let releasePatch: () => Promise<void>
 
 beforeAll(async () => {
 	initTheme("default")
-	releasePatch = await retainThinkingStepsPatch(theme)
+	releasePatch = await retainThinkingStepsPatch(testTheme)
 })
 
 afterAll(async () => {

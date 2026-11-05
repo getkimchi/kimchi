@@ -103,6 +103,13 @@ const TOKEN_RE = /\[([A-Z][A-Z0-9_]{0,40}_\d+)\]/g
  * (underscore split from the RIGHT).
  */
 const SEED_RE = /\[([A-Z][A-Z0-9_]{0,40})_(\d+)\]/g
+// Cap accepted seed suffixes: counters are plain JS numbers, and at
+// 2**53 the next increment rounds back to the same value — two distinct
+// entities would then collide on one token (the second overwriting the
+// first vault mapping) and substitution would render the wrong original.
+// Over-seeding is harmless, so a low cap only excludes crafted persisted
+// text like `[EMAIL_ADDRESS_9007199254740991]`.
+const SEED_SUFFIX_CAP = 1_000_000
 
 /**
  * Raise the process-wide counters above every token suffix observed in
@@ -117,19 +124,43 @@ const SEED_RE = /\[([A-Z][A-Z0-9_]{0,40})_(\d+)\]/g
  * seeding is the resume-safety backbone, and it should be visible when it
  * ran and what it found.
  */
+function seedOneText(text: string, observed: Map<string, number>): void {
+	SEED_RE.lastIndex = 0
+	let match = SEED_RE.exec(text)
+	while (match !== null) {
+		const entity = match[1]
+		const suffix = Number.parseInt(match[2], 10)
+		if (entity !== undefined && Number.isSafeInteger(suffix) && suffix > 0 && suffix <= SEED_SUFFIX_CAP) {
+			if ((observed.get(entity) ?? 0) < suffix) observed.set(entity, suffix)
+			if ((tokenCounters.get(entity) ?? 0) < suffix) tokenCounters.set(entity, suffix)
+		}
+		match = SEED_RE.exec(text)
+	}
+}
+
 export function seedTokenCountersFromTexts(texts: Iterable<string>): Map<string, number> {
 	const observed = new Map<string, number>()
+	for (const text of texts) seedOneText(text, observed)
+	return observed
+}
+
+/**
+ * Chunked async seed: the regex sweep over a large persisted transcript is
+ * the one potentially long synchronous block per session start — in a
+ * multi-session ACP process it would stall every other session's stream.
+ * Yields to the event loop periodically. Safe to await mid-sweep: counters
+ * only ever RISE, so concurrent allocations stay unique either way.
+ */
+const SEED_CHUNK_STRINGS = 2000
+
+async function seedTokenCountersChunked(texts: Iterable<string>): Promise<Map<string, number>> {
+	const observed = new Map<string, number>()
+	let sinceYield = 0
 	for (const text of texts) {
-		SEED_RE.lastIndex = 0
-		let match = SEED_RE.exec(text)
-		while (match !== null) {
-			const entity = match[1]
-			const suffix = Number.parseInt(match[2], 10)
-			if (entity !== undefined && Number.isSafeInteger(suffix)) {
-				if ((observed.get(entity) ?? 0) < suffix) observed.set(entity, suffix)
-				if ((tokenCounters.get(entity) ?? 0) < suffix) tokenCounters.set(entity, suffix)
-			}
-			match = SEED_RE.exec(text)
+		seedOneText(text, observed)
+		if (++sinceYield >= SEED_CHUNK_STRINGS) {
+			sinceYield = 0
+			await new Promise((resolve) => setImmediate(resolve))
 		}
 	}
 	return observed
@@ -177,8 +208,17 @@ export function substituteTokens(vault: TokenVault, text: string): string {
 // down scoped to its owner, per the shared-state rules).
 // ---------------------------------------------------------------------------
 
-/** Live vaults, keyed by session id. */
-const vaultsBySession = new Map<string, TokenVault>()
+/**
+ * Live vault entries, keyed by session id. `owner` is the sessionManager
+ * object of the session that currently owns the mapping: id keys recycle
+ * across respawns while an old session's shutdown emission is still
+ * awaited (close aborts first), so by-key deletion alone would evict the
+ * RESPAWN's mapping and leave a live session vault-less for the process
+ * lifetime — deletion requires exact-owner identity, per the shared-state
+ * rules. Retaining an existing vault across a respawn transfers ownership
+ * to the new session, which now retires it.
+ */
+const vaultEntries = new Map<string, { vault: TokenVault; owner: object }>()
 
 /**
  * The vault the TUI markdown transformer should substitute against. The
@@ -191,7 +231,7 @@ let currentVault: TokenVault | undefined
 /** The vault for a session, or undefined when none is active (not token mode / session unknown). */
 export function vaultForSession(sessionId: string | undefined): TokenVault | undefined {
 	if (sessionId === undefined || sessionId.length === 0) return undefined
-	return vaultsBySession.get(sessionId)
+	return vaultEntries.get(sessionId)?.vault
 }
 
 /** The TUI paint-time vault (singular — TUI paints one session at a time). */
@@ -211,39 +251,66 @@ export function vaultForPaint(): TokenVault | undefined {
 export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean): void {
 	pi.on("session_start", async (_event: unknown, ctx: unknown) => {
 		if (!enabled()) return
-		const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } })?.sessionManager?.getSessionId?.()
+		const sessionManager = (ctx as { sessionManager?: unknown })?.sessionManager
+		const sessionId = (sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 		if (!sessionId) return
-		// TUI switches sessions with shutdown/start pairs; ACP keys by id.
-		// A vault that outlived its creator is retained — see doc above.
-		if (!vaultsBySession.has(sessionId)) {
-			// Seed past every token already persisted for this session BEFORE
-			// any allocation, so a resumed session can never re-issue a stored
-			// token for a different value (resume degradation must render old
-			// tokens verbatim, never substitute a wrong original).
-			const sessionManager = (ctx as { sessionManager?: { getEntries?: () => unknown[] } })?.sessionManager
-			const entries = typeof sessionManager?.getEntries === "function" ? sessionManager.getEntries() : []
-			seedTokenCountersFromTexts(deepStrings(entries))
-			vaultsBySession.set(sessionId, createTokenVault())
+		// TUI switches sessions with shutdown/start pairs; ACP keys by id. A
+		// vault that outlived its creator is retained across respawns —
+		// tokens already stored in the session file must keep resolving —
+		// and ownership transfers to the new session, which now retires it.
+		const existing = vaultEntries.get(sessionId)
+		if (existing) {
+			existing.owner = sessionManager as object
+			currentVault = existing.vault
+			return
 		}
-		currentVault = vaultsBySession.get(sessionId)
+		// Seed past every token already persisted for this session BEFORE
+		// any allocation (the vault is installed only after the sweep), so a
+		// resumed session can never re-issue a stored token for a different
+		// value: resume degradation must render old tokens verbatim, never
+		// substitute a wrong original.
+		const getEntries = (sessionManager as { getEntries?: () => unknown[] } | undefined)?.getEntries
+		const entries = typeof getEntries === "function" ? getEntries.call(sessionManager) : []
+		const observed = await seedTokenCountersChunked(deepStrings(entries))
+		if (observed.size > 0) {
+			// Suffix maxima only — never the originals, which must not reach logs.
+			const summary = [...observed].map(([entity, max]) => `${entity}<=${max}`).join(", ")
+			console.error(`PII redaction token seed: counters raised from persisted session (${summary})`)
+		}
+		// Recheck across the chunked awaits: a concurrent start of the same
+		// id may have installed (or retained) a mapping while we yielded.
+		const raced = vaultEntries.get(sessionId)
+		if (raced) {
+			raced.owner = sessionManager as object
+			currentVault = raced.vault
+			return
+		}
+		const vault = createTokenVault()
+		vaultEntries.set(sessionId, { vault, owner: sessionManager as object })
+		currentVault = vault
 	})
 
 	pi.on("session_shutdown", async (_event: unknown, ctx: unknown) => {
-		const sessionId = (ctx as { sessionManager?: { getSessionId?: () => string } })?.sessionManager?.getSessionId?.()
+		const sessionManager = (ctx as { sessionManager?: unknown })?.sessionManager
+		const sessionId = (sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 		if (!sessionId) return
-		// The vault IS this key's value, so by-key removal is the identity
-		// check; the hazard worth guarding is clearing the paint pointer for
-		// a session that just respawned (shutdown/start ordering), so only
-		// clear it when it still points at the dead session's vault.
-		const vault = vaultsBySession.get(sessionId)
-		vaultsBySession.delete(sessionId)
-		if (currentVault === vault) currentVault = undefined
+		const entry = vaultEntries.get(sessionId)
+		if (!entry) return
+		// Exact-owner deletion: a concurrent respawn of the same id whose
+		// own session_start already ran owns the live mapping; this dying
+		// session must not evict it. Ownership transferred on retain, so the
+		// respawn's shutdown is the one that eventually retires the vault.
+		if (entry.owner !== sessionManager) return
+		vaultEntries.delete(sessionId)
+		// Only clear the paint pointer when it still points at the dead
+		// session's vault (shutdown/start ordering).
+		if (currentVault === entry.vault) currentVault = undefined
 	})
 }
 
 /** Reset all lifecycle state AND the process-wide counters — test isolation only. */
 export function resetTokenVaults(): void {
-	vaultsBySession.clear()
+	vaultEntries.clear()
 	currentVault = undefined
 	tokenCounters.clear()
 }
