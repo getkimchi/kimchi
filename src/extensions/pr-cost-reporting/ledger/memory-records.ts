@@ -25,9 +25,10 @@ export function createMemoryRecords(): RecordBackend {
 	const noteKey = (workId: string, name: string) => `${workId}\u0000${name}`
 	let inTx = false
 	/**
-	 * Counter fed by every mutator; the double's stand-in for SQLite data_version. Unlike the real
-	 * SQLite pragma it ALSO bumps for this process's own commits (SQLite never does), so a gate that
-	 * wrongly tracks own writes stays hidden here — keep the asymmetry in mind when adding probes.
+	 * Counter fed by every state mutator; the double's stand-in for the SQLite backend's
+	 * dataVersion (PRAGMA data_version plus its ownCommits counter — own and foreign tx()
+	 * commits alike). Observability writes (diagnostic) stay silent in both backends, so
+	 * the pass gate behaves identically against either.
 	 */
 	let version = 0
 	const touch = () => {
@@ -310,7 +311,9 @@ export function createMemoryRecords(): RecordBackend {
 			notes.delete(noteKey(workId, name))
 		},
 		diagnostic: (code) => {
-			touch()
+			// Observability writes never wake the gate in the SQLite backend (autocommit outside
+			// tx() touches neither PRAGMA data_version nor ownCommits); the double keeps the same
+			// silence so memory-backed gate tests can catch an absorption regression.
 			diagnostics.set(code, (diagnostics.get(code) ?? 0) + 1)
 		},
 		getJournalCursor: (path) => cursors.get(path),

@@ -138,10 +138,11 @@ export interface RecordBackend {
 	getJournalCursor(path: string): JournalCursor | undefined
 	putJournalCursor(cursor: JournalCursor): void
 	deleteJournalCursor(path: string): void
-	/** Monotonic commit marker for pass-gate signatures: the current connection's own commits never bump
-	 *  it (SQLite `PRAGMA data_version`), so an idle pass sees it stable; another process committing
-	 *  any row bumps it on the next read. The memory double bumps it on every mutator instead — the
-	 *  same "changed since last probe" contract from the caller's side. */
+	/** Monotonic commit marker for pass-gate signatures: bumped by another process committing
+	 *  any row (SQLite `PRAGMA data_version`) AND by this connection's own commits (the pragma
+	 *  never moves for same-connection commits, so they are tracked and summed explicitly — see
+	 *  the ownCommits counter at the implementation). A pass's own writes are absorbed by the
+	 *  stamp's post-pass recompute, so an idle pass still sees it stable. */
 	dataVersion(): number
 	/** Every cursor on record, so import can report files removed since the last pass. */
 	listJournalCursors(): JournalCursor[]
