@@ -9,6 +9,7 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { recordEditDecision } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
@@ -896,6 +897,35 @@ describe("SessionContext", () => {
 			expect(attrMap.source).toBe("cli")
 			expect(attrMap.acp_client_name).toBe("kimchi-vscode")
 			expect(attrMap.acp_client_version).toBe("0.0.1")
+		}
+	})
+
+	it("flushMetrics stamps source acp for Agent workers inside the ACP server process", async () => {
+		// Regression: in-process Agent subagents spawned by the ACP server never
+		// saw --mode=acp on argv, so they mislabeled flushes as source: "cli"
+		// and polluted the CLI bucket in per-client splits.
+		setAcpClientInfo({ name: "zed", version: "1.0.0" })
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		await runAsAgentWorker(async () => {
+			ctx.flushMetrics()
+			await Promise.allSettled([...ctx.inFlight])
+		})
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const attrMap = Object.fromEntries(
+				dataPoint.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+			)
+			expect(attrMap.source).toBe("acp")
+			expect(attrMap.acp_client_name).toBe("zed")
 		}
 	})
 
