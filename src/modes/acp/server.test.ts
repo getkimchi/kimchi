@@ -11335,7 +11335,8 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(getAcpPrompter("session-raced")).toBeDefined()
 		expect(getSessionPermissionFlagController("session-raced")).toBeDefined()
 		// The winner's record is still the registered, re-loadable session.
-		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject({}
+		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject(
+			{},
 		)
 	})
 
