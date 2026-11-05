@@ -1,7 +1,7 @@
 # Agents
 
 Kimchi's `agents` extension brings Claude-Code-style subagents to the harness. The
-LLM can spawn specialized agents via the `Agent` tool — each runs as a focused
+LLM can spawn specialized agents via the `Agent` tool — each one runs as a focused
 child session with its own system prompt, model, and tool restrictions.
 
 ## Phase model
