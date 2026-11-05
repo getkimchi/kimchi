@@ -1,17 +1,18 @@
 /**
- * Contract test pinning the `## Tool Guidelines` content inherited from the
- * pinned pi. Kimchi renders pi's per-tool `promptGuidelines` verbatim (see
- * formatToolGuidelinesSection in system-prompt.ts), so a pi upgrade can
- * silently rewrite kimchi's system prompt with no kimchi-side diff to review.
- * This snapshot fails in the pi-upgrade PR instead, forcing a conscious
- * accept-or-adjust decision — the same drift-gate pattern as the codemode
- * worker entrypoint contract in src/extensions/codemode/worker-entrypoint.test.ts.
+ * Contract test keeping pi's per-tool guidelines OUT of kimchi's system
+ * prompt. Kimchi curates the `## Tool Guidelines` section to kimchi-authored
+ * guidance (see PI_GUIDELINE_TOOL_NAMES in system-prompt.ts): every
+ * pi-authored bullet was reviewed and rejected — duplicated by kimchi's own
+ * prompt or the tool descriptions, or contradicting the implementation
+ * (bash's PI_* env claim: kimchi's background bash never injects them). The
+ * codemode steering lives in the Tool Selection line, which folds in pi's
+ * Promise.allSettled idiom.
  *
- * When this fails after a pi bump: review the new guideline text (run with -u
- * to regenerate), decide whether it conflicts with kimchi's own guidance, and
- * commit the snapshot update as part of the upgrade PR so reviewers see the
- * prompt change. New pi builtins that register guidelines need their factory
- * added below (powershell is Windows-only; tool_search registers none today).
+ * This builds the prompt from pi's REAL tool definitions (read/bash/edit/
+ * write/grep/find/ls + the codemode extension registration), so it fails if:
+ *   - the exclusion set stops filtering and a pi bullet leaks into the prompt,
+ *   - pi renames the property so the flow this test exercises changes shape,
+ *   - a new pi factory needs adding here (review its guidelines then).
  */
 import {
 	createBashToolDefinition,
@@ -41,17 +42,20 @@ const testEnv: EnvironmentInfo = {
 	isGitRepo: false,
 }
 
-/** The `## Tool Guidelines` section of a built prompt, or "" when absent. */
-function toolGuidelinesSection(prompt: string): string {
-	const start = prompt.indexOf("## Tool Guidelines")
-	if (start === -1) return ""
-	const end = prompt.indexOf("\n## ", start + 1)
-	return prompt.slice(start, end === -1 ? undefined : end).trimEnd()
-}
+/** Every guideline pi registers for the default tool set, verbatim. */
+const PI_GUIDELINE_BULLETS = [
+	"Use read to examine files instead of cat or sed.",
+	"You can inspect PI_* environment variables for current model and session details.",
+	"Use edit for precise changes (edits[].oldText must match exactly)",
+	"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+	"Use write only for new files or complete rewrites.",
+	"Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls.",
+]
 
-describe("tool guidelines contract (pi-upgrade drift gate)", () => {
-	it("renders exactly the guidelines the pinned pi registers for the default tool set", () => {
-		// Real pi definitions, not mocks: the snapshot must move when pi moves.
+describe("tool guidelines contract (pi guidelines stay curated out)", () => {
+	it("renders no pi-authored guideline; codemode steering comes from Tool Selection", () => {
+		// Real pi definitions, not mocks: the assertions must hold against
+		// whatever the pinned pi actually registers today.
 		const mock = createExtensionApi()
 		createCodemodeExtension()(mock.api)
 		const codemode = mock.getRegisteredTools().find((tool) => tool.name === "codemode")
@@ -72,21 +76,14 @@ describe("tool guidelines contract (pi-upgrade drift gate)", () => {
 			mode: "single",
 		})
 
-		// The section must exist: an absent section means the flow from pi's
-		// ToolInfo.promptGuidelines through formatToolGuidelinesSection broke
-		// (e.g. pi renamed the property), not just wording drift.
-		expect(prompt).toContain("## Tool Guidelines")
-		expect(toolGuidelinesSection(prompt)).toMatchInlineSnapshot(`
-			"## Tool Guidelines
-
-			- Use read to examine files instead of cat or sed.
-			- You can inspect PI_* environment variables for current model and session details.
-			- Use edit for precise changes (edits[].oldText must match exactly)
-			- When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls
-			- Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.
-			- Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.
-			- Use write only for new files or complete rewrites.
-			- Use codemode to batch independent tool calls (Promise.allSettled), chain them, or filter large output, instead of many separate calls."
-		`)
+		for (const bullet of PI_GUIDELINE_BULLETS) {
+			expect(prompt).not.toContain(bullet)
+		}
+		// The default pi tool set carries no kimchi-authored guidelines, so the
+		// section must be absent entirely.
+		expect(prompt).not.toContain("## Tool Guidelines")
+		// The steering lives here, with pi's idiom folded in:
+		expect(prompt).toContain("Prefer `codemode` to batch independent tool calls")
+		expect(prompt).toContain("`Promise.allSettled`")
 	})
 })

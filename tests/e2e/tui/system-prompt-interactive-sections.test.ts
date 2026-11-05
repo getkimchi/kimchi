@@ -29,12 +29,13 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("orients the user")
 			expect(prompt).toContain("## Phase Management")
 
-			// The replacement prompt keeps upstream tool guidance and explains
-			// when batching through codemode is preferable to direct calls.
-			expect(prompt).toContain("## Tool Guidelines")
-			expect(prompt).toContain("Use codemode to batch independent tool calls (Promise.allSettled)")
-			expect(prompt).toContain("Prefer `codemode` for batching independent tool calls")
-			expect(prompt).toContain("Use read to examine files instead of cat or sed.")
+			// Codemode steering lives in Tool Selection (pi's Promise.allSettled
+			// idiom folded in); pi's own per-tool guidelines are curated out —
+			// they duplicate kimchi's guidance or contradict the implementation.
+			expect(prompt).toContain("Prefer `codemode` to batch independent tool calls")
+			expect(prompt).toContain("`Promise.allSettled`")
+			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
+			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
 
 			// The headless replacement never appears in an interactive session.
 			expect(prompt).not.toContain("## Autonomous Session")

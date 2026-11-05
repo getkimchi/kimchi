@@ -21,13 +21,14 @@ it.each([true, false])(
 			expect(request).toBeDefined()
 			if (!request) throw new Error("No model request recorded")
 			const prompt = systemPromptOf(request)
-			expect(prompt.includes("Use codemode to batch independent tool calls (Promise.allSettled)")).toBe(enabled)
-			expect(prompt.includes("Prefer `codemode` for batching independent tool calls")).toBe(enabled)
-			// Builtin guidelines must survive tool-rendering's re-registration of
-			// the core tools; codemode's own guideline proves nothing about the
-			// other seven. Present regardless of the codemode toggle — only
-			// codemode is disabled here, read stays enabled.
-			expect(prompt).toContain("Use read to examine files instead of cat or sed.")
+			expect(prompt.includes("Prefer `codemode` to batch independent tool calls")).toBe(enabled)
+			expect(prompt.includes("`Promise.allSettled`")).toBe(enabled)
+			// Pi's own per-tool guidelines are curated out of the prompt: they
+			// duplicate kimchi's guidance or the tool descriptions, or contradict
+			// the implementation (bash's PI_* env claim). True regardless of the
+			// codemode toggle — the exclusion is by authorship, not availability.
+			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
+			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
 		} finally {
 			await fixture.stop()
 		}
