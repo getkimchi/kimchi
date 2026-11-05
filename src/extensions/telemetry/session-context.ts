@@ -2,7 +2,7 @@ import crypto from "node:crypto"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
-import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getDetectedVersion } from "../../utils.js"
@@ -379,7 +379,7 @@ export class TelemetryContext {
 		ctx?: ExtensionContext,
 	): TelemetryAttributes & { session_type: "ferment" | "coding"; source: "cli" | "acp"; model: string } {
 		return {
-			source: IS_ACP_MODE ? "acp" : "cli",
+			source: isAcpSessionHost() ? "acp" : "cli",
 			session_type: getSessionType(this.fermentV2Context),
 			model: this.currentModel,
 			"telemetry.cli_version": getDetectedVersion(),
@@ -434,6 +434,11 @@ export class TelemetryContext {
 								...m,
 								attrs: {
 									...m.attrs,
+									// Process-level client identity, mirroring the log-record
+									// common attributes so metric aggregations can split by
+									// harness path (cli) or ACP client (acp_client_name).
+									source: isAcpSessionHost() ? "acp" : "cli",
+									...getAcpAttributes(),
 									...(m.scope === "aggregate" ? {} : { "user.account_uuid": this.userId ?? "" }),
 								},
 							})),

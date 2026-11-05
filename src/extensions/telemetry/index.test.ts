@@ -636,6 +636,32 @@ describe("telemetryExtension integration", () => {
 		expect(event.headers["X-Parent-Session-Id"]).toBeUndefined()
 	})
 
+	it("before_provider_headers injects X-Acp-Client-Name from the ACP initialize handshake", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Acp-Client-Name"]).toBe("kimchi-vscode")
+	})
+
+	it("before_provider_headers omits X-Acp-Client-Name when no ACP client has initialized", async () => {
+		const { handlers, api, ctx } = createMockApi()
+		telemetryExtension(makeConfig())(api)
+		await getHandler(handlers, "session_start")({}, ctx)
+
+		// Plain CLI sessions never call setAcpClientInfo — the header must stay
+		// absent so the recording proxy keeps its existing unknown-client path.
+		const event = { headers: {} as Record<string, string> }
+		getHandler(handlers, "before_provider_headers")(event)
+
+		expect(event.headers["X-Acp-Client-Name"]).toBeUndefined()
+	})
+
 	it("before_provider_headers injects a fresh per-request W3C traceparent", async () => {
 		const { handlers, api, ctx } = createMockApi()
 		telemetryExtension(makeConfig())(api)
