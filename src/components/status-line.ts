@@ -666,8 +666,8 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
-function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
 	if (!dapStatus) return null
 	// Same label/value styling as the LSP segment: dim the "DAP:" label,
@@ -680,8 +680,8 @@ function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvide
 	return { id: "dap", text, width: visibleWidth(text) }
 }
 
-function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
 	// Style "LSP:" as dimmed label, server names as accent. Preserve the
@@ -710,7 +710,7 @@ const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
  * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
  *
- * Extension-status-driven like lsp/dap: renders whenever the pull-request-status
+ * Extension-status-driven: renders whenever the pull-request-status
  * extension sets a status, unless the user opted out via `hidden`.
  */
 function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
@@ -835,7 +835,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 	// Opt-out set for defaultVisible, extension-status-driven segments
-	// (lsp/dap/work-pr): they render whenever their extension sets a status, so
+	// (work-pr/shells): they render whenever their extension sets a status, so
 	// the customize UI hides them here instead of through pinning.
 	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
@@ -855,8 +855,8 @@ export function buildStatusLineSegments(
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
-		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
-		buildDapSegment(theme, statusLineData, hidden.has("dap")),
+		buildLspSegment(theme, statusLineData, pinned.has("lsp")),
+		buildDapSegment(theme, statusLineData, pinned.has("dap")),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),

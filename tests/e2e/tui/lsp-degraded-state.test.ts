@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { pinStatusLineElements, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -39,7 +39,10 @@ test("LSP degraded state shows status-bar segment and omits prompt in a Go proje
 			artifactName: "lsp-degraded-go",
 			responses: [{ stream: ["Done."] }],
 			env: { KIMCHI_LSP_BINARIES: "" },
-			seedHome: (_homeDir, workDir) => {
+			seedHome: (homeDir, workDir) => {
+				// The lsp segment is opt-in (hidden by default): pin it so the
+				// degraded status text renders in the footer.
+				pinStatusLineElements(homeDir, "lsp")
 				writeFileSync(join(workDir, "go.mod"), "module example.com/test\n\ngo 1.22\n")
 			},
 		},
@@ -106,7 +109,10 @@ test("LSP active state shows status-bar segment and includes prompt in a TS proj
 			artifactName: "lsp-active-ts",
 			responses: [{ stream: ["Done."] }],
 			env: { KIMCHI_LSP_BINARIES: "typescript-language-server" },
-			seedHome: (_homeDir, workDir) => {
+			seedHome: (homeDir, workDir) => {
+				// The lsp segment is opt-in (hidden by default): pin it so the
+				// active status text renders in the footer.
+				pinStatusLineElements(homeDir, "lsp")
 				writeFileSync(join(workDir, "package.json"), '{"name":"test","version":"1.0.0"}\n')
 			},
 		},

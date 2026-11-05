@@ -40,6 +40,20 @@ export const FAKE_PROVIDER = "fake"
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
 
+/** Pin status line elements in the fixture's isolated harness settings.json.
+ *  Opt-in segments (lsp/dap) are hidden by default, so a test asserting their
+ *  footer text must pin the segment here or it never renders. Call from
+ *  `seedHome`: the settings file already exists by then. */
+export function pinStatusLineElements(homeDir: string, ...ids: string[]): void {
+	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	const statusLine = (settings.statusLine ?? {}) as Record<string, unknown>
+	const pinned = Array.isArray(statusLine.pinned) ? (statusLine.pinned as string[]) : []
+	statusLine.pinned = [...new Set([...pinned, ...ids])]
+	settings.statusLine = statusLine
+	writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"))
+}
+
 // Per-launch pidfile so teardown can kill a kimchi that ignored Ctrl-C/SIGINT
 // (e.g. a process stuck in a synchronous loop, where signal handlers starve).
 const launchedPidFiles = new WeakMap<Terminal, string>()

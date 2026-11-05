@@ -110,13 +110,11 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "lsp",
 		label: "LSP",
 		description: "Language-server state (detected / not installed / failed)",
-		defaultVisible: true,
 	},
 	{
 		id: "dap",
 		label: "DAP",
 		description: "Debug-adapter state (detected / not installed)",
-		defaultVisible: true,
 	},
 	{
 		id: "work-pr",
