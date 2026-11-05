@@ -32,7 +32,7 @@ JSON-RPC rules.
 // params
 { "sessionId": "…", "question?": "…", "fresh?": true, "quote?": "…" }
 // result — the side-chat snapshot
-{ "id", "title", "fresh": false, "contextLength": 7, "mode": "chat", "thread": [], "closed": false }
+{ "id", "title", "fresh": false, "contextLength": 7, "mode": "chat", "draft?": "…", "thread": [], "closed": false }
 ```
 
 Opens the pane: by default the side session inherits the main session's
@@ -104,7 +104,8 @@ can render a consistent list.
 ```
 
 Reopens a side chat from history; its stored thread is present in the
-snapshot (and replays to subscribers).
+snapshot (and replays to subscribers). Resuming the chat that just closed
+reopens it — the snapshot reports `closed: false` and accepts prompts again.
 
 ## Outbound: `_kimchi.dev/side_chat_update`
 
@@ -126,6 +127,11 @@ Update types:
 | `titled` | `{title}` | the first question named the chat |
 | `wrap_draft` | `{text, final}` | `/wrap` stream; `final: true` marks the reviewable draft |
 | `closed` | `{outcome?: "sent" \| "closed"}` | the chat ended; also replayed to subscribers joining after close |
+
+`draft` appears on the snapshot (and reopens) only while the chat awaits a
+review (`mode: "review"`): the settled wrap draft, so a client attaching
+mid-review can render it — a late subscriber also gets one replayed
+`wrap_draft {final: true}` right after the `opened` snapshot.
 
 Clients that connect (or open the pane) after the chat started subscribe and
 get one `opened` snapshot carrying the thread so far — no separate

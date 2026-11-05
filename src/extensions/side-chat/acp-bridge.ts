@@ -48,6 +48,8 @@ export interface SideChatSnapshot {
 	/** User/assistant text exchanged in the side thread so far. */
 	thread: SideChatThreadEntry[]
 	mode: "chat" | "wrapping" | "review"
+	/** Settled wrap draft while the chat awaits review (`mode: "review"`). */
+	draft?: string
 	working: boolean
 	closed: boolean
 	outcome?: SideChatOutcome
@@ -119,7 +121,10 @@ export class SideChatAcpBridge {
 	async resume(sideChatId: string): Promise<SideChatSnapshot | undefined> {
 		const record = this.#controller.history(this.#ctx).find((candidate) => candidate.id === sideChatId)
 		if (!record) return undefined
-		if (this.#view?.record.id !== record.id) {
+		// Resume is only a no-op when the chat is still live: after close the
+		// view stays cached, and reusing it would return the closed snapshot
+		// without reopening the side session.
+		if (!(this.#controller.isActive && this.#view?.record.id === record.id)) {
 			await this.#controller.open(this.#ctx, { resume: record }, (view) => this.#openSink(view))
 		}
 		return this.#snapshot
@@ -158,8 +163,13 @@ export class SideChatAcpBridge {
 	subscribe(listener: SideChatUpdateListener): () => void {
 		this.#listeners.add(listener)
 		const snapshot = this.#snapshot
-		if (snapshot && !snapshot.closed) listener({ type: "opened", snapshot })
-		else if (snapshot?.closed) listener({ type: "closed", outcome: snapshot.outcome })
+		if (snapshot && !snapshot.closed) {
+			listener({ type: "opened", snapshot })
+			// Replay the settled draft so a late joiner mid-review can render it.
+			if (snapshot.mode === "review" && snapshot.draft !== undefined) {
+				listener({ type: "wrap_draft", text: snapshot.draft, final: true })
+			}
+		} else if (snapshot?.closed) listener({ type: "closed", outcome: snapshot.outcome })
 		return () => this.#listeners.delete(listener)
 	}
 
@@ -220,6 +230,10 @@ export class SideChatAcpBridge {
 				snapshot.mode = mode
 			},
 			setDraft: (text) => {
+				// A clear arrives after the mode already flipped back to "chat", so
+				// it must still drop the stored draft — the emit guard below is the
+				// only reason chat-mode clears stay silent on the wire.
+				snapshot.draft = text === "" ? undefined : text
 				if (snapshot.mode === "chat" && text === "") return
 				this.#emit({ type: "wrap_draft", text, final: snapshot.mode === "review" })
 			},

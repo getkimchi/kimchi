@@ -128,6 +128,14 @@ describe("ACP integration — side chat over the wire", () => {
 			const finalDraft = await waitForUpdate(fixture, sessionId, "wrap_draft")
 			expect(finalDraft.update.text).toBeDefined()
 
+			// The chat stays open in review mode; a snapshot re-fetch carries the
+			// reviewable draft so a freshly attached client can render it.
+			const reviewSnapshot = (await fixture.conn.extMethod(METHODS.open, { sessionId })) as Record<
+				string,
+				unknown
+			>
+			expect(reviewSnapshot).toMatchObject({ mode: "review", draft: "do the thing", closed: false })
+
 			await fixture.conn.extMethod(METHODS.sendToMain, { sessionId, text: draft })
 			const closed = await waitForUpdate(fixture, sessionId, "closed")
 			expect(closed.update).toMatchObject({ outcome: "sent" })
@@ -148,7 +156,11 @@ describe("ACP integration — side chat over the wire", () => {
 			process.env.KIMCHI_ENABLE_RESOURCES = "extensions.side-chat"
 			fixture = await startAcpFixture({
 				artifactName: "side-chat-resume",
-				responses: [{ stream: ["remembered answer"] }, { stream: ["spare"] }, { stream: ["spare"] }],
+				responses: [
+					{ stream: ["remembered answer"] },
+					{ stream: ["after-resume answer"] },
+					{ stream: ["spare"] },
+				],
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 
@@ -161,11 +173,31 @@ describe("ACP integration — side chat over the wire", () => {
 			const resumed = (await fixture.conn.extMethod(METHODS.resume, {
 				sessionId,
 				sideChatId: opened.id as string,
-			})) as { thread: Array<{ role: string; text: string }> }
+			})) as { thread: Array<{ role: string; text: string }>; closed: boolean }
 			expect(resumed.thread).toEqual([
 				{ role: "user", text: "remember this" },
 				{ role: "assistant", text: "remembered answer" },
 			])
+			// Resume must actually reopen the chat: a stale snapshot of the closed
+			// chat also carries the thread, so the thread alone doesn't prove it.
+			expect(resumed.closed).toBe(false)
+
+			// A follow-up prompt on the resumed chat rejects with -32600
+			// ("No side chat is open.") when resume returned the stale snapshot.
+			const promptResult = (await fixture.conn.extMethod(METHODS.prompt, {
+				sessionId,
+				text: "still there?",
+			})) as Record<string, unknown>
+			expect(promptResult).toEqual({ status: "started" })
+			// The feed still holds the pre-close assistant_message, so wait for
+			// the follow-up answer specifically.
+			await waitFor(
+				() =>
+					sideChatUpdates(fixture, sessionId).find(
+						(n) => n.update.type === "assistant_message" && n.update.text === "after-resume answer",
+					),
+				(update) => update !== undefined,
+			)
 		},
 		STARTUP_TIMEOUT_MS + PROMPT_TIMEOUT_MS,
 	)

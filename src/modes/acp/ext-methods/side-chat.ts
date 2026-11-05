@@ -70,6 +70,7 @@ function snapshotWire(snapshot: SideChatSnapshot): Record<string, unknown> {
 		fresh: snapshot.fresh,
 		contextLength: snapshot.contextLength ?? 0,
 		mode: snapshot.mode,
+		draft: snapshot.draft,
 		thread: snapshot.thread,
 		closed: snapshot.closed,
 	}

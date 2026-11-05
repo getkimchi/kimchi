@@ -242,6 +242,75 @@ describe("SideChatAcpBridge", () => {
 		expect(updates).toEqual([{ type: "closed", outcome: "closed" }])
 	})
 
+	it("resume of a closed chat reopens it for prompting", async () => {
+		createSideSessionMock.mockResolvedValue(fakeSideSession().side)
+		bridge.subscribe((update) => updates.push(update))
+
+		const opened = await bridge.open({ prompt: "remember this" })
+		await flush()
+		await bridge.close()
+
+		updates.length = 0
+		const resumed = await bridge.resume(opened.id)
+
+		expect(resumed?.id).toBe(opened.id)
+		expect(resumed?.closed).toBe(false)
+		expect(resumed?.thread).toEqual([
+			{ role: "user", text: "remember this" },
+			{ role: "assistant", text: "the answer" },
+		])
+		// Reopening emits a fresh opened update.
+		expect(updates[0]?.type).toBe("opened")
+		// The reopened chat accepts prompts again.
+		expect(bridge.prompt("still there?")).toEqual({ status: "started" })
+		await flush()
+		expect(updates).toContainEqual({ type: "assistant_message", text: "the answer", stopReason: "stop" })
+	})
+
+	it("replays the settled wrap draft to late subscribers in review mode", async () => {
+		createSideSessionMock.mockResolvedValue(fakeSideSession().side)
+		draftSteeringPromptMock.mockImplementation((_ctx, _thread, _extra, onPartial) => {
+			onPartial("draft par")
+			return { result: Promise.resolve("draft partial is now complete"), abort: vi.fn() }
+		})
+
+		await bridge.open({ prompt: "decide the retry policy" })
+		await flush()
+		await bridge.wrap("")
+
+		bridge.subscribe((update) => updates.push(update))
+
+		const opened = updates[0]
+		expect(opened?.type).toBe("opened")
+		if (opened?.type === "opened") {
+			expect(opened.snapshot.mode).toBe("review")
+			expect(opened.snapshot.draft).toBe("draft partial is now complete")
+		}
+		expect(updates).toContainEqual({ type: "wrap_draft", text: "draft partial is now complete", final: true })
+	})
+
+	it("clears the stored draft when a wrap completes with nothing to review", async () => {
+		createSideSessionMock.mockResolvedValue(fakeSideSession().side)
+		draftSteeringPromptMock.mockImplementation((_ctx, _thread, _extra, onPartial) => {
+			onPartial("draft par")
+			return { result: Promise.resolve(""), abort: vi.fn() }
+		})
+
+		await bridge.open({ prompt: "decide the retry policy" })
+		await flush()
+		const { draft } = await bridge.wrap("")
+
+		expect(draft).toBe("")
+		bridge.subscribe((update) => updates.push(update))
+		const opened = updates[0]
+		expect(opened?.type).toBe("opened")
+		if (opened?.type === "opened") {
+			expect(opened.snapshot.mode).toBe("chat")
+			expect(opened.snapshot.draft).toBeUndefined()
+		}
+		expect(updates.some((update) => update.type === "wrap_draft")).toBe(false)
+	})
+
 	it("history lists persisted chats after a question", async () => {
 		createSideSessionMock.mockResolvedValue(fakeSideSession().side)
 		await bridge.open({ prompt: "listed?" })
