@@ -2,20 +2,32 @@
 """Deterministic fake LLM/platform server for kimchi perf gates.
 
 Chat behaviour (keyed on the latest user message):
+  - contains "BIGTOOLS turn=<t> reads=<r>": first reply = r read calls on distinct
+    big<k>.txt files; after tool results reply text marker. Tool results seen in
+    requests are counted (min size = hydration check for #1405's store).
   - contains "TOOLS": first reply = tool calls (bash + read); after tool results reply text marker.
   - otherwise: stream LONG_CHUNKS text chunks then a marker "BENCH_DONE_<n>".
 Every request is counted per route (to spot background polling).
 
-Platform behaviour: pr-cost snapshot uploads get HTTP 413 — the body-limit
-rejection real deployments hit — so the reporting queue keeps retrying its
-pending work every pass instead of draining (the idle-cost regime the gate
-must catch when it regresses).
+Platform behaviour (default, "stuck"): pr-cost snapshot uploads get HTTP 413 at
+every size and event batches get an empty 200 the client rejects, so the
+reporting queue keeps retrying its pending work every pass instead of draining
+(the idle-cost regime the gate must catch when it regresses).
+
+With State.accept_uploads ("healthy"): uploads are acknowledged the way a
+working server does — snapshots echo their revision, event batches get one
+accepted receipt per event — so the queue drains and idle settles.
 """
 import json
+import os
 import re
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fixtures  # noqa: E402
 
 LONG_CHUNKS = 300
 # Thinking-turn fixture (thinking-stall lane): a long thinking block streamed as
@@ -35,6 +47,21 @@ class State:
         self.routes = {}
         self.chat_count = 0
         self.tool_results = []  # bash tool outputs seen in follow-up requests
+        self.accept_uploads = False
+        self.uploads_accepted = 0
+        self.reset_tool_stats()
+
+    def reset_tool_stats(self):
+        """BIGTOOLS lane: distinct read results the model received, the smallest
+        one in any request, and the largest request body."""
+        self.big_ids = set()
+        self.big_min_chars = None
+        self.max_request_bytes = 0
+
+    def tool_stats(self):
+        with self.lock:
+            return {"tool_results_seen": len(self.big_ids), "min_tool_result_chars": self.big_min_chars,
+                    "max_request_bytes": self.max_request_bytes}
 
     def record(self, method, path):
         key = f"{method} {path.split('?')[0]}"
@@ -94,6 +121,7 @@ def make_handler(state: State):
                         return None
                     raw += self.rfile.read(size)
                     self.rfile.readline()
+            self.body_bytes = len(raw)
             try:
                 return json.loads(raw) if raw else None
             except Exception:
@@ -125,11 +153,31 @@ def make_handler(state: State):
                     return self._chat(body or {})
                 except (BrokenPipeError, ConnectionResetError, ConnectionError):
                     return  # client vanished mid-stream; nothing to answer
+            if "api-keys:verify" in self.path and state.accept_uploads:
+                # Healthy mode: the key belongs to the account the aged queue was
+                # recorded under, so the worker proceeds to upload. Default mode
+                # keeps the empty answer the gated lane has always measured (the
+                # worker never passes this check there).
+                return self._json(200, {"organizationId": fixtures.HEALTHY_ACCOUNT["organizationId"],
+                                        "userId": fixtures.HEALTHY_ACCOUNT["userId"]})
             if "/pr-cost-snapshots" in self.path:
+                if state.accept_uploads and isinstance(body, dict) and body.get("revision"):
+                    with state.lock:
+                        state.uploads_accepted += 1
+                    return self._json(200, {"status": "accepted", "revision": str(body["revision"]),
+                                            "receivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
                 # The server-side body limit real deployments enforce; keeps the
                 # reporting queue in its retry regime so per-pass cost is measured.
                 return self._json(413, {"error": {"code": "PR_COST_LIMIT", "scope": "snapshot",
                                                  "limit": "bytes", "maximum": 10485760}})
+            if "pr-cost-events:batchIngest" in self.path and state.accept_uploads and isinstance(body, dict):
+                events = body.get("events") if isinstance(body.get("events"), list) else []
+                with state.lock:
+                    state.uploads_accepted += 1
+                return self._json(200, {"batchId": body.get("id"),
+                                        "receiveTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                        "receipts": [{"id": e.get("id"), "status": "accepted", "revision": e.get("revision")}
+                                                     for e in events if isinstance(e, dict)]})
             return self._json(200, {})
 
         def _sse(self, obj):
@@ -150,6 +198,14 @@ def make_handler(state: State):
             last_user = next((m for m in reversed(msgs) if m.get("role") == "user"), {})
             user_text = _content_text(last_user.get("content"))
             model = body.get("model", "basic")
+            big = [m for m in msgs if m.get("role") == "tool" and str(m.get("tool_call_id", "")).startswith("big_")]
+            if big:
+                sizes = [len(_content_text(m.get("content"))) for m in big]
+                with state.lock:
+                    state.big_ids.update(m.get("tool_call_id") for m in big)
+                    lo = min(sizes)
+                    state.big_min_chars = lo if state.big_min_chars is None else min(state.big_min_chars, lo)
+                    state.max_request_bytes = max(state.max_request_bytes, getattr(self, "body_bytes", 0))
             if last.get("role") == "tool" or any(m.get("role") == "tool" for m in msgs[-3:]):
                 for m in msgs[-3:]:
                     if m.get("role") == "tool" and m.get("tool_call_id") == "call_b1":
@@ -177,6 +233,16 @@ def make_handler(state: State):
             if first_text.startswith(("Decide whether", "Compare a new", "Read a new")):
                 chunk({"content": '{"decision":"unknown"}'})
                 chunk({}, "stop")
+            elif "BIGTOOLS" in user_text and last.get("role") == "user":
+                # Must precede the TOOLS branch ("BIGTOOLS" contains "TOOLS").
+                mt = re.search(r"turn=(\d+)", user_text)
+                mr = re.search(r"reads=(\d+)", user_text)
+                turn, reads = int(mt.group(1)) if mt else 0, int(mr.group(1)) if mr else 1
+                for j in range(reads):
+                    k = turn * reads + j
+                    chunk({"tool_calls": [{"index": j, "id": f"big_{k}", "type": "function",
+                                           "function": {"name": "read", "arguments": json.dumps({"path": f"big{k}.txt"})}}]})
+                chunk({}, "tool_calls", {"prompt_tokens": 2000, "completion_tokens": 50})
             elif "TOOLS" in user_text and last.get("role") == "user":
                 calls = [
                     ("call_b1", "bash", {"command": BASH_CMD}),

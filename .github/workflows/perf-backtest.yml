@@ -86,6 +86,17 @@ jobs:
           python3 tools/perf/gate.py --selfcheck
           python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
 
+      - name: Advisory lanes (healthy/fresh idle, large tool outputs store on vs off)
+        # Runs even when the gate step fails: old binaries miss today's budgets,
+        # and those are exactly the baselines these lanes need.
+        if: always()
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          for sc in idle_healthy idle_fresh bigtools bigtools_off; do
+            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps 2 --idle 90 \
+              --out "$RUNNER_TEMP/perf-gate-runs/$sc.jsonl" --expect-version "$VERSION" || echo "$sc failed"
+          done
+
       - name: Upload run records
         if: always()
         uses: actions/upload-artifact@v4

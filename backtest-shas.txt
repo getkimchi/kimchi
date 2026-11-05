@@ -1,26 +1,19 @@
-# Matched fix measurement + noise calibration, all on master eed36adc1.
-# One entry per line: SHA LABEL (label names the artifact; comments on their own lines only).
-# Control: master eed36adc1 x8 jobs (noise band across 8 runner VMs).
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-1
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-2
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-3
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-4
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-5
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-6
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-7
-eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master-8
-# master + stack (#1634/#1638/#1639) x4
-b804f257c66b41ccb0cd37fe02f6e7b2649d0b46 stack-1
-b804f257c66b41ccb0cd37fe02f6e7b2649d0b46 stack-2
-b804f257c66b41ccb0cd37fe02f6e7b2649d0b46 stack-3
-b804f257c66b41ccb0cd37fe02f6e7b2649d0b46 stack-4
-# master + #1645 x4
-8c4858378fa7970a6a15339e1a82cf894a178161 pr1645-1
-8c4858378fa7970a6a15339e1a82cf894a178161 pr1645-2
-8c4858378fa7970a6a15339e1a82cf894a178161 pr1645-3
-8c4858378fa7970a6a15339e1a82cf894a178161 pr1645-4
-# master + stack + #1645 x4
-725cc47becf53f936bc54e2a5d2e2548814111be both-1
-725cc47becf53f936bc54e2a5d2e2548814111be both-2
-725cc47becf53f936bc54e2a5d2e2548814111be both-3
-725cc47becf53f936bc54e2a5d2e2548814111be both-4
+# Targeted backtest with the new advisory lanes (idle_healthy, idle_fresh, bigtools, bigtools_off)
+# plus machine identity and slow-keystroke timestamps in every record.
+# One entry per line: SHA LABEL (comments on their own lines only).
+# Releases around each boundary: #1405 (v1.10.1 -> v1.11.0), fixture crossing (v1.12.2 -> v1.13.0),
+# pi 1.3.0 (v1.17.2 -> v1.18.0), #1529 (v1.21.6 -> v1.22.0), latest release.
+b6814781c684623ea0cc525c216fd67e5e703774 v1.10.1
+f87fa886223ac17c2d091bcd49109701f2669daa v1.11.0
+af688d13c1b96001ed8be45fe0c5447260ff6c9d v1.12.2
+a75e3a39feb972fe98351b210c12862ec1f6411d v1.13.0
+9b9113e5fd245ae250a24e0cf409a5d88b7aa73e v1.17.2
+426c51f0c9e188b969928d90871f9c51b32552a8 v1.18.0
+338c508f8d9b31e5e7b67fc2e2f95537e5928933 v1.21.6
+2594d5843f5091bb0d3e34bf5be3f4c5ea291cd4 v1.22.0
+f0312063b6a77ecd17d4aaa0d0e80ed5f4c0e278 v1.28.1
+# Today's master and the unreleased fixes merged onto it (same commits as run 41937598982).
+eed36adc1183597ed723b0ca4817e75fdd9ad9a3 master
+b804f257c66b41ccb0cd37fe02f6e7b2649d0b46 stack
+8c4858378fa7970a6a15339e1a82cf894a178161 pr1645
+725cc47becf53f936bc54e2a5d2e2548814111be both

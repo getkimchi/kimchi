@@ -50,6 +50,45 @@ def launch(env, cwd, argv, scenario, rep_tag="r", sampler_interval=0.2):
 
 READY_MARKERS = ["ask anything or type / for commands", "ask anything", "type / for commands"]
 REPOS = 8
+KEYLAT_SLOW_MS = 100  # probes slower than this are recorded with their time and phase
+
+
+def host_info():
+    """Which machine measured this record. Instruction counts differ across CPU
+    types behind the same runner label, so every record carries the CPU model,
+    core count, kernel and (in CI) the runner image."""
+    import platform
+    info = {"arch": platform.machine(), "ncpu": os.cpu_count(), "kernel": platform.release()}
+    model = None
+    if sys.platform.startswith("linux"):
+        try:
+            out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=10).stdout
+            fields = dict(line.split(":", 1) for line in out.splitlines() if ":" in line)
+            fields = {k.strip(): v.strip() for k, v in fields.items()}
+            model = fields.get("Model name")
+            info["cpu_vendor"] = fields.get("Vendor ID")
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        if not model:
+            try:
+                for line in open("/proc/cpuinfo"):
+                    k, _, v = line.partition(":")
+                    if k.strip() in ("model name", "CPU part"):
+                        model = v.strip()
+                        break
+            except OSError:
+                pass
+    elif sys.platform == "darwin":
+        try:
+            model = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True,
+                                   text=True, timeout=10).stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    info["cpu_model"] = model
+    for env in ("ImageOS", "ImageVersion", "RUNNER_NAME"):
+        if os.environ.get(env):
+            info[env.lower()] = os.environ[env]
+    return info
 
 
 def child_env(home, base_url, tmpdir, binary=None):
@@ -259,7 +298,18 @@ def run_resume(binary, env, cwd, srv_state, settle_s=5):
             res["screen_tail"] = tp.plain()[-1200:]
             return res
         res["ready_s"] = time.time() - t_spawn
-        time.sleep(settle_s)
+        # Same settle window as before (load counters keep their meaning); while
+        # waiting, note when screen output last changed: history rendering that
+        # continues after the prompt appears is part of what a user waits for.
+        settle_end = time.time() + settle_s
+        last_n, last_change = tp.bytes_out(), time.time()
+        while time.time() < settle_end:
+            time.sleep(0.02)
+            n = tp.bytes_out()
+            if n != last_n:
+                last_n, last_change = n, time.time()
+        res["settled_s"] = last_change - t_spawn
+        res["settled_in_window"] = last_change < settle_end - 0.5
         sampler.sample()
         a = sampler.totals()
         res["load"] = pick_counters(a)
@@ -290,6 +340,120 @@ def run_resume(binary, env, cwd, srv_state, settle_s=5):
             res["ok"] = False
             res["error"] = (f"resume did not engage: load work {load_instr:,} instructions "
                             "(session fixture drift?)")
+    finally:
+        cleanup(tp, pid, sampler, cg)
+    return res
+
+
+# Advisory idle lanes (never gated). The gated "idle" lane measures an aged
+# install whose upload queue never drains (the fake server refuses every
+# upload) -- a specific, likely uncommon state. These two give the common case:
+#   idle_healthy: same aged install, uploads acknowledged, the queue drains
+#   idle_fresh:   clean install, nothing queued
+IDLE_VARIANTS = ("idle_healthy", "idle_fresh")
+
+BIGTOOLS_TURNS = 10
+BIGTOOLS_READS = 8          # read calls per turn, each on a distinct file
+BIGTOOLS_FILE_BYTES = 60_000  # > the read tool's 50 KB cap, so every result is ~50 KB
+BIGTOOLS_EXTERNALIZE = 16384  # below ~50 KB: #1405's store mirrors every read result
+BIGTOOLS_VARIANTS = {
+    # #1405's tool-output store on, threshold lowered so built-in read results
+    # (capped at 50 KB, below the 64 KiB default) are actually externalized
+    "bigtools": {"KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES": str(BIGTOOLS_EXTERNALIZE)},
+    # same build, store off: the A/B control (pre-#1405 builds ignore both)
+    "bigtools_off": {"KIMCHI_TOOL_OUTPUT_STORE": "off"},
+}
+
+
+def write_bigtools_files(wd, turns=BIGTOOLS_TURNS, reads=BIGTOOLS_READS):
+    """Distinct ~60 KB text files big<k>.txt, one per read call of the lane."""
+    for k in range(turns * reads):
+        line = f"big{k} " + " ".join(f"w{k}-{j}" for j in range(14))
+        with open(os.path.join(wd, f"big{k}.txt"), "w") as f:
+            n = 0
+            i = 0
+            while n < BIGTOOLS_FILE_BYTES:
+                s = f"{line} {i}\n"
+                f.write(s)
+                n += len(s)
+                i += 1
+
+
+def rss_now(tot):
+    """Resident set right now (root + descendants), bytes. Not the cgroup's
+    memory.current: that includes page cache from the files the lane reads."""
+    return (tot["main"].get("footprint") or 0) + (tot["desc"].get("footprint") or 0)
+
+
+def mirror_bytes(tmpdir):
+    """Bytes in #1405's tool-output mirror files under the run's TMPDIR."""
+    total = 0
+    for root, _, files in os.walk(tmpdir):
+        if os.path.basename(root).startswith("kimchi-tool-outputs-"):
+            total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+    return total
+
+
+def run_bigtools(binary, env, cwd, srv_state, turns=BIGTOOLS_TURNS, reads=BIGTOOLS_READS):
+    """Advisory lane (never gated): many large tool results in one live session.
+
+    Each turn the fake model calls `read` on `reads` distinct ~50 KB files, then
+    answers. Records work and resident memory after every turn (growth per
+    turn), peak memory, how many bytes #1405's store mirrored to disk
+    (engagement), and the smallest tool result the model received per request
+    (hydration: a marker leaking to the model would show as ~100 chars).
+    """
+    argv = [binary, "--provider", "fake", "--model", "basic"]
+    tp, sampler, cg = launch(env, cwd, argv, "bigtools")
+    pid = tp.proc.pid
+    res = {"ok": False, "turns": []}
+    try:
+        t_spawn = time.time()
+        if not tp.wait_for(READY_MARKERS, 90):
+            res["error"] = "ready marker not seen"
+            res["exit_code"] = tp.proc.poll()
+            res["screen_tail"] = tp.plain()[-1200:]
+            return res
+        res["ready_s"] = time.time() - t_spawn
+        time.sleep(3)
+        sampler.sample()
+        base = sampler.totals()
+        base_instr = flatten_total(base)["instr"] or 0
+        res["rss_start"] = rss_now(base)
+        srv_state.reset_tool_stats()
+        for turn in range(turns):
+            tok = f"{random.randrange(10**8):08d}"
+            start = len(tp.plain())
+            t = time.time()
+            tp.send(f"BIGTOOLS turn={turn} reads={reads} TOK{tok}")
+            time.sleep(0.3)
+            tp.send("\r")
+            if not tp.wait_for([f"BENCH_DONE_{tok}"], 180, start):
+                res["error"] = f"bigtools turn {turn} marker not seen"
+                res["screen_tail"] = tp.plain()[-1200:]
+                return res
+            turn_s = time.time() - t
+            time.sleep(1)
+            sampler.sample()
+            cur = sampler.totals()
+            res["turns"].append({"turn": turn, "turn_s": round(turn_s, 3),
+                                 "instr": (flatten_total(cur)["instr"] or 0) - base_instr,
+                                 "rss": rss_now(cur)})
+        time.sleep(2)
+        sampler.sample()
+        end = sampler.totals()
+        res["total"] = flatten_total(end)
+        res["work_instr"] = (res["total"]["instr"] or 0) - base_instr
+        res["peak_mem"] = peak_mem(end)
+        res["rss_end"] = rss_now(end)
+        res["mirror_bytes"] = mirror_bytes(env["TMPDIR"])
+        res.update(srv_state.tool_stats())
+        res["counter"] = counter_tier(end)
+        expected = turns * reads
+        if res.get("tool_results_seen", 0) < expected:
+            res["error"] = f"model saw {res.get('tool_results_seen', 0)} tool results, expected {expected}"
+            return res
+        res["ok"] = True
     finally:
         cleanup(tp, pid, sampler, cg)
     return res
@@ -364,7 +528,7 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
     t0 = time.time()
     tp, sampler, cg = launch(env, cwd, argv, "idle")
     pid = tp.proc.pid
-    res = {"ok": False, "buckets": [], "keylat_ms": []}
+    res = {"ok": False, "buckets": [], "keylat_ms": [], "keylat_slow": []}
     try:
         if not tp.wait_for(READY_MARKERS, 120):
             res["error"] = "ready marker not seen"
@@ -382,9 +546,15 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
             for _ in range(n):
                 deadline = time.time() + bucket_s
                 while time.time() < deadline:
+                    t_probe = time.time() - t0
                     lat = probe_keylat(tp)
                     if lat is not None:
                         res["keylat_ms"].append(lat)
+                        if lat > KEYLAT_SLOW_MS:
+                            # when it happened (s since launch) and in which phase,
+                            # so one-off stalls can be tied to a background pass
+                            res["keylat_slow"].append({"t": round(t_probe, 2), "p": phase,
+                                                       "ms": round(lat, 1)})
                     time.sleep(1.2)
                 sampler.sample()
                 cur = sampler.totals()
@@ -406,6 +576,7 @@ def run_idle(binary, env, cwd, srv_state, total_s=70, bucket_s=10.0, stuck_s=60)
             res["state_at_retire"] = hashlib.sha256(open(sp, "rb").read()).hexdigest() if os.path.exists(sp) else None
             fixtures.retire_queue_retries(env["HOME"])
             window(2, stuck_s)
+        res["uploads_accepted"] = srv_state.uploads_accepted  # healthy lane: proof the queue drained
         res["peak_mem"] = peak_mem(prev)
         res["pids_peak"] = (prev.get("cg") or {}).get("pids_peak", 0)
         res["child_names"] = prev["child_names"]  # advisory: sampled; names for debugging only
@@ -481,21 +652,26 @@ def prepare(root, scenario, base_url, session_target_mb=8, binary=None):
     wd = os.path.join(root, "work")
     tmpdir = os.path.join(root, "tmp")
     os.makedirs(tmpdir, exist_ok=True)
-    if scenario == "idle":
+    if scenario in ("idle", "idle_healthy"):
         repos = [os.path.join(root, "repos", f"repo{i}") for i in range(REPOS)]
         for i, r in enumerate(repos):
             fixtures.make_repo(r, f"repo{i}", commits=4 + i % 3)
         fixtures.aged_home(home, base_url, repos)
         wd = make_workdir(os.path.join(root, "wdroot"))
     else:
-        fixtures.seed_clean_home(home, base_url)
+        # bigtools sends 10 prompts: the one-time survey after the third would take focus
+        fixtures.seed_clean_home(home, base_url, survey_seen=scenario in BIGTOOLS_VARIANTS)
         wd = make_workdir(os.path.join(root, "wdroot"))
         if scenario == "resume":
             sdir = session_dir(home, wd)
             os.makedirs(sdir, exist_ok=True)
             fixtures.write_big_session(os.path.join(sdir, "bench-session.jsonl"),
                                        os.path.realpath(wd), target_bytes=session_target_mb * 1024 * 1024)
-    return child_env(home, base_url, tmpdir, binary), wd
+        if scenario in BIGTOOLS_VARIANTS:
+            write_bigtools_files(wd)
+    env = child_env(home, base_url, tmpdir, binary)
+    env.update(BIGTOOLS_VARIANTS.get(scenario, {}))
+    return env, wd
 
 
 def selfcheck(binary, session_mb=2, idle_s=20):
@@ -605,7 +781,7 @@ def selfcheck(binary, session_mb=2, idle_s=20):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", required=True, help="kimchi binary (dist/bin/kimchi or a release tree's bin/kimchi)")
-    ap.add_argument("--scenario", choices=["session", "resume", "idle"])
+    ap.add_argument("--scenario", choices=["session", "resume", "idle", *IDLE_VARIANTS, *BIGTOOLS_VARIANTS])
     ap.add_argument("--selfcheck", action="store_true",
                     help="verify the harness: fixture determinism, product validators, one smoke rep per scenario")
     ap.add_argument("--out", default=None)
@@ -637,11 +813,14 @@ def main():
         raise SystemExit("--scenario and --out are required (or use --selfcheck)")
 
     srv, state, base = fakellm.start()
+    # healthy idle: the platform acknowledges uploads, so the aged queue drains
+    state.accept_uploads = args.scenario == "idle_healthy"
     git_version = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout.strip()
     root = os.path.realpath(args.workroot or tempfile.mkdtemp(prefix="kperf-"))
     os.makedirs(root, exist_ok=True)
     print(f"workroot {root}", flush=True)
     versions = set()
+    host = host_info()
     try:
         with open(args.out, "a") as out:
             for rep in range(args.reps):
@@ -660,9 +839,15 @@ def main():
                     r = run_session(args.binary, env, cwd, state)
                 elif args.scenario == "resume":
                     r = run_resume(args.binary, env, cwd, state)
+                elif args.scenario in BIGTOOLS_VARIANTS:
+                    r = run_bigtools(args.binary, env, cwd, state)
+                elif args.scenario in IDLE_VARIANTS:
+                    # one window, no stuck phase: there is no failing queue to retire
+                    r = run_idle(args.binary, env, cwd, state, args.idle, stuck_s=0)
                 else:
                     r = run_idle(args.binary, env, cwd, state, args.idle, stuck_s=args.stuck)
-                r.update({"scenario": args.scenario, "rep": rep, "version": version, "git": git_version})
+                r.update({"scenario": args.scenario, "rep": rep, "version": version, "git": git_version,
+                          "host": host})
                 out.write(json.dumps(r) + "\n")
                 out.flush()
                 total = r.get("total") or {}

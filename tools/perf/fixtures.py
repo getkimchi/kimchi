@@ -78,6 +78,11 @@ def _work_id(i):
     return str(uuid.uuid5(NS, f"work-{i}"))
 
 
+# The account the aged home's queued reports were recorded under (aged_home);
+# the healthy-idle lane's fake server verifies the API key as this account.
+HEALTHY_ACCOUNT = {"organizationId": _work_id(900), "userId": _work_id(901)}
+
+
 def _session_id(i):
     return str(uuid.uuid5(NS, f"session-{i}"))
 
@@ -102,7 +107,15 @@ def js(obj):
 
 
 # ---------------------------------------------------------------- clean HOME
-def seed_clean_home(home, base_url):
+# kimchi's one-time initial survey (src/extensions/surveys/survey.ts) opens a
+# selector after the third coding prompt and takes keyboard focus; a lane that
+# sends more prompts must start from a HOME where it was already seen, like any
+# returning user. Not seeded for the gated lanes: their measured numbers include
+# it and must stay comparable with the release history.
+INITIAL_SURVEY_ID = "019e87cc-5033-0000-d9bd-5e6501640b6e"
+
+
+def seed_clean_home(home, base_url, survey_seen=False):
     """A minimal, migration-complete kimchi HOME against the fake provider."""
     cfg_dir = os.path.join(home, ".config", "kimchi")
     agent = os.path.join(cfg_dir, "harness")
@@ -112,6 +125,8 @@ def seed_clean_home(home, base_url):
     cfg = {"apiKey": "fake", "llmEndpoint": base_url, "skillPaths": [], "migrationState": "done",
            "onboarding": {"hideSessionModeDialog": True}, "telemetry": {"enabled": True},
            "telemetry_notice_shown": True}
+    if survey_seen:
+        cfg["surveys"] = {INITIAL_SURVEY_ID: {"seenAt": _iso(BASE_MS)}}
     json.dump(cfg, open(os.path.join(cfg_dir, "config.json"), "w"), indent=1)
     # hideThinkingBlock: false = the expanded thinking view, whose renderer is
     # the expensive path in the streaming-stall class (#1645): it rebuilds the
