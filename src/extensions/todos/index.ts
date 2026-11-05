@@ -26,10 +26,12 @@ import {
 	markCheckinPending,
 	markStalenessGateOpened,
 	reconcileCheckinScope,
+	recordGateBlockedToolCall,
 	recordStalenessOpening,
 	resetScopeEpoch,
 	setCheckinEnforcementActive,
 	subscribeCheckinGate,
+	TODO_CHECKIN_BLOCK_PREFIX,
 } from "./checkin-gate.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -232,7 +234,7 @@ function checkinInstructionText(pending: readonly CheckinPending[], sessionId: s
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
 	return [
-		`⏸ Todo check-in pending (input revision ${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
@@ -601,6 +603,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length === 0) return { block: false }
+		// Record the blocked call so transcript renderers can anchor the
+		// collapsed gate display on provenance tool output cannot forge.
+		recordGateBlockedToolCall(sessionId, event.toolCallId)
 		return { block: true, reason: checkinBlockReason(pending, sessionId, revision) }
 	})
 

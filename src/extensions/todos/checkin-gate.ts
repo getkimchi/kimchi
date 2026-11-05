@@ -34,6 +34,11 @@ export const CHECKIN_DELIVERED_BOUNDARY_REQUIRED = 30
  *  user_input check is never budget-limited. */
 export const CHECKIN_STALENESS_OPENINGS_PER_REQUEST = 2
 
+/** First-line prefix of the gate's block reason, shared by its author
+ *  (index.ts) and its classifiers (telemetry) so the text contract has a
+ *  single source of truth. */
+export const TODO_CHECKIN_BLOCK_PREFIX = "⏸ Todo check-in pending (input revision "
+
 export type CheckinReason = "user_input" | "staleness" | "plan_submission"
 
 export interface CheckinPending {
@@ -69,6 +74,12 @@ interface SessionGateState {
 	 *  preserved while inactive — only their publication is suppressed, so
 	 *  re-enablement re-surfaces the unreconciled input. */
 	enforcementActive: boolean
+	/** Tool calls this session's gate blocked. Recorded at block time so
+	 *  transcript renderers can anchor the collapsed gate display on
+	 *  harness-owned provenance that tool output cannot forge. Entries are
+	 *  kept for the session (their transcript rows stay collapsed) and
+	 *  disposed with it. */
+	blockedToolCalls: Set<string>
 }
 
 const gateStates = new Map<string, SessionGateState>()
@@ -83,6 +94,7 @@ function sessionState(sessionId: string): SessionGateState {
 			stalenessOpenings: 0,
 			stalenessOpeningsRevision: 0,
 			enforcementActive: true,
+			blockedToolCalls: new Set(),
 		}
 		gateStates.set(sessionId, state)
 	}
@@ -323,6 +335,25 @@ export function recordStalenessOpening(sessionId: string, inputRevision: number)
 		state.stalenessOpeningsRevision = inputRevision
 	}
 	state.stalenessOpenings += 1
+}
+
+// ── Gate-blocked tool call registry ──────────────────────────────────────────
+
+/** Record a tool call the gate blocked. Written only from the gate's
+ *  tool_call hook — harness knowledge the transcript renderer can trust. */
+export function recordGateBlockedToolCall(sessionId: string, toolCallId: string): void {
+	sessionState(sessionId).blockedToolCalls.add(toolCallId)
+}
+
+/** True when the gate blocked this tool call in any live session. Tool call
+ *  ids are one-shot and unique, so cross-session lookup cannot collide (the
+ *  render context carries no session id); entries are disposed with their
+ *  owning session. */
+export function isGateBlockedToolCall(toolCallId: string): boolean {
+	for (const state of gateStates.values()) {
+		if (state.blockedToolCalls.has(toolCallId)) return true
+	}
+	return false
 }
 
 // ── Subscriptions and lifecycle ───────────────────────────────────────────────
