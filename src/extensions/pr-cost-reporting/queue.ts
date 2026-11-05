@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, open } from "node:fs/promises"
+import { mkdir, open, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
 import { lock } from "proper-lockfile"
@@ -191,6 +191,64 @@ function empty(): ReportingState {
 
 export async function readReportingState(agentDir: string): Promise<ReportingState> {
 	return (await loadReportingState(agentDir)).state
+}
+
+/** Cheap fingerprint of the queue file: every durable write renames a fresh temporary into place. */
+export interface ReportingStateSignature {
+	mtimeMs: number
+	size: number
+	ino: number
+}
+
+export async function readReportingStateSignature(agentDir: string): Promise<ReportingStateSignature | undefined> {
+	try {
+		const file = await stat(reportingStatePath(agentDir))
+		return { mtimeMs: file.mtimeMs, size: file.size, ino: file.ino }
+	} catch {
+		return undefined
+	}
+}
+
+/**
+ * Pass-scoped cache for readReportingState: the caller keeps `signature` across calls and the file
+ * is re-parsed only when it was actually rewritten in between. A TOCTOU race is narrowed by re-statting
+ * after the read: a write landing between stat and read changes the post-read signature, so the cache
+ * re-reads on the next call instead of trusting torn state. Callers keep a bare object.
+ */
+export interface FreshReportingState {
+	state?: ReportingState
+	signature?: ReportingStateSignature
+}
+
+export async function readReportingStateFresh(
+	agentDir: string,
+	cached: FreshReportingState,
+): Promise<FreshReportingState & { state: ReportingState }> {
+	const signature = await readReportingStateSignature(agentDir)
+	if (
+		signature &&
+		cached.signature &&
+		cached.state &&
+		signature.mtimeMs === cached.signature.mtimeMs &&
+		signature.size === cached.signature.size &&
+		signature.ino === cached.signature.ino
+	) {
+		// Telemetry config lives outside state.json; re-derive the toggle on a cache hit.
+		if (cached.state.followsTelemetry) cached.state.enabled = isTelemetryEnabled()
+		return { state: cached.state, signature: cached.signature }
+	}
+	const state = await readReportingState(agentDir)
+	const after = await readReportingStateSignature(agentDir)
+	if (
+		after &&
+		signature &&
+		after.mtimeMs === signature.mtimeMs &&
+		after.size === signature.size &&
+		after.ino === signature.ino
+	)
+		return { state, signature: after }
+	// The file changed while we read it: trust the read for this call only and cache nothing.
+	return { state, signature: undefined }
 }
 
 /** The new reporting producer rotates independently; legacy pending uploads keep their original identity. */

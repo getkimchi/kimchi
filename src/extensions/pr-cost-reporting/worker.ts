@@ -31,6 +31,7 @@ import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
 	deferFrozenSnapshot,
+	type FreshReportingState,
 	freezeSnapshots,
 	frozenSnapshotPending,
 	inUploadWindow,
@@ -39,6 +40,7 @@ import {
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
 	readReportingState,
+	readReportingStateFresh,
 	recordReportingError,
 	reportingProducer,
 	reportingStatePath,
@@ -176,6 +178,12 @@ export function deliverSnapshots(
 		const state = await freezeSnapshots(agentDir, check)
 		if (!state.enabled) return
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
+		// Pass-scoped signature cache: every durable write renames the file, so an unchanged
+		// (mtime, size, ino) means the parse is still current and the mega-byte reread is skipped.
+		// Seeded without a signature: stat seeding would pair the freeze pass's state with a
+		// signature read after it, hiding a write that landed between the two, so the first
+		// HTTP call binds state+signature itself.
+		let queueFile: FreshReportingState = { state }
 		/** The configured credential: API key, or the SSO token from auth.json. */
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
@@ -252,7 +260,9 @@ export function deliverSnapshots(
 
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
-				const current = await readReportingState(agentDir)
+				const fresh = await readReportingStateFresh(agentDir, queueFile)
+				queueFile = fresh
+				const current = fresh.state
 				assertCurrent()
 				if (!current.enabled || current.entries[job.key]?.held || !frozenSnapshotPending(agentDir, job))
 					throw new Error("PR reporting snapshot changed")
@@ -369,6 +379,8 @@ export function deliverEvents(
 ): Promise<void> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const backend = backendFor(agentDir)
+		// Pass-scoped signature cache; details at the snapshots deliver path below the events loop.
+		let queueFile: FreshReportingState = {}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
 			const due = readOutboxStatus(agentDir).filter(
@@ -410,7 +422,9 @@ export function deliverEvents(
 			}
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
-				const current = await readReportingState(agentDir)
+				const fresh = await readReportingStateFresh(agentDir, queueFile)
+				queueFile = fresh
+				const current = fresh.state
 				assertCurrent()
 				if (!current.enabled) throw new Error("PR reporting is disabled")
 				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))

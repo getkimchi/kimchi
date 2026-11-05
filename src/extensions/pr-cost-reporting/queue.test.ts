@@ -28,6 +28,7 @@ import {
 	limitSnapshot,
 	queueSnapshots,
 	readReportingState,
+	readReportingStateFresh,
 	reportingProducer,
 	setReportingEnabled,
 	takeLimitNotices,
@@ -131,6 +132,53 @@ describe("org usage-reporting policy", () => {
 })
 
 describe("durable reporting queue", () => {
+	describe("readReportingStateFresh", () => {
+		it("returns the same parsed state while the queue file is unchanged", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			expect(first.signature).toBeDefined()
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).toBe(first.state)
+			expect(second.signature).toEqual(first.signature)
+		})
+
+		it("re-reads when another writer replaces the queue between calls", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			await setReportingEnabled(directory, false)
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).not.toBe(first.state)
+			expect(second.state.enabled).toBe(false)
+			const third = await readReportingStateFresh(directory, second)
+			expect(third.state).toBe(second.state)
+		})
+
+		it("re-reads when the queue file disappears between calls", async () => {
+			await setReportingEnabled(directory, true)
+			const first = await readReportingStateFresh(directory, {})
+			await rm(join(directory, "pr-cost-reporting", "state.json"))
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.signature).toBeUndefined()
+			expect(second.state.enabled).toBe(true)
+		})
+
+		it("re-derives the telemetry toggle on a cache hit for a follows-telemetry queue", async () => {
+			await setReportingEnabled(directory, true)
+			const state = await readReportingState(directory)
+			await writeFile(
+				join(directory, "pr-cost-reporting", "state.json"),
+				JSON.stringify({ ...state, followsTelemetry: true }),
+			)
+			const first = await readReportingStateFresh(directory, {})
+			expect(first.state.enabled).toBe(true)
+			// The telemetry env flips without a state.json write; the hit path must still see it.
+			vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+			const second = await readReportingStateFresh(directory, first)
+			expect(second.state).toBe(first.state)
+			expect(second.state.enabled).toBe(false)
+		})
+	})
+
 	it("trims a legacy pending body over the upload limits before it is frozen", async () => {
 		await setReportingEnabled(directory, true)
 		const requests = Array.from({ length: 33_000 }, (_, index) => ({
