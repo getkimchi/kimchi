@@ -1517,9 +1517,7 @@ export class KimchiAcpAgent implements Agent {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
 			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
-			if (
-				unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)
-			) {
+			if (unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)) {
 				clearPermissionModeEnv(entry.session.sessionId)
 			}
 			const droppedQueue = this.drainQueue(entry)
