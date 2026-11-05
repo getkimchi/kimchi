@@ -8,7 +8,15 @@ export function registerAcpPrompter(sessionId: string, prompter: ToolPermissionP
 	bySessionId.set(sessionId, prompter)
 }
 
-export function unregisterAcpPrompter(sessionId: string): void {
+/**
+ * Id keys recycle across concurrent attaches (load+resume of one id coalesce
+ * separately) and respawns, so a caller that registered a SPECIFIC prompter
+ * passes it back for an identity check — deleting by key alone could evict
+ * another (winning, still-live) session's prompter. Without `expected`, the
+ * delete is unconditional (cleanup paths that own the id at that point).
+ */
+export function unregisterAcpPrompter(sessionId: string, expected?: ToolPermissionPrompter): void {
+	if (expected !== undefined && bySessionId.get(sessionId) !== expected) return
 	bySessionId.delete(sessionId)
 }
 

@@ -726,6 +726,9 @@ export class KimchiAcpAgent implements Agent {
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const session = await this.sessionFactory(params)
+		// Captured for the identity-checked catch unwind: a concurrent
+		// attach of the same id may own the prompter registry by then.
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
 		try {
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -761,16 +764,14 @@ export class KimchiAcpAgent implements Agent {
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Populate skill commands only after binding: extensions contribute
@@ -797,10 +798,10 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(session.sessionId)
+			unregisterAcpPrompter(session.sessionId, ownPrompter)
 			unregisterSessionPermissionFlagController(session.sessionId)
 			clearPermissionModeEnv(session.sessionId)
-			session.dispose()
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1035,15 +1036,15 @@ export class KimchiAcpAgent implements Agent {
 		const session = await this.sessionLoader(params)
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
 		try {
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
 			// disagrees with the requested id would land under the wrong key in
 			// `sessions`. Subsequent session/prompt for params.sessionId would then
 			// fail with "unknown sessionId" while the file is still held open.
-			// Reject up front and dispose so we don't quietly diverge.
+			// Reject up front; the catch below tears the session down.
 			if (sessionId !== params.sessionId) {
-				await this.disposeOrphanSession(session)
 				throw RequestError.invalidParams(
 					undefined,
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
@@ -1073,16 +1074,14 @@ export class KimchiAcpAgent implements Agent {
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Same post-binding skill population as newSession (see there).
@@ -1115,11 +1114,14 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sessionId)
+			unregisterAcpPrompter(sessionId, ownPrompter)
 			unregisterSessionPermissionFlagController(sessionId)
 			clearPermissionModeEnv(sessionId)
+			// Identity check: load and resume of one id coalesce separately, so
+			// a concurrent attach may already own the registry slot — tearing
+			// down the WINNER's record would kill a live session.
 			const existing = this.sessions.get(sessionId)
-			if (existing) {
+			if (existing && existing.session === session) {
 				this.sessions.delete(sessionId)
 				existing.planTracker?.stop()
 				existing.unsubscribe()
@@ -1726,13 +1728,16 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
-	 * Dispose a session that was never (or is no longer) registered in
-	 * `sessions` — early attach-fail paths. The vault lifecycle (and every
-	 * extension teardown keyed on it) listens for the session_shutdown
-	 * event, so disposing without emitting it would leak extension state
+	 * The single emit→dispose teardown primitive: fire session_shutdown and
+	 * await extension handlers before dispose(), ALWAYS paired. Every
+	 * session teardown routes here — early attach-fail orphans (header-id
+	 * mismatch, registration unwind, newSession catch) and registered
+	 * sessions via disposeSessionRecord — because the vault lifecycle (and
+	 * every extension teardown keyed on it) listens for the session_shutdown
+	 * event, and disposing without emitting it would leak extension state
 	 * (token vaults, etc.) for a session that did start.
 	 */
-	private async disposeOrphanSession(session: SessionRecord["session"]): Promise<void> {
+	private async disposeOrphanSession(session: AgentSession): Promise<void> {
 		try {
 			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		} catch {
@@ -1754,8 +1759,7 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		entry.session.dispose()
+		await this.disposeOrphanSession(entry.session)
 		this.skillWatcher?.removeSession(entry)
 	}
 

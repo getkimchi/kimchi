@@ -502,7 +502,17 @@ describe("pii-redaction hooks — token render mode", () => {
 		rmSync(codingAgentDir, { recursive: true, force: true })
 	})
 
-	const ctxFor = (sessionId: string) => createContext({ sessionManager: { getSessionId: () => sessionId } })
+	// One context (stable sessionManager object identity) per session id:
+	// the vault lifecycle deletes by exact-owner identity.
+	const contexts = new Map<string, ReturnType<typeof createContext>>()
+	const ctxFor = (sessionId: string) => {
+		const cached = contexts.get(sessionId)
+		if (cached) return cached
+		const created = createContext({ sessionManager: { getSessionId: () => sessionId } })
+		contexts.set(sessionId, created)
+		return created
+	}
+	beforeEach(() => contexts.clear())
 
 	it("message_end stores a stable token and reports the same facts as markers", async () => {
 		const { api, invoke, emitted } = makePi()
