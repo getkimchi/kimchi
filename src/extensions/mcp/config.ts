@@ -18,6 +18,15 @@ export const LEGACY_PROJECT_MCP_CONFIG = ".kimchi/mcp.json"
 export const SHARED_MCP_CONFIG_FILENAME = "mcp.json"
 
 /**
+ * Protocol era negotiated for MCP servers whose entry does not pin an explicit
+ * `protocolVersion`: modern (2026-07-28) with legacy fallback. Connectionless
+ * (url-based) servers negotiate; stdio servers keep the legacy handshake
+ * unless pinned, because era negotiation on stdio costs a sacrificial process
+ * spawn.
+ */
+export const DEFAULT_MCP_PROTOCOL_VERSION = "auto" as const
+
+/**
  * The user-global MCP config kimchi shares with kimchi-studio's bundled
  * harness (`~/.config/kimchi/harness/mcp.json`). Passed to createMcpAdapter()
  * as the default configPath so every adapter write flow (compat imports, Jev
