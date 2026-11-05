@@ -164,8 +164,8 @@ describe("session lifecycle", () => {
 
 	it("shutdown deletes only the mapping its own session owns (respawn race-safe)", async () => {
 		// Respawn of the same id lands BEFORE the old session's shutdown is
-		// emitted (close aborts first): the respawn retains the vault and
-		// ownership transfers to it — the OLD session's shutdown must not
+		// emitted (close aborts first): the respawn co-owns the vault — the
+		// OLD session's shutdown removes only its own ownership and must not
 		// evict the live mapping (a by-key delete would orphan the respawn).
 		const { start, shutdown } = startShutdownPair(() => true)
 		const oldCtx = ctxFor("s1")
@@ -176,6 +176,25 @@ describe("session lifecycle", () => {
 		await shutdown({}, oldCtx)
 		expect(vaultForSession("s1")).toBe(vault)
 		expect(vaultForPaint()).toBe(vault)
+	})
+
+	it("a failed attach's shutdown co-owns, never steals: the survivor's vault stays", async () => {
+		// Two concurrent same-id attaches (load+resume coalesce by intent):
+		// both observe session_start over ONE mapping. The loser's shutdown
+		// fires on its attach-fail unwind (disposeOrphanSession) — it must
+		// remove only its own ownership, not retire the survivor's vault.
+		const { start, shutdown } = startShutdownPair(() => true)
+		const entries: SessionEntry[] = []
+		const a = createContext({ sessionManager: { getSessionId: () => "s3", getEntries: () => entries } })
+		const b = createContext({ sessionManager: { getSessionId: () => "s3", getEntries: () => entries } })
+		await start({}, a)
+		const vault = vaultForSession("s3")
+		await start({}, b)
+		expect(vaultForSession("s3")).toBe(vault) // co-owned, same mapping
+		await shutdown({}, b) // the failed attach's unwind
+		expect(vaultForSession("s3")).toBe(vault) // survivor's vault untouched
+		await shutdown({}, a) // the last owner retires it
+		expect(vaultForSession("s3")).toBeUndefined()
 	})
 
 	it("shutdown clears the paint pointer only when it owns it", async () => {

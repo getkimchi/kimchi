@@ -111,7 +111,11 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
-import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import type {
+	PermissionMode,
+	PermissionModeState,
+	SessionPermissionFlagController,
+} from "../../extensions/permissions/types.js"
 import { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
 import { vaultForSession } from "../../extensions/pii-redaction/vault.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
@@ -327,6 +331,15 @@ function cancelPendingPrompts(entry: SessionRecord): void {
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
+	/**
+	 * The prompter THIS record registered — threaded so every teardown of
+	 * the registry slot identity-checks it: a close/abort await window lets
+	 * a same-id respawn register first, and a by-key delete would then evict
+	 * the RESPAWN's live prompter.
+	 */
+	ownPrompter?: ReturnType<typeof createAcpPermissionPrompter>
+	/** Same identity discipline as ownPrompter, for the mode-controller registry slot. */
+	ownFlagController?: SessionPermissionFlagController
 	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
 	// its cwd private, but the ACP server needs it to resolve relative tool
 	// paths (pre-write reads for per-turn diffs).
@@ -729,6 +742,7 @@ export class KimchiAcpAgent implements Agent {
 		// Captured for the identity-checked catch unwind: a concurrent
 		// attach of the same id may own the prompter registry by then.
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -745,7 +759,7 @@ export class KimchiAcpAgent implements Agent {
 			// way setSessionModel does for an explicit client change.
 			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -763,6 +777,7 @@ export class KimchiAcpAgent implements Agent {
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
 			ownPrompter = createAcpPermissionPrompter(
 				this.conn,
@@ -772,6 +787,7 @@ export class KimchiAcpAgent implements Agent {
 				record.cwd,
 			)
 			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Populate skill commands only after binding: extensions contribute
@@ -798,9 +814,14 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(session.sessionId, ownPrompter)
-			unregisterSessionPermissionFlagController(session.sessionId)
-			clearPermissionModeEnv(session.sessionId)
+			// Only when registration actually ran — an `undefined` expected
+			// value means UNCONDITIONAL delete, which could evict a concurrent
+			// same-id session's registry slots (e.g. loading a corrupted
+			// duplicate of a LIVE session's file hits this catch).
+			if (ownPrompter) unregisterAcpPrompter(session.sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(session.sessionId, ownFlagController)) {
+				clearPermissionModeEnv(session.sessionId)
+			}
 			await this.disposeOrphanSession(session)
 			throw err
 		}
@@ -1037,6 +1058,7 @@ export class KimchiAcpAgent implements Agent {
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
@@ -1053,7 +1075,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -1073,6 +1095,7 @@ export class KimchiAcpAgent implements Agent {
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
 			ownPrompter = createAcpPermissionPrompter(
 				this.conn,
@@ -1082,6 +1105,7 @@ export class KimchiAcpAgent implements Agent {
 				record.cwd,
 			)
 			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Same post-binding skill population as newSession (see there).
@@ -1114,9 +1138,10 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sessionId, ownPrompter)
-			unregisterSessionPermissionFlagController(sessionId)
-			clearPermissionModeEnv(sessionId)
+			if (ownPrompter) unregisterAcpPrompter(sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(sessionId, ownFlagController)) {
+				clearPermissionModeEnv(sessionId)
+			}
 			// Identity check: load and resume of one id coalesce separately, so
 			// a concurrent attach may already own the registry slot — tearing
 			// down the WINNER's record would kill a live session.
@@ -1491,9 +1516,12 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
-			unregisterAcpPrompter(entry.session.sessionId)
-			unregisterSessionPermissionFlagController(entry.session.sessionId)
-			clearPermissionModeEnv(entry.session.sessionId)
+			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
+			if (
+				unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)
+			) {
+				clearPermissionModeEnv(entry.session.sessionId)
+			}
 			const droppedQueue = this.drainQueue(entry)
 			notifyDroppedQueue(this.conn, entry.session.sessionId, droppedQueue, "shutdown")
 			await this.disposeSessionRecord(entry)
@@ -1509,9 +1537,10 @@ export class KimchiAcpAgent implements Agent {
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
-		unregisterAcpPrompter(sessionId)
-		unregisterSessionPermissionFlagController(sessionId)
-		clearPermissionModeEnv(sessionId)
+		unregisterAcpPrompter(sessionId, entry.ownPrompter)
+		if (unregisterSessionPermissionFlagController(sessionId, entry.ownFlagController)) {
+			clearPermissionModeEnv(sessionId)
+		}
 		entry.unsubscribe()
 		// Prompts parked behind an unsolicited run own no turn yet: resolve them
 		// as cancelled rather than leaving the client's request unanswered.
@@ -3304,7 +3333,7 @@ function registerPermissionFlagController(
 	session: AgentSession,
 	initialMode: PermissionModeState,
 	send: (params: SessionNotification) => void,
-): void {
+): SessionPermissionFlagController {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: initialMode,
 	})
@@ -3320,6 +3349,7 @@ function registerPermissionFlagController(
 			},
 		})
 	})
+	return permissionFlagController
 }
 
 const TITLE_MAX = 80

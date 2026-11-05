@@ -492,6 +492,7 @@ describe("pii-redaction hooks — token render mode", () => {
 		resetOrgPolicyForTests()
 		resetRedactorEngine()
 		resetTokenVaults()
+		contexts.clear()
 	})
 
 	afterEach(() => {
@@ -512,7 +513,6 @@ describe("pii-redaction hooks — token render mode", () => {
 		contexts.set(sessionId, created)
 		return created
 	}
-	beforeEach(() => contexts.clear())
 
 	it("message_end stores a stable token and reports the same facts as markers", async () => {
 		const { api, invoke, emitted } = makePi()
