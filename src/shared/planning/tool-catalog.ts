@@ -264,15 +264,20 @@ export const FERMENT_MODE_TOOLS: ToolEntry[] = [
 
 /**
  * Execution / write tools.
- * `bash` is shared between adhoc and ferment; the remaining tools are ferment-only.
- *
- * In `--plan` mode (`planning-adhoc`), `bash` is gated per-command by the
- * read-only gate at `permissions/index.ts:549–558` — not by the catalog.
+ * `bash` and `bash_control` are shared between adhoc and ferment; the
+ * remaining tools are ferment-only. The control tool is part of the bash
+ * tool — it moves with `bash` in every profile, so a session that can run
+ * commands can always stop, inspect, or wait on them (plan mode included;
+ * bash itself is still gated per-command there by the read-only gate at
+ * permissions/index.ts).
  */
 export const WRITE_TOOLS: ToolEntry[] = [
 	// Shared: available in both adhoc and ferment.
 	// In adhoc planning mode the runtime enforces read-only on a per-call basis.
 	{ name: "bash", modes: ["adhoc", "ferment"] },
+	// The bash companion: admitted wherever bash is (PLAN_MODE_TOOL_SET derives
+	// from this catalog, so plan mode admits its calls as well).
+	{ name: "bash_control", modes: ["adhoc", "ferment"] },
 	// Ferment implementation only
 	{ name: "edit", modes: ["ferment"] },
 	{ name: "write", modes: ["ferment"] },
@@ -316,7 +321,8 @@ export function getToolsForProfile(profile: ToolProfile): ToolEntry[] {
 				...PLANNING_CORE_TOOLS,
 				...ADHOC_MODE_TOOLS,
 				...SHARED_PLANNING_TOOLS,
-				// bash is the only write tool in adhoc planning mode
+				// bash (read-only gated per command) and its control tool are
+				// the only write tools in adhoc planning mode
 				...WRITE_TOOLS.filter((t) => t.modes.includes("adhoc")),
 			]
 

@@ -23,7 +23,7 @@ export function createExtensionApi(): {
 	registerEntryRenderer: ReturnType<typeof vi.fn<ExtensionAPI["registerEntryRenderer"]>>
 	getEntryRenderer(customType: string): Parameters<ExtensionAPI["registerEntryRenderer"]>[1]
 	registerCommand: ReturnType<typeof vi.fn<ExtensionAPI["registerCommand"]>>
-	emitEvent: ReturnType<typeof vi.fn>
+	emitEvent: ReturnType<typeof vi.fn<(channel: string, data: unknown) => void>>
 	registerTool: ReturnType<typeof vi.fn<ExtensionAPI["registerTool"]>>
 	setActiveTools: ReturnType<typeof vi.fn<ExtensionAPI["setActiveTools"]>>
 	getRegisteredTools(): ToolDefinition[]

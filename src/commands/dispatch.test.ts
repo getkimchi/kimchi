@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 import { dispatchSubcommand } from "./dispatch.js"
 import { ECHO_MODULE, installFakePackage, setupFakeAgentDir, teardownFakeAgentDir } from "./test-helpers.js"
 
 describe("dispatchSubcommand", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 	let agentDir: string
 
 	// Isolate package-command discovery from the real machine state — this

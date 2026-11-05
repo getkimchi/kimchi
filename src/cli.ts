@@ -68,6 +68,7 @@ import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
+import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -751,7 +752,17 @@ async function cliMain(): Promise<void> {
 			// before upstream pi-mono sees them (it does not recognize "multi-model"
 			// as a model id).
 			populateCliArgs(rawArgs)
-			const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+			// Couple the background-bash pair BEFORE pi parses the args: a
+			// `--tools` allowlist that admits `bash` also admits `bash_control`,
+			// exactly as the two extensions are registered together below. Without
+			// this, a `--tools bash,…` session keeps the background `bash` tool
+			// while pi's name-based registration filter drops its companion
+			// control tool — the model cannot disposition background processes and
+			// headless runs loop on the completion guard (see
+			// extensions/bash-background/tool-coupling.ts). Explicit
+			// `--exclude-tools bash_control` is honored: those sessions fall back
+			// to plain blocking bash instead (execute-time availability check).
+			const rawArgsWithoutMultiModel = coupleBashControlToolArg(stripMultiModelArgs(rawArgs))
 
 			// Probe runs here (before pi-mono takes stdin) so the result is cached for
 			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI

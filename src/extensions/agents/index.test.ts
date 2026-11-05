@@ -126,7 +126,8 @@ describe("AGENT_MODEL_PARAMETER_DESCRIPTION", () => {
 
 vi.mock("./manager/agent-manager.js", () => {
 	return {
-		AgentManager: vi.fn().mockImplementation((onComplete, _maxConcurrent, onStart) => {
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		AgentManager: vi.fn().mockImplementation(function (onComplete, _maxConcurrent, onStart) {
 			const records = new Map<string, unknown>()
 			const manager = {
 				onComplete,

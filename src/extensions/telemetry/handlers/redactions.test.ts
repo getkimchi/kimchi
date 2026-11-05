@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { TelemetryConfig } from "../../../config.js"
 import { logEvents, type RecordedEvent } from "../otlp-test-utils.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
@@ -44,7 +44,7 @@ const AMBIENT_BARE_KEYS = new Set([
 
 describe("handlers/redactions", () => {
 	let originalFetch: typeof globalThis.fetch
-	let fetchMock: ReturnType<typeof vi.fn>
+	let fetchMock: Mock
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch

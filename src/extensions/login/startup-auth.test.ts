@@ -1,6 +1,6 @@
 import { initTheme, LoginDialogComponent, type Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { REGIONS, type RegionId, regionEndpoints } from "../../regions.js"
 import { createContext } from "../__mocks__/context.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
@@ -67,7 +67,7 @@ function createHarness(
 		availableInitially?: boolean
 		addModelOnAuthSync?: boolean
 		overlayActiveInitially?: boolean
-		onCancel?: ReturnType<typeof vi.fn>
+		onCancel?: Mock
 		afterSessionStart?: SessionStartHandler
 	} = {},
 ) {
