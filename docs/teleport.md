@@ -72,6 +72,14 @@ Spawn a new workspace (or reuse an existing one), create a PTY session, and open
 
 If a workspace already exists for the given `--workspace` ref, it is reused; a new session is created inside it. If you pass `--git-repo`, rsync is skipped and the repo is cloned on the sandbox instead.
 
+**Workspace setup dialog:**
+
+Choosing **`+ new workspace`** in the workspace picker opens a single-page setup dialog before anything is provisioned. When your organization has workspace templates (curated presets fetched from the Kimchi API), the form leads with a searchable **Template** field: press enter to open the picker, type to filter by name or description, enter to apply (tab applies and moves on; picking `(none — manual configuration)` clears it). A selected template is expanded by the control plane at creation time — the manual fields below are ignored while one is selected (rendered dimmed, values kept so clearing the template restores them).
+
+Without a template, the manual fields configure the workspace: resources (CPU, memory, PVC size as Kubernetes quantity strings such as `1500m` / `2Gi` / `20Gi`), dependencies (comma-separated tool references such as `jq, node@22`), and the egress policy (mode plus allowed/denied destination lists). Fields left empty inherit the organization defaults; validation errors are shown inside the dialog. A template and manual parameters are mutually exclusive on the wire — exactly one of the two rides the workspace-create request. While a template is selected, its preset values are shown read-only in the manual fields (fields it doesn't set show their placeholder); only the workspace name stays editable. Your own values reappear when the template is cleared.
+
+Manual values are prefilled from a `kimchi_workspace.yaml` in your project (nearest file up to the git root) when present; the file remains the configuration source when teleport mints a workspace automatically (no picker — e.g. your first workspace). Cancelling the dialog (`esc`) cancels the teleport — nothing is provisioned. If the template catalog cannot be fetched, teleport warns and shows the manual form only.
+
 **Arguments:**
 
 | Argument | Description |

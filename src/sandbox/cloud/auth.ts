@@ -182,6 +182,12 @@ export async function createOrUpdateWorkspace(
 	description: string,
 	options?: AuthenticateOptions,
 ): Promise<{ uri: string; description: string }> {
+	if (options?.templateName && options.spec) {
+		// workspaces_api.proto: "set either template fields or explicit
+		// parameters, never both" — enforced client-side so the misuse surfaces
+		// at the call site instead of as a cryptic server 400.
+		throw new Error("templateName and spec are mutually exclusive on workspace creation")
+	}
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
@@ -197,15 +203,20 @@ export async function createOrUpdateWorkspace(
 			body: JSON.stringify({
 				description,
 				options: {
-					agentApiKey: apiKey,
+					// The Kimchi API key is deliberately NOT sent here (no agentApiKey):
+					// the workspace no longer receives it at creation. Only the git
+					// token rides `options` when provided.
 					...(options?.gitToken ? { gitToken: options.gitToken } : {}),
 				},
-				// Create-time-only spec (resources, dependencies, egress policy)
-				// under `spec` — the WorkspaceSpec create API. Never set legacy
-				// top-level fields alongside it (the server rejects the
-				// conflict); omitted entirely when unset so re-auth PUTs stay
-				// byte-identical.
+				// Create-time-only parameters under `spec` — the WorkspaceSpec
+				// create API. Never set legacy top-level fields alongside it (the
+				// server rejects the conflict); omitted entirely when unset so
+				// re-auth PUTs stay byte-identical.
 				...(options?.spec ? { spec: options.spec } : {}),
+				// Template reference (create-time-only): the server resolves the
+				// name to a snapshot of the template's values at creation. Taken
+				// instead of `spec` — the two are mutually exclusive on create.
+				...(options?.templateName ? { templateName: options.templateName } : {}),
 			}),
 		},
 		fetchImpl,

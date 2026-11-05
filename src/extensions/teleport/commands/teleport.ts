@@ -84,29 +84,41 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		ctx.ui.setStatus(STATUS_KEY, undefined)
 	}
 
-	// Resolve the workspace spec (kimchi_workspace.yaml) only when this
-	// resolution mints the workspace: spec fields are create-time-only
-	// server-side (resources immutable, dependencies/egress ignored on
-	// upsert) — sending them on re-auth is a 400 landmine or a silent no-op.
-	// Attaching to an existing workspace never reads the file, so a broken
-	// one cannot block a teleport that would ignore it anyway. Invalid
-	// values or a malformed file refuse before the upsert PUT is sent.
+	// Resolve the workspace configuration only when this resolution mints the
+	// workspace: spec fields are create-time-only server-side (resources
+	// immutable, dependencies/egress ignored on upsert) — sending them on
+	// re-auth is a 400 landmine or a silent no-op.
+	//
+	// Two mint paths:
+	// - picker "new" → the interactive setup dialog ran (resolved.setup) and
+	//   owns the result: use its spec as-is and do NOT re-read
+	//   kimchi_workspace.yaml (a cleared form means org defaults, deliberately
+	//   not file defaults).
+	// - empty-list mint (no picker) → kimchi_workspace.yaml remains the
+	//   configuration source. Attaching to an existing workspace never reads
+	//   the file. Invalid values or a malformed file refuse before the upsert
+	//   PUT is sent.
 	let workspaceSpec: ReturnType<typeof resolveWorkspaceSpec>
 	if (resolved.isNew) {
-		try {
-			workspaceSpec = resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
-		} catch (err) {
-			if (err instanceof WorkspaceFileError || err instanceof WorkspaceSpecError) {
-				refuse(ctx, err.message)
+		if (resolved.setup) {
+			workspaceSpec = resolved.setup.spec
+		} else {
+			try {
+				workspaceSpec = resolveWorkspaceSpec(loadWorkspaceFile(ctx.cwd))
+			} catch (err) {
+				if (err instanceof WorkspaceFileError || err instanceof WorkspaceSpecError) {
+					refuse(ctx, err.message)
+				}
+				throw err
 			}
-			throw err
 		}
 	}
 	const workspaceId = resolved.id
 	const sessionName = args.name ?? generateSessionName()
 	// For an existing workspace, preserve its stored name. For a newly minted
-	// one (resolved.name === undefined) fall back to the cwd basename.
-	const description = resolved.name ?? (basename(ctx.cwd) || "kimchi")
+	// one: the setup-dialog name wins when the dialog ran (user confirmed it);
+	// otherwise fall back to the cwd basename.
+	const description = resolved.setup?.name ?? resolved.name ?? (basename(ctx.cwd) || "kimchi")
 
 	// Local cancel: the progress overlay aborts this controller when the
 	// user presses Esc/Ctrl+C. Combine with the harness's ctx.signal so
@@ -169,9 +181,13 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 	try {
 		progress.step("Authenticating")
 		try {
+			// Template (resolved.setup.templateName) and spec (manual
+			// configuration) are mutually exclusive on the wire; the dialog only
+			// ever produces one of the two.
 			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
 				endpoint: ctx.endpoint,
 				...(workspaceSpec ? { spec: workspaceSpec } : {}),
+				...(resolved.setup?.templateName ? { templateName: resolved.setup.templateName } : {}),
 			})
 		} catch (err) {
 			if (signal.aborted) throw err
