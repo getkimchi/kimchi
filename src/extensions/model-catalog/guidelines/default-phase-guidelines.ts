@@ -3,9 +3,9 @@ import type { Phase } from "../types.js"
 export const DEFAULT_EXPLORE_GUIDELINES = `During **explore** phase:
 - Goal: build a mental map, not a solution. Do NOT modify files. Do NOT write a plan yet.
 - **Skip explore for greenfield projects** (empty directory, no existing code). There is nothing to explore — proceed directly to plan. A trivial 1-turn explore that only runs \`ls\` on an empty directory wastes a turn and adds no value.
-- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full. Batch independent reads with \`codemode\` when available; otherwise issue the calls together in the same turn.
+- Start broad with \`grep\`/\`find\`/\`ls\`; then \`read\` the 3–5 most relevant files in full — issue all \`read\` calls in the same turn, not one turn per file. Use \`codemode\` to chain or filter instead of returning whole files (e.g. read only the ranges a \`grep\` hit).
 - Trace imports and call chains across module boundaries — note the actual entry points and seams, not every file you saw.
-- Batch independent tool calls: prefer \`codemode\` when available for independent \`read\`, \`grep\`, or \`ls\` calls; otherwise issue the calls together in the same turn.
+- Batch independent tool calls: issue independent \`read\`, \`grep\`, or \`ls\` calls together in the same turn; prefer \`codemode\` when you can chain calls or filter large results rather than return them whole.
 - **Hypothesis testing**: After 5 consecutive read-only turns without a concrete hypothesis, state your hypothesis and run ONE targeted command to test it. Exploration without a hypothesis wastes tokens.
 - Stop as soon as you have enough context to plan. Over-exploring wastes tokens.
 - Output: a tight summary (paths, key types, integration points) — what matters, not everything you saw.`
