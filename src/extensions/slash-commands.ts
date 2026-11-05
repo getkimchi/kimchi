@@ -5,6 +5,7 @@ export const SLASH_COMMANDS = {
 	"multi-model": { hint: "Configure model roles" },
 	ferment: { hint: "Run task in background" },
 	todos: { hint: "Open todo overlay / manage short-lived todo items" },
+	tldr: { hint: "Quick status: what the agent is doing right now" },
 	compact: { hint: "Compact context window" },
 	name: { hint: "Rename this session" },
 	new: { hint: "Start a new session" },
