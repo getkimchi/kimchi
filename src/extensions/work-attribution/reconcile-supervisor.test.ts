@@ -10,6 +10,7 @@ import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	requestWorkReconciliation,
+	resolveFirstTickDelayMs,
 	resolveReconciliationIntervalMs,
 	subscribeCostReconciliation,
 	subscribeFileReconciliation,
@@ -44,6 +45,8 @@ function subscribePr() {
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reconcile-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
+	// Existing behaviour tests subscribe and expect a pass immediately.
+	vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 	vi.spyOn(transitions, "knownTransitionRepositories").mockReset().mockResolvedValue(["/repository-a", "/repository-b"])
 	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockReset().mockResolvedValue()
@@ -85,6 +88,93 @@ describe("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS seam", () => {
 		} finally {
 			vi.resetModules()
 		}
+	})
+})
+
+describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
+	it("returns the 5 s default when the seam is unset", () => {
+		vi.unstubAllEnvs()
+		expect(resolveFirstTickDelayMs()).toBe(5000)
+	})
+
+	it("honors zero and positive integer overrides", () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "200")
+		expect(resolveFirstTickDelayMs()).toBe(200)
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
+		expect(resolveFirstTickDelayMs()).toBe(0)
+	})
+
+	it.each(["-5", "1.5", "abc"])("falls back to 5 s for %s", (value) => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", value)
+		expect(resolveFirstTickDelayMs()).toBe(5000)
+	})
+
+	it("defers the first pass until the delay elapses (real short delay; interval stays faked)", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		await Promise.resolve()
+		expect(report).not.toHaveBeenCalled()
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+	})
+
+	it("an explicit request inside the window runs the pass once without a duplicate first tick", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		requestWorkReconciliation()
+		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		// Well past the window: the delayed first tick must not re-run a pass.
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		expect(report).toHaveBeenCalledOnce()
+	})
+
+	it("unsubscribing the last subscriber before the delay cancels the first pass", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
+		const report = vi.fn(async () => {})
+		const stop = subscribeReportingReconciliation(report)
+		await stop()
+		await new Promise((resolve) => setTimeout(resolve, 250))
+		expect(report).not.toHaveBeenCalled()
+	})
+
+	it("a subscriber joining inside the window drains durable updates without kicking off the scan", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "150")
+		const first = vi.fn()
+		const second = vi.fn()
+		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([
+			{
+				workId: "11111111-1111-4111-8111-111111111111",
+				sessionId: "session-1",
+				cwd: "/repository-a",
+				repository: "/repository-a/.git",
+				worktree: "/repository-a",
+				sha: "a".repeat(40),
+				pullRequests: [],
+			},
+		])
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: first }))
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(first).toHaveBeenCalledOnce()
+		// Joining mid-window: still no scan, but the durable drain broadcasts to
+		// every current subscriber — the first hears the update again.
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: second }))
+		await Promise.resolve()
+		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(second).toHaveBeenCalledOnce()
+		expect(first).toHaveBeenCalledTimes(2)
+	})
+
+	it("a subscriber joining after the window still gets an immediate tick", async () => {
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60")
+		const report = vi.fn(async () => {})
+		stops.push(subscribeReportingReconciliation(report))
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		expect(report).toHaveBeenCalled()
+		vi.clearAllMocks()
+		stops.push(subscribeReportingReconciliation(report))
+		await vi.waitFor(() => expect(report).toHaveBeenCalled())
 	})
 })
 

@@ -29,6 +29,20 @@ export function resolveReconciliationIntervalMs(): number {
 	return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_RECONCILIATION_INTERVAL_MS
 }
 export const RECONCILIATION_INTERVAL_MS = resolveReconciliationIntervalMs()
+
+const DEFAULT_FIRST_TICK_DELAY_MS = 5000
+/**
+ * A fresh supervisor holds its first pass for the startup window: the initial
+ * ledger import and first delivery are the most expensive reconciliation
+ * work, and running them synchronously at subscribe time races the
+ * interactive startup path (keystroke echo stalls ~1.8 s into the session).
+ * Later subscribers on the live supervisor still refresh immediately, and an
+ * explicit requestWorkReconciliation() bypasses the delay as before.
+ */
+export function resolveFirstTickDelayMs(): number {
+	const value = Number(readE2eSeam("KIMCHI_E2E_FIRST_TICK_DELAY_MS") ?? Number.NaN)
+	return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_FIRST_TICK_DELAY_MS
+}
 const PASS_BUDGET_MS = 3000
 type ChannelKind = "pull-requests" | "costs" | "reporting"
 /** Optional work with its own cancellation; unsubscribing waits only for that channel's pass. */
@@ -40,6 +54,8 @@ interface Supervisor extends ContinuationProgress {
 	subscribers: Set<ReconciliationSubscriber>
 	controller: AbortController
 	timer?: ReturnType<typeof setInterval>
+	firstTick?: ReturnType<typeof setTimeout>
+	hadPass?: boolean
 	running?: Promise<void>
 	requested?: boolean
 	nextRepository?: string
@@ -187,10 +203,9 @@ function reportError(owner: Supervisor, error: unknown): void {
 	if (!reported) debug("Reconciliation unavailable:", error)
 }
 
-function tick(agentDir: string, owner: Supervisor): void {
+/** Cheap local refresh: surface durable pull-request updates the session already holds. */
+function drainDurableUpdates(agentDir: string, owner: Supervisor): void {
 	if (owner.controller.signal.aborted) return
-	// Every process can display durable results, even while another process owns
-	// the lease for Git and GitHub queries.
 	try {
 		if (owner.channels.has("pull-requests"))
 			for (const update of readWorkPullRequestUpdates(agentDir))
@@ -198,7 +213,15 @@ function tick(agentDir: string, owner: Supervisor): void {
 	} catch (error) {
 		reportError(owner, error)
 	}
+}
+
+function tick(agentDir: string, owner: Supervisor): void {
+	if (owner.controller.signal.aborted) return
+	// Every process can display durable results, even while another process owns
+	// the lease for Git and GitHub queries.
+	drainDurableUpdates(agentDir, owner)
 	if (owner.running) return
+	owner.hadPass = true
 	owner.running = scan(agentDir, owner)
 		.catch((error) => {
 			if (!owner.controller.signal.aborted) debug("Reconciliation unavailable: %o", error)
@@ -231,12 +254,26 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 		const current = owner
 		current.timer = setInterval(() => tick(agentDir, current), RECONCILIATION_INTERVAL_MS)
 		current.timer.unref()
+		const delay = resolveFirstTickDelayMs()
+		if (delay > 0) {
+			current.firstTick = setTimeout(() => {
+				current.firstTick = undefined
+				// An explicit requestWorkReconciliation() or interval tick may have
+				// already run a pass inside the window; the delayed one is then moot.
+				if (!current.hadPass) tick(agentDir, current)
+			}, delay)
+			current.firstTick.unref()
+		}
 	}
 	const subscription = { ...subscriber }
 	owner.subscribers.add(subscription)
 	if (subscriber.kind !== "files" && !owner.channels.has(subscriber.kind))
 		owner.channels.set(subscriber.kind, { controller: new AbortController() })
-	tick(agentDir, owner)
+	if (owner.firstTick === undefined) tick(agentDir, owner)
+	// A subscriber joining inside the delayed first-pass window skips the
+	// expensive scan (that is the point of the delay) but still receives the
+	// durable pull-request updates the session already knows about.
+	else drainDurableUpdates(agentDir, owner)
 	const current = owner
 	let stopped = false
 	return async () => {
@@ -255,6 +292,10 @@ function subscribeReconciliation(subscriber: ReconciliationSubscriber): () => Pr
 			return
 		}
 		clearInterval(current.timer)
+		if (current.firstTick !== undefined) {
+			clearTimeout(current.firstTick)
+			current.firstTick = undefined
+		}
 		current.controller.abort()
 		await current.running
 		if (supervisors.get(agentDir) === current) supervisors.delete(agentDir)
