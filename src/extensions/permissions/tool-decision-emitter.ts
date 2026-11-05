@@ -23,6 +23,7 @@ export function emitToolDecision(
 	permissionMode: PermissionMode,
 	decision: "accept" | "reject",
 	sourceDetail: PermissionDecisionSourceDetail,
+	modeFlap?: PermissionToolDecisionPayload["modeFlap"],
 ): void {
 	const payload: PermissionToolDecisionPayload = {
 		toolCallId: event.toolCallId,
@@ -30,6 +31,7 @@ export function emitToolDecision(
 		decision,
 		sourceDetail,
 		permissionMode,
+		...(modeFlap ? { modeFlap } : {}),
 	}
 	pi.events.emit(PERMISSION_EVENTS.TOOL_DECISION, payload)
 }
