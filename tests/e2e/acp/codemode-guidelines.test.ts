@@ -23,6 +23,11 @@ it.each([true, false])(
 			const prompt = systemPromptOf(request)
 			expect(prompt.includes("Use codemode to batch independent tool calls (Promise.allSettled)")).toBe(enabled)
 			expect(prompt.includes("Prefer `codemode` for batching independent tool calls")).toBe(enabled)
+			// Builtin guidelines must survive tool-rendering's re-registration of
+			// the core tools; codemode's own guideline proves nothing about the
+			// other seven. Present regardless of the codemode toggle — only
+			// codemode is disabled here, read stays enabled.
+			expect(prompt).toContain("Use read to examine files instead of cat or sed.")
 		} finally {
 			await fixture.stop()
 		}

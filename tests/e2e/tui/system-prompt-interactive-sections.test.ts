@@ -34,6 +34,7 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 			expect(prompt).toContain("## Tool Guidelines")
 			expect(prompt).toContain("Use codemode to batch independent tool calls (Promise.allSettled)")
 			expect(prompt).toContain("Prefer `codemode` for batching independent tool calls")
+			expect(prompt).toContain("Use read to examine files instead of cat or sed.")
 
 			// The headless replacement never appears in an interactive session.
 			expect(prompt).not.toContain("## Autonomous Session")
