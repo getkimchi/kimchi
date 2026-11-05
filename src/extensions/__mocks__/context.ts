@@ -112,6 +112,10 @@ export function createContext(
 		isIdle: vi.fn(),
 		hasPendingMessages: vi.fn(() => false),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
+		// Production contexts always expose the effective system prompt
+		// (pi's ExtensionContext.getSystemPrompt); the empty default keeps
+		// event firers working without forcing every test to spell it out.
+		getSystemPrompt: vi.fn(() => ""),
 		modelRegistry: createModelRegistry(),
 		...overrides,
 		model: overrides?.model

@@ -5,6 +5,7 @@ export const TELEMETRY_PROVIDER_HEADER_NAMES = {
 	conversationId: "X-Conversation-Id",
 	turnIndex: "X-Turn-Index",
 	parentSessionId: "X-Parent-Session-Id",
+	acpClientName: "X-Acp-Client-Name",
 	traceparent: "traceparent",
 } as const
 

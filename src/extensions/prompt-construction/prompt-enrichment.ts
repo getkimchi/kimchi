@@ -38,6 +38,7 @@ import {
 	resolveSkillPathsForDiscovery,
 } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { markSessionSystemPromptEnded, recordSessionSystemPrompt } from "../../utils/session-system-prompt-store.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -968,6 +969,31 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// (applyLanguageHint), not returned here: a before_agent_start
 			// message would be persisted into the session once per turn.
 			return { systemPrompt }
+		})
+
+		// Capture the effective prompt for session exports. agent_start fires
+		// after _prepareRun has installed the finalized run options, so
+		// ctx.getSystemPrompt() returns the exact text this run sends — including
+		// appends from later-registered handlers (e.g. the Claude Code hook
+		// adapter's SessionStart delivery), which the before_agent_start return
+		// value alone would miss. pi 1.3.0 never records that text in the
+		// transcript, so without this capture the exported JSONL header and HTML
+		// payload would fall back to pi's base prompt.
+		pi.on("agent_start", async (_event, ctx) => {
+			const prompt = ctx.getSystemPrompt()
+			if (prompt) recordSessionSystemPrompt(ctx.sessionManager.getSessionId(), prompt)
+		})
+
+		// A shut-down session's capture becomes evictable in the bounded store.
+		// Whitelist the ending reasons (quit/new/resume/fork): a resource "reload"
+		// keeps the same session alive, and any unknown future reason must default
+		// to keeping the capture live — the worst case of a missed end is bounded
+		// memory, while wrongly marking a live session evictable reintroduces the
+		// wrong-prompt export bug this module fixes.
+		pi.on("session_shutdown", async (event, ctx) => {
+			if (event.reason === "quit" || event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
+				markSessionSystemPromptEnded(ctx.sessionManager.getSessionId())
+			}
 		})
 	}
 }

@@ -53,6 +53,7 @@ import {
 } from "./handlers/session.js"
 import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
+import { getAcpAttributes } from "./handlers/utils.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
@@ -1046,6 +1047,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			const parentSessionId = telemetryCtx.getParentSessionId()
 			if (parentSessionId) {
 				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId] = parentSessionId
+			}
+
+			// ACP-driven provider requests carry the ACP client name (from the
+			// initialize handshake) so the recording proxy can attribute
+			// chat_completions rows to the client that drove them, mirroring the
+			// acp_client_name metric/log attribute. Absent when no ACP client has
+			// initialized (plain CLI sessions).
+			const acpAttributes = getAcpAttributes()
+			if (acpAttributes) {
+				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.acpClientName] = acpAttributes.acp_client_name
 			}
 
 			// Inject W3C Trace Context (if not already present) with a fresh
