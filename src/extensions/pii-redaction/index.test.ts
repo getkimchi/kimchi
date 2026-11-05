@@ -14,11 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { invalidateJsonCache } from "../../config/json.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { getResourceSettingsPath, setResourceOverride } from "../../resources/store.js"
+import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import piiRedactionExtension from "./index.js"
 import { PII_REDACTION_EVENTS } from "./redaction-events.js"
 import { resetRedactorEngine } from "./redactor.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
+import { resetTokenVaults, substituteTokens, vaultForSession } from "./vault.js"
 
 // The hook-level contract for a broken settings block: the extension runner
 // (pi-coding-agent) catches handler rejections and DISCARDS their results,
@@ -89,12 +91,13 @@ function makePi() {
 	return {
 		...harness,
 		emitted,
-		invoke: (event: string, payload: unknown) =>
+		invoke: (event: string, payload: unknown, ctx?: unknown): Promise<unknown[]> =>
 			Promise.all(
 				harness
 					.getHandlers(event)
-					// The hooks under test ignore ctx entirely.
-					.map((handler) => handler(payload, undefined as unknown as Parameters<typeof handler>[1])),
+					// ctx defaults to undefined: hooks resolve the session vault
+					// from it when present and degrade to markers without it.
+					.map(async (handler) => (await handler(payload, ctx as Parameters<typeof handler>[1])) as unknown),
 			),
 	}
 }
@@ -470,5 +473,153 @@ describe("pii-redaction extension — event emission wiring", () => {
 		await invoke("message_end", { message })
 		await invoke("tool_result", { content: [{ type: "text", text: "alice@example.com" }] })
 		expect(emitted).toEqual([])
+	})
+})
+
+describe("pii-redaction hooks — token render mode", () => {
+	let codingAgentDir: string
+
+	// Assembled, not literal: write args on this file run under the same
+	// redaction the tests exercise.
+	const EMAIL = ["robin.hood", "corp-mail.io"].join("@")
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "pii-token-hooks-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction: { renderMode: "tokens" } }))
+		invalidateJsonCache(getResourceSettingsPath())
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "extensions.pii-redaction")
+		resetOrgPolicyForTests()
+		resetRedactorEngine()
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+		resetOrgPolicyForTests()
+		resetRedactorEngine()
+		resetTokenVaults()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	const ctxFor = (sessionId: string) => createContext({ sessionManager: { getSessionId: () => sessionId } })
+
+	it("message_end stores a stable token and reports the same facts as markers", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+		await invoke("session_start", {}, ctxFor("s1"))
+
+		const message = { role: "assistant", content: [{ type: "text", text: `ping ${EMAIL}` }] }
+		const results = await invoke("message_end", { message }, ctxFor("s1"))
+		const text = (results[0] as { message?: { content?: { text?: string }[] } })?.message?.content?.[0]?.text ?? ""
+		expect(text).toBe("ping [EMAIL_ADDRESS_1]")
+		expect(emitted).toEqual([
+			expect.objectContaining({
+				channel: PII_REDACTION_EVENTS.REDACTED,
+				payload: expect.objectContaining({ surface: "assistant_message", entity_type: "EMAIL_ADDRESS", count: 1 }),
+			}),
+		])
+	})
+
+	it("tokens are stable across hooks within a session (tool_result → message_end)", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+		await invoke("session_start", {}, ctxFor("s1"))
+
+		const toolResults = await invoke(
+			"tool_result",
+			{ content: [{ type: "text", text: `found ${EMAIL}` }] },
+			ctxFor("s1"),
+		)
+		const toolText = (toolResults[0] as { content?: { text?: string }[] })?.content?.[0]?.text ?? ""
+		expect(toolText).toBe("found [EMAIL_ADDRESS_1]")
+
+		const msgResults = await invoke(
+			"message_end",
+			{ message: { role: "user", content: `reply to ${EMAIL}` } },
+			ctxFor("s1"),
+		)
+		const msgText = (msgResults[0] as { message?: { content?: unknown } })?.message?.content as string
+		expect(msgText).toBe("reply to [EMAIL_ADDRESS_1]")
+	})
+
+	it("before_provider_request cache: re-scan of tokenized text nets to zero facts", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+		await invoke("session_start", {}, ctxFor("s1"))
+
+		const message = { role: "user", content: `mail ${EMAIL}` }
+		const payload = { payload: { messages: [message] } }
+		await invoke("before_provider_request", payload, ctxFor("s1"))
+		expect(JSON.stringify(payload)).toContain("[EMAIL_ADDRESS_1]")
+		expect(emitted).toHaveLength(1)
+
+		// Reference-cache hit: no rescan, no re-emission.
+		emitted.length = 0
+		await invoke("before_provider_request", payload, ctxFor("s1"))
+		expect(emitted).toEqual([])
+	})
+
+	it("no session vault → markers even under token-mode settings (no identity, no tokens)", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+		// No session_start: hook has no session id to key a vault under.
+		const message = { role: "assistant", content: [{ type: "text", text: `ping ${EMAIL}` }] }
+		const results = await invoke("message_end", { message }, ctxFor("s9"))
+		const text = (results[0] as { message?: { content?: { text?: string }[] } })?.message?.content?.[0]?.text ?? ""
+		expect(text).toBe("ping [REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("tokens never cross-substitute: foreign-session tokens render verbatim", async () => {
+		const { api, invoke } = makePi()
+		piiRedactionExtension(api)
+		await invoke("session_start", {}, ctxFor("sa"))
+		await invoke("session_start", {}, ctxFor("sb"))
+
+		const a = await invoke(
+			"message_end",
+			{ message: { role: "assistant", content: [{ type: "text", text: `a ${EMAIL}` }] } },
+			ctxFor("sa"),
+		)
+		const bEmail = ["jordan.plus", "other-corp.io"].join("@")
+		const b = await invoke(
+			"message_end",
+			{ message: { role: "assistant", content: [{ type: "text", text: `b ${bEmail}` }] } },
+			ctxFor("sb"),
+		)
+
+		const textA = (a[0] as { message?: { content?: { text?: string }[] } })?.message?.content?.[0]?.text ?? ""
+		const textB = (b[0] as { message?: { content?: { text?: string }[] } })?.message?.content?.[0]?.text ?? ""
+		// Counters are process-global: the two sessions issue distinct tokens
+		// for distinct values, so a foreign token can never alias.
+		expect(textA).toBe("a [EMAIL_ADDRESS_1]")
+		expect(textB).toBe("b [EMAIL_ADDRESS_2]")
+		// sa's vault recovers only sa's value; sb's token passes through
+		// VERBATIM under sa's vault — never a wrong value.
+		const vaultA = vaultForSession("sa")
+		expect(vaultA).toBeDefined()
+		expect(vaultA && substituteTokens(vaultA, textA)).toBe(`a ${EMAIL}`)
+		expect(vaultA && substituteTokens(vaultA, textB)).toBe("b [EMAIL_ADDRESS_2]")
+	})
+
+	it("markdown transformer substitutes against the paint vault; passthrough without one", async () => {
+		const { api, invoke, getMarkdownTransformers } = makePi()
+		piiRedactionExtension(api)
+		const transformers = getMarkdownTransformers()
+		expect(transformers).toHaveLength(1)
+		const paint = (text: string) =>
+			transformers[0](text, { messageType: "assistant", isStreaming: false, availableWidth: 80 })
+		// No session → no paint vault → transformers pass through.
+		expect(paint("text [EMAIL_ADDRESS_1]")).toBe("text [EMAIL_ADDRESS_1]")
+
+		await invoke("session_start", {}, ctxFor("s1"))
+		await invoke("message_end", { message: { role: "assistant", content: `call ${EMAIL}` } }, ctxFor("s1"))
+		// Paint-time: the tokenized stored text renders with its original.
+		expect(paint("call [EMAIL_ADDRESS_1]")).toBe(`call ${EMAIL}`)
+		// ...and markers are never touched by the substitution layer.
+		expect(paint("x [REDACTED-EMAIL_ADDRESS]")).toBe("x [REDACTED-EMAIL_ADDRESS]")
+
+		await invoke("session_shutdown", {}, ctxFor("s1"))
+		expect(paint("call [EMAIL_ADDRESS_1]")).toBe("call [EMAIL_ADDRESS_1]")
 	})
 })

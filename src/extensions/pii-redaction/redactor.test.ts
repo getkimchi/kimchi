@@ -26,6 +26,7 @@ import {
 	resetRedactorEngine,
 } from "./redactor.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
+import { createTokenVault, resetTokenVaults, substituteTokens } from "./vault.js"
 
 // ─── Fixture assembly ────────────────────────────────────────────────────────
 // Fixture VALUES are assembled at runtime, never written as literals: this
@@ -1190,5 +1191,176 @@ describe("precision defaults — scope guards", () => {
 	it("treats Unicode and punycode TLDs as real", () => {
 		expect(isTechnicalEmailDomain("пример.рф")).toBe(false)
 		expect(isTechnicalEmailDomain("example.xn--p1ai")).toBe(false)
+	})
+})
+
+describe("getRedactionConfig — redaction.renderMode settings", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-render-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("absent key → markers", () => {
+		expect(getRedactionConfig().renderMode).toBe("markers")
+	})
+
+	it('"tokens" parses', () => {
+		writeSettings({ renderMode: "tokens" })
+		expect(getRedactionConfig().renderMode).toBe("tokens")
+	})
+
+	it('"markers" parses explicitly', () => {
+		writeSettings({ renderMode: "markers" })
+		expect(getRedactionConfig().renderMode).toBe("markers")
+	})
+
+	it("invalid values throw (fail-visible)", () => {
+		writeSettings({ renderMode: "cloaked" })
+		expect(() => getRedactionConfig()).toThrow(/renderMode/)
+	})
+
+	it("non-string values throw", () => {
+		writeSettings({ renderMode: 2 })
+		expect(() => getRedactionConfig()).toThrow(/renderMode/)
+	})
+
+	it("FORCE locks force markers — a local token opt-in cannot override a locked deployment", async () => {
+		writeSettings({ renderMode: "tokens" })
+		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
+		expect(getRedactionConfig().renderMode).toBe("markers")
+	})
+})
+
+describe("token mode — composition and tally parity", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-token-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("identifier entities render as stable tokens; secret classes stay markers", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const first = await redactObjectStringsMeasured(
+			{ a: `mail ${fx.email}`, b: `host ${fx.ipAddress}`, c: `bearer ${fx.bearerValue}` },
+			vault,
+		)
+		const out = JSON.stringify(first.redacted)
+		expect(out).toContain("[EMAIL_ADDRESS_1]")
+		expect(out).toContain("[IP_ADDRESS_1]")
+		expect(out).toContain("[REDACTED-BEARER_TOKEN]")
+		expect(out).not.toContain(fx.email)
+		expect(out).not.toContain(fx.ipAddress)
+		expect(out).not.toContain(fx.bearerValue)
+		// Stability: the same address in a second pass reuses the token.
+		const second = await redactObjectStringsMeasured({ d: `again ${fx.email}` }, vault)
+		expect(JSON.stringify(second.redacted)).toContain("[EMAIL_ADDRESS_1]")
+		// A distinct address allocates the next counter.
+		const other = await redactObjectStringsMeasured({ e: `ping ${["robin.hood", "corp-mail.io"].join("@")}` }, vault)
+		expect(JSON.stringify(other.redacted)).toContain("[EMAIL_ADDRESS_2]")
+		// Round-trip: presentation-side substitution recovers the originals
+		// from tokens; markers are untouched by substitution.
+		expect(substituteTokens(vault, JSON.stringify(first.redacted))).toContain(fx.email)
+		expect(substituteTokens(vault, "[REDACTED-BEARER_TOKEN]")).toBe("[REDACTED-BEARER_TOKEN]")
+	})
+
+	it("engine detections outside the token set stay marker-shaped in token mode", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ cc: `card ${fx.creditCard}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-CREDIT_CARD]")
+	})
+
+	it("a missing vault under token settings falls back to markers", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` })
+		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("markers remain the default mode (no renderMode key)", async () => {
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("tally parity: identical input reports identical entities in both modes", async () => {
+		const input = {
+			a: `mail ${fx.email}`,
+			b: `second ${["robin.hood", "corp-mail.io"].join("@")} host ${fx.ipAddress}`,
+		}
+		const markerRun = await redactObjectStringsMeasured(structuredClone(input))
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const tokenRun = await redactObjectStringsMeasured(structuredClone(input), createTokenVault())
+		expect(tokenRun.report.entities).toEqual(markerRun.report.entities)
+		expect(Object.keys(tokenRun.report.entities).length).toBeGreaterThan(0)
+	})
+
+	it("a re-scan of already-tokenized text nets to zero introduced redactions", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const first = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, vault)
+		const second = await redactObjectStringsMeasured(first.redacted, vault)
+		expect(second.report.entities).toEqual({})
+	})
+
+	it("a token in the input can never be re-consumed by the custom-pattern pass", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		// GENERIC_SECRET's value charset excludes `[`/`]`, so the composed
+		// token must survive the second pass verbatim.
+		const result = await redactObjectStringsMeasured(
+			{ a: `password: somelongsecretvalue123 and mail ${fx.email}` },
+			vault,
+		)
+		expect(JSON.stringify(result.redacted)).toContain("[EMAIL_ADDRESS_1]")
+	})
+
+	it("strict export stays markers under token-mode settings", async () => {
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const result = await redactObjectStringsStrict({ a: `mail ${fx.email}` })
+		expect(JSON.stringify(result)).toContain("[REDACTED-EMAIL_ADDRESS]")
+	})
+
+	it("excluded entities drop detections in token mode exactly as in marker mode", async () => {
+		writeSettings({ renderMode: "tokens", excludedEntities: [...getDefaultExcludedEntities(), "EMAIL_ADDRESS"] })
+		resetRedactorEngine()
+		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, createTokenVault())
+		expect(JSON.stringify(result.redacted)).toContain(fx.email)
+		expect(result.report.entities).toEqual({})
 	})
 })

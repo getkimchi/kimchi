@@ -23,6 +23,7 @@ import type {
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -165,6 +166,12 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import {
+	installVaultLifecycle,
+	resetTokenVaults,
+	tokenFor,
+	vaultForSession,
+} from "../../extensions/pii-redaction/vault.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
@@ -12820,5 +12827,203 @@ describe("plan-review held prompt", () => {
 		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		expect(isSettled()?.ok).toBe(false)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Reversible redaction — presentation substitution of `[ENTITY_N]` tokens
+// ---------------------------------------------------------------------------
+
+describe("ACP token substitution (pii-redaction token mode)", () => {
+	// Install the production vault lifecycle (same wiring the pii-redaction
+	// extension uses) keyed to whatever session ids the tests register.
+	const extApi = () => {
+		const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<unknown> | unknown>>()
+		return {
+			api: {
+				on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+					const list = handlers.get(event) ?? []
+					list.push(handler)
+					handlers.set(event, list)
+				},
+			} as unknown as ExtensionAPI,
+			fire: (event: string, sessionId: string) => {
+				const ctx = { sessionManager: { getSessionId: () => sessionId } }
+				return Promise.all((handlers.get(event) ?? []).map((h) => h({}, ctx)))
+			},
+		}
+	}
+
+	const textDelta = (delta: string, contentIndex = 0): AgentSessionEvent => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			delta,
+			contentIndex,
+			partial: {} as unknown as AssistantMessage,
+		},
+		message: {} as unknown as AssistantMessage,
+	})
+
+	const messageEnd = (text: string): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	type Started = { agent: KimchiAcpAgent; updates: SessionNotification[]; fakes: Map<string, FakeAgentSession> }
+
+	async function startTwoSessions(): Promise<Started> {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const fakes = new Map<string, FakeAgentSession>()
+		// ACP's session/new allocates ids itself — pre-assign on the fake so
+		// the response id IS the fake's id, then key the map by it.
+		const ids = ["token-a", "token-b"]
+		let next = 0
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => {
+				const fake = new FakeAgentSession(ids[next] ?? `fake-${next}`)
+				next++
+				fakes.set(fake.sessionId, fake)
+				return asSession(fake)
+			},
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return { agent: localAgent, updates, fakes }
+	}
+
+	const chunks = (updates: SessionNotification[], sessionId: string) =>
+		updates
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	it("substitutes vault-known tokens in streamed chunks, incl. tokens split across deltas", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		expect(vaultA).toBeDefined()
+		if (!vaultA) return
+		const original = "jane.doe@acme.com"
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", original)
+
+		const fake = fakes.get("token-a")
+		expect(fake).toBeDefined()
+		if (!fake) return
+		// Token split mid-identifier across two deltas — no partial original
+		// or half-token may reach the wire.
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`ping ${token.slice(0, 10)}`))
+		fake.emit(textDelta(`${token.slice(10)} ok`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe(`ping ${original} ok`)
+		// token-b saw nothing — isolation is structural.
+		expect(chunks(updates, "token-b")).toEqual([])
+	})
+
+	it("message_end remainder + flush completes a cut token without a wrong-value or duplicated emission", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const vaultA = vaultForSession("token-a")
+		if (!vaultA) throw new Error("missing vault")
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", "jane.doe@acme.com")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`hi ${token.slice(0, 8)}`))
+		// message_end carries the full text; the remainder push + flush must
+		// reconstruct the token and substitute once.
+		fake.emit(messageEnd(`hi ${token}`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("hi jane.doe@acme.com")
+	})
+
+	it("confabulated tokens pass through verbatim (no vault entry, no crash)", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(messageEnd("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("imagine [EMAIL_ADDRESS_99] today")
+	})
+
+	it("DEAD-vault negative: session A's shutdown mid-stream stops its substitution; B never sees A's originals", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		const vaultB = vaultForSession("token-b")
+		if (!vaultA || !vaultB) throw new Error("missing vaults")
+		const secretA = "secret-a@acme-internal.io"
+		const tokenA = tokenFor(vaultA, "EMAIL_ADDRESS", secretA)
+		const tokenB = tokenFor(vaultB, "EMAIL_ADDRESS", "user-b@acme.com")
+
+		const fakeA = fakes.get("token-a")
+		const fakeB = fakes.get("token-b")
+
+		// A dies MID-STREAM. Its dangling partial tail must NOT complete into
+		// the wrong session, and its later deltas render tokens verbatim.
+		fakeA?.emit({ type: "agent_start" })
+		fakeA?.emit(textDelta(`a:${tokenA.slice(0, 12)}`))
+		await lifecycle.fire("session_shutdown", "token-a")
+		fakeA?.emit(textDelta(`${tokenA.slice(12)}.mid`))
+
+		// B streams normally while A is dead — B's vault substitutes only B's.
+		fakeB?.emit({ type: "agent_start" })
+		fakeB?.emit(textDelta(`b:${tokenB}.done`))
+		fakeB?.emit(agentEnd())
+
+		const aOut = chunks(updates, "token-a").join("")
+		const bOut = chunks(updates, "token-b").join("")
+		// A's original is recoverable from the vault that existed while it
+		// streamed — never from B's.
+		expect(aOut).toContain(secretA)
+		expect(bOut).toBe("b:user-b@acme.com.done")
+		expect(bOut).not.toContain(secretA)
 	})
 })

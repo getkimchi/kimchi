@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
+import { waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -472,6 +473,68 @@ test("emits per-entity pii_redaction.redacted + session_affected OTLP records wh
 				expect(serialized).not.toContain(card)
 				expect(serialized).not.toContain("Contact me at")
 			}
+		},
+	)
+})
+
+test("token mode: provider and session file hold tokens; the terminal paints the original", async ({ terminal }) => {
+	// Assembled at runtime — a literal address here would be rewritten by
+	// any agent pipeline editing this file.
+	const email = ["alice.stone", "corp-mail.io"].join("@")
+	await runKimchiSession(
+		terminal,
+		withRedactionEnabled({
+			artifactName: "pii-redaction-token-mode",
+			responses: [{ stream: [`Writing the reply to ${email} now — done`] }],
+			seedHome(home) {
+				// Opt into reversible rendering via settings.json.
+				const settingsPath = join(home, ".config", "kimchi", "harness", "settings.json")
+				const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>
+				settings.redaction = { renderMode: "tokens" }
+				writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`)
+			},
+		}),
+		async (fixture) => {
+			terminal.submit(`Mention ${email} in your reply`)
+
+			// The terminal paints the ORIGINAL — presentation-side substitution
+			// of the stored token. Assert the assistant line directly: the bare
+			// address also appears on the user's own echoed prompt line.
+			await expect(terminal.getByText(`Writing the reply to ${email} now — done`)).toBeVisible()
+
+			// The provider request carries the token for the user's prompt,
+			// never the address itself.
+			const request = firstChatRequest(fixture)
+			const userText = lastUserMessage(request as { body: unknown })
+			expect(userText).not.toContain(email)
+			expect(userText).toContain("[EMAIL_ADDRESS_1]")
+			expect(userText).not.toContain("[REDACTED-EMAIL_ADDRESS]")
+
+			// The session file on disk is fully tokenized (no original bytes,
+			// no marker for the identifier class).
+			const deadline = Date.now() + 10_000
+			let sessionJson = ""
+			do {
+				sessionJson = readdirSync(join(fixture.agentDir, "sessions"), { recursive: true })
+					.filter((entry) => String(entry).endsWith(".jsonl"))
+					.map((entry) => readFileSync(join(fixture.agentDir, "sessions", String(entry)), "utf8"))
+					.join("\n")
+				if (sessionJson.includes("[EMAIL_ADDRESS_1]")) break
+				await new Promise((resolve) => setTimeout(resolve, 250))
+			} while (Date.now() < deadline)
+			expect(sessionJson).toContain("[EMAIL_ADDRESS_1]")
+			expect(sessionJson).not.toContain(email)
+			expect(sessionJson).not.toContain("[REDACTED-EMAIL_ADDRESS]")
+
+			// Post-turn settle before absence assertions: streaming frames can
+			// briefly paint the token shape; the final repaint substitutes from
+			// stored tokens, so after the ready prompt returns the painted text
+			// is the settled state — original visible, token form absent.
+			await waitForTurnToSettle(fixture.fake.requests)
+			// Full assistant-reply line: unique on screen (the user's own
+			// echoed prompt is a separate line, also showing the original).
+			await expect(terminal.getByText(`Writing the reply to ${email} now — done`)).toBeVisible()
+			await expect(terminal.getByText("[EMAIL_ADDRESS_1]", { full: true })).not.toBeVisible()
 		},
 	)
 })
