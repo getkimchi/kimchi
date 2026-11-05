@@ -54,7 +54,7 @@
 			}
 		},
 		{
-			"includes": ["src/extensions/tool-rendering.ts"],
+			"includes": ["src/extensions/tool-rendering.ts", "src/extensions/tool-grouping.ts"],
 			"linter": {
 				"rules": {
 					"suspicious": {
