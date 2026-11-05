@@ -111,6 +111,7 @@ export function createExtensionApi(): {
 			registerFlag,
 			registerTool,
 			getAllTools,
+			getSettings: () => ({}),
 			getActiveTools,
 			setActiveTools,
 			sendMessage,

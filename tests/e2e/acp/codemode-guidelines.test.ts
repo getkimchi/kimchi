@@ -1,5 +1,5 @@
 import { expect, it } from "vitest"
-import { systemPromptOf } from "../tui/support/wire-requests.js"
+import { systemPromptOf, toolDescriptionOf } from "../tui/support/wire-requests.js"
 import { PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 
 it.each([true, false])(
@@ -21,6 +21,13 @@ it.each([true, false])(
 			expect(request).toBeDefined()
 			if (!request) throw new Error("No model request recorded")
 			const prompt = systemPromptOf(request)
+			const codemodeDescription = toolDescriptionOf(request, "codemode")
+			if (enabled) {
+				expect(codemodeDescription).toContain("later tool's arguments can be derived mechanically")
+				expect(codemodeDescription).toContain("Run JavaScript that calls other tools")
+			} else {
+				expect(codemodeDescription).toBeUndefined()
+			}
 			expect(prompt.includes("Prefer `codemode` for a predictable multi-step workflow")).toBe(enabled)
 			expect(prompt.includes("`Promise.allSettled`")).toBe(enabled)
 			// Pi's own per-tool guidelines are curated out of the prompt: they
