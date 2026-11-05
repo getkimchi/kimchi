@@ -1754,6 +1754,19 @@ export class KimchiAcpAgent implements Agent {
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
+				// Cancel raced the run start (acp-tck ACP-CANCEL-001/002):
+				// pi-mono's session.abort() drops the abort when it lands after
+				// _startRun marked the session active (_agentRunAbortRequested is only
+				// consulted BETWEEN chained continues) but before agent.prompt() gave
+				// the agent its AbortController (agent.activeRun is still undefined).
+				// A cancel in that window only set turn.cancelled — the first model
+				// call then streams to completion and the prompt response arrives
+				// minutes late. agent_start is the first signal that the run (and its
+				// AbortController) actually exists, so re-issue the abort for a
+				// cancelled turn here. abort() is idempotent for an idle agent and
+				// fire-and-forget: the subscriber runs synchronously inside pi's
+				// event loop, so it must not be awaited.
+				if (turn?.cancelled) void entry.session.abort()
 				return
 			}
 			case "agent_settled": {

@@ -1941,6 +1941,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		expect(fake.aborted).toBe(true)
 	})
 
+	// Cancel while pi-mono is still in session.prompt()'s pre-run awaits:
+	// session.abort() finds no active run and is dropped, so the run starts
+	// streaming anyway. The server must re-abort when agent_start reveals the
+	// turn is already cancelled.
+	it("re-aborts on agent_start when cancel landed before the run existed", async () => {
+		let abortCalls = 0
+		let runMayStart = false
+		fake.promptImpl = async () => {
+			// Park here so the cancel below lands in the pre-run window.
+			while (!runMayStart) await delay(5)
+			fake.emit({ type: "agent_start" })
+			// The agent_start re-abort is what stops the run.
+			while (abortCalls < 2) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			abortCalls++
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+		runMayStart = true
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		// The original (dropped) cancel abort plus the agent_start re-abort.
+		expect(abortCalls).toBeGreaterThanOrEqual(2)
+	})
+
 	// Cancel path where pi-mono surfaces abortion as a rejection instead of a
 	// final agent_end: the RPC contract still demands stopReason="cancelled",
 	// not a JSON-RPC error. The prompt() catch block must honor cancelled=true

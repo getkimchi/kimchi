@@ -202,9 +202,22 @@ describe("telemetryExtension integration", () => {
 
 		expect(tm?.cumulative.toolUsage).toEqual({ unknown: 2 })
 		expect(Object.keys(tm?.cumulative.toolDurationMs ?? {})).toEqual(["unknown"])
+		// Taxonomy: `Tool X not found` is a recognized model mistake → one
+		// tool_outcome (canonical, with the model-supplied tool name as a bounded
+		// attribute); the malformed name (embedded newline) is unrecognized →
+		// one raw-fallback error. Neither uses the model-generated name as a
+		// telemetry label — tool_name stays "unknown" on both records.
 		expect(logEvents(fetchMock).filter((event) => event.eventName === "error")).toEqual([
 			expect.objectContaining({ attrs: expect.objectContaining({ error_type: "tool_failure", tool_name: "unknown" }) }),
-			expect.objectContaining({ attrs: expect.objectContaining({ error_type: "tool_failure", tool_name: "unknown" }) }),
+		])
+		expect(logEvents(fetchMock).filter((event) => event.eventName === "tool_outcome")).toEqual([
+			expect.objectContaining({
+				attrs: expect.objectContaining({
+					outcome_kind: "model_mistake",
+					tool_name: "unknown",
+					message: "Tool not found",
+				}),
+			}),
 		])
 	})
 
