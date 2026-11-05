@@ -32,7 +32,9 @@ vi.mock("./install.js", () => ({
 	smokeTestBinary: mocks.smokeTestBinary,
 }))
 
-const { checkForUpdate, parseCanarySha7, applyUpdate } = await import("./workflow.js")
+const { checkForUpdate, parseCanarySha7, applyUpdate, isRestartPending, readInstalledVersion } = await import(
+	"./workflow.js"
+)
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
 
@@ -525,5 +527,74 @@ describe("applyUpdate share destination", () => {
 			Object.defineProperty(process, "platform", { value: origPlatform })
 			Object.defineProperty(process, "arch", { value: origArch })
 		}
+	})
+})
+
+describe("isRestartPending", () => {
+	it.each([
+		["the installed release is newer", "1.28.0", "1.29.0", true],
+		["the installed tag carries a v prefix", "1.28.0", "v1.29.0", true],
+		["the running version matches", "1.29.0", "1.29.0", false],
+		["the running version is newer", "1.30.0", "1.29.0", false],
+		["a canary is installed under a stable session", "1.28.0", "0.0.0-canary.20260601.def5678", true],
+		["the installed version cannot be read", "1.28.0", null, false],
+		["the installed version is not semver", "1.28.0", "unknown", false],
+	])("when %s", (_case, running, installed, want) => {
+		expect(isRestartPending(running, installed)).toBe(want)
+	})
+})
+
+describe("readInstalledVersion", () => {
+	let dir: string
+	let prevPackageDir: string | undefined
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-installed-version-"))
+		prevPackageDir = process.env.PI_PACKAGE_DIR
+		process.env.PI_PACKAGE_DIR = dir
+	})
+
+	afterEach(() => {
+		if (prevPackageDir === undefined) delete process.env.PI_PACKAGE_DIR
+		else process.env.PI_PACKAGE_DIR = prevPackageDir
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("re-reads the version from the installed files on every call", () => {
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.28.0" }))
+		expect(readInstalledVersion()).toBe("1.28.0")
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.29.0" }))
+		expect(readInstalledVersion()).toBe("1.29.0")
+	})
+})
+
+describe("readInstalledVersion when the installed files are unusable", () => {
+	let dir: string
+	let prevPackageDir: string | undefined
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-installed-version-"))
+		prevPackageDir = process.env.PI_PACKAGE_DIR
+		process.env.PI_PACKAGE_DIR = dir
+	})
+
+	afterEach(() => {
+		if (prevPackageDir === undefined) delete process.env.PI_PACKAGE_DIR
+		else process.env.PI_PACKAGE_DIR = prevPackageDir
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("returns null when package.json is missing", () => {
+		expect(readInstalledVersion()).toBeNull()
+	})
+
+	it("returns null when package.json is corrupt", () => {
+		writeFileSync(join(dir, "package.json"), "{ not json")
+		expect(readInstalledVersion()).toBeNull()
+	})
+
+	it("returns null when package.json has no version", () => {
+		writeFileSync(join(dir, "package.json"), "{}")
+		expect(readInstalledVersion()).toBeNull()
 	})
 })

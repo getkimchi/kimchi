@@ -4,7 +4,9 @@ import {
 	parseArgs as parsePiArgs,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { acquireUpdaterLock } from "../update/lock.js"
 import { isHomebrewInstall } from "../update/paths.js"
+import { saveLastInstalled } from "../update/state.js"
 import { applyUpdate, checkForUpdate } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 import { confirm } from "./_helpers.js"
@@ -263,6 +265,30 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	}
 
 	const current = getVersion()
+
+	// A dry run installs nothing, so it needs no lock, and holding one would make
+	// a background tick skip.
+	if (flags.dryRun) return checkAndInstall(flags, current)
+
+	// Share the updater lock with the background ticks: a session mid-install
+	// and a CLI install would race on the share-directory swap (applyUpdate is
+	// atomic for the binary but not for vendor/bridge copies).
+	const lock = acquireUpdaterLock({ allowUnavailable: true })
+	if (lock === null) {
+		console.error("kimchi update: an update is already in progress. Retry in a moment.")
+		return 1
+	}
+	try {
+		return await checkAndInstall(flags, current)
+	} finally {
+		lock.release()
+	}
+}
+
+async function checkAndInstall(
+	flags: Pick<UpdateFlags, "canary" | "dryRun" | "force" | "version">,
+	current: string,
+): Promise<number> {
 	let check: Awaited<ReturnType<typeof checkForUpdate>>
 	try {
 		check = await checkForUpdate({ currentVersion: current, skipCache: true, canary: flags.canary, tag: flags.version })
@@ -303,6 +329,9 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	console.log(`Updating to ${check.latestVersion}…`)
 	try {
 		await applyUpdate({ tag: check.tag })
+		// Record it (still under the lock) so this and other sessions'
+		// background ticks dedup the release the user just installed.
+		saveLastInstalled(check.tag)
 	} catch (err) {
 		console.error(`kimchi update: update failed — ${(err as Error).message}`)
 		console.error("")

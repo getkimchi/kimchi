@@ -7,6 +7,8 @@ const isHomebrewInstallMock = vi.fn(() => false)
 const loadAutoUpdateSettingMock = vi.fn(() => false)
 const loadAutoUpdateNoticeShownMock = vi.fn(() => false)
 const markAutoUpdateNoticeShownMock = vi.fn()
+const refreshBridgeMock = vi.fn()
+const cliOptions = { current: {} as Record<string, unknown> }
 
 vi.mock(import("../update/workflow.js"), async (importOriginal) => {
 	const actual = await importOriginal()
@@ -25,6 +27,14 @@ vi.mock("../utils.js", () => ({
 }))
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: () => isHomebrewInstallMock(),
+	stableExecutablePath: () => "/fake/brew/opt/kimchi/bin/kimchi",
+}))
+vi.mock("../update/install.js", () => ({
+	refreshBridge: (...args: unknown[]) => refreshBridgeMock(...args),
+}))
+vi.mock(import("../cli-args.js"), async (importOriginal) => ({
+	...(await importOriginal()),
+	getParsedCliArgs: () => ({ options: cliOptions.current, positionals: [] }),
 }))
 vi.mock("../update/settings.js", () => ({
 	loadAutoUpdateSetting: () => loadAutoUpdateSettingMock(),
@@ -51,11 +61,12 @@ function createMockApi() {
 	return { handlers, appendEntry, api: api as unknown as Parameters<typeof startupUpdateExtension>[0] }
 }
 
-function makeCtx(opts: { hasUI: boolean }) {
+function makeCtx(opts: { hasUI: boolean; mode?: string }) {
 	const setStatus = vi.fn()
 	const notify = vi.fn()
 	const ctx = {
 		hasUI: opts.hasUI,
+		mode: opts.mode ?? "tui",
 		ui: {
 			setStatus,
 			notify,
@@ -157,6 +168,51 @@ describe("startupUpdateExtension", () => {
 		expect(setStatus).not.toHaveBeenCalled()
 	})
 
+	describe("Homebrew bridge refresh", () => {
+		beforeEach(() => {
+			refreshBridgeMock.mockReset()
+			cliOptions.current = {}
+			getVersionMock.mockReturnValue("0.0.22")
+			isHomebrewInstallMock.mockReturnValue(true)
+			checkForUpdateMock.mockResolvedValue({ hasUpdate: false })
+		})
+
+		afterEach(() => {
+			isHomebrewInstallMock.mockReturnValue(false)
+			cliOptions.current = {}
+			vi.unstubAllEnvs()
+		})
+
+		async function start(mode: string) {
+			const { handlers, api } = createMockApi()
+			startupUpdateExtension(api)
+			const { ctx } = makeCtx({ hasUI: true, mode })
+			await handlers.get("session_start")?.({}, ctx)
+		}
+
+		it("refreshes the bridge in a TUI session", async () => {
+			await start("tui")
+			expect(refreshBridgeMock).toHaveBeenCalledOnce()
+		})
+
+		it("does not refresh in RPC mode, which is also how ACP binds extensions", async () => {
+			await start("rpc")
+			expect(refreshBridgeMock).not.toHaveBeenCalled()
+		})
+
+		it("does not refresh with KIMCHI_NO_UPDATE_CHECK set", async () => {
+			vi.stubEnv("KIMCHI_NO_UPDATE_CHECK", "1")
+			await start("tui")
+			expect(refreshBridgeMock).not.toHaveBeenCalled()
+		})
+
+		it("does not refresh with --no-auto-update", async () => {
+			cliOptions.current = { "no-auto-update": true }
+			await start("tui")
+			expect(refreshBridgeMock).not.toHaveBeenCalled()
+		})
+	})
+
 	describe("auto-update aware", () => {
 		it("suppresses setStatus (no nag) when autoUpdate is enabled and update is available", async () => {
 			getVersionMock.mockReturnValue("v0.0.23")
@@ -198,6 +254,42 @@ describe("startupUpdateExtension", () => {
 			expect(markAutoUpdateNoticeShownMock).toHaveBeenCalledOnce()
 			expect(checkForUpdateMock).not.toHaveBeenCalled()
 			expect(setStatus).not.toHaveBeenCalled()
+		})
+
+		it("shows no notice and leaves the flag unmarked with KIMCHI_NO_UPDATE_CHECK, since nothing updates in the background", async ({
+			onTestFinished,
+		}) => {
+			vi.stubEnv("KIMCHI_NO_UPDATE_CHECK", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			getVersionMock.mockReturnValue("0.0.22")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
+			const { handlers, appendEntry, api } = createMockApi()
+			startupUpdateExtension(api)
+			const handler = handlers.get("session_start")
+			if (!handler) throw new Error("no session_start handler")
+
+			const { ctx } = makeCtx({ hasUI: true })
+			await handler({}, ctx)
+
+			expect(appendEntry).not.toHaveBeenCalled()
+			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
+		})
+
+		it("shows no notice and leaves the flag unmarked with --no-auto-update, since nothing updates this session", async () => {
+			cliOptions.current = { "no-auto-update": true }
+			getVersionMock.mockReturnValue("0.0.22")
+			loadAutoUpdateSettingMock.mockReturnValue(true)
+			loadAutoUpdateNoticeShownMock.mockReturnValue(false)
+			const { handlers, appendEntry, api } = createMockApi()
+			startupUpdateExtension(api)
+			const { ctx } = makeCtx({ hasUI: true })
+			await handlers.get("session_start")?.({}, ctx)
+			cliOptions.current = {}
+			expect(appendEntry).not.toHaveBeenCalled()
+			expect(markAutoUpdateNoticeShownMock).not.toHaveBeenCalled()
 		})
 
 		it("shows no notice and leaves the flag unmarked in ACP mode — the client owns harness updates there", async () => {

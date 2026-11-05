@@ -12,7 +12,14 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { atomicInstall, copySupportingFiles, refreshBridge, reportBridgeRefresh } from "./install.js"
+import {
+	atomicInstall,
+	copySupportingFiles,
+	macosCodesignReSign,
+	refreshBridge,
+	reportBridgeRefresh,
+	smokeTestBinary,
+} from "./install.js"
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -321,6 +328,84 @@ describe.skipIf(process.platform === "win32")("refreshBridge", () => {
 			expect(error).toHaveBeenCalledWith(expect.stringContaining("did not complete"))
 		} finally {
 			error.mockRestore()
+		}
+	})
+})
+
+describe("pre-swap binary checks run mid-session", () => {
+	let dir: string
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "kimchi-smoke-test-"))
+	})
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true })
+	})
+
+	function script(name: string, body: string): string {
+		const path = join(dir, name)
+		writeFileSync(path, `#!/bin/sh\n${body}\n`)
+		chmodSync(path, 0o755)
+		return path
+	}
+
+	it("smokeTestBinary resolves when the binary exits 0", async () => {
+		await expect(smokeTestBinary(script("ok", "exit 0"))).resolves.toBeUndefined()
+	})
+
+	it("smokeTestBinary keeps the event loop running while the binary runs", async () => {
+		let ticks = 0
+		const timer = setInterval(() => {
+			ticks++
+		}, 5)
+		await smokeTestBinary(script("slow", "sleep 0.2"))
+		clearInterval(timer)
+		expect(ticks).toBeGreaterThan(0)
+	})
+
+	it("macosCodesignReSign signs through codesign on macOS", async () => {
+		const log = join(dir, "calls.log")
+		script("codesign", `echo "$@" >> "${log}"`)
+		const restore = stubDarwinWithPath(dir)
+		try {
+			await macosCodesignReSign("/tmp/kimchi-new")
+		} finally {
+			restore()
+		}
+		expect(readFileSync(log, "utf-8")).toBe("--remove-signature /tmp/kimchi-new\n--sign - --force /tmp/kimchi-new\n")
+	})
+
+	function stubDarwinWithPath(pathDir: string): () => void {
+		const platform = process.platform
+		const path = process.env.PATH
+		Object.defineProperty(process, "platform", { value: "darwin" })
+		process.env.PATH = `${pathDir}:${path}`
+		return () => {
+			Object.defineProperty(process, "platform", { value: platform })
+			process.env.PATH = path
+		}
+	}
+
+	it("smokeTestBinary rejects with the binary's output when it exits non-zero", async () => {
+		await expect(smokeTestBinary(script("bad", "echo corrupt >&2; exit 3"))).rejects.toThrow("corrupt")
+	})
+
+	it("smokeTestBinary rejects instead of hanging when the binary never exits", async () => {
+		await expect(smokeTestBinary(script("hang", "exec sleep 30"), 100)).rejects.toThrow("did not exit")
+	})
+
+	it("smokeTestBinary rejects when the binary cannot be started", async () => {
+		await expect(smokeTestBinary(join(dir, "missing"))).rejects.toThrow("smoke test")
+	})
+
+	it("macosCodesignReSign rejects with codesign's error when signing fails", async () => {
+		script("codesign", 'case "$1" in --remove-signature) exit 0;; esac; echo "bad identity" >&2; exit 1')
+		const restore = stubDarwinWithPath(dir)
+		try {
+			await expect(macosCodesignReSign("/tmp/kimchi-new")).rejects.toThrow("bad identity")
+		} finally {
+			restore()
 		}
 	})
 })

@@ -66,6 +66,7 @@ import assistantPrefixExtension from "./extensions/assistant-prefix.js"
 import { installAutoModelAdapters } from "./extensions/auto-model/adapters.js"
 import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
+import backgroundUpdateExtension from "./extensions/background-update.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
@@ -880,6 +881,7 @@ async function cliMain(): Promise<void> {
 				settingsTrustSyncExtension,
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
+				backgroundUpdateExtension,
 				packageInstallGuardExtension,
 				sessionNameExtension(),
 				shutdownMarkerExtension,

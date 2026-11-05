@@ -17,9 +17,14 @@ const mockIsHomebrewInstall = vi.fn(() => false)
 const mockGetVersion = vi.fn(() => "1.0.0")
 
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
+const mockAcquireUpdaterLock = vi.fn()
+const mockSaveLastInstalled = vi.fn()
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
+}))
+vi.mock("../update/lock.js", () => ({
+	acquireUpdaterLock: (...args: unknown[]) => mockAcquireUpdaterLock(...args),
 }))
 vi.mock("../update/settings.js", () => ({
 	loadAutoUpdateSetting: mockLoadAutoUpdateSetting,
@@ -32,6 +37,9 @@ vi.mock("../update/workflow.js", () => ({
 	applyUpdate: mockApplyUpdate,
 	parseCanarySha7: mockParseCanarySha7,
 }))
+vi.mock("../update/state.js", () => ({
+	saveLastInstalled: mockSaveLastInstalled,
+}))
 vi.mock("../utils.js", () => ({
 	getVersion: mockGetVersion,
 }))
@@ -40,7 +48,6 @@ vi.mock("../utils.js", () => ({
 const extension = await import("./auto-update-settings.js")
 const {
 	runManualUpdate,
-	argvHasSkipTrigger,
 	loadAutoUpdateSetting,
 	saveAutoUpdateSetting,
 	loadAutoUpdateNoticeShown,
@@ -63,6 +70,9 @@ function resetMocks(): void {
 	mockIsHomebrewInstall.mockReturnValue(false)
 	mockGetVersion.mockReturnValue("1.0.0")
 	mockParseCanarySha7.mockReturnValue(null)
+	mockAcquireUpdaterLock.mockReset()
+	mockAcquireUpdaterLock.mockReturnValue({ release: vi.fn() })
+	mockSaveLastInstalled.mockReset()
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -102,20 +112,6 @@ describe("re-exports delegate to the underlying modules", () => {
 	it("markAutoUpdateNoticeShown delegates to settings.markAutoUpdateNoticeShown", () => {
 		markAutoUpdateNoticeShown()
 		expect(mockMarkAutoUpdateNoticeShown).toHaveBeenCalledOnce()
-	})
-})
-
-describe("argvHasSkipTrigger re-export sanity", () => {
-	it("returns true for `kimchi update`", () => {
-		expect(argvHasSkipTrigger(["node", "kimchi", "update"])).toBe(true)
-	})
-
-	it("returns true for `--no-auto-update` flag", () => {
-		expect(argvHasSkipTrigger(["node", "kimchi", "--no-auto-update"])).toBe(true)
-	})
-
-	it("returns false for a plain TUI launch", () => {
-		expect(argvHasSkipTrigger(["node", "kimchi"])).toBe(false)
 	})
 })
 
@@ -208,6 +204,25 @@ describe("runManualUpdate — happy path", () => {
 		expect(result.message).toContain("1.1.0")
 		expect(result.message).toContain("Restart your terminal")
 	})
+
+	it("records the installed tag so background ticks dedup the same release", async () => {
+		// Without this record the session's next tick would reinstall what the
+		// user just installed: its own version check stays stale for the whole
+		// process lifetime (the install applies to the NEXT launch).
+		mockCheckForUpdate.mockResolvedValue({
+			currentVersion: "1.0.0",
+			latestVersion: "1.1.0",
+			tag: "v1.1.0",
+			releaseUrl: "",
+			hasUpdate: true,
+			cached: false,
+		})
+		mockApplyUpdate.mockResolvedValue({ from: "1.0.0", to: "1.1.0", backupPath: undefined })
+
+		const result = await runManualUpdate()
+		expect(result.ok).toBe(true)
+		expect(mockSaveLastInstalled).toHaveBeenCalledWith("v1.1.0")
+	})
 })
 
 describe("runManualUpdate — failure paths", () => {
@@ -226,6 +241,7 @@ describe("runManualUpdate — failure paths", () => {
 		const result = await runManualUpdate()
 		expect(result.ok).toBe(false)
 		expect(result.message).toBe("Update failed: smoke test failed")
+		expect(mockSaveLastInstalled).not.toHaveBeenCalled()
 		// We should have written a log line so the failure is visible.
 		expect(warnSpy).toHaveBeenCalled()
 		const written = warnSpy.mock.calls.map((c) => String(c[0])).join("")
@@ -243,6 +259,38 @@ describe("runManualUpdate — failure paths", () => {
 		expect(warnSpy).toHaveBeenCalled()
 		const written = warnSpy.mock.calls.map((c) => String(c[0])).join("")
 		expect(written).toContain("update check failed")
+	})
+})
+
+describe("runManualUpdate — updater lock", () => {
+	it("refuses to start when another session holds the lock", async () => {
+		mockAcquireUpdaterLock.mockReturnValue(null)
+		const result = await runManualUpdate()
+		expect(result.ok).toBe(false)
+		expect(result.message).toContain("already in progress")
+		expect(mockCheckForUpdate).not.toHaveBeenCalled()
+	})
+
+	it("does not let an unwritable lock file block a manual update", async () => {
+		await runManualUpdate()
+		expect(mockAcquireUpdaterLock).toHaveBeenCalledWith({ allowUnavailable: true })
+	})
+
+	it("releases the lock on the success path", async () => {
+		const release = vi.fn()
+		mockAcquireUpdaterLock.mockReturnValue({ release })
+		const result = await runManualUpdate()
+		expect(result.ok).toBe(true)
+		expect(release).toHaveBeenCalledOnce()
+	})
+
+	it("releases the lock when the check throws", async () => {
+		const release = vi.fn()
+		mockAcquireUpdaterLock.mockReturnValue({ release })
+		mockCheckForUpdate.mockRejectedValue(new Error("boom"))
+		vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+		await runManualUpdate()
+		expect(release).toHaveBeenCalledOnce()
 	})
 })
 
