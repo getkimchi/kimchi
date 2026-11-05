@@ -19,6 +19,7 @@ export type StatusLineElementId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "memory"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[]; hidden: StatusLineElementId[] }
 
@@ -128,6 +129,12 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "shells",
 		label: "Shells",
 		description: "Running background Bash commands (shown while any run)",
+		defaultVisible: true,
+	},
+	{
+		id: "memory",
+		label: "Memory",
+		description: "Recalled memory facts in context (shown after first recall)",
 		defaultVisible: true,
 	},
 ]

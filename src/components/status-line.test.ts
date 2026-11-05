@@ -982,6 +982,36 @@ describe("StatusLine segment coverage", () => {
 		})
 	})
 
+	describe("memory segment", () => {
+		function memoryData(count: string | undefined) {
+			const data = createMockStatusLineData()
+			vi.mocked(data.getExtensionStatuses).mockReturnValue(new Map(count === undefined ? [] : [["memory", count]]))
+			return data
+		}
+
+		it("renders the recalled-fact count when the memory extension sets a status", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("3")), 200)).toContain("memory: 3")
+		})
+
+		it("is hidden without a delivery, or when the user hides it", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData(undefined)), 200)).not.toContain(
+				"memory:",
+			)
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("0")), 200)).not.toContain("memory:")
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("x")), 200)).not.toContain("memory:")
+			withHidden(["memory"], () => {
+				expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("2")), 200)).not.toContain("memory:")
+			})
+		})
+
+		it("never pushes the line past a narrow terminal", () => {
+			const sl = new StatusLine(createMockContext(), theme, memoryData("12"))
+			for (const width of [1, 20, 40]) {
+				for (const line of sl.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	})
+
 	it("agents segment is hidden when count is zero", () => {
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData())

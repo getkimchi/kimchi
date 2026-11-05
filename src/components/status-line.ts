@@ -37,6 +37,7 @@ export type SegmentId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "memory"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -450,6 +451,7 @@ const SHED_ORDER: SegmentId[] = [
 	"tags",
 	"phase",
 	"usage",
+	"memory",
 	"shells",
 	"agents",
 	"thinking",
@@ -780,6 +782,22 @@ function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	return { id: "shells", text, width: visibleWidth(text) }
 }
 
+/** Extension status key the memory extension sets to the number of recalled
+ *  facts currently in context (cleared when the delivery ledger empties or
+ *  the session toggle disables memory). */
+const MEMORY_STATUS_KEY = "memory"
+
+/** Extension-status-driven like shells: renders the recalled-fact count only
+ *  after memory has delivered facts into the conversation, unless the user
+ *  opted out via `hidden`. */
+function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
+	if (hidden) return null
+	const count = Number(statusLineData.getExtensionStatuses().get(MEMORY_STATUS_KEY))
+	if (!Number.isInteger(count) || count <= 0) return null
+	const text = `${dimText(theme, "memory:")} ${accentText(theme, String(count))}`
+	return { id: "memory", text, width: visibleWidth(text) }
+}
+
 function buildFermentSegment(
 	theme: Theme,
 	pinned: boolean,
@@ -858,6 +876,7 @@ export function buildStatusLineSegments(
 		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
 		buildDapSegment(theme, statusLineData, hidden.has("dap")),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
+		buildMemorySegment(theme, statusLineData, hidden.has("memory")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),
 	].filter((s): s is Segment => s !== null)
