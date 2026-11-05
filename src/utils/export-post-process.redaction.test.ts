@@ -7,9 +7,10 @@ import { postProcessHtmlExportOnce, postProcessJsonlExportOnce, runSecureExport 
 import * as sessionMetadataStore from "./session-metadata-store.js"
 import { _resetSessionMetadataStore } from "./session-metadata-store.js"
 
-// Toggleable engine-scan override for the fail-closed end-to-end tests. When
-// `scanImpl` is null (the default) createEngine returns the real engine; the
-// engine-failure test sets a rejecting scan to simulate a redaction failure.
+// Toggleable engine-analyze override for the fail-closed end-to-end tests.
+// When `scanImpl` is null (the default) createEngine returns the real engine;
+// the engine-failure test sets a rejecting analyze to simulate a redaction
+// failure (the redactor composes from analyze(), never calls scan()).
 const engineScanOverride = vi.hoisted(() => ({
 	scanImpl: null as ((text: string) => Promise<unknown>) | null,
 }))
@@ -21,10 +22,10 @@ vi.mock("@bulkhead-ai/core", async (importOriginal) => {
 		createEngine: (...args: Parameters<typeof actual.createEngine>) => {
 			const engine = actual.createEngine(...args)
 			if (!engineScanOverride.scanImpl) return engine
-			// Delegate to the real engine but intercept `scan` — Object.create
+			// Delegate to the real engine but intercept `analyze` — Object.create
 			// keeps the prototype (setExcludeEntities etc.) intact.
 			const overridden = Object.create(engine) as typeof engine
-			overridden.scan = engineScanOverride.scanImpl as typeof engine.scan
+			overridden.analyze = engineScanOverride.scanImpl as typeof engine.analyze
 			return overridden
 		},
 	}
@@ -85,6 +86,35 @@ describe("single-pass export redaction (assemble-then-redact)", () => {
 		// Trace IDs survive redaction unchanged.
 		expect(result).toContain("diag-trace-123")
 		expect(JSON.parse(result.split("\n")[0] ?? "").appVersion).toBeDefined()
+	})
+
+	it("bare-shape spans (SHAs, timestamps) survive export — the deliberate tier change", async () => {
+		// Pin the precision-policy behavior at the publish boundary: anchored
+		// and checksum secrets still redact; context-free shapes pass through.
+		const sha = "a89b3cd4".repeat(5)
+		const iso = [["2026", "11", "02"].join("-"), "T", "21:27:58", ".323Z"].join("")
+		const card = ["4532", "0151", "1283", "0366"].join("")
+		const sk = ["sk-", "liveTe".repeat(4), "9z"].join("")
+		const entries = [
+			JSON.stringify({ type: "session", version: 3, id: "s1" }),
+			JSON.stringify({
+				type: "message",
+				id: "msg-1",
+				message: { role: "user", content: `commit ${sha} at ${iso}; CC ${card}; key ${sk}` },
+			}),
+		].join("\n")
+		const filePath = join(tmpDir, "export.jsonl")
+		writeFileSync(filePath, `${entries}\n`, "utf-8")
+
+		await postProcessJsonlExportOnce(filePath)
+
+		const result = readFileSync(filePath, "utf-8")
+		expect(result).toContain(sha)
+		expect(result).toContain(iso)
+		expect(result).not.toContain(card)
+		expect(result).not.toContain(sk)
+		expect(result).toContain("[REDACTED-CREDIT_CARD]")
+		expect(result).toContain("[REDACTED-OPENAI_API_KEY]")
 	})
 
 	it("redacts the JSONL header systemPrompt", async () => {

@@ -46,12 +46,11 @@ import {
 	resetModelMetadataCache as resetMetadataCache,
 } from "./model-metadata.js"
 
-export { modelIdFromRef, splitModelRef } from "./model-ref-utils.js"
+export { modelIdFromRef, splitModelRef } from "../../shared/model-ref.js"
 
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
+import { findModelByRef, modelIdFromRef } from "../../shared/model-ref.js"
 import { getProcessOrchestratorRef } from "../kimchi-process.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
-import { modelIdFromRef } from "./model-ref-utils.js"
 
 /** Task-type affinity tag used to match an agent persona to a model role. */
 export type ModelRole = "review" | "build" | "plan" | "explore" | "research"

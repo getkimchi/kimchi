@@ -21,11 +21,22 @@ export function createSideChatHost(): {
 	host: SideChatHost
 	setFrame(frame: Frame | undefined): void
 	setSelection(selection: { bounds: SelectionBounds; text: string } | undefined): void
+	setModal(modal: Component | undefined): void
+	lastFocus(): Component | undefined
 } {
 	let frame: Frame | undefined
 	let selection: { bounds: SelectionBounds; text: string } | undefined
+	let modal: Component | undefined
+	let focused: Component | undefined
 	const host = {
 		isFullscreen: vi.fn(() => true),
+		ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+		editorTheme: {},
+		keybindings: { matches: vi.fn(() => false) },
+		modalDialog: vi.fn(() => modal),
+		focusComponent: vi.fn((component: Component) => {
+			focused = modal ?? component
+		}),
 		focusMainEditor: vi.fn(),
 		forwardExtensionShortcut: vi.fn(() => false),
 		setSidePanel: vi.fn(),
@@ -45,5 +56,9 @@ export function createSideChatHost(): {
 		setSelection: (next) => {
 			selection = next
 		},
+		setModal: (next) => {
+			modal = next
+		},
+		lastFocus: () => focused,
 	}
 }

@@ -10,6 +10,7 @@ import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	requestWorkReconciliation,
+	resolveReconciliationIntervalMs,
 	subscribeCostReconciliation,
 	subscribeFileReconciliation,
 	subscribePullRequestReconciliation,
@@ -44,12 +45,12 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reconcile-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-	vi.spyOn(transitions, "knownTransitionRepositories").mockResolvedValue(["/repository-a", "/repository-b"])
-	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockResolvedValue()
-	vi.mocked(pullRequests.reconcileWorkPullRequests).mockResolvedValue()
-	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([])
-	vi.mocked(costs.reconcileWorkCosts).mockResolvedValue()
-	vi.mocked(continuations.reconcileWorkContinuations).mockResolvedValue()
+	vi.spyOn(transitions, "knownTransitionRepositories").mockReset().mockResolvedValue(["/repository-a", "/repository-b"])
+	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockReset().mockResolvedValue()
+	vi.mocked(pullRequests.reconcileWorkPullRequests).mockReset().mockResolvedValue()
+	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReset().mockReturnValue([])
+	vi.mocked(costs.reconcileWorkCosts).mockReset().mockResolvedValue()
+	vi.mocked(continuations.reconcileWorkContinuations).mockReset().mockResolvedValue()
 })
 afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
@@ -57,6 +58,34 @@ afterEach(async () => {
 	vi.restoreAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(directory, { recursive: true, force: true })
+})
+
+describe("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS seam", () => {
+	it("returns the 30 s default when the seam is unset", () => {
+		expect(resolveReconciliationIntervalMs()).toBe(30_000)
+	})
+
+	it("honors a positive integer override inside the test harness", () => {
+		vi.stubEnv("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS", "1000")
+		expect(resolveReconciliationIntervalMs()).toBe(1000)
+	})
+
+	it.each(["0", "-5", "1.5", "abc"])("falls back to 30 s for %s", (value) => {
+		vi.stubEnv("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS", value)
+		expect(resolveReconciliationIntervalMs()).toBe(30_000)
+	})
+
+	it("the exported const is bound once at module load", async () => {
+		expect(RECONCILIATION_INTERVAL_MS).toBe(30_000)
+		vi.stubEnv("KIMCHI_E2E_RECONCILIATION_INTERVAL_MS", "500")
+		vi.resetModules()
+		try {
+			const fresh = await import("./reconcile-supervisor.js")
+			expect(fresh.RECONCILIATION_INTERVAL_MS).toBe(500)
+		} finally {
+			vi.resetModules()
+		}
+	})
 })
 
 describe("shared file reconciliation", () => {

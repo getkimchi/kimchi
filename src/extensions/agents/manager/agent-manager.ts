@@ -50,6 +50,7 @@ import {
 	runRemoteAgent,
 } from "./remote-agent-runner.js"
 import { RemoteAgentSession } from "./remote-agent-session.js"
+import { formatRunResultText } from "./result-text.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -392,27 +393,39 @@ export class AgentManager {
 		const promise = record.remote
 			? this.wireRemoteCompletion(record, runPromise, { detach, maxTurns: options.maxTurns })
 			: runPromise
-					.then(({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
-						if (record.status !== "stopped") {
-							record.status = aborted ? "aborted" : steered ? "steered" : "completed"
-						}
-						record.abortReason = abortReason
-						const finalText = planPath ? `${responseText}\n\nPlan saved to: ${planPath}` : responseText
-						record.result = finalText
-						record.session = session
-						record.lastTurnCount = turnsUsed
-						// Preserve the effective, normalized turn cap returned by the runner.
-						record.maxTurns = maxTurns ?? options.maxTurns
-						record.completedAt ??= Date.now()
-						record.latestOutcome = buildAgentOutcome(record)
+					.then(
+						({
+							responseText,
+							session,
+							aborted,
+							abortReason,
+							steered,
+							turnsUsed,
+							maxTurns,
+							planPath,
+							autoLoadedSkills,
+						}) => {
+							if (record.status !== "stopped") {
+								record.status = aborted ? "aborted" : steered ? "steered" : "completed"
+							}
+							record.abortReason = abortReason
+							const finalText = formatRunResultText(responseText, planPath, autoLoadedSkills)
+							record.result = finalText
+							record.session = session
+							record.lastTurnCount = turnsUsed
+							// Preserve the effective, normalized turn cap returned by the runner.
+							record.maxTurns = maxTurns ?? options.maxTurns
+							record.completedAt ??= Date.now()
+							record.latestOutcome = buildAgentOutcome(record)
 
-						if (record.isBackground) {
-							this.runningBackground--
-							if (!this.disposed) this.onComplete?.(record)
-							this.drainQueue()
-						}
-						return finalText
-					})
+							if (record.isBackground) {
+								this.runningBackground--
+								if (!this.disposed) this.onComplete?.(record)
+								this.drainQueue()
+							}
+							return finalText
+						},
+					)
 					.catch((err) => {
 						if (record.status !== "stopped") {
 							record.status = "error"

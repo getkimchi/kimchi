@@ -62,21 +62,27 @@ const clientState = vi.hoisted(() => ({
 }))
 
 vi.mock("./dap/client.js", () => ({
-	DapClientRegistry: vi.fn().mockImplementation(() => ({
-		getOrCreate: vi.fn(async () => ({}) as unknown),
-		shutdownAll: vi.fn(),
-		getAll: vi.fn(() => []),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	DapClientRegistry: vi.fn().mockImplementation(function () {
+		return {
+			getOrCreate: vi.fn(async () => ({}) as unknown),
+			shutdownAll: vi.fn(),
+			getAll: vi.fn(() => []),
+		}
+	}),
 }))
 
 vi.mock("./dap/session.js", () => ({
-	DapSessionRegistry: vi.fn().mockImplementation(() => ({
-		create: vi.fn(() => clientState.sessionAfterCreate ?? { id: "test-session" }),
-		get: vi.fn(() => undefined),
-		remove: vi.fn(),
-		clearAll: vi.fn(),
-		getActive: vi.fn(() => []),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	DapSessionRegistry: vi.fn().mockImplementation(function () {
+		return {
+			create: vi.fn(() => clientState.sessionAfterCreate ?? { id: "test-session" }),
+			get: vi.fn(() => undefined),
+			remove: vi.fn(),
+			clearAll: vi.fn(),
+			getActive: vi.fn(() => []),
+		}
+	}),
 }))
 
 vi.mock("./prompt-construction/index.js", () => ({

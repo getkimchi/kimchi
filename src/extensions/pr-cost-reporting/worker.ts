@@ -3,6 +3,7 @@ import { setImmediate } from "node:timers/promises"
 import { verifyApiKey } from "../../api/organizations.js"
 import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
+import { canonicalPlatformApiUrl } from "../../regions.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
@@ -43,7 +44,8 @@ import {
 	reportingStatePath,
 	type ServerLimit,
 	type SnapshotAck,
-	withDrainedLegacyAccount,
+	trimFrozenSnapshot,
+	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
@@ -178,7 +180,16 @@ export function deliverSnapshots(
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
 		const configuredEndpoint = platformApiUrl(cwd)
-		if (frozen.some(({ entry }) => !configuredKey || entry.account.apiUrl !== configuredEndpoint))
+		// Compare endpoints canonically: snapshots queued before the platform API
+		// moved to the region's API origin hold the legacy console-proxy base and
+		// must not be treated as another account's reports.
+		if (
+			frozen.some(
+				({ entry }) =>
+					!configuredKey ||
+					canonicalPlatformApiUrl(entry.account.apiUrl) !== canonicalPlatformApiUrl(configuredEndpoint),
+			)
+		)
 			await recordReportingError(
 				agentDir,
 				`${state.error ? `${state.error}. ` : ""}Some queued reports are waiting for their original account endpoint and credentials`,
@@ -216,12 +227,19 @@ export function deliverSnapshots(
 			if (combined.aborted || attempts >= 3) break
 			const { token: key, organizationId } = configuredCredentials()
 			const apiUrl = platformApiUrl(cwd)
-			if (!key || !safeEndpoint(apiUrl) || apiUrl !== entry.account.apiUrl) continue
+			if (
+				!key ||
+				!safeEndpoint(apiUrl) ||
+				canonicalPlatformApiUrl(apiUrl) !== canonicalPlatformApiUrl(entry.account.apiUrl)
+			)
+				continue
 			attempts++
 			let status: number | undefined
 			let retryAfterMs: number | null = null
 			let limit: ServerLimit | undefined
 			let errorMessage = "PR reporting request unavailable"
+			/** Only the upload's rejection may trim the body; a verify rejection cannot. */
+			let uploadAttempted = false
 			const assertOwnership = () => {
 				assertLease()
 				if (configuredCredentials().token !== key || platformApiUrl(cwd) !== apiUrl)
@@ -274,6 +292,7 @@ export function deliverSnapshots(
 					throw new Error(errorMessage)
 				}
 
+				uploadAttempted = true
 				const response = await fetchBounded(
 					`${apiUrl}/ai-optimizer/v1beta/organizations/${entry.account.organizationId}/pr-cost-snapshots`,
 					{
@@ -302,17 +321,39 @@ export function deliverSnapshots(
 				} catch {
 					return
 				}
-				if (limit) {
-					await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-					if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
-				} else
-					await deferFrozenSnapshot(
-						agentDir,
-						job,
-						Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
-						errorMessage,
-						assertOwnership,
-					)
+				// Another process replaced or capped this body away while the upload was in flight; its
+				// claims moved with it, so this job is settled and the pass moves on to the next one.
+				const gone = () => {
+					try {
+						return !frozenSnapshotPending(agentDir, job)
+					} catch {
+						return true
+					}
+				}
+				if (gone()) continue
+				try {
+					if (limit) {
+						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
+						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+						else if (limit.scope === "snapshot" && limit.limit === "bytes") {
+							// The server's own byte cap rejected this body; trim it to the cap it stated, so the
+							// retry carries a body the server can accept instead of resending it for hours.
+							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
+						}
+					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
+						// The server rejected this body for its size; the next pass retries the halved one.
+					} else
+						await deferFrozenSnapshot(
+							agentDir,
+							job,
+							Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
+							errorMessage,
+							assertOwnership,
+						)
+				} catch (error) {
+					if (gone()) continue
+					throw error
+				}
 			}
 		}
 	})
@@ -412,15 +453,13 @@ export function deliverEvents(
 			const own = due.filter((status) => status.accountKey === accountId)
 			if (!own.length) return
 			let batch: OutboxBatch | undefined
-			const ready = await withDrainedLegacyAccount(
+			const ready = await withReportingConsent(
 				agentDir,
-				account,
 				(fence) => {
 					batch = pendingBatch(agentDir, accountId, fence)
 				},
 				assertCurrent,
 			)
-			if (!ready) defer(own, "PR cost events are waiting for queued snapshots to upload")
 			if (!ready || !batch) return
 			const sent = batch
 			const schedule = deliveryRetry(backend, accountId, sent.id)
@@ -430,9 +469,8 @@ export function deliverEvents(
 			try {
 				let dispatched: Promise<Response> | undefined
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							const current = pendingBatch(agentDir, accountId, fence)
 							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
@@ -468,9 +506,8 @@ export function deliverEvents(
 				assertCurrent()
 				let acknowledged = false
 				if (
-					!(await withDrainedLegacyAccount(
+					!(await withReportingConsent(
 						agentDir,
-						account,
 						(fence) => {
 							backend.tx(() => {
 								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)

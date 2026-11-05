@@ -18,6 +18,7 @@ export type StatusLineElementId =
 	| "lsp"
 	| "dap"
 	| "work-pr"
+	| "shells"
 
 export type StatusLineConfig = { pinned: StatusLineElementId[]; hidden: StatusLineElementId[] }
 
@@ -67,7 +68,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 	{
 		id: "agents",
 		label: "Agents",
-		description: "Active sub-agent count",
+		description: "Active sub-agent count (shown while any run)",
 	},
 	{
 		id: "context",
@@ -121,6 +122,12 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 		id: "work-pr",
 		label: "Branch / PR",
 		description: "Checked-out branch and its linked PR/MR",
+		defaultVisible: true,
+	},
+	{
+		id: "shells",
+		label: "Shells",
+		description: "Running background Bash commands (shown while any run)",
 		defaultVisible: true,
 	},
 ]

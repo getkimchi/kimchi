@@ -23,6 +23,13 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 			hint: "Provide a concise title (3-5 words) to describe the issue.",
 		},
 	},
+	{
+		name: "language",
+		description: SLASH_COMMANDS.language.hint,
+		input: {
+			hint: 'A language name or code (e.g. "ko", "Korean"), or "auto" to reply in the language you write in.',
+		},
+	},
 ]
 
 /** Full session palette: static commands first, then skill commands. */

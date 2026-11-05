@@ -10,7 +10,7 @@
 // fields) so assertions are on the orchestration, not the DAP wire protocol.
 // No subprocesses are spawned.
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import type { ComposedDeps } from "./composed.js"
 import {
 	ComposedTimeoutError,
@@ -43,20 +43,20 @@ interface StubSession extends DapSession {
 	id: string
 	adapter: DapAdapterConfig
 	cwd: string
-	setBreakpoint: ReturnType<typeof vi.fn>
-	continue: ReturnType<typeof vi.fn>
-	stepOver: ReturnType<typeof vi.fn>
-	waitForStop: ReturnType<typeof vi.fn>
-	getStackFrame: ReturnType<typeof vi.fn>
-	getScopes: ReturnType<typeof vi.fn>
-	getVariables: ReturnType<typeof vi.fn>
-	evaluate: ReturnType<typeof vi.fn>
-	getExceptionInfo: ReturnType<typeof vi.fn>
-	terminate: ReturnType<typeof vi.fn>
-	launch: ReturnType<typeof vi.fn>
-	completeLaunch: ReturnType<typeof vi.fn>
-	awaitLaunch: ReturnType<typeof vi.fn>
-	setExceptionBreakpoints: ReturnType<typeof vi.fn>
+	setBreakpoint: Mock
+	continue: Mock
+	stepOver: Mock
+	waitForStop: Mock
+	getStackFrame: Mock
+	getScopes: Mock
+	getVariables: Mock
+	evaluate: Mock
+	getExceptionInfo: Mock
+	terminate: Mock
+	launch: Mock
+	completeLaunch: Mock
+	awaitLaunch: Mock
+	setExceptionBreakpoints: Mock
 	isLaunched: boolean
 	isTerminated: boolean
 	threadId: number | null

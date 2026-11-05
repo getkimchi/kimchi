@@ -1,5 +1,5 @@
 import type { CustomEntry, SessionEntry } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 
 // ---------------------------------------------------------------------------
 // Mock readConfigSetting so getGlobalDefault() is deterministic and does NOT
@@ -349,8 +349,8 @@ describe("getGlobalDefault", () => {
 
 /** Create a persist mock with an appendCustomEntry spy. Returns the object and the spy. */
 function makePersist(): {
-	persist: { appendCustomEntry: ReturnType<typeof vi.fn> }
-	spy: ReturnType<typeof vi.fn>
+	persist: { appendCustomEntry: Mock }
+	spy: Mock
 } {
 	const spy = vi.fn()
 	return { persist: { appendCustomEntry: spy }, spy }
@@ -358,8 +358,8 @@ function makePersist(): {
 
 /** Create a persist mock with an appendEntry spy (ExtensionAPI-like). Returns the object and the spy. */
 function makePersistApi(): {
-	persist: { appendEntry: ReturnType<typeof vi.fn> }
-	spy: ReturnType<typeof vi.fn>
+	persist: { appendEntry: Mock }
+	spy: Mock
 } {
 	const spy = vi.fn()
 	return { persist: { appendEntry: spy }, spy }

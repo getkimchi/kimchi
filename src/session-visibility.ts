@@ -1,6 +1,6 @@
 import { open } from "node:fs/promises"
 import { parseSessionEntries, type SessionInfo } from "@earendil-works/pi-coding-agent"
-import { refFromParts } from "./extensions/model-catalog/ref-utils.js"
+import { refFromParts } from "./shared/model-ref.js"
 
 export const INTERNAL_SESSION_ENTRY = "kimchi:internal-session"
 

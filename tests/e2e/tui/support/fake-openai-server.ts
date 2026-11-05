@@ -40,8 +40,9 @@ export interface FakeResponseScript {
 	match?: (request: FakeResponseRequest) => boolean
 	/** Raw streamed deltas for tests that need exact SSE chunk boundaries. */
 	rawDeltas?: { delta: Record<string, unknown>; delayMs?: number }[]
-	/** Final streamed finish reason. Defaults to the existing tool-call-aware value. */
-	finishReason?: "stop" | "tool_calls"
+	/** Final streamed finish reason. Defaults to the existing tool-call-aware value.
+	 *  `content_filter` simulates a gateway guardrail refusing the request. */
+	finishReason?: "stop" | "tool_calls" | "content_filter"
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**

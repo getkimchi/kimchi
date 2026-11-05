@@ -1,7 +1,8 @@
 /**
  * Unit tests for the cohort lifecycle coordinator.
  *
- * Verifies the per-command 2s handoffs (each command gets its own deadline),
+ * Verifies the per-command handoffs (each command gets its own deadline; 15s
+ * by default, early on queued user input after the minimum runtime),
  * the absence of any recurring clock (timer-count stability across long
  * advances), bounded checkpoint waits (300s default, caller-passed
  * durations, joiners without deadline resets, early exits, last-handle
@@ -11,7 +12,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createFakeOps, type FakeOps } from "./__mocks__/fake-bash-ops.js"
 import { createProcessRegistry } from "./process-registry.js"
-import { createReviewCoordinator } from "./review-coordinator.js"
+import {
+	createReviewCoordinator,
+	INITIAL_HANDOFF_SECONDS,
+	MIN_HANDOFF_SECONDS,
+	USER_INPUT_POLL_MS,
+} from "./review-coordinator.js"
 import { createTerminalDelivery } from "./terminal-delivery.js"
 
 const HANDOFF = 2
@@ -111,6 +117,65 @@ describe("initial handoff", () => {
 		await vi.advanceTimersByTimeAsync(HANDOFF * 1000)
 		await p
 		expect(vi.getTimerCount()).toBe(before)
+	})
+})
+
+describe("handoff defaults and user input", () => {
+	async function isSettled(p: Promise<unknown>): Promise<boolean> {
+		let settled = false
+		void p.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(0)
+		return settled
+	}
+
+	it("defaults to a 15s handoff so typical tests and builds return a normal result", async () => {
+		expect(INITIAL_HANDOFF_SECONDS).toBe(15)
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const p = c.awaitInitialHandoff(h)
+		await vi.advanceTimersByTimeAsync(14_999)
+		expect(await isSettled(p)).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("hands off early on queued user input, but not before the minimum runtime", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const p = c.awaitInitialHandoff(h, undefined, () => true)
+		await vi.advanceTimersByTimeAsync(MIN_HANDOFF_SECONDS * 1000 - 1)
+		expect(await isSettled(p)).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("hands off when user input is queued mid-handoff", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		let pending = false
+		const p = c.awaitInitialHandoff(h, undefined, () => pending)
+		await vi.advanceTimersByTimeAsync(5_000)
+		expect(await isSettled(p)).toBe(false)
+		pending = true
+		await vi.advanceTimersByTimeAsync(USER_INPUT_POLL_MS)
+		await expect(p).resolves.toBe("handoff")
+	})
+
+	it("lets a process exit win over pending user input and clears every timer", async () => {
+		const c = createReviewCoordinator({ registry })
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const before = vi.getTimerCount()
+		const p = c.awaitInitialHandoff(h, undefined, () => false)
+		await vi.advanceTimersByTimeAsync(3_000)
+		await ops.exit(0)
+		await expect(p).resolves.toBe("exited")
+		expect(vi.getTimerCount()).toBeLessThanOrEqual(before)
 	})
 })
 
@@ -347,6 +412,147 @@ describe("cohort wait", () => {
 		await assertion
 		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
 		expect(c.hasActiveWait()).toBe(false)
+	})
+})
+
+describe("user-input wait release", () => {
+	it("settles 'user-input' immediately when a message is already queued at wait start", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => true)
+		// No timer advance: an already-queued message releases the wait at once.
+		await expect(event).resolves.toEqual({ kind: "user-input" })
+	})
+
+	it("settles 'user-input' from the poll interval when a message queues mid-wait", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		let queued = false
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => queued)
+		let settled = false
+		void event.then(() => {
+			settled = true
+		})
+		// Not yet queued: the poll interval fires but must not settle.
+		await vi.advanceTimersByTimeAsync(200)
+		expect(settled).toBe(false)
+		queued = true
+		await vi.advanceTimersByTimeAsync(USER_INPUT_POLL_MS)
+		await expect(event).resolves.toEqual({ kind: "user-input" })
+	})
+
+	it("keeps the wait (and processes) untouched without a pending-user-input check", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		// No check supplied — even with messages queued everywhere, the wait
+		// runs to its own events only.
+		const event = c.awaitCohortEvent("call-1", undefined, 300)
+		let settled = false
+		void event.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(300_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
+		expect(settled).toBe(true)
+	})
+
+	it("settles only the wait — the process keeps running and stays in the cohort", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => true)
+		await expect(event).resolves.toEqual({ kind: "user-input" })
+		expect(c.hasActiveWait()).toBe(false)
+		expect(c.handles()).toEqual([h])
+		expect(registry.getEntry(h)?.state).toBe("running")
+	})
+
+	it("clears the poll interval on every settlement path (timer-count stability)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		const baseline = vi.getTimerCount()
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const timerCountAfterWait = vi.getTimerCount()
+		// checkpoint timer + poll interval (+ registry safety deadline)
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => false)
+		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h })
+		await ops.exit(0)
+		await assertion
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		// The exited exit settles the wait: the checkpoint timer AND the poll
+		// interval are both cleared (timer count drops below the wait's).
+		expect(vi.getTimerCount()).toBeLessThan(timerCountAfterWait)
+		expect(c.hasActiveWait()).toBe(false)
+		expect(baseline).toBeGreaterThan(0) // sanity: the registry deadline exists
+	})
+
+	it("an exit fires before the input poll finds the message (exit wins, input stays queued)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		let queued = false
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => queued)
+		const assertion = expect(event).resolves.toEqual({ kind: "exit", handle: h })
+		// The exit lands between poll ticks, before the message queues.
+		await ops.exit(0)
+		await assertion
+		queued = true
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		expect(c.hasActiveWait()).toBe(false)
+	})
+
+	it("abort settles the wait with the check wired (cleanup path)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const controller = new AbortController()
+		const event = c.awaitCohortEvent("call-1", controller.signal, 300, undefined, () => false)
+		const assertion = expect(event).resolves.toEqual({ kind: "aborted" })
+		controller.abort()
+		await assertion
+		await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+		expect(c.hasActiveWait()).toBe(false)
+	})
+
+	it("dispose settles the wait with the check wired (cleanup path)", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		const event = c.awaitCohortEvent("call-1", undefined, 300, undefined, () => false)
+		const assertion = expect(event).resolves.toEqual({ kind: "aborted" })
+		c.dispose()
+		await assertion
+	})
+
+	it("a fresh wait can begin after a user-input settlement", async () => {
+		const c = makeCoordinator()
+		const h = spawnOne()
+		c.handleSpawned(h)
+		expect(c.beginCohortWait("call-1")).toEqual({ ok: true })
+		await c.awaitCohortEvent("call-1", undefined, 300, undefined, () => true)
+		c.endCohortWait("call-1")
+		expect(c.beginCohortWait("call-2")).toEqual({ ok: true })
+		// The fresh wait is NOT pre-released by the still-queued message...
+		let settled = false
+		const event = c.awaitCohortEvent("call-2", undefined, 300, undefined, () => false)
+		void event.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(299_000)
+		expect(settled).toBe(false)
+		await vi.advanceTimersByTimeAsync(1_000)
+		await expect(event).resolves.toEqual({ kind: "checkpoint" })
 	})
 })
 

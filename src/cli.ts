@@ -73,6 +73,7 @@ import autoModelRoutingExtension from "./extensions/auto-model/index.js"
 import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
+import { coupleBashControlToolArg } from "./extensions/bash-background/tool-coupling.js"
 import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
@@ -81,6 +82,7 @@ import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
 import bugReportDestinationExtension from "./extensions/bug-report.js"
+import buildInfoExtension from "./extensions/build-info.js"
 import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
@@ -90,6 +92,7 @@ import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
+import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
@@ -109,6 +112,7 @@ import {
 import { applyInteractiveModelSessionPatch } from "./extensions/interactive-model-session.js"
 import kimchiHooksAdapter from "./extensions/kimchi-hooks/index.js"
 import kimchiMinimalTintsExtension from "./extensions/kimchi-minimal-tints.js"
+import languageCommandExtension from "./extensions/language-command.js"
 import llmResponseLogExtension from "./extensions/llm-response-log.js"
 import loginExtension from "./extensions/login/index.js"
 import { createStartupAuthGate, createStartupAuthGateState } from "./extensions/login/startup-auth.js"
@@ -144,6 +148,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
+import refusedTurnsExtension from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -300,6 +305,23 @@ async function cliMain(): Promise<void> {
 		process.exit(await runExportWorkerMain(originalArgs.slice(1)))
 	}
 
+	// Document-skill CLI route: `kimchi doc-cli <pdf|docx|xlsx|pptx> …` loads the
+	// staged bundle in-process — the binary resolves the script, the agent
+	// never supplies a path. Routed before telemetry/org-policy like the workers
+	// above: the agent calls it repeatedly inside one session, and the route
+	// must stay invisible to app_started instrumentation.
+	if (originalArgs[0] === "doc-cli") {
+		const { runDocCliMain } = await import("./extensions/documents/doc-cli-main.js")
+		const code = await runDocCliMain(originalArgs.slice(1))
+		// Exit through the event loop, never process.exit(): a hard exit can
+		// truncate large piped output — the empty-write drain this route used
+		// still lost ~16% of a 3000-line `fields` dump on CI runners (the OS
+		// pipe had not drained when the callback fired). exitCode + return lets
+		// the runtime keep the process alive until stdio has flushed.
+		process.exitCode = code
+		return
+	}
+
 	// Observes provider transport failures in-process (via message_end) so the
 	// exit path can reclassify a failed run as infrastructure (exit 74).
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
@@ -404,7 +426,7 @@ async function cliMain(): Promise<void> {
 			stdinIsTTY: process.stdin.isTTY === true,
 			stdoutIsTTY: process.stdout.isTTY === true,
 		}
-		// Only chat TUI sessions load the warning extension after startup dialogs.
+		// Only chat TUI sessions load the api-key warning extension after startup dialogs.
 		// Setup commands render their own Clack warning; other subcommands exit before extensions load.
 		if (
 			apiKeyWarning &&
@@ -735,7 +757,17 @@ async function cliMain(): Promise<void> {
 			// before upstream pi-mono sees them (it does not recognize "multi-model"
 			// as a model id).
 			populateCliArgs(rawArgs)
-			const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
+			// Couple the background-bash pair BEFORE pi parses the args: a
+			// `--tools` allowlist that admits `bash` also admits `bash_control`,
+			// exactly as the two extensions are registered together below. Without
+			// this, a `--tools bash,…` session keeps the background `bash` tool
+			// while pi's name-based registration filter drops its companion
+			// control tool — the model cannot disposition background processes and
+			// headless runs loop on the completion guard (see
+			// extensions/bash-background/tool-coupling.ts). Explicit
+			// `--exclude-tools bash_control` is honored: those sessions fall back
+			// to plain blocking bash instead (execute-time availability check).
+			const rawArgsWithoutMultiModel = coupleBashControlToolArg(stripMultiModelArgs(rawArgs))
 
 			// Probe runs here (before pi-mono takes stdin) so the result is cached for
 			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -832,6 +864,7 @@ async function cliMain(): Promise<void> {
 				packageInstallGuardExtension,
 				sessionNameExtension(),
 				shutdownMarkerExtension,
+				buildInfoExtension,
 				// skill_view must always be present: the skills catalog in the system
 				// prompt directs the model to load skills through it. skill_manage
 				// (the write side) stays disabled — #235 turned it off because its
@@ -928,6 +961,9 @@ async function cliMain(): Promise<void> {
 				thinkingStepsExtension,
 				assistantPrefixExtension,
 				clipboardImageExtension,
+				// Binary document intake: read-tool redirect + @file stubbing. Runs in
+				// every permission mode — correctness, not permission.
+				documentIntakeExtension,
 				sessionModeOnboarding,
 				tipsExtension(),
 				...enabledExtensionFactories([
@@ -940,6 +976,7 @@ async function cliMain(): Promise<void> {
 				helpExtension,
 				themeSelectorExtension,
 				customizeStatusLineExtension,
+				languageCommandExtension,
 				inputHistoryExtension,
 				bugReportDestinationExtension,
 				tagsExtension,
@@ -962,6 +999,7 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				refusedTurnsExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
 				piiRedactionExtension,

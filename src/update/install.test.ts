@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -243,11 +253,20 @@ describe.skipIf(process.platform === "win32")("refreshBridge", () => {
 		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
 		writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
 		writeFileSync(join(prefix, "installed", "code"), "v0.2.0\n")
+		symlinkSync(join(share, "bridge", "VERSION"), join(prefix, "runtime"))
 		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
 		rmSync(join(share, "bridge"), { recursive: true })
 		writeFileSync(join(prefix, "installed", "code"), "v0.1.0\n")
 		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual([])
 		expect(existsSync(join(root, "calls"))).toBe(false)
+	})
+
+	it("relinks current plugins whose runtime is gone, as after a Homebrew upgrade", async () => {
+		writeFileSync(join(prefix, "installed", "codex"), "kimchi-work-0123456789ab\n")
+		writeFileSync(join(prefix, "installed", "code"), "v0.2.0\n")
+		symlinkSync(join(root, "Cellar", "kimchi", "1.0.0", "bin", "kimchi"), join(prefix, "runtime"))
+		expect(refreshBridge(share, "/opt/kimchi", prefix)).toEqual(["codex"])
+		await vi.waitFor(() => expect(readFileSync(join(root, "calls"), "utf8")).toBe("update codex /opt/kimchi\n"))
 	})
 
 	it("streams the installer child's output to refresh.log", async () => {

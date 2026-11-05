@@ -67,6 +67,33 @@ describe("apply", () => {
 		expect(isSnapshotAppliedThisTurn(pi)).toBe(true)
 	})
 
+	it("keeps bash_control beside bash even when a defaultTools setting does not name it", () => {
+		// A user-set defaultTools list resolves to the named builtins; it
+		// can never include bash_control (not a builtin). The pair must
+		// still move together: bash kept ⇒ bash_control kept.
+		const pi = makeMockPi()
+		mockIsDefaultToolEnabled.mockImplementation((name: string) => name !== "bash_control")
+
+		apply("planning-adhoc", "adhoc", pi)
+
+		const active = vi.mocked(pi.setActiveTools).mock.calls[0][0]
+		expect(active).toContain("bash")
+		expect(active).toContain("bash_control")
+	})
+
+	it("drops the whole bash pair when defaultTools disables bash", () => {
+		const pi = makeMockPi()
+		// A resolved defaultTools list with `-bash`: neither member is
+		// included (bash_control is never a named builtin).
+		mockIsDefaultToolEnabled.mockImplementation((name: string) => name !== "bash" && name !== "bash_control")
+
+		apply("planning-adhoc", "adhoc", pi)
+
+		const active = vi.mocked(pi.setActiveTools).mock.calls[0][0]
+		expect(active).not.toContain("bash")
+		expect(active).not.toContain("bash_control")
+	})
+
 	it("planning profiles admit read-only-qualified provider names", () => {
 		const pi = makeMockPi()
 		const unregister = registerReadOnlyToolProvider(pi, () => ["srv_get_issue"])

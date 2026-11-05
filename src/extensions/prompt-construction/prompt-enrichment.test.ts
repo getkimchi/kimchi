@@ -360,6 +360,69 @@ describe("prompt enrichment environment context", () => {
 	})
 })
 
+describe("prompt enrichment language pin", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("pins the reply language from the effective config, re-read for the session cwd", async () => {
+		const loadConfig = vi
+			.spyOn(config, "loadConfig")
+			.mockReturnValue({ apiKey: "", language: "ko" } as ReturnType<typeof config.loadConfig>)
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const ctx = createContext({ hasUI: false })
+		const result = (await beforeAgentStart({}, ctx)) as { systemPrompt: string; message?: unknown }
+
+		expect(result.systemPrompt).toContain("Always respond in ko, whatever language the user writes in")
+		expect(result.systemPrompt).not.toContain("Respond in the language the user writes in")
+		expect(loadConfig).toHaveBeenCalledWith({ cwd: ctx.cwd })
+		// Never persisted as a session message — the reminder is ephemeral (context hook).
+		expect(result.message).toBeUndefined()
+	})
+
+	it("injects one ephemeral per-request reminder after the latest user message while pinned", async () => {
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "", language: "ko" } as ReturnType<
+			typeof config.loadConfig
+		>)
+		const { beforeAgentStart, handlers } = buildPromptExtensionWithHandlers()
+		const contextHook = handlers.get("context")
+		if (!beforeAgentStart || !contextHook) throw new Error("handlers were not registered")
+
+		const ctx = createContext({ hasUI: false })
+		await beforeAgentStart({}, ctx)
+		const messages = [makeUser("bonjour"), makeAssistant(), makeUser("et maintenant ?")]
+		const result = (await contextHook({ messages }, ctx)) as { messages: OrchestratorMessages }
+
+		const hints = result.messages.filter((m) => (m as { customType?: string }).customType === "language_hint")
+		expect(hints).toHaveLength(1)
+		expect(result.messages.indexOf(hints[0])).toBe(3)
+		const text = (hints[0] as { content: { text: string }[] }).content[0].text
+		expect(isHarnessSteer(text)).toBe(true)
+		expect(text).toContain("Reply in ko.")
+	})
+
+	it("falls back to the adaptive rule, with no reminder, when no language is pinned", async () => {
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		const { beforeAgentStart, handlers } = buildPromptExtensionWithHandlers()
+		const contextHook = handlers.get("context")
+		if (!beforeAgentStart || !contextHook) throw new Error("handlers were not registered")
+
+		const ctx = createContext({ hasUI: false })
+		const result = (await beforeAgentStart({}, ctx)) as { systemPrompt: string; message?: unknown }
+		expect(result.systemPrompt).toContain("Respond in the language the user writes in")
+		expect(result.systemPrompt).not.toContain("Always respond in")
+		expect(result.message).toBeUndefined()
+
+		const messages = [makeUser("bonjour")]
+		const contextResult = (await contextHook({ messages }, ctx)) as { messages?: OrchestratorMessages } | undefined
+		const sent = contextResult?.messages ?? messages
+		expect(sent.some((m) => (m as { customType?: string }).customType === "language_hint")).toBe(false)
+	})
+})
+
 describe("prompt enrichment skills", () => {
 	let dir: string
 	let oldAgentDir: string | undefined

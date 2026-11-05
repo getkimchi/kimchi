@@ -32,6 +32,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow, pickReplacementSlug, readModelDeprecations } from "../../model-deprecation.js"
+import { findModelByRef } from "../../shared/model-ref.js"
 import {
 	collectBundledDisabledSkillNames,
 	resolveSkillPathsForDiscovery,
@@ -44,7 +45,6 @@ import { getEffectiveModel } from "../auto-model/state.js"
 import { getConfiguredSkillResourcePaths } from "../claude-code-skills/definition.js"
 import { bumpStallCounter, fireStepStallSteerIfStalled } from "../ferment/todo-sync.js"
 import { getProcessOrchestratorRef, setProcessOrchestratorRef } from "../kimchi-process.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
 import { getMultiModelEnabled, setAndPersistMultiModelEnabled } from "../multi-model.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
@@ -76,6 +76,7 @@ import { registerModelRolesCommand } from "../orchestration/model-roles-command.
 import { emitSteerFired, isSteerDisabled } from "../steer-events.js"
 import { watchSteerOutcome } from "../steer-outcome-watcher.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
+import { applyLanguageHint } from "./language-hint.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import { backgroundNotificationsReachUser, hasUserLoop } from "./session-user-loop.js"
 import { buildSystemPrompt, DELEGATION_TOOL_NAMES, type EnvironmentInfo, type PromptMode } from "./system-prompt.js"
@@ -265,6 +266,12 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			description: "Print enriched prompts in the UI (default: hidden)",
 			default: process.env.KIMCHI_DEBUG_PROMPTS === "1",
 		})
+
+		// Effective `language` pin, re-read at every run start (before_agent_start)
+		// and consumed by the `context` hooks below to inject the per-request
+		// reminder. Closure state, not config reads, so each LLM request in a
+		// turn sees the same value without touching the config files.
+		let pinnedLanguage: string | undefined
 
 		if (!subagentMode) {
 			registerModelRolesCommand(pi)
@@ -784,6 +791,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
+				messages = applyLanguageHint(messages, pinnedLanguage)
 				// kimi-k2.x stalls on historical tool calls whose IDs are not in
 				// Moonshot's canonical format (issue #1063) — normalize for those
 				// targets only.
@@ -808,6 +816,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				if (isKimiK2Model(effectiveModel?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
+				messages = applyLanguageHint(messages, pinnedLanguage)
 				messages = brandUnmarkedSteers(messages)
 				if (messages !== event.messages) return { messages }
 			})
@@ -892,6 +901,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			const roles = mode === "orchestrator" ? getModelRoles() : undefined
 			const customConfigs = mode === "orchestrator" && roles ? extractCustomConfigs(roles) : undefined
 
+			// Re-read per build so `/language` and `kimchi config set language`
+			// take effect on the next turn without a restart. Project config
+			// (trusted) wins over global — resolve against the session cwd.
+			pinnedLanguage = loadConfig({ cwd: ctx.cwd }).language
+
 			let systemPrompt = buildSystemPrompt({
 				tools,
 				env,
@@ -909,6 +923,7 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				sessionId,
 				hasUserLoop: hasUserLoop(),
 				backgroundNotificationsReachUser: backgroundNotificationsReachUser(ctx.mode),
+				language: pinnedLanguage,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
@@ -943,6 +958,9 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				delete process.env.KIMCHI_DEBUG_SESSION
 			}
 
+			// The pinned per-turn reminder is injected by the `context` hooks
+			// (applyLanguageHint), not returned here: a before_agent_start
+			// message would be persisted into the session once per turn.
 			return { systemPrompt }
 		})
 	}

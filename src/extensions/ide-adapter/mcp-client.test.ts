@@ -11,12 +11,15 @@ const mockListTools = vi.fn().mockResolvedValue({ tools: [] })
 const mockCallTool = vi.fn().mockResolvedValue({ content: [] })
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
-	Client: vi.fn().mockImplementation(() => ({
-		connect: mockClientConnect,
-		close: mockClientClose,
-		listTools: mockListTools,
-		callTool: mockCallTool,
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+	Client: vi.fn().mockImplementation(function () {
+		return {
+			connect: mockClientConnect,
+			close: mockClientClose,
+			listTools: mockListTools,
+			callTool: mockCallTool,
+		}
+	}),
 }))
 
 describe("IdeWebSocketTransport", () => {

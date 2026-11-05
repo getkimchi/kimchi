@@ -43,6 +43,7 @@ import {
 	readAttributedFileStates,
 	reconcileFileTransitions,
 	reconcileRepositoryTransitions,
+	type SharedTypeReads,
 } from "./file-transitions.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
@@ -150,6 +151,8 @@ afterEach(async () => {
 	closeBackends()
 	useBackendFactory(null)
 	vi.restoreAllMocks()
+	vi.mocked(childProcess.execFileSync).mockReset()
+	vi.mocked(childProcess.execFile).mockReset()
 	vi.unstubAllEnvs()
 	rmSync(root, { recursive: true, force: true })
 })
@@ -279,6 +282,45 @@ describe("manual commit reconciliation", () => {
 		// Repository discovery is one ledger read; no journal-header opens happen on this path.
 		expect(await knownTransitionRepositories(checkBudget)).toHaveLength(5)
 		expect(headers).not.toHaveBeenCalled()
+	})
+
+	it("reads the transition table once per pass, sharing it across repositories", async () => {
+		let transitionReads = 0
+		let commitReads = 0
+		useBackendFactory(() => {
+			const inner = createMemoryRecords()
+			const readRecords: typeof inner.readRecords = (opts, checkBudget) => {
+				if (opts.type === "file_transition") transitionReads++
+				if (opts.type === "commit") commitReads++
+				return inner.readRecords(opts, checkBudget)
+			}
+			return { ...inner, readRecords }
+		})
+		baseline()
+		await write("file.txt", "first edit\n")
+		repo = join(root, "second")
+		mkdirSync(repo)
+		git("init", "-q")
+		await write("file.txt", "other edit\n")
+		await flushWorkSummaries()
+		transitionReads = 0
+		commitReads = 0
+		const shared: SharedTypeReads = {}
+		const repositories = await knownTransitionRepositories(() => {}, shared)
+		expect(repositories).toHaveLength(2)
+		expect(shared.fileTransitions?.length).toBeGreaterThanOrEqual(2)
+		for (const repository of repositories)
+			await reconcileRepositoryTransitions(
+				repository,
+				undefined,
+				() => {},
+				() => {},
+				shared,
+			)
+		// Discovery read the table once into `shared`; every repository's pass reused it.
+		expect(transitionReads).toBe(1)
+		// The first repository's reconcile cached the commits table for the second.
+		expect(commitReads).toBe(1)
 	})
 
 	it("discovers another known repository even when a large journal cannot be read", async () => {
@@ -728,6 +770,8 @@ describe("manual commit reconciliation", () => {
 		expect(contributions()).toEqual([])
 
 		vi.restoreAllMocks()
+		vi.mocked(childProcess.execFileSync).mockReset()
+		vi.mocked(childProcess.execFile).mockReset()
 		await reconcileFileTransitions(context("retry"))
 		await reconcileFileTransitions(context("repeat"))
 		expect(contributions()).toEqual([
@@ -771,7 +815,7 @@ describe("manual commit reconciliation", () => {
 
 	it("records native edit evidence without blocking on synchronous Git calls", async () => {
 		baseline()
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		await edit("one", "first")
 		expect(syncGit).not.toHaveBeenCalled()
 		expect(rows().filter((row) => row.type === "file_transition")).toEqual([
@@ -798,7 +842,7 @@ describe("manual commit reconciliation", () => {
 					void gate.then(() => (callback as (...values: unknown[]) => void)(...result))
 			return execute(...args)
 		}) as typeof execute)
-		const syncGit = vi.spyOn(childProcess, "execFileSync")
+		const syncGit = vi.spyOn(childProcess, "execFileSync").mockClear()
 		const child = createExtensionApi()
 		createWorkAttributionExtension(workId)(child.api)
 		try {
