@@ -276,7 +276,9 @@ function importJournalFiles(
 	const result: ImportResult = { files: [], anomalies: [], problems: [], imported: 0, skipped: 0 }
 	const backend = backendFor(agentDir)
 	const start = until === undefined ? 0 : Math.max(0, journals.indexOf(stopped.get(agentDir) ?? ""))
-	for (const path of [...journals.slice(start), ...journals.slice(0, start)]) {
+	const ordered = [...journals.slice(start), ...journals.slice(0, start)]
+	for (let journalIndex = 0; journalIndex < ordered.length; journalIndex += 1) {
+		const path = ordered[journalIndex]
 		checkBudget?.()
 		const cursor = backend.getJournalCursor(path)
 		// A journal with saved problems is re-read from the start once per process: the note describes an
@@ -438,9 +440,14 @@ function importJournalFiles(
 			skipped: entries.length - imported,
 		})
 		// Unchanged journals cost a stat each; only journals that imported spend the slice.
+		// A finished pass is not pending: the clock expiring after the last journal means this
+		// slice did all the work there was, which a loaded machine reaches routinely with a
+		// single small journal. Only report partial coverage when journals are actually left.
 		if (until !== undefined && Date.now() >= until) {
-			result.pending = true
-			stopped.set(agentDir, path)
+			if (journalIndex + 1 < ordered.length) {
+				result.pending = true
+				stopped.set(agentDir, path)
+			}
 			break
 		}
 	}

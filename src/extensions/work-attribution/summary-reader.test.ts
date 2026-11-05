@@ -111,6 +111,17 @@ it("imports legacy history one short slice per read and the rest in the backgrou
 	expect(readWorkRecords(agentDir, undefined, () => {})).toHaveLength(3)
 })
 
+it("does not report an unfinished import when the slice clock expires after the last journal", () => {
+	// Regression: a 50 ms slice expiring once the only journal was fully consumed used to
+	// make strict readers throw "Legacy work history is still importing" on loaded CI
+	// runners, where the slice's own stat/read work routinely outlives the budget.
+	const { agentDir } = journal([work])
+	const start = Date.now()
+	let calls = 0
+	vi.spyOn(Date, "now").mockImplementation(() => start + 60 * calls++)
+	expect(readWorkRecords(agentDir, undefined, () => {})).toEqual([work])
+})
+
 it("honors a read budget before import commits and allows a later retry", () => {
 	const { agentDir, path } = journal([work])
 	const budget = () => {
