@@ -366,10 +366,20 @@ async function cliMain(): Promise<void> {
 	// redaction engine failure aborts the export — never an unredacted file.
 	// The wrapper is async; upstream's handleExportCommand awaits it.
 	//
-	// The JSONL header's systemPrompt comes from the per-session capture
+	// Both patches share resolveExportSystemPromptFor below: the JSONL header
+	// and the HTML payload systemPrompt come from the per-session capture
 	// (what the model actually ran with), NOT the session getter — pi 1.3.0
-	// never records the forced prompt in the transcript, so the getter
-	// resolves to pi's base prompt once the session is idle.
+	// never records the forced prompt in the transcript, so the getter resolves
+	// to pi's base prompt once the session is idle.
+	const resolveExportSystemPromptFor = (session: {
+		sessionManager: { getSessionId(): string }
+		systemPrompt?: unknown
+	}): string | undefined =>
+		resolveExportSystemPrompt(
+			session.sessionManager.getSessionId(),
+			typeof session.systemPrompt === "string" ? session.systemPrompt : undefined,
+		)
+
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
@@ -386,10 +396,7 @@ async function cliMain(): Promise<void> {
 				runExportOffloaded({
 					mode: "jsonl",
 					filePath: tempPath,
-					systemPrompt: resolveExportSystemPrompt(
-						this.sessionManager.getSessionId(),
-						typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
-					),
+					systemPrompt: resolveExportSystemPromptFor(this),
 				}),
 		})
 	}
@@ -421,10 +428,7 @@ async function cliMain(): Promise<void> {
 				runExportOffloaded({
 					mode: "html",
 					filePath: tempPath,
-					systemPrompt: resolveExportSystemPrompt(
-						this.sessionManager.getSessionId(),
-						typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
-					),
+					systemPrompt: resolveExportSystemPromptFor(this),
 				}),
 		})
 	}
