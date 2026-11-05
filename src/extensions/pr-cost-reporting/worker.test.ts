@@ -201,6 +201,8 @@ describe("account-fenced reporting delivery", () => {
 		if (mode === "explicit resume") await setReportingEnabled(directory, true)
 		if (mode === "another eligible account")
 			backend.insertOutboxBatch({ ...batch, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", accountKey: "other-account" })
+		// Only the schedule matters here: no batch is sent after authentication.
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(undefined)
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).toHaveBeenCalledTimes(mode === "backoff" ? 0 : 1)
 		if (mode !== "backoff") expect(String(http.mock.calls[0][0])).toContain("api-keys:verify")
@@ -258,6 +260,19 @@ describe("account-fenced reporting delivery", () => {
 		expect(backendFor(directory).getNote("pr-cost-delivery", accountId)).toBeUndefined()
 	})
 
+	it("still delivers a snapshot queued under the legacy console platform API base", async () => {
+		// Snapshots queued before the platform API moved to the region's API origin
+		// hold webAppUrl + "/api" as their account base. The delivery pass must not
+		// skip them as another account's reports — with no TTL, that skip would be
+		// permanent.
+		config.endpoint = "https://api.cast.ai"
+		await queueSnapshots(directory, [
+			{ ...content, account: { ...content.account, apiUrl: "https://app.kimchi.dev/api" } },
+		])
+		await deliver()
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-snapshots"))).toBe(true)
+	})
+
 	it("uploads snapshots and events with the SSO credential when no API key is configured", async () => {
 		config.key = ""
 		const agentDir = join(directory, "agent")
@@ -310,9 +325,31 @@ describe("account-fenced reporting delivery", () => {
 		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
 	})
 
-	it("keeps an event batch without an error when the credential changes during its upload", async () => {
-		// Events wait until the legacy snapshot queued for this account drains.
+	it("sends events while the account's legacy snapshot keeps failing with HTTP 413", async () => {
+		// nginx in front of the API refuses a body above 1 MiB, so this snapshot never drains.
+		const batch = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			accountKey: accountKey(content.account),
+			body: new TextEncoder().encode("{}"),
+			eventIds: [],
+			createdAt: Date.now(),
+			orderKey: "",
+		}
+		http.mockImplementation(async (input) => {
+			const url = String(input)
+			if (url.endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (url.endsWith("/pr-cost-snapshots")) return new Response("Request Entity Too Large", { status: 413 })
+			return Response.json({ batchId: batch.id, receipts: [] })
+		})
 		await deliver()
+		backendFor(directory).insertOutboxBatch(batch)
+		vi.spyOn(outbox, "pendingBatch").mockReturnValue(batch)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(posts()).toHaveLength(1)
+		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
+	it("keeps an event batch without an error when the credential changes during its upload", async () => {
 		const batch = {
 			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			accountKey: accountKey(content.account),
@@ -337,8 +374,6 @@ describe("account-fenced reporting delivery", () => {
 	})
 
 	it("sends a batch's events under a new ID after the server answers 409 for its ID", async () => {
-		// Events wait until the legacy snapshot queued for this account drains.
-		await deliver()
 		const batch = {
 			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			accountKey: accountKey(content.account),
@@ -758,6 +793,230 @@ describe("account-fenced reporting delivery", () => {
 		expect(http).toHaveBeenCalledOnce()
 		expect(Object.values((await readReportingState(directory)).entries)[0].pending).toBeDefined()
 	})
+	// The server rejected this body for its size; the queue halves it and retries, down to a floor.
+	it("halves a body the server rejects with 413 and retries the trimmed replacement", async () => {
+		// The replacement carries the queued snapshot's request, or the queue holds the old body.
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+				},
+			},
+		])
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: new Response(null, { status: 413 }),
+		)
+		const frozenBody = () => {
+			const rows = backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
+			expect(rows).toHaveLength(1)
+			const parsed = JSON.parse(rows[0].body)
+			return JSON.parse(parsed.body) as {
+				requests: unknown[]
+				coverage: { historyComplete: boolean; trimmedRequests?: number }
+			}
+		}
+		await deliver()
+		expect(frozenBody().requests.length).toBe(20)
+		expect(frozenBody().coverage.historyComplete).toBe(false)
+		expect(frozenBody().coverage.trimmedRequests).toBe(20)
+		await deliver()
+		expect(frozenBody().requests.length).toBe(16)
+		// Trimmed requests accumulate across halvings, so the server sees the total omissions.
+		expect(frozenBody().coverage.trimmedRequests).toBe(24)
+		// At the floor the body no longer shrinks; the rejection defers like any other.
+		await deliver()
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.lastError).toBe("PR reporting returned HTTP 413")
+		expect(frozenBody().requests.length).toBe(16)
+	})
+
+	it("does not trim a queued body when the verify call itself rejects with 413", async () => {
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+				},
+			},
+		])
+		// A misbehaving proxy rejects the verification itself; the upload was never attempted.
+		http.mockImplementation(async (input) =>
+			String(input).endsWith("api-keys:verify")
+				? new Response(null, { status: 413 })
+				: new Response(null, { status: 200 }),
+		)
+		await deliver()
+		const rows = backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
+		expect(rows).toHaveLength(1)
+		const frozen = JSON.parse(rows[0].body) as { body: string }
+		const parsed = JSON.parse(frozen.body) as { requests: unknown[]; coverage: { historyComplete: boolean } }
+		// Trimming is the remedy for a rejected body, so the verify rejection leaves it intact.
+		expect(parsed.requests.length).toBe(40)
+		expect(parsed.coverage.historyComplete).toBe(true)
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.lastError).toContain("413")
+		expect(entry.retryAt).toBeGreaterThan(Date.now() + 30 * 60_000)
+	})
+
+	it("delivers the trimmed replacement after a 413 once the server accepts it", async () => {
+		// The replacement carries the queued snapshot's request, or the queue holds the old body.
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: requests.length, historyComplete: true },
+				},
+			},
+		])
+		let rejected = true
+		http.mockImplementation(async (input, init) =>
+			String(input).endsWith("api-keys:verify")
+				? Response.json({ organizationId: org, userId: user })
+				: rejected
+					? new Response(null, { status: 413 })
+					: Response.json({
+							status: "accepted",
+							revision: JSON.parse(String(init?.body)).revision,
+							receivedAt: new Date().toISOString(),
+						}),
+		)
+		await deliver()
+		const trimmed = JSON.parse(backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)[0].body)
+		const parsed = JSON.parse(trimmed.body)
+		expect(parsed.requests.length).toBe(20)
+		rejected = false
+		await deliver()
+		const backend = backendFor(directory)
+		expect(backend.readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(0)
+		expect(backend.readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.pending).toBeUndefined()
+		// The trimmed ack keeps membership for the requests it left out, which the server retains.
+		expect(entry.requestHashes).toHaveLength(40)
+	})
+
+	it("trims a body the server rejects with a snapshot byte limit and delivers the smaller one", async () => {
+		const requests = [
+			content.content.requests[0],
+			...Array.from({ length: 39 }, (_, index) => ({
+				requestId: `33333333-3333-4333-8333-${String(index).padStart(12, "0")}`,
+				billingRecordIds: [],
+				startedAt: "2026-10-04T12:00:00Z",
+				allocation: { kind: "unlinked" as const, pullRequestIds: [], method: "native" as const },
+			})),
+		]
+		await queueSnapshots(directory, [
+			{
+				account: content.account,
+				content: {
+					repository: content.content.repository,
+					pullRequests: [],
+					requests,
+					coverage: { observedRequests: requests.length, unpricedRequests: 0, historyComplete: true },
+				},
+			},
+		])
+		let rejected = true
+		http.mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (rejected)
+				return Response.json(
+					{
+						code: 8,
+						message: "PR cost reporting resource limit exceeded",
+						details: [
+							{
+								"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+								reason: "PR_COST_LIMIT",
+								domain: "ai-optimizer",
+								metadata: { scope: "snapshot", limit: "bytes", current: "16000", maximum: "2048" },
+							},
+						],
+					},
+					{ status: 429 },
+				)
+			return Response.json({
+				status: "accepted",
+				revision: JSON.parse(String(init?.body)).revision,
+				receivedAt: new Date().toISOString(),
+			})
+		})
+		await deliver()
+		// The learned cap replaced the body with one that fits the server's stated maximum.
+		const rows = () => backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)
+		expect(rows()).toHaveLength(1)
+		const envelope = JSON.parse(rows()[0].body)
+		expect(Buffer.byteLength(envelope.body)).toBeLessThanOrEqual(2048)
+		expect(JSON.parse(envelope.body).coverage.historyComplete).toBe(false)
+		// The upload window settles, then the smaller body is accepted.
+		const settled = Date.now() + 6 * 60_000
+		vi.spyOn(Date, "now").mockReturnValue(settled)
+		rejected = false
+		await deliver()
+		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshots", "", 100)).toHaveLength(0)
+		expect(backendFor(directory).readNotePage("legacy-pr-cost-snapshot-receipts", "", 100)).toHaveLength(1)
+	})
+
+	it("treats a body deleted mid-delivery as settled and continues the pass", async () => {
+		await queueSnapshots(directory, [content])
+		let deleted = false
+		http.mockImplementation(async (input) => {
+			if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+			if (!deleted) {
+				// Another process caps this body away while its upload is in flight.
+				const backend = backendFor(directory)
+				for (const row of backend.readNotePage("legacy-pr-cost-snapshots", "", 100))
+					backend.deleteNote("legacy-pr-cost-snapshots", row.name)
+				deleted = true
+			}
+			return new Response(null, { status: 413 })
+		})
+		await deliver()
+		expect(deleted).toBe(true)
+		const entry = Object.values((await readReportingState(directory)).entries)[0]
+		expect(entry.attempts).toBe(0)
+		expect(entry.lastError).toBeUndefined()
+	})
+
 	it("persists Retry-After and does not retry before its deadline", async () => {
 		http.mockImplementation(async (input) =>
 			String(input).endsWith("api-keys:verify")

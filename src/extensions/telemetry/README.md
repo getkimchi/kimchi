@@ -33,7 +33,9 @@ Every in-session payload includes:
 | `session.id` | The emitting session's own pi session id — the same id the user sees via pi's built-in `/session` overlay and in the JSONL filename. Subagents (in-process or subprocess) carry their own; see [Subagent identification](#subagent-identification) |
 | `session.parent_id` | Spawning (parent) session's pi session id — present only on events emitted from inside a subagent run |
 | `client` | `"pi"` |
-| `source` | Where the event originated (e.g. `"cli"`) |
+| `source` | Where the event originated: `"cli"` (interactive TUI) or `"acp"` (JSON-RPC over stdio, driven by an ACP client) |
+| `acp_client_name` | ACP client consuming the harness (e.g. `"kimchi-studio"`, `"kimchi-vscode"`, `"zed"`, `"acp-orchestrator"`), from the ACP `initialize` handshake; present once a client has initialized, regardless of `source` |
+| `acp_client_version` | ACP client version from the same handshake; present whenever `acp_client_name` is |
 | `mode` | `"coding"` or `"ferment"` |
 
 Pre-session events (`app_started`, `harness_launched`, …) still use the **device ID** as `session.id` — no session exists yet.
@@ -89,6 +91,13 @@ how it already records `X-Session-Id` / `X-Turn-Index`. When Auto routing is
 active, its `/v1/route` request receives the same telemetry correlation headers
 as the concrete model request; unrelated provider headers are not forwarded.
 
+Provider requests made by an ACP-driven process additionally carry
+`X-Acp-Client-Name` (the ACP client from the `initialize` handshake, same
+source as the `acp_client_name` log/metric attribute) so the proxy can
+attribute `chat_completions` rows to the consuming client — the client split
+needs this header, not just the metric stamping, because recorded
+`chat_completions` rows are produced by the proxy itself.
+
 ## Pre-Session Events
 
 Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endpoint**.
@@ -101,7 +110,7 @@ Fired from `pre-session.ts` via `sendPreSessionEvent()`. Sent to the **logs endp
 | `tool_configured` | Tool enabled in setup wizard | `tool_name` |
 | `setup_completed` | Setup wizard finished | `tools_count`, `scope` |
 
-All pre-session events also carry base resource attributes: `telemetry.cli_version`, `telemetry.os`, `telemetry.arch`, and optionally `user.account_uuid` / `userEmail`.
+All pre-session events also carry base resource attributes: `telemetry.cli_version`, `telemetry.os`, `telemetry.arch`, and optionally `user.account_uuid` / `userEmail`. `telemetry.cli_version` reports the detected version (`getDetectedVersion()` in `src/utils.ts`): a run from a kimchi source checkout reports `dev` even when the package dir points at an installed release.
 
 ## In-Session Log Events
 
@@ -188,7 +197,10 @@ Common attributes: `run_id`, `workflow_name`, `at` (producer ISO timestamp). Ste
 Accumulated per process — the accumulator is keyed by the internal process
 telemetryId (see [ID scheme](#id-scheme)), so totals span every session in the
 process — and flushed every 30s to the **metrics endpoint**. Each flush's data
-points carry the flushing session's pi session id as `session.id`.
+points carry the flushing session's pi session id as `session.id`, plus the
+same process-level identity as log records (`source`, `acp_client_name`,
+`acp_client_version`, `user.account_uuid`), so downstream aggregations can
+split metrics by harness path or ACP client the same way they split logs.
 
 | Metric Name | Type | Description | Attributes |
 |-------------|------|-------------|------------|
@@ -199,7 +211,7 @@ points carry the flushing session's pi session id as `session.id`.
 | `claude_code.lines_of_code.count` | Sum | Lines added or removed | `type` (`added` / `removed`), `language` |
 | `claude_code.tool.usage` | Sum | Tool invocation count | `tool_name` |
 | `claude_code.tool.duration_ms` | Sum | Total tool execution time (ms) | `tool_name` |
-| `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `source` |
+| `claude_code.code_edit_tool.decision` | Sum | Edit tool decisions by language | `tool_name`, `decision`, `language`, `decision_source` |
 
 ### `editDecisions` Key Format
 
@@ -211,6 +223,11 @@ The accumulator stores edit decisions under a pipe-delimited key:
 
 Example: `write|accept|TypeScript|auto`
 
+The fourth segment is the decision origin and is emitted as the
+`decision_source` attribute (always `auto` today). It is named `decision_source`
+— not `source` — because `source` on every data point holds the session origin
+(`cli` / `acp`), the same rename the log path applies to its decision events.
+
 ## Transport Details
 
 | Setting | Value |
@@ -219,7 +236,7 @@ Example: `write|accept|TypeScript|auto`
 | Log flush interval | 5 000 ms |
 | Metrics flush interval | 30 000 ms |
 | Drain timeout | 5 000 ms (in-session) / 3 000 ms (pre-session) |
-| Resource attributes | `service.name="kimchi"`, `user_agent.original="kimchi/{version}"` |
+| Resource attributes | `service.name="kimchi"`, `user_agent.original="kimchi/{detected version}"` (same `getDetectedVersion()` value as `telemetry.cli_version`) |
 | Scope | `name="kimchi"`, `version="1.0.0"` |
 | Endpoints | `config.endpoint` (logs), `config.metricsEndpoint` (metrics) |
 

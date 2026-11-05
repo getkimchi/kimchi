@@ -12,6 +12,9 @@
  *   selection highlight and flashes are applied);
  * - mouse interceptors that may consume a raw SGR mouse event before the
  *   renderer dispatches it;
+ * - focus guards that re-focus a modal dialog after mouse dispatch (mouse
+ *   clicks refocus the clicked editor directly, without going through
+ *   `focusComponent`, and a keyboard-only permission ask has no way back);
  * - wheel interceptors that may consume a wheel scroll before it is routed
  *   (upstream chains leftover wheel delta into the primary transcript even
  *   from an `overscroll: "contain"` view).
@@ -105,10 +108,13 @@ export interface SelectionBounds {
 export type Compositor = (screen: string[], frame: Frame, width: number) => string[]
 export type MouseInterceptor = (event: RawMouseEvent) => boolean
 export type WheelInterceptor = (x: number, y: number, delta: number) => boolean
+/** Names a modal dialog that must keep keyboard focus (typically `SideChatHost.modalDialog`), or undefined. */
+export type FocusGuard = () => Component | undefined
 
 const compositors = new Set<Compositor>()
 const mouseInterceptors = new Set<MouseInterceptor>()
 const wheelInterceptors = new Set<WheelInterceptor>()
+const focusGuards = new Set<FocusGuard>()
 
 export function addCompositor(compositor: Compositor): () => void {
 	compositors.add(compositor)
@@ -123,6 +129,11 @@ export function addMouseInterceptor(interceptor: MouseInterceptor): () => void {
 export function addWheelInterceptor(interceptor: WheelInterceptor): () => void {
 	wheelInterceptors.add(interceptor)
 	return () => wheelInterceptors.delete(interceptor)
+}
+
+export function addFocusGuard(guard: FocusGuard): () => void {
+	focusGuards.add(guard)
+	return () => focusGuards.delete(guard)
 }
 
 /** Run every registered compositor over a laid-out screen, in registration order. */
@@ -144,6 +155,28 @@ export function interceptMouse(event: RawMouseEvent): boolean {
 export function interceptWheel(x: number, y: number, delta: number): boolean {
 	for (const interceptor of wheelInterceptors) {
 		if (interceptor(x, y, delta)) return true
+	}
+	return false
+}
+
+/** The `TUI` focus surface (getFocusedComponent is runtime-present but off the public type). */
+export interface FocusReader {
+	getFocusedComponent(): Component | null
+	setFocus(component: Component | null): void
+}
+
+/**
+ * Run every focus guard after mouse dispatch; when one names an open modal
+ * dialog, make sure it keeps the keyboard focus. Mouse-driven focus changes
+ * (an editor answers a click with `focus: true`) otherwise strand the
+ * keyboard-only dialog unfocused. True when a guard named a dialog.
+ */
+export function applyFocusGuards(ui: FocusReader): boolean {
+	for (const guard of focusGuards) {
+		const dialog = guard()
+		if (!dialog) continue
+		if (ui.getFocusedComponent() !== dialog) ui.setFocus(dialog)
+		return true
 	}
 	return false
 }
@@ -188,6 +221,18 @@ interface InteractiveModeInternals {
 	defaultEditor: Component & { theme: EditorTheme; onExtensionShortcut?: (data: string) => boolean }
 	fullscreenLayoutRoot?: Component
 	outputPad: number
+	/** Main-session modal dialogs shown in the editor slot (permission asks come through `ctx.ui.select`). */
+	extensionSelector?: Component
+	extensionInput?: Component
+	extensionEditor?: Component
+	/**
+	 * The editor slot's container: it holds `editor`, swapped for the active
+	 * dialog. Selector/input/editor dialogs are ALSO tracked in the members
+	 * above, but a `ctx.ui.custom` component (the questionnaire form) replaces
+	 * the editor without any tracked member — detectable here as "the slot's
+	 * only child is not the editor".
+	 */
+	editorContainer?: { children: Component[] }
 	init(): Promise<void>
 	getMarkdownThemeWithSettings(): MarkdownTheme
 	getRegisteredToolDefinition(name: string): ToolDefinition | undefined
@@ -255,7 +300,9 @@ export function installSideChatHarnessPatch(): boolean {
 
 	const originalHandleMouse = altProto.handleMouseEvent
 	altProto.handleMouseEvent = function patchedHandleMouse(this: AltScreenInternals, event: RawMouseEvent) {
-		if (!interceptMouse(event)) originalHandleMouse.call(this, event)
+		if (interceptMouse(event)) return
+		originalHandleMouse.call(this, event)
+		if (activeMode) applyFocusGuards(activeMode.ui as unknown as FocusReader)
 	}
 
 	const originalRouteWheel = altProto.routeWheel
@@ -291,6 +338,18 @@ export interface SideChatHost {
 	markdownTheme(): MarkdownTheme
 	toolDefinition(name: string): ToolDefinition | undefined
 	mainEditor(): DecoratableEditor
+	/**
+	 * The main session's active modal dialog: a permission ask (`ctx.ui.select`),
+	 * an extension input/editor, a `ctx.ui.custom` dialog in the editor slot (the
+	 * questionnaire form), or a focus-capturing overlay (plan review, /help).
+	 * While one is open it owns the keyboard;
+	 * all side-chat focus transitions must go through `focusComponent` — the
+	 * dialogs have no mouse support, so once unfocused there is no way back to
+	 * them and the session deadlocks on an unanswerable ask.
+	 */
+	modalDialog(): Component | undefined
+	/** Focus `component`, unless a main-session modal dialog is open — then (re)focus the dialog instead. */
+	focusComponent(component: Component): void
 	focusMainEditor(): void
 	/** Route a key to the main editor's extension-shortcut table (so shortcuts work from any pane). */
 	forwardExtensionShortcut(data: string): boolean
@@ -314,10 +373,49 @@ function mountLayoutRoot(mode: InteractiveModeInternals, build: (base: Component
 	mode.ui.requestRender()
 }
 
+/** Private `TUI` members the side chat reads (declared `private` upstream). */
+interface TuiOverlayInternals {
+	getTopmostVisibleOverlay?(): { component: Component } | undefined
+}
+
+/** Structural slice of `InteractiveMode` that modal-dialog resolution reads. */
+export interface ModalDialogSource {
+	ui: object
+	editor: Component
+	extensionSelector?: Component
+	extensionInput?: Component
+	extensionEditor?: Component
+	editorContainer?: { children: Component[] }
+}
+
+/**
+ * The main session's active keyboard-only modal dialog, if any: a tracked
+ * selector/input/editor dialog (permission asks come through `ctx.ui.select`),
+ * the topmost focus-capturing overlay (plan review, feedback, /help), or a
+ * `ctx.ui.custom` dialog mounted in the editor slot — upstream keeps that one
+ * in a local closure (`showExtensionCustom`), so the only observable trace is
+ * that the slot's child is no longer the editor. Non-capturing overlays and a
+ * slot holding the plain editor both resolve to undefined.
+ */
+export function resolveModalDialog(mode: ModalDialogSource): Component | undefined {
+	if (mode.extensionSelector) return mode.extensionSelector
+	if (mode.extensionInput) return mode.extensionInput
+	if (mode.extensionEditor) return mode.extensionEditor
+	const overlay = (mode.ui as TuiOverlayInternals).getTopmostVisibleOverlay?.()
+	if (overlay) return overlay.component
+	const child = mode.editorContainer?.children[0]
+	return child && child !== mode.editor ? child : undefined
+}
+
 /** The live interactive session; undefined before `InteractiveMode.init`, outside the TUI, or when not installed. */
 export function getSideChatHost(): SideChatHost | undefined {
 	const mode = installState === "installed" ? activeMode : undefined
 	if (!mode) return undefined
+	const modalDialog = () => resolveModalDialog(mode)
+	const focusComponent = (component: Component) => {
+		mode.ui.setFocus(modalDialog() ?? component)
+		mode.ui.requestRender()
+	}
 	return {
 		ui: mode.ui,
 		keybindings: mode.keybindings,
@@ -327,10 +425,9 @@ export function getSideChatHost(): SideChatHost | undefined {
 		markdownTheme: () => mode.getMarkdownThemeWithSettings(),
 		toolDefinition: (name) => mode.getRegisteredToolDefinition(name),
 		mainEditor: () => mode.editor,
-		focusMainEditor: () => {
-			mode.ui.setFocus(mode.editor)
-			mode.ui.requestRender()
-		},
+		modalDialog,
+		focusComponent,
+		focusMainEditor: () => focusComponent(mode.editor),
 		forwardExtensionShortcut: (data) => mode.defaultEditor.onExtensionShortcut?.(data) ?? false,
 		setSidePanel: (panel, { divider, width }) => {
 			mountLayoutRoot(

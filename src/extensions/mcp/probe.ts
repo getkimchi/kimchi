@@ -38,12 +38,23 @@ export interface ProbeResult {
 	 * (Studio connector cards) instead of reading as an unavailable keychain.
 	 */
 	keychainDenied?: boolean
+	/** Outcome of an optional single tool invocation (`--call`). */
+	call?: ProbeCallResult
+}
+
+export interface ProbeCallResult {
+	ok: boolean
+	error: string | null
+	/** The tool's text content, when the call succeeded. */
+	content: string | null
 }
 
 export interface McpProbeOptions {
 	authenticate?: boolean
 	cwd?: string
 	signal?: AbortSignal
+	/** Invoke one tool through the connected session after tools/list. */
+	call?: { tool: string; args?: Record<string, unknown> }
 }
 
 export interface McpProbe {
@@ -573,10 +584,37 @@ export class UpstreamMcpProbe implements McpProbe {
 				}
 			}
 
+			// Optional single tool invocation through the live session (probe --call):
+			// one read call proves the freshly renewed credentials can actually do work,
+			// not just list a catalog. Failures are reported on the result, not thrown,
+			// so the catalog is still returned.
+			let call: ProbeCallResult | undefined
+			if (options.call) {
+				try {
+					const callResult = await Promise.race([
+						executeGateway(host, {
+							tool: options.call.tool,
+							args: options.call.args ?? {},
+							server: probeName,
+						}),
+						aborted,
+					])
+					const details = resultDetails(callResult)
+					const text = resultMessage(callResult)
+					call = {
+						ok: !details.error,
+						error: details.error ? String(details.message ?? text) : null,
+						content: text || null,
+					}
+				} catch (error) {
+					call = { ok: false, error: error instanceof Error ? error.message : String(error), content: null }
+				}
+			}
+
 			// The gateway catalog is filtered, renames tools, and adds resource tools.
 			// Discovery must expose the server's original tools/list catalog so users
 			// can select tools that their current model-facing configuration excludes.
-			return { tools: [...capturedTools.values()], needsAuth: false, error: null }
+			return { tools: [...capturedTools.values()], needsAuth: false, error: null, ...(call ? { call } : {}) }
 		} finally {
 			signal.removeEventListener("abort", onAbort)
 			if (throwaway) {

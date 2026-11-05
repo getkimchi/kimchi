@@ -454,6 +454,24 @@ describe("includeCoreGuidelines", () => {
 		expect(output).not.toContain("## Phase Management")
 	})
 
+	it("carries the pinned language section into a replace-mode prompt", () => {
+		const agent: AgentConfig = {
+			name: "Test-Lang",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const languageBlock = "## Language\n\n- Always respond in Korean, whatever language the user writes in."
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, { languageBlock })
+		expect(output).toContain(languageBlock)
+		expect(output.indexOf(languageBlock)).toBeGreaterThan(output.indexOf("Do the thing."))
+
+		const without = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, PARENT_SYSTEM_PROMPT, {})
+		expect(without).not.toContain("## Language")
+	})
+
 	it("includes only guidance for tools available to a restricted replace-mode agent", () => {
 		const agent: AgentConfig = {
 			name: "Test-Restricted-Core",
@@ -547,5 +565,21 @@ Use the Skill tool to load a skill's full instructions.
 		expect(output).toContain("## Available Skills")
 		expect(output).toContain("**my-skill**")
 		expect(output).toContain("Skill tool")
+	})
+
+	it("renders preloaded skill blocks in the prompt when provided", () => {
+		const agent: AgentConfig = {
+			name: "Test-SkillBlocks",
+			description: "Test",
+			extensions: true,
+			skills: true,
+			systemPrompt: "Do the thing.",
+			promptMode: "replace",
+		}
+		const output = buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, {
+			skillBlocks: [{ name: "pdf", content: "PDF SKILL BODY" }],
+		})
+		expect(output).toContain("# Preloaded Skill: pdf")
+		expect(output).toContain("PDF SKILL BODY")
 	})
 })

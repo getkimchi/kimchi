@@ -39,10 +39,12 @@ import {
 	type LoopGuardWarnPayload,
 } from "../loop-guard-events.js"
 import { PERMISSION_EVENTS, type PermissionToolDecisionPayload } from "../permissions/permissions-events.js"
+import { PII_REDACTION_EVENTS } from "../pii-redaction/redaction-events.js"
 import { STEER_EVENTS } from "../steer-events.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 import { handleAgentEnd, handleBeforeAgentStart, handleMessageEnd, handleMessageStart } from "./handlers/messages.js"
 import { handleToolDecision } from "./handlers/permissions.js"
+import { createRedactionHandlers } from "./handlers/redactions.js"
 import {
 	emitSessionStartEvent,
 	handleSessionCompact,
@@ -51,6 +53,7 @@ import {
 } from "./handlers/session.js"
 import { handleSteerAborted, handleSteerFired, handleSteerOutcome } from "./handlers/steers.js"
 import { handleToolExecutionEnd, handleToolExecutionStart } from "./handlers/tools.js"
+import { getAcpAttributes } from "./handlers/utils.js"
 import { handleWorkflowEvent } from "./handlers/workflows.js"
 import { TELEMETRY_PROVIDER_HEADER_NAMES } from "./provider-headers.js"
 import { type TelemetryAttributes, TelemetryContext } from "./session-context.js"
@@ -949,6 +952,22 @@ export default function telemetryExtension(config: TelemetryConfig) {
 		pi.events.on(STEER_EVENTS.OUTCOME, (raw) => onSteerOutcome(telemetryCtx, raw))
 		pi.events.on(STEER_EVENTS.ABORTED, (raw) => onSteerAborted(telemetryCtx, raw))
 
+		// Subscribe to PII-redaction domain events. Redaction hooks publish
+		// per-entity redaction facts; telemetry forwards them through the
+		// allowlist in handlers/redactions.ts. The handler factory holds a
+		// once-per-session latch (session_affected) — per extension instance,
+		// hence per session — re-armed on session_start in case a host ever
+		// reuses one extension instance for a second session in-process.
+		const redactionHandlers = createRedactionHandlers()
+		pi.events.on(PII_REDACTION_EVENTS.REDACTED, (raw) => {
+			if (!isCtxEnabled(telemetryCtx)) return
+			redactionHandlers.onRedactionRedacted(telemetryCtx, raw)
+		})
+		pi.events.on(PII_REDACTION_EVENTS.ENGINE_DEGRADED, (raw) => {
+			if (!isCtxEnabled(telemetryCtx)) return
+			redactionHandlers.onEngineDegraded(telemetryCtx, raw)
+		})
+
 		// Subscribe to permission decision events. The permissions extension
 		// publishes one fact per gated tool decision; telemetry translates them
 		// into `claude_code.tool_decision` OTLP records (the acceptance signal).
@@ -959,6 +978,7 @@ export default function telemetryExtension(config: TelemetryConfig) {
 
 		pi.on("session_start", async (_event, ctx) => {
 			conversationId = randomUUID()
+			redactionHandlers.reset()
 			handleSessionStart(telemetryCtx, ctx)
 			registerSessionContext(telemetryCtx.piSessionId, telemetryCtx)
 			// Attribution (piSessionId) is initialized above; attach the settings
@@ -1027,6 +1047,16 @@ export default function telemetryExtension(config: TelemetryConfig) {
 			const parentSessionId = telemetryCtx.getParentSessionId()
 			if (parentSessionId) {
 				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.parentSessionId] = parentSessionId
+			}
+
+			// ACP-driven provider requests carry the ACP client name (from the
+			// initialize handshake) so the recording proxy can attribute
+			// chat_completions rows to the client that drove them, mirroring the
+			// acp_client_name metric/log attribute. Absent when no ACP client has
+			// initialized (plain CLI sessions).
+			const acpAttributes = getAcpAttributes()
+			if (acpAttributes) {
+				event.headers[TELEMETRY_PROVIDER_HEADER_NAMES.acpClientName] = acpAttributes.acp_client_name
 			}
 
 			// Inject W3C Trace Context (if not already present) with a fresh

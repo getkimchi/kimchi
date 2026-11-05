@@ -28,6 +28,7 @@ import { AGENT_CONTINUATION_TOOL_NAMES } from "./agents/index.js"
 import bashControlExtension from "./bash-background/bash-control-extension.js"
 import { createLayer1Tools, createLayer2Tools, type DapToolDeps } from "./dap/tools.js"
 import { LSP_TOOL_NAMES } from "./lsp.js"
+import { isPrintModeEnabled } from "./print-mode.js"
 
 export const CHARS_PER_TOKEN = 4
 
@@ -87,8 +88,10 @@ interface CaptureApi {
 	tools: Map<string, AnyToolDef>
 	/** Invoke handlers the factory registered for an event (e.g. `session_start`,
 	 *  where several extensions register their tools). Best effort: handler
-	 *  errors are swallowed — partial sessions don't block measurement. */
-	fire: (event: string) => Promise<void>
+	 *  errors are swallowed — partial sessions don't block measurement. The
+	 *  optional `ctx` reaches handlers that read the extension context (e.g.
+	 *  bash_control's session-kind resolution). */
+	fire: (event: string, ctx?: unknown) => Promise<void>
 }
 
 /** Capture a session without CLI overrides: honor registered flag defaults,
@@ -96,7 +99,7 @@ interface CaptureApi {
 export function createCaptureApi(): CaptureApi {
 	const tools = new Map<string, AnyToolDef>()
 	const flagValues = new Map<string, boolean | string>()
-	const handlers = new Map<string, Array<(event: unknown) => unknown>>()
+	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>()
 	const api = new Proxy(
 		{
 			registerTool: (tool: AnyToolDef) => tools.set(tool.name, tool),
@@ -109,7 +112,7 @@ export function createCaptureApi(): CaptureApi {
 			get: (target, prop) => {
 				if (prop === "registerTool" || prop === "registerFlag" || prop === "getFlag") return Reflect.get(target, prop)
 				if (prop === "on") {
-					return (event: string, handler: (payload: unknown) => unknown) => {
+					return (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 						const list = handlers.get(event) ?? []
 						list.push(handler)
 						handlers.set(event, list)
@@ -120,10 +123,10 @@ export function createCaptureApi(): CaptureApi {
 			},
 		},
 	)
-	const fire = async (event: string) => {
+	const fire = async (event: string, ctx?: unknown) => {
 		for (const handler of handlers.get(event) ?? []) {
 			try {
-				await handler({})
+				await handler({}, ctx)
 			} catch {
 				// best effort — see interface docstring
 			}
@@ -172,10 +175,13 @@ async function measureBuiltinTools(out: Map<string, ToolSurfaceEntry>): Promise<
 	}
 	// bash-control registers in a normal default-export factory *inside*
 	// `session_start`; capture it here rather than via EXTENSION_SOURCES so its
-	// tool appears alongside builtins/dap in deterministic order.
+	// tool appears alongside builtins/dap in deterministic order. The ctx carries
+	// the mode the session policy branches on: print under the print gate
+	// (withPrintGate), tui for the canonical interactive surface — so the
+	// measurement follows the description the real surface would register.
 	const { api: bashControlApi, tools: bashTools, fire: fireBashControl } = createCaptureApi()
 	bashControlExtension(bashControlApi as never, { getState: () => undefined })
-	await fireBashControl("session_start")
+	await fireBashControl("session_start", { mode: isPrintModeEnabled() ? "print" : "tui" })
 	for (const tool of bashTools.values()) {
 		out.set(tool.name, entry("extension:bash-control", tool))
 	}

@@ -485,6 +485,56 @@ describe("postProcessHtmlExportOnce", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("replaces the payload's top-level systemPrompt when the option is provided", async () => {
+		// Upstream embeds pi's base prompt as the payload systemPrompt; the
+		// captured harness prompt must win.
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "You are an expert coding assistant operating inside pi, a coding agent harness.",
+		}
+		const outputPath = join(tmpDir, "export-system-prompt.html")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
+
+		await postProcessHtmlExportOnce(outputPath, { systemPrompt: "You are Kimchi, an AI coding agent by CAST AI." })
+
+		const payload = readHtmlPayload(readFileSync(outputPath, "utf-8"))
+		expect(payload.systemPrompt).toBe("You are Kimchi, an AI coding agent by CAST AI.")
+	})
+
+	it("preserves the payload's existing systemPrompt when no option is provided", async () => {
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "Original embedded prompt",
+		}
+		const outputPath = join(tmpDir, "export-keep-system-prompt.html")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
+
+		await postProcessHtmlExportOnce(outputPath)
+
+		const payload = readHtmlPayload(readFileSync(outputPath, "utf-8"))
+		expect(payload.systemPrompt).toBe("Original embedded prompt")
+	})
+
+	it("preserves the payload's existing systemPrompt when the option is whitespace-only", async () => {
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "Original embedded prompt",
+		}
+		const outputPath = join(tmpDir, "export-blank-system-prompt.html")
+		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
+
+		await postProcessHtmlExportOnce(outputPath, { systemPrompt: "   \n  " })
+
+		const payload = readHtmlPayload(readFileSync(outputPath, "utf-8"))
+		expect(payload.systemPrompt).toBe("Original embedded prompt")
+	})
+
 	it("injects trace-id renderer script before </body>", async () => {
 		const sessionData = {
 			version: 3,

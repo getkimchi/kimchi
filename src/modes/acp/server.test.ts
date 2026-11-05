@@ -308,6 +308,7 @@ class FakeAgentSession {
 	}
 	promptImpl: (text: string, opts?: PromptOpts) => Promise<void> = async () => {}
 	abortImpl: () => Promise<void> = async () => {}
+	waitForIdleImpl: () => Promise<void> = async () => {}
 	bindExtensionsImpl: (_bindings: unknown) => Promise<void> = async () => {}
 	// Captures tool registration and activation state for parity assertions.
 	registeredTools: Map<string, unknown> = new Map()
@@ -411,6 +412,10 @@ class FakeAgentSession {
 		this.aborted = true
 		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async waitForIdle(): Promise<void> {
+		await this.waitForIdleImpl()
 	}
 
 	async steer(text: string, _images?: unknown[]): Promise<void> {
@@ -1703,6 +1708,85 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	// because session.prompt was still running the chained continues.
 	// Now: end_turn is sent exactly once, only after session.prompt()
 	// resolves (i.e. after ALL chained calls complete).
+	// Regression: a prompt waiting out an unsolicited run (e.g. a background
+	// bash completion waking the agent) has no TurnContext yet. cancel()
+	// aborts the unsolicited run, which released the wait and started the
+	// cancelled prompt anyway.
+	it("a prompt cancelled while waiting out an unsolicited run never starts", async () => {
+		let releaseIdle!: () => void
+		fake.waitForIdleImpl = () =>
+			new Promise<void>((resolve) => {
+				releaseIdle = resolve
+			})
+		fake.abortImpl = async () => releaseIdle()
+		// No prompt owns this run: the server allocates unsolicited bookkeeping.
+		fake.emit({ type: "agent_start" })
+
+		const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+		await delay(0)
+		await agent.cancel({ sessionId })
+
+		await expect(pending).resolves.toEqual({ stopReason: "cancelled" })
+		expect(fake.promptCalls).toHaveLength(0)
+
+		// The session stays usable: the next prompt runs normally.
+		fake.emit({ type: "agent_settled" } as AgentSessionEvent)
+		await expect(agent.prompt({ sessionId, prompt: [{ type: "text", text: "again" }] })).resolves.toEqual({
+			stopReason: "end_turn",
+		})
+		expect(fake.promptCalls.map((c) => c.prompt)).toEqual(["again"])
+	})
+
+	// Regression (PR #1616 review): close and shutdown only serviced prompts
+	// that owned a turn, so a prompt parked behind an unsolicited run was never
+	// answered and the run kept streaming against the disposed session.
+	describe("a prompt waiting out an unsolicited run on teardown", () => {
+		const outcomeOf = (pending: Promise<{ stopReason: string }>) =>
+			Promise.race([pending.then((r) => r.stopReason), delay(250).then(() => "hung" as const)])
+
+		it("is cancelled when the session closes, and the run is aborted", async () => {
+			let releaseIdle!: () => void
+			fake.waitForIdleImpl = () =>
+				new Promise<void>((resolve) => {
+					releaseIdle = resolve
+				})
+			fake.abortImpl = async () => releaseIdle()
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await expect(agent.unstable_closeSession({ sessionId })).resolves.toEqual({})
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.aborted).toBe(true)
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+
+		it("is cancelled on close even when abort never settles the wait", async () => {
+			fake.waitForIdleImpl = () => new Promise<void>(() => {})
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await agent.unstable_closeSession({ sessionId })
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+
+		it("is cancelled when the server shuts down", async () => {
+			fake.waitForIdleImpl = () => new Promise<void>(() => {})
+			fake.emit({ type: "agent_start" })
+
+			const pending = agent.prompt({ sessionId, prompt: [{ type: "text", text: "next question" }] })
+			await delay(0)
+			await agent.shutdown()
+
+			expect(await outcomeOf(pending)).toBe("cancelled")
+			expect(fake.promptCalls).toHaveLength(0)
+		})
+	})
+
 	it("sends exactly one end_turn after chained agent.continue() cycles complete", async () => {
 		const { conn: recordingConn, updates } = makeRecordingConn()
 		const localAgent = new KimchiAcpAgent(recordingConn, {
@@ -1855,6 +1939,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+	})
+
+	// Cancel while pi-mono is still in session.prompt()'s pre-run awaits:
+	// session.abort() finds no active run and is dropped, so the run starts
+	// streaming anyway. The server must re-abort when agent_start reveals the
+	// turn is already cancelled.
+	it("re-aborts on agent_start when cancel landed before the run existed", async () => {
+		let abortCalls = 0
+		let runMayStart = false
+		fake.promptImpl = async () => {
+			// Park here so the cancel below lands in the pre-run window.
+			while (!runMayStart) await delay(5)
+			fake.emit({ type: "agent_start" })
+			// The agent_start re-abort is what stops the run.
+			while (abortCalls < 2) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			abortCalls++
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+		runMayStart = true
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		// The original (dropped) cancel abort plus the agent_start re-abort.
+		expect(abortCalls).toBeGreaterThanOrEqual(2)
 	})
 
 	// Cancel path where pi-mono surfaces abortion as a rejection instead of a

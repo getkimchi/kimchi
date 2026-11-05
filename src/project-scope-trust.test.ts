@@ -59,16 +59,23 @@ describe("isProjectScopeAllowed", () => {
 
 describe("TRUST_REQUIRING_PROJECT_RESOURCES stays in sync with the pi patch", () => {
 	it("the patch's embedded KIMCHI_TRUST_REQUIRING_PROJECT_RESOURCES matches the first-party constant", () => {
-		// Derive the patch path from package.json — the pinned dependency
-		// version names the patchedDependencies key; hardcoding the patch
-		// filename would go stale on every pi upgrade.
+		// Derive the patch path from package.json (the pin) and pnpm-workspace.yaml
+		// (the patch entry) — the pinned dependency version names the
+		// patchedDependencies key; hardcoding the patch filename would go stale on
+		// every pi upgrade.
 		const pkgDir = join(dirname(fileURLToPath(import.meta.url)), "..")
 		const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8")) as {
 			dependencies: Record<string, string>
-			pnpm?: { patchedDependencies?: Record<string, string> }
 		}
 		const pin = pkg.dependencies["@earendil-works/pi-coding-agent"]
-		const patchRel = pkg.pnpm?.patchedDependencies?.[`@earendil-works/pi-coding-agent@${pin}`]
+		// patchedDependencies lives in pnpm-workspace.yaml — pnpm 10 no longer
+		// reads the `pnpm` field from package.json. A targeted regex beats
+		// pulling in a YAML parser for one mapping.
+		const workspaceYaml = readFileSync(join(pkgDir, "pnpm-workspace.yaml"), "utf-8")
+		const escapedPin = pin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+		const patchRel = workspaceYaml.match(
+			new RegExp(`^\\s*['"]@earendil-works/pi-coding-agent@${escapedPin}['"]\\s*:\\s*['"]?([^\\s'"]+)`, "m"),
+		)?.[1]
 		if (!patchRel) {
 			throw new Error(`no patchedDependencies entry for @earendil-works/pi-coding-agent@${pin}`)
 		}

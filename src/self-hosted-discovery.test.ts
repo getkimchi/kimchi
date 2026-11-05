@@ -236,8 +236,9 @@ describe("discovered endpoints → region derivation (the llm origin-only rule)"
 		// REST API paths live at the root of the api origin.
 		expect(endpoints.keyValidationUrl).toBe("https://kimchi.example.com/v1/llm/openai/supported-providers")
 		expect(endpoints.telemetryLogsUrl).toBe("https://kimchi.example.com/ai-optimizer/v1beta/logs:ingest")
-		// The platform API keeps the console /api proxy path.
-		expect(endpoints.platformApiUrl).toBe("https://kimchi.example.com/api")
+		// The platform API is the api origin directly (alias of castApiUrl) —
+		// the console host carries no API traffic.
+		expect(endpoints.platformApiUrl).toBe("https://kimchi.example.com")
 		expect(endpoints.webAppUrl).toBe("https://kimchi.example.com")
 	})
 
@@ -253,6 +254,6 @@ describe("discovered endpoints → region derivation (the llm origin-only rule)"
 		expect(endpoints.openAiBaseUrl).toBe("http://llm.localhost:8080/openai/v1")
 		expect(endpoints.anthropicBaseUrl).toBe("http://llm.localhost:8080/anthropic")
 		expect(endpoints.webAppUrl).toBe("http://localhost:8080")
-		expect(endpoints.platformApiUrl).toBe("http://localhost:8080/api")
+		expect(endpoints.platformApiUrl).toBe("http://localhost:8080")
 	})
 })

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type {
@@ -36,7 +36,6 @@ import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
-import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
@@ -46,6 +45,7 @@ import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
@@ -92,8 +92,8 @@ vi.mock("./classifier.js", async () => {
 	}
 })
 
-vi.mock("../model-catalog/classifier-models.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../model-catalog/classifier-models.js")>()
+vi.mock("./classifier-models.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./classifier-models.js")>()
 	return {
 		...actual,
 		resolveClassifierCandidates: vi.fn(() => ({
@@ -116,6 +116,15 @@ vi.mock("../../resources/store.js", async (importOriginal) => {
 })
 
 const isResourceEnabledMock = vi.mocked(isResourceEnabled)
+
+// Bundled skills root the permissions extension resolves at session start; the
+// write/edit deny over the doc-cli load path anchors on this dir. Tests set it
+// to a temp tree per case.
+const bundledSkillsDirState = vi.hoisted(() => ({ dir: "" as string }))
+
+vi.mock("../../shared/skill-discovery/resolve-skill-roots.js", () => ({
+	resolveBundledSkillsDir: vi.fn(() => bundledSkillsDirState.dir || null),
+}))
 
 function cleanPermissionEnv(): void {
 	Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
@@ -2663,12 +2672,14 @@ describe("compound bash permission regressions", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		pi = createExtensionApi().api
 	})
 
@@ -2681,6 +2692,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2702,6 +2714,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "npm test"],
 			permissionMode: "default",
 		})
@@ -2724,6 +2737,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -2744,6 +2758,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2764,6 +2779,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2788,6 +2804,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2811,6 +2828,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2833,6 +2851,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2856,6 +2875,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2883,6 +2903,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["git diff", "npm install", "npm publish"],
 			permissionMode: "default",
 		})
@@ -2905,6 +2926,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "whoami"],
 			permissionMode: "default",
 		})
@@ -2923,6 +2945,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands: read-only segments skip the per-subcommand
 			// prompt entirely (a standalone call would never ask either).
 			subcommands: ["npm install", "cargo build"],
@@ -2943,6 +2966,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2967,6 +2991,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2983,6 +3008,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [],
 			permissionMode: "default",
 		})
@@ -3001,6 +3027,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo hello"],
 			permissionMode: "default",
 		})
@@ -3022,6 +3049,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3051,6 +3079,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3070,6 +3099,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -3081,6 +3111,7 @@ describe("handleCompoundConfirm", () => {
 describe("herdr:blocked signaling", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 	let emitEvent: ReturnType<typeof vi.fn>
 
@@ -3094,6 +3125,7 @@ describe("herdr:blocked signaling", () => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		const mock = createExtensionApi()
 		pi = mock.api
 		emitEvent = mock.emitEvent
@@ -3114,6 +3146,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -3142,6 +3175,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands so both nested prompts fire.
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
@@ -3173,6 +3207,7 @@ describe("herdr:blocked signaling", () => {
 				pi,
 				session,
 				activeAborts,
+				promptToolCalls,
 				subcommands: ["echo a"],
 				permissionMode: "default",
 			}),
@@ -3192,6 +3227,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -3901,6 +3937,239 @@ describe("permission mode session-log persistence", () => {
 	})
 })
 
+describe("document-skill CLI route (kimchi doc-cli)", () => {
+	let bundledDir: string
+
+	beforeEach(() => {
+		bundledDir = mkdtempSync(join(tmpdir(), "bundle-doc-skills-"))
+		mkdirSync(join(bundledDir, "pdf", "scripts"), { recursive: true })
+		writeFileSync(join(bundledDir, "pdf", "scripts", "pdf.mjs"), "")
+		bundledSkillsDirState.dir = bundledDir
+		vi.mocked(classifyToolCall).mockClear()
+	})
+	afterEach(() => {
+		rmSync(bundledDir, { recursive: true, force: true })
+		bundledSkillsDirState.dir = ""
+	})
+
+	const docPdfRead = () => "kimchi doc-cli pdf read docs/report.pdf"
+	const tcall = (command: string) => ({ type: "tool_call", toolCallId: "tc-doc", toolName: "bash", input: { command } })
+
+	it("allows the doc-cli route in auto mode without invoking the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("accepts in headless default mode (no UI) without the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createClassifierContext() // hasUI: false
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("accepts read-only subcommands in default mode with a UI without prompting", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toBeUndefined()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("still prompts in default mode with a UI for mutating subcommands", async () => {
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = createMockContext([])
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			tcall("kimchi doc-cli pdf fill-form docs/report.pdf --values v.json"),
+			ctx,
+		)
+
+		// The mock select returns nothing -> the user "declined": default mode
+		// still runs the prompt for mutating commands (the read-only matcher
+		// is the only default-mode gate).
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(ctx.ui.select).toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("a user deny rule still blocks the documented invocation", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true, "deny-tool": "bash(kimchi doc-cli *)" })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(result).toEqual(expect.objectContaining({ block: true }))
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("the legacy script-path form still goes to the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const legacy = `BUN_BE_BUN=1 kimchi ${join(bundledDir, "pdf", "scripts", "pdf.mjs")} read x.pdf`
+		const result = await harness.fire("tool_call", tcall(legacy), ctx)
+
+		expect(result).toBeUndefined() // mocked classifier says safe
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("non-documented shapes of the route still go to the classifier", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const hostile = [
+			"BUN_BE_BUN=1 kimchi doc-cli pdf read x.pdf", // env prefix
+			"kimchi doc-cli pdf read x.pdf > out.txt", // redirect
+			"kimchi doc-cli evil read x.pdf", // unknown skill
+			"kimchi doc-cli pdf read x.pdf && echo done", // compound tail
+		]
+		for (const command of hostile) {
+			const result = await harness.fire("tool_call", tcall(command), ctx)
+			expect(result).toBeUndefined() // mocked classifier says safe
+		}
+		expect(classifyToolCall).toHaveBeenCalledTimes(hostile.length)
+	})
+
+	it("blocks write/edit inside the bundled dir (the auto-allow trust anchor)", async () => {
+		const harness = createPermissionsHarness(["write", "edit"], { auto: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const writeResult = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-w",
+				toolName: "write",
+				input: { path: `${bundledDir}/pwn/scripts/pwn.mjs`, content: "x" },
+			},
+			ctx,
+		)
+		const editResult = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-e",
+				toolName: "edit",
+				input: { file_path: `${bundledDir}/pdf/scripts/pdf.mjs`, edits: [] },
+			},
+			ctx,
+		)
+
+		expect(writeResult).toEqual(expect.objectContaining({ block: true }))
+		expect(editResult).toEqual(expect.objectContaining({ block: true }))
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		// the deny is a gated decision: visible to decision telemetry/ACP like every sibling deny path
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-w",
+				toolName: "write",
+				decision: "reject",
+				sourceDetail: "bundled_skill_dir_deny",
+				permissionMode: "auto",
+			},
+			{
+				toolCallId: "tc-e",
+				toolName: "edit",
+				decision: "reject",
+				sourceDetail: "bundled_skill_dir_deny",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("write outside the bundled dir still goes through the classifier in auto mode", async () => {
+		const harness = createPermissionsHarness(["write"], { auto: true })
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire(
+			"tool_call",
+			{
+				type: "tool_call",
+				toolCallId: "tc-w2",
+				toolName: "write",
+				input: { path: `${bundledDir}-outside.md`, content: "x" },
+			},
+			ctx,
+		)
+
+		expect(result).toBeUndefined() // mocked classifier says safe
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps the doc-cli gate identical across two sessions", async () => {
+		const harnessA = createPermissionsHarness(["bash"], { auto: true })
+		const harnessB = createPermissionsHarness(["bash"], { auto: true })
+		const ctxA = createClassifierContext()
+		const ctxB = createClassifierContext()
+		await harnessA.fire("session_start", {}, ctxA)
+		await harnessB.fire("session_start", {}, ctxB)
+
+		const resultA = await harnessA.fire("tool_call", tcall(docPdfRead()), ctxA)
+		const resultB = await harnessB.fire("tool_call", tcall(docPdfRead()), ctxB)
+
+		expect(resultA).toBeUndefined()
+		expect(resultB).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+	})
+
+	it("warns when the bundled skills dir does not resolve (deny inactive)", async () => {
+		bundledSkillsDirState.dir = ""
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const harness = createPermissionsHarness(["bash"], { auto: true })
+			const ctx = createClassifierContext() // hasUI: false → console.error
+			await harness.fire("session_start", {}, ctx)
+			expect(spy).toHaveBeenCalledWith(expect.stringContaining("bundled skills dir not found"))
+		} finally {
+			spy.mockRestore()
+			bundledSkillsDirState.dir = bundledDir
+		}
+	})
+
+	it("emits the bundled_skill_cli decision source in auto mode", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.fire("tool_call", tcall(docPdfRead()), ctx)
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-doc",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "bundled_skill_cli",
+				permissionMode: "auto",
+			},
+		])
+	})
+})
+
 describe("permissions:tool_decision emissions", () => {
 	const tcall = (toolName: string, input: Record<string, unknown>, toolCallId = "tc-1") => ({
 		type: "tool_call",
@@ -4277,6 +4546,77 @@ describe("permissions:tool_decision emissions", () => {
 				decision: "reject",
 				sourceDetail: "mode_flap",
 			})
+			// No actual mode change fired in this scenario: the flap diagnostics
+			// carry a zero count and an empty source set, not fabricated data.
+			const flap = decisions[decisions.length - 1] as { modeFlap?: { modeChangeCount: number } }
+			expect(flap.modeFlap).toEqual({ modeChangeCount: 0, modeChangeSources: [] })
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("mode-flap diagnostics record per-dismissal sources (repeats counted) and clean up after the call", async () => {
+		// Multi-source flap: while each prompt is open, a REAL mode change fires
+		// (alternating shift+tab and a controller push), flipping default → plan
+		// and back so the call keeps re-prompting until the loop exhausts. The
+		// dismissal is recorded at the flip-away; the flip-back happens with no
+		// open prompt, so it must NOT be counted.
+		let terminalHandler: TerminalInputHandler | undefined
+		const baseCtx = createMockContext([], TEST_SESSION_ID, {
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler
+					return () => {}
+				}),
+			},
+		})
+		const ctx = { ...baseCtx, mode: "rpc" } as unknown as ExtensionContext
+		let promptCount = 0
+		const request = vi.fn(async () => {
+			promptCount++
+			// Flip away (records one dismissal for THIS call)…
+			if (promptCount % 2 === 1)
+				terminalHandler?.("\x1b[Z") // default → plan, user_shift_tab
+			else setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" }) // controller
+			// …and back so the next attempt prompts again (no open prompt → no record).
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+			return { kind: "aborted" as const }
+		})
+		registerAcpPrompter(TEST_SESSION_ID, { request })
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			const result = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(result).toMatchObject({
+				block: true,
+				reason: "Permission mode changed too many times during prompt",
+			})
+
+			const flap = decisions[decisions.length - 1] as unknown as {
+				sourceDetail: string
+				modeFlap?: { modeChangeCount: number; modeChangeSources: string[] }
+			}
+			expect(flap.sourceDetail).toBe("mode_flap")
+			expect(flap.modeFlap).toEqual({
+				// One dismissal per aborted attempt, sources in dismissal order
+				// (repeats counted; the serialized set is telemetry's job).
+				modeChangeCount: 4,
+				modeChangeSources: ["user_shift_tab", "controller", "user_shift_tab", "controller"],
+			})
+
+			// Cleanup + no cross-call contamination: a subsequent tool call with a
+			// normal prompter decides normally, with no leftover flap diagnostics.
+			unregisterAcpPrompter(TEST_SESSION_ID)
+			registerAcpPrompter(TEST_SESSION_ID, { request: vi.fn(async () => ({ kind: "allow-once" as const })) })
+			decisions.length = 0
+			const second = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(second).toBeUndefined()
+			expect(decisions).toEqual([expect.objectContaining({ decision: "accept", sourceDetail: "allow_once" })])
+			const secondFlap = decisions[0] as unknown as { modeFlap?: unknown }
+			expect(secondFlap.modeFlap).toBeUndefined()
 		} finally {
 			unregisterAcpPrompter(TEST_SESSION_ID)
 		}
@@ -4336,12 +4676,14 @@ describe("permissions:tool_decision emissions", () => {
 		const ctx = { ...createMockContext([]), mode: "rpc", hasUI: false } as ExtensionContext
 		const session = new SessionMemory()
 		const activeAborts = new Set<AbortController>()
+		const promptToolCalls = new Map<AbortController, string>()
 
 		const result = await handleCompoundConfirm(createMockEvent(), {
 			ctx,
 			pi: harness.pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})

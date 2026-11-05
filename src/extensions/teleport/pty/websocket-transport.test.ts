@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { WebSocketTransport } from "./websocket-transport.js"
 
 interface MockSocket {
 	readyState: number
 	handlers: Record<string, ((...args: unknown[]) => void)[]>
-	send: ReturnType<typeof vi.fn>
-	close: ReturnType<typeof vi.fn>
+	send: Mock
+	close: Mock
 	url: string
 	headers: Record<string, string>
 }

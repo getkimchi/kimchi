@@ -9,11 +9,12 @@ import {
 	type WorkScope,
 } from "../work-attribution/scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "../work-attribution/summary.js"
-import type { Fact } from "./ledger/outbox.js"
+import { type Fact, validateClaimUpdate } from "./ledger/outbox.js"
 import type { StoredRecord } from "./ledger/records.js"
 import { nativeObservations } from "./native.js"
 import {
 	type Event,
+	encodeEvent,
 	gitID,
 	type IssueKey,
 	normalizeIngestTimes,
@@ -81,6 +82,8 @@ export function buildEvents(
 	}
 	const accounts = new Map<string, { account: WorkAccount; facts: Map<string, Fact>; recordHashes: Set<string> }>()
 	const owners = new Map<string, RequestOwner>()
+	// The claims the outbox holds for the requests this pass translates, by account and entity.
+	const claims = new Map<string, Event | undefined>()
 	const unresolved: CommonEvents["unresolved"] = []
 	const units: EventUnit[] = []
 	for (const [requestId, evidence] of attribution) {
@@ -136,6 +139,7 @@ export function buildEvents(
 			const key = accountKey(scope.account)
 			const entityId = stableID("kimchi", "request", key, producerId, requestId.toLowerCase())
 			const previous = included ? existingClaim(key, entityId) : undefined
+			if (included) claims.set(`${key}\u0000${entityId}`, previous)
 			const entities = [entityId]
 			const repository = previous ? previous.repository : identity === "unsupported" ? undefined : identity
 			const group = accounts.get(key) ?? {
@@ -227,21 +231,33 @@ export function buildEvents(
 				: evidence.correction
 					? (previous?.allocation?.targetRepository ?? previous?.repository)
 					: undefined
+			// The server takes no other allocation under a correction receipt it holds, so newer evidence or rules leave
+			// that claim as reported until a newer receipt arrives.
+			const receipt = previous?.correction
+			const kept =
+				receipt &&
+				(!evidence.correction ||
+					(evidence.correction.id === receipt.id &&
+						evidence.correction.revision === receipt.revision &&
+						evidence.correction.source === receipt.source &&
+						timeNanos(evidence.correction.recordedAt) === timeNanos(receipt.recordedAt)))
 			group.facts.set(entityId, {
 				...common,
 				entityId,
 				usage,
 				startedAt: row.startedAt,
-				allocation: {
-					...allocation,
-					...(destination &&
-					(!repository ||
-						destination.provider !== repository.provider ||
-						destination.host !== repository.host ||
-						destination.id !== repository.id)
-						? { targetRepository: destination }
-						: {}),
-				},
+				allocation: kept
+					? previous.allocation
+					: {
+							...allocation,
+							...(destination &&
+							(!repository ||
+								destination.provider !== repository.provider ||
+								destination.host !== repository.host ||
+								destination.id !== repository.id)
+								? { targetRepository: destination }
+								: {}),
+						},
 				...(evidence.correction ? { correction: evidence.correction } : {}),
 			})
 			const workEntity = stableID("kimchi", "work", key, producerId, row.workId)
@@ -581,7 +597,12 @@ export function buildEvents(
 				const fact = facts?.get(entity)
 				let accepted = !!fact
 				try {
-					if (fact) validateIngestEvent(normalizeIngestTimes({ ...fact, id: stableID(fact.entityId), revision: "1" }))
+					if (fact) {
+						const event = normalizeIngestTimes({ ...fact, id: stableID(fact.entityId), revision: "1" })
+						validateIngestEvent(event)
+						// The outbox would refuse this claim update, and with it every event of the pass.
+						if (fact.usage) validateClaimUpdate(JSON.parse(encodeEvent(event)), claims.get(id))
+					}
 				} catch {
 					accepted = false
 				}

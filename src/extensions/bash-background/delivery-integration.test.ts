@@ -152,7 +152,14 @@ async function setupIntegration(script: ScriptedResponse[]): Promise<Integration
 	const registry = createProcessRegistry()
 	const coordinator = createReviewCoordinator({ registry, handoffSeconds: 0.05 })
 	const delivery = createTerminalDelivery()
-	const state: BashSessionState = { registry, coordinator, delivery, limitSeconds: 3600, cwd: CWD }
+	const state: BashSessionState = {
+		registry,
+		coordinator,
+		delivery,
+		limitSeconds: 3600,
+		sessionKind: "unattended",
+		cwd: CWD,
+	}
 
 	const pi = createExtensionApi()
 	const requests: RequestRecord[] = []

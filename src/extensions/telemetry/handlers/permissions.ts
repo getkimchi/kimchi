@@ -9,6 +9,7 @@ import type {
 	PermissionDecisionSourceDetail,
 	PermissionToolDecisionPayload,
 } from "../../permissions/permissions-events.js"
+import { MODE_CHANGE_REASON_VALUES } from "../../permissions/permissions-events.js"
 import type { TelemetryContext } from "../session-context.js"
 
 export const TOOL_DECISION_EVENT = "claude_code.tool_decision"
@@ -27,6 +28,8 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	plan_readonly: "config",
 	plan_gate: "config",
 	builtin_safe: "config",
+	bundled_skill_cli: "config",
+	bundled_skill_dir_deny: "config",
 	readonly: "config",
 	ferment_internal: "config",
 	compound_rule: "config",
@@ -45,6 +48,8 @@ const DECISION_SOURCE: Record<PermissionDecisionSourceDetail, DecisionSource> = 
 	denied_by_client: "user_reject",
 	abort: "user_abort",
 }
+
+const MODE_CHANGE_REASON_SET = new Set<string>(MODE_CHANGE_REASON_VALUES)
 
 /**
  * Emit one `claude_code.tool_decision` log record per permission decision.
@@ -66,6 +71,22 @@ export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 	if (!Object.hasOwn(DECISION_SOURCE, payload.sourceDetail)) return
 	const decisionSource = DECISION_SOURCE[payload.sourceDetail]
 
+	// Mode-flap diagnostics (typed optional payload, explicitly forwarded):
+	// count includes repeated sources; sources are serialized as a sorted,
+	// deduplicated comma-separated set of enum-validated values, bounded by
+	// the enum size. Correlates with the canonical `Permission mode flap` error
+	// via tool_use_id.
+	let modeFlapAttrs: Record<string, string | number> = {}
+	if (payload.modeFlap && payload.sourceDetail === "mode_flap") {
+		const sources = [...new Set(payload.modeFlap.modeChangeSources)]
+			.filter((s): s is (typeof MODE_CHANGE_REASON_VALUES)[number] => MODE_CHANGE_REASON_SET.has(s))
+			.sort()
+		modeFlapAttrs = {
+			mode_change_count: payload.modeFlap.modeChangeCount,
+			mode_change_sources: sources.join(","),
+		}
+	}
+
 	tm.emit(
 		TOOL_DECISION_EVENT,
 		{
@@ -75,6 +96,7 @@ export function handleToolDecision(tm: TelemetryContext, raw: unknown): void {
 			decision_source: decisionSource,
 			source_detail: payload.sourceDetail,
 			permission_mode: payload.permissionMode,
+			...modeFlapAttrs,
 		},
 		undefined, // no ExtensionContext — this fires from the pi.events bus
 		{ model: acceptRateModel(tm) },

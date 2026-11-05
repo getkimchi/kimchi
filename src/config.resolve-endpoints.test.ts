@@ -280,7 +280,9 @@ describe("resolveEndpoints — self-hosted discovery endpoints", () => {
 		expect(resolved).toMatchObject({
 			region: "self-hosted",
 			webAppUrl: "https://kimchi.example.com",
-			platformApiUrl: "https://kimchi.example.com/api",
+			// The platform API is the api origin directly (alias of castApiUrl) —
+			// the console host carries no API traffic.
+			platformApiUrl: "https://kimchi.example.com",
 			llmBaseUrl: "https://llm.example.com",
 			// The llm value is the ORIGIN ONLY — consumers append the API shape.
 			openAiBaseUrl: "https://llm.example.com/openai/v1",

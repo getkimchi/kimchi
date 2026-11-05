@@ -30,6 +30,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
+import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -62,7 +63,6 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { resolveClassifierCandidates } from "../model-catalog/classifier-models.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
@@ -74,8 +74,10 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
+import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
 import { classifyToolCall } from "./classifier.js"
 import { classifierHealth } from "./classifier-health.js"
+import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import {
@@ -259,6 +261,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let currentCtx: ExtensionContext | undefined
+	// The bundled skills dir the binary ships — the dir the doc-cli route loads
+	// its staged CLI bundles from. Resolved per session; process-constant in
+	// practice. The doc-cli allow itself needs no anchor (the binary resolves
+	// the script, not the model); this root backs the write/edit denial that
+	// keeps the load path unplantable.
+	let bundledSkillCliRoot: string | null = null
 	let appliedPermissionMode: PermissionModeState | undefined
 	let applyingPermissionMode = false
 	let preFermentMode: PermissionModeState | undefined
@@ -279,6 +287,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
+	/** Associates each open permission prompt's abort controller with its tool
+	 *  call, so mode changes that dismiss prompts can be attributed per call. */
+	const activePromptToolCalls = new Map<AbortController, string>()
+	/** Mode-change reasons queued per tool call whose prompt a mode change
+	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
+	 *  return; entries never survive the tool call's evaluation. */
+	const pendingModeChangeDismissals = new Map<string, ModeChangeReason[]>()
 	let unsubscribeTerminalInput: (() => void) | null = null
 	let unsubscribePermissionFlagController: (() => void) | undefined
 
@@ -425,9 +440,19 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
-		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
+		// Dismiss all active permission prompts so tool_call handlers re-evaluate
+		// under the new mode. Record the dismissal reason per open prompt's tool
+		// call — the re-evaluation loop attributes it to that call's mode-flap
+		// diagnostics when it observes the "aborted" return. Unrelated mode
+		// changes (no open prompts) record nothing.
+		for (const toolCallId of activePromptToolCalls.values()) {
+			const reasons = pendingModeChangeDismissals.get(toolCallId) ?? []
+			reasons.push(reason)
+			pendingModeChangeDismissals.set(toolCallId, reasons)
+		}
 		for (const ctrl of activeAbortControllers) ctrl.abort()
 		activeAbortControllers.clear()
+		activePromptToolCalls.clear()
 		updateStatus(ctx)
 		maybeShowPolicyWarning(ctx)
 		appliedPermissionMode = next
@@ -621,6 +646,15 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activePlanSlug = undefined
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
+		bundledSkillCliRoot = resolveBundledSkillsDir()
+		if (bundledSkillCliRoot === null) {
+			// Fail-open visibility: without the root the write/edit deny over the
+			// doc-cli load path is inactive. Should only happen on a broken
+			// install (staged dir missing) — say so instead of degrading silently.
+			const msg = "permissions: bundled skills dir not found — the doc-cli write deny is inactive this session"
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning")
+			else console.error(msg)
+		}
 
 		for (const err of errors) {
 			if (ctx.hasUI) ctx.ui.notify(`permissions: ${err}`, "warning")
@@ -1319,6 +1353,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 	})
 
+	/** Write/edit target path: `file_path` or `path`, whichever the tool names. */
+	const writeEditTargetPath = (input: Record<string, unknown>): string =>
+		typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+
 	pi.on("tool_call", async (event, ctx) => {
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
@@ -1338,8 +1376,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// write and edit are only allowed for .kimchi/plans/* paths.
 		if (process.env.KIMCHI_AGENT_PERSONA?.toLowerCase() === "plan") {
 			if (toolName === "write" || toolName === "edit") {
-				const filePath =
-					typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+				const filePath = writeEditTargetPath(input)
 				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
 					return {
 						block: true,
@@ -1351,6 +1388,23 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 		}
 
+		// The bundled skills tree is where the doc-cli route loads its staged CLI
+		// bundles from — the agent must never be able to populate or overwrite it.
+		// write/edit to any path under it is blocked outright. Coverage is
+		// write/edit-only by design: bash file writes (and other write-capable
+		// tools) inside it stay behind the classifier, the documented residual
+		// (see docs/doc-cli.md).
+		if ((toolName === "write" || toolName === "edit") && bundledSkillCliRoot !== null) {
+			const filePath = writeEditTargetPath(input)
+			if (filePath && isUnderBundledSkillsDir(filePath, bundledSkillCliRoot, ctx.cwd)) {
+				emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "bundled_skill_dir_deny")
+				return {
+					block: true,
+					reason: `Blocked: ${toolName} inside the bundled skills directory is not allowed — it is the trust anchor for auto-allowed skill commands.`,
+				}
+			}
+		}
+
 		// Re-evaluation loop: when a permission prompt is dismissed because the user
 		// changed mode via shift+tab, we re-evaluate the tool call under the new mode.
 		// Cap iterations at MODES.length to prevent infinite loops.
@@ -1359,204 +1413,270 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// permissions:tool_decision event via emitToolDecision (the IDE diff-viewer
 		// deferral is the one documented exception). This is the per-call acceptance
 		// signal — do not add silent returns.
-		for (let attempt = 0; attempt < MODES.length; attempt++) {
-			const { mode } = getRuntimePermissionMode()
+		//
+		// Mode-flap diagnostics: each prompt dismissal by a mode change is
+		// recorded (source + count) and reported on the fail-closed mode_flap
+		// decision, so PostHog can distinguish controller flapping from
+		// stale pre-#1404 clients. Scoped to this tool call's evaluation.
+		const modeChangeSources: ModeChangeReason[] = []
+		const dismissalKey = event.toolCallId ?? ""
+		const consumeModeChangeDismissal = (): void => {
+			const reasons = pendingModeChangeDismissals.get(dismissalKey)
+			if (!reasons?.length) return
+			modeChangeSources.push(reasons.shift() as ModeChangeReason)
+			if (reasons.length === 0) pendingModeChangeDismissals.delete(dismissalKey)
+		}
+		/** Prompt settlement, shared by all three prompt sites: a prompt
+		 *  dismissed by a mode change resolves "aborted" — consume the recorded
+		 *  dismissal source and report that the loop should re-evaluate under
+		 *  the new mode. Keeping this in one place is what makes the per-site
+		 *  handling unable to drift. The type predicate preserves the
+		 *  not-aborted narrowing the inline checks used to provide. */
+		const promptAbortedByModeChange = (result: PromptOutcome): result is "aborted" => {
+			if (result !== "aborted") return false
+			consumeModeChangeDismissal()
+			return true
+		}
+		try {
+			for (let attempt = 0; attempt < MODES.length; attempt++) {
+				const { mode } = getRuntimePermissionMode()
 
-			// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
-			if (mode === "yolo") {
-				emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
-				return undefined
-			}
+				// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
+				if (mode === "yolo") {
+					emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
+					return undefined
+				}
 
-			if (mode === "plan") {
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : ""
-					if (!isReadOnlyBashCommand(command)) {
+				if (mode === "plan") {
+					if (toolName === "bash") {
+						const command = typeof input.command === "string" ? input.command : ""
+						// Read-only doc-cli verbs count as read-only here too, but only
+						// through the strict single-segment gate (bundled-skill-cli.ts) —
+						// the generic matcher stays unaware of the route, so a compound
+						// like `… doc-cli pdf read x && echo done` keeps failing the
+						// plan read-only check and rejects, mirroring the classifier
+						// contract in default/auto.
+						if (!isReadOnlyBashCommand(command) && !isReadOnlyDocCliCommand(command)) {
+							emitToolDecision(pi, event, mode, "reject", "plan_gate")
+							return {
+								block: true,
+								reason:
+									"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
+							}
+						}
+						emitToolDecision(pi, event, mode, "accept", "plan_readonly")
+						return undefined
+					}
+					if (!isPlanModeTool(event.toolName)) {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
 							block: true,
-							reason:
-								"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
+							reason: `Blocked: the session is in plan mode (read-only) — tool ${toolName} is unavailable. Do not retry; present the plan to the user.`,
 						}
 					}
 					emitToolDecision(pi, event, mode, "accept", "plan_readonly")
 					return undefined
 				}
-				if (!isPlanModeTool(event.toolName)) {
-					emitToolDecision(pi, event, mode, "reject", "plan_gate")
+
+				if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) {
+					emitToolDecision(pi, event, mode, "accept", "builtin_safe")
+					return undefined
+				}
+
+				// IDE approval deferral: when the ide-adapter extension has an active
+				// IDE connection AND we're in default mode, write/edit approvals are
+				// handled via the IDE diff viewer. In auto/yolo the user has opted out
+				// of per-file approval, so don't defer.
+				if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
+					// Skip the terminal prompt so the user isn't asked twice.
+					return undefined
+				}
+
+				// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
+				// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.
+				if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) {
+					emitToolDecision(pi, event, mode, "accept", "ferment_internal")
+					return undefined
+				}
+
+				// Compound bash commands: early gate for deny/allow only.
+				// If the check returns "prompt", fall through to
+				// evaluateRules → auto-mode/classifier → prompt site below.
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					if (isCompoundCommand(command)) {
+						const compoundCheck = checkCompoundCommand(command, allRules())
+						if (compoundCheck.decision === "deny") {
+							emitToolDecision(pi, event, mode, "reject", "compound_rule")
+							return {
+								block: true,
+								reason: compoundCheck.deniedReason ?? "Subcommand denied",
+							}
+						}
+						if (compoundCheck.decision === "allow") {
+							emitToolDecision(pi, event, mode, "accept", "compound_rule")
+							return undefined
+						}
+						// "prompt" → fall through to existing flow
+					}
+				}
+
+				const match = evaluateRules(allRules(), toolName, input)
+				if (match.decision === "deny") {
+					emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
 					return {
 						block: true,
-						reason: `Blocked: the session is in plan mode (read-only) — tool ${toolName} is unavailable. Do not retry; present the plan to the user.`,
+						reason: `Denied by rule ${formatRule(match.rule)}`,
 					}
 				}
-				emitToolDecision(pi, event, mode, "accept", "plan_readonly")
-				return undefined
-			}
-
-			if (BUILTIN_ALLOW_TOOL_NAMES.includes(toolName)) {
-				emitToolDecision(pi, event, mode, "accept", "builtin_safe")
-				return undefined
-			}
-
-			// IDE approval deferral: when the ide-adapter extension has an active
-			// IDE connection AND we're in default mode, write/edit approvals are
-			// handled via the IDE diff viewer. In auto/yolo the user has opted out
-			// of per-file approval, so don't defer.
-			if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
-				// Skip the terminal prompt so the user isn't asked twice.
-				return undefined
-			}
-
-			// Ferment tools are internal state-management operations; bypass user rules and classifier prompts.
-			// User-facing ferment tools (`ask_user`) are listed in USER_FACING_FERMENT_TOOL_NAMES and skip this bypass.
-			if (isFermentToolName(toolName) && !isUserFacingFermentToolName(toolName)) {
-				emitToolDecision(pi, event, mode, "accept", "ferment_internal")
-				return undefined
-			}
-
-			// Compound bash commands: early gate for deny/allow only.
-			// If the check returns "prompt", fall through to
-			// evaluateRules → auto-mode/classifier → prompt site below.
-			if (toolName === "bash") {
-				const command = typeof input.command === "string" ? input.command : ""
-				if (isCompoundCommand(command)) {
-					const compoundCheck = checkCompoundCommand(command, allRules())
-					if (compoundCheck.decision === "deny") {
-						emitToolDecision(pi, event, mode, "reject", "compound_rule")
-						return {
-							block: true,
-							reason: compoundCheck.deniedReason ?? "Subcommand denied",
-						}
-					}
-					if (compoundCheck.decision === "allow") {
-						emitToolDecision(pi, event, mode, "accept", "compound_rule")
-						return undefined
-					}
-					// "prompt" → fall through to existing flow
+				if (match.decision === "allow") {
+					emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
+					return undefined
 				}
-			}
 
-			const match = evaluateRules(allRules(), toolName, input)
-			if (match.decision === "deny") {
-				emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
-				return {
-					block: true,
-					reason: `Denied by rule ${formatRule(match.rule)}`,
+				// In default mode, a questionnaire call means the agent wants to plan —
+				// auto-promote the session to plan mode so the rest of the conversation
+				// runs under the right tool set instead of silently approving here.
+				if (toolName === "questionnaire" && mode === "default") {
+					changeMode(
+						ctx,
+						"default",
+						{ mode: "plan", initiatedBy: "user", source: "runtime" },
+						"questionnaire_promotion",
+					)
+					emitToolDecision(pi, event, mode, "accept", "questionnaire_promotion")
+					return undefined
 				}
-			}
-			if (match.decision === "allow") {
-				emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
-				return undefined
-			}
-
-			// In default mode, a questionnaire call means the agent wants to plan —
-			// auto-promote the session to plan mode so the rest of the conversation
-			// runs under the right tool set instead of silently approving here.
-			if (toolName === "questionnaire" && mode === "default") {
-				changeMode(ctx, "default", { mode: "plan", initiatedBy: "user", source: "runtime" }, "questionnaire_promotion")
-				emitToolDecision(pi, event, mode, "accept", "questionnaire_promotion")
-				return undefined
-			}
-			if (isReadOnlyTool(toolName)) {
-				emitToolDecision(pi, event, mode, "accept", "readonly")
-				return undefined
-			}
-			if (toolName === "bash") {
-				const command = typeof input.command === "string" ? input.command : ""
-				if (isReadOnlyBashCommand(command)) {
+				if (isReadOnlyTool(toolName)) {
 					emitToolDecision(pi, event, mode, "accept", "readonly")
 					return undefined
 				}
-			}
-
-			// Auto mode + non-promptable default mode (headless/subagents) both go
-			// through the classifier; prompts without a frontend fail closed.
-			const promptAvailable = canPrompt(ctx)
-			if (mode === "auto" || !promptAvailable) {
-				const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
-				const verdict = await classifyToolCall(
-					candidates,
-					ctx.modelRegistry,
-					{ toolName, input, cwd: ctx.cwd },
-					{
-						context: ctx,
-						timeoutMs: loaded.config.classifierTimeoutMs,
-						maxTotalMs: loaded.config.classifierMaxTotalMs,
-					},
-					ctx.signal,
-				)
-				const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
-				if (health) {
-					pi.events.emit(health.channel, health.payload)
-					if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
-						classifierWarnings.add(health.notifyKey)
-						ctx.ui.notify(health.message, "warning")
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					if (isReadOnlyBashCommand(command)) {
+						emitToolDecision(pi, event, mode, "accept", "readonly")
+						return undefined
 					}
 				}
 
-				if (verdict.verdict === "safe") {
-					emitToolDecision(pi, event, mode, "accept", "classifier")
-					return undefined
+				// Auto mode + non-promptable default mode (headless/subagents) both go
+				// through the classifier; prompts without a frontend fail closed.
+				const promptAvailable = canPrompt(ctx)
+				// The hidden document-skill CLI route (`kimchi doc-cli pdf …`) is
+				// first-party: the binary resolves and loads the staged bundle, the
+				// model only supplies the fixed command shape. It skips the classifier
+				// — the deterministic shape check accepts exactly the documented form.
+				// Default mode accepts without prompting only for the read-only
+				// subcommands; mutating ones still prompt. User deny rules
+				// (evaluateRules above) still win.
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					if (
+						isDocCliCommand(command) &&
+						(mode === "auto" || !promptAvailable || (mode === "default" && isReadOnlyDocCliCommand(command)))
+					) {
+						emitToolDecision(pi, event, mode, "accept", "bundled_skill_cli")
+						return undefined
+					}
 				}
-				if (!promptAvailable) {
-					emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
-					return {
-						block: true,
-						reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
+				if (mode === "auto" || !promptAvailable) {
+					const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
+					const verdict = await classifyToolCall(
+						candidates,
+						ctx.modelRegistry,
+						{ toolName, input, cwd: ctx.cwd },
+						{
+							context: ctx,
+							timeoutMs: loaded.config.classifierTimeoutMs,
+							maxTotalMs: loaded.config.classifierMaxTotalMs,
+						},
+						ctx.signal,
+					)
+					const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
+					if (health) {
+						pi.events.emit(health.channel, health.payload)
+						if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
+							classifierWarnings.add(health.notifyKey)
+							ctx.ui.notify(health.message, "warning")
+						}
+					}
+
+					if (verdict.verdict === "safe") {
+						emitToolDecision(pi, event, mode, "accept", "classifier")
+						return undefined
+					}
+					if (!promptAvailable) {
+						emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
+						return {
+							block: true,
+							reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
+						}
+					}
+					const result = await handleConfirm(event, {
+						ctx,
+						pi,
+						subtitle: verdict.reason,
+						riskScore: verdict.riskScore,
+						session,
+						activeAborts: activeAbortControllers,
+						promptToolCalls: activePromptToolCalls,
+						allRules,
+						permissionMode: mode,
+					})
+					if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
+					return result
+				}
+
+				// Prompt site — branch to compound or single-command flow
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					if (isCompoundCommand(command)) {
+						const subcommands = splitCompoundCommand(command)
+						if (subcommands && subcommands.length > 0) {
+							const result = await handleCompoundConfirm(event, {
+								ctx,
+								pi,
+								session,
+								activeAborts: activeAbortControllers,
+								promptToolCalls: activePromptToolCalls,
+								subcommands,
+								allRules,
+								permissionMode: mode,
+							})
+							if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
+							return result
+						}
 					}
 				}
 				const result = await handleConfirm(event, {
 					ctx,
 					pi,
-					subtitle: verdict.reason,
-					riskScore: verdict.riskScore,
 					session,
 					activeAborts: activeAbortControllers,
+					promptToolCalls: activePromptToolCalls,
 					allRules,
 					permissionMode: mode,
 				})
-				if (result === "aborted") continue // mode changed, re-evaluate
+				if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
 				return result
 			}
 
-			// Prompt site — branch to compound or single-command flow
-			if (toolName === "bash") {
-				const command = typeof input.command === "string" ? input.command : ""
-				if (isCompoundCommand(command)) {
-					const subcommands = splitCompoundCommand(command)
-					if (subcommands && subcommands.length > 0) {
-						const result = await handleCompoundConfirm(event, {
-							ctx,
-							pi,
-							session,
-							activeAborts: activeAbortControllers,
-							subcommands,
-							allRules,
-							permissionMode: mode,
-						})
-						if (result === "aborted") continue // mode changed, re-evaluate
-						return result
-					}
-				}
-			}
-			const result = await handleConfirm(event, {
-				ctx,
-				pi,
-				session,
-				activeAborts: activeAbortControllers,
-				allRules,
-				permissionMode: mode,
+			// Exhausted re-evaluation attempts — fail closed.
+			console.warn("permissions: mode changed too many times during prompt, failing closed")
+			emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "mode_flap", {
+				modeChangeCount: modeChangeSources.length,
+				modeChangeSources: [...modeChangeSources],
 			})
-			if (result === "aborted") continue // mode changed, re-evaluate
-			return result
-		}
-
-		// Exhausted re-evaluation attempts — fail closed.
-		console.warn("permissions: mode changed too many times during prompt, failing closed")
-		emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "mode_flap")
-		return {
-			block: true,
-			reason: "Permission mode changed too many times during prompt",
+			return {
+				block: true,
+				reason: "Permission mode changed too many times during prompt",
+			}
+		} finally {
+			// Scope cleanup: a dismissal recorded for a prompt that settled with a
+			// real decision (mode-change/decision race — the abort arrives after
+			// the prompter already resolved) is never consumed. Tool-call ids are
+			// unique, so an unconsumed entry would otherwise sit here forever.
+			pendingModeChangeDismissals.delete(dismissalKey)
 		}
 	})
 
@@ -1577,6 +1697,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 }
 
+/** What a permission prompt settles to: a decision to apply, "aborted"
+ *  (dismissed by a mode change — re-evaluate), or undefined (allow). */
+type PromptOutcome = { block: true; reason: string } | "aborted" | undefined
+
 interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
@@ -1584,6 +1708,9 @@ interface ConfirmOptions {
 	/** Risk score from the classifier LLM, for display in the prompt. */
 	riskScore?: RiskScore
 	activeAborts: Set<AbortController>
+	/** Associates open prompts with their tool call for mode-change dismissal
+	 *  attribution (mode-flap diagnostics). */
+	promptToolCalls: Map<AbortController, string>
 	allRules?: () => Rule[]
 	pi: ExtensionAPI
 	/** Permission mode the prompt is opened under (reported with the decision). */
@@ -1597,6 +1724,7 @@ async function handleConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) {
@@ -1646,6 +1774,7 @@ async function handleConfirm(
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
+		opts.promptToolCalls.delete(abort)
 	}
 }
 
@@ -1656,6 +1785,7 @@ export async function handleCompoundConfirm(
 	const abort = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
 	opts.activeAborts.add(abort)
+	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
 	try {
 		const prompter = resolvePrompter(opts.ctx)
 		if (!prompter) {
@@ -1789,6 +1919,7 @@ export async function handleCompoundConfirm(
 	} finally {
 		unlinkAbort()
 		opts.activeAborts.delete(abort)
+		opts.promptToolCalls.delete(abort)
 	}
 }
 

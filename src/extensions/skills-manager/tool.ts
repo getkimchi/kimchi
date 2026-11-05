@@ -62,6 +62,21 @@ async function sessionReviewWriteGuard(name: string, tracker: UsageTracker): Pro
 	return null
 }
 
+/** The skill_view tool result text for a successful entry-file load — the
+ *  single formatter shared by the tool and by skill auto-load, so an
+ *  auto-loaded skill reads exactly like a manually loaded one. */
+export function formatSkillViewResult(result: {
+	content?: string
+	skill_dir?: string
+	linked_files?: Record<string, string[]>
+}): string {
+	return [
+		result.content ?? "",
+		result.skill_dir ? `\nSkill directory: ${result.skill_dir}` : "",
+		result.linked_files ? `\nLinked files: ${JSON.stringify(result.linked_files)}` : "",
+	].join("")
+}
+
 export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker) {
 	return {
 		name: "skill_view",
@@ -84,12 +99,12 @@ export function createSkillViewTool(manager: SkillManager, tracker: UsageTracker
 			if (result.success) {
 				void tracker.bumpUse(params.name)
 			}
+			// Linked-file reads return the bare file content; entry-file loads
+			// get the full result shape (skill dir + linked map).
 			const text = result.success
-				? [
-						result.content ?? "",
-						result.skill_dir ? `\nSkill directory: ${result.skill_dir}` : "",
-						result.linked_files ? `\nLinked files: ${JSON.stringify(result.linked_files)}` : "",
-					].join("")
+				? params.file_path
+					? (result.content ?? "")
+					: formatSkillViewResult(result)
 				: (result.error ?? "Error")
 			return {
 				content: [{ type: "text" as const, text }],

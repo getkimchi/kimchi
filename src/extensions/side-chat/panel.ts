@@ -28,6 +28,7 @@ import {
 	VStack,
 	visibleWidth,
 } from "@earendil-works/pi-tui"
+import { sideChatAutocomplete } from "./autocomplete.js"
 import { applyFocusChrome } from "./focus-chrome.js"
 import { type Frame, rectContains, rectOf, type SideChatHost } from "./harness.js"
 import { type HeaderAction, PanelHeader } from "./header.js"
@@ -96,6 +97,7 @@ export class SideChatPanel {
 			scrollbarThumbStyle: (text) => theme.fg("scrollbarThumb", text),
 		})
 		this.editor = new CustomEditor(host.ui, host.editorTheme, host.keybindings, { paddingX: 1 })
+		this.editor.setAutocompleteProvider(sideChatAutocomplete(this.mode, this.cwd))
 		applyFocusChrome(this.editor, theme, {
 			label: "side chat",
 			focusedColor: () => (this.mode === "review" ? "success" : undefined),
@@ -141,8 +143,7 @@ export class SideChatPanel {
 	showHistory(items: readonly HistoryItem[]): void {
 		this.history.setItems(items)
 		this.historyOpen = true
-		this.host.ui.setFocus(this.history)
-		this.host.requestRender()
+		this.host.focusComponent(this.history)
 	}
 
 	hideHistory(): void {
@@ -157,6 +158,8 @@ export class SideChatPanel {
 
 	setMode(mode: SidePanelMode): void {
 		this.mode = mode
+		// Rebuild the hints: /wrap only runs in chat mode (see handleSubmit).
+		this.editor.setAutocompleteProvider(sideChatAutocomplete(mode, this.cwd))
 		this.host.requestRender()
 	}
 
@@ -172,8 +175,7 @@ export class SideChatPanel {
 
 	/** Focus the side chat: its history list while open, else its editor. */
 	focus(): void {
-		this.host.ui.setFocus(this.historyOpen ? this.history : this.editor)
-		this.host.requestRender()
+		this.host.focusComponent(this.historyOpen ? this.history : this.editor)
 	}
 
 	/** Quote a transcript selection into the editor, Cursor "add to chat" style. */
@@ -374,7 +376,9 @@ export class SideChatPanel {
 		if (this.mode === "review") {
 			return ` ${key("enter")}${dim(" send to main · ")}${key("esc")}${dim(" keep chatting · ")}${key("/close")}${dim(" discard")}`
 		}
-		const escAction = this.busy ? dim(" stop · ") : dim(" main · ")
+		// While a main-session modal (a permission ask) is open, esc navigates to it — the
+		// modal owns the keyboard, so it takes precedence even over a running side stream.
+		const escAction = this.host.modalDialog() ? dim(" ask · ") : this.busy ? dim(" stop · ") : dim(" main · ")
 		const focusKeys = sideChatFocusHint()
 		const focusHint = focusKeys ? `${key(focusKeys)}${dim(" focus · ")}` : ""
 		return ` ${key("esc")}${escAction}${focusHint}${key("/wrap")}${dim(" → main")}`

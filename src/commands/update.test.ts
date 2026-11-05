@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
 
 const isHomebrewInstallMock = vi.fn(() => false)
 const checkForUpdateMock = vi.fn()
@@ -23,11 +23,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		SettingsManager: {
 			create: (cwd: unknown, agentDir: unknown) => settingsManagerCreateMock(cwd, agentDir),
 		},
-		DefaultPackageManager: vi.fn().mockImplementation(() => ({
-			listConfiguredPackages: listConfiguredPackagesMock,
-			setProgressCallback: setProgressCallbackMock,
-			update: packageUpdateMock,
-		})),
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		DefaultPackageManager: vi.fn().mockImplementation(function () {
+			return {
+				listConfiguredPackages: listConfiguredPackagesMock,
+				setProgressCallback: setProgressCallbackMock,
+				update: packageUpdateMock,
+			}
+		}),
 	}
 })
 
@@ -44,8 +47,8 @@ vi.mock("../utils.js", () => ({
 const { runUpdate } = await import("./update.js")
 
 describe("runUpdate flag parsing", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -226,8 +229,8 @@ describe("runUpdate flag parsing", () => {
 })
 
 describe("runUpdate Homebrew branch", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -288,8 +291,8 @@ describe("runUpdate Homebrew branch", () => {
 })
 
 describe("runUpdate non-interactive composition", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})
@@ -340,8 +343,8 @@ describe("runUpdate non-interactive composition", () => {
 })
 
 describe("runUpdate package targets", () => {
-	let logSpy: ReturnType<typeof vi.spyOn>
-	let errSpy: ReturnType<typeof vi.spyOn>
+	let logSpy: MockInstance<(...args: unknown[]) => unknown>
+	let errSpy: MockInstance<(...args: unknown[]) => unknown>
 
 	beforeEach(() => {
 		logSpy = vi.spyOn(console, "log").mockImplementation(() => {})

@@ -48,7 +48,12 @@ interface McpFixtureEventDetails {
 		accessType?: string
 		prompt?: string
 	}
-	oauth_token_issued: { grantType: string; expiresIn: number; pkceVerified?: boolean }
+	oauth_token_issued: {
+		grantType: string
+		expiresIn: number
+		pkceVerified?: boolean
+		refreshTokenIssued?: boolean
+	}
 	oauth_token_rejected: { grantType?: string }
 	oauth_refresh_rejected: Record<string, never>
 	oauth_manual_revoke: Record<string, never>
@@ -107,6 +112,7 @@ export type McpFixtureScenario =
 	| "oauth-token-failure"
 	| "oauth-expiring"
 	| "oauth-google-authorization-endpoint"
+	| "oauth-google-like"
 	| "oauth-offline-access-scope"
 	| "oauth-split-issuer-flaky-prm"
 	| "oauth-refresh-revoked"
@@ -437,7 +443,13 @@ export async function createMcpFixture(agentDir: string, options: McpFixtureOpti
 			...configuredServerFields(options),
 		}
 		const configPath = writeMcpConfig(agentDir, { [serverName]: serverDefinition }, options)
-		const browserEnv = oauth ? createOAuthBrowserDriver(agentDir, eventPath) : {}
+		// oauth-google-like advertises Google's authorization endpoint, so the browser
+		// driver replays the authorize request against the fixture to complete the flow.
+		const browserEnv = oauth
+			? createOAuthBrowserDriver(agentDir, eventPath, {
+					rewriteGoogleOrigin: scenario === "oauth-google-like" ? new URL(listening.url).origin : undefined,
+				})
+			: {}
 		const authStoreEnv = oauth ? { KIMCHI_MCP_E2E_KEYRING_DIR: resolve(agentDir, "mcp-keyring") } : {}
 		const serverFixture: McpServerFixture = { serverName, serverDefinition, configPath, eventPath, ...eventReader }
 
@@ -595,11 +607,22 @@ if (!response.ok) throw new Error(\`MCP UI browser driver received HTTP \${respo
  * Browser driver script shared by the OAuth fixture and tests that override it.
  * Both modes append an `oauth_browser_opened` event carrying the authorize URL;
  * auto-complete mode additionally fetches the URL so the flow completes on its own.
+ * A `rewriteGoogleOrigin` replays a Google authorize request (same query) against
+ * that origin, so scenarios that advertise Google's endpoint still complete the
+ * flow against the fixture while the client's real Google behavior runs.
  */
-export function oauthBrowserDriverScript(eventPath: string, options: { autoComplete: boolean }): string {
+export function oauthBrowserDriverScript(
+	eventPath: string,
+	options: { autoComplete: boolean; rewriteGoogleOrigin?: string },
+): string {
+	const rewriteBody = options.rewriteGoogleOrigin
+		? `if (new URL(target).hostname === "accounts.google.com")
+  fetchTarget = ${JSON.stringify(options.rewriteGoogleOrigin)} + "/authorize" + new URL(target).search
+`
+		: ""
 	const autoCompleteBody = options.autoComplete
 		? `
-const response = await fetch(target, { redirect: "follow" })
+const response = await fetch(fetchTarget, { redirect: "follow" })
 const body = await Promise.race([
   response.text().catch(() => ""),
   new Promise((resolve) => setTimeout(() => resolve(""), 1_000)),
@@ -622,15 +645,24 @@ import { appendFileSync } from "node:fs"
 const eventPath = ${JSON.stringify(eventPath)}
 const target = process.argv.find((argument) => argument.startsWith("http://") || argument.startsWith("https://"))
 if (!target) throw new Error("OAuth browser driver did not receive an HTTP URL")
-appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")${autoCompleteBody}
+let fetchTarget = target
+${rewriteBody}appendFileSync(eventPath, JSON.stringify({ type: "oauth_browser_opened", at: new Date().toISOString(), pid: process.pid, scenario: "oauth", target }) + "\\n")${autoCompleteBody}
 `
 }
 
-function createOAuthBrowserDriver(agentDir: string, eventPath: string): Record<string, string> {
+function createOAuthBrowserDriver(
+	agentDir: string,
+	eventPath: string,
+	options: { rewriteGoogleOrigin?: string } = {},
+): Record<string, string> {
 	const browserBinDir = resolve(agentDir, "mcp-oauth-browser")
 	const browserPath = resolve(browserBinDir, "open")
 	mkdirSync(browserBinDir, { recursive: true })
-	writeFileSync(browserPath, oauthBrowserDriverScript(eventPath, { autoComplete: true }), "utf-8")
+	writeFileSync(
+		browserPath,
+		oauthBrowserDriverScript(eventPath, { autoComplete: true, rewriteGoogleOrigin: options.rewriteGoogleOrigin }),
+		"utf-8",
+	)
 	chmodSync(browserPath, 0o755)
 	return {
 		BROWSER: browserPath,

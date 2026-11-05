@@ -13,7 +13,13 @@
  */
 import { relative } from "node:path"
 import type { IncrementalSnapshot, ProcessEntry, ProcessState } from "./process-registry.js"
-import { elapsedSecondsSince, SAFETY_LIMIT_REASON } from "./process-registry.js"
+import {
+	elapsedSecondsSince,
+	INLINE_OUTPUT_MAX_BYTES,
+	INLINE_OUTPUT_MAX_LINES,
+	SAFETY_LIMIT_REASON,
+} from "./process-registry.js"
+import type { BashSessionKind } from "./session-policy.js"
 
 /** Human-readable byte count for status lines (e.g. "18 KB"). */
 export function formatBytes(bytes: number): string {
@@ -53,6 +59,7 @@ export function runningFactsText(
 			? "no output yet"
 			: `last output ${Math.max(0, Math.floor((Date.now() - entry.lastOutputAtMs) / 1000))}s ago`
 	lines.push(` output activity: ${activity}; ${lastOutput}`)
+	if (incremental.logPath) lines.push(` full log: ${incremental.logPath} (complete output, appended live)`)
 	lines.push("]")
 	return lines.join("\n")
 }
@@ -62,7 +69,9 @@ export function unseenOutputText(incremental: IncrementalSnapshot): string {
 	const parts: string[] = []
 	if (incremental.omittedBytes > 0) {
 		parts.push(
-			`[${formatBytes(incremental.omittedBytes)} of older unseen output omitted from this snapshot; if final output is truncated, the full-output file retains everything.]`,
+			incremental.logPath
+				? `[${formatBytes(incremental.omittedBytes)} of older unseen output omitted from this snapshot; the full log ${incremental.logPath} retains everything — grep it.]`
+				: `[${formatBytes(incremental.omittedBytes)} of older unseen output omitted from this snapshot; if final output is truncated, the full-output file retains everything.]`,
 		)
 	}
 	if (incremental.newBytes > 0 && incremental.text.length > 0) {
@@ -101,6 +110,8 @@ export interface ProcessEvidence {
 	sessionCwd?: string
 	/** Working directory the process was spawned in. */
 	cwd: string
+	/** Path of the process's complete output log, once one exists. */
+	logPath?: string
 }
 
 /**
@@ -120,6 +131,7 @@ export function processEvidenceText(e: ProcessEvidence): string {
 	)
 	lines.push(`Consecutive wait checkpoints: ${e.consecutiveCheckpoints}`)
 	lines.push(`Safety budget remaining: ${e.safetyRemainingSeconds}s`)
+	if (e.logPath) lines.push(`Full log: ${e.logPath}`)
 	return lines.join("\n")
 }
 
@@ -168,6 +180,29 @@ export function checkpointGuidanceText(): string {
 	)
 }
 
+/**
+ * Header for a wait released by a queued user message (user-facing
+ * sessions): the wait ended, nothing else did.
+ */
+export function userInputHeaderText(): string {
+	return "Wait released: a message from the user is waiting."
+}
+
+/**
+ * Guidance appended to a user-input wait release: handle the user's
+ * message now; the cohort keeps running untouched and its exit results
+ * still arrive automatically, so settling to answer never needs a new
+ * wait or a stop.
+ */
+export function userInputGuidanceText(): string {
+	return (
+		"Handle the user's message now. Every process listed above keeps running untouched — " +
+		"their exit results arrive on their own, and a later completion notification wakes you " +
+		"when they end. Do not start another wait just to watch them, and do not stop them " +
+		"unless the user's request makes them unnecessary."
+	)
+}
+
 /** Terminal-state label shared by all terminal formatters. */
 export function terminalReasonText(state: ProcessState, exitCode: number | null, reason: string | null): string {
 	if (reason === SAFETY_LIMIT_REASON) return "killed by the harness safety limit"
@@ -197,6 +232,20 @@ export interface TerminalResultInput {
 }
 
 /**
+ * Notice pointing at the complete output log. Truncated output names the
+ * inline budget and steers toward grepping the log instead of re-running
+ * the command to see a different slice; an untruncated result with a log
+ * (a backgrounded command) still names it for later searches.
+ */
+export function outputLogNoticeText(truncated: boolean, fullOutputPath: string | undefined): string | undefined {
+	if (!fullOutputPath) return undefined
+	if (truncated) {
+		return `[Output truncated to the last ${INLINE_OUTPUT_MAX_LINES} lines / ${formatBytes(INLINE_OUTPUT_MAX_BYTES)}. Full output: ${fullOutputPath} — grep it instead of re-running the command.]`
+	}
+	return `[Full log: ${fullOutputPath}]`
+}
+
+/**
  * One terminal result block. Used by pre-handoff `bash` exits,
  * `bash_control` stop/wait results, and unattended exit notifications —
  * every terminal path formats through here so the agent always sees the
@@ -222,9 +271,8 @@ export function terminalResultText(input: TerminalResultInput): string {
 	} else {
 		parts.push("The process produced no further output.")
 	}
-	if (input.truncated && input.fullOutputPath) {
-		parts.push(`[Output truncated. Full output: ${input.fullOutputPath}]`)
-	}
+	const notice = outputLogNoticeText(input.truncated === true, input.fullOutputPath)
+	if (notice) parts.push(notice)
 	if (input.reason === SAFETY_LIMIT_REASON) {
 		parts.push(
 			`[This process reached the ${input.deadlineSeconds}s harness safety limit. Break the work into smaller commands or run a bounded subset first. Servers and watchers that must run indefinitely belong in the daemon mechanism, not background bash.]`,
@@ -235,20 +283,38 @@ export function terminalResultText(input: TerminalResultInput): string {
 
 /**
  * Guidance appended to a result that yields a live handle. States the
- * continuation contract once, without recommending polling.
+ * continuation contract once, without recommending polling. In
+ * user-facing sessions, adds that the human's messages release waits and
+ * that turns may settle while the process keeps running.
  */
-export function handoffGuidanceText(): string {
-	return (
-		"[This process now continues by default. Its exit result will be delivered " +
-		"automatically — do not poll it. Do independent work with the other " +
-		"tools now, avoiding commands or edits that could conflict with it (same " +
-		"files, package managers, ports, generated output). Call bash_control to " +
-		"inspect this process or the whole cohort (optionally narrowed with handles; " +
-		"wait defaults to an immediate inspection), to stop specific handles " +
-		"(stop_handles, with no wait needed), or with wait: true when you genuinely " +
-		"have no other work until something changes — an explicit wait returns at " +
-		"the first exit or a bounded checkpoint (five minutes by default, ten at " +
-		"most). Intentional servers/watchers that must outlive the session belong in " +
-		"daemon management.]"
-	)
+export function handoffGuidanceText(sessionKind?: BashSessionKind, logPath?: string): string {
+	const sentences = [
+		"This process now continues by default. Its exit result will be delivered " +
+			"automatically — do not poll it. Do independent work with the other " +
+			"tools now, avoiding commands or edits that could conflict with it (same " +
+			"files, package managers, ports, generated output). Call bash_control to " +
+			"inspect this process or the whole cohort (optionally narrowed with handles; " +
+			"wait defaults to an immediate inspection), to stop specific handles " +
+			"(stop_handles, with no wait needed), or with wait: true when you genuinely " +
+			"have no other work until something changes — an explicit wait returns at " +
+			"the first exit or a bounded checkpoint (five minutes by default, ten at " +
+			"most). Intentional servers/watchers that must outlive the session belong in " +
+			"daemon management.",
+	]
+	if (logPath) {
+		sentences.push(
+			`To be woken when specific output appears (a server is ready, a first failure), run ` +
+				`\`until grep -qE "<success>|<failure>" ${logPath}; do sleep 1; done\` as its own bash ` +
+				"command — its exit is delivered like any other. Always include failure patterns, or a " +
+				"crash looks like waiting.",
+		)
+	}
+	if (sessionKind === "user-facing") {
+		sentences.push(
+			"A user message queued while you wait releases the wait immediately — answer it, " +
+				"and let the turn settle while this process keeps running: its exit result " +
+				"still arrives on its own.",
+		)
+	}
+	return `[${sentences.join(" ")}]`
 }

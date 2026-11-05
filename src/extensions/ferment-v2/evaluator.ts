@@ -3,10 +3,10 @@ import { completeSimple } from "@earendil-works/pi-ai/compat"
 import { type AgentEndEvent, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent"
 import { classifyLLMGatewayError } from "../../llm-gateway-error.js"
 import { INTERNAL_SESSION_ENTRY } from "../../session-visibility.js"
-import { findModelByRef } from "../model-catalog/ref-utils.js"
+import { findModelByRef } from "../../shared/model-ref.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getModelRoles, normalizeRoleModels } from "../orchestration/model-roles.js"
-import { getRedactionConfig } from "../pii-redaction/config.js"
+import { isRedactionEnabled } from "../pii-redaction/config.js"
 import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
 import { createNativeUsageCapture } from "../work-attribution/native-usage.js"
@@ -321,7 +321,7 @@ export async function evaluateFermentV2(
 		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
 		let prompt = `Objective:\n${objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
-		if (getRedactionConfig().enabled) {
+		if (isRedactionEnabled()) {
 			try {
 				prompt = await redactTextOrThrow(prompt)
 			} catch {

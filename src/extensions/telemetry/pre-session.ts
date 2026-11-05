@@ -17,7 +17,7 @@ import { getMe } from "../../api/me.js"
 import type { TelemetryConfig } from "../../config.js"
 import { ensureDeviceId } from "../../posthog-device.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
-import { getVersion } from "../../utils.js"
+import { getDetectedVersion } from "../../utils.js"
 import { sendLog } from "./transport.js"
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ async function doSend(
 
 		const deviceId = ensureDeviceId()
 		const attrs: Record<string, string | number | boolean> = {
-			"telemetry.cli_version": getVersion(),
+			"telemetry.cli_version": getDetectedVersion(),
 			...getOsMetadata(),
 		}
 

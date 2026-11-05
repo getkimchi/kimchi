@@ -496,12 +496,26 @@ async function journalOwner(path: string): Promise<FileTransition | undefined> {
 		await file.close()
 	}
 }
-export async function knownTransitionRepositories(checkBudget: () => void = () => {}): Promise<string[]> {
+/** Whole-type ledger reads shared by one supervisor pass, so the table is parsed once, not once per repository. Rows written mid-pass wait for the next pass. */
+export interface SharedTypeReads {
+	fileTransitions?: WorkRecord[]
+	commits?: WorkRecord[]
+}
+
+export async function knownTransitionRepositories(
+	checkBudget: () => void = () => {},
+	shared?: SharedTypeReads,
+): Promise<string[]> {
 	const repositories = new Set<string>()
 	// Native captures live in the store; include their repositories alongside legacy journal files.
 	try {
-		for (const row of readWorkRecordsOfType(getAgentDir(), "file_transition"))
-			if (typeof row.repository === "string") repositories.add(row.repository)
+		if (shared === undefined) shared = {}
+		let rows = shared.fileTransitions
+		if (rows === undefined) {
+			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
+			shared.fileTransitions = rows
+		}
+		for (const row of rows) if (typeof row.repository === "string") repositories.add(row.repository)
 	} catch {
 		// No store; the JSONL scan below still works.
 	}
@@ -512,14 +526,25 @@ export async function knownTransitionRepositories(checkBudget: () => void = () =
 	}
 	return [...repositories].sort()
 }
-async function readJournals(repository: string, checkBudget: () => void): Promise<TransitionJournal[]> {
+async function readJournals(
+	repository: string,
+	checkBudget: () => void,
+	shared?: SharedTypeReads,
+): Promise<TransitionJournal[]> {
 	const journals: TransitionJournal[] = []
 	const boundaries = new Map<string, string[] | undefined>()
 	// Native captures write transitions only into the ledger (C2): they are the journal now. The
 	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
 	let ledgerTransitions: Transition[] = []
 	try {
-		ledgerTransitions = readWorkRecordsOfType(getAgentDir(), "file_transition").filter(
+		// Cache on first read like knownTransitionRepositories does, so every entry point
+		// into a pass shares the single read.
+		let rows = shared?.fileTransitions
+		if (rows === undefined) {
+			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
+			if (shared !== undefined) shared.fileTransitions = rows
+		}
+		ledgerTransitions = rows.filter(
 			(row): row is WorkRecord & Transition => isTransition(row) && row.repository === repository,
 		)
 	} catch {
@@ -1079,13 +1104,19 @@ export async function reconcileRepositoryTransitions(
 	signal?: AbortSignal,
 	checkBudget = reconciliationBudget(signal),
 	assertLease: () => void = () => {},
+	shared?: SharedTypeReads,
 ): Promise<void> {
 	if (!existsSync(repository)) return
-	const journals = await readJournals(repository, checkBudget)
+	const journals = await readJournals(repository, checkBudget, shared)
 	if (!journals.length) return
 	const histories: JournalHistory[] = []
 	// Commit contributions live in the ledger now; the old session journal files were imported (A2).
-	const recordedCommits: Record<string, unknown>[] = readWorkRecordsOfType(getAgentDir(), "commit")
+	if (shared === undefined) shared = {}
+	let recordedCommits: WorkRecord[] | undefined = shared.commits
+	if (recordedCommits === undefined) {
+		recordedCommits = readWorkRecordsOfType(getAgentDir(), "commit")
+		shared.commits = recordedCommits
+	}
 	for (const journal of journals) {
 		checkBudget()
 		histories.push(await readJournalHistory(journal, signal))

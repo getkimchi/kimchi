@@ -4,11 +4,14 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TelemetryConfig } from "../../config.js"
 import * as config from "../../config.js"
+import { resetAcpClientInfo, setAcpClientInfo } from "../../modes/acp/state.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import * as osMetadata from "../../utils/os-metadata.js"
 import { createContext } from "../__mocks__/context.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { recordEditDecision } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
 import * as telemetry from "./index.js"
 import { trackPRCostMetric } from "./pr-cost.js"
@@ -20,6 +23,14 @@ vi.mock("../../api/me.js", () => ({
 
 vi.mock("../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(() => undefined),
+}))
+
+// Partial mock: only the version seam differs from the real module, so the
+// cli_version assertions can distinguish the detected version from the
+// package-dir version ("dev" in this environment).
+vi.mock("../../utils.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../utils.js")>()),
+	getDetectedVersion: vi.fn(() => "9.9.9-dev"),
 }))
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
@@ -47,6 +58,7 @@ describe("SessionContext", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch
+		resetAcpClientInfo()
 		_resetSharedAccumulators()
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
@@ -391,6 +403,29 @@ describe("SessionContext", () => {
 		expect(changeAttrs.previous_session_type).toBe("coding")
 		expect(changeAttrs.ferment_id).toBe("f-1")
 		expect(changeAttrs.source).toBe("cli")
+		// the type_changed record reports the detected version, not the package-dir one
+		expect(changeAttrs["telemetry.cli_version"]).toBe("9.9.9-dev")
+	})
+
+	it("reports the detected version on every emitted event's telemetry.cli_version", async () => {
+		const { getActiveFerment } = await import("../ferment/index.js")
+		vi.mocked(getActiveFerment).mockReturnValue(undefined)
+
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.emit("test.event", { custom: "value" })
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+
+		expect(globalThis.fetch).toHaveBeenCalledOnce()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const record = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		const attrs = Object.fromEntries(
+			record.attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+		// the detected version — not the package-dir version (the real
+		// getVersion() reports "dev" in this environment)
+		expect(attrs["telemetry.cli_version"]).toBe("9.9.9-dev")
 	})
 
 	it("prefers active Ferment V2 attribution over legacy Ferment on ambient events", async () => {
@@ -836,6 +871,96 @@ describe("SessionContext", () => {
 			const sessionAttr = dataPoint.attributes.find((a: { key: string }) => a.key === "session.id")
 			expect(sessionAttr?.value.stringValue).toBe("019e2af0-153f-77dc-839c-683e23fd301d")
 		}
+	})
+
+	it("flushMetrics stamps source and ACP client identity on metric data points", async () => {
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		expect(metrics.length).toBeGreaterThan(0)
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const attrMap = Object.fromEntries(
+				dataPoint.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+			)
+			// Vitest runs without --mode=acp, so the process-level source is the CLI path.
+			expect(attrMap.source).toBe("cli")
+			expect(attrMap.acp_client_name).toBe("kimchi-vscode")
+			expect(attrMap.acp_client_version).toBe("0.0.1")
+		}
+	})
+
+	it("flushMetrics stamps source acp for Agent workers inside the ACP server process", async () => {
+		// Regression: in-process Agent subagents spawned by the ACP server never
+		// saw --mode=acp on argv, so they mislabeled flushes as source: "cli"
+		// and polluted the CLI bucket in per-client splits.
+		setAcpClientInfo({ name: "zed", version: "1.0.0" })
+		const ctx = new TelemetryContext(makeConfig())
+		ctx.cumulative.tokensByModel.m1 = { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 }
+
+		await runAsAgentWorker(async () => {
+			ctx.flushMetrics()
+			await Promise.allSettled([...ctx.inFlight])
+		})
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const metrics = body.resourceMetrics[0].scopeMetrics[0].metrics
+		for (const metric of metrics) {
+			const dataPoint = (metric.sum ?? metric.gauge).dataPoints[0]
+			const attrMap = Object.fromEntries(
+				dataPoint.attributes.map((a: { key: string; value: { stringValue?: string } }) => [a.key, a.value.stringValue]),
+			)
+			expect(attrMap.source).toBe("acp")
+			expect(attrMap.acp_client_name).toBe("zed")
+		}
+	})
+
+	it("flushMetrics stamps source and keeps decision_source on code_edit_tool.decision", async () => {
+		setAcpClientInfo({ name: "kimchi-vscode", version: "0.0.1" })
+		const ctx = new TelemetryContext(makeConfig())
+		recordEditDecision(ctx.cumulative, "Edit", "ts")
+
+		ctx.flushMetrics()
+		await Promise.allSettled([...ctx.inFlight])
+
+		const metricsCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]: unknown[]) =>
+			String(url).includes("/metrics"),
+		)
+		expect(metricsCalls.length).toBe(1)
+		const body = JSON.parse((metricsCalls[0][1] as { body: string }).body)
+		const decision = body.resourceMetrics[0].scopeMetrics[0].metrics.find(
+			(metric: { name: string }) => metric.name === "claude_code.code_edit_tool.decision",
+		)
+		expect(decision).toBeDefined()
+		const attrMap = Object.fromEntries(
+			decision.sum.dataPoints[0].attributes.map((a: { key: string; value: { stringValue?: string } }) => [
+				a.key,
+				a.value.stringValue,
+			]),
+		)
+		// The decision-origin attribute no longer collides with the
+		// process-identity `source`; both survive the flush stamping.
+		expect(attrMap.source).toBe("cli")
+		expect(attrMap.decision_source).toBe("auto")
+		expect(attrMap.tool_name).toBe("Edit")
+		expect(attrMap.decision).toBe("accept")
+		expect(attrMap.language).toBe("ts")
+		// Identity attributes still attach.
+		expect(attrMap.acp_client_name).toBe("kimchi-vscode")
 	})
 
 	it("accumulators stay keyed by telemetryId even when pi session ids differ", () => {

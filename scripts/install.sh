@@ -11,6 +11,9 @@
 #   KIMCHI_VERSION      Pin a specific version tag (e.g. v0.2.0). Defaults
 #                      to "latest", which resolves to the GitHub "Latest
 #                      release" pointer.
+#   KIMCHI_BRIDGE_YES   Add the work-reporting plugins to Claude Code and
+#                      Codex without asking (scripted installs).
+#   KIMCHI_BRIDGE_SKIP  Never add the work-reporting plugins.
 
 set -euo pipefail
 
@@ -157,10 +160,11 @@ if [ "$NEEDS_PATH_SETUP" = "yes" ] || { [ "$NEEDS_PATH_SETUP" = "maybe" ] && ! c
 fi
 
 # The release carries Kimchi's work-reporting plugins for the official Claude
-# Code and Codex CLIs (getkimchi/kimchi-bridge). Add them to each client
-# found. They run on this Kimchi binary, report with Kimchi's sign-in and
-# leave inference settings alone. Adding them is opt-in: ask when run from a
-# terminal, and honor KIMCHI_BRIDGE_SKIP for scripted installs. Anyone who
+# Code and Codex CLIs (getkimchi/kimchi-bridge). Adding them wires hooks into
+# another tool's configuration, so it always needs consent: ask through the
+# controlling terminal — curl pipes this script over stdin, so `[ -t 0 ]`
+# alone never asks — treat KIMCHI_BRIDGE_YES as scripted consent, honor
+# KIMCHI_BRIDGE_SKIP, and skip silently-installing anywhere else. Anyone who
 # skips can add them later with `kimchi bridge setup`.
 BRIDGE_INSTALLER="$DATA_DIR/kimchi/bridge/install.sh"
 if [ -f "$BRIDGE_INSTALLER" ] && [ -n "${SUDO_USER:-}" ]; then
@@ -172,15 +176,28 @@ elif [ -f "$BRIDGE_INSTALLER" ] && [ -n "${KIMCHI_BRIDGE_SKIP:-}" ]; then
 elif [ -f "$BRIDGE_INSTALLER" ]; then
 	for client in claude codex; do
 		command -v "$client" >/dev/null 2>&1 || continue
-		# Interactive terminals get a real choice; piped installs default to yes
-		# and print how to undo.
-		if [ -t 0 ]; then
+		# Consent comes first: scripted yes, an interactive stdin, or a prompt
+		# delivered through the controlling terminal when stdin is the curl pipe —
+		# only while a human watches stdout, which headless runs redirect. Anything
+		# else gets no plugins and hears how to opt in.
+		answer=""
+		if [ -n "${KIMCHI_BRIDGE_YES:-}" ]; then
+			:
+		elif [ -t 0 ]; then
 			printf "${BLUE}Add Kimchi work reporting to %s?${NC} [Y/n] " "$client"
-			read -r answer
-			case "$answer" in
-				n | N | no) echo "Skipped. Run 'kimchi bridge setup' anytime to add it."; continue ;;
-			esac
+			read -r answer || answer=""
+		elif [ -t 1 ] && {
+			printf "${BLUE}Add Kimchi work reporting to %s?${NC} [Y/n] " "$client" >/dev/tty 2>/dev/null &&
+				read -r answer </dev/tty 2>/dev/null
+		}; then
+			:
+		else
+			echo -e "${BLUE}No terminal to confirm with, so work reporting for ${client} was not added. Run ${GREEN}kimchi bridge setup${NC} anytime to add it.${NC}"
+			continue
 		fi
+		case "$answer" in
+			n | N | no) echo "Skipped. Run 'kimchi bridge setup' anytime to add it."; continue ;;
+		esac
 		echo ""
 		echo -e "${BLUE}Adding Kimchi work reporting to ${client}…${NC}"
 		# stdin stays with this script when it is piped into bash.

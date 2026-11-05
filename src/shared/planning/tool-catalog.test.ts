@@ -231,6 +231,16 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
+		it("includes bash_control wherever bash is (the pair moves together)", () => {
+			expect(names).toContain("bash_control")
+			// The ferment implementation profile keeps the pair too.
+			expect(namesOf(getToolsForProfile("implementation-ferment"))).toContain("bash_control")
+			// Planning-ferment has neither member.
+			const planningFerment = namesOf(getToolsForProfile("planning-ferment"))
+			expect(planningFerment).not.toContain("bash")
+			expect(planningFerment).not.toContain("bash_control")
+		})
+
 		it("does NOT include the mcp gateway", () => {
 			expect(names).not.toContain("mcp")
 		})

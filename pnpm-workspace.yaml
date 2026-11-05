@@ -1,0 +1,71 @@
+# pnpm 10 package-manager settings. pnpm 10 no longer reads the `pnpm` field
+# from package.json (it warns and silently ignores it) — this file is the home
+# for overrides, patchedDependencies, build allowlists, and target
+# architectures. Keep in sync when adding patches or overrides.
+
+onlyBuiltDependencies:
+  - "@biomejs/biome"
+  - esbuild
+  - koffi
+  - node-pty
+  - protobufjs
+
+ignoredOptionalDependencies:
+  - cpu-features
+  - nan
+
+overrides:
+  better-sqlite3: link:./shims/better-sqlite3
+  natural: link:./shims/natural
+  shell-quote: ^1.11.0
+  tinypool: ^2.1.2
+  body-parser: ^2.4.0
+  fast-uri: ^3.1.7
+  # GHSA-mrwp-f3q8-3g9p (high, prod via mem0ai>axios)
+  follow-redirects: ^1.16.2
+  hono: ^4.13.11
+  image-size: ^2.0.3
+  ip-address: ^10.7.4
+  mem0ai>zod: ^4.6.6
+  # GHSA-g3hv-75wg-m249 (ReDoS). Pi pins the vulnerable 10.x line.
+  "@earendil-works/pi-coding-agent>minimatch": ^11.0.1
+  # GHSA-3g3m-2fjr-6pw4 (glob) and GHSA-g3hv-75wg-m249 (its minimatch).
+  # glob 10 with minimatch 11 breaks wildcard matching; glob 14 declares 11.
+  "@microsoft/tui-test>glob": ^14.0.2
+  nanoid@3: ^3.3.18
+  postcss: ^8.5.18
+  protobufjs: ^7.6.1
+  # GHSA-q8mj-m7cp-5q26, GHSA-4mjr-xmp4-gh2g, GHSA-x5fp-wj9c-mxmx, GHSA-6pq8-jhm2-2vcw
+  qs: ^6.16.1
+  source-map-js: ^1.2.2
+  brace-expansion@2: ^2.1.7
+  undici@6: ^6.29.1
+  undici@7: ^7.29.1
+  undici@8: ^8.12.2
+  vite: ^7.3.7
+  # GHSA-82fw-gwwq-j7x9 + @vitest/mocker GHSA-qxg6-89mg-rqv8 (no 3.x backport exists)
+  vitest: ^4.1.12
+  ws: ^8.21.0
+  # GHSA-frvp-7c67-39w9 + GHSA-rmxm-3fg6-px4f (both fixed in
+  # @hono/node-server >=2.1.3, within @modelcontextprotocol/sdk's declared range)
+  "@hono/node-server": ^2.1.3
+
+patchedDependencies:
+  playwright-core@1.59.1: patches/playwright-core@1.59.1.patch
+  "@earendil-works/pi-ai@1.3.0": patches/@earendil-works__pi-ai@1.3.0.patch
+  "@earendil-works/pi-tui@1.3.0": patches/@earendil-works__pi-tui@1.3.0.patch
+  "@earendil-works/pi-coding-agent@1.3.0": patches/@earendil-works__pi-coding-agent@1.3.0.patch
+  pi-mcp-adapter@5.3.1: patches/pi-mcp-adapter@5.3.1.patch
+  "@modelcontextprotocol/client@2.3.1": patches/@modelcontextprotocol__client@2.3.1.patch
+
+supportedArchitectures:
+  os:
+    - current
+    - linux
+  cpu:
+    - current
+    - x64
+  libc:
+    - current
+    - glibc
+    - musl

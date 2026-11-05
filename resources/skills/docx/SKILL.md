@@ -3,13 +3,21 @@ name: docx
 description: Read, create, and edit local .docx files — extract to Markdown, write from Markdown, replace text, insert content, edit tables, add comments. Use whenever the user mentions a .docx file.
 requires-resource: skills.docx
 disables-skills: docx
+triggers:
+  prompt:
+    extensions: [docx]
+    keywords: [docx, word document, word doc, microsoft word]
 ---
 
 # docx
 
-All commands run the bundled runtime. Get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>`. Always use that value; never search the filesystem for the script.
-- With the kimchi binary: `BUN_BE_BUN=1 kimchi <skill-dir>/scripts/docx.mjs <command> ...`
-- Fallback if `kimchi` is not on PATH and Node is: `node <skill-dir>/scripts/docx.mjs ...`
+All commands run the bundled runtime.
+- Primary: `kimchi doc-cli docx <command> ...` — the binary finds and runs the bundled CLI itself; no script path needed.
+- Fallback — if `kimchi` is not on PATH or the `doc-cli` route itself fails (a kimchi build older than the route), and Node is on PATH: get this skill's directory from the `skill_view` result (`Skill directory:` line) — call it `<skill-dir>` — and run `node <skill-dir>/scripts/docx.mjs ...`
+
+Run each command as its own single bash call: no `cd … &&`, `;` chains, or `echo`
+wrappers — a compound command loses the permission auto-allow and prompts. Use
+absolute paths instead of `cd`; the tool result already carries the exit status.
 
 Do NOT use python-docx or the `docx` npm package directly — the bundled CLI is the supported route. Never write through LibreOffice macros; edits go through `edit` below.
 

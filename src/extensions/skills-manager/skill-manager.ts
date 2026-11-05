@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from
 import { basename, dirname, join, resolve, sep } from "node:path"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { parse as parseYaml } from "yaml"
+import { isAgentCreatedSkillDir } from "./skill-triggers.js"
 
 /**
  * Check if a skill directory exists.
@@ -359,16 +360,11 @@ export class SkillManager {
 					const skillPath = join(full, "SKILL.md")
 					try {
 						await stat(skillPath)
-						// Check agent_created flag in .usage.json
-						let agentCreated = false
-						try {
-							const usagePath = join(full, ".usage.json")
-							const usageContent = await readFile(usagePath, "utf-8")
-							const usage = JSON.parse(usageContent)
-							agentCreated = usage.agent_created === true
-						} catch {
-							// No .usage.json or parse error → not agent-created
-						}
+						// agent_created flag: shared sidecar probe (skill-triggers.ts).
+						// Sync read is deliberate: the sidecar is tiny and page-cache-hot,
+						// and an async variant would fork the shared helper for no
+						// measurable gain inside this walk.
+						const agentCreated = isAgentCreatedSkillDir(full)
 						out.push({ name: entry, category, path: full, agent_created: agentCreated, origin })
 					} catch {
 						// Not a skill dir, recurse into subdirs

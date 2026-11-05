@@ -22,7 +22,7 @@ it.each([true, false])(
 			if (!request) throw new Error("No model request recorded")
 			const prompt = systemPromptOf(request)
 			expect(prompt.includes("Use codemode to batch independent tool calls (Promise.allSettled)")).toBe(enabled)
-			expect(prompt.includes("Prefer `codemode` for batching independent tool calls")).toBe(enabled)
+			expect(prompt.includes("Prefer `codemode` for a predictable multi-step workflow")).toBe(enabled)
 		} finally {
 			await fixture.stop()
 		}

@@ -29,11 +29,13 @@
 
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { parseSideChatCommand } from "./autocomplete.js"
 import { btwCompletions, parseBtwArgs } from "./command.js"
 import { PaneDivider } from "./divider.js"
 import { applyFocusChrome } from "./focus-chrome.js"
 import {
 	addCompositor,
+	addFocusGuard,
 	addMouseInterceptor,
 	addWheelInterceptor,
 	getSideChatHost,
@@ -254,7 +256,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		if (!text) return
 		const { panel } = chat
 		panel.setNotice("")
-		if (text === "/close") {
+		const command = parseSideChatCommand(text)
+		if (command?.name === "close") {
 			void closeSideChat("closed")
 			return
 		}
@@ -265,8 +268,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		}
 		panel.editor.addToHistory(text)
 		panel.editor.setText("")
-		if (text === "/wrap" || text.startsWith("/wrap ")) {
-			void wrapUp(chat, text.slice("/wrap".length).trim())
+		if (command?.name === "wrap") {
+			void wrapUp(chat, command.args)
 			return
 		}
 		if (chat.record.title === UNTITLED_SIDE_CHAT) {
@@ -397,6 +400,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		})
 		const removeDividerPaint = addCompositor((screen, frame, width) => divider.paint(screen, frame, width))
 		const removeDividerMouse = addMouseInterceptor((event) => divider.handleMouse(event))
+		// Mouse dispatch refocuses clicked editors directly, bypassing focusComponent;
+		// keep a main-session modal dialog (a permission ask) focused regardless.
+		const removeFocusGuard = addFocusGuard(() => (active === chat ? host.modalDialog() : undefined))
 		let unsubscribe: (() => void) | undefined
 
 		const ready = createSideSession(ctx, {
@@ -446,6 +452,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				removeWheel()
 				removeDividerPaint()
 				removeDividerMouse()
+				removeFocusGuard()
 				restoreBorder()
 				host.clearSidePanel()
 				host.focusMainEditor()

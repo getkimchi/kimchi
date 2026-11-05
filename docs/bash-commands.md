@@ -1,5 +1,7 @@
 # Inspect running Bash commands
 
+While managed Bash commands run, the footer shows `1 shell` / `N shells` at the right end of the status line, after the agent count; it disappears when none run. Hide it in **/customize-status-line**. The active-agent count follows the same rule: it shows only while agents run.
+
 Run **`/processes`** while Kimchi is executing a managed Bash command. It replaces the input with a full-width menu, with the conversation visible above. Select a command and press **Enter** to inspect it. Closing restores the input without replaying conversation history.
 
 The list shows one row per process: its purpose (or command when no purpose was provided), status and elapsed time. It grows as processes start, up to half the terminal height. In fullscreen mode, click a row to inspect it, then click **Script** or **Output** to switch views. The text cursor stays hidden while inspecting.
@@ -28,11 +30,46 @@ This view covers managed Bash commands in the current session. Direct `!` shell 
 
 Compound command approval shows the original script, including quoting. **Allow all for this session** appears only when every required permission can be remembered. Scripts that cannot be safely represented by reusable rules explain that they need approval each time and offer **Run all (once)**.
 
+## Handoff and output logs
+
+A managed Bash command returns a normal result if it finishes within **15 seconds**. Trace data put this threshold where most tests and builds still return directly: about 90% of commands finish within 15s. A command still running at 15s hands off: the agent gets a handle, and the command continues in the background. In interactive sessions, a queued user message hands the command off early, once it has run for at least 2 seconds.
+
+Inline output is bounded to the last **200 lines or 8 KB**. The complete output is written to a log file (`$TMPDIR/kimchi-bash-*.log`):
+
+- **Quick commands** create a log only when their output exceeds the inline budget. The truncated result names the log.
+- **Backgrounded commands** always have a log, started at handoff. The log holds every byte from the start, and output keeps appending to it while the command runs. The handoff result, `bash_control` inspections and the exit result name it.
+
+Because long output is bounded and kept, the agent does not need to pipe through `head`/`tail`. It greps the log instead of re-running a command to see a different part of the output. To be woken when specific output appears, it runs a watcher as its own command:
+
+```bash
+until grep -qE "Ready|ERROR|Traceback" /tmp/kimchi-bash-….log; do sleep 1; done
+```
+
+The watcher's exit is delivered like any other exit result. Include failure patterns in the search, or a crash looks like waiting. Logs are deleted when the session shuts down.
+
+## Tool-set restrictions
+
+`bash` and `bash_control` are two separate tools that are always enabled and disabled together. Allowing `bash` — via `--tools` — also allows `bash_control`, and excluding either member (`--exclude-tools`) excludes both: a session that can start background commands can always stop, inspect, or wait on them, and a session without the control tool has no `bash` at all. Plan mode keeps the pair too (`bash` stays gated per-command by the read-only gate; `bash_control` manages only processes the session itself started).
+
+If a session ever ends up with live background commands and no callable `bash_control` anyway, two safety nets apply: `bash` executions fall back to plain blocking mode with a deterministic 120-second timeout (reporting `Command timed out after N seconds`), and the completion guard resolves the cohort itself at task completion — it stops the session's processes, delivers their results, and reports what it stopped, so the run ends instead of re-prompting for a disposition the session cannot make.
+
+E2E rigs shorten the handoff with `KIMCHI_E2E_BASH_HANDOFF_SECONDS` (honored only inside test harnesses). The TUI and ACP e2e fixtures set it to 2. The blocking-mode timeout has the same kind of seam: `KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS`.
+
+## Interactive sessions and user messages
+
+Interactive sessions — the TUI and ACP/IDE integrations — treat the user as present:
+
+- A user message queued while a `bash_control(wait: true)` call is waiting releases the wait immediately. The wait returns a distinct `user-input` result with the current cohort evidence — nothing is stopped and no checkpoint is counted — and the agent handles the message. Exit results still arrive on their own afterwards.
+- A chat turn may end while managed commands keep running. The harness does not force the agent back into a wait or a stop for them: their exit results arrive as automatic notifications, and each one wakes an idle agent.
+- The agent loop's own message semantics are untouched — the harness never dequeues, rewrites, or drops a queued user message, and steering and explicit follow-ups keep their existing ordering.
+
+Headless runs (`--print`, JSON output) and agent workers keep the stricter completion guard: a task cannot finish while managed work lacks a disposition, so a run that tries to end with live commands or undelivered outcomes receives a continuation reminder directing it to wait or stop. Cancellation behavior, the absolute process safety limit, per-session isolation, and session-shutdown cleanup are identical on both surfaces.
+
 ## For tool authors
 
 The Bash tool accepts an optional short `description` alongside `command`. The description states purpose; expand the card to see the command. No extra model call is used to generate labels.
 
-`bash_control` remains the model-facing tool name. `wait` is optional and defaults to an immediate inspection: use `wait: true` to wait for an exit or a bounded checkpoint, and omit it (or pass `wait: false`) to inspect. An optional `handles` list restricts an immediate inspection to the selected commands — only their new output and evidence is returned, unselected commands keep running with their output cursors untouched, and unknown handles are reported individually. `stop_handles` stops selected commands independently of the filter, and a stop-only call needs no `wait`. Commands continue by default, and while any command runs, conflicting write/execute calls receive one concurrency advisory per session. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
+`bash_control` remains the model-facing tool name. `wait` is optional and defaults to an immediate inspection: use `wait: true` to wait for an exit or a bounded checkpoint, and omit it (or pass `wait: false`) to inspect. In interactive sessions, a queued user message also releases an active wait — the result reports the release with current cohort evidence and the processes keep running. An optional `handles` list restricts an immediate inspection to the selected commands — only their new output and evidence is returned, unselected commands keep running with their output cursors untouched, and unknown handles are reported individually. `stop_handles` stops selected commands independently of the filter, and a stop-only call needs no `wait`. Commands continue by default, and while any command runs, conflicting write/execute calls receive one concurrency advisory per session. The harness owns the absolute safety limit (`--bash-process-limit`); legacy `timeout`, `checkin_interval`, and `extend_seconds` inputs are accepted and ignored.
 
 Automatic exit results arrive as one compact notification per delivery boundary: exits landing within a short window of each other batch into a single message that carries every terminal result, error, and output. A notice reports only what ended — cohort status belongs to inspection — and an outcome reads as pending until its notification has been acknowledged in the conversation.
 
