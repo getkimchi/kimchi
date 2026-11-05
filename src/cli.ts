@@ -226,6 +226,7 @@ import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from 
 import { runSecureExport } from "./utils/export-post-process.js"
 import { runExportOffloaded } from "./utils/export-worker.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
+import { resolveExportSystemPrompt } from "./utils/session-system-prompt-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
@@ -364,6 +365,11 @@ async function cliMain(): Promise<void> {
 	// a child process) transforms it before the single atomic publish. A
 	// redaction engine failure aborts the export — never an unredacted file.
 	// The wrapper is async; upstream's handleExportCommand awaits it.
+	//
+	// The JSONL header's systemPrompt comes from the per-session capture
+	// (what the model actually ran with), NOT the session getter — pi 1.3.0
+	// never records the forced prompt in the transcript, so the getter
+	// resolves to pi's base prompt once the session is idle.
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
@@ -380,7 +386,10 @@ async function cliMain(): Promise<void> {
 				runExportOffloaded({
 					mode: "jsonl",
 					filePath: tempPath,
-					systemPrompt: typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
+					systemPrompt: resolveExportSystemPrompt(
+						this.sessionManager.getSessionId(),
+						typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
+					),
 				}),
 		})
 	}
@@ -397,6 +406,9 @@ async function cliMain(): Promise<void> {
 		outputPath?: string,
 		options?: { themeName?: string } | string,
 	) {
+		// The HTML payload's top-level systemPrompt is likewise sourced from the
+		// per-session capture: upstream embeds `agent.state.systemPrompt`
+		// (pi's base prompt) in the payload, which the pipeline overrides.
 		return await runSecureExport({
 			mode: "html",
 			outputPath,
@@ -405,7 +417,15 @@ async function cliMain(): Promise<void> {
 				cwd: this.sessionManager.getCwd(),
 			},
 			upstreamExport: (tempPath) => _origExportToHtml.call(this, tempPath, options),
-			pipeline: (tempPath) => runExportOffloaded({ mode: "html", filePath: tempPath }),
+			pipeline: (tempPath) =>
+				runExportOffloaded({
+					mode: "html",
+					filePath: tempPath,
+					systemPrompt: resolveExportSystemPrompt(
+						this.sessionManager.getSessionId(),
+						typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
+					),
+				}),
 		})
 	}
 	const helpOrVersion = isHelpOrVersionArgs(originalArgs)

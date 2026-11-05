@@ -38,6 +38,7 @@ import {
 	resolveSkillPathsForDiscovery,
 } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { getAvailableModels } from "../../startup-context.js"
+import { recordSessionSystemPrompt } from "../../utils/session-system-prompt-store.js"
 import { getGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
@@ -967,6 +968,12 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// The pinned per-turn reminder is injected by the `context` hooks
 			// (applyLanguageHint), not returned here: a before_agent_start
 			// message would be persisted into the session once per turn.
+			//
+			// Capture the final prompt for session exports: pi 1.3.0 delivers this
+			// value as a per-run forceSystemPrompt projection that is never recorded
+			// in the transcript, so without this the exported JSONL header and HTML
+			// payload would carry pi's base prompt instead of the harness prompt.
+			recordSessionSystemPrompt(sessionId, systemPrompt)
 			return { systemPrompt }
 		})
 	}

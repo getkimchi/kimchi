@@ -9,6 +9,11 @@ import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
+import {
+	_resetSessionSystemPromptStore,
+	getSessionSystemPrompt,
+	resolveExportSystemPrompt,
+} from "../../utils/session-system-prompt-store.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
@@ -707,6 +712,64 @@ describe("append system prompt", () => {
 
 		// Whitespace-only should be skipped — prompt unchanged
 		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
+	})
+})
+
+describe("export prompt capture", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		_resetSessionSystemPromptStore()
+	})
+
+	it("records the returned prompt under the session ID for export surfaces", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: {} },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "capture-session-1" } }),
+		)) as { systemPrompt: string }
+
+		// The capture must be the exact text the model runs with — the returned
+		// value, post appendSystemPrompt — so exports replay the real prompt.
+		expect(getSessionSystemPrompt("capture-session-1")).toBe(result.systemPrompt)
+		expect(resolveExportSystemPrompt("capture-session-1", "pi base")).toBe(result.systemPrompt)
+	})
+
+	it("captures the final text after appendSystemPrompt is appended", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "EXPORT APPEND MARKER" } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "capture-session-2" } }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt.endsWith("EXPORT APPEND MARKER")).toBe(true)
+		expect(getSessionSystemPrompt("capture-session-2")?.endsWith("EXPORT APPEND MARKER")).toBe(true)
+	})
+
+	it("captures per session — a second session's turn never overwrites the first's capture", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const first = (await beforeAgentStart(
+			{ systemPromptOptions: {} },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "main-session" } }),
+		)) as { systemPrompt: string }
+		const second = (await beforeAgentStart(
+			{ systemPromptOptions: { appendSystemPrompt: "SUBAGENT EXTRA" } },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "subagent-session" } }),
+		)) as { systemPrompt: string }
+
+		// Identical inputs may build identical text — the contract is that each
+		// session key holds exactly what that session's turn returned.
+		expect(getSessionSystemPrompt("main-session")).toBe(first.systemPrompt)
+		expect(getSessionSystemPrompt("subagent-session")).toBe(second.systemPrompt)
+		expect(second.systemPrompt.endsWith("SUBAGENT EXTRA")).toBe(true)
+		expect(first.systemPrompt.endsWith("SUBAGENT EXTRA")).toBe(false)
 	})
 })
 

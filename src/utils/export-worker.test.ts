@@ -121,6 +121,32 @@ describe("runExportOffloaded", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
+	it("state serialization round-trips the live systemPrompt through the child (HTML payload)", {
+		skip: !bunAvailable,
+	}, async () => {
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "You are an expert coding assistant operating inside pi, a coding agent harness.",
+		}
+		const filePath = join(tmpDir, "raw.html")
+		writeFileSync(filePath, buildRawHtml(sessionData), "utf-8")
+
+		await runExportOffloaded(
+			{ mode: "html", filePath, systemPrompt: "round-tripped system prompt" },
+			{ buildCommand: bunCommand },
+		)
+
+		const html = readFileSync(filePath, "utf-8")
+		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		if (!match?.[1]) throw new Error("session-data script not found")
+		const payload = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
+			systemPrompt?: string
+		}
+		expect(payload.systemPrompt).toBe("round-tripped system prompt")
+	})
+
 	it("worker output is byte-identical to the inline pipeline on the same fixture", {
 		skip: !bunAvailable,
 	}, async () => {
