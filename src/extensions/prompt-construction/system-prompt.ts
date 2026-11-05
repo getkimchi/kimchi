@@ -581,9 +581,38 @@ function buildPrompt(parts: PromptParts): string {
 // Section formatters
 // ---------------------------------------------------------------------------
 
+/** Pi-shipped tools whose `promptGuidelines` kimchi deliberately does not
+ *  render. Each was reviewed in the 2026-11 curation pass:
+ *  - read duplicates the Tool Selection rule (not cat/head/tail/sed -n);
+ *  - write duplicates the build-phase guideline (new files / full rewrites);
+ *  - edit's four bullets duplicate the edit tool's own schema description
+ *    (exact match, original-file matching, no overlapping/nested edits,
+ *    merge nearby, keep oldText small) nearly verbatim;
+ *  - bash contradicts the implementation: kimchi's background bash never
+ *    injects the PI_* session/model env vars the guideline advertises;
+ *  - codemode's is superseded by the Tool Selection line, which folds in
+ *    its Promise.allSettled idiom;
+ *  - grep/find/ls/powershell/tool_search register none today — listed so a
+ *    future pi addition surfaces as a review decision here, not silently.
+ *  Kimchi-authored guidelines (e.g. ferment-v2's update_ferment_v2) still
+ *  render: this scopes the section to guidance kimchi stands behind. */
+const PI_GUIDELINE_TOOL_NAMES = new Set([
+	"read",
+	"bash",
+	"powershell",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	"codemode",
+	"tool_search",
+])
+
 function formatToolGuidelinesSection(tools: readonly PromptTool[]): string {
 	const guidelines = new Set<string>()
 	for (const tool of tools) {
+		if (PI_GUIDELINE_TOOL_NAMES.has(tool.name)) continue
 		for (const guideline of tool.promptGuidelines ?? []) {
 			const trimmed = guideline.trim()
 			if (trimmed) guidelines.add(trimmed)

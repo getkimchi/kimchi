@@ -117,26 +117,33 @@ describe("buildSystemPrompt", () => {
 		"single",
 		"orchestrator",
 		"subagent",
-	] as const)("preserves and deduplicates active tool guidelines in %s mode", (mode) => {
+	] as const)("renders kimchi-authored guidelines and filters pi tools in %s mode", (mode) => {
 		const result = buildSystemPrompt({
 			tools: [
-				{ name: "codemode", description: "Run JavaScript", promptGuidelines: [" Batch independent calls. ", ""] },
+				{ name: "codemode", description: "Run JavaScript", promptGuidelines: [" Batch objective updates. ", ""] },
+				{
+					name: "update_ferment_v2",
+					description: "Submit the objective",
+					promptGuidelines: ["Batch objective updates.", "Read relevant files."],
+				},
 				{
 					name: "read",
 					description: "Read files",
-					promptGuidelines: ["Batch independent calls.", "Read relevant files."],
+					promptGuidelines: ["Use read to examine files instead of cat or sed."],
 				},
 			],
 			env: testEnv,
 			mode,
 		})
 
-		expect(result).toContain("## Tool Guidelines\n\n- Batch independent calls.\n- Read relevant files.")
-		expect(result.match(/Batch independent calls\./g)).toHaveLength(1)
+		expect(result).toContain("## Tool Guidelines\n\n- Batch objective updates.\n- Read relevant files.")
+		expect(result.match(/Batch objective updates\./g)).toHaveLength(1)
+		expect(result).not.toContain("Use read to examine files instead of cat or sed.")
 		expect(result).toContain("Prefer `codemode` for a predictable multi-step workflow")
 		expect(result).toContain("search for a symbol, select the matching files, read the relevant ranges")
 		expect(result).toContain("For independent calls whose full results you need, issue direct calls together.")
 		expect(result).toContain("Direct tools remain available for single operations, approvals, and background commands.")
+		expect(result).toContain("`Promise.allSettled`")
 	})
 
 	it("omits codemode advice and the tool-guidelines section when no active tool contributes guidelines", () => {

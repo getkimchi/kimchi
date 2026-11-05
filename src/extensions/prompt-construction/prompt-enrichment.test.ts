@@ -240,9 +240,17 @@ describe("stripEmptyToolCalls", () => {
 })
 
 describe("prompt enrichment tool visibility", () => {
-	it("preserves active tool guidelines and removes them when the tool becomes inactive", async () => {
+	it("renders kimchi tool guidelines and drops them when the tool becomes inactive; pi tool guidelines stay filtered", async () => {
 		const mock = createExtensionApi()
 		mock.api.getFlag = vi.fn(() => false)
+		mock.api.registerTool({
+			name: "update_ferment_v2",
+			label: "Update Ferment V2",
+			description: "Submit the objective",
+			parameters: Type.Object({}),
+			promptGuidelines: ["Claim complete only after evidence."],
+			execute: async () => ({ content: [], details: undefined }),
+		})
 		mock.api.registerTool({
 			name: "codemode",
 			label: "Codemode",
@@ -251,17 +259,18 @@ describe("prompt enrichment tool visibility", () => {
 			promptGuidelines: ["Use codemode to batch independent tool calls."],
 			execute: async () => ({ content: [], details: undefined }),
 		})
-		mock.api.setActiveTools(["codemode"])
+		mock.api.setActiveTools(["update_ferment_v2", "codemode"])
 		promptEnrichmentExtension(() => [])(mock.api)
 		const handler = mock.getHandler<unknown, { systemPrompt: string }>("before_agent_start")
 		const ctx = createContext({ hasUI: false })
 		const active = await handler({}, ctx)
-		expect(active?.systemPrompt).toContain("- Use codemode to batch independent tool calls.")
+		expect(active?.systemPrompt).toContain("- Claim complete only after evidence.")
+		expect(active?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
 		expect(active?.systemPrompt).toContain("Prefer `codemode` for a predictable multi-step workflow")
 
 		mock.api.setActiveTools([])
 		const inactive = await handler({}, ctx)
-		expect(inactive?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
+		expect(inactive?.systemPrompt).not.toContain("- Claim complete only after evidence.")
 		expect(inactive?.systemPrompt).not.toContain("Prefer `codemode`")
 	})
 
