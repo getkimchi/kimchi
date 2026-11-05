@@ -85,11 +85,13 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	// tokens (never allocated, foreign-session, post-restart) pass through
 	// verbatim — substitution must never be a wrong transformation. The
 	// stored message never changes.
-	pi.registerMarkdownTransformer((markdown: string) => {
-		const vault = vaultForPaint()
-		if (!vault) return markdown
-		return substituteTokens(vault, markdown)
-	})
+	if (typeof pi.registerMarkdownTransformer === "function") {
+		pi.registerMarkdownTransformer((markdown: string) => {
+			const vault = vaultForPaint()
+			if (!vault) return markdown
+			return substituteTokens(vault, markdown)
+		})
+	}
 
 	// 1. Redact assistant messages before they are stored.
 	pi.on("message_end", async (event: unknown, ctx: unknown) => {
