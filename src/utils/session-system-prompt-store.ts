@@ -94,6 +94,10 @@ export function markSessionSystemPromptEnded(sessionId: string): void {
 	try {
 		const stored = prompts.get(sessionId)
 		if (stored) stored.ended = true
+		// A shutdown can be what finally brings an over-cap store (all-live
+		// growth) back under the soft cap — evict immediately rather than
+		// waiting for the next capture elsewhere to trigger it.
+		evictIfNeeded()
 	} catch {
 		// Never let the shutdown hook crash.
 	}

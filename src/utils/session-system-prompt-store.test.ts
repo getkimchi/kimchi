@@ -88,6 +88,27 @@ describe("session system prompt store eviction", () => {
 		}
 	})
 
+	it("marking ended evicts immediately — an over-cap store shrinks on shutdown, not on the next capture", () => {
+		_resetSessionSystemPromptStore()
+		for (let i = 0; i < 80; i++) {
+			recordSessionSystemPrompt(`live${i}`, `prompt ${i}`)
+		}
+
+		// All live: the store grew past the cap on purpose. Sessions closing one
+		// by one must each evict as soon as they become the only evictable entry —
+		// not wait for some unrelated session's next capture to trigger it.
+		for (let i = 0; i < 16; i++) {
+			markSessionSystemPromptEnded(`live${i}`)
+		}
+
+		for (let i = 0; i < 16; i++) {
+			expect(getSessionSystemPrompt(`live${i}`)).toBeUndefined()
+		}
+		for (let i = 16; i < 80; i++) {
+			expect(getSessionSystemPrompt(`live${i}`)).toBe(`prompt ${i}`)
+		}
+	})
+
 	it("prefers evicting the oldest ended entry over a newer live one", () => {
 		_resetSessionSystemPromptStore()
 		recordSessionSystemPrompt("old-ended", "old prompt")
