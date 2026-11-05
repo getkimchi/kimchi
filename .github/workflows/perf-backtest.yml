@@ -1,7 +1,8 @@
-# TEMPORARY — pre-merge noise validation for the perf gate. Replays the gate
-# against sampled master commits ("innocent" code that merged) to look for
-# false positives. Runs only on pushes to this PR that touch the two
-# backtest files; removed before merge.
+# TEMPORARY — release re-crawl for the perf gate: re-measures every release
+# since v1.0.0 plus master and the unreleased fix stacks with the current
+# harness (gated + advisory lanes) for the release-series report. Runs only
+# on pushes to this PR that touch the two backtest files; the labelled SHA
+# list and this workflow's temporary edits come out before merge.
 name: Perf gate backtest
 
 on:
@@ -36,7 +37,7 @@ jobs:
   backtest:
     needs: shas
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -105,134 +106,3 @@ jobs:
           path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
           if-no-files-found: ignore
 
-  # One-shot debugging lane: JS-level CPU profile of the idle scenario on the
-  # culprit commit (bd659df9d) vs its parent, to pin down which stacks burn
-  # the post-#1482 idle instructions. Runs the app in dev mode (bun
-  # --cpu-prof src/entry.ts) so the profile carries JS frames; the gate
-  # binary profile would need symbols Bun does not embed.
-  profile:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - sha: 1219aa4382b267cf407484e3e64fb0a320b39113
-            tag: parent
-          - sha: bd659df9dc84df5cdd27184df048086d2ab649a7
-            tag: culprit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.sha }}
-          fetch-depth: 0
-
-      - name: Overlay the gate harness from the PR head
-        env:
-          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          git fetch --depth=1 origin "$GATE_SHA"
-          git checkout FETCH_HEAD -- tools/perf
-
-      - uses: ./.github/actions/setup
-        with:
-          bun: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Build proxy-helper
-        run: make copy-for-dev
-        working-directory: tools/proxy-helper
-
-      - name: Dev-mode profiling wrapper
-        run: |
-          BUNBIN="$(command -v bun)"
-          cat > "$RUNNER_TEMP/prof-wrap.sh" <<EOF
-          #!/bin/sh
-          exec "$BUNBIN" --preload "$PWD/src/set-package-dir.ts" \
-            --cpu-prof --cpu-prof-dir="$RUNNER_TEMP" --cpu-prof-name=profile.cpuprofile \
-            "$PWD/src/entry.ts" "\$@"
-          EOF
-          chmod +x "$RUNNER_TEMP/prof-wrap.sh"
-          "$RUNNER_TEMP/prof-wrap.sh" --version
-
-      - name: Run profiled idle scenario
-        run: python3 tools/perf/scenarios.py --binary "$RUNNER_TEMP/prof-wrap.sh" --scenario idle --idle 60 --out "$RUNNER_TEMP/profile.jsonl"
-
-      - name: Upload profile
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: profile-${{ matrix.tag }}
-          path: |
-            ${{ runner.temp }}/profile.cpuprofile
-            ${{ runner.temp }}/profile.jsonl
-          if-no-files-found: ignore
-
-  # Second debugging lane: syscall-level file activity of the REAL binary on
-  # parent vs culprit (the dev-mode cpuprofile showed identical main-thread
-  # cost, so the regression sits in native/child work). strace -yy resolves
-  # read fds back to paths; we aggregate bytes/read-per-path offline.
-  trace:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - sha: 1219aa4382b267cf407484e3e64fb0a320b39113
-            tag: parent
-          - sha: bd659df9dc84df5cdd27184df048086d2ab649a7
-            tag: culprit
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.sha }}
-          fetch-depth: 0
-
-      - name: Overlay the gate harness from the PR head
-        env:
-          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          git fetch --depth=1 origin "$GATE_SHA"
-          git checkout FETCH_HEAD -- tools/perf
-
-      - uses: ./.github/actions/setup
-        with:
-          bun: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Build proxy-helper
-        run: make copy-for-dev
-        working-directory: tools/proxy-helper
-
-      - name: Build binary
-        run: pnpm run build:binary
-
-      - name: Install strace and wrap the binary
-        run: |
-          sudo apt-get install -y strace >/dev/null 2>&1 || sudo apt-get update >/dev/null && sudo apt-get install -y strace | tail -1
-          cat > "$RUNNER_TEMP/trace-wrap.sh" <<EOF
-          #!/bin/sh
-          exec strace -f -qq -e trace=openat,openat2,read,close -yy -t \
-            -o "$RUNNER_TEMP/strace.$$.log" "$PWD/dist/bin/kimchi" "\$@"
-          EOF
-          chmod +x "$RUNNER_TEMP/trace-wrap.sh"
-
-      - name: Run traced idle scenario
-        run: python3 tools/perf/scenarios.py --binary "$RUNNER_TEMP/trace-wrap.sh" --scenario idle --idle 60 --out "$RUNNER_TEMP/trace.jsonl"
-
-      - name: Upload strace
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trace-${{ matrix.tag }}
-          path: |
-            ${{ runner.temp }}/strace.*.log
-            ${{ runner.temp }}/trace.jsonl
-          if-no-files-found: ignore
