@@ -219,6 +219,18 @@ export function deliverSnapshots(
 				return revision < 0n ? -1 : revision > 0n ? 1 : a.entry.retryAt - b.entry.retryAt
 			})
 		let attempts = 0
+		// One account verification per pass for the configured credential; a multi-entry queue
+		// sends api-keys:verify once, not once per upload attempt. The result is keyed on the
+		// credential so a mid-pass change re-verifies instead of reusing the stale verdict.
+		let passVerify:
+			| {
+					key: string
+					apiUrl: string
+					result:
+						| { ok: { apiUrl: string } & Awaited<ReturnType<typeof verifyApiKey>> }
+						| { status: number | undefined; retryAfterMs: number | null; message: string }
+			  }
+			| undefined
 		for (const job of due) {
 			const entry = job.entry
 			const snapshot = entry.pending
@@ -276,16 +288,34 @@ export function deliverSnapshots(
 				return bounded
 			}
 			try {
-				const verified = {
-					apiUrl,
-					...(await verifyApiKey(key, {
-						endpoint: apiUrl,
-						organizationId,
-						fetch: fetchBounded,
-						signal: combined,
-						retry: { maxRetries: 0 },
-					})),
-				}
+				let verified: { apiUrl: string } & Awaited<ReturnType<typeof verifyApiKey>>
+				if (passVerify?.key === key && passVerify.apiUrl === apiUrl && "ok" in passVerify.result)
+					verified = passVerify.result.ok
+				else if (passVerify?.key === key && passVerify.apiUrl === apiUrl && !("ok" in passVerify.result)) {
+					status = passVerify.result.status
+					retryAfterMs = passVerify.result.retryAfterMs
+					errorMessage = passVerify.result.message
+					throw new Error(errorMessage)
+				} else
+					try {
+						verified = {
+							apiUrl,
+							...(await verifyApiKey(key, {
+								endpoint: apiUrl,
+								organizationId,
+								fetch: fetchBounded,
+								signal: combined,
+								retry: { maxRetries: 0 },
+							})),
+						}
+						passVerify = { key, apiUrl, result: { ok: verified } }
+					} catch {
+						// Only an HTTP-level failure is credential-scoped and safe to replay within the pass;
+						// a throw from the per-job state guard (held/replaced/trimmed) belongs to this entry alone.
+						if (status !== undefined && !combined.aborted && !signal.aborted)
+							passVerify = { key, apiUrl, result: { status, retryAfterMs, message: errorMessage } }
+						throw new Error(errorMessage)
+					}
 				assertCurrent()
 				if (!isWorkAccount(verified) || !sameWorkAccount(entry.account, verified)) {
 					errorMessage = "PR reporting is waiting for the original account"

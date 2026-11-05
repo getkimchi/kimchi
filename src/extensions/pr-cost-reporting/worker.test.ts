@@ -167,6 +167,52 @@ async function seedLinked(priced = true) {
 }
 
 describe("account-fenced reporting delivery", () => {
+	it("verifies the credential once per pass for a multi-entry queue", async () => {
+		const extra = (id: string): RepositorySnapshot => ({
+			...content,
+			content: {
+				...content.content,
+				repository: { provider: "github", host: "github.com", id },
+			},
+		})
+		await queueSnapshots(directory, [extra("43"), extra("44")])
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		const verifies = http.mock.calls.filter(([input]) => String(input).endsWith("api-keys:verify"))
+		const uploads = http.mock.calls.filter(([input]) => !String(input).endsWith("api-keys:verify"))
+		expect(verifies).toHaveLength(1)
+		expect(uploads).toHaveLength(3)
+	})
+
+	it("replays a cached verify failure within the pass without repeating the request", async () => {
+		http.mockReset().mockImplementation(async (input, init) => {
+			if (String(input).endsWith("api-keys:verify")) return new Response("nope", { status: 403 })
+			return Response.json({
+				status: "accepted",
+				revision: JSON.parse(String(init?.body)).revision,
+				receivedAt: new Date().toISOString(),
+			})
+		})
+		const extra = (id: string): RepositorySnapshot => ({
+			...content,
+			content: {
+				...content.content,
+				repository: { provider: "github", host: "github.com", id },
+			},
+		})
+		await queueSnapshots(directory, [extra("43")])
+		await deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+		const verifies = http.mock.calls.filter(([input]) => String(input).endsWith("api-keys:verify"))
+		expect(verifies).toHaveLength(1)
+		// Both entries took the identical 403 defer: same error text, same 4xx-hour backoff.
+		const entries = Object.values((await readReportingState(directory)).entries)
+		expect(entries).toHaveLength(2)
+		for (const entry of entries) {
+			expect(entry.lastError).toBe(
+				"PR reporting is not allowed for this API key: uploading PR costs needs an Owner or Member role (HTTP 403)",
+			)
+			expect(entry.retryAt).toBeGreaterThan(Date.now() + 30 * 60_000)
+		}
+	})
 	it("makes no authentication request when the event outbox is empty", async () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).not.toHaveBeenCalled()
