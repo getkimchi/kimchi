@@ -26,11 +26,20 @@ export function registerSessionPermissionFlagController(
 }
 
 /**
- * Unregister a session's mode controller.
- * Called by ACP when closing a session.
+ * Unregister a session's mode controller. Called by ACP when closing a
+ * session. Id keys recycle across concurrent attaches (load+resume of one
+ * id coalesce separately), respawns, and failed loads, so callers that
+ * registered a SPECIFIC controller pass it back for an identity check — a
+ * by-key delete could otherwise evict a LIVE session's controller (e.g.
+ * loading a corrupted duplicate of a running session's file). Returns
+ * whether the entry was actually evicted, so env cleanup stays paired.
  */
-export function unregisterSessionPermissionFlagController(sessionId: string): void {
-	bySessionId.delete(sessionId)
+export function unregisterSessionPermissionFlagController(
+	sessionId: string,
+	expected?: SessionPermissionFlagController,
+): boolean {
+	if (expected !== undefined && bySessionId.get(sessionId) !== expected) return false
+	return bySessionId.delete(sessionId)
 }
 
 /**

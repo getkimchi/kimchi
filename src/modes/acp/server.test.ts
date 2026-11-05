@@ -11243,6 +11243,42 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(fake.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
 	})
 
+	it("a corrupt duplicate of a LIVE session's file leaves the live session's registrations intact", async () => {
+		// failure-004 trigger: loading a hand-edited copy of a RUNNING
+		// session's file — its header claims the live session's id while the
+		// request asks for a different one. The attach fails (mismatch), but
+		// its catch must unwind ONLY what THIS attach registered: the live
+		// session's prompter / mode controller / vault must survive. Without
+		// the identity guards the catch would evict them by key.
+		const conn = makeConn()
+		const live = new FakeAgentSession("session-alive")
+		const liveAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+		})
+		await liveAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		// Note: same header id as the LIVE session, different requested id.
+		const dup = new FakeAgentSession("session-alive")
+		const loadAgent = makeAgent(async () => asSession(dup), { conn })
+		await expect(
+			loadAgent.loadSession({
+				sessionId: "session-other",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+		// The orphan itself still got the full emit→dispose teardown...
+		expect(dup.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
+		// ...but nothing registered by the LIVE session was touched.
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeDefined()
+		await liveAgent.closeSession({ sessionId: "session-alive" })
+		expect(getAcpPrompter("session-alive")).toBeUndefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeUndefined()
+	})
+
 	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {
 		// Replay contract: emit the full message as a single chunk. Adjacent
 		// text blocks (rare but legal) must merge into one agent_message_chunk;

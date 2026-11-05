@@ -65,12 +65,17 @@ cannot return a wrong value — worst case it renders the token verbatim.
 The vault lives as long as its session: it is deleted when the extension
 runner emits `session_shutdown` — on an explicit session close, on client
 disconnect, and on server shutdown; ACP prompt-cancel is not a teardown
-(the session stays alive and keeps its vault). One documented exception:
-a text block still in flight when its session dies finishes substituting
-against its (now dead) vault — the stream holds a desanitizer reference
-until the block ends. That is presentation-only, to the same client that
-already saw the session's originals, and it extends past vault deletion
-by at most one turn's remainder.
+(the session stays alive and keeps its vault). Deletion is multi-owner:
+overlapping attaches of the same session id (close-racing respawns,
+load+resume races, failed attaches whose bind completed) all co-own the
+mapping, a shutdown removes only its own ownership, and the vault is
+evicted by its LAST owner — a dying attach can never retire a survivor's
+vault. One documented exception: a text block still in flight when its
+session dies finishes substituting against its (now dead) vault — the
+stream holds a desanitizer reference until the block ends. That is
+presentation-only, to the same client that already saw the session's
+originals, and it extends past vault deletion by at most one turn's
+remainder.
 
 ## Failure modes (all degrade toward the token, never toward PII)
 

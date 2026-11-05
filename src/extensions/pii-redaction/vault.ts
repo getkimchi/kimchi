@@ -107,9 +107,11 @@ const SEED_RE = /\[([A-Z][A-Z0-9_]{0,40})_(\d+)\]/g
 // 2**53 the next increment rounds back to the same value — two distinct
 // entities would then collide on one token (the second overwriting the
 // first vault mapping) and substitution would render the wrong original.
-// Over-seeding is harmless, so a low cap only excludes crafted persisted
-// text like `[EMAIL_ADDRESS_9007199254740991]`.
-const SEED_SUFFIX_CAP = 1_000_000
+// Over-seeding is harmless, and counters are PROCESS-global (a long-lived
+// ACP process legitimately accumulates very large suffixes over time), so
+// the cap must not reject large REAL values — it only excludes the crafted
+// precision-collision band near 2**53, like `[EMAIL_ADDRESS_9007199254740991]`.
+const SEED_SUFFIX_CAP = 0xffffffff
 
 /**
  * Raise the process-wide counters above every token suffix observed in
@@ -209,16 +211,20 @@ export function substituteTokens(vault: TokenVault, text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Live vault entries, keyed by session id. `owner` is the sessionManager
- * object of the session that currently owns the mapping: id keys recycle
+ * Live vault entries, keyed by session id. `owners` are the sessionManager
+ * objects of EVERY session that has claimed the mapping: id keys recycle
  * across respawns while an old session's shutdown emission is still
- * awaited (close aborts first), so by-key deletion alone would evict the
- * RESPAWN's mapping and leave a live session vault-less for the process
- * lifetime — deletion requires exact-owner identity, per the shared-state
- * rules. Retaining an existing vault across a respawn transfers ownership
- * to the new session, which now retires it.
+ * awaited (close aborts first), and concurrent same-id attaches (load +
+ * resume coalesce separately; a failed attach can still have observed a
+ * session_start) overlap in the same way. Ownership-adopting on start is
+ * NOT enough — a later FAILURE of that attach fires its shutdown, which
+ * would steal-retire the survivor's vault. Multi-owner instead: shutdown
+ * removes ONLY its own owner entry; the vault outlives its creator while
+ * any owner remains (tokens already stored must keep resolving), and is
+ * evicted when the LAST owner shuts down — exact-owner semantics per the
+ * shared-state rules, with no steal possible.
  */
-const vaultEntries = new Map<string, { vault: TokenVault; owner: object }>()
+const vaultEntries = new Map<string, { vault: TokenVault; owners: object[] }>()
 
 /**
  * The vault the TUI markdown transformer should substitute against. The
@@ -255,12 +261,12 @@ export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean):
 		const sessionId = (sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.()
 		if (!sessionId) return
 		// TUI switches sessions with shutdown/start pairs; ACP keys by id. A
-		// vault that outlived its creator is retained across respawns —
-		// tokens already stored in the session file must keep resolving —
-		// and ownership transfers to the new session, which now retires it.
+		// vault that outlived its creator is retained and CO-OWNED across
+		// respawns — tokens already stored in the session file must keep
+		// resolving — without any ownership steal.
 		const existing = vaultEntries.get(sessionId)
 		if (existing) {
-			existing.owner = sessionManager as object
+			if (!existing.owners.includes(sessionManager as object)) existing.owners.push(sessionManager as object)
 			currentVault = existing.vault
 			return
 		}
@@ -278,15 +284,15 @@ export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean):
 			console.error(`PII redaction token seed: counters raised from persisted session (${summary})`)
 		}
 		// Recheck across the chunked awaits: a concurrent start of the same
-		// id may have installed (or retained) a mapping while we yielded.
+		// id may have installed a mapping while we yielded — co-own, don't steal.
 		const raced = vaultEntries.get(sessionId)
 		if (raced) {
-			raced.owner = sessionManager as object
+			if (!raced.owners.includes(sessionManager as object)) raced.owners.push(sessionManager as object)
 			currentVault = raced.vault
 			return
 		}
 		const vault = createTokenVault()
-		vaultEntries.set(sessionId, { vault, owner: sessionManager as object })
+		vaultEntries.set(sessionId, { vault, owners: [sessionManager as object] })
 		currentVault = vault
 	})
 
@@ -296,11 +302,14 @@ export function installVaultLifecycle(pi: ExtensionAPI, enabled: () => boolean):
 		if (!sessionId) return
 		const entry = vaultEntries.get(sessionId)
 		if (!entry) return
-		// Exact-owner deletion: a concurrent respawn of the same id whose
-		// own session_start already ran owns the live mapping; this dying
-		// session must not evict it. Ownership transferred on retain, so the
-		// respawn's shutdown is the one that eventually retires the vault.
-		if (entry.owner !== sessionManager) return
+		// Remove ONLY this session's ownership: a concurrent respawn's (or
+		// failed attach's) shutdown must not retire a vault still owned by a
+		// live session. The mapping is evicted only by its LAST owner — a
+		// dead-owner-only mapping is treated as empty (its vault degrades to
+		// verbatim anyway), so late starts of a dead-owner mapping simply
+		// adopt it.
+		entry.owners = entry.owners.filter((owner) => owner !== sessionManager)
+		if (entry.owners.length > 0) return
 		vaultEntries.delete(sessionId)
 		// Only clear the paint pointer when it still points at the dead
 		// session's vault (shutdown/start ordering).

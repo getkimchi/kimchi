@@ -2,8 +2,8 @@
  * an id key recycles across concurrent attaches, so a stale unwind must
  * never evict another session's live prompter. */
 
-import type { ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import { describe, expect, it } from "vitest"
+import type { ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import { getAcpPrompter, registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 
 const prompter = (tag: string) => ({ tag }) as unknown as ToolPermissionPrompter
