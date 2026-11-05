@@ -26,8 +26,10 @@ import {
 	noteSessionStart,
 	reapIdleClients,
 	refreshFile,
+	sendNotification,
 	sendRequest,
 	shutdownAll,
+	splitStderrLines,
 } from "./client.js"
 import {
 	LSP_EVICT_GRACE_MS,
@@ -36,7 +38,7 @@ import {
 	MAX_CHAINS,
 	OPEN_DOCS_MAX,
 } from "./lifecycle-constants.js"
-import type { BunProcess, ServerConfig } from "./types.js"
+import type { BunProcess, LspClient, ServerConfig } from "./types.js"
 import { fileToUri } from "./utils.js"
 
 // =============================================================================
@@ -74,7 +76,10 @@ interface FakeProc {
 	enqueueRaw: (content: string) => void
 	closeStdout: () => void
 	errorStdout: (err: Error) => void
+	errorStderr: (err: Error) => void
 	isKilled: () => boolean
+	killCount: () => number
+	setKillThrows: (err: Error | null) => void
 }
 
 function createFakeProc(): FakeProc {
@@ -92,6 +97,8 @@ function createFakeProc(): FakeProc {
 	})
 	const written: string[] = []
 	let killed = false
+	let kills = 0
+	let killThrows: Error | null = null
 	const proc: BunProcess = {
 		stdin: {
 			write(data: Uint8Array | string) {
@@ -107,7 +114,11 @@ function createFakeProc(): FakeProc {
 		stdout,
 		stderr,
 		kill() {
+			// Test knob: simulate a platform/runtime where kill() can throw,
+			// so teardown paths can be proven not to hang or leak rejections.
+			if (killThrows) throw killThrows
 			killed = true
+			kills++
 			try {
 				stdoutController?.close()
 			} catch {
@@ -145,7 +156,18 @@ function createFakeProc(): FakeProc {
 				/* already closed */
 			}
 		},
+		errorStderr: (err: Error) => {
+			try {
+				stderrController?.error(err)
+			} catch {
+				/* already closed */
+			}
+		},
 		isKilled: () => killed,
+		killCount: () => kills,
+		setKillThrows: (err: Error | null) => {
+			killThrows = err
+		},
 	}
 }
 
@@ -383,6 +405,210 @@ describe("LSP client reader — zombie cleanup on crash", () => {
 		expect(getAllClients()).toHaveLength(0)
 		// Process should have been killed
 		expect(fake.isKilled()).toBe(true)
+	})
+})
+
+describe("dead server pipe (EPIPE) resilience", () => {
+	// Regression (crash report, harness v1.21.0): the typescript-native server
+	// died mid-session; the next tool result ran refreshFile → didOpen, and
+	// Bun threw EPIPE synchronously from proc.stdin.write. The raw rejection
+	// escaped as an unhandled rejection and Bun treated it as fatal — the
+	// whole harness crashed. Invariants at this seam:
+	//   1. a failed write rejects with a labelled "pipe closed" error, and
+	//   2. the failed write evicts the corpse so the next getOrCreateClient
+	//      respawns a fresh server instead of handing out the dead one.
+	const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), {
+		code: "EPIPE",
+		errno: -32,
+		syscall: "write",
+	})
+
+	let fakes: FakeProc[]
+
+	beforeEach(() => {
+		fakes = []
+		// One fake proc per spawn so the respawn assertion can observe a
+		// genuinely fresh chain.
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = {
+			spawn: () => {
+				const f = createFakeProc()
+				fakes.push(f)
+				return f.proc
+			},
+			file: (p: string) => ({ text: async () => `// content of ${p}` }),
+		}
+	})
+
+	/** Corrupt stdin the way a dead server does: Bun throws EPIPE
+	 *  synchronously from stdin.write once the child process is gone. */
+	function killStdin(fake: FakeProc): void {
+		fake.proc.stdin.write = () => {
+			throw epipe
+		}
+	}
+
+	async function startChain(): Promise<LspClient> {
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await answerInitialize(fakes[fakes.length - 1])
+		return clientPromise
+	}
+
+	it("labels the write error and evicts the client when sendNotification hits a dead server", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).rejects.toThrow(/pipe closed/)
+		// The original transport error survives as `cause` — code/errno/syscall
+		// and the stack stay available to upstream classifiers and logs.
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).rejects.toMatchObject({ cause: epipe })
+
+		// The corpse must not stay registered: otherwise the next file op keeps
+		// writing into the dead pipe instead of respawning a fresh server.
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("rejects refreshFile cleanly (didOpen route) instead of leaking an unhandled rejection", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		// The crash route: a tool result syncing a file the dead server never
+		// opened. The rejection must stay a normal promise rejection — vitest
+		// fails the run if it escapes as an unhandled rejection.
+		await expect(refreshFile(client, `${CWD}/never-opened.ts`)).rejects.toThrow(/pipe closed/)
+		expect(getAllClients()).toHaveLength(0)
+	})
+
+	it("labels the write error and evicts the client when sendRequest hits a dead server", async () => {
+		const client = await startChain()
+		killStdin(fakes[0])
+
+		await expect(sendRequest(client, "textDocument/hover", {})).rejects.toThrow(/pipe closed/)
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("respawns a fresh server on the next getOrCreateClient after a write failure", async () => {
+		const dead = await startChain()
+		killStdin(fakes[0])
+		await sendRequest(dead, "textDocument/hover", {}).catch(() => {})
+		expect(getAllClients()).toHaveLength(0)
+
+		const fresh = await startChain()
+		expect(fresh).not.toBe(dead)
+		expect(getAllClients()).toHaveLength(1)
+
+		// The fresh chain is fully functional: didOpen reaches the new server.
+		await ensureFileOpen(fresh, `${CWD}/f0.ts`)
+		expect(fakes[1].written.some((w) => w.includes('"textDocument/didOpen"'))).toBe(true)
+	})
+
+	it("evicts the client when the reply to a server-initiated request hits a dead pipe", async () => {
+		// Third write site: the reader's null reply to server-initiated requests
+		// (workspace/configuration, window/workDoneProgress/create) must get the
+		// same teardown as sendRequest/sendNotification — otherwise a pipe that
+		// breaks exactly there leaves the corpse registered until stdout EOF
+		// happens to fire. A real consumer request stays pending across the
+		// failed reply write, so teardown must reject it too.
+		const client = await startChain()
+		const pending = sendRequest(client, "textDocument/hover", {}).catch(() => "rejected")
+		killStdin(fakes[0])
+
+		fakes[0].enqueue({ jsonrpc: "2.0", id: 7, method: "workspace/configuration", params: {} })
+
+		const result = await Promise.race([pending, new Promise<string>((r) => setTimeout(() => r("timeout"), 2000))])
+		expect(result).toBe("rejected")
+		// Give the async reply-write catch a moment to run the teardown.
+		await new Promise((r) => setTimeout(r, 100))
+
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("survives an errored stderr stream without leaking an unhandled rejection", async () => {
+		// closeDeadClient's kill can race an in-flight stderr read; the errored
+		// stream must not escape the drain IIFE as an unhandled rejection
+		// (fatal in Bun — the exact crash class this module guards against).
+		const client = await startChain()
+		fakes[0].errorStderr(new Error("simulated stderr stream error"))
+		await new Promise((r) => setTimeout(r, 100))
+
+		// The chain itself is unaffected: writes still work.
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).resolves.toBeUndefined()
+	})
+
+	it("survives a reader crash racing a failed write (double teardown)", async () => {
+		// Both death paths fire for the same chain: closeDeadClient must be
+		// idempotent — double kill() and identity-checked registry removal
+		// must not throw, and the corpse must be gone either way.
+		const client = await startChain()
+		const pending = sendRequest(client, "textDocument/hover", {}).catch(() => "rejected")
+		killStdin(fakes[0])
+
+		const notification = sendNotification(client, "textDocument/didOpen", {
+			textDocument: { uri: fileToUri(`${CWD}/f0.ts`) },
+		}).catch(() => "n-failed")
+		fakes[0].errorStdout(new Error("simulated reader crash"))
+
+		expect(await Promise.all([pending, notification])).toEqual(["rejected", "n-failed"])
+		await new Promise((r) => setTimeout(r, 100))
+
+		expect(getAllClients()).toHaveLength(0)
+		// Both teardowns ran — the second kill is the point: it must not throw.
+		expect(fakes[0].killCount()).toBe(2)
+	})
+
+	it("labels the error and evicts when only flush() rejects (write buffered OK)", async () => {
+		// Bun's FileSink buffers writes; on some versions/paths the EPIPE
+		// surfaces from flush() instead of write() — the write itself returns
+		// normally. That variant exercises the await inside writeMessage's try
+		// block; pin it so a refactor can't silently unguard it.
+		const client = await startChain()
+		fakes[0].proc.stdin.flush = () => Promise.reject(epipe)
+
+		await expect(
+			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
+		).rejects.toThrow(/pipe closed/)
+		expect(getAllClients()).toHaveLength(0)
+		expect(fakes[0].isKilled()).toBe(true)
+	})
+
+	it("rejects sendRequest without hanging when kill() throws during teardown", async () => {
+		// Review (hardening): if kill() ever throws inside closeDeadClient,
+		// sendRequest's write-catch has already cleared the timeout — an
+		// escaping throw would leave the caller's promise unsettled forever and
+		// surface as an unhandled rejection (fatal in Bun). kill() never throws
+		// in real Bun today; this is insurance against runtime drift.
+		const client = await startChain()
+		fakes[0].setKillThrows(new Error("EPERM: operation not permitted"))
+		killStdin(fakes[0])
+
+		const result = await Promise.race([
+			sendRequest(client, "textDocument/hover", {}).then(
+				() => "settled without error" as const,
+				(err) => `rejected: ${(err as Error).message}`,
+			),
+			new Promise((r) => setTimeout(() => r("hung"), 1500)),
+		])
+		expect(result).toMatch(/^rejected:/)
+		expect(getAllClients()).toHaveLength(0)
+	})
+})
+
+describe("splitStderrLines", () => {
+	it("emits complete lines and keeps the trailing partial line buffered", () => {
+		expect(splitStderrLines("first\nsecond\npar")).toEqual({ lines: ["first", "second"], rest: "par" })
+		expect(splitStderrLines("tail\n")).toEqual({ lines: ["tail"], rest: "" })
+		expect(splitStderrLines("")).toEqual({ lines: [], rest: "" })
+		// A crash dump without a trailing newline stays buffered until done.
+		expect(splitStderrLines("no newline at all")).toEqual({ lines: [], rest: "no newline at all" })
 	})
 })
 
@@ -766,6 +992,75 @@ describe("eviction/respawn lifecycle races", () => {
 		// Once the span ends the ancient chain is reaped normally.
 		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(1)
 		expect(evicted).toEqual([client.name])
+	})
+
+	it("closeDeadClient fails creators parked on projectLoaded instead of stranding them", async () => {
+		// Review (moderate): a write failure mid-creation evicted the chain but
+		// never settled projectLoaded — the creator stayed parked for the full
+		// 15s timeout and then resolved with an unregistered corpse. Awaiting
+		// creators must throw (the invariant shutdownAll enforces), not receive
+		// a dead chain as a normal success.
+		const { clientPromise, fake } = await startMidInitChain(CWD)
+
+		// Corrupt stdin the way a dead server does (EPIPE on write) and fail a
+		// notification on the mid-creation chain to trigger closeDeadClient.
+		const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), { code: "EPIPE" })
+		const midClient = getAllClients().find((cl) => cl.cwd === CWD)
+		if (!midClient)
+			throw new Error("mid-creation client not registered")
+			// biome-ignore lint/suspicious/noExplicitAny: test-only stdin corruption
+		;(midClient.proc.stdin as any).write = () => {
+			throw epipe
+		}
+		await sendNotification(midClient, "textDocument/didOpen", {
+			textDocument: { uri: fileToUri(`${CWD}/f.ts`) },
+		}).catch(() => {})
+
+		// The parked creator must reject (fast), not resolve with a corpse.
+		const outcome = await Promise.race([
+			clientPromise.then(
+				() => "resolved with a client" as const,
+				(err) => `rejected: ${(err as Error).message}`,
+			),
+			new Promise((r) => setTimeout(() => r("still parked after 2s"), 2000)),
+		])
+		expect(outcome).toMatch(/^rejected:/)
+		// The corpse is gone either way; the next caller respawns fresh.
+		expect(getAllClients()).toHaveLength(0)
+		expect(fake.isKilled()).toBe(true)
+	})
+
+	it("a server exit mid-init rejects the awaiting creator instead of resolving a corpse", async () => {
+		// Review (moderate, sibling site): the exited handler used to RESOLVE
+		// projectLoaded — a server dying between initialize and $/progress end
+		// handed the creating caller a dead chain as a normal success. Small
+		// writes to dead pipes are silently swallowed in real Bun, so exit is
+		// the only death signal for that class of crash.
+		let resolveExited: (() => void) | undefined
+		const exited = new Promise<void>((r) => {
+			resolveExited = r
+		})
+		const exitedFake = createFakeProc()
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(exitedFake.proc as any).exited = exited
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(globalThis as any).Bun = { spawn: () => exitedFake.proc }
+
+		const clientPromise = getOrCreateClient(FAKE_CONFIG, CWD)
+		await Promise.resolve()
+		await Promise.resolve()
+		const initReq = parseWrittenRequest(exitedFake.written[0])
+		if (!initReq) throw new Error("no initialize request written")
+		exitedFake.enqueue({ jsonrpc: "2.0", id: initReq.id, result: { capabilities: {} } })
+		await new Promise((r) => setTimeout(r, 20)) // creator parks on projectLoaded
+
+		// The server dies on its own mid-init.
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+		;(exitedFake.proc as any).exitCode = 1
+		resolveExited?.()
+
+		await expect(clientPromise).rejects.toThrow(/LSP server exited/)
+		expect(getAllClients()).toHaveLength(0)
 	})
 
 	/** A fake proc whose `exited` promise resolves when killed, like a real

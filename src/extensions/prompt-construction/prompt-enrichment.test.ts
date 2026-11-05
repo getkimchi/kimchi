@@ -10,6 +10,11 @@ import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import * as startupContext from "../../startup-context.js"
+import {
+	_resetSessionSystemPromptStore,
+	getSessionSystemPrompt,
+	resolveExportSystemPrompt,
+} from "../../utils/session-system-prompt-store.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import * as agentWorkerContext from "../agent-worker-context.js"
@@ -23,7 +28,7 @@ import promptEnrichmentExtension, {
 	_resetDeprecatedNotificationTracking,
 	stripEmptyToolCalls,
 } from "./prompt-enrichment.js"
-import { toolNamesFromSection } from "./test-utils.js"
+import { composeHandlerRegistration, toolNamesFromSection } from "./test-utils.js"
 import { createToolVisibility } from "./tool-visibility.js"
 
 function makeUser(text: string): OrchestratorMessages[number] {
@@ -281,7 +286,7 @@ describe("prompt enrichment tool visibility", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => tools,
 			getActiveTools: () => activeTools,
@@ -319,7 +324,7 @@ describe("prompt enrichment tool visibility", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => tools,
 			getActiveTools: () => ["read"],
@@ -745,6 +750,208 @@ describe("append system prompt", () => {
 	})
 })
 
+describe("export prompt capture", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+		_resetSessionSystemPromptStore()
+	})
+
+	it("captures ctx.getSystemPrompt() at agent_start under the session ID", async () => {
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "KIMCHI PROMPT WITH HOOK CONTEXT",
+				sessionManager: { getSessionId: () => "capture-session-1" },
+			}),
+		)
+
+		expect(getSessionSystemPrompt("capture-session-1")).toBe("KIMCHI PROMPT WITH HOOK CONTEXT")
+		expect(resolveExportSystemPrompt("capture-session-1", "pi base")).toBe("KIMCHI PROMPT WITH HOOK CONTEXT")
+	})
+
+	it("the before_agent_start return value alone is not captured — the finalized prompt at agent_start wins", async () => {
+		// Regression shape of the review finding: hook adapters registered after
+		// prompt-enrichment append context to the union prompt (claude-code
+		// SessionStart delivery). The capture must be the FINAL text
+		// (ctx.getSystemPrompt() at agent_start), not what this extension
+		// returned from before_agent_start.
+		const { handlers, beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+		const agentStart = handlers.get("agent_start")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+
+		const built = (await beforeAgentStart(
+			{ systemPromptOptions: {} },
+			createContext({ hasUI: false, sessionManager: { getSessionId: () => "capture-session-2" } }),
+		)) as { systemPrompt: string }
+		// Not captured at build time — only the finalized run prompt is.
+		expect(getSessionSystemPrompt("capture-session-2")).toBeUndefined()
+
+		const finalized = `${built.systemPrompt}\n\nHOOK ADAPTER APPENDED CONTEXT`
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => finalized,
+				sessionManager: { getSessionId: () => "capture-session-2" },
+			}),
+		)
+
+		expect(getSessionSystemPrompt("capture-session-2")).toBe(finalized)
+		expect(getSessionSystemPrompt("capture-session-2")?.endsWith("HOOK ADAPTER APPENDED CONTEXT")).toBe(true)
+	})
+
+	it("captures per session — a second session's turn never overwrites the first's capture", async () => {
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "MAIN PROMPT",
+				sessionManager: { getSessionId: () => "main-session" },
+			}),
+		)
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "SUB PROMPT",
+				sessionManager: { getSessionId: () => "subagent-session" },
+			}),
+		)
+
+		expect(getSessionSystemPrompt("main-session")).toBe("MAIN PROMPT")
+		expect(getSessionSystemPrompt("subagent-session")).toBe("SUB PROMPT")
+	})
+
+	it("session_shutdown with an ending reason marks the capture evictable", async () => {
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		const sessionShutdown = handlers.get("session_shutdown")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+		if (!sessionShutdown) throw new Error("session_shutdown handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "QUIT SESSION PROMPT",
+				sessionManager: { getSessionId: () => "quit-session" },
+			}),
+		)
+		await sessionShutdown(
+			{ reason: "quit" },
+			createContext({
+				hasUI: false,
+				sessionManager: { getSessionId: () => "quit-session" },
+			}),
+		)
+
+		// Ended captures stay readable but evict first: fill the store past its
+		// cap with live sessions, then verify the ended one was dropped.
+		for (let i = 0; i < 64; i++) {
+			await agentStart(
+				{},
+				createContext({
+					hasUI: false,
+					getSystemPrompt: () => `filler ${i}`,
+					sessionManager: { getSessionId: () => `filler-${i}` },
+				}),
+			)
+		}
+		expect(getSessionSystemPrompt("quit-session")).toBeUndefined()
+		expect(getSessionSystemPrompt("filler-0")).toBe("filler 0")
+	})
+
+	it("session_shutdown with reason reload keeps the capture live", async () => {
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		const sessionShutdown = handlers.get("session_shutdown")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+		if (!sessionShutdown) throw new Error("session_shutdown handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "RELOADED SESSION PROMPT",
+				sessionManager: { getSessionId: () => "reload-session" },
+			}),
+		)
+		// A resource reload keeps the same session alive — the capture must not
+		// become evictable.
+		await sessionShutdown(
+			{ reason: "reload" },
+			createContext({
+				hasUI: false,
+				sessionManager: { getSessionId: () => "reload-session" },
+			}),
+		)
+
+		for (let i = 0; i < 64; i++) {
+			await agentStart(
+				{},
+				createContext({
+					hasUI: false,
+					getSystemPrompt: () => `filler ${i}`,
+					sessionManager: { getSessionId: () => `filler-${i}` },
+				}),
+			)
+		}
+		expect(getSessionSystemPrompt("reload-session")).toBe("RELOADED SESSION PROMPT")
+	})
+
+	it("session_shutdown with an unknown future reason keeps the capture live", async () => {
+		// The ending reasons are whitelisted: an unrecognized reason must default
+		// to keeping the capture live (worst case: bounded memory), never make a
+		// potentially live session's capture evictable (worst case: the
+		// wrong-prompt export bug this module fixes).
+		const { handlers } = buildPromptExtensionWithHandlers()
+		const agentStart = handlers.get("agent_start")
+		const sessionShutdown = handlers.get("session_shutdown")
+		if (!agentStart) throw new Error("agent_start handler was not registered")
+		if (!sessionShutdown) throw new Error("session_shutdown handler was not registered")
+
+		await agentStart(
+			{},
+			createContext({
+				hasUI: false,
+				getSystemPrompt: () => "UNKNOWN REASON SESSION PROMPT",
+				sessionManager: { getSessionId: () => "unknown-reason-session" },
+			}),
+		)
+		await sessionShutdown(
+			{ reason: "some-future-reason" },
+			createContext({
+				hasUI: false,
+				sessionManager: { getSessionId: () => "unknown-reason-session" },
+			}),
+		)
+
+		for (let i = 0; i < 64; i++) {
+			await agentStart(
+				{},
+				createContext({
+					hasUI: false,
+					getSystemPrompt: () => `filler ${i}`,
+					sessionManager: { getSessionId: () => `filler-${i}` },
+				}),
+			)
+		}
+		expect(getSessionSystemPrompt("unknown-reason-session")).toBe("UNKNOWN REASON SESSION PROMPT")
+	})
+})
+
 describe("model role startup warnings", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks()
@@ -826,7 +1033,7 @@ function buildPromptExtensionWithHandlers(skillPaths: string[] = []) {
 		registerFlag: () => {},
 		registerCommand: () => {},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-			handlers.set(event, handler)
+			composeHandlerRegistration(handlers, event, handler)
 		},
 		getAllTools: () => [],
 		getActiveTools: () => [],
@@ -882,7 +1089,7 @@ describe("deprecated model notification", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => [],
 			getActiveTools: () => [],
@@ -1388,7 +1595,7 @@ describe("orchestrator default remap on session_start", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => [],
 			getActiveTools: () => [],
@@ -1529,7 +1736,7 @@ describe("retired model substitution notification", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => [],
 			getActiveTools: () => [],
@@ -2638,7 +2845,7 @@ describe("debug prompts cleanup", () => {
 			registerFlag: () => {},
 			registerCommand: () => {},
 			on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
-				handlers.set(event, handler)
+				composeHandlerRegistration(handlers, event, handler)
 			},
 			getAllTools: () => [],
 			getActiveTools: () => [],

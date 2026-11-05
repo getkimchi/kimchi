@@ -493,13 +493,16 @@ describe("registered workspace tools resolve against the session cwd", () => {
 		expect(result.isError ?? false).toBe(false)
 	})
 
-	it("grep uses the ExtensionContext cwd over the process cwd", async () => {
+	it("grep uses the ExtensionContext cwd over the process cwd", { timeout: 15_000 }, async () => {
+		// CI flake 2026-11: these two tests spawn the real grep/find binaries
+		// and the default 5s budget intermittently timed out on slower runners
+		// (PR #1595 ×3, ci/perf-gate ×1) while passing locally in ~500ms.
 		const result = await execute("grep", { pattern: "needle-in-session-cwd" })
 		expect(resultText(result)).toContain("probe.txt")
 		expect(resultText(result)).not.toContain(GREP_NO_MATCHES_SENTINEL)
 	})
 
-	it("find uses the ExtensionContext cwd over the process cwd", async () => {
+	it("find uses the ExtensionContext cwd over the process cwd", { timeout: 15_000 }, async () => {
 		const result = await execute("find", { pattern: "probe.txt" })
 		expect(resultText(result)).toContain("probe.txt")
 	})

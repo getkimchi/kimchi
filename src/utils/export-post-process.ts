@@ -235,8 +235,11 @@ export async function postProcessHtmlExportOnce(filePath: string, options?: Expo
 	// Assemble ALL payload content before redaction: host metadata, buffered
 	// config-change entries, and sub-agent tab payloads (the tab sessionData
 	// includes the persona-resolved system prompt and the full transcript).
-	// The top-level systemPrompt is already in the payload (upstream puts
-	// state.systemPrompt there). Nothing is encoded yet.
+	// The top-level systemPrompt arrives embedded by upstream as
+	// `agent.state.systemPrompt` — pi's base prompt (pi 1.3.0 never records
+	// the forced harness prompt in the transcript) — so the captured
+	// effective prompt replaces it below when available. Nothing is encoded
+	// yet.
 	const { metadata, configChanges } = resolvePipelineOptions(options)
 	if (metadata) {
 		// Naturally idempotent: reassigning the same primitives.
@@ -245,6 +248,10 @@ export async function postProcessHtmlExportOnce(filePath: string, options?: Expo
 			config: metadata.config,
 			capturedAt: metadata.capturedAt,
 		}
+	}
+	const systemPrompt = options?.systemPrompt?.trim()
+	if (systemPrompt) {
+		data.systemPrompt = systemPrompt
 	}
 	appendConfigChangeEntries(entries, configChanges)
 	const tabData = collectSubAgentTabData(entries, options?.agentSystemPrompts)

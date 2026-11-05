@@ -2672,12 +2672,14 @@ describe("compound bash permission regressions", () => {
 describe("handleCompoundConfirm", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 
 	beforeEach(() => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		pi = createExtensionApi().api
 	})
 
@@ -2690,6 +2692,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2711,6 +2714,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "npm test"],
 			permissionMode: "default",
 		})
@@ -2733,6 +2737,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -2753,6 +2758,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2773,6 +2779,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -2797,6 +2804,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2820,6 +2828,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2842,6 +2851,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["cd /tmp", "npm install"],
 			permissionMode: "default",
 		})
@@ -2865,6 +2875,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [command, "npm install"],
 			permissionMode: "default",
 		})
@@ -2892,6 +2903,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["git diff", "npm install", "npm publish"],
 			permissionMode: "default",
 		})
@@ -2914,6 +2926,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "whoami"],
 			permissionMode: "default",
 		})
@@ -2932,6 +2945,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands: read-only segments skip the per-subcommand
 			// prompt entirely (a standalone call would never ask either).
 			subcommands: ["npm install", "cargo build"],
@@ -2952,6 +2966,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2976,6 +2991,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -2992,6 +3008,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: [],
 			permissionMode: "default",
 		})
@@ -3010,6 +3027,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo hello"],
 			permissionMode: "default",
 		})
@@ -3031,6 +3049,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3060,6 +3079,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
 		})
@@ -3079,6 +3099,7 @@ describe("handleCompoundConfirm", () => {
 			session,
 			pi,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -3090,6 +3111,7 @@ describe("handleCompoundConfirm", () => {
 describe("herdr:blocked signaling", () => {
 	let session: SessionMemory
 	let activeAborts: Set<AbortController>
+	let promptToolCalls: Map<AbortController, string>
 	let pi: ExtensionAPI
 	let emitEvent: ReturnType<typeof vi.fn>
 
@@ -3103,6 +3125,7 @@ describe("herdr:blocked signaling", () => {
 		session = new SessionMemory()
 		session.clear()
 		activeAborts = new Set()
+		promptToolCalls = new Map()
 		const mock = createExtensionApi()
 		pi = mock.api
 		emitEvent = mock.emitEvent
@@ -3123,6 +3146,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
@@ -3151,6 +3175,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			// Non-read-only subcommands so both nested prompts fire.
 			subcommands: ["npm install", "cargo build"],
 			permissionMode: "default",
@@ -3182,6 +3207,7 @@ describe("herdr:blocked signaling", () => {
 				pi,
 				session,
 				activeAborts,
+				promptToolCalls,
 				subcommands: ["echo a"],
 				permissionMode: "default",
 			}),
@@ -3201,6 +3227,7 @@ describe("herdr:blocked signaling", () => {
 			pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a"],
 			permissionMode: "default",
 		})
@@ -4519,6 +4546,77 @@ describe("permissions:tool_decision emissions", () => {
 				decision: "reject",
 				sourceDetail: "mode_flap",
 			})
+			// No actual mode change fired in this scenario: the flap diagnostics
+			// carry a zero count and an empty source set, not fabricated data.
+			const flap = decisions[decisions.length - 1] as { modeFlap?: { modeChangeCount: number } }
+			expect(flap.modeFlap).toEqual({ modeChangeCount: 0, modeChangeSources: [] })
+		} finally {
+			unregisterAcpPrompter(TEST_SESSION_ID)
+		}
+	})
+
+	it("mode-flap diagnostics record per-dismissal sources (repeats counted) and clean up after the call", async () => {
+		// Multi-source flap: while each prompt is open, a REAL mode change fires
+		// (alternating shift+tab and a controller push), flipping default → plan
+		// and back so the call keeps re-prompting until the loop exhausts. The
+		// dismissal is recorded at the flip-away; the flip-back happens with no
+		// open prompt, so it must NOT be counted.
+		let terminalHandler: TerminalInputHandler | undefined
+		const baseCtx = createMockContext([], TEST_SESSION_ID, {
+			uiContext: {
+				onTerminalInput: vi.fn((handler) => {
+					terminalHandler = handler
+					return () => {}
+				}),
+			},
+		})
+		const ctx = { ...baseCtx, mode: "rpc" } as unknown as ExtensionContext
+		let promptCount = 0
+		const request = vi.fn(async () => {
+			promptCount++
+			// Flip away (records one dismissal for THIS call)…
+			if (promptCount % 2 === 1)
+				terminalHandler?.("\x1b[Z") // default → plan, user_shift_tab
+			else setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" }) // controller
+			// …and back so the next attempt prompts again (no open prompt → no record).
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+			return { kind: "aborted" as const }
+		})
+		registerAcpPrompter(TEST_SESSION_ID, { request })
+		try {
+			const harness = createPermissionsHarness(["bash"])
+			const decisions = collectDecisions(harness)
+			await harness.fire("session_start", {}, ctx)
+			setPermissionMode(TEST_SESSION_ID, { mode: "default", source: "runtime", initiatedBy: "user" })
+
+			const result = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(result).toMatchObject({
+				block: true,
+				reason: "Permission mode changed too many times during prompt",
+			})
+
+			const flap = decisions[decisions.length - 1] as unknown as {
+				sourceDetail: string
+				modeFlap?: { modeChangeCount: number; modeChangeSources: string[] }
+			}
+			expect(flap.sourceDetail).toBe("mode_flap")
+			expect(flap.modeFlap).toEqual({
+				// One dismissal per aborted attempt, sources in dismissal order
+				// (repeats counted; the serialized set is telemetry's job).
+				modeChangeCount: 4,
+				modeChangeSources: ["user_shift_tab", "controller", "user_shift_tab", "controller"],
+			})
+
+			// Cleanup + no cross-call contamination: a subsequent tool call with a
+			// normal prompter decides normally, with no leftover flap diagnostics.
+			unregisterAcpPrompter(TEST_SESSION_ID)
+			registerAcpPrompter(TEST_SESSION_ID, { request: vi.fn(async () => ({ kind: "allow-once" as const })) })
+			decisions.length = 0
+			const second = await harness.fire("tool_call", tcall("bash", { command: "npm install" }), ctx)
+			expect(second).toBeUndefined()
+			expect(decisions).toEqual([expect.objectContaining({ decision: "accept", sourceDetail: "allow_once" })])
+			const secondFlap = decisions[0] as unknown as { modeFlap?: unknown }
+			expect(secondFlap.modeFlap).toBeUndefined()
 		} finally {
 			unregisterAcpPrompter(TEST_SESSION_ID)
 		}
@@ -4578,12 +4676,14 @@ describe("permissions:tool_decision emissions", () => {
 		const ctx = { ...createMockContext([]), mode: "rpc", hasUI: false } as ExtensionContext
 		const session = new SessionMemory()
 		const activeAborts = new Set<AbortController>()
+		const promptToolCalls = new Map<AbortController, string>()
 
 		const result = await handleCompoundConfirm(createMockEvent(), {
 			ctx,
 			pi: harness.pi,
 			session,
 			activeAborts,
+			promptToolCalls,
 			subcommands: ["echo a", "echo b"],
 			permissionMode: "default",
 		})
