@@ -5,13 +5,14 @@ import { getMe } from "../../api/me.js"
 import { getOrganization, type Organization, verifyApiKey } from "../../api/organizations.js"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { type ApiKeySource, getApiKeySource, getEnvironmentApiKey, getSavedApiKey, loadConfig } from "../../config.js"
-import { isKimchiProvider } from "../../kimchi-provider.js"
+import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { refFromModel } from "../../shared/model-ref.js"
 import { getVersion } from "../../utils.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { resolveEffectiveModel } from "../auto-model/state.js"
 import { getKimchiAuthPath } from "../login/flow.js"
 import { createStatusPanelComponent } from "./panel.js"
+import { setActiveStatusIdentityRefresher } from "./refresh.js"
 
 export const STATUS_COMMAND_DESCRIPTION = "Show version, login, session, model, and MCP status"
 
@@ -111,6 +112,17 @@ function thirdPartyProviders(authPath: string): string[] {
 	}
 }
 
+/** True when auth.json holds the kimchi-dev OAuth credential (Kimchi SSO login). */
+function hasKimchiSsoCredential(authPath: string): boolean {
+	if (!existsSync(authPath)) return false
+	try {
+		const creds = JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, { type?: unknown } | undefined>
+		return creds[KIMCHI_PROVIDER_ID]?.type === "oauth"
+	} catch {
+		return false
+	}
+}
+
 /**
  * Browser login and the pasted-key flow both persist the same platform key in
  * config.json, so "Kimchi account" is indistinguishable from a saved key; only
@@ -125,6 +137,7 @@ function thirdPartyProviders(authPath: string): string[] {
  * Precedence: env override (KIMCHI_API_KEY set and differs from saved key) →
  * Kimchi account (config key present) →
  * Kimchi API key (KIMCHI_API_KEY environment, only when no config key) →
+ * Kimchi SSO (kimchi-dev OAuth credential in auth.json) →
  * third-party provider → not logged in.
  */
 export function resolveLoginMethod(deps: {
@@ -138,16 +151,26 @@ export function resolveLoginMethod(deps: {
 	if (deps.configApiKey) return "Kimchi account"
 	if (deps.apiKeySource === "environment" && deps.envApiKey) return "Kimchi API key (KIMCHI_API_KEY environment)"
 	const others = thirdPartyProviders(deps.authPath)
+	// SSO login clears the config key and keeps only the auth.json OAuth
+	// credential — without this branch an SSO session reported "Not logged in".
+	if (hasKimchiSsoCredential(deps.authPath)) {
+		return others.length > 0 ? `Kimchi SSO · third-party: ${others.join(", ")}` : "Kimchi SSO"
+	}
 	if (others.length > 0) return `Third-party provider (${others.join(", ")})`
 	return "Not logged in"
 }
 
-/** Account identity fetched in the background for the key currently in use. */
+/** Account identity fetched in the background for the credential currently in use. */
 interface Identity {
 	apiKey: string
+	/** SSO organization routing id — part of the change-detection key with apiKey. */
+	organizationId?: string
 	email?: string
 	organization?: Organization
 }
+
+/** Bound on awaiting an in-flight identity refetch before rendering /status. */
+const IDENTITY_ROW_WAIT_MS = 3000
 
 /** Data the extension collects between `/status` invocations. */
 export interface StatusSources {
@@ -199,11 +222,19 @@ export default function statusExtension(pi: ExtensionAPI): void {
 	let mcpSnapshot: McpStatusSnapshot | undefined
 
 	/**
-	 * Best-effort background fetch of email and organization for the active
-	 * key; never blocks the panel, which omits rows whose fetch has not landed.
-	 * Refetches only when the key changes (e.g. after /login or /logout).
+	 * The most recent refetch — an unchanged credential still awaits a login-
+	 * triggered refetch that is already in flight, so /status never renders
+	 * rows the push was about to fill.
 	 */
-	const refreshIdentity = (): void => {
+	let latestIdentityRefresh: Promise<void> = Promise.resolve()
+
+	/**
+	 * Best-effort fetch of email and organization for the active credential.
+	 * Refetches when the credential changes (e.g. after /login or /logout) and
+	 * resolves when the fetches settle so the /status handler can await a
+	 * just-triggered refetch instead of showing pre-login rows.
+	 */
+	const refreshIdentity = async (): Promise<void> => {
 		// API key or the SSO credential in auth.json — an OAuth login must show
 		// identity rows too (config.apiKey alone is "" for SSO users).
 		const credentials = resolveGatewayCredentials({ apiKey: getEnvironmentApiKey() ?? loadConfig().apiKey })
@@ -211,26 +242,43 @@ export default function statusExtension(pi: ExtensionAPI): void {
 			identity = undefined
 			return
 		}
-		if (identity?.apiKey === credentials.token) return
-		// Writes go to this object, so a fetch for a superseded key cannot
-		// overwrite the identity of the current one.
-		const current: Identity = { apiKey: credentials.token }
+		if (identity?.apiKey === credentials.token && identity?.organizationId === credentials.organizationId) {
+			return latestIdentityRefresh
+		}
+		// Writes go to this object, so a fetch for a superseded credential cannot
+		// overwrite the identity of the current one. The SSO credential carries
+		// the organization picked at login — seed it so the row renders
+		// immediately and survives an identity-fetch failure.
+		const current: Identity = {
+			apiKey: credentials.token,
+			organizationId: credentials.organizationId,
+			...(credentials.organizationId && credentials.organizationName
+				? { organization: { id: credentials.organizationId, name: credentials.organizationName } }
+				: {}),
+		}
 		identity = current
-		getMe(credentials.token)
-			.then((me) => {
+		// SSO requests carry the organization routing header; without it the
+		// platform API cannot attribute an OAuth bearer and the rows never land.
+		const organizationId = credentials.organizationId
+		const refresh = Promise.allSettled([
+			getMe(credentials.token, { organizationId }).then((me) => {
 				current.email = me.email
-			})
-			.catch(() => {})
-		verifyApiKey(credentials.token)
-			.then(({ organizationId }) => getOrganization(credentials.token, organizationId))
-			.then((organization) => {
-				current.organization = organization
-			})
-			.catch(() => {})
+			}),
+			verifyApiKey(credentials.token, { organizationId })
+				.then(({ organizationId: verifiedId }) => getOrganization(credentials.token, verifiedId, { organizationId }))
+				.then((organization) => {
+					current.organization = organization
+				}),
+		]).then(() => {})
+		latestIdentityRefresh = refresh
+		await refresh
 	}
+	setActiveStatusIdentityRefresher(() => {
+		void refreshIdentity()
+	})
 
 	pi.on("session_start", () => {
-		refreshIdentity()
+		void refreshIdentity()
 	})
 	pi.events.on(MCP_STATUS_EVENT, (data) => {
 		if (isMcpStatusSnapshot(data)) mcpSnapshot = data
@@ -240,8 +288,13 @@ export default function statusExtension(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			// Print and JSON modes have no UI surface; notify would be a no-op.
 			if (!ctx.hasUI) return
-			// Pick up a key that changed mid-session; rows land on the next open.
-			refreshIdentity()
+			// Pick up a credential that changed mid-session (e.g. /login); await
+			// the refetch (bounded) so the fresh rows show on this open.
+			const boundedWait = new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, IDENTITY_ROW_WAIT_MS)
+				timer.unref?.()
+			})
+			await Promise.race([refreshIdentity(), boundedWait])
 			const rows = gatherStatusRows(ctx, { identity, mcp: mcpSnapshot })
 			if (ctx.mode === "tui") {
 				await ctx.ui.custom<void>((_tui, theme, _kb, done) => createStatusPanelComponent(theme, rows, done))

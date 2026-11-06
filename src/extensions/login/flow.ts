@@ -48,6 +48,7 @@ import {
 import { discoveryFailureMessage, fetchSelfHostedEndpoints } from "../../self-hosted-discovery.js"
 import { GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "../auto-model/constants.js"
 import { refreshBillingStatusFromConfig } from "../billing/status.js"
+import { requestStatusIdentityRefresh } from "../status/refresh.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
@@ -588,6 +589,9 @@ async function configureKimchiToken(
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
+		// Warm /status identity rows for the new credential (no-op in surfaces
+		// without a live status extension instance).
+		requestStatusIdentityRefresh()
 		await applyPostLoginModel(host, providerModels)
 		const warning = getApiKeyMismatchWarning(token)
 		if (warning) host.addFeedback?.(warning)
@@ -680,6 +684,9 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	}
 	if (authSynchronized && providerModels.length > 0) {
 		void refreshBillingStatusFromConfig({ mode: "forced" })
+		// Warm /status identity rows for the new credential (no-op in surfaces
+		// without a live status extension instance).
+		requestStatusIdentityRefresh()
 		await applyPostLoginModel(host, providerModels)
 		return true
 	}

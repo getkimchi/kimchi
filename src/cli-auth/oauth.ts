@@ -303,8 +303,41 @@ interface OrganizationsResponse {
 	organizations?: Array<{ id?: string; name?: string }>
 }
 
-/** List the user's organizations from the Kimchi users API
- * (`GET <organizationsUrl>` — the Kimchi users API organization listing). */
+/**
+ * Resolve an organization's display name from the detail endpoint
+ * (`GET <organizationsUrl>/<id>`). Returns undefined on any failure — the
+ * caller falls back to the id so the picker never renders an empty label.
+ */
+async function fetchOrganizationName(
+	organizationsUrl: string,
+	organizationId: string,
+	bearer: string,
+	signal: AbortSignal,
+): Promise<string | undefined> {
+	const url = `${organizationsUrl.replace(/\/+$/, "")}/${encodeURIComponent(organizationId)}`
+	let response: Response
+	try {
+		response = await fetch(url, {
+			headers: { accept: "application/json", authorization: `Bearer ${bearer}` },
+			signal: AbortSignal.any([signal, AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS)]),
+		})
+	} catch {
+		if (signal.aborted) throw new Error(LOGIN_CANCELLED_MESSAGE)
+		return undefined
+	}
+	if (!response.ok) return undefined
+	const body = (await response.json().catch(() => null)) as { name?: unknown; organization?: { name?: unknown } } | null
+	const name = typeof body?.name === "string" ? body.name : body?.organization?.name
+	return typeof name === "string" && name.trim().length > 0 ? name.trim() : undefined
+}
+
+/**
+ * List the user's organizations from the Kimchi users API
+ * (`GET <organizationsUrl>` — the Kimchi users API organization listing).
+ * Entries without a name (the listing ships a blank name for some
+ * organizations, e.g. a personal one) are resolved through the organization
+ * detail endpoint; when that fails the id stands in as the label.
+ */
 export async function listUserOrganizations(
 	organizationsUrl: string,
 	bearer: string,
@@ -327,8 +360,16 @@ export async function listUserOrganizations(
 	const body = (await response.json().catch(() => null)) as OrganizationsResponse | null
 	const organizations = (body?.organizations ?? [])
 		.filter((org) => typeof org?.id === "string" && org.id.trim().length > 0)
-		.map((org) => ({ id: org.id as string, name: typeof org.name === "string" ? org.name : (org.id as string) }))
-	return organizations
+		.map((org) => ({
+			id: org.id as string,
+			name: typeof org.name === "string" && org.name.trim().length > 0 ? org.name.trim() : undefined,
+		}))
+	return Promise.all(
+		organizations.map(async (org) => ({
+			id: org.id,
+			name: org.name ?? (await fetchOrganizationName(organizationsUrl, org.id, bearer, signal)) ?? org.id,
+		})),
+	)
 }
 
 /** Sentinel option id for the paginator entry (cannot collide with real
