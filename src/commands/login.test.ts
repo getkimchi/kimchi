@@ -14,7 +14,7 @@ vi.mock("@clack/prompts", () => ({
 vi.mock("../cli-auth/index.js", () => ({ authenticateViaBrowser: vi.fn() }))
 vi.mock("../cli-auth/oauth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../cli-auth/oauth.js")>()
-	return { ...actual, loginWithCastAiOauth: vi.fn() }
+	return { ...actual, loginWithKimchiOauth: vi.fn() }
 })
 vi.mock("../pi-auth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../pi-auth.js")>()
@@ -48,7 +48,7 @@ vi.mock("./login-prompts.js", () => ({
 }))
 
 import { authenticateViaBrowser } from "../cli-auth/index.js"
-import { loginWithCastAiOauth } from "../cli-auth/oauth.js"
+import { loginWithKimchiOauth } from "../cli-auth/oauth.js"
 import * as config from "../config.js"
 import { setExperimentalFeaturesEnabled } from "../extensions/experimental.js"
 import {
@@ -274,7 +274,7 @@ describe("interactive kimchi login", () => {
 	it("runs the SSO login and completes it", async () => {
 		vi.mocked(promptLoginMethod).mockResolvedValue({ kind: "next", value: "sso" })
 		vi.mocked(promptLoginRegion).mockResolvedValue({ kind: "next", value: "eu" })
-		vi.mocked(loginWithCastAiOauth).mockResolvedValue({
+		vi.mocked(loginWithKimchiOauth).mockResolvedValue({
 			type: "oauth",
 			access: "access-token",
 			refresh: "refresh-token",
@@ -289,28 +289,28 @@ describe("interactive kimchi login", () => {
 
 		expect(await runLogin([], INTERACTIVE)).toBe(0)
 
-		expect(loginWithCastAiOauth).toHaveBeenCalled()
+		expect(loginWithKimchiOauth).toHaveBeenCalled()
 		expect(completeKimchiSsoLogin).toHaveBeenCalled()
 	})
 
 	it("maps an SSO callback-port conflict to a clear error", async () => {
 		vi.mocked(promptLoginMethod).mockResolvedValue({ kind: "next", value: "sso" })
 		vi.mocked(promptLoginRegion).mockResolvedValue({ kind: "next", value: "us" })
-		vi.mocked(loginWithCastAiOauth).mockRejectedValue(
+		vi.mocked(loginWithKimchiOauth).mockRejectedValue(
 			Object.assign(new Error("listen EADDRINUSE: address in use :::8765"), { code: "EADDRINUSE" }),
 		)
 
 		expect(await runLogin([], INTERACTIVE)).toBe(1)
 
 		expect(console.error).toHaveBeenCalledWith(
-			"CAST AI SSO login appears to be in progress elsewhere — finish it, then retry.",
+			"Kimchi SSO login appears to be in progress elsewhere — finish it, then retry.",
 		)
 	})
 
 	it("treats an aborted SSO wait as a cancellation (exit 0)", async () => {
 		vi.mocked(promptLoginMethod).mockResolvedValue({ kind: "next", value: "sso" })
 		vi.mocked(promptLoginRegion).mockResolvedValue({ kind: "next", value: "us" })
-		vi.mocked(loginWithCastAiOauth).mockRejectedValue(new Error("Login cancelled"))
+		vi.mocked(loginWithKimchiOauth).mockRejectedValue(new Error("Login cancelled"))
 
 		expect(await runLogin([], INTERACTIVE)).toBe(0)
 		expect(console.log).toHaveBeenCalledWith("Login cancelled.")

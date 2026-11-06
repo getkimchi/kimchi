@@ -78,25 +78,25 @@ describe("createRegionSelector", () => {
 		expect(onSelect).not.toHaveBeenCalled()
 	})
 
-	it("hides EU and self-hosted when experimental features are off", () => {
+	it("hides self-hosted when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const us = createRegionSelector({ currentRegion: "us", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(us)).toEqual(["United States \u2014 current"])
+		expect(optionsOf(us)).toEqual(["United States \u2014 current", "Europe"])
 	})
 
-	it("still lists the configured EU region first when experimental features are off", () => {
+	it("lists the configured EU region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const eu = createRegionSelector({ currentRegion: "eu", onSelect: vi.fn(), onBack: vi.fn() })
 		expect(optionsOf(eu)).toEqual(["Europe \u2014 current", "United States"])
 	})
 
-	it("still lists the configured self-hosted region first when experimental features are off", () => {
+	it("lists the configured self-hosted region first when experimental features are off", () => {
 		setExperimentalFeaturesEnabled(false)
 
 		const selfHosted = createRegionSelector({ currentRegion: "self-hosted", onSelect: vi.fn(), onBack: vi.fn() })
-		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States"])
+		expect(optionsOf(selfHosted)).toEqual(["Self-hosted \u2014 current", "United States", "Europe"])
 	})
 })
 
@@ -108,18 +108,18 @@ describe("regionChoiceRequired", () => {
 		expect(regionChoiceRequired("us")).toBe(true)
 	})
 
-	it("is false when EU is experimental-gated and the configured region is the default", () => {
-		setExperimentalFeaturesEnabled(false)
-		expect(regionChoiceRequired("us")).toBe(false)
-	})
-
-	it("is true when EU is experimental-gated but already configured (user can switch back)", () => {
-		setExperimentalFeaturesEnabled(false)
+	// EU is no longer experimental-gated, so every configured region has at least
+	// one other selectable region (us or eu) and regionChoiceRequired is true
+	// regardless of the experimental flag.
+	it("is always true because us and eu are always selectable alongside the current region", () => {
+		setExperimentalFeaturesEnabled(true)
+		expect(regionChoiceRequired("us")).toBe(true)
 		expect(regionChoiceRequired("eu")).toBe(true)
-	})
+		expect(regionChoiceRequired("self-hosted")).toBe(true)
 
-	it("is true when self-hosted is experimental-gated but already configured", () => {
 		setExperimentalFeaturesEnabled(false)
+		expect(regionChoiceRequired("us")).toBe(true)
+		expect(regionChoiceRequired("eu")).toBe(true)
 		expect(regionChoiceRequired("self-hosted")).toBe(true)
 	})
 })
@@ -138,9 +138,9 @@ describe("orderedLoginRegions", () => {
 		expect(orderedLoginRegions("eu", [REGIONS.us]).map((region) => region.id)).toEqual(["eu", "us"])
 	})
 
-	it("lists only the current region when experimental features are off", () => {
+	it("lists us and eu when experimental features are off (self-hosted is hidden)", () => {
 		setExperimentalFeaturesEnabled(false)
-		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us"])
+		expect(orderedLoginRegions("us").map((region) => region.id)).toEqual(["us", "eu"])
 	})
 })
 

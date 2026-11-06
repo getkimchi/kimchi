@@ -14,7 +14,6 @@ import {
 	performKimchiApiKeyLoginViaExtensionUI,
 	performKimchiBrowserLoginWithDialog,
 	performKimchiSsoLoginWithExtensionUI,
-	regionChoiceRequired,
 	showSubscriptionLoginWithExtensionUI,
 	syncKimchiAuth,
 } from "./flow.js"
@@ -152,8 +151,6 @@ async function promptAuthChoice(
  */
 async function promptRegionChoice(ctx: ExtensionContext): Promise<RegionId | undefined> {
 	const currentRegion = loadConfig().region
-	// Skip the picker when experimental gating leaves no choice.
-	if (!regionChoiceRequired(currentRegion)) return currentRegion
 	return ctx.ui.custom<RegionId | undefined>((_tui, _theme, _keybindings, done) => {
 		const selector = createRegionSelector({
 			currentRegion,
@@ -165,7 +162,7 @@ async function promptRegionChoice(ctx: ExtensionContext): Promise<RegionId | und
 }
 
 /**
- * Region pick preceding a CAST AI SSO login in the startup gate: SSO tenants
+ * Region pick preceding a Kimchi SSO login in the startup gate: SSO tenants
  * exist per region (US and EU), so unlike the key-login region prompt this
  * lists the SSO-capable regions. Back (Esc) returns `undefined` so the gate
  * loops back to the auth-method selector.

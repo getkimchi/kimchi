@@ -9,7 +9,7 @@ import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimch
 test.use(TUI_TEST_CONFIG)
 
 /**
- * CAST AI SSO: /login offers "Sign in with CAST AI (SSO)" and
+ * Kimchi SSO: /login offers "Sign in with SSO" and
  * completes the full OAuth Authorization Code + PKCE round trip against a
  * local mock Auth0 tenant — the "browser" is a deterministic driver script
  * ($BROWSER) that records the authorize URL and follows it, so the mock AS
@@ -31,7 +31,7 @@ interface MockAuthServer {
 	close(): Promise<void>
 }
 
-/** Mock Auth0 tenant + Cast AI users API: /authorize auto-approves (302 to
+/** Mock Auth0 tenant + Kimchi users API: /authorize auto-approves (302 to
  * the loopback callback with a fresh code + the echoed state), /token answers
  * authorization_code and refresh_token grants, and GET /v1/organizations
  * lists the account's organizations. Mirrors the kubecast mock-oauth test
@@ -149,7 +149,7 @@ async function waitForBrowserEvent(eventPath: string): Promise<BrowserEvent> {
 	}
 }
 
-test("login via CAST AI SSO completes the OAuth code exchange and stores a refreshable credential", async ({
+test("login via Kimchi SSO completes the OAuth code exchange and stores a refreshable credential", async ({
 	terminal,
 }) => {
 	const mockAs = await startMockAuthServer()
@@ -187,7 +187,7 @@ test("login via CAST AI SSO completes the OAuth code exchange and stores a refre
 				terminal.write("/login")
 				await waitForText(terminal, "/login", { timeoutMs: INPUT_TIMEOUT_MS })
 				terminal.submit("")
-				await waitForText(terminal, "Sign in with CAST AI (SSO)", { timeoutMs: INPUT_TIMEOUT_MS })
+				await waitForText(terminal, "Sign in with SSO", { timeoutMs: INPUT_TIMEOUT_MS })
 				// SSO is now the recommended first option (no keyDown offset).
 				terminal.submit("")
 				trace.step("SSO selected in the auth-method selector")

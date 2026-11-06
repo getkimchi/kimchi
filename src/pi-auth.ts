@@ -66,7 +66,7 @@ export async function clearPiAuth(authPath: string): Promise<void> {
  * auth.json entry.
  *
  * Rotation safety: every fanned-out entry shares one refresh token. This is
- * only safe while the CAST AI Auth0 app does NOT rotate refresh tokens —
+ * only safe while the Kimchi Auth0 app does NOT rotate refresh tokens —
  * Auth0 rotation makes a refresh token single-use, and sibling entries
  * refreshing with the same token would kill each other (and trip reuse
  * detection). Step-1 registration must keep rotation OFF. When Auth0 rotation

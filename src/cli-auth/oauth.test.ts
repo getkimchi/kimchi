@@ -10,9 +10,9 @@ import {
 	generateCodeVerifier,
 	generateOAuthState,
 	isInvalidGrantError,
-	loginWithCastAiOauth,
+	loginWithKimchiOauth,
 	OAuthTokenError,
-	refreshCastAiOauth,
+	refreshKimchiOauth,
 } from "./oauth.js"
 
 // ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ function configFor(tokenUrl: string, overrides: Partial<KimchiOAuthConfig> = {})
  * port instead (callbackPort: 0) — the redirect URI is read back from the
  * bound server, so the flow is identical apart from the port. */
 function login(config: KimchiOAuthConfig, callbacks: OAuthLoginCallbacks) {
-	return loginWithCastAiOauth(config, callbacks, { callbackPort: 0 })
+	return loginWithKimchiOauth(config, callbacks, { callbackPort: 0 })
 }
 
 function makeCallbacks(overrides: Partial<OAuthLoginCallbacks> = {}) {
@@ -257,7 +257,7 @@ describe("authorizationCodeFromManualInput", () => {
 	})
 })
 
-describe("loginWithCastAiOauth", () => {
+describe("loginWithKimchiOauth", () => {
 	it("fails with guidance when the chosen callback port is already in use", async () => {
 		// Bind a server on an ephemeral port, then point the login at that exact
 		// port so its callback server hits EADDRINUSE (the fixed production
@@ -268,8 +268,8 @@ describe("loginWithCastAiOauth", () => {
 		)
 		try {
 			const { callbacks } = makeCallbacks()
-			await expect(loginWithCastAiOauth(configFor(mock.url), callbacks, { callbackPort: blockerPort })).rejects.toThrow(
-				new RegExp(`${blockerPort} is in use, probably by an unfinished CAST AI sign-in`),
+			await expect(loginWithKimchiOauth(configFor(mock.url), callbacks, { callbackPort: blockerPort })).rejects.toThrow(
+				new RegExp(`${blockerPort} is in use, probably by an unfinished Kimchi sign-in`),
 			)
 		} finally {
 			await new Promise<void>((resolveClose) => blocker.close(() => resolveClose()))
@@ -526,7 +526,7 @@ describe("loginWithCastAiOauth", () => {
 	})
 })
 
-describe("refreshCastAiOauth", () => {
+describe("refreshKimchiOauth", () => {
 	const storedCredential = {
 		type: "oauth" as const,
 		access: "id-1",
@@ -545,7 +545,7 @@ describe("refreshCastAiOauth", () => {
 	it("renews with grant_type=refresh_token and rotates the refresh token", async () => {
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
 		const before = Date.now() - 1000
-		const next = await refreshCastAiOauth(credential, new AbortController().signal)
+		const next = await refreshKimchiOauth(credential, new AbortController().signal)
 		expect(mock.requests).toHaveLength(1)
 		expect(mock.requests[0].params.get("grant_type")).toBe("refresh_token")
 		expect(mock.requests[0].params.get("refresh_token")).toBe("rt-1")
@@ -563,7 +563,7 @@ describe("refreshCastAiOauth", () => {
 			body: { access_token: "at-3", id_token: "id-3", expires_in: 3600 },
 		}))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const next = await refreshCastAiOauth(credential, new AbortController().signal)
+		const next = await refreshKimchiOauth(credential, new AbortController().signal)
 		expect(next.refresh).toBe("rt-1")
 	})
 
@@ -573,7 +573,7 @@ describe("refreshCastAiOauth", () => {
 			body: { error: "invalid_grant", error_description: "refresh token revoked" },
 		}))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const error = await refreshCastAiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
+		const error = await refreshKimchiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
 		expect(isInvalidGrantError(error)).toBe(true)
 		expect((error as OAuthTokenError).message).toContain("refresh token revoked")
 	})
@@ -581,13 +581,13 @@ describe("refreshCastAiOauth", () => {
 	it("passes transient failures through without the invalid_grant classification", async () => {
 		mock.setResponder(() => ({ status: 500, body: { error: "server_error" } }))
 		const credential = { ...storedCredential, tokenUrl: `${mock.url}/token` }
-		const error = await refreshCastAiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
+		const error = await refreshKimchiOauth(credential, new AbortController().signal).catch((err: unknown) => err)
 		expect(isInvalidGrantError(error)).toBe(false)
 		expect((error as OAuthTokenError).status).toBe(500)
 	})
 
 	it("fails with a re-login guidance error when stored extras are incomplete", async () => {
 		const credential = { type: "oauth" as const, access: "x", refresh: "r", expires: 0 }
-		await expect(refreshCastAiOauth(credential, new AbortController().signal)).rejects.toThrow(/sign in again/)
+		await expect(refreshKimchiOauth(credential, new AbortController().signal)).rejects.toThrow(/sign in again/)
 	})
 })

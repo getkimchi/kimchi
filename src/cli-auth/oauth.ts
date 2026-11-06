@@ -1,6 +1,6 @@
 /**
- * CAST AI SSO login for the kimchi-dev provider: OAuth 2.0 Authorization Code
- * with PKCE (S256) against the per-region CAST AI Auth0 tenant, adapted to
+ * Kimchi SSO login for the kimchi-dev provider: OAuth 2.0 Authorization Code
+ * with PKCE (S256) against the per-region Kimchi Auth0 tenant, adapted to
  * the harness's extension OAuth shape (`ExtensionOAuthConfig` from
  * pi-coding-agent, backed by `OAuthLoginCallbacks` from pi-ai).
  *
@@ -21,7 +21,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { CAST_AI_SSO_CALLBACK_PORT, generateOAuthState, startCallbackServer } from "./callback-server.js"
+import { generateOAuthState, KIMCHI_SSO_CALLBACK_PORT, startCallbackServer } from "./callback-server.js"
 
 export { generateOAuthState }
 
@@ -46,7 +46,7 @@ const EXPIRY_MARGIN_MS = 60_000
 /** Scope: offline_access yields the refresh token the harness needs. */
 export const OAUTH_SCOPE = "openid profile email offline_access"
 
-const SUCCESS_MESSAGE = "Signed in with CAST AI. You can close this window and return to Kimchi."
+const SUCCESS_MESSAGE = "Signed in with Kimchi. You can close this window and return to Kimchi."
 
 // ---------------------------------------------------------------------------
 // PKCE (RFC 7636) — 32 random bytes base64url; S256 challenge.
@@ -137,7 +137,7 @@ export function authorizationCodeFromManualInput(
 	const errorParam = url.searchParams.get("error")
 	if (errorParam) {
 		const desc = url.searchParams.get("error_description") ?? ""
-		throw new OAuthTokenError(`CAST AI sign-in failed: ${errorParam}${desc ? ` — ${desc}` : ""}`, {
+		throw new OAuthTokenError(`Kimchi sign-in failed: ${errorParam}${desc ? ` — ${desc}` : ""}`, {
 			code: errorParam,
 		})
 	}
@@ -251,7 +251,7 @@ function credentialFromTokenResponse(
 		typeof token.refresh_token === "string" && token.refresh_token.trim() ? token.refresh_token : previous?.refresh
 	if (!refresh) {
 		throw new Error(
-			"CAST AI sign-in did not return a refresh token — the Auth0 application must allow the 'offline_access' scope",
+			"Kimchi sign-in did not return a refresh token — the Auth0 application must allow the 'offline_access' scope",
 		)
 	}
 	if (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) {
@@ -278,7 +278,7 @@ function credentialFromTokenResponse(
 	// useIdToken config (default: ID token as the gateway bearer) pending the V-1 gateway probe.
 	const bearer = config.useIdToken ? idToken : accessToken
 	if (!bearer) {
-		throw new Error("CAST AI sign-in did not return an ID token (KIMCHI_OAUTH_USE_ID_TOKEN=0 to use the access token)")
+		throw new Error("Kimchi sign-in did not return an ID token (KIMCHI_OAUTH_USE_ID_TOKEN=0 to use the access token)")
 	}
 
 	return {
@@ -303,8 +303,8 @@ interface OrganizationsResponse {
 	organizations?: Array<{ id?: string; name?: string }>
 }
 
-/** List the user's organizations from the Cast AI users API
- * (`GET <organizationsUrl>` — the Cast AI users API organization listing). */
+/** List the user's organizations from the Kimchi users API
+ * (`GET <organizationsUrl>` — the Kimchi users API organization listing). */
 export async function listUserOrganizations(
 	organizationsUrl: string,
 	bearer: string,
@@ -332,7 +332,7 @@ export async function listUserOrganizations(
 }
 
 /** Sentinel option id for the paginator entry (cannot collide with real
- * CAST AI org ids, which are UUIDs). */
+ * Kimchi org ids, which are UUIDs). */
 const MORE_ORGANIZATIONS_ID = "__kimchi_more_organizations__"
 /** The upstream auth selector renders every option without scrolling, so the
  * org list is paged — 10 organizations per selector page. */
@@ -350,7 +350,7 @@ export async function selectOrganization(
 	callbacks: OAuthLoginCallbacks,
 ): Promise<KimchiOrganization> {
 	if (organizations.length === 0) {
-		throw new Error("This CAST AI account has no organizations")
+		throw new Error("This Kimchi account has no organizations")
 	}
 	if (organizations.length === 1) {
 		return organizations[0]
@@ -383,7 +383,7 @@ export async function selectOrganization(
 		return selected
 	}
 	// Unreachable: the loop returns on selection or throws on cancel.
-	throw new Error("This CAST AI account has no organizations")
+	throw new Error("This Kimchi account has no organizations")
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +391,7 @@ export async function selectOrganization(
 // ---------------------------------------------------------------------------
 
 /**
- * Run the browser-based CAST AI SSO login. Resolves with an OAuth credential
+ * Run the browser-based Kimchi SSO login. Resolves with an OAuth credential
  * the extension adapter stores under `kimchi-dev` in auth.json.
  *
  * `options.callbackPort` is a test seam: omitted (production) it binds the
@@ -401,7 +401,7 @@ export async function selectOrganization(
  * machine). The redirect URI is read from the bound server either way, so
  * nothing else changes between the two modes.
  */
-export async function loginWithCastAiOauth(
+export async function loginWithKimchiOauth(
 	config: KimchiOAuthConfig,
 	callbacks: OAuthLoginCallbacks,
 	options: { callbackPort?: number } = {},
@@ -410,7 +410,7 @@ export async function loginWithCastAiOauth(
 	const verifier = generateCodeVerifier()
 	const state = generateOAuthState()
 
-	const fixedPort = options.callbackPort ?? CAST_AI_SSO_CALLBACK_PORT
+	const fixedPort = options.callbackPort ?? KIMCHI_SSO_CALLBACK_PORT
 	const callbackServer = await startCallbackServer(state, {
 		mode: "code",
 		successMessage: SUCCESS_MESSAGE,
@@ -441,7 +441,7 @@ export async function loginWithCastAiOauth(
 					// surface "access_denied" vs "interaction_required" vs a transient
 					// response_error distinctly.
 					throw new OAuthTokenError(
-						`CAST AI sign-in failed: ${result.errorCode}${result.error && result.error !== result.errorCode ? ` — ${result.error}` : ""}`,
+						`Kimchi sign-in failed: ${result.errorCode}${result.error && result.error !== result.errorCode ? ` — ${result.error}` : ""}`,
 						{ code: result.errorCode },
 					)
 				}
@@ -490,7 +490,7 @@ export async function loginWithCastAiOauth(
 function configFromCredential(credential: OAuthCredentials): TokenFlowConfig {
 	const extras = credential as OAuthCredentials & Partial<KimchiCredentialExtras>
 	if (!extras.tokenUrl || !extras.clientId) {
-		throw new Error("Stored CAST AI credential is incomplete — sign in again")
+		throw new Error("Stored Kimchi credential is incomplete — sign in again")
 	}
 	return {
 		region: extras.region as KimchiOAuthConfig["region"],
@@ -511,7 +511,7 @@ function configFromCredential(credential: OAuthCredentials): TokenFlowConfig {
  * Side-effect-free besides the HTTP call: upstream runs this under the
  * credential-store lock and persists the returned credential itself.
  */
-export async function refreshCastAiOauth(credential: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
+export async function refreshKimchiOauth(credential: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
 	const config = configFromCredential(credential)
 	const previous = credential as OAuthCredentials & Partial<KimchiCredentialExtras>
 
@@ -529,7 +529,7 @@ export async function refreshCastAiOauth(credential: OAuthCredentials, signal: A
 }
 
 /** The bearer string requests send — what `credentialFromTokenResponse` selected. */
-export function castAiOauthApiKey(credential: OAuthCredentials): string {
+export function kimchiOauthApiKey(credential: OAuthCredentials): string {
 	return credential.access
 }
 
@@ -558,21 +558,21 @@ export function kimchiSsoExtensionOAuth(
 	hooks: KimchiSsoOAuthHooks = {},
 ): ExtensionOAuthConfig {
 	return {
-		name: "CAST AI SSO",
+		name: "Kimchi SSO",
 		login: (callbacks) => {
 			// Region comes from the selector (pending) or, absent one, config.
 			const config = resolveOAuthLoginConfig(storedRegion())
 			clearPendingOAuthRegion()
 			if (!config) {
 				return Promise.reject(
-					new Error("CAST AI SSO login is not available for the current region (self-hosted has no SSO tenant)"),
+					new Error("Kimchi SSO login is not available for the current region (self-hosted has no SSO tenant)"),
 				)
 			}
-			return loginWithCastAiOauth(config, callbacks)
+			return loginWithKimchiOauth(config, callbacks)
 		},
 		refreshToken: async (credentials, signal) => {
 			try {
-				return await refreshCastAiOauth(credentials, signal)
+				return await refreshKimchiOauth(credentials, signal)
 			} catch (error) {
 				if (error instanceof OAuthTokenError && error.code === "invalid_grant") {
 					hooks.onInvalidGrant?.(credentials, error)
@@ -580,6 +580,6 @@ export function kimchiSsoExtensionOAuth(
 				throw error
 			}
 		},
-		getApiKey: (credentials) => castAiOauthApiKey(credentials),
+		getApiKey: (credentials) => kimchiOauthApiKey(credentials),
 	}
 }
