@@ -26,7 +26,7 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
-import { getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
+import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
@@ -401,12 +401,18 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			policy = installedPolicy
 			const adapterOptions: McpAdapterOptions =
 				options.callerServers || selectedResult.useProgrammaticConfig
-					? { config }
+					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
 						// land where kimchi 1.14 and Studio read them. An explicit
 						// `--mcp-config` keeps winning; the trust flow never sees this default.
-						{ configPath: selectedResult.configPath ?? getSharedMcpConfigPath() }
+						// `defaultProtocolVersion` opts unconfigured servers into era
+						// negotiation (2026-07-28 with legacy fallback); explicit per-server
+						// `protocolVersion` values in mcp.json always win.
+						{
+							configPath: selectedResult.configPath ?? getSharedMcpConfigPath(),
+							defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
+						}
 			// Offline-access request parameters for every OAuth authorize URL; stateless, see
 			// oauth-offline-access.ts.
 			installOfflineAccessAuthorizationUrlTransform()

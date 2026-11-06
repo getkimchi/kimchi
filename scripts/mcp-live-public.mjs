@@ -32,6 +32,14 @@ const DEFAULT_SERVERS = [
 		tool: "read_wiki_structure",
 		args: { repoName: "expressjs/express" },
 	},
+	{
+		// Modern-era (2026-07-28) reference server, modern-only (rejects legacy):
+		// exercises the default era promotion against a real third-party host.
+		name: "mcpjam-stateless",
+		url: "https://stateless.mcpjam.com/mcp",
+		tool: "echo",
+		args: { message: "kimchi live modern-era check" },
+	},
 ]
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms))
