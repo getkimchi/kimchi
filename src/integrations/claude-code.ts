@@ -34,7 +34,10 @@ export function claudeCodeEnv(
 		ANTHROPIC_BASE_URL: baseUrl,
 		ANTHROPIC_API_KEY: "",
 		ANTHROPIC_AUTH_TOKEN: apiKey,
-		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: typeof userBetas === "string" ? userBetas : "1",
+		// settings.json may hold a JSON number or boolean; Claude Code honours those too.
+		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: ["string", "number", "boolean"].includes(typeof userBetas)
+			? String(userBetas)
+			: "1",
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"

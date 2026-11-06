@@ -115,6 +115,28 @@ describe("injectClaudeCodeEnv", () => {
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
+	it("keeps a JSON number or boolean CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS from settings.json", () => {
+		const zero: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 0 }
+		injectClaudeCodeEnv(zero, "https://b", "k")
+		expect(zero.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+
+		const off: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: false }
+		injectClaudeCodeEnv(off, "https://b", "k")
+		expect(off.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("false")
+	})
+
+	it("keeps an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS, which Claude Code reads as not disabled", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "" }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("")
+	})
+
+	it("treats a null CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS in settings.json as unset", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: null }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
 	it("sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when settings.json does not have it", () => {
 		const env: Record<string, unknown> = {}
 		injectClaudeCodeEnv(env, "https://b", "k")
