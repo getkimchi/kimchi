@@ -32,10 +32,10 @@
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import {
-	KIMCHI_SSO_CALLBACK_PORT,
 	CallbackPortInUseError,
 	type CallbackResult,
 	type CallbackServer,
+	KIMCHI_SSO_CALLBACK_PORT,
 	type startCallbackServer as startCallbackServerProd,
 } from "../../../cli-auth/callback-server.js"
 import {
