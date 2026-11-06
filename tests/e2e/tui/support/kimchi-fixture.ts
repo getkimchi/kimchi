@@ -40,6 +40,32 @@ export const FAKE_PROVIDER = "fake"
 export const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
 export const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
 
+/** Absolute path of the harness settings.json inside a fixture's isolated HOME. */
+export function harnessSettingsPath(homeDir: string): string {
+	return join(homeDir, ".config", "kimchi", "harness", "settings.json")
+}
+
+/** Pin status line elements in the fixture's isolated harness settings.json.
+ *  Opt-in segments (lsp/dap) are hidden by default, so a test asserting their
+ *  footer text must pin the segment here or it never renders. Call from
+ *  `seedHome` — the fixture writes settings.json (it owns the statusLine.pinned
+ *  schema seeded here) before seedHome runs; calling earlier fails loudly
+ *  instead of with an opaque ENOENT. */
+export function pinStatusLineElements(homeDir: string, ...ids: string[]): void {
+	const settingsPath = harnessSettingsPath(homeDir)
+	if (!existsSync(settingsPath)) {
+		throw new Error(
+			`pinStatusLineElements: ${settingsPath} not found — call from seedHome; the fixture writes harness settings.json before seedHome runs`,
+		)
+	}
+	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	const statusLine = (settings.statusLine ?? {}) as Record<string, unknown>
+	const pinned = Array.isArray(statusLine.pinned) ? (statusLine.pinned as string[]) : []
+	statusLine.pinned = [...new Set([...pinned, ...ids])]
+	settings.statusLine = statusLine
+	writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"))
+}
+
 // Per-launch pidfile so teardown can kill a kimchi that ignored Ctrl-C/SIGINT
 // (e.g. a process stuck in a synchronous loop, where signal handlers starve).
 const launchedPidFiles = new WeakMap<Terminal, string>()
@@ -214,7 +240,7 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 		// E2E tests. Without this, readStatusLineConfig() would return DEFAULT_STATUS_LINE_PINNED
 		// (context, agents, phase, usage) and change the terminal layout for every test.
 		writeFileSync(
-			join(agentDir, "settings.json"),
+			harnessSettingsPath(homeDir),
 			JSON.stringify(
 				{
 					statusLine: { pinned: [] },

@@ -18,7 +18,7 @@ import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { pinStatusLineElements, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -76,7 +76,10 @@ test("DAP degraded state: debug_launch surfaces the missing-adapter error and st
 			// No adapter binaries — dlv/debugpy/lldb-dap can exist on a dev
 			// machine but must not change this scenario.
 			env: { KIMCHI_DAP_BINARIES: "" },
-			seedHome: (_homeDir, workDir) => {
+			seedHome: (homeDir, workDir) => {
+				// The dap segment is opt-in (hidden by default): pin it so the
+				// missing-adapter status renders in the footer.
+				pinStatusLineElements(homeDir, "dap")
 				// package.json marks the project as TS/JS → js-debug is the missing
 				// adapter shown in the status footer.
 				writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
@@ -186,7 +189,10 @@ testWithJsDebug(
 				// exercised a real adapter. Naming js-debug whitelists its custom
 				// script-path probe; dlv/debugpy/lldb-dap stay inert.
 				env: { KIMCHI_DAP_BINARIES: "js-debug" },
-				seedHome: (_homeDir, workDir) => {
+				seedHome: (homeDir, workDir) => {
+					// The dap segment is opt-in (hidden by default): pin it so the
+					// active-adapter status renders in the footer.
+					pinStatusLineElements(homeDir, "dap")
 					writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
 					// Breakpoint at line 2 stops inside add() with a=2, b=3.
 					writeFileSync(

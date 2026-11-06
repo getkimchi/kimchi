@@ -8,7 +8,7 @@ const CC_CONFIG_PATH = join(homedir(), ".claude.json")
 const CC_SKILLS_DIR = join(homedir(), ".claude", "skills")
 const CC_COMMANDS_DIR = join(homedir(), ".claude", "commands")
 
-interface CcServerRaw {
+export interface CcServerRaw {
 	command?: string
 	args?: string[]
 	env?: Record<string, string>
@@ -19,7 +19,7 @@ interface CcServerRaw {
 	type?: string
 }
 
-function makeTransformServer(raw: CcServerRaw): ServerEntry {
+export function makeTransformServer(raw: CcServerRaw): ServerEntry {
 	const entry: ServerEntry = {}
 	if (raw.command !== undefined) entry.command = raw.command
 	if (raw.args !== undefined) entry.args = raw.args

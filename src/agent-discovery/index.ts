@@ -1,5 +1,6 @@
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { claudeCode } from "./agents/claude-code.js"
+import { claudeDesktop } from "./agents/claude-desktop.js"
 import { cursor } from "./agents/cursor.js"
 import { openCode } from "./agents/opencode.js"
 import { SKILLS_ONLY_AGENTS } from "./agents/skills-only.js"
@@ -38,6 +39,15 @@ export interface AgentDefinition {
 	 * prompts. Empty array → no commands concept for this agent.
 	 */
 	readonly commandsDirs: readonly DirCandidate[]
+	/**
+	 * Merge skills from EVERY existing skillsDirs candidate instead of the
+	 * default first-existing-wins. Set by agents that materialize skills in
+	 * several disjoint roots (Claude Desktop: account-skills bundle plus one
+	 * `skills/` dir per installed plugin). Unset/false keeps the documented
+	 * single-winner behaviour; merging dedupes by invocation name,
+	 * first-writer-wins.
+	 */
+	readonly mergeAllSkillsDirs?: boolean
 	/**
 	 * Parse the raw config file contents. Defaults to JSON.parse if omitted.
 	 * OpenCode uses a JSONC parser; CC uses plain JSON.
@@ -115,4 +125,10 @@ export interface AgentDiscovery {
 
 export { discoverAgent }
 
-export const AGENT_DEFINITIONS: readonly AgentDefinition[] = [claudeCode, openCode, cursor, ...SKILLS_ONLY_AGENTS]
+export const AGENT_DEFINITIONS: readonly AgentDefinition[] = [
+	claudeCode,
+	openCode,
+	cursor,
+	claudeDesktop,
+	...SKILLS_ONLY_AGENTS,
+]
