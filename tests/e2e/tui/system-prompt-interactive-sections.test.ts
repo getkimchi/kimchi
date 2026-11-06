@@ -31,9 +31,11 @@ test("interactive TUI sessions keep Consent, Harness Notes, Documents and the or
 
 			// Codemode's dependent-workflow trigger reaches the model through both
 			// Tool Selection and the dynamic function declaration.
-			expect(prompt).toContain("Prefer `codemode` for a predictable multi-step workflow")
-			expect(prompt).toContain("`Promise.allSettled`")
-			expect(toolDescriptionOf(chat[0], "codemode")).toContain("later tool's arguments can be derived mechanically")
+			expect(prompt).toContain("Prefer `codemode` when later tool arguments can be computed from an earlier result")
+			expect(toolDescriptionOf(chat[0], "codemode")).toContain(
+				"later tool arguments can be computed from an earlier result",
+			)
+			expect(toolDescriptionOf(chat[0], "codemode")).toContain("const hits = (await tools.grep")
 			expect(prompt).not.toContain("Use read to examine files instead of cat or sed.")
 			expect(prompt).not.toContain("Use codemode to batch independent tool calls (Promise.allSettled),")
 

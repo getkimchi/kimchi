@@ -139,11 +139,10 @@ describe("buildSystemPrompt", () => {
 		expect(result).toContain("## Tool Guidelines\n\n- Batch objective updates.\n- Read relevant files.")
 		expect(result.match(/Batch objective updates\./g)).toHaveLength(1)
 		expect(result).not.toContain("Use read to examine files instead of cat or sed.")
-		expect(result).toContain("Prefer `codemode` for a predictable multi-step workflow")
-		expect(result).toContain("search for a symbol, select the matching files, read the relevant ranges")
-		expect(result).toContain("For independent calls whose full results you need, issue direct calls together.")
+		expect(result).toContain("Prefer `codemode` when later tool arguments can be computed from an earlier result")
+		expect(result).toContain("grep for a symbol, read bounded ranges around the returned hits")
+		expect(result).toContain("when independent calls need their full results; issue those calls together")
 		expect(result).toContain("Direct tools remain available for single operations, approvals, and background commands.")
-		expect(result).toContain("`Promise.allSettled`")
 	})
 
 	it("omits codemode advice and the tool-guidelines section when no active tool contributes guidelines", () => {

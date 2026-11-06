@@ -266,7 +266,9 @@ describe("prompt enrichment tool visibility", () => {
 		const active = await handler({}, ctx)
 		expect(active?.systemPrompt).toContain("- Claim complete only after evidence.")
 		expect(active?.systemPrompt).not.toContain("Use codemode to batch independent tool calls.")
-		expect(active?.systemPrompt).toContain("Prefer `codemode` for a predictable multi-step workflow")
+		expect(active?.systemPrompt).toContain(
+			"Prefer `codemode` when later tool arguments can be computed from an earlier result",
+		)
 
 		mock.api.setActiveTools([])
 		const inactive = await handler({}, ctx)

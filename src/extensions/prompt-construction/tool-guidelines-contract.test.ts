@@ -83,7 +83,7 @@ describe("tool guidelines contract (pi guidelines stay curated out)", () => {
 		// section must be absent entirely.
 		expect(prompt).not.toContain("## Tool Guidelines")
 		// The steering lives here, with pi's idiom folded in:
-		expect(prompt).toContain("Prefer `codemode` for a predictable multi-step workflow")
-		expect(prompt).toContain("`Promise.allSettled`")
+		expect(prompt).toContain("Prefer `codemode` when later tool arguments can be computed from an earlier result")
+		expect(prompt).toContain("when independent calls need their full results; issue those calls together")
 	})
 })

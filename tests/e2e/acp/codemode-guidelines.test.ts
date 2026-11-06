@@ -23,13 +23,15 @@ it.each([true, false])(
 			const prompt = systemPromptOf(request)
 			const codemodeDescription = toolDescriptionOf(request, "codemode")
 			if (enabled) {
-				expect(codemodeDescription).toContain("later tool's arguments can be derived mechanically")
+				expect(codemodeDescription).toContain("later tool arguments can be computed from an earlier result")
+				expect(codemodeDescription).toContain("const hits = (await tools.grep")
 				expect(codemodeDescription).toContain("Run JavaScript that calls other tools")
 			} else {
 				expect(codemodeDescription).toBeUndefined()
 			}
-			expect(prompt.includes("Prefer `codemode` for a predictable multi-step workflow")).toBe(enabled)
-			expect(prompt.includes("`Promise.allSettled`")).toBe(enabled)
+			expect(
+				prompt.includes("Prefer `codemode` when later tool arguments can be computed from an earlier result"),
+			).toBe(enabled)
 			// Pi's own per-tool guidelines are curated out of the prompt: they
 			// duplicate kimchi's guidance or the tool descriptions, or contradict
 			// the implementation (bash's PI_* env claim). True regardless of the

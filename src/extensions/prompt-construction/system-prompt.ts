@@ -416,7 +416,7 @@ export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): stri
 	const lines: string[] = []
 	if (toolNames?.has("codemode")) {
 		lines.push(
-			"- Prefer `codemode` for a predictable multi-step workflow that needs no model decision between calls: search for a symbol, select the matching files, read the relevant ranges, then return concise findings. It can also batch independent calls when you will filter or combine their results before returning them. Use `Promise.allSettled` for independent nested calls, inspect failures, and await every call. For independent calls whose full results you need, issue direct calls together. Direct tools remain available for single operations, approvals, and background commands.",
+			"- Prefer `codemode` when later tool arguments can be computed from an earlier result and intermediate output can be filtered before it reaches the model. For example, grep for a symbol, read bounded ranges around the returned hits, and return concise findings. Use direct tools when the next step needs model judgment or when independent calls need their full results; issue those calls together. Direct tools remain available for single operations, approvals, and background commands.",
 		)
 	}
 	if (hasTool(toolNames, "read")) {
