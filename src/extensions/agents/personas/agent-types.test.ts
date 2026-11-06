@@ -39,6 +39,33 @@ describe("agent type tool resolution", () => {
 
 		expect(getToolNamesForType("NoTools")).toEqual([])
 	})
+
+	it("returns no tools for unknown types — fail closed, never General-Purpose's set (issue #1678)", () => {
+		expect(getToolNamesForType("does-not-exist")).toEqual([])
+	})
+
+	it("returns no tools for disabled types", () => {
+		registerAgents(new Map([["Off", agent({ name: "Off", enabled: false })]]))
+
+		expect(getToolNamesForType("Off")).toEqual([])
+	})
+
+	it("getConfig falls back to a fail-closed config for unknown types, not General-Purpose (issue #1678)", () => {
+		const cfg = getConfig("does-not-exist")
+
+		expect(cfg.builtinToolNames).toEqual([])
+		expect(cfg.extensions).toBe(false)
+		expect(cfg.skills).toBe(false)
+	})
+
+	it("getConfig falls back to a fail-closed config for disabled types", () => {
+		registerAgents(new Map([["Off", agent({ name: "Off", enabled: false })]]))
+
+		const cfg = getConfig("Off")
+		expect(cfg.builtinToolNames).toEqual([])
+		expect(cfg.extensions).toBe(false)
+		expect(cfg.skills).toBe(false)
+	})
 })
 
 describe("advertised default agents", () => {
