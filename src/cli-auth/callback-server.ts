@@ -27,11 +27,23 @@ export interface CallbackServerOptions {
  * uses ephemeral ports via the CallbackServerOptions seam. */
 export const KIMCHI_SSO_CALLBACK_PORT = 8765
 
-/** Reusable port-in-use guidance for callers that pick `port.kind: "fixed"`. */
+/** Reusable port-in-use guidance for callers that pick `port.kind: "fixed"`.
+ * Typed so callers (e.g. the ACP SSO flow mapping to CALLBACK_PORT_BUSY) can
+ * classify the failure without substring-matching the message. */
+export class CallbackPortInUseError extends Error {
+	readonly port: number
+
+	constructor(port: number) {
+		super(
+			`Port ${port} is in use, probably by an unfinished CAST AI sign-in in another Kimchi session. Cancel that sign-in and try again.`,
+		)
+		this.name = "CallbackPortInUseError"
+		this.port = port
+	}
+}
+
 export function callbackPortInUseError(port: number): Error {
-	return new Error(
-		`Port ${port} is in use, probably by an unfinished Kimchi sign-in in another Kimchi session. Cancel that sign-in and try again.`,
-	)
+	return new CallbackPortInUseError(port)
 }
 
 export interface CallbackResult {
