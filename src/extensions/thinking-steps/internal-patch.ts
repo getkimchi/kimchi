@@ -2,6 +2,7 @@ import type { AssistantMessage, ThinkingContent } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent as _AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
 import { Markdown, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { deriveThinkingStepsForMessage } from "./parse.js"
 import { ThinkingStepsComponent, tailRawLinesFromBlocks } from "./render.js"
 import {
 	decrementPatchRefCount,
@@ -85,20 +86,29 @@ class LiveThinkingPreview implements Component {
 	constructor(
 		private readonly theme: ThinkingThemeLike,
 		private readonly blocks: ThinkingSourceBlock[],
+		private readonly messageTimestamp: number,
+		private readonly scopeKey: string,
 	) {}
 
 	render(width: number): string[] {
 		const innerWidth = Math.max(1, width - 1)
 		const nowMs = Date.now()
+		// Re-check the active state on every paint. If the run died without a
+		// final message_update (a loop-level exception mid-thinking orphans the
+		// streaming message; handleRunFailure emits events for a NEW failure
+		// message and agent_end only clears the state), no updateContent ever
+		// swaps this preview for the settled view — without this check it would
+		// keep animating "Thinking •" forever and look like a hung turn.
+		const active = getActiveThinkingState(this.messageTimestamp, this.scopeKey).active
 		const pulseFrames = [
 			this.theme.fg("dim", "·"),
 			this.theme.fg("muted", "•"),
 			this.theme.fg("accent", "•"),
 			this.theme.fg("muted", "•"),
 		]
-		const pulse = pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]
+		const pulse = active ? (pulseFrames[Math.floor(nowMs / 180) % pulseFrames.length] ?? pulseFrames[0]) : ""
 		const header = ` ${truncateToWidth(
-			`${this.theme.fg("muted", "▍")} ${this.theme.fg("dim", "Thinking")} ${pulse}`,
+			`${this.theme.fg("muted", "▍")} ${this.theme.fg("dim", "Thinking")}${pulse ? ` ${pulse}` : ""}`,
 			innerWidth,
 			"",
 		)}`
@@ -327,26 +337,40 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
 					renderedThinking = true
 					if (!thinkingSuppressed) {
-						if (this.hideThinkingBlock) {
-							const activeState = getActiveThinkingState(message.timestamp, thinkingScopeKey)
-							if (activeState.active) {
-								this.contentContainer.addChild(new LiveThinkingPreview(theme, thinkingBlocks))
-							} else {
-								const lastDuration = getLastThinkingDuration()
-								const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
-								const rawLabel = usesDuration
-									? lastDuration.durationMs < 1000
-										? "Thought for <1s"
-										: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
-									: this.hiddenThinkingLabel
-								const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
-								this.contentContainer.addChild(
-									new Text(` ${theme.fg("muted", "▍")} ${theme.fg("dim", styledLabel)}`, 0, 0),
-								)
-							}
+						const activeState = getActiveThinkingState(message.timestamp, thinkingScopeKey)
+						if (activeState.active) {
+							// While thinking streams, every message_update rebuilds the
+							// message content. Constructing ThinkingStepsComponent here
+							// re-derives every step from the full accumulated text on
+							// every update, which saturates the main thread on large
+							// thinking blocks (measured: multi-second input freezes).
+							// Render the cached tail-only preview until the message
+							// settles, then build the full view once.
+							this.contentContainer.addChild(
+								new LiveThinkingPreview(theme, thinkingBlocks, message.timestamp, thinkingScopeKey),
+							)
+						} else if (this.hideThinkingBlock) {
+							const lastDuration = getLastThinkingDuration()
+							const usesDuration = lastDuration !== undefined && message.timestamp === lastDuration.messageTimestamp
+							const rawLabel = usesDuration
+								? lastDuration.durationMs < 1000
+									? "Thought for <1s"
+									: `Thought for ${Math.round(lastDuration.durationMs / 1000)}s`
+								: this.hiddenThinkingLabel
+							const styledLabel = theme.bold ? theme.bold(rawLabel) : rawLabel
+							this.contentContainer.addChild(
+								new Text(` ${theme.fg("muted", "▍")} ${theme.fg("dim", styledLabel)}`, 0, 0),
+							)
 						} else {
 							this.contentContainer.addChild(
-								new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, thinkingScopeKey, this),
+								new ThinkingStepsComponent(
+									theme,
+									message.timestamp,
+									thinkingBlocks,
+									thinkingScopeKey,
+									this,
+									deriveThinkingStepsForMessage(message, thinkingBlocks),
+								),
 							)
 						}
 						if (hasVisibleTextAfterThinking) {

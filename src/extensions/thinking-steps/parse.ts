@@ -1426,6 +1426,56 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 	return steps
 }
 
+/**
+ * Memoized per-message derivation. The streaming chat rebuilds a message's
+ * components on every message_update and re-renders the settled message until
+ * message_end, and chat rebuilds (resume, compaction, theme change) re-derive
+ * every historical message. `deriveThinkingSteps` is pure, so unchanged
+ * thinking can reuse the previous result.
+ *
+ * Keyed by the message's content array, not the message object: the agent loop
+ * emits every message_update with `message: { ...partialMessage }` — a fresh
+ * object per delta whose `content` is the accumulating message's array (the
+ * spread copies the reference). Keying by that array makes the memo hit
+ * across every streaming delta, and chat rebuilds reuse the same message
+ * objects, so they hit too. A value signature over the blocks guards against
+ * in-place content growth reusing stale steps.
+ */
+let derivedStepsByMessage = new WeakMap<object, { signature: string; steps: DerivedThinkingStep[] }>()
+
+/**
+ * Fingerprint for the per-message memo: contentIndex, redacted flag, text
+ * length, and the first/last 32 characters of each block. Relies on thinking
+ * text being append-only in practice (every provider converter appends
+ * deltas), so a same-length mid-text rewrite could alias — the worst case is
+ * one message reusing stale steps until its next change.
+ */
+function thinkingBlocksSignature(blocks: ThinkingSourceBlock[]): string {
+	return blocks
+		.map(
+			(block) =>
+				`${block.contentIndex}:${block.redacted ? 1 : 0}:${block.text.length}:${block.text.slice(0, 32)}\u0000${block.text.slice(-32)}`,
+		)
+		.join("\u0001")
+}
+
+export function deriveThinkingStepsForMessage(
+	message: { content: readonly unknown[] },
+	blocks: ThinkingSourceBlock[],
+): DerivedThinkingStep[] {
+	const signature = thinkingBlocksSignature(blocks)
+	const cached = derivedStepsByMessage.get(message.content)
+	if (cached && cached.signature === signature) return cached.steps
+	const steps = deriveThinkingSteps(blocks)
+	derivedStepsByMessage.set(message.content, { signature, steps })
+	return steps
+}
+
+/** Test hook: drop the per-message memo so tests cannot pollute each other. */
+export function resetDerivedStepsMemoForTests(): void {
+	derivedStepsByMessage = new WeakMap()
+}
+
 export function parseThinkingMode(input: string): ThinkingStepsMode | undefined {
 	const normalized = input.trim().toLowerCase()
 	if (!normalized) return undefined
