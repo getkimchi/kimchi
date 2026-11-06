@@ -925,9 +925,6 @@ export default function (pi: ExtensionAPI) {
 		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
 	})
 
-	// cwd is required: `process.cwd()` is the server-process cwd, which differs
-	// from the session cwd for ACP sessions and worktrees — a default here
-	// silently drops project agents (see findAgentFile below).
 	const reloadCustomAgents = (cwd: string) => {
 		const userAgents = loadCustomAgents(cwd)
 		registerAgents(userAgents)
