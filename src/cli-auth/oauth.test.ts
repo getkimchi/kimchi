@@ -269,7 +269,7 @@ describe("loginWithKimchiOauth", () => {
 		try {
 			const { callbacks } = makeCallbacks()
 			await expect(loginWithKimchiOauth(configFor(mock.url), callbacks, { callbackPort: blockerPort })).rejects.toThrow(
-				new RegExp(`${blockerPort} is in use, probably by an unfinished Kimchi sign-in`),
+				new RegExp(`${blockerPort} is in use, probably by an unfinished CAST AI sign-in`),
 			)
 		} finally {
 			await new Promise<void>((resolveClose) => blocker.close(() => resolveClose()))

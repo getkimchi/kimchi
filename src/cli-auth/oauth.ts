@@ -454,19 +454,7 @@ export async function loginWithKimchiOauth(
 		const { code } = await Promise.race(candidates)
 
 		callbacks.onProgress?.("Exchanging authorization code for tokens…")
-		const token = await postTokenRequest(
-			config.tokenUrl,
-			{
-				grant_type: "authorization_code",
-				client_id: config.clientId,
-				code,
-				code_verifier: verifier,
-				redirect_uri: callbackServer.url,
-				...(config.audience ? { audience: config.audience } : {}),
-			},
-			signal,
-		)
-		const credential = credentialFromTokenResponse(token, config)
+		const credential = await exchangeAuthorizationCode(config, code, verifier, callbackServer.url, signal)
 
 		// SSO credentials are organization-scoped: list the user's organizations
 		// and select one BEFORE the credential is saved, so the
@@ -484,6 +472,34 @@ export async function loginWithKimchiOauth(
 		// late manual-prompt failure never crashes the process.
 		manualCode?.catch(() => {})
 	}
+}
+
+/**
+ * Exchange an authorization code for tokens (grant_type=authorization_code).
+ * Stepwise seam for surfaces that split the login across calls (the ACP SSO
+ * ext-method flow exchanges after `sso_await` delivers the callback code);
+ * `loginWithCastAiOauth` composes the same pieces inline for the TUI.
+ */
+export async function exchangeAuthorizationCode(
+	config: KimchiOAuthConfig,
+	code: string,
+	codeVerifier: string,
+	redirectUri: string,
+	signal: AbortSignal,
+): Promise<OAuthCredentials> {
+	const token = await postTokenRequest(
+		config.tokenUrl,
+		{
+			grant_type: "authorization_code",
+			client_id: config.clientId,
+			code,
+			code_verifier: codeVerifier,
+			redirect_uri: redirectUri,
+			...(config.audience ? { audience: config.audience } : {}),
+		},
+		signal,
+	)
+	return credentialFromTokenResponse(token, config)
 }
 
 /** Config needed to renew a stored credential — carried inside the credential itself. */
