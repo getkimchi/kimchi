@@ -383,6 +383,49 @@ describe("SsoFlowManager", () => {
 			)
 		})
 
+		// Review finding: concurrent select_org calls must settle exactly once —
+		// settleCredential is a read-modify-write of the shared credential store.
+		it("settles shared concurrent select_org calls exactly once", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockResolvedValue([
+				{ id: "org-123", name: "Acme" },
+				{ id: "org-456", name: "Acme Staging" },
+			])
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			await h.manager.awaitResult({ requestId: begin.requestId })
+
+			const first = h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })
+			const second = h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })
+			await expect(first).resolves.toEqual({ status: "authenticated", org: { id: "org-456", name: "Acme Staging" } })
+			await expect(second).resolves.toEqual({ status: "authenticated", org: { id: "org-456", name: "Acme Staging" } })
+			expect(h.settleCredential).toHaveBeenCalledTimes(1)
+		})
+
+		// Failure semantics match the single-org branch: a failed settle consumes
+		// the flow, so a retry gets SSO_REQUEST_NOT_FOUND instead of re-running
+		// a partially-settled persist.
+		it("consumes the flow when the settle tail fails", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockResolvedValue([
+				{ id: "org-123", name: "Acme" },
+				{ id: "org-456", name: "Acme Staging" },
+			])
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			await h.manager.awaitResult({ requestId: begin.requestId })
+			h.settleCredential.mockRejectedValueOnce(new Error("disk full"))
+
+			// The raw persist failure surfaces, and the flow is consumed with it —
+			// a retry gets SSO_REQUEST_NOT_FOUND instead of re-running a
+			// partially-settled persist.
+			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" })).rejects.toThrow("disk full")
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+		})
+
 		it("rejects an unknown org with SSO_UNKNOWN_ORG without consuming the flow", async () => {
 			const h = makeHarness()
 			h.listUserOrganizations.mockResolvedValue([

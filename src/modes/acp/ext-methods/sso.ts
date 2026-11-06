@@ -148,6 +148,9 @@ interface PendingSsoFlow {
 	organizations?: KimchiOrganization[]
 	/** Shared wait so concurrent/repeat `sso_await` calls settle once. */
 	awaitPromise?: Promise<SsoAwaitResponse>
+	/** Shared settle so concurrent `sso_select_org` calls persist exactly once
+	 * (settleSsoCredential is a read-modify-write of models.json/auth.json). */
+	settlePromise?: Promise<SsoSelectOrgResponse>
 }
 
 function requireStringParam(params: Record<string, unknown>, name: string): string {
@@ -282,10 +285,27 @@ export class SsoFlowManager {
 			this.discard(flow)
 			throw ssoError("SSO_REQUEST_NOT_FOUND", "No organization selection is pending for this requestId")
 		}
+		// Memoized settle: concurrent select_org calls share one persist, and a
+		// failed settle consumes the flow (same terminal semantics as the
+		// single-org branch in runBrowserWait).
+		flow.settlePromise ??= this.settleOrg(flow, credential, org)
+		return flow.settlePromise
+	}
+
+	private async settleOrg(
+		flow: PendingSsoFlow,
+		credential: OAuthCredentials,
+		org: KimchiOrganization,
+	): Promise<SsoSelectOrgResponse> {
 		this.assertFlowAlive(flow)
-		// Persist + fan out the org-scoped credential; nothing was written
-		// before this point (contract §3.2).
-		await this.deps.settleCredential(credential, org)
+		try {
+			// Persist + fan out the org-scoped credential; nothing was written
+			// before this point (contract §3.2).
+			await this.deps.settleCredential(credential, org)
+		} catch (error) {
+			this.discard(flow)
+			throw error
+		}
 		this.discard(flow)
 		return { status: "authenticated", org }
 	}
