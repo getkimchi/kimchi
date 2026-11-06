@@ -1,12 +1,16 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
-import { MEMORY_STATUS_KEY } from "../../components/status-line.js"
+import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
 import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
+import { captureSessionId } from "./capture.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
@@ -550,6 +554,38 @@ describe("memory extension", () => {
 		)
 		await start(startEvent("set up the repo"), ctx)
 		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== MEMORY_STATUS_KEY)).toBe(true)
+		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Recalled"))).toBe(true)
+	})
+
+	it("announces the first delivery once, then only updates the segment", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct fact number ${++n}`, score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("drift topic 1"), ctx)
+		await start(startEvent("drift topic 2"), ctx)
+		// The first delivery announced itself — exactly once, pluralized.
+		expect(vi.mocked(ctx.ui.notify).mock.calls.filter((call) => String(call[0]).startsWith("Recalled"))).toEqual([
+			["Recalled 1 memory", "info"],
+		])
+		// The later recall grew the segment silently — no second announce.
+		const statusCalls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
+		expect(statusCalls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
+	})
+
+	it("pluralizes the first-recall notification for multi-fact digests", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [
+			{ memory: "user prefers pnpm over npm", score: 0.7 },
+			{ memory: "the user lives in Lisbon", score: 0.6 },
+		])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.notify).mock.calls).toContainEqual(["Recalled 2 memories", "info"])
 	})
 
 	it("clears the recall indicator even when retrieval fails", async () => {
@@ -955,5 +991,57 @@ describe("memory status over the ACP bridge", () => {
 		await new Promise((r) => setImmediate(r))
 		const cleared = memoryStatusCalls().at(-1)?.[1] as { statusText?: string } | undefined
 		expect(cleared?.statusText).toBeUndefined()
+	})
+})
+
+describe("memory saved feedback (completion record)", () => {
+	const realHome = process.env.HOME
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-memory-saved-"))
+		process.env.HOME = home
+	})
+
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	/** Seed the worker's completion record for THIS capture session. */
+	const writeRecord = (factsAdded: number): void => {
+		const dir = join(home, ".config", "kimchi", "memory")
+		mkdirSync(dir, { recursive: true })
+		writeFileSync(
+			join(dir, "capture-completions.json"),
+			JSON.stringify({ sessions: { [captureSessionId()]: { factsAdded, updatedAt: Date.now() } } }),
+		)
+	}
+
+	it("keeps the saved half in the segment without notifications", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		// Nothing recorded yet — no saved status.
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== MEMORY_SAVED_STATUS_KEY)).toBe(true)
+
+		// A drain commits one fact for this capture session → next turn sets
+		// the segment's saved half.
+		writeRecord(1)
+		await start(startEvent("next turn"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "1"])
+
+		// No change → the status is not re-set for the same commit.
+		await start(startEvent("third turn"), ctx)
+		// A later commit adds more → the status grows.
+		writeRecord(3)
+		await start(startEvent("fourth turn"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+
+		// Saves never announce — the segment half is the only surface.
+		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
 	})
 })

@@ -799,14 +799,26 @@ function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
  *  the session toggle disables memory). */
 export const MEMORY_STATUS_KEY = "memory"
 
-/** Extension-status-driven like shells: renders the recalled-fact count only
- *  after memory has delivered facts into the conversation, unless the user
- *  opted out via `hidden`. */
+/** Extension status key for the session's own stored-fact count (set when
+ *  an incremental capture commits; grows per session). */
+export const MEMORY_SAVED_STATUS_KEY = "memory-saved"
+
+/** Extension-status-driven like shells: renders the recalled/saved counts
+ *  after memory first delivers or captures something, unless the user
+ *  opted out via `hidden`. Each half renders only when its value is
+ *  present. */
 function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
 	if (hidden) return null
-	const count = Number(statusLineData.getExtensionStatuses().get(MEMORY_STATUS_KEY))
-	if (!Number.isInteger(count) || count <= 0) return null
-	const text = `${dimText(theme, "memory:")} ${accentText(theme, String(count))}`
+	const statuses = statusLineData.getExtensionStatuses()
+	const recalled = Number(statuses.get(MEMORY_STATUS_KEY))
+	const saved = Number(statuses.get(MEMORY_SAVED_STATUS_KEY))
+	const showRecalled = Number.isInteger(recalled) && recalled > 0
+	const showSaved = Number.isInteger(saved) && saved > 0
+	if (!showRecalled && !showSaved) return null
+	const parts: string[] = []
+	if (showRecalled) parts.push(`${accentText(theme, String(recalled))} ${dimText(theme, "recalled")}`)
+	if (showSaved) parts.push(`${accentText(theme, String(saved))} ${dimText(theme, "saved")}`)
+	const text = `${dimText(theme, "memory:")} ${parts.join(` ${dimText(theme, "·")} `)}`
 	return { id: "memory", text, width: visibleWidth(text) }
 }
 

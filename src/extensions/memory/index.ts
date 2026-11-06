@@ -41,7 +41,7 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
-import { MEMORY_STATUS_KEY } from "../../components/status-line.js"
+import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
 import { loadConfig } from "../../config.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
@@ -49,10 +49,18 @@ import {
 	adminDeleteFacts,
 	adminListFacts,
 	adminSearchFacts,
+	memoryCountText,
 	parseAdminArgs,
 	runAdminCommand,
 } from "./admin.js"
-import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
+import {
+	captureSessionId,
+	createIncrementalCaptureState,
+	incrementalCapture,
+	messageText,
+	readCaptureSessionSaved,
+	wireMemoryCapture,
+} from "./capture.js"
 import {
 	DIGEST_SCORE_THRESHOLD,
 	MEMORY_SEARCH_TIMEOUT_MS,
@@ -306,6 +314,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const deliveredKeys = new Set<string>()
 		const deliveredFacts: string[] = []
 		let recallFailed = false
+		// The session's first fact delivery announces itself once ("Recalled N
+		// memories"); later recalls only bump the status segment. Never reset —
+		// even compaction re-delivery does not re-announce.
+		let recallNotified = false
+		// Capture feedback: cumulative count of this session's stored facts
+		// observed in the worker's completion record — the segment's saved half.
+		let savedSeen = 0
 		// Lever 3: mid-session incremental capture — the runtime mark makes
 		// batches non-overlapping; the worker's hash ledger dedupes restarts.
 		let incrementalState = createIncrementalCaptureState()
@@ -398,6 +413,21 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const updateMemoryStatus = (ctx: ExtensionContext): void => {
 			if (!ctx.hasUI) return
 			ctx.ui.setStatus(MEMORY_STATUS_KEY, deliveredFacts.length > 0 ? String(deliveredFacts.length) : undefined)
+			if (!recallNotified && deliveredFacts.length > 0) {
+				recallNotified = true
+				ctx.ui.notify(`Recalled ${memoryCountText(deliveredFacts.length)}`, "info")
+			}
+		}
+
+		// Read the completion record for our capture session and keep the
+		// segment's saved half current. The closure value guards against a
+		// later drain dropping our entry (record cap).
+		const updateSavedStatus = (ctx: ExtensionContext): void => {
+			if (!ctx.hasUI) return
+			const recorded = readCaptureSessionSaved(captureSessionId())
+			if (recorded <= savedSeen) return
+			savedSeen = recorded
+			ctx.ui.setStatus(MEMORY_SAVED_STATUS_KEY, String(savedSeen))
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
@@ -538,6 +568,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// Lever 3: drain new content as it accumulates (sync, cheap — reads
 			// the in-memory entries and spawns a detached worker past the mark).
 			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd)
+
+			// Capture feedback: read the drain's completion record (per-session
+			// counts) — bump the segment's saved half.
+			updateSavedStatus(ctx)
 
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
