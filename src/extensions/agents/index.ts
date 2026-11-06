@@ -79,6 +79,7 @@ import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllTypes,
+	getAvailableTypes,
 	getDefaultAgentNames,
 	getUserAgentNames,
 	registerAgents,
@@ -1875,12 +1876,27 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				const rawType = params.subagent_type as SubagentType
 				const resolved = resolveType(rawType)
-				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
-				const fellBack = resolved === undefined
+				// Fail closed: an unknown type must never silently widen to a more
+				// privileged persona (previously fell back to General-Purpose with all
+				// builtin tools — see issue #1678). Return the valid names so the
+				// caller can retry immediately.
+				if (resolved === undefined) {
+					return textResult(
+						`Error: Unknown agent type "${rawType}". Valid types: ${getAvailableTypes().join(", ")}. Retry with one of these.`,
+					)
+				}
+				const subagentType = resolved
 
 				const displayName = getDisplayName(subagentType)
 
 				const customConfig = getAgentConfig(subagentType)
+				// A registered but disabled agent is likewise not spawnable: its
+				// permission profile is unavailable, so it must not fall back either.
+				if (customConfig?.enabled === false) {
+					return textResult(
+						`Error: Agent type "${subagentType}" is disabled. Valid types: ${getAvailableTypes().join(", ")}. Retry with one of these.`,
+					)
+				}
 
 				// Background-by-default is a TUI-only behavior — the TUI is the only
 				// surface with a loop that presents background-agent lifecycle to the
@@ -2301,10 +2317,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					widget.markFinished(fgId)
 				}
 
-				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
-					: ""
-
 				// Ferment step worker killed by its OWN budget (turns/duration) on a
 				// first attempt: auto-resume once so the worker finishes instead of the
 				// orchestrator patching the remaining work on the main thread — the
@@ -2336,7 +2348,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				if (record.status === "error") {
-					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
+					return textResult(`Agent failed: ${record.error}`, details)
 				}
 				blockBudgetRetryIfNeeded(
 					record,
@@ -2368,7 +2380,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const instruction = getStatusInstruction(record.status, multiModelEnabled, record.abortReason)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
+					`Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},

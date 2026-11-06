@@ -201,6 +201,13 @@ vi.mock("../orchestration/model-registry/index.js", () => ({
 	MODEL_CAPABILITIES: {},
 }))
 
+// Keep agent discovery hermetic: execute() reloads custom agents from disk
+// on every call, so tests control the discovered set via this mock.
+const { loadCustomAgentsMock } = vi.hoisted(() => ({
+	loadCustomAgentsMock: vi.fn((): Map<string, unknown> => new Map()),
+}))
+vi.mock("./personas/custom-agents.js", () => ({ loadCustomAgents: loadCustomAgentsMock }))
+
 vi.mock("../orchestration/model-roles.js", () => ({
 	getAllowedMultiModelRefs: vi
 		.fn()
@@ -499,9 +506,84 @@ describe("Agent tool renderer", () => {
 		expect(tool.renderCall({ subagent_type: "Explore" }, theme, { argsComplete: false }).render(80)[0]?.trimEnd()).toBe(
 			"▸ Explore",
 		)
+		// Unknown types fail closed — the renderer shows the requested name, not
+		// the previous General-Purpose fallback (issue #1678).
 		expect(tool.renderCall({ subagent_type: "unknown" }, theme, { argsComplete: true }).render(80)[0]?.trimEnd()).toBe(
-			"▸ General Purpose",
+			"▸ unknown",
 		)
+	})
+})
+
+describe("Agent tool fail-closed type validation (issue #1678)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(getMultiModelEnabled).mockReturnValue(false)
+		vi.mocked(sessionHasImages).mockReturnValue(false)
+		loadCustomAgentsMock.mockReturnValue(new Map())
+	})
+
+	function lastManagerInstance(): { spawn: ReturnType<typeof vi.fn> } {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance
+	}
+
+	it("rejects an unknown subagent_type with an error listing valid types and never spawns", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "Redaer", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Unknown agent type "Redaer"')
+		expect(text).toContain("General-Purpose")
+		expect(text).toContain("Explore")
+		expect(manager.spawn).not.toHaveBeenCalled()
+	})
+
+	it("rejects a disabled agent type (case-insensitive) and never spawns", async () => {
+		loadCustomAgentsMock.mockReturnValue(
+			new Map([
+				[
+					"Reader",
+					{
+						name: "Reader",
+						description: "read-only agent",
+						enabled: false,
+						extensions: false,
+						skills: false,
+						systemPrompt: "",
+						promptMode: "replace",
+					},
+				],
+			]),
+		)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = lastManagerInstance()
+		const tool = getRegisteredAgentTool(pi)
+		const ctx = makeMockCtx(makeMockModelRegistry([]), undefined)
+
+		const result = await tool.execute(
+			"call-1",
+			{ prompt: "do work", description: "test", subagent_type: "reader", run_in_background: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		const text = result.content[0].text
+		expect(text).toContain('Agent type "Reader" is disabled')
+		expect(manager.spawn).not.toHaveBeenCalled()
 	})
 })
 
