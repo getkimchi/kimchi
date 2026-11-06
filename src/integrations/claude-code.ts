@@ -18,17 +18,23 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * `env` block. Setting ANTHROPIC_API_KEY to "" is important — Claude Code
  * picks the first non-empty of (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN)
  * and we want it to use AUTH_TOKEN with our key.
+ *
+ * CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS defaults to "1", which also turns
+ * off Claude Code's MCP tool search. A value already set in `userEnv` (the
+ * shell env, or the existing settings.json `env` block) wins, so
+ * `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back on (#1507).
  */
 export function claudeCodeEnv(
 	apiKey: string,
 	baseUrl: string = resolveEndpoints().anthropicBaseUrl,
-	options?: { telemetryEnabled?: boolean },
+	options?: { telemetryEnabled?: boolean; userEnv?: Record<string, unknown> },
 ): Record<string, string> {
+	const userBetas = options?.userEnv?.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
 	const env: Record<string, string> = {
 		ANTHROPIC_BASE_URL: baseUrl,
 		ANTHROPIC_API_KEY: "",
 		ANTHROPIC_AUTH_TOKEN: apiKey,
-		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1",
+		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: typeof userBetas === "string" ? userBetas : "1",
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"
@@ -70,7 +76,7 @@ export function injectClaudeCodeEnv(
 	apiKey: string,
 	options?: { telemetryEnabled?: boolean },
 ): void {
-	const pairs = claudeCodeEnv(apiKey, baseUrl, options)
+	const pairs = claudeCodeEnv(apiKey, baseUrl, { ...options, userEnv: env })
 	for (const [k, v] of Object.entries(pairs)) {
 		env[k] = v
 	}

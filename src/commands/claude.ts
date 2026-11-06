@@ -20,7 +20,11 @@ export async function runClaude(args: string[]): Promise<number> {
 		if (!prepped) return 1
 
 		const telemetryEnabled = isTelemetryEnabled()
-		return await runForeground("claude", args, claudeCodeEnv(prepped.apiKey, undefined, { telemetryEnabled }))
+		return await runForeground(
+			"claude",
+			args,
+			claudeCodeEnv(prepped.apiKey, undefined, { telemetryEnabled, userEnv: process.env }),
+		)
 	} catch (err) {
 		console.error("kimchi claude:", err instanceof Error ? err.message : String(err))
 		return 1

@@ -36,6 +36,16 @@ describe("claudeCodeEnv", () => {
 		})
 	})
 
+	it("keeps a CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS value the user already set", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("defaults CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when the user env does not set it", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { FOO: "bar" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
 	it("accepts a custom base URL for testing", () => {
 		const env = claudeCodeEnv("k", "https://example.com/anthropic")
 		expect(env.ANTHROPIC_BASE_URL).toBe("https://example.com/anthropic")
@@ -97,6 +107,18 @@ describe("injectClaudeCodeEnv", () => {
 		injectClaudeCodeEnv(env, "https://b", "new")
 		expect(env.ANTHROPIC_API_KEY).toBe("")
 		expect(env.ANTHROPIC_AUTH_TOKEN).toBe("new")
+	})
+
+	it("keeps a CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS value already in settings.json", () => {
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "0" }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when settings.json does not have it", () => {
+		const env: Record<string, unknown> = {}
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
 	})
 
 	it("adds OTEL env vars when telemetryEnabled is true", () => {
