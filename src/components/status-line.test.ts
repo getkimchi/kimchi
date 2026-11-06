@@ -1610,44 +1610,46 @@ describe("status line priority shedding", () => {
 
 	it("sheds lsp before any core segment", () => {
 		const data = createMockStatusLineData({ permissionsMode: "● default", lsp: "LSP:typescript-language-server" })
-		const wide = renderVisibleWith(data, 100)
-		expect(wide).toContain("typescript-language-server")
+		withPinned(["lsp"], () => {
+			const wide = renderVisibleWith(data, 100)
+			expect(wide).toContain("typescript-language-server")
 
-		const narrow = renderVisibleWith(data, 70)
-		expect(narrow).not.toContain("typescript-language-server")
-		expect(narrow).toContain("m-m (claude-opus-4-6)")
-		expect(narrow).toContain("● default")
+			const narrow = renderVisibleWith(data, 70)
+			expect(narrow).not.toContain("typescript-language-server")
+			expect(narrow).toContain("m-m (claude-opus-4-6)")
+			expect(narrow).toContain("● default")
+		})
 	})
 
-	it("shows lsp/dap segments by default and hides them via the hidden config", () => {
+	it("hides lsp/dap segments by default and shows them via the pinned config", () => {
 		const data = createMockStatusLineData({
 			permissionsMode: "● default",
 			lsp: "LSP:typescript-language-server",
 			dap: "DAP:js-debug",
 		})
 
-		const shown = renderVisibleWith(data, 200)
-		expect(shown).toContain("typescript-language-server")
-		expect(shown).toContain("js-debug")
+		// Statuses are set but the segments are not pinned: nothing renders.
+		const hiddenByDefault = renderVisibleWith(data, 200)
+		expect(hiddenByDefault).not.toContain("typescript-language-server")
+		expect(hiddenByDefault).not.toContain("js-debug")
 
-		// Hidden is an opt-out per segment: hiding lsp leaves dap visible.
-		withHidden(["lsp"], () => {
+		// Pinning is an opt-in per segment: pinning lsp leaves dap hidden.
+		withPinned(["lsp"], () => {
 			const visible = renderVisibleWith(data, 200)
-			expect(visible).not.toContain("typescript-language-server")
-			expect(visible).toContain("js-debug")
+			expect(visible).toContain("typescript-language-server")
+			expect(visible).not.toContain("js-debug")
 		})
 
-		withHidden(["lsp", "dap"], () => {
+		withPinned(["lsp", "dap"], () => {
 			const visible = renderVisibleWith(data, 200)
-			expect(visible).not.toContain("typescript-language-server")
-			expect(visible).not.toContain("js-debug")
+			expect(visible).toContain("typescript-language-server")
+			expect(visible).toContain("js-debug")
 		})
 	})
 
-	it("hidden work-pr is omitted while other defaultVisible segments remain", () => {
+	it("hidden work-pr is omitted", () => {
 		const data = createMockStatusLineData({
 			permissionsMode: "● default",
-			lsp: "LSP:typescript-language-server",
 			workPr: "feature · PR #7 open",
 			gitBranch: "feature",
 		})
@@ -1656,7 +1658,6 @@ describe("status line priority shedding", () => {
 		withHidden(["work-pr"], () => {
 			const visible = renderVisibleWith(data, 200)
 			expect(visible).not.toContain("PR #7")
-			expect(visible).toContain("typescript-language-server")
 		})
 	})
 })
