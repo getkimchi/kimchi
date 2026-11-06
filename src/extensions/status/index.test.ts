@@ -615,6 +615,23 @@ describe("status handler with Kimchi SSO credentials", () => {
 		expect(getOrganization).toHaveBeenCalledWith("oauth-token", "org-1", { organizationId: "org-9" })
 	})
 
+	it("keeps the credential-stamped organization when the API resolves a blank name", async () => {
+		// Production: GET /v1/organizations/{id} returns name "" for the personal
+		// organization — the fetched org must not blank out the seeded one.
+		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
+		vi.mocked(getMe).mockResolvedValue({ id: "user-1", email: "you@example.com" })
+		vi.mocked(verifyApiKey).mockResolvedValue({ organizationId: "org-9" })
+		vi.mocked(getOrganization).mockResolvedValue({ id: "org-9", name: "" })
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		await startSession()
+		const rows = await runStatus()
+
+		expect(rows).toContain("Organization:   My organization (org-9)")
+		expect(rows).toContain("Email:          you@example.com")
+	})
+
 	it("keeps the credential-stamped organization when the SSO identity fetches fail", async () => {
 		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
 		vi.mocked(getMe).mockRejectedValue(new Error("boom"))

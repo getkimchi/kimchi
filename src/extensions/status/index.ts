@@ -267,7 +267,10 @@ export default function statusExtension(pi: ExtensionAPI): void {
 			verifyApiKey(credentials.token, { organizationId })
 				.then(({ organizationId: verifiedId }) => getOrganization(credentials.token, verifiedId, { organizationId }))
 				.then((organization) => {
-					current.organization = organization
+					// The detail endpoint ships an empty name for nameless orgs (the
+					// personal one — verified against production): keep the
+					// credential-seeded organization instead of blanking the row.
+					if (organization.name.trim().length > 0) current.organization = organization
 				}),
 		]).then(() => {})
 		latestIdentityRefresh = refresh
