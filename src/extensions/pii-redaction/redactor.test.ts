@@ -11,6 +11,12 @@ import { getDefaultExcludedEntities } from "./entity-tiers.js"
 import {
 	applyCustomPatterns,
 	getRedactionConfigError,
+	isGenericLocalPart,
+	isNonIdentifyingDetection,
+	isNonIdentifyingEmail,
+	isNonSensitiveIp,
+	isSelfIdentity,
+	isTechnicalEmailDomain,
 	redactMessages,
 	redactObjectStrings,
 	redactObjectStringsMeasured,
@@ -63,7 +69,7 @@ const fx = {
 	].join(""),
 	azureAccountKey: ["K7xQ".repeat(11), "=="].join(""),
 	basicAuthHeader: ["Authorization: Basic ", "dXNlcjpwYXNzd29yZA", "=="].join(""),
-	ipAddress: ["203", "0", "113", "7"].join("."), // TEST-NET-3
+	ipAddress: ["93", "184", "216", "34"].join("."), // public address: TEST-NET is filtered as non-identifying
 	uuid: "019f36c2-1b53-71ed-afc8-faded478f42a",
 } as const
 
@@ -1020,5 +1026,169 @@ describe("scan settle bound — in-flight map must always release", () => {
 		expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
 		expect(String(consoleErrorSpy.mock.calls[0]?.[1])).toContain("did not settle")
 		consoleErrorSpy.mockRestore()
+	})
+})
+
+// ─── Precision defaults — detections that identify nobody ───────────────────
+//
+// Two tables: every measured false-positive family must be filtered, and a
+// true-positive guard must survive for each rule. The guards matter more than
+// the filters — two candidate rules were rejected during design for dropping
+// real data (rejecting `.internal`/`.local` by domain, and treating whitespace
+// or punctuation as "code"), so they are pinned here as regressions.
+
+describe("precision defaults — measured false-positive families", () => {
+	it.each([
+		// Versioned package paths read as addresses (the `patches/@scope__pkg@x.y.z.patch` shape).
+		["toolchain@v0.0.1-go1.26.5.darwin", "go version string"],
+		["earendil-works__pi-coding-agent@1.3.0.patch", "patchedDependencies path"],
+		["pi-agent-core@0.85.1.patch", "bare package path"],
+		["lib@5.3.1.path", "path-shaped suffix"],
+		["pkg@2.34.0.patch", "versioned patch file"],
+		// The harness's own commit identity.
+		["noreply@kimchi.dev", "self identity"],
+		// Role mailboxes.
+		["git@github.com", "git role address"],
+		["noreply@acmecorp.com", "noreply role address"],
+		["bot+notifications@acmecorp.com", "tagged role address"],
+		["mailer-daemon@acmecorp.com", "bounce address"],
+	])("drops %s (%s)", (span) => {
+		expect(isNonIdentifyingEmail(span)).toBe(true)
+		expect(isNonIdentifyingDetection("EMAIL_ADDRESS", span)).toBe(true)
+	})
+
+	it.each([
+		["127.0.0.1", "loopback"],
+		["127.4.5.6", "loopback /8"],
+		["0.0.0.0", "this network"],
+		["169.254.10.1", "link-local"],
+		["192.0.2.7", "TEST-NET-1"],
+		["198.51.100.7", "TEST-NET-2"],
+		["203.0.113.7", "TEST-NET-3"],
+		["198.18.0.1", "benchmarking"],
+		["::1", "ipv6 loopback"],
+		["fe80::1", "ipv6 link-local"],
+		["2001:db8::", "ipv6 documentation prefix"],
+		["2001:db8::1", "ipv6 documentation address"],
+	])("drops %s (%s)", (span) => {
+		expect(isNonSensitiveIp(span)).toBe(true)
+		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(true)
+	})
+})
+
+describe("precision defaults — true-positive guards", () => {
+	it.each([
+		// Real people at real domains, including the git-trailer population.
+		["jane.doe@acmecorp.com", "personal address"],
+		["jane.doe@gmail.com", "consumer address"],
+		["jane.doe@cast.ai", "short gTLD"],
+		// A real intranet address: rejecting `.internal` by domain would leak it.
+		["john.doe@corp.internal", "intranet address"],
+		// A real mDNS hostname: rejecting `.local` by domain would leak it.
+		["theo.martin@theos-macbook-pro.local", "mdns address"],
+		// Real TLDs that look like file extensions — the reason this is not a suffix deny-list.
+		["someone@example.zip", ".zip is a real gTLD"],
+		["someone@corp.sh", ".sh is a real ccTLD"],
+		["someone@corp.md", ".md is a real ccTLD"],
+		// Reserved namespaces stay redacted on purpose (fixture semantics).
+		["jane.doe@example.com", "reserved but intentionally redacted"],
+		// Consumer mail providers with a numeric label — a real person's mailbox.
+		["zhang.wei@163.com", "163.com is NetEase mail"],
+		["someone@126.com", "126.com is NetEase mail"],
+		["user@189.com.cn", "numeric label in a multi-label domain"],
+		// Raw-Unicode IDN domains are real addresses (engine support is ASCII-only
+		// today; this must stay redacted if that changes).
+		["user@пример.рф", "raw Unicode .рф"],
+		["user@みんな.メール", "raw Unicode IDN"],
+		// Mixed case must not be misread as a package path.
+		["jane.doe@Corp.COM", "mixed-case domain"],
+		// A trailing dot is a valid absolute FQDN, not a file extension.
+		["jane.doe@acmecorp.com.", "trailing-dot FQDN"],
+		// A personal plus-tag carries an identifier; only operational tags are ignored.
+		["noreply+jane.doe@acmecorp.com", "personal plus-tag on a role base"],
+		// Punycode TLDs are real.
+		["user@example.xn--p1ai", "punycode .рф"],
+		["user@xn--80akhbyknj4f.xn--p1ai", "fully punycode IDN"],
+		// Digits in a label are fine as long as the label is not purely numeric.
+		["user@mail.1und1.de", "digit-leading but real label"],
+	])("keeps %s (%s)", (span) => {
+		expect(isNonIdentifyingEmail(span)).toBe(false)
+		expect(isNonIdentifyingDetection("EMAIL_ADDRESS", span)).toBe(false)
+	})
+
+	it.each([
+		["93.184.216.34", "public endpoint"],
+		["8.8.8.8", "public resolver"],
+		// Private space still describes real internal topology — kept redacted.
+		["10.0.0.5", "RFC1918 /8"],
+		["192.168.1.10", "RFC1918 /16"],
+		["172.16.5.4", "RFC1918 /12"],
+		["fc00::1", "ipv6 ULA"],
+		["2001:4860:4860::8888", "global IPv6 (must not be caught by the db8 rule)"],
+	])("keeps %s (%s)", (span) => {
+		expect(isNonSensitiveIp(span)).toBe(false)
+		expect(isNonIdentifyingDetection("IP_ADDRESS", span)).toBe(false)
+	})
+})
+
+describe("precision defaults — scope guards", () => {
+	it("never drops an unknown entity type", () => {
+		// Fail toward redaction: a new detector's output is never filtered blind.
+		expect(isNonIdentifyingDetection("AWS_SECRET_KEY", "noreply@kimchi.dev")).toBe(false)
+		expect(isNonIdentifyingDetection("SOMETHING_NEW", "127.0.0.1")).toBe(false)
+	})
+
+	it("keeps a span it cannot parse — the engine already called it an address", () => {
+		// Failure direction is toward redaction: unparseable is not evidence of
+		// non-identification.
+		expect(isNonIdentifyingEmail("not-an-address")).toBe(false)
+		expect(isNonIdentifyingEmail("@")).toBe(false)
+	})
+
+	it("keeps single-label (dotless) domains — they are real intranet hosts", () => {
+		expect(isNonIdentifyingEmail("jane.doe@intranet")).toBe(false)
+		expect(isNonIdentifyingEmail("user@mailserver")).toBe(false)
+		expect(isTechnicalEmailDomain("intranet")).toBe(false)
+	})
+
+	it("matches self identity exactly, never by domain", () => {
+		expect(isSelfIdentity("noreply@kimchi.dev")).toBe(true)
+		expect(isSelfIdentity("Noreply@Kimchi.Dev")).toBe(true)
+		// A real employee address must still be redacted.
+		expect(isSelfIdentity("jane.doe@kimchi.dev")).toBe(false)
+		expect(isNonIdentifyingEmail("jane.doe@kimchi.dev")).toBe(false)
+	})
+
+	it("rejects non-TLD suffixes and double-underscore scopes", () => {
+		expect(isTechnicalEmailDomain("1.3.0.patch")).toBe(true)
+		expect(isTechnicalEmailDomain("v0.0.1-go1.26.5.darwin")).toBe(true)
+		expect(isTechnicalEmailDomain("scope__pkg")).toBe(true)
+		expect(isTechnicalEmailDomain("acmecorp.com")).toBe(false)
+	})
+
+	it("recognises tagged role addresses only when the tag is operational", () => {
+		expect(isGenericLocalPart("noreply+notifications")).toBe(true)
+		expect(isGenericLocalPart("bot+123")).toBe(true)
+		expect(isGenericLocalPart("noreply")).toBe(true)
+		// A tag can carry an identifier — keep redacted.
+		expect(isGenericLocalPart("noreply+jane.doe")).toBe(false)
+		expect(isGenericLocalPart("git+ssh-key")).toBe(false)
+		expect(isGenericLocalPart("jane.doe")).toBe(false)
+	})
+
+	it("normalises case before classifying a domain", () => {
+		expect(isTechnicalEmailDomain("Corp.COM")).toBe(false)
+		expect(isTechnicalEmailDomain("ACME.COM")).toBe(false)
+		// Version shapes are still caught regardless of case.
+		expect(isTechnicalEmailDomain("1.3.0.PATCH")).toBe(true)
+	})
+
+	it("treats an empty final label as non-technical", () => {
+		expect(isTechnicalEmailDomain("acmecorp.com.")).toBe(false)
+	})
+
+	it("treats Unicode and punycode TLDs as real", () => {
+		expect(isTechnicalEmailDomain("пример.рф")).toBe(false)
+		expect(isTechnicalEmailDomain("example.xn--p1ai")).toBe(false)
 	})
 })

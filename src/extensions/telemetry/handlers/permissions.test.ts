@@ -141,6 +141,76 @@ describe("handleToolDecision", () => {
 		expect(event?.attrs.model).toBe("kimi-k2.6")
 	})
 
+	it("forwards mode-flap diagnostics: repeated-source count and a validated, sorted, deduplicated source set", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "tc-flap",
+			toolName: "bash",
+			decision: "reject",
+			sourceDetail: "mode_flap",
+			permissionMode: "default",
+			modeFlap: {
+				// Repeated sources are counted per dismissal (4) but exported as a
+				// sorted, deduplicated set bounded by the enum size.
+				modeChangeCount: 4,
+				modeChangeSources: ["controller", "user_shift_tab", "controller", "questionnaire_promotion"],
+			},
+		})
+
+		ctx.flushLogBuffer()
+
+		let event: ReturnType<typeof logEvents>[number] | undefined
+		await vi.waitFor(() => {
+			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
+			expect(event).toBeDefined()
+		})
+		expect(event?.attrs.source_detail).toBe("mode_flap")
+		expect(event?.attrs.mode_change_count).toBe("4")
+		expect(event?.attrs.mode_change_sources).toBe("controller,questionnaire_promotion,user_shift_tab")
+	})
+
+	it("drops out-of-contract mode-change sources instead of exporting them", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "tc-flap-bad",
+			toolName: "bash",
+			decision: "reject",
+			sourceDetail: "mode_flap",
+			permissionMode: "default",
+			modeFlap: {
+				modeChangeCount: 2,
+				modeChangeSources: ["controller", "not-a-real-reason"],
+			},
+		})
+		// modeFlap diagnostics on non-mode-flap decisions are not forwarded.
+		handleToolDecision(ctx, {
+			toolCallId: "tc-flap-other",
+			toolName: "bash",
+			decision: "reject",
+			sourceDetail: "plan_gate",
+			permissionMode: "plan",
+			modeFlap: { modeChangeCount: 9, modeChangeSources: ["controller"] },
+		})
+
+		ctx.flushLogBuffer()
+
+		await vi.waitFor(() => {
+			const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+				(e) => e.eventName === TOOL_DECISION_EVENT,
+			)
+			expect(events).toHaveLength(2)
+		})
+		const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+			(e) => e.eventName === TOOL_DECISION_EVENT,
+		)
+		const flap = events.find((e) => e.attrs.tool_use_id === "tc-flap-bad")
+		expect(flap?.attrs.mode_change_sources).toBe("controller")
+		expect(flap?.attrs.mode_change_count).toBe("2")
+		const other = events.find((e) => e.attrs.tool_use_id === "tc-flap-other")
+		expect(other?.attrs.mode_change_count).toBeUndefined()
+		expect(other?.attrs.mode_change_sources).toBeUndefined()
+	})
+
 	it("skips malformed payloads instead of emitting partial events", async () => {
 		const ctx = new TelemetryContext(makeConfig())
 		const valid = {

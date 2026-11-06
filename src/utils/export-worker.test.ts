@@ -121,6 +121,61 @@ describe("runExportOffloaded", () => {
 		expect(header.appVersion).toBeDefined()
 	})
 
+	it("state serialization round-trips the live systemPrompt through the child (HTML payload)", {
+		skip: !bunAvailable,
+	}, async () => {
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "You are an expert coding assistant operating inside pi, a coding agent harness.",
+		}
+		const filePath = join(tmpDir, "raw.html")
+		writeFileSync(filePath, buildRawHtml(sessionData), "utf-8")
+
+		await runExportOffloaded(
+			{ mode: "html", filePath, systemPrompt: "round-tripped system prompt" },
+			{ buildCommand: bunCommand },
+		)
+
+		const html = readFileSync(filePath, "utf-8")
+		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		if (!match?.[1]) throw new Error("session-data script not found")
+		const payload = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
+			systemPrompt?: string
+		}
+		expect(payload.systemPrompt).toBe("round-tripped system prompt")
+	})
+
+	it("spawn failure falls back to the inline pipeline with the assembled state (bun-independent)", async () => {
+		// CI environments without bun skip every child-process round-trip above;
+		// this forces the ENOENT fallback so the state assembly — including the
+		// systemPrompt option threading — is exercised everywhere. The inline
+		// fallback is also a real production path: it runs whenever the worker
+		// spawn fails.
+		const sessionData = {
+			version: 3,
+			id: "s1",
+			entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
+			systemPrompt: "You are an expert coding assistant operating inside pi, a coding agent harness.",
+		}
+		const filePath = join(tmpDir, "fallback.html")
+		writeFileSync(filePath, buildRawHtml(sessionData), "utf-8")
+
+		await runExportOffloaded(
+			{ mode: "html", filePath, systemPrompt: "inline-fallback system prompt" },
+			{ buildCommand: () => ({ command: "/nonexistent-kimchi-export-worker", args: [] }) },
+		)
+
+		const html = readFileSync(filePath, "utf-8")
+		const match = html.match(/<script id="session-data" type="application\/json">([\s\S]*?)<\/script>/)
+		if (!match?.[1]) throw new Error("session-data script not found")
+		const payload = JSON.parse(Buffer.from(match[1], "base64").toString("utf-8")) as {
+			systemPrompt?: string
+		}
+		expect(payload.systemPrompt).toBe("inline-fallback system prompt")
+	})
+
 	it("worker output is byte-identical to the inline pipeline on the same fixture", {
 		skip: !bunAvailable,
 	}, async () => {

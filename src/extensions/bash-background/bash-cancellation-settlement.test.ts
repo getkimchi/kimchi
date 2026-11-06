@@ -83,6 +83,11 @@ if (process.argv[2] === 'writer') {
 		: target === 'both' ? [process.stdout, process.stderr]
 		: [process.stdout];
 	for (const stream of streams) stream.on('error', () => {});
+	// First chunk before the launcher is allowed to exit, so the inherited pipe already
+	// carries data when the shell disappears. Otherwise the writer's node boot can land
+	// after waitForChildProcess's 100 ms post-exit grace, and the executor settles with
+	// exitCode 0 before any output (or cancellation) exists.
+	for (const stream of streams) stream.write('escaped-output\\n');
 	fs.appendFileSync('tree.pids', process.pid + '\\n');
 	setInterval(() => {
 		for (const stream of streams) stream.write('escaped-output\\n');
@@ -96,6 +101,10 @@ const stdio =
 	: target === 'both' ? ['ignore', 'inherit', 'inherit']
 	: ['ignore', 'inherit', 'ignore'];
 spawn(process.execPath, [__filename, 'writer', target], { detached: true, stdio }).unref();
+// Exit only once the detached writer owns the inherited pipes and has written its first
+// chunk; a launcher that leaves before that is what made the escape nondeterministic.
+const deadline = Date.now() + 5000;
+while (!fs.existsSync('tree.pids') && Date.now() < deadline) {}
 `,
 	)
 }
@@ -143,17 +152,25 @@ itPosix(
 		const ops = createLocalBashOperations()
 		const output: Buffer[] = []
 		const abort = new AbortController()
+		let abortedAt: number | undefined
 		const running = ops.exec("node escaped-writer.cjs stdout", cwd, {
-			onData: (data) => output.push(data),
+			onData: (data) => {
+				output.push(data)
+				// Cancel on the first chunk, while the escaped writer holds the pipe. The
+				// executor is pending by construction here; a fixed delay let a slow writer
+				// start (node boot > the 100 ms post-exit stdio grace) settle the exec with
+				// exitCode 0 before the abort landed.
+				if (abortedAt === undefined) {
+					abortedAt = Date.now()
+					abort.abort()
+				}
+			},
 			signal: abort.signal,
 		})
 		const rejected = expect(running).rejects.toThrow("aborted")
-		await expect.poll(() => treePids().length, { timeout: 1500 }).toBe(1)
-		await delay(200) // establish the continuous output flow before cancelling
-		const abortedAt = Date.now()
-		abort.abort()
 		await rejected
-		expect(Date.now() - abortedAt).toBeLessThan(SETTLEMENT_BOUND_MS)
+		expect(abortedAt).toBeDefined()
+		expect(Date.now() - (abortedAt as number)).toBeLessThan(SETTLEMENT_BOUND_MS)
 		expect(Buffer.concat(output).toString()).toContain("escaped-output")
 	},
 	15_000,
@@ -166,17 +183,21 @@ itPosix(
 		const ops = createLocalBashOperations()
 		const output: Buffer[] = []
 		const abort = new AbortController()
+		let abortedAt: number | undefined
 		const running = ops.exec("node escaped-writer.cjs stderr", cwd, {
-			onData: (data) => output.push(data),
+			onData: (data) => {
+				output.push(data)
+				if (abortedAt === undefined) {
+					abortedAt = Date.now()
+					abort.abort()
+				}
+			},
 			signal: abort.signal,
 		})
 		const rejected = expect(running).rejects.toThrow("aborted")
-		await expect.poll(() => treePids().length, { timeout: 1500 }).toBe(1)
-		await delay(200)
-		const abortedAt = Date.now()
-		abort.abort()
 		await rejected
-		expect(Date.now() - abortedAt).toBeLessThan(SETTLEMENT_BOUND_MS)
+		expect(abortedAt).toBeDefined()
+		expect(Date.now() - (abortedAt as number)).toBeLessThan(SETTLEMENT_BOUND_MS)
 		expect(Buffer.concat(output).toString()).toContain("escaped-output")
 	},
 	15_000,

@@ -127,7 +127,9 @@ test("ledger path sits in the reporting directory", () => {
 })
 
 describe("open via Bun driver", () => {
-	test("PR lookup backoff migrates once and survives a real SQLite reopen", () => {
+	// Three cold `bun` starts of the ledger module graph (~370 ms each on a CI runner)
+	// plus SQLite work; the default 5 s budget is too tight when four workers share the box.
+	test("PR lookup backoff migrates once and survives a real SQLite reopen", { timeout: 30_000 }, () => {
 		const dir = agentDir()
 		const repository = join(dir, "removed-worktree", ".git")
 		const sha = "a".repeat(40)

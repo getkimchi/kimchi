@@ -68,6 +68,10 @@ export function sendHiddenSteer(
 	opts: { steerKind?: SteerKind; steerReason?: SteerReason; interactive?: boolean; sessionId?: string } = {},
 ): boolean {
 	if (opts.steerKind && isSteerDisabled(opts.steerKind)) return false
+	// markHarnessSteer neutralizes closing-marker near-misses in the payload
+	// (todo content is model-authored and may carry external text) — the
+	// protection lives inside the marker so every wrapped channel is covered,
+	// including the todo state block and other markHarnessSteer callers.
 	pi.sendMessage(
 		{
 			customType,

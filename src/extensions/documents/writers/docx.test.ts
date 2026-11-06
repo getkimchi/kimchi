@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createPinnedClock } from "../clock.js"
 import { extractDocx } from "../extractors/docx.js"
 import { parseMarkdownBlocks } from "../markdown/blocks.js"
@@ -45,8 +45,17 @@ describe("writeDocx", () => {
 
 	it("is byte-identical across two runs with the clock pinned", async () => {
 		const blocks = parseMarkdownBlocks("# Same\nText with\na line break.")
-		const [a, b] = await Promise.all([writeDocx({ blocks }, { clock }), writeDocx({ blocks }, { clock })])
-		expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
+		// Move the wall clock between runs so only the clock seam can date entries.
+		vi.useFakeTimers({ toFake: ["Date"] })
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"))
+			const a = await writeDocx({ blocks }, { clock })
+			vi.setSystemTime(new Date("2026-06-01T12:34:56.000Z"))
+			const b = await writeDocx({ blocks }, { clock })
+			expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("splits multi-line runs (no raw \\n swallowed by Word)", async () => {

@@ -26,10 +26,12 @@ import {
 	markCheckinPending,
 	markStalenessGateOpened,
 	reconcileCheckinScope,
+	recordGateBlockedToolCall,
 	recordStalenessOpening,
 	resetScopeEpoch,
 	setCheckinEnforcementActive,
 	subscribeCheckinGate,
+	TODO_CHECKIN_BLOCK_PREFIX,
 } from "./checkin-gate.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CLOSURE_CUSTOM_TYPE, TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
@@ -213,26 +215,12 @@ function checkinListBlocks(scopes: readonly TodoScope[], sessionId: string, revi
 	return lines
 }
 
-/** Hidden-steer instruction sent once per accepted input revision when
- *  checks are pending — before the model's first work tool of the new
- *  request, so reconciliation can share the next turn. */
-function checkinInstructionText(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
-	return [
-		`Todo check-in (input revision ${revision}): the user's latest input may change the plan. Before starting further work tools, reconcile each list below — add newly requested work, remove obsolete items, revise statuses — or, when a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
-		...checkinListBlocks(
-			pending.map((check) => check.scope),
-			sessionId,
-			revision,
-		),
-	].join("\n")
-}
-
 /** Block reason for work tools admitted while a check is pending. Carries
  *  the current instructions on every blocked call — without queuing
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
 	return [
-		`⏸ Todo check-in pending (input revision ${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
@@ -248,7 +236,7 @@ function checkinBlockReason(pending: readonly CheckinPending[], sessionId: strin
  *  shares that turn before further work tools. */
 function planSubmissionCheckinText(sessionId: string, revision: number): string {
 	return [
-		`Todo check-in (input revision ${revision}): the plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
+		`Todo check-in (input revision ${revision}): harness reminder, not the user's message. The plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
 		...checkinListBlocks([GLOBAL_TODO_SCOPE], sessionId, revision),
 	].join("\n")
 }
@@ -395,7 +383,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		syncTodoWidget(ctx)
 	}
 
-	const deliverGenuineInput = (ctx: ExtensionContext, opts: { deferred: boolean }) => {
+	const deliverGenuineInput = (ctx: ExtensionContext) => {
 		const sessionId = ctx.sessionManager.getSessionId()
 		const revision = advanceInputRevision(sessionId)
 		// Publish the effective enforcement state first: a release while
@@ -411,21 +399,22 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		markCheckinPending(getRelevantCheckinScopes(sessionId), sessionId, revision)
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length > 0) {
-			// Immediate inputs queue one instruction per received input revision.
-			// Deferred follow-up deliveries skip the separate instruction: their
-			// message_start fires inside the agent loop right before the response
-			// streams, so a steer sent now is only read after the first tool
-			// batch — the block reason carries the instructions instead, with
-			// the model already looking at the new direction.
-			if (!opts.deferred) {
-				sendHiddenSteer(pi, TODO_CHECKIN_CUSTOM_TYPE, checkinInstructionText(pending, sessionId, revision), {
-					reason: "user_input",
-					inputRevision: revision,
-				})
-			}
-			// The fire is emitted directly with no outcome watcher: the outcome
-			// is attributed when the check actually closes, carrying this
-			// steer_id.
+			// No instruction steer is queued here, on purpose. Any instruction
+			// sent around the user's message races the steering queue: upstream
+			// awaits ALL input handlers before enqueueing the user's message
+			// (agent-session `_queueUserInput`), and later-registered handlers
+			// park on real I/O (`documents/intake` @file reads, clipboard image
+			// vision gate) — so even a macrotask-deferred send can enter the
+			// queue AHEAD of the message it refers to. With one-at-a-time
+			// steering (the default) it is then delivered alone, and a pending
+			// wait release ("a message from the user is waiting") makes the
+			// model read the reminder as that message instead of the input.
+			// The gate itself is the delivery mechanism: the first work-tool
+			// admission after the message is seen is blocked with the full
+			// instructions (checkinBlockReason), with the model already looking
+			// at the new direction — the same contract the follow-up path uses.
+			// The fire is emitted with no outcome watcher: the outcome is
+			// attributed when the check actually closes, carrying this steer_id.
 			const steerId = emitSteerFired(pi, "todo_checkin", "checkin", { interactive: ctx.hasUI, sessionId })
 			if (steerId) checkinSteerIds.set(sessionId, steerId)
 		}
@@ -454,7 +443,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// follow-up) at message_start.
 		const sessionId = ctx.sessionManager.getSessionId()
 		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text].slice(-4))
-		deliverGenuineInput(ctx, { deferred: false })
+		deliverGenuineInput(ctx)
 	})
 
 	// Delivery point for queued follow-ups: the user message entering
@@ -533,7 +522,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			return
 		}
 		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
-		deliverGenuineInput(ctx, { deferred: true })
+		deliverGenuineInput(ctx)
 	})
 
 	// Run boundary: idle and steered prompts are delivered within the run
@@ -601,6 +590,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length === 0) return { block: false }
+		// Record the blocked call so transcript renderers can anchor the
+		// collapsed gate display on provenance tool output cannot forge.
+		recordGateBlockedToolCall(sessionId, event.toolCallId)
 		return { block: true, reason: checkinBlockReason(pending, sessionId, revision) }
 	})
 
