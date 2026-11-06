@@ -170,7 +170,7 @@ type AgentWaitOutcome = "completed" | "timed_out" | "aborted"
 /**
  * Bounded, interruptible wait on an agent's run promise.
  * Resolves "completed" when the agent settles (success or failure), or early
- * on cap timeout / abort signal. Never rejePATS.
+ * on cap timeout / abort signal. Never rejects.
  */
 function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSignal): Promise<AgentWaitOutcome> {
 	return new Promise((resolve) => {
@@ -497,7 +497,7 @@ export interface AutoResumeShape {
  * yields `undefined` and silently drops the note. Exported for unit testing. */
 export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
 	if (!beforeAbortReason) return ""
-	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflePATS the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
 }
 
 /** True when a ferment step worker was killed by its own budget on a first
@@ -726,7 +726,7 @@ export function getActiveAgentModelIds(): string[] {
 
 /**
  * Returns a read-only snapshot of the agent record for task validation.
- * The returned object is a shallow copy — nested objePATS (session, lifetimeUsage,
+ * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
  * etc.) are shared references. Callers MUST NOT mutate nested properties;
  * doing so would corrupt the live agent's state in the manager.
  */
@@ -1883,7 +1883,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 				reloadCustomAgents(ctx.cwd)
 
-				// Capture the session faPATS every post-run path needs BEFORE the
+				// Capture the session facts every post-run path needs BEFORE the
 				// first await: the race below can run for minutes, and a session
 				// replace/fork/reload mid-run invalidates this per-call ctx (every
 				// property read throws — see ../stale-ctx.ts), which must not turn a
