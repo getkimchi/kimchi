@@ -61,6 +61,25 @@ function withRedactionEnabled<T extends { env?: Record<string, string> }>(
 	return { ...options, env: { ...options.env, KIMCHI_ENABLE_RESOURCES: "extensions.pii-redaction" } }
 }
 
+type SeedHomeFn = (home: string, cwd: string, fakeBaseUrl: string) => void
+
+// Marker-mode pin: `redaction.renderMode` defaults to tokens; marker-mode
+// tests opt back into markers explicitly so their `[REDACTED-*]` assertions
+// keep testing the marker pipeline rather than passing accidentally.
+function withMarkerMode<T extends Record<string, unknown>>(options: T): T {
+	const original = (options as { seedHome?: SeedHomeFn }).seedHome
+	return {
+		...options,
+		seedHome(home: string, cwd: string, fakeBaseUrl: string) {
+			const settingsPath = join(home, ".config", "kimchi", "harness", "settings.json")
+			const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>
+			settings.redaction = { renderMode: "markers" }
+			writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`)
+			original?.(home, cwd, fakeBaseUrl)
+		},
+	} as T
+}
+
 type RecordedChatRequest = { url: string; body: unknown }
 
 function findToolContextRequest(
@@ -96,10 +115,12 @@ async function waitForToolContextRequest(
 test("redacts email from user prompt; bare-shape phone passes through by default", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		withRedactionEnabled({
-			artifactName: "pii-redaction-email-phone",
-			responses: [{ stream: ["OK"] }],
-		}),
+		withRedactionEnabled(
+			withMarkerMode({
+				artifactName: "pii-redaction-email-phone",
+				responses: [{ stream: ["OK"] }],
+			}),
+		),
 		async (fixture) => {
 			terminal.submit("Contact me at alice@example.com or call 555-867-5309")
 
@@ -166,10 +187,12 @@ test("redacts credit card and IBAN from user prompt", async ({ terminal }) => {
 test("preserves surrounding text when redacting PII", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		withRedactionEnabled({
-			artifactName: "pii-redaction-preservation",
-			responses: [{ stream: ["OK"] }],
-		}),
+		withRedactionEnabled(
+			withMarkerMode({
+				artifactName: "pii-redaction-preservation",
+				responses: [{ stream: ["OK"] }],
+			}),
+		),
 		async (fixture) => {
 			terminal.submit("Please review the file at /home/user/project and email bob@corp.org")
 
@@ -285,28 +308,30 @@ test("redacts PII in tool-call arguments before LLM sees them in context", async
 test("redacts PII in tool results before LLM sees them in context", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		withRedactionEnabled({
-			artifactName: "pii-redaction-tool-result",
-			responses: [
-				// First response: fake model calls bash, which will echo PII
-				{
-					stream: ["Checking config..."],
-					toolCalls: [
-						{
-							id: "call_bash_2",
-							function: {
-								name: "bash",
-								arguments: JSON.stringify({
-									command: "echo john.doe@example.com AKIAIOSFODNN7EXAMPLE",
-								}),
+		withRedactionEnabled(
+			withMarkerMode({
+				artifactName: "pii-redaction-tool-result",
+				responses: [
+					// First response: fake model calls bash, which will echo PII
+					{
+						stream: ["Checking config..."],
+						toolCalls: [
+							{
+								id: "call_bash_2",
+								function: {
+									name: "bash",
+									arguments: JSON.stringify({
+										command: "echo john.doe@example.com AKIAIOSFODNN7EXAMPLE",
+									}),
+								},
 							},
-						},
-					],
-				},
-				// Second response: final text after tool result
-				{ stream: ["Reviewed."] },
-			],
-		}),
+						],
+					},
+					// Second response: final text after tool result
+					{ stream: ["Reviewed."] },
+				],
+			}),
+		),
 		async (fixture) => {
 			terminal.submit("Check what's in the config")
 

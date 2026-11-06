@@ -119,7 +119,7 @@ export function getRedactionConfig(): RedactionConfig {
 	const user = readExcludedEntitiesSetting()
 	return {
 		enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
-		renderMode: readRenderModeSetting() ?? "markers",
+		renderMode: readRenderModeSetting() ?? "tokens",
 		excludedEntities: user ?? getDefaultExcludedEntities(),
 		userExcludedEntities: user ?? [],
 	}
@@ -155,7 +155,7 @@ function readExcludedEntitiesSetting(): string[] | undefined {
 
 /**
  * Read + validate settings.json `redaction.renderMode`. Returns undefined
- * when the key is absent (markers default). Same fail-visible convention as
+ * when the key is absent (tokens default). Same fail-visible convention as
  * the entity list: a typo throws so the operator learns the setting is
  * wrong; consumers degrade to markers per their failure policy (strict
  * export fails closed; hooks degrade with one loud log).
