@@ -9,7 +9,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { isResourceEnabled } from "../../resources/store.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { STEER_EVENTS } from "../steer-events.js"
-import { __resetCheckinGate, getPendingCheckins, hasEffectivePendingCheckin } from "./checkin-gate.js"
+import {
+	__resetCheckinGate,
+	disposeCheckinGateSession,
+	getPendingCheckins,
+	hasEffectivePendingCheckin,
+	isGateBlockedToolCall,
+} from "./checkin-gate.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { __resetReconciliationBookkeeping, getInputRevision } from "./reconciliation.js"
@@ -798,6 +804,9 @@ describe("todo check-in gate", () => {
 		const result = await fireWork(harness, ctx, "w1")
 		expect(result).toMatchObject({ block: true })
 		expect((result as { reason?: string }).reason).toContain("check-in pending (input revision 1)")
+		// Byte-exact head pin: the telemetry classifier regex-matches this
+		// shape, so the contract is asserted against literals, not constants.
+		expect((result as { reason?: string }).reason).toMatch(/^⏸ Todo check-in pending \(input revision 1\)\. /)
 		expect((result as { reason?: string }).reason).toContain("[in_progress] #1 task")
 
 		// One hidden instruction per accepted input revision.
@@ -818,6 +827,36 @@ describe("todo check-in gate", () => {
 				ctx,
 			),
 		).toEqual({ block: false })
+	})
+
+	it("registers blocked tool calls for the collapsed transcript display, disposed with the session", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+		expect(isGateBlockedToolCall("w1")).toBe(true)
+		// Reconciliation calls admitted while gated are never registered.
+		expect(
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+		).toEqual({ block: false })
+		expect(isGateBlockedToolCall("m1")).toBe(false)
+
+		// Reconciliation releases the gate but the historical row stays
+		// collapsed; the entry leaves only with the session.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+		expect(isGateBlockedToolCall("w1")).toBe(true)
+		disposeCheckinGateSession("session")
+		expect(isGateBlockedToolCall("w1")).toBe(false)
 	})
 
 	it("releases work after a real write and after a successful confirmation", async () => {
