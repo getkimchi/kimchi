@@ -2,6 +2,7 @@ import type { AssistantMessage, ThinkingContent } from "@earendil-works/pi-ai"
 import { AssistantMessageComponent as _AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui"
 import { Markdown, Spacer, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { isRefusalNotice } from "../refused-turns.js"
 import { ThinkingStepsComponent, tailRawLinesFromBlocks } from "./render.js"
 import {
 	decrementPatchRefCount,
@@ -290,7 +291,10 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 		message: AssistantMessage,
 	): void {
 		this.lastMessage = message
-		if (!hasPatchableContentContainer(this)) {
+		// A refused turn has its own renderer, the refused-turns carve-out in the
+		// method this patch wrapped (installed from cli.ts before any session
+		// starts); rendering its notice as markdown here would hide that.
+		if (!hasPatchableContentContainer(this) || isRefusalNotice(message)) {
 			fallbackToOriginalUpdateContent(this, message, "updateContent")
 			return
 		}

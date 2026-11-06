@@ -33,16 +33,18 @@ test("a refused prompt shows the usage-policy reason and does not poison the nex
 	)
 })
 
-test("a guardrail refusal with stop details shows the safeguards notice, not an error", async ({ terminal }) => {
+test("a guardrail refusal with stop details shows the refusal notice with its checks, not an error", async ({
+	terminal,
+}) => {
 	await runKimchiSession(
 		terminal,
 		{ artifactName: "refused-turn-details", responses: DETAILED_REFUSED_TURN_RESPONSES },
 		async (fixture) => {
 			terminal.submit(REFUSED_PROMPT)
-			// The notice is the assistant's message text — informational, so the
-			// canned refusal text and an error line must never appear.
-			await waitForText(terminal, "Safeguards stopped the response above")
-			await waitForText(terminal, "offensive_intent")
+			// The notice prints as warning-colored informational text, so the canned
+			// refusal text and an error line must never appear.
+			await waitForText(terminal, "The response was removed")
+			await waitForText(terminal, "Detected issue: `offensive_intent`, `exfil_intent`")
 			await expect(terminal.getByText(REFUSAL_TEXT)).not.toBeVisible()
 			await expect(terminal.getByText("Error:")).not.toBeVisible()
 

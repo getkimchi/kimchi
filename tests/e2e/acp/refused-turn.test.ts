@@ -3,13 +3,13 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
+	DETAILED_REFUSAL_NOTICE,
 	DETAILED_REFUSED_TURN_RESPONSES,
 	FOLLOW_UP_REPLY,
 	REFUSAL_REASON,
 	REFUSAL_TEXT,
 	REFUSED_PROMPT,
 	REFUSED_TURN_RESPONSES,
-	SAFEGUARDS_NOTICE,
 	sendsRefusedPrompt,
 } from "../tui/support/refused-turn.js"
 import { chatRequests } from "../tui/support/wire-requests.js"
@@ -45,7 +45,7 @@ describe("ACP integration — refused turn", () => {
 		expect(sendsRefusedPrompt(requests[requests.length - 1])).toBe(false)
 	})
 
-	it("ends a guardrail refusal with stopReason refusal and the detailed safeguards notice", async () => {
+	it("ends a guardrail refusal with stopReason refusal and the detailed refusal notice", async () => {
 		await fixture.stop()
 		fixture = await startAcpFixture({
 			artifactName: "refused-turn-details",
@@ -56,10 +56,10 @@ describe("ACP integration — refused turn", () => {
 		const refused = await prompt(fixture, sessionId, REFUSED_PROMPT)
 
 		expect(refused.stopReason).toBe("refusal")
-		expect(refused.chunks).toContain(SAFEGUARDS_NOTICE)
+		expect(refused.chunks).toContain(DETAILED_REFUSAL_NOTICE)
 		// ACP chunks are append-only: the canned text streamed before the refusal
 		// was detected stays visible, followed by the notice — once, not twice.
-		expect(refused.chunks.split(SAFEGUARDS_NOTICE)).toHaveLength(2)
+		expect(refused.chunks.split(DETAILED_REFUSAL_NOTICE)).toHaveLength(2)
 		expect(refused.chunks).toContain(REFUSAL_TEXT)
 
 		const followUp = await prompt(fixture, sessionId, "hi")

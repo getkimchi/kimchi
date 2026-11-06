@@ -13,14 +13,14 @@
  * refusal text is dropped and the notice becomes the message text, with
  * stopReason "stop" — a refusal is a turn outcome the user can act on, not an
  * error, so it must not render as one. The proxy attaches guardrail stop
- * details to the refusal stream events: `guardrail_name` (string),
- * `flagged_checks` (string[]), `category` (string) — flat on the chat
- * completions finish chunk (next to `choices`), flat on the response object of
- * the responses `response.incomplete` event, and inside `delta.stop_details` of
- * the Anthropic `message_delta` event. With details the notice names the coarse
- * category, the flagged checks, and the guardrail (refusalNotice); without them
- * it falls back to REFUSAL_MESSAGE, which covers providers' own content
- * filters (a guardrail block always carries details). ACP chunks are
+ * details to the refusal stream events: `guardrail_name` (string) and
+ * `flagged_checks` (string[]) — flat on the chat completions finish chunk (next
+ * to `choices`), flat on the response object of the responses
+ * `response.incomplete` event, and inside `delta.stop_details` of the
+ * Anthropic `message_delta` event. With flagged checks the notice names them
+ * under the apology (refusalNotice); without them it is the bare apology,
+ * which covers providers' own content filters (a guardrail block always
+ * carries details). ACP chunks are
  * append-only, so text streamed before the refusal event stays visible there,
  * followed by the same notice.
  *
@@ -37,6 +37,9 @@
  */
 
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent"
+import { Spacer, Text } from "@earendil-works/pi-tui"
+import { liveTheme } from "../components/live-theme.js"
 import { stripControlChars } from "../llm-gateway-error.js"
 
 type AgentMessage = ContextEvent["messages"][number]
@@ -44,23 +47,19 @@ type AgentMessage = ContextEvent["messages"][number]
 export const REFUSAL_MESSAGE =
 	"This request was declined under the usage policy and removed from the conversation. Rephrase it to continue."
 
+/** Lead of every refusal notice: the apology the user sees before the detected issue. */
+export const REFUSAL_NOTICE_LEAD =
+	"Sorry, I can't assist with this request because it may involve harmful or illegal activity. The response was removed. Please rephrase your request if you intended a safe or legitimate use case."
+
 /** Exact marker written to errorMessage of a refused turn. Pure structured state: nothing
  * renders errorMessage unless stopReason is "error"/"aborted" (upstream TUI, export-html), and
  * a refused turn ends with stopReason "stop" — the notice itself is the message text. isRefusal
  * matches it by exact equality, so no provider/proxy error body can pose as a refusal. */
 const REFUSAL_MARKER = "kimchi:refusal"
 
-/** Markdown heading prefix that styles the notice as a warning in the TUI: the
- * markdown theme renders headings via its mdHeading token (warning-yellow in
- * themes where mdHeading maps to the warning color). Presentation only — the
- * notice text itself (refusalText) carries no heading. */
-export const NOTICE_HEADING_PREFIX = "#### "
-
 /** Coarse stop details the guardrail proxy attaches to its in-band refusal, normalized
  * across provider stream formats (see the header for per-format field placement). */
 export interface GuardrailStopDetails {
-	/** Coarse violation category, e.g. `cyber` (`exfiltration`, `prompt_injection` are the other built-ins). */
-	readonly category?: string
 	/** Violated hazard IDs, e.g. `["offensive_intent"]`. */
 	readonly flaggedChecks: readonly string[]
 	/** The guardrail that blocked, e.g. `security-intent`. */
@@ -72,8 +71,8 @@ export interface GuardrailStopDetails {
  * to `choices`), flat on the response object of the OpenAI responses
  * `response.incomplete` event, and inside `delta.stop_details` of the Anthropic
  * `message_delta` event. Returns undefined when the event carries no valid
- * detail fields, so the refusal falls back to REFUSAL_MESSAGE (providers'
- * own content filters). */
+ * detail fields, so the notice is the bare apology (providers' own content
+ * filters). */
 export function extractGuardrailStopDetails(data: unknown): GuardrailStopDetails | undefined {
 	if (!isRecord(data)) return undefined
 	if (Array.isArray(data.choices)) return parseStopDetails(data)
@@ -81,7 +80,7 @@ export function extractGuardrailStopDetails(data: unknown): GuardrailStopDetails
 	return parseStopDetails(data.response)
 }
 
-/** Read the three detail fields (`category`, `guardrail_name`, `flagged_checks`) off one
+/** Read the detail fields (`guardrail_name`, `flagged_checks`) off one
  * object; undefined when none survives validation. Values are proxy-supplied, so they are
  * stripped of control characters and trimmed here (the same precedent as model_retired
  * parsing in llm-gateway-error); blank results count as absent so a later all-blank event
@@ -94,7 +93,6 @@ function parseStopDetails(source: unknown): GuardrailStopDetails | undefined {
 		const stripped = stripControlChars(value).trim()
 		return stripped === "" ? undefined : stripped
 	}
-	const category = clean(source.category)
 	const guardrailName = clean(source.guardrail_name)
 	const flaggedChecks = Array.isArray(source.flagged_checks)
 		? source.flagged_checks
@@ -102,8 +100,8 @@ function parseStopDetails(source: unknown): GuardrailStopDetails | undefined {
 				.map(clean)
 				.filter((check): check is string => check !== undefined)
 		: []
-	if (category === undefined && guardrailName === undefined && flaggedChecks.length === 0) return undefined
-	return { category, guardrailName, flaggedChecks }
+	if (guardrailName === undefined && flaggedChecks.length === 0) return undefined
+	return { guardrailName, flaggedChecks }
 }
 
 /** Proxy-supplied detail values are untrusted free text, so the notice bounds them:
@@ -111,26 +109,19 @@ function parseStopDetails(source: unknown): GuardrailStopDetails | undefined {
 const MAX_DETAIL_LENGTH = 64
 const MAX_CHECKS_SHOWN = 5
 
-/** The user-facing notice for a refused turn: the safeguards sentence plus the
- * reason, falling back to REFUSAL_MESSAGE when no reason fields are present.
+/** The user-facing notice for a refused turn: the apology lead, plus a
+ * "Detected issue" line naming the flagged checks when the proxy sent any.
  * Values are sanitized here again (idempotent with parseStopDetails) so the
  * exported function is safe for any caller. */
-export function refusalNotice(details: GuardrailStopDetails): string {
+export function refusalNotice(details: GuardrailStopDetails | undefined): string {
 	const clean = (value: string) => stripControlChars(value).trim().slice(0, MAX_DETAIL_LENGTH)
-	const category = details.category ? clean(details.category) : ""
-	const guardrailName = details.guardrailName ? clean(details.guardrailName) : ""
-	const allChecks = details.flaggedChecks.map(clean).filter((check) => check !== "")
+	const allChecks = (details?.flaggedChecks ?? [])
+		.map((check) => `\`${clean(check)}\``)
+		.filter((check) => check !== "``")
 	const flaggedChecks = allChecks.slice(0, MAX_CHECKS_SHOWN)
 	const hidden = allChecks.length - flaggedChecks.length
-	const parts: string[] = []
-	if (category) parts.push(`category: \`${category}\``)
-	if (flaggedChecks.length > 0) {
-		const listed = flaggedChecks.map((check) => `\`${check}\``).join(", ")
-		parts.push(`flagged checks: ${listed}${hidden > 0 ? ` (+${hidden} more)` : ""}`)
-	}
-	if (guardrailName) parts.push(`guardrail: \`${guardrailName}\``)
-	if (parts.length === 0) return REFUSAL_MESSAGE
-	return `Safeguards stopped the response above — ${parts.join("; ")}. It was removed from the conversation; rephrase it to continue.`
+	if (flaggedChecks.length === 0) return REFUSAL_NOTICE_LEAD
+	return `${REFUSAL_NOTICE_LEAD}\n\nDetected issue: ${flaggedChecks.join(", ")}${hidden > 0 ? ` (+${hidden} more)` : ""}`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -161,22 +152,30 @@ export function isRefusalStreamEvent(data: unknown): boolean {
 export function isRefusal(message: AgentMessage): boolean {
 	if (message.role !== "assistant") return false
 	if (message.stopReason === "error") return message.errorMessage === REFUSAL_MESSAGE
-	return message.stopReason === "stop" && message.errorMessage === REFUSAL_MARKER
+	return isRefusalNotice(message)
 }
 
-/** The notice text of a refused turn — its message content minus the heading
- * prefix, so surfaces that do not render markdown (ACP chunks) get plain text.
- * REFUSAL_MESSAGE if a caller passes something that is not a refusal-shaped
- * assistant message. */
+/** True for the current refusal shape only — the render carve-out must never
+ * touch the legacy marker shape (pruning-only, no legacy rendering path).
+ * Exported for renderers that replace AssistantMessageComponent.updateContent
+ * wholesale (thinking-steps): they must hand these messages to the method they
+ * wrapped, which carries this carve-out. */
+export function isRefusalNotice(message: unknown): boolean {
+	return isRecord(message) && message.stopReason === "stop" && message.errorMessage === REFUSAL_MARKER
+}
+
+/** The notice text of a refused turn — its message content. The TUI renders it
+ * through the warning-colored carve-out (applyRefusalNoticeRenderingPatch),
+ * ACP forwards it as plain text. REFUSAL_NOTICE_LEAD if a caller passes
+ * something that is not a refusal-shaped assistant message. */
 export function refusalText(message: AgentMessage): string {
-	if (message.role !== "assistant" || !Array.isArray(message.content)) return REFUSAL_MESSAGE
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return REFUSAL_NOTICE_LEAD
 	const text = message.content
 		.filter((block): block is { type: "text"; text: string } => block.type === "text")
 		.map((block) => block.text)
 		.join("\n")
 		.trim()
-	if (text === "") return REFUSAL_MESSAGE
-	return text.startsWith(NOTICE_HEADING_PREFIX) ? text.slice(NOTICE_HEADING_PREFIX.length) : text
+	return text === "" ? REFUSAL_NOTICE_LEAD : text
 }
 
 /** Return `messages` without refused turns, or the same array when there are none. */
@@ -221,19 +220,16 @@ export default function refusedTurnsExtension(pi: ExtensionAPI): void {
 		const details = refusal.details
 		refusal = undefined
 		// The notice is the message text with a normal "stop" stop reason, so both
-		// surfaces render it as information, never as an error: the TUI shows
-		// assistant text instead of a red "Error: …" line, and interactive-error-surface
-		// (and every other error-path consumer) ignores messages that did not stop
-		// with "error". The heading prefix renders the notice through the theme's
-		// mdHeading token — warning-colored in themes that map it to the warning
-		// color — so it reads as a warning, not as model prose; ACP strips it
-		// (refusalText). REFUSAL_MARKER on errorMessage is the exact, never-rendered
-		// structured marker isRefusal and the ACP refusal path read.
-		const notice = details ? refusalNotice(details) : REFUSAL_MESSAGE
+		// surfaces render it as information, never as an error: the TUI carves the
+		// marker shape out of AssistantMessageComponent and prints the notice in the
+		// theme's warning color (applyRefusalNoticeRenderingPatch), and every
+		// error-path consumer ignores messages that did not stop with "error".
+		// REFUSAL_MARKER on errorMessage is the exact, never-rendered structured
+		// marker isRefusal and the ACP refusal path read.
 		return {
 			message: {
 				...event.message,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${notice}` }],
+				content: [{ type: "text", text: refusalNotice(details) }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -245,4 +241,40 @@ export default function refusedTurnsExtension(pi: ExtensionAPI): void {
 		if (messages === event.messages) return
 		return { messages }
 	})
+}
+
+// ---------------------------------------------------------------------------
+// TUI rendering carve-out
+// ---------------------------------------------------------------------------
+
+const REFUSAL_RENDER_PATCH = Symbol.for("kimchi:patched-assistant-refusal-render")
+
+/** Carve-out in AssistantMessageComponent: a refused turn prints its notice as
+ * plain warning-colored text — the same mechanism and theme token as other
+ * single-colored TUI output (e.g. status-line segments) — instead of markdown
+ * model prose or a red "Error:" line. Must run before any component instance
+ * is constructed (called from cli.ts), and before thinking-steps installs its
+ * own updateContent at session_start: that renderer passes refusal notices
+ * (isRefusalNotice) to the method it wrapped, i.e. this one. */
+export function applyRefusalNoticeRenderingPatch(): void {
+	// biome-ignore lint/suspicious/noExplicitAny: prototype patching requires runtime property access
+	const proto = AssistantMessageComponent.prototype as any
+	if (proto[REFUSAL_RENDER_PATCH]) return
+	proto[REFUSAL_RENDER_PATCH] = true
+
+	const originalUpdateContent = proto.updateContent
+	// biome-ignore lint/suspicious/noExplicitAny: see above
+	proto.updateContent = function patchedUpdateContent(this: any, message: AgentMessage, isStreaming?: boolean) {
+		if (!isRefusalNotice(message)) return originalUpdateContent.call(this, message, isStreaming)
+		this.lastMessage = message
+		this.isStreaming = isStreaming ?? this.isStreaming
+		this.hasToolCalls = false
+		this.contentContainer.clear()
+		this.contentContainer.addChild(new Spacer(1))
+		const theme = liveTheme()
+		for (const paragraph of refusalText(message).split("\n\n")) {
+			this.contentContainer.addChild(new Text(theme ? theme.fg("warning", paragraph) : paragraph, this.outputPad, 0))
+			this.contentContainer.addChild(new Spacer(1))
+		}
+	}
 }

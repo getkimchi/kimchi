@@ -44,6 +44,7 @@ import {
 import * as Diff from "diff"
 import type { BundledLanguage, BundledTheme } from "shiki"
 import type { TSchema } from "typebox"
+import { liveTheme } from "../components/live-theme.js"
 import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
@@ -70,15 +71,6 @@ const MESSAGE_RENDER_CACHE = Symbol.for("pi-claude-style-tools:message-render-ca
 // Bumped whenever a style input shared by all cached renders changes (new
 // theme instance applied, palette reset). Compared inside cached entries.
 let renderStyleGeneration = 0
-/** The live pi theme instance (swapped on globalThis by every theme
- *  switch, including in-memory previews and setThemeInstance paths that
- *  never write settings). Compared by reference inside the render caches —
- *  renderStyleGeneration alone misses those paths, with the next turn_start
- *  palette apply as the slower backstop. */
-const PI_THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
-function currentThemeInstance(): unknown {
-	return (globalThis as Record<symbol, unknown>)[PI_THEME_KEY]
-}
 let themeChangeListenerRegistered = false
 const HIDDEN_TOOL_BLOCK_NAMES = new Set<string>([...TODO_WRITE_TOOL_NAMES, ...FERMENT_V2_TOOL_NAMES])
 const WRAP_MARK = "\uE000"
@@ -553,10 +545,13 @@ export function patchAssistantMessageRender(): void {
 		) {
 			const durationMs = message[WORKED_DURATION_KEY]
 			const cached = component[MESSAGE_RENDER_CACHE]
+			// The live theme is compared by reference: renderStyleGeneration alone
+			// misses switches that never write settings (in-memory previews,
+			// setThemeInstance), with the next turn_start palette apply as backstop.
 			if (
 				cached?.width === width &&
 				cached?.style === renderStyleGeneration &&
-				cached?.theme === currentThemeInstance() &&
+				cached?.theme === liveTheme() &&
 				cached?.durationMs === durationMs &&
 				cached?.children === component.contentContainer.children &&
 				cached?.content === message.content &&
@@ -573,7 +568,7 @@ export function patchAssistantMessageRender(): void {
 			component[MESSAGE_RENDER_CACHE] = {
 				width,
 				style: renderStyleGeneration,
-				theme: currentThemeInstance(),
+				theme: liveTheme(),
 				durationMs,
 				children: component.contentContainer.children,
 				content: message.content,
@@ -621,7 +616,7 @@ export function patchUserMessageRender(): void {
 		if (
 			cached?.width === width &&
 			cached?.style === renderStyleGeneration &&
-			cached?.theme === currentThemeInstance() &&
+			cached?.theme === liveTheme() &&
 			cached?.text === component.text &&
 			cached?.children === component.children
 		) {
@@ -665,7 +660,7 @@ export function patchUserMessageRender(): void {
 		component[MESSAGE_RENDER_CACHE] = {
 			width,
 			style: renderStyleGeneration,
-			theme: currentThemeInstance(),
+			theme: liveTheme(),
 			text: component.text,
 			children: component.children,
 			lines,

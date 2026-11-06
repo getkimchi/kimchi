@@ -6,9 +6,9 @@ import refusedTurnsExtension, {
 	extractGuardrailStopDetails,
 	isRefusal,
 	isRefusalStreamEvent,
-	NOTICE_HEADING_PREFIX,
 	pruneRefusedTurns,
 	REFUSAL_MESSAGE,
+	REFUSAL_NOTICE_LEAD,
 	refusalNotice,
 	refusalText,
 } from "./refused-turns.js"
@@ -30,13 +30,11 @@ const assistant = (text: string, extra: Record<string, unknown> = {}) =>
 // errorMessage — pinned here so accidental marker changes fail loudly.
 const REFUSAL_MARKER = "kimchi:refusal"
 
-// A turn refused by the current shape: the notice is the message text under a
-// level-4 markdown heading (rendered via the theme's mdHeading token), the stop
-// reason is a normal "stop", and the never-rendered marker rides errorMessage.
-const refused = (notice: string = REFUSAL_MESSAGE) =>
-	assistant(`${NOTICE_HEADING_PREFIX}${notice}`, { stopReason: "stop", errorMessage: REFUSAL_MARKER })
-
-const refusedWithNotice = (notice: string) => refused(notice)
+// A turn refused by the current shape: the notice is the message text (the TUI
+// prints it in the warning color via the rendering carve-out), the stop reason
+// is a normal "stop", and the never-rendered marker rides errorMessage.
+const refused = (notice: string = REFUSAL_NOTICE_LEAD) =>
+	assistant(notice, { stopReason: "stop", errorMessage: REFUSAL_MARKER })
 
 // A turn from a session persisted before the marker existed: exact legacy text
 // on an error stop. Pruning-only — matched so old sessions keep pruning, never
@@ -63,8 +61,8 @@ const toolResult = (id: string) =>
 
 const CHAT_COMPLETIONS_REFUSAL = { choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }] }
 
-// The wire contract's example payload, one per stream format. The three detail
-// fields (`guardrail_name`, `flagged_checks`, `category`) ride flat on the chat
+// The wire contract's example payload, one per stream format. The detail fields
+// (`guardrail_name`, `flagged_checks`) ride flat on the chat
 // completions finish chunk, flat on the response object of the responses
 // `response.incomplete` event, and inside `delta.stop_details` of the Anthropic
 // `message_delta` event.
@@ -75,7 +73,6 @@ const CHAT_COMPLETIONS_REFUSAL_WITH_DETAILS = {
 	choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }],
 	guardrail_name: "security-intent",
 	flagged_checks: ["offensive_intent", "exfil_intent"],
-	category: "cyber",
 }
 
 const RESPONSES_INCOMPLETE_WITH_DETAILS = {
@@ -88,7 +85,6 @@ const RESPONSES_INCOMPLETE_WITH_DETAILS = {
 		incomplete_details: { reason: "content_filter" },
 		guardrail_name: "security-intent",
 		flagged_checks: ["offensive_intent", "exfil_intent"],
-		category: "cyber",
 	},
 }
 
@@ -100,7 +96,6 @@ const ANTHROPIC_MESSAGE_DELTA_WITH_DETAILS = {
 		stop_details: {
 			guardrail_name: "security-intent",
 			flagged_checks: ["offensive_intent", "exfil_intent"],
-			category: "cyber",
 		},
 	},
 	usage: { output_tokens: 0 },
@@ -108,7 +103,7 @@ const ANTHROPIC_MESSAGE_DELTA_WITH_DETAILS = {
 
 // The detailed notice every extension-level refusal test expects for the contract's example payload.
 const CONTRACT_EXAMPLE_NOTICE =
-	"Safeguards stopped the response above — category: `cyber`; flagged checks: `offensive_intent`, `exfil_intent`; guardrail: `security-intent`. It was removed from the conversation; rephrase it to continue."
+	"Sorry, I can't assist with this request because it may involve harmful or illegal activity. The response was removed. Please rephrase your request if you intended a safe or legitimate use case.\n\nDetected issue: `offensive_intent`, `exfil_intent`"
 
 describe("isRefusalStreamEvent", () => {
 	it.each([
@@ -141,7 +136,6 @@ describe("extractGuardrailStopDetails", () => {
 		["Anthropic message_delta, inside delta.stop_details", ANTHROPIC_MESSAGE_DELTA_WITH_DETAILS],
 	])("reads the contract's fields from %s", (_name, data) => {
 		expect(extractGuardrailStopDetails(data)).toEqual({
-			category: "cyber",
 			guardrailName: "security-intent",
 			flaggedChecks: ["offensive_intent", "exfil_intent"],
 		})
@@ -162,12 +156,10 @@ describe("extractGuardrailStopDetails", () => {
 		const data = {
 			choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }],
 			guardrail_name: 42,
-			category: { nested: "cyber" },
 			flagged_checks: ["offensive_intent", 7, null, ["exfil_intent"]],
 		}
 
 		expect(extractGuardrailStopDetails(data)).toEqual({
-			category: undefined,
 			guardrailName: undefined,
 			flaggedChecks: ["offensive_intent"],
 		})
@@ -177,7 +169,6 @@ describe("extractGuardrailStopDetails", () => {
 		const data = {
 			choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }],
 			guardrail_name: " ",
-			category: "\u0007\t",
 			flagged_checks: ["", "  ", "\u001b"],
 		}
 
@@ -187,56 +178,73 @@ describe("extractGuardrailStopDetails", () => {
 	it("returns undefined for a non-object event", () => {
 		expect(extractGuardrailStopDetails("data: [DONE]")).toBeUndefined()
 	})
+
+	it("ignores a category an older proxy build still sends", () => {
+		const data = { ...CHAT_COMPLETIONS_REFUSAL_WITH_DETAILS, category: "cyber" }
+
+		expect(extractGuardrailStopDetails(data)).toEqual({
+			guardrailName: "security-intent",
+			flaggedChecks: ["offensive_intent", "exfil_intent"],
+		})
+	})
 })
 
 describe("refusalNotice", () => {
 	it("renders the contract's example payload end to end", () => {
 		const details = extractGuardrailStopDetails(CHAT_COMPLETIONS_REFUSAL_WITH_DETAILS)
 
-		expect(refusalNotice(details ?? { flaggedChecks: [] })).toBe(
-			"Safeguards stopped the response above — category: `cyber`; flagged checks: `offensive_intent`, `exfil_intent`; guardrail: `security-intent`. It was removed from the conversation; rephrase it to continue.",
+		expect(refusalNotice(details)).toBe(CONTRACT_EXAMPLE_NOTICE)
+	})
+
+	it("names the flagged checks under a detected-issue line", () => {
+		expect(refusalNotice({ flaggedChecks: ["offensive_intent"], guardrailName: "security-intent" })).toBe(
+			`${REFUSAL_NOTICE_LEAD}\n\nDetected issue: \`offensive_intent\``,
 		)
 	})
 
-	it("names the category, flagged checks, and guardrail", () => {
-		expect(
-			refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"], guardrailName: "security-intent" }),
-		).toBe(
-			"Safeguards stopped the response above — category: `cyber`; flagged checks: `offensive_intent`; guardrail: `security-intent`. It was removed from the conversation; rephrase it to continue.",
+	it("lists checks from more than one guardrail in the order the proxy sent them", () => {
+		// An injected tool result that also asked for offensive work: the proxy
+		// sends the injection check first.
+		const details = extractGuardrailStopDetails({
+			...CHAT_COMPLETIONS_REFUSAL_WITH_DETAILS,
+			guardrail_name: "tool-output-injection",
+			flagged_checks: ["injection_intent", "offensive_intent"],
+		})
+
+		expect(refusalNotice(details)).toBe(
+			`${REFUSAL_NOTICE_LEAD}\n\nDetected issue: \`injection_intent\`, \`offensive_intent\``,
 		)
 	})
 
-	it("omits absent fields", () => {
-		expect(refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"] })).toBe(
-			"Safeguards stopped the response above — category: `cyber`; flagged checks: `offensive_intent`. It was removed from the conversation; rephrase it to continue.",
-		)
+	it("falls back to the bare apology when no checks are present", () => {
+		expect(refusalNotice({ flaggedChecks: [] })).toBe(REFUSAL_NOTICE_LEAD)
 	})
 
-	it("falls back to the generic refusal message when no reason fields are present", () => {
-		expect(refusalNotice({ flaggedChecks: [] })).toBe(REFUSAL_MESSAGE)
+	it("falls back to the bare apology when there are no details at all", () => {
+		expect(refusalNotice(undefined)).toBe(REFUSAL_NOTICE_LEAD)
 	})
 
 	// The escape introducer is stripped but the sequence tail (`[2j`) stays inert text —
 	// the same behavior as stripControlChars in model_retired parsing.
-	it("strips control characters from proxy-supplied fields", () => {
-		const notice = refusalNotice({ category: "cy\u001b\u009fber", flaggedChecks: ["offensive\u0007_intent"] })
+	it("strips control characters from proxy-supplied checks", () => {
+		const notice = refusalNotice({ flaggedChecks: ["offensive\u0007_intent"] })
 
-		expect(notice).toContain("category: `cyber`")
-		expect(notice).toContain("flagged checks: `offensive_intent`")
+		expect(notice).toContain("Detected issue: `offensive_intent`")
+		// Newlines are the notice's own paragraph break; no other control character may survive.
 		// biome-ignore lint/complexity/useRegexLiterals: string pattern on purpose — noControlCharactersInRegex only flags literals, and the control ranges here are the whole point.
-		expect(notice).not.toMatch(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]"))
+		expect(notice.replaceAll("\n", "")).not.toMatch(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]"))
 	})
 
-	it("bounds each field and the number of listed checks (the proxy is untrusted)", () => {
+	it("bounds each check and the number of listed checks (the proxy is untrusted)", () => {
 		const long = "x".repeat(200)
 		const many = Array.from({ length: 9 }, (_, i) => `check_${i}`)
-		const notice = refusalNotice({ category: long, flaggedChecks: many, guardrailName: long })
+		const notice = refusalNotice({ flaggedChecks: [long, ...many] })
 
 		expect(notice).not.toContain(long)
 		expect(notice).toContain(`\`${"x".repeat(64)}\``)
-		expect(notice).toContain("check_4")
-		expect(notice).not.toContain("check_5")
-		expect(notice).toContain("(+4 more)")
+		expect(notice).toContain("check_3")
+		expect(notice).not.toContain("check_4")
+		expect(notice).toContain("(+5 more)")
 	})
 })
 
@@ -245,10 +253,10 @@ describe("isRefusal", () => {
 		expect(isRefusal(refused())).toBe(true)
 	})
 
-	it("recognizes a detailed safeguards notice", () => {
-		const notice = refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"] })
+	it("recognizes a detailed refusal notice", () => {
+		const notice = refusalNotice({ flaggedChecks: ["offensive_intent"] })
 
-		expect(isRefusal(refusedWithNotice(notice))).toBe(true)
+		expect(isRefusal(refused(notice))).toBe(true)
 	})
 
 	// Pruning-only legacy support: sessions persisted before the marker existed
@@ -267,14 +275,11 @@ describe("isRefusal", () => {
 			"an error body starting with the notice sentence",
 			{
 				stopReason: "error",
-				errorMessage: "Safeguards stopped the response above — category: `cyber`. Then the gateway failed.",
+				errorMessage: `${REFUSAL_NOTICE_LEAD} Then the gateway failed.`,
 			},
 		],
 		["the marker on an errored turn", { stopReason: "error", errorMessage: REFUSAL_MARKER }],
-		[
-			"a successful reply whose text starts like a notice",
-			{ stopReason: "stop", errorMessage: "Safeguards stopped the response above" },
-		],
+		["a successful reply whose text starts like a notice", { stopReason: "stop", errorMessage: REFUSAL_NOTICE_LEAD }],
 	])("ignores %s", (_name, extra) => {
 		expect(isRefusal(assistant("Hi!", extra))).toBe(false)
 	})
@@ -327,18 +332,18 @@ describe("pruneRefusedTurns", () => {
 })
 
 describe("refusalText", () => {
-	it("returns the notice text of a refused turn without the heading prefix", () => {
-		const notice = refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"] })
+	it("returns the notice text of a refused turn", () => {
+		const notice = refusalNotice({ flaggedChecks: ["offensive_intent"] })
 
-		expect(refusalText(refusedWithNotice(notice))).toBe(notice)
+		expect(refusalText(refused(notice))).toBe(notice)
 	})
 
-	it("returns the generic refusal message for the fallback refusal", () => {
-		expect(refusalText(refused())).toBe(REFUSAL_MESSAGE)
+	it("returns the bare apology for the fallback refusal", () => {
+		expect(refusalText(refused())).toBe(REFUSAL_NOTICE_LEAD)
 	})
 
 	it("falls back for a non-refusal-shaped message", () => {
-		expect(refusalText(user("hi"))).toBe(REFUSAL_MESSAGE)
+		expect(refusalText(user("hi"))).toBe(REFUSAL_NOTICE_LEAD)
 	})
 })
 
@@ -369,19 +374,19 @@ describe("refusedTurnsExtension", () => {
 		await stream(CHAT_COMPLETIONS_REFUSAL)
 
 		// The notice is the message text with a normal stop — informational, not an
-		// error — under the heading prefix, and the marker on errorMessage is
+		// error — and the marker on errorMessage is
 		// exact-match state, never rendered.
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${REFUSAL_MESSAGE}` }],
+				content: [{ type: "text", text: REFUSAL_NOTICE_LEAD }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
 		})
 	})
 
-	it("turns a chat completions refusal with stop details into the safeguards notice", async () => {
+	it("turns a chat completions refusal with stop details into the refusal notice", async () => {
 		const { request, stream, endMessage } = setup()
 		const reply = assistant("I'm sorry, I can't assist with this request.")
 
@@ -391,14 +396,14 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
+				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
 		})
 	})
 
-	it("turns an Anthropic refusal with stop details into the safeguards notice", async () => {
+	it("turns an Anthropic refusal with stop details into the refusal notice", async () => {
 		const { request, stream, endMessage } = setup()
 		const reply = assistant("I'm sorry, I can't assist with this request.")
 
@@ -408,7 +413,7 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
+				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -426,7 +431,7 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
+				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -463,13 +468,13 @@ describe("refusedTurnsExtension", () => {
 		})
 	})
 
-	// The safeguards notice carries proxy-supplied category/check names as the
+	// The refusal notice carries proxy-supplied check names as the
 	// persisted message text; a refused session log entry must prune the same way.
-	it("prunes turns refused with a detailed safeguards notice", () => {
-		const notice = refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"] })
+	it("prunes turns refused with a detailed refusal notice", () => {
+		const notice = refusalNotice({ flaggedChecks: ["offensive_intent"] })
 		const next = user("hi")
 
-		expect(pruneRefusedTurns([user("bad"), refusedWithNotice(notice), next])).toEqual([next])
+		expect(pruneRefusedTurns([user("bad"), refused(notice), next])).toEqual([next])
 	})
 
 	it("keeps earlier details when a later refusal event carries only blank fields", async () => {
@@ -482,14 +487,14 @@ describe("refusedTurnsExtension", () => {
 			type: "message_delta",
 			delta: {
 				stop_reason: "refusal",
-				stop_details: { category: " ", flagged_checks: ["", "\u0007"], guardrail_name: "" },
+				stop_details: { flagged_checks: ["", "\u0007"], guardrail_name: "" },
 			},
 		})
 
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
+				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},

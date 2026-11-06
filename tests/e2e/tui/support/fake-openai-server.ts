@@ -44,8 +44,8 @@ export interface FakeResponseScript {
 	 *  `content_filter` simulates a gateway guardrail refusing the request. */
 	finishReason?: "stop" | "tool_calls" | "content_filter"
 	/** Guardrail stop details written flat on the content_filter finish chunk —
-	 *  the guardrail proxy's refusal shape (guardrail_name, flagged_checks, category). */
-	guardrailRefusal?: { guardrail_name: string; flagged_checks: string[]; category: string }
+	 *  the guardrail proxy's refusal shape (guardrail_name, flagged_checks). */
+	guardrailRefusal?: { guardrail_name: string; flagged_checks: string[] }
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
@@ -527,7 +527,6 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 			choices: [finalChunk],
 			guardrail_name: script.guardrailRefusal.guardrail_name,
 			flagged_checks: script.guardrailRefusal.flagged_checks,
-			category: script.guardrailRefusal.category,
 		})
 	} else {
 		chunk([finalChunk])
