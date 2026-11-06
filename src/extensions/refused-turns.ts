@@ -19,17 +19,19 @@
  * the responses `response.incomplete` event, and inside `delta.stop_details` of
  * the Anthropic `message_delta` event. With details the notice names the coarse
  * category, the flagged checks, and the guardrail (refusalNotice); without them
- * it falls back to REFUSAL_MESSAGE, which also covers older proxies and
- * providers' own content filters. ACP chunks are append-only, so text streamed
- * before the refusal event stays visible there, followed by the same notice.
+ * it falls back to REFUSAL_MESSAGE, which covers providers' own content
+ * filters (a guardrail block always carries details). ACP chunks are
+ * append-only, so text streamed before the refusal event stays visible there,
+ * followed by the same notice.
  *
  * The provider contract is that clients remove the refused turn from history,
  * otherwise every later request re-sends the prompt and is refused again.
  * The `context` hook drops everything from the user message that opened the
  * turn through the refusal, for the outgoing context only. REFUSAL_MARKER on
  * the replaced message (exact equality, never rendered) is the persisted
- * marker, so resumed sessions are pruned too; turns refused before it existed
- * carry the exact legacy REFUSAL_MESSAGE on an error stop.
+ * marker, so resumed sessions are pruned too; sessions persisted before the
+ * marker existed prune via the legacy exact-match branch of isRefusal
+ * (pruning only — no legacy rendering path exists).
  *
  * Registered in the shared extension list, so it covers both TUI and ACP.
  */
@@ -48,6 +50,12 @@ export const REFUSAL_MESSAGE =
  * matches it by exact equality, so no provider/proxy error body can pose as a refusal. */
 const REFUSAL_MARKER = "kimchi:refusal"
 
+/** Markdown heading prefix that styles the notice as a warning in the TUI: the
+ * markdown theme renders headings via its mdHeading token (warning-yellow in
+ * themes where mdHeading maps to the warning color). Presentation only — the
+ * notice text itself (refusalText) carries no heading. */
+export const NOTICE_HEADING_PREFIX = "#### "
+
 /** Coarse stop details the guardrail proxy attaches to its in-band refusal, normalized
  * across provider stream formats (see the header for per-format field placement). */
 export interface GuardrailStopDetails {
@@ -64,8 +72,8 @@ export interface GuardrailStopDetails {
  * to `choices`), flat on the response object of the OpenAI responses
  * `response.incomplete` event, and inside `delta.stop_details` of the Anthropic
  * `message_delta` event. Returns undefined when the event carries no valid
- * detail fields, so the refusal falls back to REFUSAL_MESSAGE (older proxy,
- * providers' own content filters). */
+ * detail fields, so the refusal falls back to REFUSAL_MESSAGE (providers'
+ * own content filters). */
 export function extractGuardrailStopDetails(data: unknown): GuardrailStopDetails | undefined {
 	if (!isRecord(data)) return undefined
 	if (Array.isArray(data.choices)) return parseStopDetails(data)
@@ -146,18 +154,20 @@ export function isRefusalStreamEvent(data: unknown): boolean {
 }
 
 /** True when this message is a refused turn. Exact markers only — never a prefix
- * match on free text, so no provider/proxy error body can pose as a refusal:
- * current turns carry REFUSAL_MARKER on a "stop" stop reason, and turns refused
- * before the marker existed (plus providers' own content filters rewritten here)
- * carry the exact legacy REFUSAL_MESSAGE on an "error" stop reason. */
+ * match on free text, so no provider/proxy error body can pose as a refusal.
+ * The legacy branch matches sessions persisted before the marker existed so
+ * they keep pruning (and ACP keeps reporting the refusal outcome); it is never
+ * a rendering path — message_end only ever produces the current shape. */
 export function isRefusal(message: AgentMessage): boolean {
 	if (message.role !== "assistant") return false
 	if (message.stopReason === "error") return message.errorMessage === REFUSAL_MESSAGE
 	return message.stopReason === "stop" && message.errorMessage === REFUSAL_MARKER
 }
 
-/** The notice text of a refused turn — its message content. REFUSAL_MESSAGE if
- * a caller passes something that is not a refusal-shaped assistant message. */
+/** The notice text of a refused turn — its message content minus the heading
+ * prefix, so surfaces that do not render markdown (ACP chunks) get plain text.
+ * REFUSAL_MESSAGE if a caller passes something that is not a refusal-shaped
+ * assistant message. */
 export function refusalText(message: AgentMessage): string {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return REFUSAL_MESSAGE
 	const text = message.content
@@ -165,7 +175,8 @@ export function refusalText(message: AgentMessage): string {
 		.map((block) => block.text)
 		.join("\n")
 		.trim()
-	return text === "" ? REFUSAL_MESSAGE : text
+	if (text === "") return REFUSAL_MESSAGE
+	return text.startsWith(NOTICE_HEADING_PREFIX) ? text.slice(NOTICE_HEADING_PREFIX.length) : text
 }
 
 /** Return `messages` without refused turns, or the same array when there are none. */
@@ -210,15 +221,19 @@ export default function refusedTurnsExtension(pi: ExtensionAPI): void {
 		const details = refusal.details
 		refusal = undefined
 		// The notice is the message text with a normal "stop" stop reason, so both
-		// surfaces render it as information, not as an error: the TUI shows plain
-		// assistant text instead of a red "Error:" line, and interactive-error-surface
+		// surfaces render it as information, never as an error: the TUI shows
+		// assistant text instead of a red "Error: …" line, and interactive-error-surface
 		// (and every other error-path consumer) ignores messages that did not stop
-		// with "error". REFUSAL_MARKER on errorMessage is the exact, never-rendered
+		// with "error". The heading prefix renders the notice through the theme's
+		// mdHeading token — warning-colored in themes that map it to the warning
+		// color — so it reads as a warning, not as model prose; ACP strips it
+		// (refusalText). REFUSAL_MARKER on errorMessage is the exact, never-rendered
 		// structured marker isRefusal and the ACP refusal path read.
+		const notice = details ? refusalNotice(details) : REFUSAL_MESSAGE
 		return {
 			message: {
 				...event.message,
-				content: [{ type: "text", text: details ? refusalNotice(details) : REFUSAL_MESSAGE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${notice}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},

@@ -1952,7 +1952,8 @@ export class KimchiAcpAgent implements Agent {
 					// stopReason "refusal" with the reason the user can act on. The
 					// canned text may already be streamed and can't be retracted, so
 					// the notice — the message's text after the refused-turns
-					// rewrite — goes out as a separate message.
+					// rewrite, minus the markdown heading the TUI uses for warning
+					// styling — goes out as a separate message.
 					turn.lastAssistantError = undefined
 					const notice = refusalText(msg)
 					// Mark the notice as sent so forwardUnsentMessageText below does

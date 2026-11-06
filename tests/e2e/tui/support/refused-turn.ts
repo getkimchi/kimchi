@@ -24,7 +24,9 @@ export const GUARDRAIL_REFUSAL = {
 	category: "cyber",
 }
 
-/** The notice the harness renders for GUARDRAIL_REFUSAL. */
+/** The notice the harness renders for GUARDRAIL_REFUSAL, as plain text: the
+ *  TUI shows it under a markdown heading (rendered via the theme's mdHeading
+ *  token); ACP strips the heading, so the chunk carries the bare notice. */
 export const SAFEGUARDS_NOTICE =
 	"Safeguards stopped the response above — category: `cyber`; flagged checks: `offensive_intent`, `exfil_intent`; guardrail: `security-intent`."
 

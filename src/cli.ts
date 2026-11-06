@@ -1018,6 +1018,12 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				// Order matters: refused-turns rewrites a refused assistant message into
+				// a normally-stopped notice (heading text + REFUSAL_MARKER) before
+				// interactive-error-surface's message_end runs below, so the refusal never
+				// passes through gateway classification, sanitization, or the Retrying
+				// placeholder. Keep refused-turns ahead of interactive-error-surface in
+				// this list.
 				refusedTurnsExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,

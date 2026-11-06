@@ -1,12 +1,12 @@
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import refusedTurnsExtension, {
 	extractGuardrailStopDetails,
 	isRefusal,
 	isRefusalStreamEvent,
+	NOTICE_HEADING_PREFIX,
 	pruneRefusedTurns,
 	REFUSAL_MESSAGE,
 	refusalNotice,
@@ -30,15 +30,17 @@ const assistant = (text: string, extra: Record<string, unknown> = {}) =>
 // errorMessage — pinned here so accidental marker changes fail loudly.
 const REFUSAL_MARKER = "kimchi:refusal"
 
-// A turn refused by the current shape: the notice is the message text, the stop
+// A turn refused by the current shape: the notice is the message text under a
+// level-4 markdown heading (rendered via the theme's mdHeading token), the stop
 // reason is a normal "stop", and the never-rendered marker rides errorMessage.
 const refused = (notice: string = REFUSAL_MESSAGE) =>
-	assistant(notice, { stopReason: "stop", errorMessage: REFUSAL_MARKER })
+	assistant(`${NOTICE_HEADING_PREFIX}${notice}`, { stopReason: "stop", errorMessage: REFUSAL_MARKER })
 
 const refusedWithNotice = (notice: string) => refused(notice)
 
-// A turn refused before the marker existed: the exact legacy text on an error
-// stop (old session logs, resumed sessions).
+// A turn from a session persisted before the marker existed: exact legacy text
+// on an error stop. Pruning-only — matched so old sessions keep pruning, never
+// rendered.
 const legacyRefused = () => assistant("", { content: [], stopReason: "error", errorMessage: REFUSAL_MESSAGE })
 
 const toolCall = (id: string) =>
@@ -249,7 +251,10 @@ describe("isRefusal", () => {
 		expect(isRefusal(refusedWithNotice(notice))).toBe(true)
 	})
 
-	it("recognizes the legacy shape from old session logs", () => {
+	// Pruning-only legacy support: sessions persisted before the marker existed
+	// still match, so their refused pairs are pruned and ACP reports the refusal
+	// outcome — but nothing ever renders this shape again.
+	it("recognizes the legacy shape for pruning (sessions persisted before the marker)", () => {
 		expect(isRefusal(legacyRefused())).toBe(true)
 	})
 
@@ -312,7 +317,9 @@ describe("pruneRefusedTurns", () => {
 		expect(pruneRefusedTurns([user("bad 1"), refused(), user("bad 2"), refused(), ok])).toEqual([ok])
 	})
 
-	it("prunes turns refused with the legacy shape from old session logs", () => {
+	// The provider contract says clients must not re-send the refused prompt; a
+	// pre-marker session's outgoing context must prune the same way.
+	it("prunes the legacy shape from outgoing context", () => {
 		const next = user("hi")
 
 		expect(pruneRefusedTurns([user("bad"), legacyRefused(), next])).toEqual([next])
@@ -320,7 +327,7 @@ describe("pruneRefusedTurns", () => {
 })
 
 describe("refusalText", () => {
-	it("returns the notice text of a refused turn", () => {
+	it("returns the notice text of a refused turn without the heading prefix", () => {
 		const notice = refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"] })
 
 		expect(refusalText(refusedWithNotice(notice))).toBe(notice)
@@ -362,11 +369,12 @@ describe("refusedTurnsExtension", () => {
 		await stream(CHAT_COMPLETIONS_REFUSAL)
 
 		// The notice is the message text with a normal stop — informational, not an
-		// error — and the marker on errorMessage is exact-match state, never rendered.
+		// error — under the heading prefix, and the marker on errorMessage is
+		// exact-match state, never rendered.
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: REFUSAL_MESSAGE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${REFUSAL_MESSAGE}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -383,7 +391,7 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -400,7 +408,7 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -418,7 +426,7 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
@@ -481,25 +489,10 @@ describe("refusedTurnsExtension", () => {
 		expect(await endMessage(reply)).toEqual({
 			message: {
 				...reply,
-				content: [{ type: "text", text: CONTRACT_EXAMPLE_NOTICE }],
+				content: [{ type: "text", text: `${NOTICE_HEADING_PREFIX}${CONTRACT_EXAMPLE_NOTICE}` }],
 				stopReason: "stop",
 				errorMessage: REFUSAL_MARKER,
 			},
 		})
-	})
-
-	// interactive-error-surface ignores messages that did not stop with "error",
-	// and skips refusal-marked ones outright; these pin that no refusal copy the
-	// classifier could ever see is gateway-classifiable either.
-	it("uses a message the gateway error classifier leaves alone", () => {
-		expect(classifyLLMGatewayError(REFUSAL_MESSAGE)).toBeUndefined()
-	})
-
-	it("uses a notice the gateway error classifier leaves alone", () => {
-		expect(
-			classifyLLMGatewayError(
-				refusalNotice({ category: "cyber", flaggedChecks: ["offensive_intent"], guardrailName: "security-intent" }),
-			),
-		).toBeUndefined()
 	})
 })
