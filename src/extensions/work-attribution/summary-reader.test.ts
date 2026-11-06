@@ -122,6 +122,36 @@ it("does not report an unfinished import when the slice clock expires after the 
 	expect(readWorkRecords(agentDir, undefined, () => {})).toEqual([work])
 })
 
+it("does not report an unfinished import when the journals left in the pass are already consumed", () => {
+	// Same false signal one journal wider: the clock expires after the journal that had
+	// unread bytes, and the remaining journals in the pass are settled, so nothing is
+	// outstanding even though the loop stopped early.
+	const { agentDir, path } = journal([work])
+	const settled = join(agentDir, "work-attribution", "settled.jsonl")
+	writeFileSync(settled, `${JSON.stringify({ ...work, sessionId: "settled" })}\n`)
+	expect(readWorkRecords(agentDir)).toHaveLength(2)
+	writeFileSync(path, `${[work, { ...work, sessionId: "appended" }].map((row) => JSON.stringify(row)).join("\n")}\n`)
+	const start = Date.now()
+	let calls = 0
+	vi.spyOn(Date, "now").mockImplementation(() => start + 60 * calls++)
+	expect(() => readWorkRecords(agentDir, undefined, () => {})).not.toThrow()
+})
+
+it("still reports an unfinished import while an unvisited journal has unread bytes", () => {
+	// The guard keeps its meaning: one journal per slice, so the journals after the first
+	// are genuinely unread and a strict reader must refuse to answer from partial history.
+	const { agentDir } = journal([work])
+	for (const name of ["second", "third"])
+		writeFileSync(
+			join(agentDir, "work-attribution", `${name}.jsonl`),
+			`${JSON.stringify({ ...work, sessionId: name })}\n`,
+		)
+	const start = Date.now()
+	let calls = 0
+	vi.spyOn(Date, "now").mockImplementation(() => start + 60 * calls++)
+	expect(() => readWorkRecords(agentDir, undefined, () => {})).toThrow("Legacy work history is still importing")
+})
+
 it("honors a read budget before import commits and allows a later retry", () => {
 	const { agentDir, path } = journal([work])
 	const budget = () => {

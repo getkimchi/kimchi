@@ -440,11 +440,12 @@ function importJournalFiles(
 			skipped: entries.length - imported,
 		})
 		// Unchanged journals cost a stat each; only journals that imported spend the slice.
-		// A finished pass is not pending: the clock expiring after the last journal means this
-		// slice did all the work there was, which a loaded machine reaches routinely with a
-		// single small journal. Only report partial coverage when journals are actually left.
+		// A finished pass is not pending: the clock can expire with journals left in the
+		// list that are already consumed (an untouched journal costs a stat and skips before
+		// this point), so ask whether any unvisited journal still has unread bytes instead of
+		// assuming it does. A loaded machine reaches this with small journals routinely.
 		if (until !== undefined && Date.now() >= until) {
-			if (journalIndex + 1 < ordered.length) {
+			if (ordered.slice(journalIndex + 1).some((remaining) => hasUnreadJournalBytes(backend, remaining))) {
 				result.pending = true
 				stopped.set(agentDir, path)
 			}
@@ -464,6 +465,22 @@ function importJournalFiles(
 			}
 		}
 	return result
+}
+
+/**
+ * Whether a journal this pass has not reached yet still holds unread bytes. Used at the slice
+ * deadline to tell "more work is left" from "the clock ran out after the work was done": an
+ * untouched journal costs one stat, which only happens on the budget-exhausted path.
+ */
+function hasUnreadJournalBytes(backend: RecordBackend, path: string): boolean {
+	const cursor = backend.getJournalCursor(path)
+	if (!cursor) return true
+	try {
+		return statSync(path).size > cursor.offset
+	} catch {
+		// A vanished journal needs a sweep pass to forget it, so treat it as outstanding work.
+		return true
+	}
 }
 
 /**
