@@ -1955,10 +1955,12 @@ export class KimchiAcpAgent implements Agent {
 					// rewrite — goes out as a separate message.
 					turn.lastAssistantError = undefined
 					const notice = refusalText(msg)
-					// Mark the notice as sent so forwardUnsentMessageText below does
-					// not emit the replaced content a second time when nothing was
-					// streamed before the refusal.
-					entry.streamedText.set(0, notice)
+					// Mark every text block as sent so forwardUnsentMessageText below
+					// does not emit the replaced content a second time — whatever
+					// block layout the refused-turns rewrite produces.
+					for (const [index, block] of msg.content.entries()) {
+						if (block.type === "text") entry.streamedText.set(index, block.text)
+					}
 					this.send({
 						sessionId,
 						update: {

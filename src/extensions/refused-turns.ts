@@ -105,7 +105,8 @@ function parseStopDetails(source: unknown): GuardrailStopDetails | undefined {
 }
 
 /** Proxy-supplied detail values are untrusted free text, so the notice bounds them:
- * each value is capped per-field and at most MAX_CHECKS_SHOWN checks are listed. */
+ * each value is stripped of backticks, capped per-field, and at most
+ * MAX_CHECKS_SHOWN checks are listed. */
 const MAX_DETAIL_LENGTH = 64
 const MAX_CHECKS_SHOWN = 5
 
@@ -114,7 +115,8 @@ const MAX_CHECKS_SHOWN = 5
  * Values are sanitized here again (idempotent with parseStopDetails) so the
  * exported function is safe for any caller. */
 export function refusalNotice(details: GuardrailStopDetails | undefined): string {
-	const clean = (value: string) => stripControlChars(value).trim().slice(0, MAX_DETAIL_LENGTH)
+	// Backticks are dropped so a value can never close its code span and inject markdown.
+	const clean = (value: string) => stripControlChars(value).replaceAll("`", "").trim().slice(0, MAX_DETAIL_LENGTH)
 	const allChecks = (details?.flaggedChecks ?? [])
 		.map((check) => `\`${clean(check)}\``)
 		.filter((check) => check !== "``")

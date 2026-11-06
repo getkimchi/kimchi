@@ -3838,6 +3838,34 @@ describe("KimchiAcpAgent per-message model attribution", () => {
 		])
 	})
 
+	it("emits a refusal notice exactly once, whatever text blocks the refused message carries", async () => {
+		// The refusal path sends the notice as its own chunk; every text block of
+		// the refused message must count as sent, not only index 0, or the
+		// message_end catch-up re-emits part of the notice.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_end",
+				message: partialMessage({
+					content: [
+						{ type: "text", text: "first paragraph" },
+						{ type: "text", text: "second paragraph" },
+					],
+					stopReason: "stop",
+					errorMessage: "kimchi:refusal",
+				}),
+			})
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.stopReason).toBe("refusal")
+		const texts = updates
+			.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content: { text: string } }).content.text)
+		expect(texts).toEqual(["first paragraph\nsecond paragraph"])
+	})
+
 	it("emits a zero-length correction chunk when responseModel arrives only at message_end", async () => {
 		// The fully-streamed gap: every delta carried the requested-id
 		// fallback, and the restore path emits nothing when no text is left —

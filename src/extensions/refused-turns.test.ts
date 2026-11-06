@@ -235,6 +235,13 @@ describe("refusalNotice", () => {
 		expect(notice.replaceAll("\n", "")).not.toMatch(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]"))
 	})
 
+	it("strips backticks so a check cannot break out of its code span", () => {
+		const notice = refusalNotice({ flaggedChecks: ["evil` [link](https://x.example) `", "``"] })
+
+		expect(notice).toContain("Detected issue: `evil [link](https://x.example)`")
+		expect(notice.split("\n\n")[1]?.match(/`/g)).toHaveLength(2)
+	})
+
 	it("bounds each check and the number of listed checks (the proxy is untrusted)", () => {
 		const long = "x".repeat(200)
 		const many = Array.from({ length: 9 }, (_, i) => `check_${i}`)
