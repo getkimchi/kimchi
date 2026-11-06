@@ -4374,6 +4374,29 @@ describe("permissions:tool_decision emissions", () => {
 		])
 	})
 
+	it("yolo honors allow rules over the hard-block net (explicit user intent wins)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "allow-tool": "bash(rm -rf *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// `rm -rf /bin/x` is hard-blocked when no rule matches (yolo_hard_block),
+		// but an explicit allow rule outranks the net — mirroring default-mode
+		// semantics where an exact user allow rule wins.
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "rm -rf /bin/x" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
 	it("--dangerously-skip-permissions keeps the documented full bypass", async () => {
 		const harness = createPermissionsHarness(["bash"], {
 			"dangerously-skip-permissions": true,
