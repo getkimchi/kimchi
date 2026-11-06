@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { type Component, Container, type TUI } from "@earendil-works/pi-tui"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { kimchiSsoExtensionOAuth, loginWithCastAiOauth } from "../../cli-auth/oauth.js"
+import { kimchiSsoExtensionOAuth, loginWithKimchiOauth } from "../../cli-auth/oauth.js"
 import {
 	clearApiKey,
 	endpointsForRegion,
@@ -51,7 +51,7 @@ import { refreshBillingStatusFromConfig } from "../billing/status.js"
 
 export const KIMCHI_ACCOUNT_LABEL = "Use a Kimchi account"
 export const KIMCHI_API_KEY_LABEL = "Use a Kimchi API key"
-export const KIMCHI_SSO_LABEL = "Sign in with CAST AI (SSO)"
+export const KIMCHI_SSO_LABEL = "Sign in with SSO"
 export const SUBSCRIPTION_LABEL = "Use a subscription"
 
 let browserLoginLinkSeq = 0
@@ -114,7 +114,7 @@ export function createKimchiProviderOAuth(): ExtensionOAuthConfig {
 		},
 	})
 	return {
-		name: "Sign in with CAST AI (SSO)",
+		name: "Sign in with SSO",
 		login: (callbacks) => ssoOAuth.login(callbacks),
 		refreshToken: ssoOAuth.refreshToken,
 		getApiKey: (credentials) => credentials.access,
@@ -308,7 +308,7 @@ export interface LoginMethodChoice {
 
 /**
  * Shared auth-method menu for `/login` (and the startup gate) and the
- * `kimchi login` CLI: CAST AI SSO first (the recommended browser login) when
+ * `kimchi login` CLI: Kimchi SSO first (the recommended browser login) when
  * available, then account and API key. Keeping the ordering in one place
  * prevents the TUI and CLI menus from drifting apart.
  */
@@ -330,7 +330,7 @@ export function loginMethodChoices(options: {
 export function createLoginChoiceSelector(options: {
 	onKimchiAccount: () => void
 	onKimchiApiKey?: () => void
-	/** CAST AI SSO: the recommended browser login. */
+	/** Kimchi SSO: the recommended browser login. */
 	onKimchiSso?: () => void
 	onSubscription: () => void
 	onCancel: () => void
@@ -555,7 +555,7 @@ async function configureKimchiToken(
 	}
 
 	// Key-based logins carry no organization: drop a stale X-CastAi-Organization-Id
-	// a previous CAST AI SSO login left in models.json (no-op when absent —
+	// a previous Kimchi SSO login left in models.json (no-op when absent —
 	// also covers the cached-fallback path that skips the rewrite).
 	{
 		const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
@@ -603,7 +603,7 @@ async function configureKimchiToken(
 }
 
 /**
- * Complete a CAST AI SSO login after the provider OAuth dialog stored the
+ * Complete a Kimchi SSO login after the provider OAuth dialog stored the
  * credential in auth.json:
  *
  * 1. Persist the credential's region so endpoint derivation (models metadata
@@ -687,7 +687,7 @@ export async function completeKimchiSsoLogin(host: KimchiBrowserLoginHost): Prom
 	if (refreshError) {
 		host.showError?.(formatKimchiTokenError(refreshError, { saved: true }))
 	} else {
-		host.showError?.("CAST AI SSO login did not configure any available models. Your sign-in was saved; try again.")
+		host.showError?.("Kimchi SSO login did not configure any available models. Your sign-in was saved; try again.")
 	}
 	return false
 }
@@ -855,7 +855,7 @@ export async function performKimchiBrowserLoginWithDialog(
 }
 
 /**
- * CAST AI SSO login driven through the extension UI (startup gate), mirroring
+ * Kimchi SSO login driven through the extension UI (startup gate), mirroring
  * `performKimchiBrowserLoginWithDialog`: LoginDialogComponent for chrome and
  * Esc-to-cancel, with the OAuth callbacks adapted to the dialog. The org
  * selection renders as a numbered text prompt — the dialog has no list
@@ -869,7 +869,7 @@ export async function performKimchiSsoLoginWithExtensionUI(
 	setPendingOAuthRegion(options.region)
 	const config = resolveOAuthLoginConfig(options.region)
 	if (!config) {
-		ctx.ui.notify("CAST AI SSO login is not available for the current region", "error")
+		ctx.ui.notify("Kimchi SSO login is not available for the current region", "error")
 		return "failed"
 	}
 
@@ -892,13 +892,13 @@ export async function performKimchiSsoLoginWithExtensionUI(
 					finish("cancelled")
 				}
 			},
-			"CAST AI",
-			"Sign in with CAST AI",
+			"Kimchi",
+			"Sign in with SSO",
 		)
 
 		void (async () => {
 			try {
-				const credential = await loginWithCastAiOauth(config, {
+				const credential = await loginWithKimchiOauth(config, {
 					onAuth: (info) => dialog.showAuth(info.url, info.instructions),
 					onProgress: (message) => dialog.showProgress(message),
 					onPrompt: (prompt) => dialog.showPrompt(prompt.message, prompt.placeholder),
@@ -928,7 +928,7 @@ export async function performKimchiSsoLoginWithExtensionUI(
 					finish("cancelled")
 					return
 				}
-				ctx.ui.notify(`CAST AI SSO login failed: ${error instanceof Error ? error.message : String(error)}`, "error")
+				ctx.ui.notify(`Kimchi SSO login failed: ${error instanceof Error ? error.message : String(error)}`, "error")
 				finish("failed")
 			}
 		})()

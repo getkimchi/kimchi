@@ -2,7 +2,7 @@
  * `kimchi login` — the CLI mirror of the interactive `/login` command
  * (src/login-command-patch.ts + src/extensions/login/flow.ts).
  *
- * Interactive terminal: the same three-step chain — auth method (CAST AI SSO /
+ * Interactive terminal: the same three-step chain — auth method (Kimchi SSO /
  * Kimchi account / Kimchi API key, ordered by loginMethodChoices), region
  * (current first, self-hosted via console-URL + discovery), then the
  * method-specific prompts or browser wait — and the same post-login
@@ -24,7 +24,7 @@ import { emitKeypressEvents } from "node:readline"
 import { spinner } from "@clack/prompts"
 import { ModelRegistry, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent"
 import { authenticateViaBrowser } from "../cli-auth/index.js"
-import { LOGIN_CANCELLED_MESSAGE, loginWithCastAiOauth } from "../cli-auth/oauth.js"
+import { LOGIN_CANCELLED_MESSAGE, loginWithKimchiOauth } from "../cli-auth/oauth.js"
 import { endpointsForRegion, getApiKeyMismatchWarning, loadConfig, writeApiKey } from "../config.js"
 import {
 	completeKimchiSsoLogin,
@@ -196,18 +196,18 @@ async function runSsoMethod(): Promise<MethodResult> {
 	setPendingOAuthRegion(picked.value)
 	const config = resolveOAuthLoginConfig(picked.value)
 	if (!config) {
-		console.error("CAST AI SSO login is not available for the current region")
+		console.error("Kimchi SSO login is not available for the current region")
 		return 1
 	}
 
 	const { controller, cancelKey, disarm } = armInFlightCancel()
 	try {
 		const credential = await Promise.race([
-			loginWithCastAiOauth(config, createCliSsoCallbacks(controller)),
+			loginWithKimchiOauth(config, createCliSsoCallbacks(controller)),
 			abortedWhen(controller),
 		])
 		// Settle the (possibly) outstanding manual-code prompt: the manual branch
-		// of loginWithCastAiOauth's race hangs otherwise. Aborted is a no-op here
+		// of loginWithKimchiOauth's race hangs otherwise. Aborted is a no-op here
 		// when already aborted, and host.signal is unused by completeKimchiSsoLogin.
 		controller.abort()
 		disarm()
@@ -231,10 +231,10 @@ async function runSsoMethod(): Promise<MethodResult> {
 			return key === "ctrl-c" ? 130 : 0
 		}
 		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
-			console.error("CAST AI SSO login appears to be in progress elsewhere — finish it, then retry.")
+			console.error("Kimchi SSO login appears to be in progress elsewhere — finish it, then retry.")
 			return 1
 		}
-		console.error(`CAST AI SSO login failed: ${error instanceof Error ? error.message : String(error)}`)
+		console.error(`Kimchi SSO login failed: ${error instanceof Error ? error.message : String(error)}`)
 		return 1
 	}
 }
@@ -360,7 +360,7 @@ async function withInFlightCancel<T>(
 }
 
 /** Rejects when the controller aborts — races a flow that ignores the signal
- * (the pending callback-server wait inside loginWithCastAiOauth). */
+ * (the pending callback-server wait inside loginWithKimchiOauth). */
 function abortedWhen(controller: AbortController): Promise<never> {
 	return new Promise<never>((_resolve, reject) => {
 		controller.signal.addEventListener("abort", () => reject(new Error(LOGIN_CANCELLED_MESSAGE)), { once: true })
@@ -442,7 +442,7 @@ async function runSelfHostedLogin(consoleUrlArg: string): Promise<number> {
 
 export function getLoginHelp(): string {
 	const lines: string[] = [
-		"Log in to Kimchi: choose CAST AI SSO (recommended), your Kimchi account in the browser,",
+		"Log in to Kimchi: choose Kimchi SSO (recommended), your Kimchi account in the browser,",
 		"or an API key — then pick a region. Future sessions pick up the credential automatically.",
 		"Subscription logins (e.g. Anthropic, GitHub Copilot) are available via /login inside the TUI.",
 		"",

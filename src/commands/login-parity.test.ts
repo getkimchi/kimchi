@@ -31,7 +31,7 @@ vi.mock("@clack/prompts", () => ({
 vi.mock("../cli-auth/index.js", () => ({ authenticateViaBrowser: vi.fn() }))
 vi.mock("../cli-auth/oauth.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../cli-auth/oauth.js")>()
-	return { ...actual, loginWithCastAiOauth: vi.fn() }
+	return { ...actual, loginWithKimchiOauth: vi.fn() }
 })
 vi.mock("../extensions/billing/status.js", () => ({ refreshBillingStatusFromConfig: vi.fn() }))
 vi.mock("../self-hosted-discovery.js", async (importOriginal) => {
@@ -48,7 +48,7 @@ vi.mock("./login-prompts.js", () => ({
 }))
 
 import { authenticateViaBrowser } from "../cli-auth/index.js"
-import { loginWithCastAiOauth } from "../cli-auth/oauth.js"
+import { loginWithKimchiOauth } from "../cli-auth/oauth.js"
 import * as configModule from "../config.js"
 import { resetCredentialStalenessForTests } from "../credential-staleness.js"
 import * as experimentalModule from "../extensions/experimental.js"
@@ -304,9 +304,9 @@ describe("CLI ↔ /login outcome parity", () => {
 		])
 	})
 
-	it("CAST AI SSO login leaves identical state", async () => {
+	it("Kimchi SSO login leaves identical state", async () => {
 		const cli = await runCliSide(() => {
-			vi.mocked(loginWithCastAiOauth).mockResolvedValue({ ...SSO_CREDENTIAL })
+			vi.mocked(loginWithKimchiOauth).mockResolvedValue({ ...SSO_CREDENTIAL })
 			vi.mocked(promptLoginMethod).mockResolvedValue({ kind: "next", value: "sso" })
 			vi.mocked(promptLoginRegion).mockResolvedValue({ kind: "next", value: "eu" })
 		})

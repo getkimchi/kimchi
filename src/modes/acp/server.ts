@@ -633,7 +633,7 @@ export class KimchiAcpAgent implements Agent {
 		// out-of-band: the client launches `kimchi login` as a separate process,
 		// so this method is never called for it.
 		//
-		// NOTE: the experimental CAST AI SSO (OAuth code + PKCE) login is NOT
+		// NOTE: the experimental Kimchi SSO (OAuth code + PKCE) login is NOT
 		// offered here. ACP clients cannot reliably answer the manual-code prompt
 		// the SSH/headless path needs, so ACP keeps this web-app handoff; SSO
 		// credentials created by the TUI still work in ACP sessions (the

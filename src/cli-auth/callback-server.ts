@@ -25,12 +25,12 @@ export interface CallbackServerOptions {
  * free (another Kimchi session may legitimately hold it mid-login), so the
  * production SSO constant is exported for the SSO login and the test suite
  * uses ephemeral ports via the CallbackServerOptions seam. */
-export const CAST_AI_SSO_CALLBACK_PORT = 8765
+export const KIMCHI_SSO_CALLBACK_PORT = 8765
 
 /** Reusable port-in-use guidance for callers that pick `port.kind: "fixed"`. */
 export function callbackPortInUseError(port: number): Error {
 	return new Error(
-		`Port ${port} is in use, probably by an unfinished CAST AI sign-in in another Kimchi session. Cancel that sign-in and try again.`,
+		`Port ${port} is in use, probably by an unfinished Kimchi sign-in in another Kimchi session. Cancel that sign-in and try again.`,
 	)
 }
 
