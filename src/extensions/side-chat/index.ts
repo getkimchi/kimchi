@@ -1,6 +1,6 @@
 /**
- * Side chat (experimental, TUI fullscreen only). Enabled via /resources →
- * Experimental → "Side chat" (`extensions.side-chat`), restart required.
+ * Side chat (experimental). Enabled via /resources → Experimental →
+ * "Side chat" (`extensions.side-chat`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
  * - select text in either transcript and click "Add to side chat" to quote
@@ -19,7 +19,10 @@
  * - every side chat keeps its own transcript file next to the main session,
  *   referenced by a hidden main-session entry; `/btw history` reopens one.
  *
- * ACP has no split view, so this is TUI-only by design.
+ * This file is the TUI front: panel, dividers, selection pill, shortcuts and
+ * the /btw command. The side-chat lifecycle itself (sessions, persistence,
+ * wrap-up) lives in controller.ts, surfaced per chat through a SideChatSink
+ * so the same core also drives the ACP bridge (acp-bridge.ts).
  *
  * The harness patch is installed only when this (resource-gated) extension
  * loads; every compositor and interceptor registered here is removed again on
@@ -27,10 +30,17 @@
  * `/reload` and the previous instance's context is stale by then.
  */
 
-import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { parseSideChatCommand } from "./autocomplete.js"
-import { btwCompletions, parseBtwArgs } from "./command.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { SideChatAcpBridge } from "./acp-bridge.js"
+import { type BtwCommand, btwCompletions, parseBtwArgs } from "./command.js"
+import {
+	type OpenOptions,
+	SideChatController,
+	type SideChatDeps,
+	type SideChatSink,
+	type SideChatView,
+} from "./controller.js"
 import { PaneDivider } from "./divider.js"
 import { applyFocusChrome } from "./focus-chrome.js"
 import {
@@ -44,63 +54,37 @@ import {
 	type SideChatHost,
 } from "./harness.js"
 import { SideChatPanel } from "./panel.js"
-import {
-	historyLabel,
-	readSideChatHistory,
-	SIDE_CHAT_ENTRY_TYPE,
-	type SideChatRecord,
-	titleFrom,
-	UNTITLED_SIDE_CHAT,
-} from "./records.js"
+import { historyLabel } from "./records.js"
+import { registerSideChatBridge } from "./registry.js"
 import { SelectionPill } from "./selection-pill.js"
-import {
-	createSideSession,
-	draftSteeringPrompt,
-	SIDE_CHAT_TOOLS,
-	type SideChatSession,
-	sideThreadMessages,
-	type WrapUpRun,
-} from "./session.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
-import { openSideChatLog, persistableThread, type SideChatLog, type SideThread } from "./store.js"
 
 /** Side panel width chosen by dragging the divider; kept for the process lifetime. */
 let sideWidth: number | undefined
 
-interface ActiveSideChat {
-	record: SideChatRecord
-	panel: SideChatPanel
-	ready: Promise<SideChatSession | undefined>
-	side?: SideChatSession
-	ctx: ExtensionContext
-	/** The side chat's own transcript file. */
-	log: SideChatLog
-	/** Side-thread messages already in `log`. */
-	persistedCount: number
-	/** The main session holds a record of this side chat. */
-	recorded: boolean
-	/** The in-flight `/wrap` draft, if any. */
-	wrapUp?: WrapUpRun
-	dispose: () => void
-}
-
-interface OpenOptions {
-	quote?: string
-	prompt?: string
-	resume?: SideChatRecord
-	/** Start without main-session context (`/btw new`); replaces an open side chat. */
-	fresh?: boolean
-}
-
 export default function sideChatExtension(pi: ExtensionAPI) {
 	const harnessReady = installSideChatHarnessPatch()
-	let active: ActiveSideChat | undefined
 	/** Removes the pill compositor/interceptor registered for the current session. */
 	let removePill: (() => void) | undefined
 
 	const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => {
 		if (ctx.hasUI) ctx.ui.notify(message, level)
 	}
+
+	const deps: SideChatDeps = {
+		appendEntry: (customType, data) => pi.appendEntry(customType, data),
+		sendUserMessage: (text, options) => pi.sendUserMessage(text, options),
+		getThinkingLevel: () => pi.getThinkingLevel(),
+		notify,
+	}
+	const controller = new SideChatController(deps)
+
+	/** ACP surface of the current session; registered in the process-wide registry. */
+	let acpBridge: SideChatAcpBridge | undefined
+	let unregisterAcp: (() => void) | undefined
+
+	/** Panel and view of the open side chat, for the history list toggles. */
+	let tui: { panel: SideChatPanel; view: SideChatView; ctx: ExtensionContext } | undefined
 
 	function hostFor(ctx: ExtensionContext): SideChatHost | undefined {
 		if (!harnessReady) {
@@ -131,260 +115,24 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		return text
 	}
 
-	const countQuestions = (thread: SideThread) => thread.filter((message) => message.role === "user").length
-
-	function writeRecord(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
-		const questions = chat.side ? countQuestions(sideThreadMessages(chat.side)) : chat.record.questions
-		chat.record = { ...chat.record, questions, updatedAt: Date.now(), ...(outcome ? { outcome } : {}) }
-		chat.recorded = true
-		pi.appendEntry(SIDE_CHAT_ENTRY_TYPE, chat.record)
-	}
-
-	/**
-	 * Append the unsaved side-thread messages to the side chat's own file
-	 * (after every turn). A reply still streaming is skipped here; it is saved
-	 * when the turn settles — on close the turn is aborted first, so the file
-	 * keeps it with `stopReason: "aborted"` (see persistableThread). The first
-	 * save also records the side chat in the main session, so a crash keeps it
-	 * reachable from `/btw history`.
-	 */
-	function saveThread(chat: ActiveSideChat): void {
-		if (!chat.side) return
-		const messages = persistableThread(sideThreadMessages(chat.side))
-		const unsaved = messages.slice(chat.persistedCount)
-		if (unsaved.length === 0) return
-		try {
-			chat.log.append(unsaved)
-		} catch (error) {
-			chat.panel.addInfo(`Could not save the side chat: ${error instanceof Error ? error.message : String(error)}`)
-			return
-		}
-		chat.persistedCount = messages.length
-		if (!chat.recorded) writeRecord(chat)
-	}
-
-	/** Save the thread and refresh the main-session record when its summary changed. */
-	function persist(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
-		saveThread(chat)
-		if (!chat.recorded || !chat.side) return
-		const questions = countQuestions(sideThreadMessages(chat.side))
-		if (questions === chat.record.questions && (!outcome || outcome === chat.record.outcome)) return
-		writeRecord(chat, outcome)
-	}
-
-	async function closeSideChat(outcome: SideChatRecord["outcome"]): Promise<void> {
-		const chat = active
-		if (!chat) return
-		active = undefined
-		chat.wrapUp?.abort()
-		const side = chat.side ?? (await chat.ready.catch(() => undefined))
-		// Settle an in-flight reply as "aborted" before saving and tearing down:
-		// the persisted turn then shows as interrupted when the chat is reopened,
-		// instead of the partial reply freezing as a plausible final answer.
-		if (side) {
-			await side.session.abort().catch(() => {})
-			persist(chat, outcome)
-			side.session.dispose()
-		} else {
-			persist(chat, outcome)
-		}
-		chat.dispose()
-	}
-
-	async function sendToMain(chat: ActiveSideChat, text: string): Promise<void> {
-		if (chat.ctx.isIdle()) pi.sendUserMessage(text)
-		else pi.sendUserMessage(text, { deliverAs: "steer" })
-		notify(chat.ctx, "Side chat summary sent to the main session.")
-		await closeSideChat("sent")
-	}
-
-	async function prompt(chat: ActiveSideChat, text: string): Promise<void> {
-		const side = await chat.ready
-		if (!side || active !== chat) return
-		try {
-			await side.session.prompt(text, {
-				expandPromptTemplates: false,
-				source: "extension",
-				...(side.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-			})
-		} catch (error) {
-			chat.panel.addInfo(`Side chat error: ${error instanceof Error ? error.message : String(error)}`)
-		}
-	}
-
-	async function wrapUp(chat: ActiveSideChat, extra: string): Promise<void> {
-		const side = await chat.ready
-		if (!side || active !== chat || chat.wrapUp) return
-		const thread = sideThreadMessages(side)
-		if (thread.length === 0) {
-			chat.panel.setNotice("Nothing to wrap up yet — ask something first.")
-			return
-		}
-		if (side.session.isStreaming) {
-			chat.panel.setNotice("Wait for the reply (or press esc) before /wrap.")
-			return
-		}
-		const { panel } = chat
-		panel.setMode("wrapping")
-		panel.setWorking(true)
-		const run = draftSteeringPrompt(chat.ctx, thread, extra, (partial) => {
-			if (active === chat && panel.currentMode === "wrapping") panel.editor.setText(partial)
-		})
-		chat.wrapUp = run
-		let draft = ""
-		try {
-			draft = await run.result
-		} catch (error) {
-			if (active === chat) panel.setNotice(`Wrap-up failed: ${error instanceof Error ? error.message : String(error)}`)
-		} finally {
-			chat.wrapUp = undefined
-			panel.setWorking(false)
-		}
-		if (active !== chat || panel.currentMode !== "wrapping") return
-		if (!draft) {
-			panel.setMode("chat")
-			panel.editor.setText("")
-			return
-		}
-		panel.setMode("review")
-		panel.editor.setText(draft)
-		panel.focus()
-	}
-
-	function handleSubmit(chat: ActiveSideChat, raw: string): void {
-		const text = raw.trim()
-		if (!text) return
-		const { panel } = chat
-		panel.setNotice("")
-		const command = parseSideChatCommand(text)
-		if (command?.name === "close") {
-			void closeSideChat("closed")
-			return
-		}
-		if (panel.currentMode === "review") {
-			panel.editor.setText("")
-			void sendToMain(chat, text)
-			return
-		}
-		panel.editor.addToHistory(text)
-		panel.editor.setText("")
-		if (command?.name === "wrap") {
-			void wrapUp(chat, command.args)
-			return
-		}
-		if (chat.record.title === UNTITLED_SIDE_CHAT) {
-			chat.record.title = titleFrom(text)
-			panel.setTitle(chat.record.title)
-		}
-		void prompt(chat, text)
-	}
-
-	function handleEscape(chat: ActiveSideChat): void {
-		const { panel, side } = chat
-		if (chat.wrapUp) {
-			chat.wrapUp.abort()
-			panel.setMode("chat")
-			panel.editor.setText("")
-			return
-		}
-		if (side?.session.isStreaming) {
-			void side.session.abort()
-			return
-		}
-		if (panel.currentMode === "review") {
-			panel.setMode("chat")
-			panel.editor.setText("")
-			return
-		}
-		getSideChatHost()?.focusMainEditor()
-	}
-
-	/** ≡: list this session's side chats in the panel (or close the list). */
-	function toggleHistory(chat: ActiveSideChat): void {
-		if (chat.panel.isHistoryOpen) {
-			chat.panel.hideHistory()
-			return
-		}
-		persist(chat)
-		const history = readSideChatHistory(chat.ctx.sessionManager.getEntries())
-		if (history.length === 0) {
-			chat.panel.setNotice("No saved side chats yet — ask something first.")
-			return
-		}
-		chat.panel.showHistory(
-			history.map((record) => ({ id: record.id, label: historyLabel(record), current: record.id === chat.record.id })),
-		)
-	}
-
-	async function pickHistory(chat: ActiveSideChat, id: string): Promise<void> {
-		if (id === chat.record.id) {
-			chat.panel.hideHistory()
-			return
-		}
-		const record = readSideChatHistory(chat.ctx.sessionManager.getEntries()).find((candidate) => candidate.id === id)
-		if (record) await openSideChat(chat.ctx, { resume: record })
-	}
-
-	async function openSideChat(ctx: ExtensionContext, options: OpenOptions): Promise<void> {
-		const host = hostFor(ctx)
-		if (!host) return
-		const replacesActive = options.fresh || (options.resume && active?.record.id !== options.resume.id)
-		if (active && replacesActive) await closeSideChat(undefined)
-		if (active) {
-			if (options.quote) active.panel.addQuote(options.quote)
-			active.panel.focus()
-			if (options.prompt) handleSubmit(active, options.prompt)
-			return
-		}
-
-		const now = Date.now()
-		const sessionId = ctx.sessionManager.getSessionId()
-		const { resume } = options
-		let thread: SideThread = []
-		if (resume) {
-			try {
-				thread = openSideChatLog(ctx.sessionManager, resume.id, resume.sessionId).read()
-			} catch {
-				// Unreadable transcript: reopen with the inherited context only.
-			}
-		}
-		const owned = resume?.sessionId === sessionId
-		let record: SideChatRecord
-		if (resume && owned) {
-			record = resume
-		} else if (resume) {
-			// Inherited from another main session (a fork or copy): continue it as a
-			// new side chat of this session, leaving the original file untouched.
-			record = { ...resume, id: randomUUID(), sessionId, outcome: undefined }
-		} else {
-			const opening = options.prompt ?? options.quote
-			record = {
-				id: randomUUID(),
-				sessionId,
-				branchLeafId: ctx.sessionManager.getLeafId(),
-				...(options.fresh ? { fresh: true } : {}),
-				startedAt: now,
-				updatedAt: now,
-				title: opening ? titleFrom(opening) : UNTITLED_SIDE_CHAT,
-				questions: 0,
-			}
-		}
+	/** TUI sink: every controller call maps onto the side panel's API. */
+	function createTuiSink(ctx: ExtensionContext, host: SideChatHost, view: SideChatView): SideChatSink {
 		const { theme } = ctx.ui
-		let chat: ActiveSideChat | undefined
 		const panel = new SideChatPanel({
 			host,
 			theme,
 			cwd: ctx.cwd,
-			title: record.title,
-			onSubmit: (text) => chat && handleSubmit(chat, text),
-			onEscape: () => chat && handleEscape(chat),
+			title: view.record.title,
+			onSubmit: (text) => controller.submit(text),
+			onEscape: () => {
+				if (!controller.escape()) host.focusMainEditor()
+			},
 			onShortcut: (data) => host.forwardExtensionShortcut(data),
 			onHeaderAction: (action) => {
-				if (!chat) return
-				if (action === "close") void closeSideChat("closed")
-				else toggleHistory(chat)
+				if (action === "close") void controller.close("closed")
+				else toggleHistory()
 			},
-			onPickHistory: (id) => chat && void pickHistory(chat, id),
+			onPickHistory: (id) => void pickHistory(id),
 		})
 		const restoreBorder = applyFocusChrome(host.mainEditor(), theme, { label: "main" })
 		const removePaint = addCompositor((screen, frame, width) => panel.paint(screen, frame, width))
@@ -402,51 +150,26 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const removeDividerMouse = addMouseInterceptor((event) => divider.handleMouse(event))
 		// Mouse dispatch refocuses clicked editors directly, bypassing focusComponent;
 		// keep a main-session modal dialog (a permission ask) focused regardless.
-		const removeFocusGuard = addFocusGuard(() => (active === chat ? host.modalDialog() : undefined))
-		let unsubscribe: (() => void) | undefined
-
-		const ready = createSideSession(ctx, {
-			branchLeafId: record.branchLeafId,
-			fresh: record.fresh === true,
-			thinkingLevel: pi.getThinkingLevel(),
-			thread,
-		}).then(
-			(side) => {
-				if (active !== chat) {
-					side.session.dispose()
-					return undefined
-				}
-				if (chat) chat.side = side
-				if (!options.resume) {
-					const origin = record.fresh
-						? "↳ Fresh side chat — no main-session context"
-						: `↳ Branched from the main session with ${side.contextLength} messages of context`
-					panel.addInfo(`${origin} · read-only tools: ${SIDE_CHAT_TOOLS.join(", ")}`)
-				}
-				unsubscribe = side.session.subscribe((event) => {
-					panel.handleEvent(event)
-					if (event.type !== "agent_end") return
-					panel.setNotice("")
-					if (chat) saveThread(chat)
-				})
-				return side
+		const removeFocusGuard = addFocusGuard(() => (tui?.view === view ? host.modalDialog() : undefined))
+		host.setSidePanel(panel.root, { divider: divider.component, width: sideWidth })
+		tui = { panel, view, ctx }
+		return {
+			addInfo: (text) => panel.addInfo(text),
+			setNotice: (text) => panel.setNotice(text),
+			handleEvent: (event) => panel.handleEvent(event),
+			replay: (messages) => panel.replay(messages),
+			addQuote: (quote) => panel.addQuote(quote),
+			setTitle: (title) => panel.setTitle(title),
+			commitInput: (text) => {
+				panel.editor.addToHistory(text)
+				panel.editor.setText("")
 			},
-			(error: unknown) => {
-				panel.addInfo(`Could not start side chat: ${error instanceof Error ? error.message : String(error)}`)
-				return undefined
-			},
-		)
-
-		chat = {
-			record,
-			panel,
-			ready,
-			ctx,
-			log: openSideChatLog(ctx.sessionManager, record.id),
-			persistedCount: owned ? thread.length : 0,
-			recorded: owned,
-			dispose: () => {
-				unsubscribe?.()
+			setMode: (mode) => panel.setMode(mode),
+			setDraft: (text) => panel.editor.setText(text),
+			setWorking: (working) => panel.setWorking(working),
+			focus: () => panel.focus(),
+			closed: () => {
+				tui = undefined
 				panel.dispose()
 				removePaint()
 				removeWheel()
@@ -458,37 +181,69 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				host.focusMainEditor()
 			},
 		}
-		active = chat
+	}
 
-		if (resume) {
-			panel.addInfo(`↺ Reopened side chat from ${new Date(record.startedAt).toLocaleString()}`)
-			if (thread.length === 0 && resume.questions > 0) panel.addInfo("Its transcript is no longer available.")
-			panel.replay(thread)
+	async function openSideChat(ctx: ExtensionContext, options: OpenOptions): Promise<void> {
+		const host = hostFor(ctx)
+		if (!host) return
+		await controller.open(ctx, options, (view) => createTuiSink(ctx, host, view))
+	}
+
+	/** ≡: list this session's side chats in the panel (or close the list). */
+	function toggleHistory(): void {
+		const current = tui
+		if (!current) return
+		if (current.panel.isHistoryOpen) {
+			current.panel.hideHistory()
+			return
 		}
-		host.setSidePanel(panel.root, { divider: divider.component, width: sideWidth })
-		if (options.quote) panel.addQuote(options.quote)
-		panel.focus()
-		if (options.prompt) handleSubmit(chat, options.prompt)
+		const history = controller.history(current.ctx)
+		if (history.length === 0) {
+			current.panel.setNotice("No saved side chats yet — ask something first.")
+			return
+		}
+		current.panel.showHistory(
+			history.map((record) => ({
+				id: record.id,
+				label: historyLabel(record),
+				current: record.id === current.view.record.id,
+			})),
+		)
+	}
+
+	async function pickHistory(id: string): Promise<void> {
+		const current = tui
+		if (!current) return
+		if (id === current.view.record.id) {
+			current.panel.hideHistory()
+			return
+		}
+		const record = controller.history(current.ctx).find((candidate) => candidate.id === id)
+		if (record) await openSideChat(current.ctx, { resume: record })
 	}
 
 	pi.registerShortcut(SIDE_CHAT_SHORTCUTS.focusMain, {
 		description: "Side chat: focus the main session",
-		handler: () => {
-			if (active) getSideChatHost()?.focusMainEditor()
-		},
+		handler: () => hostFocusMain(),
 	})
 
 	pi.registerShortcut(SIDE_CHAT_SHORTCUTS.focusSide, {
 		description: "Side chat: focus the side chat (opens one if none is open)",
 		handler: async (ctx) => {
-			if (active) active.panel.focus()
-			else await openSideChat(ctx, {})
+			if (IS_ACP_MODE) {
+				await acpBridge?.open({})
+				return
+			}
+			if (!controller.focus()) await openSideChat(ctx, {})
 		},
 	})
 
+	function hostFocusMain(): void {
+		getSideChatHost()?.focusMainEditor()
+	}
+
 	async function pickFromHistory(ctx: ExtensionContext): Promise<void> {
-		if (active) persist(active)
-		const history = readSideChatHistory(ctx.sessionManager.getEntries())
+		const history = controller.history(ctx)
 		if (history.length === 0) {
 			notify(ctx, "No side chats in this session yet. Start one with /btw.")
 			return
@@ -498,11 +253,11 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const index = choice === undefined ? -1 : labels.indexOf(choice)
 		if (index < 0) return
 		const record = history[index]
-		if (active?.record.id === record.id) {
-			active.panel.focus()
+		if (tui?.view.record.id === record?.id) {
+			tui?.panel.focus()
 			return
 		}
-		await openSideChat(ctx, { resume: record })
+		if (record) await openSideChat(ctx, { resume: record })
 	}
 
 	pi.registerCommand("btw", {
@@ -510,12 +265,16 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		getArgumentCompletions: btwCompletions,
 		handler: async (args, ctx) => {
 			const command = parseBtwArgs(args)
+			if (IS_ACP_MODE) {
+				await btwAcp(ctx, command)
+				return
+			}
 			switch (command.action) {
 				case "history":
 					await pickFromHistory(ctx)
 					return
 				case "close":
-					await closeSideChat("closed")
+					await controller.close("closed")
 					return
 				case "new":
 					await openSideChat(ctx, { fresh: true, prompt: command.question, quote: takeSelection() })
@@ -526,14 +285,50 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		},
 	})
 
+	/** ACP-mode /btw: drives the registry-visible bridge; the client renders the pane. */
+	async function btwAcp(ctx: ExtensionContext, command: BtwCommand): Promise<void> {
+		const bridge = acpBridge
+		if (!bridge) {
+			notify(ctx, "Side chat is not ready yet.", "warning")
+			return
+		}
+		switch (command.action) {
+			case "history": {
+				const history = bridge.history()
+				notify(
+					ctx,
+					history.length === 0
+						? "No side chats in this session yet. Start one with /btw."
+						: history.map((record) => historyLabel(record)).join("\n"),
+				)
+				return
+			}
+			case "close":
+				await bridge.close()
+				return
+			case "new":
+				await bridge.open({ fresh: true, prompt: command.question })
+				return
+			case "open":
+				await bridge.open({ prompt: command.question })
+		}
+	}
+
 	pi.on("session_start", (_event, ctx) => {
 		removePill?.()
 		removePill = undefined
+		if (IS_ACP_MODE) {
+			// ACP has no split view; the client renders the pane from the
+			// bridge's side_chat_update stream (see acp-bridge.ts).
+			acpBridge = new SideChatAcpBridge(ctx, deps)
+			unregisterAcp = registerSideChatBridge(ctx.sessionManager.getSessionId(), acpBridge)
+			return
+		}
 		if (!harnessReady || !ctx.hasUI) return
 		const pill = new SelectionPill({
 			host: getSideChatHost,
 			theme: ctx.ui.theme,
-			excludeWithin: () => active?.panel.root,
+			excludeWithin: () => tui?.panel.root,
 			onAdd: (quote) => void openSideChat(ctx, { quote }),
 		})
 		const removePaint = addCompositor((screen, frame, width) => pill.paint(screen, frame, width))
@@ -547,6 +342,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async () => {
 		removePill?.()
 		removePill = undefined
-		await closeSideChat(undefined)
+		unregisterAcp?.()
+		unregisterAcp = undefined
+		acpBridge = undefined
+		await controller.close(undefined)
 	})
 }

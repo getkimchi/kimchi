@@ -39,6 +39,15 @@ export const AVAILABLE_EXT_METHODS = {
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
+	// Side chat (the /btw extension). The client renders the split view from
+	// side_chat_update; these methods open/prompt/wrap/close/resume the chat.
+	side_chat_open: `_${CAPABILITIES_KEY}/side_chat_open`,
+	side_chat_prompt: `_${CAPABILITIES_KEY}/side_chat_prompt`,
+	side_chat_wrap: `_${CAPABILITIES_KEY}/side_chat_wrap`,
+	side_chat_send_to_main: `_${CAPABILITIES_KEY}/side_chat_send_to_main`,
+	side_chat_close: `_${CAPABILITIES_KEY}/side_chat_close`,
+	side_chat_history: `_${CAPABILITIES_KEY}/side_chat_history`,
+	side_chat_resume: `_${CAPABILITIES_KEY}/side_chat_resume`,
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
@@ -68,6 +77,9 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 	agent_activity: `_${CAPABILITIES_KEY}/agent_activity`,
 	routed_model: `_${CAPABILITIES_KEY}/routed_model`,
 	skill_autoload: `_${CAPABILITIES_KEY}/skill_autoload`,
+	// Side-chat stream; sessionId + sideChatId in the payload (queue_dropped
+	// precedent), so it is not advertised in _meta.
+	side_chat_update: `_${CAPABILITIES_KEY}/side_chat_update`,
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS

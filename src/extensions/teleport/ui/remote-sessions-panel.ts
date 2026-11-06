@@ -2,12 +2,12 @@ import type { Component } from "@earendil-works/pi-tui"
 import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
+import { formatRelativeTime } from "../../../shared/relative-time.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
 import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
 import { type QuotaInput, quotaLines, settleQuota } from "./quota-footer.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
-import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
 // Must match the maxHeight in the overlay options below. The panel sizes its
