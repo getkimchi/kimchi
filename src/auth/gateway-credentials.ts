@@ -37,6 +37,8 @@ export interface GatewayCredentials {
 	token: string
 	/** SSO organization id for the routing header; only set on the OAuth path. */
 	organizationId?: string
+	/** SSO organization display name stamped at login; only set on the OAuth path. */
+	organizationName?: string
 	/** What supplied the token — drives per-feature messaging and gating. */
 	source: "api-key" | "oauth" | "none"
 }
@@ -76,13 +78,14 @@ export function resolveGatewayCredentials(
 	if (!credential) return NONE
 
 	if (credential.type === "oauth") {
-		// orgId/region are Kimchi extras stamped on the credential at login
-		// (completeKimchiSsoLogin) — not part of pi-ai's OAuthCredential type.
-		const extras = credential as { access?: unknown; orgId?: unknown }
+		// orgId/orgName/region are Kimchi extras stamped on the credential at login
+		// (loginWithCastAiOauth) — not part of pi-ai's OAuthCredential type.
+		const extras = credential as { access?: unknown; orgId?: unknown; orgName?: unknown }
 		if (typeof extras.access !== "string" || extras.access.length === 0) return NONE
 		return {
 			token: extras.access,
 			organizationId: typeof extras.orgId === "string" && extras.orgId.length > 0 ? extras.orgId : undefined,
+			organizationName: typeof extras.orgName === "string" && extras.orgName.length > 0 ? extras.orgName : undefined,
 			source: "oauth",
 		}
 	}
