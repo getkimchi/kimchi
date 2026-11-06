@@ -223,7 +223,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		default: false,
 	})
 	pi.registerFlag("yolo", {
-		description: "Alias for --auto. Start in autonomous mode (YOLO with classifier).",
+		description: "Start in YOLO mode (auto-approve everything, no classifier — your deny rules still apply).",
 		type: "boolean",
 		default: false,
 	})
@@ -392,7 +392,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (mode === "yolo" && initiatedBy === "user") {
 			ctx.ui.setStatus(
 				"permissions-warning",
-				"WARNING: all permission checks disabled. Recommended for sandbox environments only.",
+				"WARNING: permission prompts and the classifier are disabled in yolo mode. Your deny rules still apply. Recommended for sandbox environments only.",
 			)
 		} else if (!hasExecutableMode()) {
 			// Org policy is plan-only: no approved plan can ever proceed to
@@ -1399,8 +1399,36 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		for (let attempt = 0; attempt < MODES.length; attempt++) {
 			const { mode } = getRuntimePermissionMode()
 
-			// YOLO mode: bypass ALL permission checks including rules, denylist, and classifier
+			// YOLO mode: skip approval prompts and the classifier — but the user's
+			// blocklist still wins. Deny rules (and the allow rules that can override
+			// builtin denies) are evaluated first, then the hard-block net for bash
+			// commands no rule matched. Only --dangerously-skip-permissions keeps
+			// the documented full bypass.
 			if (mode === "yolo") {
+				if (pi.getFlag(DANGEROUS_BYPASS_FLAG) !== true) {
+					const match = evaluateRules(allRules(), toolName, input)
+					if (match.decision === "deny") {
+						emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
+						return {
+							block: true,
+							reason: `Denied by rule ${formatRule(match.rule)}`,
+						}
+					}
+					if (match.decision === "allow") {
+						emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
+						return undefined
+					}
+					if (toolName === "bash") {
+						const command = typeof input.command === "string" ? input.command : ""
+						if (isHardBlockedBash(command)) {
+							emitToolDecision(pi, event, mode, "reject", "yolo_hard_block")
+							return {
+								block: true,
+								reason: `Blocked in yolo mode (hard-blocked command): ${command}`,
+							}
+						}
+					}
+				}
 				emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
 				return undefined
 			}

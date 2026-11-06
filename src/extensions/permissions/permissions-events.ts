@@ -103,6 +103,7 @@ export interface PermissionAfterDecisionPayload {
  */
 export type PermissionDecisionSourceDetail =
 	| "yolo_bypass"
+	| "yolo_hard_block"
 	| "plan_readonly"
 	| "plan_gate"
 	| "builtin_safe"
