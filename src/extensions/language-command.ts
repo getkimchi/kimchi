@@ -51,7 +51,9 @@ export async function handleLanguageCommand(args: string, ctx: ExtensionCommandC
 	const effective = loadConfig({ cwd: ctx.cwd }).language
 	if (effective !== value) {
 		ctx.ui.notify(
-			`Saved ${describeLanguageSetting(value)} to the global config, but this project's .kimchi/config.json pins "${effective}" — edit that file to change it here.`,
+			// `effective` undefined here means the project set "auto" (resolved to
+			// unset by loadConfig) — name the project's value, not the resolved one.
+			`Saved ${describeLanguageSetting(value)} to the global config, but this project's .kimchi/config.json pins "${effective ?? LANGUAGE_AUTO}" — edit that file to change it here.`,
 			"warning",
 		)
 		return
