@@ -132,6 +132,198 @@ export function resetRedactorEngine(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Precision defaults — detections that identify nobody
+// ---------------------------------------------------------------------------
+//
+// The engine optimises for recall: a shape that *could* be an address or an IP
+// is reported. In an engineering corpus that costs precision — a two-week
+// replay of 701 real transcripts measured ~9,700 email/IP detections of which
+// ~5,300 were technical identifiers, not personal data (package paths read as
+// addresses, `127.0.0.1` in dev-server URLs, the harness's own co-author line).
+//
+// The defaults below narrow detection after the engine has spoken, expressed
+// as small lookup tables plus one predicate per entity. Every rule fails
+// toward redaction: an unparseable span, an unknown entity type, a dotless
+// intranet host (`.internal`, `.local`, `user@mailserver`), a mixed-case
+// domain, a Unicode or punycode TLD, a consumer mail domain with a numeric
+// label (`163.com`, `126.com`), or a role address whose `+tag` carries an
+// identifier (`noreply+jane.doe@`) is kept. Reserved namespaces
+// (`example.com`, `.invalid`, `.test`) are deliberately still redacted — they
+// are the ecosystem's stand-in for an address, and a precision fix should not
+// change what a test fixture denotes.
+//
+// No rule inspects a matched value's content beyond its shape — nothing logs,
+// stores, or returns the span.
+
+/** File/code suffixes that can never be a top-level domain. */
+const NON_TLD_SUFFIXES = new Set([
+	"patch",
+	"path",
+	"json",
+	"jsonl",
+	"lockfile",
+	"toml",
+	"yaml",
+	"yml",
+	"tsx",
+	"jsx",
+	"darwin",
+	"linux",
+	"win32",
+	"dylib",
+	"exe",
+	"map",
+	"css",
+	"png",
+	"svg",
+	"html",
+])
+
+/**
+ * Role mailboxes that never identify a person. Kept deliberately short: the
+ * list is matched on the local part only, so a longer list starts hitting real
+ * shared inboxes (`support@` at a small company is a person's job).
+ */
+const GENERIC_LOCAL_PARTS = new Set(["noreply", "no-reply", "git", "bot", "nobody", "mailer-daemon"])
+
+/**
+ * Tags that describe a mailbox's function, not a person. A role address with
+ * an operational tag (`bot+notifications@`) is a measured false-positive
+ * family; a personal tag (`noreply+jane.doe@`) can carry an identifier, so it
+ * stays redacted.
+ */
+const OPERATIONAL_TAGS = new Set([
+	"notifications",
+	"notification",
+	"noreply",
+	"no-reply",
+	"bounce",
+	"bounces",
+	"alerts",
+	"alert",
+	"updates",
+	"update",
+	"digest",
+	"newsletter",
+	"unsubscribe",
+	"automated",
+	"system",
+	"mail",
+])
+
+/**
+ * The harness's own commit identity. Exact address only — never a domain
+ * wildcard, which would let any real `*@kimchi.dev` employee address through.
+ */
+const SELF_IDENTITY_ADDRESSES = new Set(["noreply@kimchi.dev"])
+
+function splitAddress(span: string): { local: string; domain: string } | undefined {
+	const at = span.lastIndexOf("@")
+	if (at <= 0 || at === span.length - 1) return undefined
+	return { local: span.slice(0, at).toLowerCase(), domain: span.slice(at + 1).toLowerCase() }
+}
+
+/** The engine's own identity, so generated commit trailers survive redaction. */
+export function isSelfIdentity(span: string): boolean {
+	return SELF_IDENTITY_ADDRESSES.has(span.toLowerCase())
+}
+
+/**
+ * Whether the domain is structurally a domain rather than a versioned package
+ * path. Rejects pure-numeric labels (`1.3.0.patch`, `v0.0.1-go1.26.5.darwin`),
+ * double-underscore package scopes, and non-TLD suffixes.
+ *
+ * Deliberately NOT rejected: `.zip` and `.mov` (both real gTLDs), `.md`/`.sh`/
+ * `.so` (real ccTLDs), IDN `xn--` domains, and any alphabetic TLD — a
+ * file-extension deny-list wide enough to catch every path-shaped match would
+ * start dropping real addresses.
+ */
+export function isTechnicalEmailDomain(domain: string): boolean {
+	// Normalised here so an external caller cannot misclassify a mixed-case
+	// domain (`Corp.COM`) and drop a real address.
+	const lower = domain.toLowerCase()
+	if (lower.includes("__")) return true
+	const labels = lower.split(".")
+	if (labels.length < 2) return false
+	// Two or more purely numeric labels only appear in version strings
+	// (`1.3.0.patch`, `v0.0.1-go1.26.5.darwin`). ONE numeric label is a real
+	// domain — 163.com, 126.com, 189.com.cn are consumer mail providers.
+	if (labels.filter((label) => /^\d+$/.test(label)).length >= 2) return true
+	const tld = labels[labels.length - 1] ?? ""
+	// Trailing dot (`acmecorp.com.`) leaves an empty label — not evidence of a
+	// package path, so fail toward redaction.
+	if (tld === "") return false
+	if (NON_TLD_SUFFIXES.has(tld)) return true
+	// A TLD is at least two letters — ASCII or Unicode (`рф`, `メール`), or
+	// punycode. The engine detects only ASCII addresses today, so the Unicode
+	// branch is forward-looking: an engine upgrade must not turn a real IDN
+	// address into a dropped detection.
+	return !/^(?:xn--[a-z0-9]{2,}|\p{L}{2,})$/u.test(tld)
+}
+
+function isOperationalTag(tag: string): boolean {
+	const lower = tag.toLowerCase()
+	return lower === "" || /^\d+$/.test(lower) || OPERATIONAL_TAGS.has(lower)
+}
+
+/**
+ * Role mailbox whose local part never identifies a person.
+ *
+ * A `+tag` is only ignored when the tag itself is operational: stripping every
+ * tag would let `noreply+jane.doe@acmecorp.com` escape redaction entirely.
+ */
+export function isGenericLocalPart(local: string): boolean {
+	const [base = local, ...tagParts] = local.split("+")
+	if (!GENERIC_LOCAL_PARTS.has(base)) return false
+	return tagParts.every(isOperationalTag)
+}
+
+/**
+ * Whether an email detection identifies nobody: the harness itself, a package
+ * path, or a role mailbox. Reserved test namespaces stay redacted on purpose.
+ */
+export function isNonIdentifyingEmail(span: string): boolean {
+	if (isSelfIdentity(span)) return true
+	const parts = splitAddress(span)
+	// Unparseable: the engine flagged it as an address, so keep it redacted.
+	if (!parts) return false
+	if (isTechnicalEmailDomain(parts.domain)) return true
+	return isGenericLocalPart(parts.local)
+}
+
+/**
+ * Ranges that cannot identify a person or a reachable host: loopback,
+ * link-local, "this network", benchmarking, and the documentation blocks
+ * (IPv4 and IPv6). RFC1918 private space is NOT here — a private address
+ * still describes real internal topology.
+ */
+export function isNonSensitiveIp(span: string): boolean {
+	if (span === "::" || span === "::1") return true
+	if (/^fe80:/i.test(span)) return true
+	if (/^2001:db8:/i.test(span)) return true
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(span)
+	if (!v4) return false
+	const [a, b] = [Number(v4[1]), Number(v4[2])]
+	if (a === 0 || a === 127) return true
+	if (a === 169 && b === 254) return true
+	if (a === 192 && b === 0 && Number(v4[3]) === 2) return true
+	// 198.51.100.0/24 (documentation) and 198.18.0.0/15 (benchmarking).
+	if (a === 198 && ((b === 51 && Number(v4[3]) === 100) || b === 18 || b === 19)) return true
+	if (a === 203 && b === 0 && Number(v4[3]) === 113) return true
+	return false
+}
+
+/**
+ * Single entry point for the precision filter: does this detection identify
+ * nobody? Unknown entity types are never dropped (fail toward redaction).
+ */
+export function isNonIdentifyingDetection(entityType: string, span: string): boolean {
+	if (entityType === "EMAIL_ADDRESS") return isNonIdentifyingEmail(span)
+	if (entityType === "IP_ADDRESS") return isNonSensitiveIp(span)
+	return false
+}
+
+// ---------------------------------------------------------------------------
 // Exclusion-correct composition
 // ---------------------------------------------------------------------------
 
@@ -163,7 +355,11 @@ interface EngineDetection {
 
 /**
  * Detection pass shared by composition and analysis tooling: analyze, drop
- * excluded entities, then greedily resolve overlaps.
+ * excluded entities, drop detections that identify nobody, then greedily
+ * resolve overlaps.
+ *
+ * Precision filtering happens BEFORE overlap resolution: a rejected span must
+ * not consume coverage and suppress a neighbouring detection that is real.
  */
 export async function collectDetections(
 	text: string,
@@ -174,8 +370,9 @@ export async function collectDetections(
 	const active: EngineDetection[] = []
 	for (const r of results) {
 		for (const d of r.detections) {
-			if (!excluded.has(d.entityType))
-				active.push({ entityType: d.entityType, start: d.start, end: d.end, text: d.text })
+			if (excluded.has(d.entityType)) continue
+			if (isNonIdentifyingDetection(d.entityType, d.text)) continue
+			active.push({ entityType: d.entityType, start: d.start, end: d.end, text: d.text })
 		}
 	}
 	const byStart = [...active].sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start))
@@ -443,11 +640,8 @@ export function applyCustomPatterns(
  * Scan a single string for PII/secrets and return the redacted version.
  *
  * Runs the bulkhead engine first, then applies custom patterns (castai_v1_,
- * Bearer tokens, OAuth tokens) as a second pass.
- *
- * If scanning fails (engine error, unexpected input), the original text is
- * returned unchanged — redaction must never break the prompt pipeline.
- * The error is logged per the code-review-lessons rule: no empty catch blocks.
+ * Bearer tokens, OAuth tokens) as a second pass. Fail-open behavior lives in
+ * `redactTextCounted`; this function propagates scan failures.
  */
 async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot): Promise<string> {
 	const afterEngine = await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
@@ -470,7 +664,7 @@ export async function redactTextOrThrow(text: string): Promise<string> {
  */
 const SCAN_SETTLE_TIMEOUT_MS = 30_000
 
-function settleBoundScan(text: string): Promise<string> {
+function settleBoundScan(run: () => Promise<string>): Promise<string> {
 	let timer: ReturnType<typeof setTimeout> | undefined
 	const timeout = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(
@@ -478,7 +672,7 @@ function settleBoundScan(text: string): Promise<string> {
 			SCAN_SETTLE_TIMEOUT_MS,
 		)
 	})
-	return Promise.race([redactTextOrThrow(text), timeout]).finally(() => clearTimeout(timer))
+	return Promise.race([run(), timeout]).finally(() => clearTimeout(timer))
 }
 
 /**
@@ -489,9 +683,15 @@ function settleBoundScan(text: string): Promise<string> {
  * once per invocation, not once per string, so a degraded engine cannot
  * flood stderr with a stack trace per scanned string in a large context.
  */
-async function redactTextCounted(text: string, onFailure?: (err: unknown) => void): Promise<string> {
+async function redactTextCounted(
+	text: string,
+	onFailure?: (err: unknown) => void,
+	snapshot?: EngineSnapshot,
+): Promise<string> {
 	try {
-		return await settleBoundScan(text)
+		// A caller-supplied snapshot carries the pass's atomic policy view;
+		// otherwise resolve the current one.
+		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot()))
 	} catch (err) {
 		onFailure?.(err)
 		return text
@@ -670,22 +870,25 @@ export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionM
 	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
-	// every settle-bounded string scan (redactTextCounted resolves its own)
-	// see an atomic policy view, exactly like the lenient variant.
+	// every settle-bounded string scan see the same atomic policy view.
 	const snapshot = resolveSnapshot()
 	const redactStringMeasured = async (text: string): Promise<string> => {
 		if (text.length === 0) return text
 		report.stringsScanned += 1
-		return redactTextCounted(text, (err) => {
-			report.engineFailures += 1
-			// One log per invocation: a persistently degraded engine would
-			// otherwise print a stack trace per scanned string per hook.
-			if (!failureLogged) {
-				failureLogged = true
-				console.error("PII redaction scan failed, returning original text:", err)
-			}
-			return text
-		})
+		return redactTextCounted(
+			text,
+			(err) => {
+				report.engineFailures += 1
+				// One log per invocation: a persistently degraded engine would
+				// otherwise print a stack trace per scanned string per hook.
+				if (!failureLogged) {
+					failureLogged = true
+					console.error("PII redaction scan failed, returning original text:", err)
+				}
+				return text
+			},
+			snapshot,
+		)
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
 		tallyMarkersNet(input, output, report.entities),

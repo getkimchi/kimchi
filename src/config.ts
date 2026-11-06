@@ -282,21 +282,27 @@ export const MAX_LANGUAGE_SETTING_LENGTH = 40
 export const LANGUAGE_AUTO = "auto"
 
 /**
+ * Characters a `language` value may contain: letters (any script) with their
+ * combining marks, plain spaces, hyphens, apostrophes and parentheses \u2014 enough
+ * for "ko", "zh-Hant", "pt-BR", "Brazilian Portuguese", "Portugu\u00eas (Brasil)",
+ * "\ud55c\uad6d\uc5b4". Everything else (digits, punctuation, `<`/`>`, control bytes,
+ * Unicode separators, bidi controls) is rejected: the value is interpolated
+ * into the system prompt and the per-request reminder, and a trusted project
+ * config can be attacker-authored, so an allowlist beats a denylist here.
+ */
+const LANGUAGE_SETTING_ALLOWED = /^[\p{L}\p{M} '()-]+$/u
+
+/**
  * Validate a `language` setting value: trimmed, single-line, non-empty, at most
- * MAX_LANGUAGE_SETTING_LENGTH chars. Returns undefined for anything else so an
- * invalid config value falls back to "mirror the user's language" instead of
- * injecting arbitrary text into the system prompt.
+ * MAX_LANGUAGE_SETTING_LENGTH chars, drawn from LANGUAGE_SETTING_ALLOWED.
+ * Returns undefined for anything else so an invalid config value falls back
+ * to "mirror the user's language" instead of injecting text into the prompt.
  */
 export function normalizeLanguageSetting(raw: unknown): string | undefined {
 	if (typeof raw !== "string") return undefined
-	const trimmed = raw.trim()
-	// Reject control bytes (newlines, tabs, escapes), Unicode line/paragraph
-	// separators and bidi controls BEFORE collapsing spaces: a multi-line or
-	// direction-flipping value is an injection attempt, not sloppy whitespace.
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: the prompt is plain text
-	if (/[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(trimmed)) return undefined
-	const value = trimmed.replace(/ {2,}/g, " ")
+	const value = raw.trim().replace(/ {2,}/g, " ")
 	if (value.length === 0 || value.length > MAX_LANGUAGE_SETTING_LENGTH) return undefined
+	if (!LANGUAGE_SETTING_ALLOWED.test(value)) return undefined
 	// "auto" (any case) is the explicit unpin sentinel, on every surface — the
 	// CLI, `/language`, and a hand-edited config file alike.
 	if (value.toLowerCase() === LANGUAGE_AUTO) return LANGUAGE_AUTO
