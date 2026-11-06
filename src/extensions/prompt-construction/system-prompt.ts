@@ -7,7 +7,7 @@
  * subagent and single-model content lives in this file.
  */
 
-import type { Skill } from "@earendil-works/pi-coding-agent"
+import type { Skill, ToolInfo } from "@earendil-works/pi-coding-agent"
 import { getVersion } from "../../utils.js"
 import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
 import { resolvePhaseGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
@@ -37,15 +37,12 @@ export interface EnvironmentInfo {
 	gitRemote?: string
 }
 
-export interface ToolInfo {
-	name: string
-	description: string
-}
+type PromptTool = Pick<ToolInfo, "name" | "description" | "promptGuidelines">
 
 export type PromptMode = "orchestrator" | "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
-	tools: readonly ToolInfo[]
+	tools: readonly PromptTool[]
 	env: EnvironmentInfo
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
@@ -115,6 +112,7 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		mode,
 		toolNames: new Set(effectiveTools.map((tool) => tool.name)),
 		toolsSection,
+		toolGuidelinesSection: formatToolGuidelinesSection(effectiveTools),
 		environmentSection,
 		projectContext,
 		skillsSection: formatSkillsSection(filteredSkills, effectiveTools, options.contextWindow),
@@ -137,6 +135,7 @@ interface PromptParts {
 	mode: PromptMode
 	toolNames: ReadonlySet<string>
 	toolsSection: string
+	toolGuidelinesSection: string
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
@@ -421,6 +420,11 @@ ${lines.join("\n")}`
 
 export function buildToolSelectionSection(toolNames?: ReadonlySet<string>): string {
 	const lines: string[] = []
+	if (toolNames?.has("codemode")) {
+		lines.push(
+			"- Prefer `codemode` when later tool arguments can be computed from an earlier result and intermediate output can be filtered before it reaches the model. For example, grep for a symbol, read bounded ranges around the returned hits, and return concise findings. Use direct tools when the next step needs model judgment or when independent calls need their full results; issue those calls together. Direct tools remain available for single operations, approvals, and background commands.",
+		)
+	}
 	if (hasTool(toolNames, "read")) {
 		lines.push("- Reading a file → use `read` (not `cat`, `head`, `tail`, `sed -n`).")
 	}
@@ -542,6 +546,7 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, phase, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
+	sections.push(parts.toolGuidelinesSection)
 	sections.push(
 		buildPhaseManagementSection(
 			parts.currentModelId,
@@ -582,7 +587,48 @@ function buildPrompt(parts: PromptParts): string {
 // Section formatters
 // ---------------------------------------------------------------------------
 
-function formatToolsSection(tools: readonly ToolInfo[]): string {
+/** Pi-shipped tools whose `promptGuidelines` kimchi deliberately does not
+ *  render. Each was reviewed in the 2026-11 curation pass:
+ *  - read duplicates the Tool Selection rule (not cat/head/tail/sed -n);
+ *  - write duplicates the build-phase guideline (new files / full rewrites);
+ *  - edit's four bullets duplicate the edit tool's own schema description
+ *    (exact match, original-file matching, no overlapping/nested edits,
+ *    merge nearby, keep oldText small) nearly verbatim;
+ *  - bash contradicts the implementation: kimchi's background bash never
+ *    injects the PI_* session/model env vars the guideline advertises;
+ *  - codemode's is superseded by the Tool Selection line, which folds in
+ *    its Promise.allSettled idiom;
+ *  - grep/find/ls/powershell/tool_search register none today — listed so a
+ *    future pi addition surfaces as a review decision here, not silently.
+ *  Kimchi-authored guidelines (e.g. ferment-v2's update_ferment_v2) still
+ *  render: this scopes the section to guidance kimchi stands behind. */
+const PI_GUIDELINE_TOOL_NAMES = new Set([
+	"read",
+	"bash",
+	"powershell",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+	"codemode",
+	"tool_search",
+])
+
+function formatToolGuidelinesSection(tools: readonly PromptTool[]): string {
+	const guidelines = new Set<string>()
+	for (const tool of tools) {
+		if (PI_GUIDELINE_TOOL_NAMES.has(tool.name)) continue
+		for (const guideline of tool.promptGuidelines ?? []) {
+			const trimmed = guideline.trim()
+			if (trimmed) guidelines.add(trimmed)
+		}
+	}
+	if (guidelines.size === 0) return ""
+	return `## Tool Guidelines\n\n${[...guidelines].map((guideline) => `- ${guideline}`).join("\n")}`
+}
+
+function formatToolsSection(tools: readonly PromptTool[]): string {
 	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
 	// The API request already carries each
 	// tool's description in the function-calling payload, so embedding a second
@@ -680,7 +726,7 @@ function truncateDescription(description: string, max: number): string {
  *  of a pointer to an unregistered tool. Both variants render as markdown. */
 function formatSkillsSection(
 	skills: readonly Skill[] | undefined,
-	tools: readonly ToolInfo[],
+	tools: readonly PromptTool[],
 	contextWindow?: number,
 ): string {
 	if (!skills || skills.length === 0) return ""

@@ -490,6 +490,7 @@ export function createBackgroundBashToolDefinition(
 		label: wrapped.label,
 		description,
 		promptSnippet: wrapped.promptSnippet,
+		promptGuidelines: wrapped.promptGuidelines,
 		parameters: backgroundBashSchema,
 		renderShell: wrapped.renderShell,
 		prepareArguments: wrapped.prepareArguments as

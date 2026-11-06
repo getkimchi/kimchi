@@ -24,6 +24,7 @@ import {
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
@@ -875,6 +876,7 @@ async function cliMain(): Promise<void> {
 				{ id: "plugins.mcp-apps", factory: mcpAdapterExtension },
 			] satisfies ManagedExtensionFactory[])
 			const extensionFactories = [
+				createGuidedCodemodeExtension(),
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
@@ -1051,6 +1053,8 @@ async function cliMain(): Promise<void> {
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
 				await runAcpMode({
+					// ACP creates SDK sessions directly; the same guided codemode
+					// extension in extensionFactories serves every surface.
 					extensionFactories,
 					agentDir,
 					...(mcpAdapterExtensions.length > 0
