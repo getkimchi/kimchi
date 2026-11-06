@@ -44,9 +44,10 @@ import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 
 /**
  * How engine detections are rendered in stored output:
- * - `markers` (default): `[REDACTED-<ENTITY>]` — the historical shape
- * - `tokens`: `[<ENTITY>_N]` — stable per-session reversible tokens;
- *   originals resolve only at presentation (see tokenization-vault
+ * - `tokens` (default): `[<ENTITY>_N]` — stable per-session reversible
+ *   tokens; originals resolve only at presentation (see tokenization-vault
+ * - `markers`: `[REDACTED-<ENTITY>]` — opt-in flat markers (settings or
+ *   degrade fallback), the historical shape
  *   implementation notes), exports and telemetry stay tokenized
  *
  * Local opt-in via settings.json `redaction.renderMode`; org-locked
@@ -107,11 +108,14 @@ export function getRedactionRenderMode(): RedactionRenderMode {
 /** Read the current config: resources-system enablement + local exclusion list. */
 export function getRedactionConfig(): RedactionConfig {
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
-	// settings file is never opened.
+	// settings file is never opened. The org lock pins the resource, not
+	// the presentation — rendering follows the default (tokens) here too;
+	// only an explicit "markers" setting, readable in an unlocked
+	// deployment, restores the old flat markers.
 	if (isResourceLocked(PII_REDACTION_RESOURCE_ID)) {
 		return {
 			enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
-			renderMode: "markers",
+			renderMode: "tokens",
 			excludedEntities: getDefaultExcludedEntities(),
 			userExcludedEntities: [],
 		}

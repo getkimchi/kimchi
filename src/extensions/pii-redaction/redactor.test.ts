@@ -1239,10 +1239,12 @@ describe("getRedactionConfig — redaction.renderMode settings", () => {
 		expect(() => getRedactionConfig()).toThrow(/renderMode/)
 	})
 
-	it("FORCE locks force markers — a local token opt-in cannot override a locked deployment", async () => {
-		writeSettings({ renderMode: "tokens" })
+	it("FORCE locks follow the tokens default — the org lock pins the resource, not the presentation", async () => {
+		// A local settings override (including markers) is never read under a
+		// lock: the deployment renders the default in every case.
+		writeSettings({ renderMode: "markers" })
 		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
-		expect(getRedactionConfig().renderMode).toBe("markers")
+		expect(getRedactionConfig().renderMode).toBe("tokens")
 	})
 })
 
