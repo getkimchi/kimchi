@@ -32,7 +32,7 @@
 import { RequestError } from "@agentclientprotocol/sdk"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import {
-	CAST_AI_SSO_CALLBACK_PORT,
+	KIMCHI_SSO_CALLBACK_PORT,
 	CallbackPortInUseError,
 	type CallbackResult,
 	type CallbackServer,
@@ -148,8 +148,8 @@ interface PendingSsoFlow {
 	verifier: string
 	callbackServer: CallbackServer
 	/** Aborted by discard(): cancels an in-flight token exchange or org fetch
-	 * so a cancelled sign-in can never complete (review: sso_cancel must stop
-	 * the whole continuation, not just the loopback server). */
+	 * so a cancelled sign-in can never complete — sso_cancel stops the whole
+	 * continuation, not just the loopback server. */
 	abortController: AbortController
 	expiresAtMs: number
 	/** Shared wait so concurrent/repeat `sso_await` calls settle once. */
@@ -429,7 +429,7 @@ export class SsoFlowManager {
 				successMessage: SSO_CALLBACK_SUCCESS_MESSAGE,
 				// The redirect URI is registered with Auth0 as exactly
 				// http://localhost:8765/callback — the port is non-negotiable.
-				port: { kind: "fixed", value: CAST_AI_SSO_CALLBACK_PORT },
+				port: { kind: "fixed", value: KIMCHI_SSO_CALLBACK_PORT },
 			})
 		try {
 			return await start()

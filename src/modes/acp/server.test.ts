@@ -1043,26 +1043,6 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(meta?.sso_cancel).toBe(true)
 		})
 
-		it("omits the EU companion method when EU is experimental-gated", async () => {
->>>>>>> 13286213 (feat(acp): CAST AI SSO login via _kimchi.dev/sso_* ext methods + kimchi-sso auth methods)
-			setExperimentalFeaturesEnabled(false)
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-			})
-
-			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods?.map((m) => m.id)).toEqual([
-				"kimchi-sso",
-				"kimchi-sso-us",
-				"kimchi-sso-eu",
-				"kimchi-agent",
-				"kimchi-agent-us",
-				"kimchi-agent-eu",
-			])
-		})
-
 		it("declares terminal auth method when client supports terminal capability", async () => {
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
