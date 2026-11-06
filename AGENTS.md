@@ -48,6 +48,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/mcp-e2e-testing.md](docs/mcp-e2e-testing.md) — MCP end-to-end testing approach (live creds, real preconditions)
 - [docs/memory-extension.md](docs/memory-extension.md) · [docs/memory-residency.md](docs/memory-residency.md) — memory: LLM-extraction pipeline, disk-backed residency and display budget
 - [docs/model-routing.md](docs/model-routing.md) — auto model routing (incl. multi-model: main/author/verifier)
+- [docs/pii-redaction-tokens.md](docs/pii-redaction-tokens.md) — reversible redaction tokens (`redaction.renderMode: "tokens"`), vault lifetime, surface guarantee matrix
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
 - [docs/response-language.md](docs/response-language.md) — reply-language rule and the `language` pin (`kimchi config set language`, `/language`)

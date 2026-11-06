@@ -22,6 +22,7 @@ import type {
 	TextContent,
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -154,6 +155,12 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import {
+	installVaultLifecycle,
+	resetTokenVaults,
+	tokenFor,
+	vaultForSession,
+} from "../../extensions/pii-redaction/vault.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
@@ -366,14 +373,17 @@ class FakeAgentSession {
 	// on it. The real AgentSession exposes this via its extensionRunner
 	// getter; the fake keeps it on the session root for simpler test wiring.
 	setUIContextCalls: unknown[] = []
+	// Ordered lifecycle tape (event emits + disposal) so tests can assert
+	// that session_shutdown precedes dispose on every teardown path — the
+	// vault lifecycle evicts on shutdown, so losing the emit-or-order
+	// regresses vault eviction for orphan/early-fail sessions.
+	lifecycleEvents: string[] = []
 	extensionRunner = {
 		setUIContext: (ui: unknown) => {
 			this.setUIContextCalls.push(ui)
 		},
-		emit: async (_event: unknown) => {
-			// Real runner exposes emit for session lifecycle events; the fake
-			// just resolves so disposeSessionRecord's session_shutdown hook
-			// doesn't throw.
+		emit: async (event: unknown) => {
+			this.lifecycleEvents.push((event as { type?: string })?.type ?? "unknown")
 		},
 	}
 
@@ -469,6 +479,7 @@ class FakeAgentSession {
 
 	dispose(): void {
 		this.disposed = true
+		this.lifecycleEvents.push("disposed")
 		this.listeners.clear()
 	}
 }
@@ -652,6 +663,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	afterEach(async () => {
+		// Every beforeEach attaches a FRESH agent under the same id; the
+		// multi-owner registry stacks otherwise accumulate one entry per
+		// test. Close after every test (no-ops when the test closed already).
+		try {
+			await agent.unstable_closeSession({ sessionId })
+		} catch {
+			// already closed
+		}
+		try {
+			await agent.shutdown()
+		} catch {
+			// already down
+		}
 	})
 
 	it("publishes todos written during extension startup before the plan subscription exists", async () => {
@@ -2744,6 +2771,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/subscribe boom/)
 		expect(leaky.disposed).toBe(true)
+		// Extensions bind before subscribe fails, so the failure path must
+		// still emit session_shutdown before dispose (vault eviction).
+		expect(leaky.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
 	})
 
 	it("unregisters the ACP permission prompter if bindExtensions throws during newSession", async () => {
@@ -2870,12 +2900,16 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	})
 
 	it("closes a live session and unregisters its ACP permission prompter", async () => {
-		expect(getAcpPrompter(sessionId)).toBeDefined()
+		const ownPrompter = getAcpPrompter(sessionId)
+		expect(ownPrompter).toBeDefined()
 
 		await agent.unstable_closeSession({ sessionId })
 
 		expect(fake.disposed).toBe(true)
-		expect(getAcpPrompter(sessionId)).toBeUndefined()
+		// The OWN prompter is unwound from the multi-owner slot; what's
+		// visible afterwards may be ANOTHER same-id attach's object (only
+		// test-suite id reuse produces that here) — but never ours.
+		expect(getAcpPrompter(sessionId)).not.toBe(ownPrompter)
 		await expect(
 			agent.prompt({
 				sessionId,
@@ -10977,6 +11011,86 @@ describe("KimchiAcpAgent loadSession", () => {
 			code: -32602,
 		})
 		expect(fake.disposed).toBe(true)
+		// Orphan teardown must emit session_shutdown BEFORE dispose so
+		// extension state keyed on it (the token vault) is evicted.
+		expect(fake.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
+	})
+
+	it("a corrupt duplicate of a LIVE session's file leaves the live session's registrations intact", async () => {
+		// failure-004 trigger: loading a hand-edited copy of a RUNNING
+		// session's file — its header claims the live session's id while the
+		// request asks for a different one. The attach fails (mismatch), but
+		// its catch must unwind ONLY what THIS attach registered: the live
+		// session's prompter / mode controller / vault must survive. Without
+		// the identity guards the catch would evict them by key.
+		const conn = makeConn()
+		const live = new FakeAgentSession("session-alive")
+		const liveAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+		})
+		await liveAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		// Note: same header id as the LIVE session, different requested id.
+		const dup = new FakeAgentSession("session-alive")
+		const loadAgent = makeAgent(async () => asSession(dup), { conn })
+		await expect(
+			loadAgent.loadSession({
+				sessionId: "session-other",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+		// The orphan itself still got the full emit→dispose teardown...
+		expect(dup.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
+		// ...but nothing registered by the LIVE session was touched.
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeDefined()
+		await liveAgent.closeSession({ sessionId: "session-alive" })
+		expect(getAcpPrompter("session-alive")).toBeUndefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeUndefined()
+	})
+
+	it("a late-failing concurrent attach evicts only its own registrations (winner stays intact)", async () => {
+		// failure-006: load + resume of the same id coalesce separately and
+		// race; here the loser registers AFTER the winner installed its
+		// record. Registry slots are multi-owner stacks: the loser's
+		// identity-checked unwind evicts exactly its own objects, and the
+		// winner's triad (record, prompter, mode controller) stays intact.
+		const conn = makeConn()
+		const winner = new FakeAgentSession("session-raced")
+		const loser = new FakeAgentSession("session-raced")
+		loser.bindExtensionsImpl = async () => {
+			throw new Error("bind boom")
+		}
+		let gateLoser: (s: FakeAgentSession) => void = () => {}
+		const loserGate = new Promise<FakeAgentSession>((resolve) => {
+			gateLoser = resolve
+		})
+		let loaderCalls = 0
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused-x")),
+			sessionLoader: async () => {
+				loaderCalls += 1
+				return asSession(loaderCalls === 1 ? winner : await loserGate)
+			},
+		})
+		const winnerPromise = agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		const loserPromise = agent.resumeSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		await winnerPromise
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		gateLoser(loser)
+		await expect(loserPromise).rejects.toThrow(/bind boom/)
+		// Loser unwound exactly its own registrations; the winner lives on.
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-raced")).toBeDefined()
+		// The winner's record is still the registered, re-loadable session.
+		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject(
+			{},
+		)
 	})
 
 	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {
@@ -12573,5 +12687,203 @@ describe("plan-review held prompt", () => {
 		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		expect(isSettled()?.ok).toBe(false)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Reversible redaction — presentation substitution of `[ENTITY_N]` tokens
+// ---------------------------------------------------------------------------
+
+describe("ACP token substitution (pii-redaction token mode)", () => {
+	// Install the production vault lifecycle (same wiring the pii-redaction
+	// extension uses) keyed to whatever session ids the tests register.
+	const extApi = () => {
+		const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<unknown> | unknown>>()
+		return {
+			api: {
+				on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+					const list = handlers.get(event) ?? []
+					list.push(handler)
+					handlers.set(event, list)
+				},
+			} as unknown as ExtensionAPI,
+			fire: (event: string, sessionId: string) => {
+				const ctx = { sessionManager: { getSessionId: () => sessionId } }
+				return Promise.all((handlers.get(event) ?? []).map((h) => h({}, ctx)))
+			},
+		}
+	}
+
+	const textDelta = (delta: string, contentIndex = 0): AgentSessionEvent => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			delta,
+			contentIndex,
+			partial: {} as unknown as AssistantMessage,
+		},
+		message: {} as unknown as AssistantMessage,
+	})
+
+	const messageEnd = (text: string): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	type Started = { agent: KimchiAcpAgent; updates: SessionNotification[]; fakes: Map<string, FakeAgentSession> }
+
+	async function startTwoSessions(): Promise<Started> {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const fakes = new Map<string, FakeAgentSession>()
+		// ACP's session/new allocates ids itself — pre-assign on the fake so
+		// the response id IS the fake's id, then key the map by it.
+		const ids = ["token-a", "token-b"]
+		let next = 0
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => {
+				const fake = new FakeAgentSession(ids[next] ?? `fake-${next}`)
+				next++
+				fakes.set(fake.sessionId, fake)
+				return asSession(fake)
+			},
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return { agent: localAgent, updates, fakes }
+	}
+
+	const chunks = (updates: SessionNotification[], sessionId: string) =>
+		updates
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	it("substitutes vault-known tokens in streamed chunks, incl. tokens split across deltas", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		expect(vaultA).toBeDefined()
+		if (!vaultA) return
+		const original = "jane.doe@acme.com"
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", original)
+
+		const fake = fakes.get("token-a")
+		expect(fake).toBeDefined()
+		if (!fake) return
+		// Token split mid-identifier across two deltas — no partial original
+		// or half-token may reach the wire.
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`ping ${token.slice(0, 10)}`))
+		fake.emit(textDelta(`${token.slice(10)} ok`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe(`ping ${original} ok`)
+		// token-b saw nothing — isolation is structural.
+		expect(chunks(updates, "token-b")).toEqual([])
+	})
+
+	it("message_end remainder + flush completes a cut token without a wrong-value or duplicated emission", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const vaultA = vaultForSession("token-a")
+		if (!vaultA) throw new Error("missing vault")
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", "jane.doe@acme.com")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`hi ${token.slice(0, 8)}`))
+		// message_end carries the full text; the remainder push + flush must
+		// reconstruct the token and substitute once.
+		fake.emit(messageEnd(`hi ${token}`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("hi jane.doe@acme.com")
+	})
+
+	it("confabulated tokens pass through verbatim (no vault entry, no crash)", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(messageEnd("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("imagine [EMAIL_ADDRESS_99] today")
+	})
+
+	it("DEAD-vault negative: session A's shutdown mid-stream stops its substitution; B never sees A's originals", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		const vaultB = vaultForSession("token-b")
+		if (!vaultA || !vaultB) throw new Error("missing vaults")
+		const secretA = "secret-a@acme-internal.io"
+		const tokenA = tokenFor(vaultA, "EMAIL_ADDRESS", secretA)
+		const tokenB = tokenFor(vaultB, "EMAIL_ADDRESS", "user-b@acme.com")
+
+		const fakeA = fakes.get("token-a")
+		const fakeB = fakes.get("token-b")
+
+		// A dies MID-STREAM. Its dangling partial tail must NOT complete into
+		// the wrong session, and its later deltas render tokens verbatim.
+		fakeA?.emit({ type: "agent_start" })
+		fakeA?.emit(textDelta(`a:${tokenA.slice(0, 12)}`))
+		await lifecycle.fire("session_shutdown", "token-a")
+		fakeA?.emit(textDelta(`${tokenA.slice(12)}.mid`))
+
+		// B streams normally while A is dead — B's vault substitutes only B's.
+		fakeB?.emit({ type: "agent_start" })
+		fakeB?.emit(textDelta(`b:${tokenB}.done`))
+		fakeB?.emit(agentEnd())
+
+		const aOut = chunks(updates, "token-a").join("")
+		const bOut = chunks(updates, "token-b").join("")
+		// A's original is recoverable from the vault that existed while it
+		// streamed — never from B's.
+		expect(aOut).toContain(secretA)
+		expect(bOut).toBe("b:user-b@acme.com.done")
+		expect(bOut).not.toContain(secretA)
 	})
 })

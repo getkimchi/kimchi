@@ -20,8 +20,9 @@
  */
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
-import { getRedactionConfig } from "./config.js"
+import { getRedactionConfig, type RedactionRenderMode } from "./config.js"
 import { getDefaultExcludedEntities } from "./entity-tiers.js"
+import { TOKENIZED_ENTITIES, type TokenVault, tokenFor } from "./vault.js"
 
 /**
  * One atomic view of the redaction policy: the engine, the engine-level
@@ -38,7 +39,8 @@ interface EngineSnapshot {
 	engine: GuardrailsEngine
 	exclusions: ReadonlySet<string>
 	userExclusions: ReadonlySet<string>
-	/** Joined exclusion signature the snapshot was built from. */
+	renderMode: RedactionRenderMode
+	/** Joined policy signature the snapshot was built from. */
 	signature: string
 }
 
@@ -103,14 +105,24 @@ function resolveSnapshot(): EngineSnapshot {
 			)
 		}
 		configError = error
-		config = { enabled: true, excludedEntities: getDefaultExcludedEntities(), userExcludedEntities: [] }
+		config = {
+			enabled: true,
+			renderMode: "markers",
+			excludedEntities: getDefaultExcludedEntities(),
+			userExcludedEntities: [],
+		}
 	}
-	const signature = [config.excludedEntities.join("\u0001"), config.userExcludedEntities.join("\u0001")].join("\u0002")
+	const signature = [
+		config.excludedEntities.join("\u0001"),
+		config.userExcludedEntities.join("\u0001"),
+		config.renderMode,
+	].join("\u0002")
 	if (current && signature === current.signature) return current
 	current = {
 		engine: createRedactionEngine(config.excludedEntities),
 		exclusions: new Set(config.excludedEntities),
 		userExclusions: new Set(config.userExcludedEntities),
+		renderMode: config.renderMode,
 		signature,
 	}
 	return current
@@ -397,6 +409,26 @@ export function composeRedactedText(text: string, kept: EngineDetection[]): stri
 }
 
 /**
+ * Token-mode counterpart of {@link composeRedactedText}: identifier-class
+ * detections (TOKENIZED_ENTITIES) are spliced as stable per-session tokens
+ * recorded in `vault`; every other detection keeps its marker — secret
+ * classes stay marker-shaped in every mode (a vault of live credentials is
+ * strictly more dangerous than a vault of identities). Same right-to-left
+ * splice; the vault's token map is the ONLY place the token→original
+ * mapping exists.
+ */
+export function composeTokenizedText(text: string, kept: EngineDetection[], vault: TokenVault): string {
+	let out = text
+	for (const d of [...kept].sort((a, b) => b.start - a.start)) {
+		const replacement = TOKENIZED_ENTITIES.has(d.entityType)
+			? tokenFor(vault, d.entityType, text.slice(d.start, d.end))
+			: `[REDACTED-${d.entityType}]`
+		out = `${out.slice(0, d.start)}${replacement}${out.slice(d.end)}`
+	}
+	return out
+}
+
+/**
  * Run the engine's detection pass and return composed, exclusion-filtered
  * text. Exported for the shadow-mode analysis script and tier tests —
  * passing `engine` explicitly avoids the process-wide singleton.
@@ -407,6 +439,16 @@ export async function detectAndCompose(
 	excluded: ReadonlySet<string>,
 ): Promise<string> {
 	return composeRedactedText(text, await collectDetections(text, engine, excluded))
+}
+
+/** Token-mode variant of {@link detectAndCompose} — used by the session hooks. */
+export async function detectAndComposeTokenized(
+	text: string,
+	engine: GuardrailsEngine,
+	excluded: ReadonlySet<string>,
+	vault: TokenVault,
+): Promise<string> {
+	return composeTokenizedText(text, await collectDetections(text, engine, excluded), vault)
 }
 
 // ---------------------------------------------------------------------------
@@ -643,8 +685,16 @@ export function applyCustomPatterns(
  * Bearer tokens, OAuth tokens) as a second pass. Fail-open behavior lives in
  * `redactTextCounted`; this function propagates scan failures.
  */
-async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot): Promise<string> {
-	const afterEngine = await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
+async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, vault?: TokenVault): Promise<string> {
+	// Token composition only engages when BOTH the snapshot says token mode
+	// and a session vault exists. A missing vault (unknown/restarted
+	// session, non-hook callers) falls back to markers — markers decay
+	// gracefully in every downstream surface; a token without its vault
+	// renders as dead text.
+	const afterEngine =
+		snapshot.renderMode === "tokens" && vault
+			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault)
+			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
 	return applyCustomPatterns(afterEngine, snapshot.userExclusions)
 }
 
@@ -687,11 +737,12 @@ async function redactTextCounted(
 	text: string,
 	onFailure?: (err: unknown) => void,
 	snapshot?: EngineSnapshot,
+	vault?: TokenVault,
 ): Promise<string> {
 	try {
 		// A caller-supplied snapshot carries the pass's atomic policy view;
 		// otherwise resolve the current one.
-		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot()))
+		return await settleBoundScan(() => redactTextWithSnapshot(text, snapshot ?? resolveSnapshot(), vault))
 	} catch (err) {
 		onFailure?.(err)
 		return text
@@ -802,8 +853,16 @@ export async function redactObjectStrings<T>(obj: T): Promise<T> {
 // Measured variant — redaction + a privacy-safe report stub
 // ---------------------------------------------------------------------------
 
-/** Marker every redaction pass converges on: `[REDACTED-<ENTITY_TYPE>]`. */
-const REDACTION_MARKER_RE = /\[REDACTED-([A-Z0-9_]+)\]/g
+/**
+ * Marker and token shapes a redaction pass can produce: `[REDACTED-<ENTITY>]`
+ * and (token mode) `[<ENTITY>_N]`. The entity group is lazily captured with
+ * an optional trailing counter so both shapes tally under the same entity
+ * key — marker and token modes produce identical tallies for identical
+ * input. A composite token like `[EMAIL_ADDRESS_12]` groups as
+ * EMAIL_ADDRESS (lazy growth stops at the first `]`-terminated suffix), not
+ * `EMAIL_ADDRESS_1`.
+ */
+const REDACTION_SHAPE_RE = /\[(?:REDACTED-)?([A-Z0-9_]+?)(?:_\d+)?\]/g
 
 /**
  * Tally markers INTRODUCED by a single string's redaction pass. Markers
@@ -816,10 +875,10 @@ const REDACTION_MARKER_RE = /\[REDACTED-([A-Z0-9_]+)\]/g
 function tallyMarkersNet(input: string, output: string, entities: Record<string, number>): void {
 	// Cheap path first: most strings contain no markers at all — one output
 	// sweep, and only when markers exist do we pay for the input multiset.
-	const outMarkers = [...output.matchAll(REDACTION_MARKER_RE)]
+	const outMarkers = [...output.matchAll(REDACTION_SHAPE_RE)]
 	if (outMarkers.length === 0) return
 	const available = new Map<string, number>()
-	for (const match of input.matchAll(REDACTION_MARKER_RE)) {
+	for (const match of input.matchAll(REDACTION_SHAPE_RE)) {
 		available.set(match[1], (available.get(match[1]) ?? 0) + 1)
 	}
 	for (const match of outMarkers) {
@@ -866,7 +925,13 @@ export interface RedactionMeasurement<T> {
  * over already-redacted text (message_end → before_provider_request) do
  * not double-count.
  */
-export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionMeasurement<T>> {
+/**
+ * @param vault  Optional session token vault. When the resolved policy is
+ *   token mode and a vault is supplied, identifier detections render as
+ *   `[<ENTITY>_N]` tokens recorded in the vault (presentation-side
+ *   retrieval). Omitted by exports and non-hook callers → markers always.
+ */
+export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault): Promise<RedactionMeasurement<T>> {
 	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
@@ -879,6 +944,7 @@ export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionM
 			text,
 			(err) => {
 				report.engineFailures += 1
+
 				// One log per invocation: a persistently degraded engine would
 				// otherwise print a stack trace per scanned string per hook.
 				if (!failureLogged) {
@@ -888,6 +954,7 @@ export async function redactObjectStringsMeasured<T>(obj: T): Promise<RedactionM
 				return text
 			},
 			snapshot,
+			vault,
 		)
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>

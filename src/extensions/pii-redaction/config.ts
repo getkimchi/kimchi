@@ -42,9 +42,24 @@ import { getResourceSettingsPath, isResourceEnabled, isResourceLocked } from "..
 import { getDefaultExcludedEntities, isKnownEntity } from "./entity-tiers.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 
+/**
+ * How engine detections are rendered in stored output:
+ * - `tokens` (default): `[<ENTITY>_N]` — stable per-session reversible
+ *   tokens; originals resolve only at presentation (see tokenization-vault
+ * - `markers`: `[REDACTED-<ENTITY>]` — opt-in flat markers (settings or
+ *   degrade fallback), the historical shape
+ *   implementation notes), exports and telemetry stay tokenized
+ *
+ * Local opt-in via settings.json `redaction.renderMode`; org-locked
+ * deployments are always markers.
+ */
+export type RedactionRenderMode = "markers" | "tokens"
+
 export interface RedactionConfig {
 	/** Whether PII/secret redaction is active. */
 	enabled: boolean
+	/** Detection rendering mode (default `markers`). */
+	renderMode: RedactionRenderMode
 	/**
 	 * Entity types excluded at engine level: local settings.json
 	 * `redaction.excludedEntities` when present, else the tier-registry
@@ -76,13 +91,31 @@ export function isRedactionEnabled(): boolean {
 	return isResourceEnabled(PII_REDACTION_RESOURCE_ID)
 }
 
+/**
+ * Non-throwing render-mode read for vault lifecycle gating (session_start
+ * may not throw). An invalid settings block degrades to `markers` here;
+ * the loud-log and strict-fail paths live in the redactor's snapshot
+ * resolution and the export walk.
+ */
+export function getRedactionRenderMode(): RedactionRenderMode {
+	try {
+		return getRedactionConfig().renderMode
+	} catch {
+		return "markers"
+	}
+}
+
 /** Read the current config: resources-system enablement + local exclusion list. */
 export function getRedactionConfig(): RedactionConfig {
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
-	// settings file is never opened.
+	// settings file is never opened. The org lock pins the resource, not
+	// the presentation — rendering follows the default (tokens) here too;
+	// only an explicit "markers" setting, readable in an unlocked
+	// deployment, restores the old flat markers.
 	if (isResourceLocked(PII_REDACTION_RESOURCE_ID)) {
 		return {
 			enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
+			renderMode: "tokens",
 			excludedEntities: getDefaultExcludedEntities(),
 			userExcludedEntities: [],
 		}
@@ -90,6 +123,7 @@ export function getRedactionConfig(): RedactionConfig {
 	const user = readExcludedEntitiesSetting()
 	return {
 		enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
+		renderMode: readRenderModeSetting() ?? "tokens",
 		excludedEntities: user ?? getDefaultExcludedEntities(),
 		userExcludedEntities: user ?? [],
 	}
@@ -121,4 +155,26 @@ function readExcludedEntitiesSetting(): string[] | undefined {
 		}
 	}
 	return raw as string[]
+}
+
+/**
+ * Read + validate settings.json `redaction.renderMode`. Returns undefined
+ * when the key is absent (tokens default). Same fail-visible convention as
+ * the entity list: a typo throws so the operator learns the setting is
+ * wrong; consumers degrade to markers per their failure policy (strict
+ * export fails closed; hooks degrade with one loud log).
+ */
+function readRenderModeSetting(): RedactionRenderMode | undefined {
+	const settings = readJsonCached(getResourceSettingsPath())
+	const redaction = settings.redaction
+	if (redaction === undefined) return undefined
+	if (redaction === null || typeof redaction !== "object" || Array.isArray(redaction)) {
+		throw new Error('settings.json "redaction" must be an object')
+	}
+	const raw = (redaction as Record<string, unknown>).renderMode
+	if (raw === undefined) return undefined
+	if (raw !== "markers" && raw !== "tokens") {
+		throw new Error('settings.json "redaction.renderMode" must be "markers" or "tokens"')
+	}
+	return raw
 }
