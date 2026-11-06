@@ -1182,8 +1182,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			return outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
 		})
 		const cancel = vi.fn(() => ({}))
+		// Single cast at the injection seam: the object is typed against the
+		// Pick the server actually consumes, so a new consumed method breaks the
+		// type check instead of silently staying behind.
+		const manager = { begin, awaitResult, cancel } as Pick<SsoFlowManager, "begin" | "awaitResult" | "cancel">
 		return {
-			manager: { begin, awaitResult, cancel } as unknown as SsoFlowManager,
+			manager: manager as SsoFlowManager,
 			begin,
 			awaitResult,
 			cancel,
