@@ -1,0 +1,113 @@
+# TEMPORARY — release re-crawl for the perf gate: re-measures every release
+# since v1.0.0 plus master and the unreleased fix stacks with the current
+# harness (gated + advisory lanes) for the release-series report. Runs only
+# on pushes to this PR that touch the two backtest files; the labelled SHA
+# list and this workflow's temporary edits come out before merge.
+name: Perf gate backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      reps:
+        description: "Reps per scenario"
+        default: "2"
+        required: false
+  pull_request:
+    paths:
+      - '.github/workflows/perf-backtest.yml'
+      - 'backtest-shas.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-backtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shas:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      list: ${{ steps.split.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: split
+        # One entry per line: "SHA [LABEL]". The optional label names the
+        # artifact, so the same SHA can appear several times (repeat jobs).
+        run: |
+          LIST=$(grep -v '^#' backtest-shas.txt | grep -v '^$' \
+            | jq -R 'split(" ") | map(select(. != "")) | {sha: .[0], label: (.[1] // .[0])}' | jq -cs .)
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+
+  backtest:
+    needs: shas
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.shas.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.entry.sha }}
+          fetch-depth: 0
+
+      - name: Overlay the gate harness from the PR head
+        # Only tools/perf (harness + budgets) comes from the PR head; the
+        # measured tree keeps its own package.json/lockfile/patches/proxy
+        # helper, so old code builds against its own dependencies — exactly
+        # what a PR diff touching nothing else would have compiled like.
+        env:
+          GATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git fetch --depth=1 origin "$GATE_SHA"
+          git checkout FETCH_HEAD -- tools/perf
+          git status --short | head -20
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build proxy-helper
+        run: make copy-for-dev
+        working-directory: tools/proxy-helper
+
+      - name: Enable hardware counters
+        run: |
+          sudo sysctl -w kernel.perf_event_paranoid=0
+          cat /proc/sys/kernel/perf_event_paranoid
+
+      - name: Build binary
+        run: pnpm run build:binary
+
+      - name: Run perf gate
+        # Direct python3 calls: old trees have no perf:* package scripts.
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          python3 tools/perf/gate.py --selfcheck
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}"
+
+      - name: Advisory lanes (healthy/fresh idle, large tool outputs store on vs off)
+        # Runs even when the gate step fails: old binaries miss today's budgets,
+        # and those are exactly the baselines these lanes need.
+        if: always()
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          for sc in idle_healthy idle_fresh bigtools bigtools_off; do
+            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${{ inputs.reps || 2 }}" --idle 90 \
+              --out "$RUNNER_TEMP/perf-gate-runs/$sc.jsonl" --expect-version "$VERSION" || echo "$sc failed"
+          done
+
+      - name: Upload run records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ matrix.entry.label }}
+          path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
+          if-no-files-found: ignore
+

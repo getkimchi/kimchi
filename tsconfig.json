@@ -13,6 +13,6 @@
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true
 	},
-	"include": ["src", "extensions", "scripts"],
+	"include": ["src", "extensions", "scripts", "tools/perf/validate-fixture.ts"],
 	"exclude": ["node_modules", "dist"]
 }

@@ -1,0 +1,4 @@
+# Higher-rep re-verify of the combined tree vs master, to settle the
+# session-CPU question from the 2-rep run. Temporary; restored before merge.
+776e745a4e5bd0df9a8ce747201daef29098c446 master-baseline
+96886d858d0af24c22f12193ce8c399c20d4598b combined-3pr
