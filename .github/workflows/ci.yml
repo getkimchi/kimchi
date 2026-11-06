@@ -29,6 +29,18 @@ jobs:
       - name: Document unit tests
         run: pnpm exec vitest run src/extensions/documents
 
+  docs-memory-book:
+    # Mechanical invariants for the Memory Book (docs/memory/): mermaid
+    # syntax, links, glossary backlinks, repo paths, measured-claim pins,
+    # status discipline. Includes the checker's fixture self-tests.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docs check
+        run: node scripts/docs-check.js --self-test && node scripts/docs-check.js
+
   pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
