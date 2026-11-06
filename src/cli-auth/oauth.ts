@@ -331,12 +331,19 @@ async function fetchOrganizationName(
 	return typeof name === "string" && name.trim().length > 0 ? name.trim() : undefined
 }
 
+/** Display label for organizations the API leaves nameless (the personal
+ * org ships with an empty name on both the listing and detail endpoints —
+ * the console renders the same label client-side). */
+const UNNAMED_ORGANIZATION_LABEL = "My organization"
+
 /**
  * List the user's organizations from the Kimchi users API
  * (`GET <organizationsUrl>` — the Kimchi users API organization listing).
  * Entries without a name (the listing ships a blank name for some
  * organizations, e.g. a personal one) are resolved through the organization
- * detail endpoint; when that fails the id stands in as the label.
+ * detail endpoint. When no name can be loaded at all, the entry is labeled
+ * "My organization" (suffixed with an id prefix when several are nameless)
+ * so the picker never renders an empty label.
  */
 export async function listUserOrganizations(
 	organizationsUrl: string,
@@ -364,12 +371,19 @@ export async function listUserOrganizations(
 			id: org.id as string,
 			name: typeof org.name === "string" && org.name.trim().length > 0 ? org.name.trim() : undefined,
 		}))
-	return Promise.all(
+	const resolved = await Promise.all(
 		organizations.map(async (org) => ({
 			id: org.id,
-			name: org.name ?? (await fetchOrganizationName(organizationsUrl, org.id, bearer, signal)) ?? org.id,
+			name: org.name ?? (await fetchOrganizationName(organizationsUrl, org.id, bearer, signal)),
 		})),
 	)
+	const unnamedCount = resolved.filter((org) => !org.name).length
+	return resolved.map((org) => ({
+		id: org.id,
+		name:
+			org.name ??
+			(unnamedCount === 1 ? UNNAMED_ORGANIZATION_LABEL : `${UNNAMED_ORGANIZATION_LABEL} (${org.id.slice(0, 8)})`),
+	}))
 }
 
 /** Sentinel option id for the paginator entry (cannot collide with real

@@ -423,7 +423,9 @@ describe("loginWithKimchiOauth", () => {
 		expect(credential.orgName).toBe("My organization")
 	})
 
-	it("falls back to the organization id when the detail endpoint cannot supply a name", async () => {
+	it("labels a nameless organization as My organization when no name can be loaded", async () => {
+		// Personal organizations ship without a name on both the listing and
+		// the detail endpoint — the picker still needs a label.
 		mock.setOrganizations([{ id: "org-blank", name: "" }]) // no detail entry → 404
 		mock.setResponder(() => ({
 			status: 200,
@@ -435,11 +437,38 @@ describe("loginWithKimchiOauth", () => {
 		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
 		await driveBrowserCallback(redirectUri, { code: "c", state })
 		const credential = await loginPromise
-		// A single organization is auto-selected without prompting; its label is
-		// the id rather than nothing.
+		// A single organization is auto-selected without prompting.
 		expect(credential.orgId).toBe("org-blank")
-		expect(credential.orgName).toBe("org-blank")
+		expect(credential.orgName).toBe("My organization")
 		expect(mock.orgDetailRequests).toEqual([{ id: "org-blank", authorization: "Bearer id-1" }])
+	})
+
+	it("disambiguates several nameless organizations with id prefixes in the picker", async () => {
+		mock.setOrganizations([
+			{ id: "aaaaaaaa-0000-0000-0000-000000000001" },
+			{ id: "bbbbbbbb-0000-0000-0000-000000000002" },
+		])
+		mock.setResponder(() => ({
+			status: 200,
+			body: { access_token: "at-1", id_token: "id-1", refresh_token: "rt-1", expires_in: 3600 },
+		}))
+		const selections: Array<{ message: string; options: Array<{ id: string; label: string }> }> = []
+		const { callbacks, authUrls } = makeCallbacks({
+			onSelect: async (prompt) => {
+				selections.push({ message: prompt.message, options: prompt.options })
+				return "bbbbbbbb-0000-0000-0000-000000000002"
+			},
+		})
+		const loginPromise = login(configFor(mock.url), callbacks)
+		await vi.waitFor(() => expect(authUrls).toHaveLength(1))
+		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
+		await driveBrowserCallback(redirectUri, { code: "c", state })
+		const credential = await loginPromise
+		expect(selections[0]?.options).toEqual([
+			{ id: "aaaaaaaa-0000-0000-0000-000000000001", label: "My organization (aaaaaaaa)" },
+			{ id: "bbbbbbbb-0000-0000-0000-000000000002", label: "My organization (bbbbbbbb)" },
+		])
+		expect(credential.orgName).toBe("My organization (bbbbbbbb)")
 	})
 
 	it("pages long organization lists through the selector instead of overflowing it", async () => {
