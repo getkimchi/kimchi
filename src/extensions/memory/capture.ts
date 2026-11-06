@@ -11,7 +11,7 @@
  */
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { mkdirSync, renameSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
@@ -149,8 +149,29 @@ export function messageText(content: unknown): string {
  * A uuid, not a timestamp: recording time never enters LLM input. */
 const CAPTURE_SESSION_ID = randomUUID()
 
-function captureSessionId(): string {
+export function captureSessionId(): string {
 	return CAPTURE_SESSION_ID
+}
+
+/** Read one capture session's cumulative stored-facts count from the
+ *  worker's completion record (capture-completions.json — per-session
+ *  counts, merge-written by each drain under the capture lock). Degrades
+ *  to 0: surfacing is best-effort and must never break a session. */
+export function readCaptureSessionSaved(sessionId: string): number {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(defaultMemoryDir(), "capture-completions.json"), "utf-8"))
+		const sessions =
+			parsed && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as { sessions?: unknown }).sessions
+				: undefined
+		if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) return 0
+		const entry = (sessions as Record<string, unknown>)[sessionId]
+		if (!entry || typeof entry !== "object") return 0
+		const factsAdded = (entry as { factsAdded?: unknown }).factsAdded
+		return typeof factsAdded === "number" && factsAdded > 0 ? factsAdded : 0
+	} catch {
+		return 0
+	}
 }
 
 function captureMessages(messages: CaptureMessage[], cwd: string): void {

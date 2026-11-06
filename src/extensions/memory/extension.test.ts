@@ -1,9 +1,16 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
+import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
+import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
+import { captureSessionId } from "./capture.js"
 import { MEMORY_SEARCH_TIMEOUT_MS, TURN_RECALL_QUERY_MAX_CHARS } from "./config.js"
 import { createMemoryExtension, type MemorySearcher } from "./index.js"
 import { MemoryPanel } from "./memory-panel.js"
@@ -441,9 +448,144 @@ describe("memory extension", () => {
 		await start(startEvent("set up the repo"), ctx)
 		// The indicator was on screen during the retrieval, and the turn
 		// ended with it cleared — nothing left behind.
-		expect(setDuringSearch).toEqual([["memory-recall", ["Recalling memory…"]]])
+		expect(setDuringSearch).toEqual([["memory-recall", ["› set up the repo", "Recalling memory…"]]])
 		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
 		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
+	})
+
+	it("truncates a long prompt to one line in the recall widget", async () => {
+		const ctx = createContext()
+		const seen: Array<unknown> = []
+		const search = vi.fn(async () => {
+			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
+			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
+		})
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent(`edge ${"x".repeat(200)}`), ctx)
+		// One capped line with an ellipsis — never the full 200-char payload.
+		expect(seen).toEqual([["memory-recall", [`› edge ${"x".repeat(114)}…`, "Recalling memory…"]]])
+	})
+
+	it("shows only the first line of a multi-line prompt in the recall widget", async () => {
+		const ctx = createContext()
+		const seen: Array<unknown> = []
+		const search = vi.fn(async () => {
+			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
+			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
+		})
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("first line of a paste\nsecond line stays hidden"), ctx)
+		expect(seen).toEqual([["memory-recall", ["› first line of a paste", "Recalling memory…"]]])
+	})
+
+	it("falls back to the bare progress line for a whitespace-only prompt", async () => {
+		const ctx = createContext()
+		const seen: Array<unknown> = []
+		const search = vi.fn(async () => {
+			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
+			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
+		})
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("   "), ctx)
+		expect(seen).toEqual([["memory-recall", ["Recalling memory…"]]])
+	})
+
+	it("sets the memory status segment to the delivered fact count", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		// The status-line segment mirrors the delivery ledger: 1 fact in context.
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+	})
+
+	it("updates the memory status as turn recall delivers more facts", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct fact number ${++n}`, score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("drift topic 1"), ctx)
+		await start(startEvent("drift topic 2"), ctx)
+		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
+		expect(calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+		expect(calls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
+	})
+
+	it("clears the memory status when the session toggle disables memory", async () => {
+		const search = vi.fn(async () => [{ memory: "flag fact", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("turn 1"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 2"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_STATUS_KEY, undefined])
+	})
+
+	it("clears the memory status when compaction resets the delivery ledger", async () => {
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start, getHandler } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+		getHandler("session_compact")({ type: "session_compact" }, ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_STATUS_KEY, undefined])
+	})
+
+	it("never sets the memory status without a UI", async () => {
+		const ctx = createContext({ hasUI: false })
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== MEMORY_STATUS_KEY)).toBe(true)
+		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Recalled"))).toBe(true)
+	})
+
+	it("announces the first delivery once, then only updates the segment", async () => {
+		let n = 0
+		const search = vi.fn(async () => [{ memory: `distinct fact number ${++n}`, score: 0.6 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		const ctx = createContext()
+		await start(startEvent("drift topic 1"), ctx)
+		await start(startEvent("drift topic 2"), ctx)
+		// The first delivery announced itself — exactly once, pluralized.
+		expect(vi.mocked(ctx.ui.notify).mock.calls.filter((call) => String(call[0]).startsWith("Recalled"))).toEqual([
+			["Recalled 1 memory", "info"],
+		])
+		// The later recall grew the segment silently — no second announce.
+		const statusCalls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
+		expect(statusCalls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
+	})
+
+	it("pluralizes the first-recall notification for multi-fact digests", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [
+			{ memory: "user prefers pnpm over npm", score: 0.7 },
+			{ memory: "the user lives in Lisbon", score: 0.6 },
+		])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.notify).mock.calls).toContainEqual(["Recalled 2 memories", "info"])
 	})
 
 	it("clears the recall indicator even when retrieval fails", async () => {
@@ -804,5 +946,102 @@ describe("memory extension — digest selection gate", () => {
 		} finally {
 			consoleError.mockRestore()
 		}
+	})
+})
+
+describe("memory status over the ACP bridge", () => {
+	it("forwards the delivered count and the disable clear to ACP clients", async () => {
+		// Real ACP ui context over a minimal fake conn — setStatus forwards
+		// unconditionally (no capability gate), proving the composition the
+		// docs claim: hasUI guard → extension emission → _kimchi.dev/pi_notify.
+		const extNotification = vi.fn(async (_method: string, _params: Record<string, unknown>) => {})
+		const conn = { extNotification } as unknown as AgentSideConnection
+		const acpUi = createAcpUIContext(conn, "sess-1", undefined, vi.fn())
+		const ctx = createContext({ ui: acpUi })
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		await new Promise((r) => setImmediate(r))
+
+		const memoryStatusCalls = () =>
+			extNotification.mock.calls.filter(
+				(call) =>
+					call[0] === "_kimchi.dev/pi_notify" &&
+					(call[1] as { method?: string; statusKey?: string }).method === "setStatus" &&
+					(call[1] as { statusKey?: string }).statusKey === MEMORY_STATUS_KEY,
+			)
+
+		// The delivered count reached the ACP client with the exact wire shape.
+		expect(memoryStatusCalls().length).toBeGreaterThanOrEqual(1)
+		expect(memoryStatusCalls()[0]?.[1]).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "setStatus",
+			sessionId: "sess-1",
+			statusKey: MEMORY_STATUS_KEY,
+			statusText: "1",
+		})
+
+		// Session toggle off (what the ACP set_memory_enabled ext-method
+		// writes): the clear must reach ACP clients as statusText undefined.
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 2"), ctx)
+		await new Promise((r) => setImmediate(r))
+		const cleared = memoryStatusCalls().at(-1)?.[1] as { statusText?: string } | undefined
+		expect(cleared?.statusText).toBeUndefined()
+	})
+})
+
+describe("memory saved feedback (completion record)", () => {
+	const realHome = process.env.HOME
+	let home: string
+
+	beforeEach(() => {
+		home = mkdtempSync(join(tmpdir(), "kimchi-memory-saved-"))
+		process.env.HOME = home
+	})
+
+	afterEach(() => {
+		process.env.HOME = realHome
+		rmSync(home, { recursive: true, force: true })
+	})
+
+	/** Seed the worker's completion record for THIS capture session. */
+	const writeRecord = (factsAdded: number): void => {
+		const dir = join(home, ".config", "kimchi", "memory")
+		mkdirSync(dir, { recursive: true })
+		writeFileSync(
+			join(dir, "capture-completions.json"),
+			JSON.stringify({ sessions: { [captureSessionId()]: { factsAdded, updatedAt: Date.now() } } }),
+		)
+	}
+
+	it("keeps the saved half in the segment without notifications", async () => {
+		const ctx = createContext()
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		// Nothing recorded yet — no saved status.
+		await start(startEvent("set up the repo"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== MEMORY_SAVED_STATUS_KEY)).toBe(true)
+
+		// A drain commits one fact for this capture session → next turn sets
+		// the segment's saved half.
+		writeRecord(1)
+		await start(startEvent("next turn"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "1"])
+
+		// No change → the status is not re-set for the same commit.
+		await start(startEvent("third turn"), ctx)
+		// A later commit adds more → the status grows.
+		writeRecord(3)
+		await start(startEvent("fourth turn"), ctx)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_SAVED_STATUS_KEY, "3"])
+
+		// Saves never announce — the segment half is the only surface.
+		expect(vi.mocked(ctx.ui.notify).mock.calls.every((call) => !String(call[0]).startsWith("Saved"))).toBe(true)
 	})
 })

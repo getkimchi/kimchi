@@ -54,8 +54,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 16 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(16)
+	it("has 17 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(17)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -85,6 +85,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"dap",
 			"work-pr",
 			"shells",
+			"memory",
 		].sort()
 		expect(ids).toEqual(expected)
 	})
@@ -102,8 +103,8 @@ describe("STATUS_LINE_ELEMENTS", () => {
 		}
 	})
 
-	it("marks work-pr and shells as defaultVisible (shown unless hidden, no pin needed)", () => {
-		for (const id of ["work-pr", "shells"] as const) {
+	it("marks lsp, dap, work-pr and memory as defaultVisible (shown unless hidden, no pin needed)", () => {
+		for (const id of ["lsp", "dap", "work-pr", "memory", "shells"] as const) {
 			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
 			expect(el).toBeDefined()
 			expect(el).toMatchObject({ defaultVisible: true })

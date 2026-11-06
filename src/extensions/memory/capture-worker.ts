@@ -548,6 +548,70 @@ function saveHashes(hashes: Set<string>): void {
 	renameSync(tmp, path)
 }
 
+/** Completion record path — per-session stored-fact counts for in-session
+ *  surfacing (the "Saved N memories" announcement and the segment's saved
+ *  half). Sibling of the captured-hashes ledger at the memory root. */
+function captureCompletionsPath(): string {
+	return join(defaultMemoryDir(), "capture-completions.json")
+}
+
+/** Cap on remembered sessions in the completion record — bounds growth;
+ *  the cap evicts by updatedAt, oldest first. */
+const MAX_COMPLETION_SESSIONS = 50
+
+/** Merge-write the per-session completion record. Drains are serialized
+ *  by the capture lock, so read-modify-write is race-free (the same
+ *  belt-and-braces as saveHashes). Entries are cumulative per session —
+ *  a session's incremental batches add across drains. Unattributable
+ *  jobs (no session id) land under a legacy key no live session can
+ *  match. Fail-soft: surfacing degrades to silent, never blocks the
+ *  drain. */
+function writeCaptureCompletions(savedBySession: Map<string, number>): void {
+	const path = captureCompletionsPath()
+	try {
+		const merged = new Map<string, { factsAdded: number; updatedAt: number }>()
+		try {
+			const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"))
+			const sessions =
+				parsed && typeof parsed === "object" && !Array.isArray(parsed)
+					? (parsed as { sessions?: unknown }).sessions
+					: undefined
+			if (sessions && typeof sessions === "object" && !Array.isArray(sessions)) {
+				for (const [id, entry] of Object.entries(sessions as Record<string, unknown>)) {
+					if (!entry || typeof entry !== "object") continue
+					const factsAdded = (entry as { factsAdded?: unknown }).factsAdded
+					const updatedAt = (entry as { updatedAt?: unknown }).updatedAt
+					if (typeof factsAdded === "number" && factsAdded > 0 && typeof updatedAt === "number") {
+						merged.set(id, { factsAdded, updatedAt })
+					}
+				}
+			}
+		} catch {
+			// Missing or corrupt record — start from empty (fail-open).
+		}
+		const now = Date.now()
+		for (const [id, factsAdded] of savedBySession) {
+			if (factsAdded <= 0) continue
+			const existing = merged.get(id)
+			merged.set(id, { factsAdded: (existing?.factsAdded ?? 0) + factsAdded, updatedAt: now })
+		}
+		const sessions: Record<string, { factsAdded: number; updatedAt: number }> = {}
+		const recent = [...merged.entries()]
+			.sort((a, b) => b[1].updatedAt - a[1].updatedAt)
+			.slice(0, MAX_COMPLETION_SESSIONS)
+		for (const [id, entry] of recent) sessions[id] = entry
+		mkdirSync(dirname(path), { recursive: true })
+		const tmp = `${path}.${process.pid}.tmp`
+		writeFileSync(tmp, `${JSON.stringify({ sessions }, null, 0)}\n`, "utf-8")
+		renameSync(tmp, path)
+	} catch (err) {
+		console.error(
+			"[memory-capture] completion record write failed (surfacing degrades to silent):",
+			err instanceof Error ? err.message : err,
+		)
+	}
+}
+
 /**
  * The store surface the capture pipeline needs — the injectable seam for
  * Node-side orchestration tests (the default factory builds mem0 via
@@ -1112,6 +1176,9 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const personalAdded: string[] = []
 	const projectAdded = new Map<string, string[]>()
 	let captured = 0
+	// Per-session stored-fact counts — feeds the completion record for
+	// in-session surfacing ("Saved N memories", the segment's saved half).
+	const savedBySession = new Map<string, number>()
 	let skippedNonDurable = 0
 	let skippedByValuation = 0
 	let redacted = 0
@@ -1126,6 +1193,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			skippedNonDurable += added.skippedNonDurable
 			skippedByValuation += added.skippedByValuation
 			redacted += added.redacted
+			if (added.captured > 0) {
+				const key = plan.session ?? "(unknown-session)"
+				savedBySession.set(key, (savedBySession.get(key) ?? 0) + added.captured)
+			}
 		} catch (err) {
 			failed += 1
 			console.error(
@@ -1179,6 +1250,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	for (const [projectId, backend] of projectBackends) {
 		await runBatchedSupersede(backend, projectAdded.get(projectId) ?? [], supersedeJudge)
 	}
+
+	// Completion record: merge-write per-session counts for in-session
+	// surfacing. Written before any throw — the successful part's counts are
+	// real even when some jobs failed.
+	writeCaptureCompletions(savedBySession)
 
 	if (failed > 0) throw new Error(`${failed} capture job(s) failed (${captured} facts captured)`)
 	return captured

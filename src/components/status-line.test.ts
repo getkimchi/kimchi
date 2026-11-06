@@ -21,6 +21,8 @@ import {
 	buildScriptPayload,
 	buildStatusLineSegments,
 	entriesAssistantUsageTotals,
+	MEMORY_SAVED_STATUS_KEY,
+	MEMORY_STATUS_KEY,
 	renderFittedLine,
 	type SegmentId,
 	SHELLS_STATUS_KEY,
@@ -1030,6 +1032,53 @@ describe("StatusLine segment coverage", () => {
 
 		it("never pushes the line past a narrow terminal", () => {
 			const sl = new StatusLine(createMockContext(), theme, shellsData("4"))
+			for (const width of [1, 20, 40]) {
+				for (const line of sl.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	})
+
+	describe("memory segment", () => {
+		function memoryData(recalled: string | undefined, saved?: string | undefined) {
+			const data = createMockStatusLineData()
+			const entries: Array<[string, string]> = []
+			if (recalled !== undefined) entries.push([MEMORY_STATUS_KEY, recalled])
+			if (saved !== undefined) entries.push([MEMORY_SAVED_STATUS_KEY, saved])
+			vi.mocked(data.getExtensionStatuses).mockReturnValue(new Map(entries))
+			return data
+		}
+
+		it("renders the recalled count when the memory extension sets a status", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("3")), 200)).toContain(
+				"memory: 3 recalled",
+			)
+		})
+
+		it("composes conditional halves: recalled · saved, saved alone, never a bare zero", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("2", "1")), 200)).toContain(
+				"memory: 2 recalled · 1 saved",
+			)
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData(undefined, "1")), 200)).toContain(
+				"memory: 1 saved",
+			)
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData(undefined, "0")), 200)).not.toContain(
+				"memory:",
+			)
+		})
+
+		it("is hidden without a delivery, or when the user hides it", () => {
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData(undefined)), 200)).not.toContain(
+				"memory:",
+			)
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("0")), 200)).not.toContain("memory:")
+			expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("x")), 200)).not.toContain("memory:")
+			withHidden(["memory"], () => {
+				expect(renderVisible(new StatusLine(createMockContext(), theme, memoryData("2")), 200)).not.toContain("memory:")
+			})
+		})
+
+		it("never pushes the line past a narrow terminal", () => {
+			const sl = new StatusLine(createMockContext(), theme, memoryData("12"))
 			for (const width of [1, 20, 40]) {
 				for (const line of sl.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width)
 			}

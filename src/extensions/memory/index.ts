@@ -41,6 +41,7 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
+import { MEMORY_SAVED_STATUS_KEY, MEMORY_STATUS_KEY } from "../../components/status-line.js"
 import { loadConfig } from "../../config.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
@@ -48,10 +49,18 @@ import {
 	adminDeleteFacts,
 	adminListFacts,
 	adminSearchFacts,
+	memoryCountText,
 	parseAdminArgs,
 	runAdminCommand,
 } from "./admin.js"
-import { createIncrementalCaptureState, incrementalCapture, messageText, wireMemoryCapture } from "./capture.js"
+import {
+	captureSessionId,
+	createIncrementalCaptureState,
+	incrementalCapture,
+	messageText,
+	readCaptureSessionSaved,
+	wireMemoryCapture,
+} from "./capture.js"
 import {
 	DIGEST_SCORE_THRESHOLD,
 	MEMORY_SEARCH_TIMEOUT_MS,
@@ -146,11 +155,31 @@ const MEMORY_VIEW_MAX_LINES = 10
  * Widget slot for the recall progress line. A separate key from
  * MEMORY_VIEW_KEY so the indicator and the /memory view can never clear
  * each other. Shown while memory retrieval runs inside before_agent_start —
- * the submitted prompt does not render until those hooks finish, so without
- * an indicator the TUI looks frozen for the lookup's duration.
+ * the submitted prompt does not render in the history window until those
+ * hooks finish, so the widget echoes it above the progress line (see
+ * recallWidgetLines) for the lookup's duration.
  */
 const MEMORY_RECALL_KEY = "memory-recall"
 const MEMORY_RECALL_TEXT = "Recalling memory…"
+
+/** Cap for the one-line prompt preview shown in the recall widget. */
+const MEMORY_RECALL_PROMPT_MAX_CHARS = 120
+
+/**
+ * The recall widget's lines while retrieval runs: the submitted prompt as a
+ * single truncated line (a multi-line paste never renders in full) above the
+ * progress line. A whitespace-only prompt degrades to the progress line
+ * alone.
+ */
+function recallWidgetLines(prompt: string): string[] {
+	const firstLine = prompt.split("\n", 1)[0]?.trim() ?? ""
+	if (!firstLine) return [MEMORY_RECALL_TEXT]
+	const display =
+		firstLine.length > MEMORY_RECALL_PROMPT_MAX_CHARS
+			? `${firstLine.slice(0, MEMORY_RECALL_PROMPT_MAX_CHARS - 1)}…`
+			: firstLine
+	return [`› ${display}`, MEMORY_RECALL_TEXT]
+}
 
 /**
  * The interactive browser behind /memory list and /memory search: fetches
@@ -243,6 +272,12 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						},
 					},
 				})
+				// /memory disable drops the recall count at once — flip detection
+				// at the next agent start would clear it too, but a stale count
+				// shouldn't linger between management commands.
+				if (ctx.hasUI && getSessionMemoryOverride(ctx.sessionManager) === false) {
+					ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
+				}
 				const output = result.useJson ? result.json : result.text
 				if (!ctx.hasUI) {
 					console.log(output)
@@ -279,6 +314,13 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 		const deliveredKeys = new Set<string>()
 		const deliveredFacts: string[] = []
 		let recallFailed = false
+		// The session's first fact delivery announces itself once ("Recalled N
+		// memories"); later recalls only bump the status segment. Never reset —
+		// even compaction re-delivery does not re-announce.
+		let recallNotified = false
+		// Capture feedback: cumulative count of this session's stored facts
+		// observed in the worker's completion record — the segment's saved half.
+		let savedSeen = 0
 		// Lever 3: mid-session incremental capture — the runtime mark makes
 		// batches non-overlapping; the worker's hash ledger dedupes restarts.
 		let incrementalState = createIncrementalCaptureState()
@@ -343,16 +385,49 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			if (ctx.hasUI) ctx.ui.setWidget(MEMORY_VIEW_KEY, undefined)
 		}
 
-		// Show the recall progress line for the duration of `work`, and always
-		// clear it — a failed or timed-out search must not leave it behind.
-		const withRecallIndicator = async <T>(ctx: ExtensionContext, work: () => Promise<T>): Promise<T> => {
+		// Show the submitted prompt plus the recall progress line for the
+		// duration of `work`, and always clear it — a failed or timed-out
+		// search must not leave it behind.
+		const withRecallIndicator = async <T>(
+			ctx: ExtensionContext,
+			prompt: string,
+			work: () => Promise<T>,
+		): Promise<T> => {
 			if (!ctx.hasUI) return work()
-			ctx.ui.setWidget(MEMORY_RECALL_KEY, [MEMORY_RECALL_TEXT])
+			ctx.ui.setWidget(MEMORY_RECALL_KEY, recallWidgetLines(prompt))
 			try {
 				return await work()
 			} finally {
 				ctx.ui.setWidget(MEMORY_RECALL_KEY, undefined)
 			}
+		}
+
+		// Status-line segment (MEMORY_STATUS_KEY, shared with
+		// src/components/status-line.ts): the number of recalled facts currently
+		// in context. Set after any digest / turn-recall delivery, cleared when
+		// the delivery ledger empties (toggle flip, compaction) — the segment
+		// renders only after memory has actually delivered facts. ACP passes a
+		// real uiContext (server.ts bindExtensions), so hasUI is true there and
+		// the count reaches IDE clients via the setStatus bridge
+		// (acp-ui-context.ts forwards it as _kimchi.dev/pi_notify).
+		const updateMemoryStatus = (ctx: ExtensionContext): void => {
+			if (!ctx.hasUI) return
+			ctx.ui.setStatus(MEMORY_STATUS_KEY, deliveredFacts.length > 0 ? String(deliveredFacts.length) : undefined)
+			if (!recallNotified && deliveredFacts.length > 0) {
+				recallNotified = true
+				ctx.ui.notify(`Recalled ${memoryCountText(deliveredFacts.length)}`, "info")
+			}
+		}
+
+		// Read the completion record for our capture session and keep the
+		// segment's saved half current. The closure value guards against a
+		// later drain dropping our entry (record cap).
+		const updateSavedStatus = (ctx: ExtensionContext): void => {
+			if (!ctx.hasUI) return
+			const recorded = readCaptureSessionSaved(captureSessionId())
+			if (recorded <= savedSeen) return
+			savedSeen = recorded
+			ctx.ui.setStatus(MEMORY_SAVED_STATUS_KEY, String(savedSeen))
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {
@@ -471,6 +546,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					deliveredKeys.clear()
 					deliveredFacts.length = 0
 					incrementalState = createIncrementalCaptureState()
+					// The flip emptied the ledger — drop any stale count.
+					updateMemoryStatus(ctx)
 				}
 				lastActive = active
 			}
@@ -492,10 +569,14 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// the in-memory entries and spawns a detached worker past the mark).
 			incrementalCapture(ctx.sessionManager.getEntries(), incrementalState, ctx.cwd)
 
+			// Capture feedback: read the drain's completion record (per-session
+			// counts) — bump the segment's saved half.
+			updateSavedStatus(ctx)
+
 			// Turn 1 (awaited): the prefix carries the digest from the very first
 			// request, so later turns never see a prompt change.
 			if (digest === undefined) {
-				digest = await withRecallIndicator(ctx, () =>
+				digest = await withRecallIndicator(ctx, event.prompt, () =>
 					withTimeout(computeDigest(event.prompt), MEMORY_SEARCH_TIMEOUT_MS, "digest computation"),
 				)
 				if (digest) {
@@ -505,6 +586,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						deliveredFacts.push(fact)
 					}
 				}
+				updateMemoryStatus(ctx)
 				// The digest search already used this prompt — no recall this turn.
 				if (digest === null) {
 					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
@@ -556,7 +638,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 					}
 					if (!skipSearch) {
 						try {
-							const hits = await withRecallIndicator(ctx, async () => {
+							const hits = await withRecallIndicator(ctx, event.prompt, async () => {
 								const s = await getSearcher()
 								if (!s) return undefined
 								return withTimeout(s.search(recent), MEMORY_SEARCH_TIMEOUT_MS, "turn recall search")
@@ -568,6 +650,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 										deliveredKeys.add(factKey(fact))
 										deliveredFacts.push(fact)
 									}
+									updateMemoryStatus(ctx)
 									pi.sendMessage(
 										{
 											customType: "memory-recall",
@@ -602,7 +685,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
 		})
 
-		pi.on("session_compact", () => {
+		pi.on("session_compact", (_event, ctx) => {
 			// The prefix breaks at compaction anyway — recompute the digest
 			// against the post-compaction state on the next agent start, and
 			// reset the delivery ledger: earlier recall steers may have been
@@ -613,6 +696,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			// Post-compaction entries restructure — re-derive the incremental mark
 			// from zero; the worker's ledger dedupes the re-passed messages.
 			incrementalState = createIncrementalCaptureState()
+			// The ledger reset means nothing is in context — clear the count
+			// until the next agent start recomputes the digest.
+			updateMemoryStatus(ctx)
 		})
 
 		pi.registerTool(

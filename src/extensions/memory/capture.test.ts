@@ -874,6 +874,30 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(ledger).toHaveLength(1)
 	})
 
+	it("writes and accumulates the per-session completion record", async () => {
+		const fake = makeFakeBackend()
+		const session = "11111111-2222-3333-4444-555555555555"
+		const recordPath = () => join(home, ".config", "kimchi", "memory", "capture-completions.json")
+		const options = { llm: makeFakeLlm([]), createBackend: () => Promise.resolve(fake.backend) }
+		const job1 = join(pendingDir(), "s1.json")
+		writeFileSync(job1, JSON.stringify({ messages: [msg("user", "my dog's name is Fred")], project: null, session }))
+		const captured = await runCaptureWorker(["--job", job1, "--db", dbPath()], options)
+		expect(captured).toBe(1)
+		const record = JSON.parse(readFileSync(recordPath(), "utf-8")) as {
+			sessions: Record<string, { factsAdded: number }>
+		}
+		expect(record.sessions[session]?.factsAdded).toBe(1)
+
+		// A second drain for the same session accumulates the count.
+		const job2 = join(pendingDir(), "s2.json")
+		writeFileSync(job2, JSON.stringify({ messages: [msg("user", "my cat's name is Luna")], project: null, session }))
+		await runCaptureWorker(["--job", job2, "--db", dbPath()], options)
+		const updated = JSON.parse(readFileSync(recordPath(), "utf-8")) as {
+			sessions: Record<string, { factsAdded: number }>
+		}
+		expect(updated.sessions[session]?.factsAdded).toBe(2)
+	})
+
 	it("a re-spawned duplicate job is a no-op (ledger idempotence)", async () => {
 		const fake = makeFakeBackend()
 		const transcripts: string[] = []

@@ -14,6 +14,7 @@ import {
 	runAdminCommand,
 	scopeFilterFromParams,
 } from "./admin.js"
+import { captureSessionId } from "./capture.js"
 
 // --- fixtures -------------------------------------------------------------------
 
@@ -608,6 +609,23 @@ describe("runAdminCommand — overview and usage errors", () => {
 		expect(result.text).toContain("usage: memory")
 	})
 
+	it("the overview shows the last session's stored count from the completion record", async () => {
+		const h = trackedHarness({ personal: [fact("p1", "a fact")] })
+		const other = "99999999-8888-7777-6666-555555555555"
+		writeFileSync(
+			join(h.root, "capture-completions.json"),
+			JSON.stringify({ sessions: { [other]: { factsAdded: 2, updatedAt: Date.now() } } }),
+		)
+		const result = await h.run([])
+		expect(result.text).toContain("Last session: stored 2 memories")
+	})
+
+	it("the overview placeholder appears when no other session has recorded a capture", async () => {
+		const h = trackedHarness({})
+		const result = await h.run([])
+		expect(result.text).toContain("Last session: no captures recorded yet")
+	})
+
 	it("usage errors exit nonzero with the usage text", async () => {
 		const h = trackedHarness({})
 		const result = await h.run(["bogus"])
@@ -710,6 +728,28 @@ describe("adminOverview", () => {
 		expect(data.pendingJobs).toBe(1)
 		expect(data.failedJobs).toBe(0)
 		expect(data.ledgerEntries).toBe(1)
+		expect(data.lastCapture).toBeNull()
+	})
+
+	it("lastCapture reads the completion record and excludes the calling session", async () => {
+		const h = trackedHarness({})
+		const other = "99999999-8888-7777-6666-555555555555"
+		writeFileSync(
+			join(h.root, "capture-completions.json"),
+			JSON.stringify({
+				sessions: {
+					// The calling process's own capture session — newer, but excluded.
+					[captureSessionId()]: { factsAdded: 5, updatedAt: Date.now() + 1000 },
+					[other]: { factsAdded: 2, updatedAt: 1000 },
+				},
+			}),
+		)
+		const data = await adminOverview({
+			memoryRoot: h.root,
+			createBackend: (dbPath) => Promise.resolve(h.backends.get(dbPath)?.backend ?? makeFakeBackend([]).backend),
+			acquireLock: () => Promise.resolve(() => Promise.resolve()),
+		})
+		expect(data.lastCapture).toEqual({ factsAdded: 2, updatedAt: 1000 })
 	})
 
 	it("surfaces quarantined poison jobs in data and text", async () => {
