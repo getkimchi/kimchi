@@ -933,9 +933,7 @@ export default function (pi: ExtensionAPI) {
 		registerAgents(userAgents)
 	}
 
-	// Pre-session bootstrap: no ExtensionContext exists yet, so the launch
-	// directory is the only cwd available. `session_start` reloads with
-	// `ctx.cwd` as soon as a session exists.
+	// Pre-session bootstrap; session_start reloads with ctx.cwd.
 	reloadCustomAgents(process.cwd())
 
 	const agentActivity = new Map<string, AgentActivity>()
@@ -1686,10 +1684,7 @@ export default function (pi: ExtensionAPI) {
 
 	const typeListText = buildTypeListText()
 
-	// Pre-session bootstrap: no ExtensionContext exists yet, so the launch
-	// directory is the only cwd available. `session_start` reloads with
-	// `ctx.cwd` as soon as a session exists (same contract as
-	// reloadCustomAgents above).
+	// Pre-session bootstrap; session_start reloads with ctx.cwd.
 	applyAndEmitLoaded(
 		{
 			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
