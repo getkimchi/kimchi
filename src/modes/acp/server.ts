@@ -791,13 +791,19 @@ export class KimchiAcpAgent implements Agent {
 		const begin = await this.sso.begin({ region })
 
 		// The e2e seam skips the opener (TUI e2e parity with
-		// authenticateViaBrowser); a failed opener is non-fatal — the flow still
-		// waits on the loopback callback.
+		// authenticateViaBrowser).
 		if (readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_OPEN") !== "1") {
 			try {
 				await open(begin.authorizeUrl)
 			} catch {
-				// User can complete sign-in from the browser history / manually.
+				// Headless/SSH machines: no browser opens and no surface ever shows
+				// the URL — fail fast with the sign-in link instead of hanging
+				// until the loopback timeout.
+				this.sso.cancel({ requestId: begin.requestId })
+				throw RequestError.internalError(
+					undefined,
+					`Could not open a browser for CAST AI sign-in. Open ${begin.authorizeUrl} manually, then retry.`,
+				)
 			}
 		}
 

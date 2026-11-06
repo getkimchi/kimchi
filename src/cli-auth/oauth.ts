@@ -454,19 +454,7 @@ export async function loginWithKimchiOauth(
 		const { code } = await Promise.race(candidates)
 
 		callbacks.onProgress?.("Exchanging authorization code for tokens…")
-		const token = await postTokenRequest(
-			config.tokenUrl,
-			{
-				grant_type: "authorization_code",
-				client_id: config.clientId,
-				code,
-				code_verifier: verifier,
-				redirect_uri: callbackServer.url,
-				...(config.audience ? { audience: config.audience } : {}),
-			},
-			signal,
-		)
-		const credential = credentialFromTokenResponse(token, config)
+		const credential = await exchangeAuthorizationCode(config, code, verifier, callbackServer.url, signal)
 
 		// SSO credentials are organization-scoped: list the user's organizations
 		// and select one BEFORE the credential is saved, so the
