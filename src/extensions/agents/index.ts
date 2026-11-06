@@ -930,9 +930,6 @@ export default function (pi: ExtensionAPI) {
 		registerAgents(userAgents)
 	}
 
-	// Pre-session bootstrap; session_start reloads with ctx.cwd.
-	reloadCustomAgents(process.cwd())
-
 	const agentActivity = new Map<string, AgentActivity>()
 
 	// ---- Cancellable pending notifications ----
@@ -1682,10 +1679,11 @@ export default function (pi: ExtensionAPI) {
 		return name.replace(/-\d{8}$/, "")
 	}
 
-	const typeListText = buildTypeListText()
-
-	// Pre-session bootstrap; session_start reloads with ctx.cwd.
+	// Pre-session bootstrap (populates the registry for buildTypeListText);
+	// session_start reloads with ctx.cwd.
 	reloadProjectAgentState(process.cwd())
+
+	const typeListText = buildTypeListText()
 
 	// ---- Agent tool ----
 
