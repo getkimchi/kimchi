@@ -1215,8 +1215,8 @@ describe("getRedactionConfig — redaction.renderMode settings", () => {
 		invalidateJsonCache(getResourceSettingsPath())
 	}
 
-	it("absent key → markers", () => {
-		expect(getRedactionConfig().renderMode).toBe("markers")
+	it("absent key → tokens", () => {
+		expect(getRedactionConfig().renderMode).toBe("tokens")
 	})
 
 	it('"tokens" parses', () => {
@@ -1309,9 +1309,9 @@ describe("token mode — composition and tally parity", () => {
 		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-EMAIL_ADDRESS]")
 	})
 
-	it("markers remain the default mode (no renderMode key)", async () => {
+	it("tokens are the default mode (no renderMode key)", async () => {
 		const result = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, createTokenVault())
-		expect(JSON.stringify(result.redacted)).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(JSON.stringify(result.redacted)).toContain("[EMAIL_ADDRESS_1]")
 	})
 
 	it("tally parity: identical input reports identical entities in both modes", async () => {
@@ -1319,6 +1319,7 @@ describe("token mode — composition and tally parity", () => {
 			a: `mail ${fx.email}`,
 			b: `second ${["robin.hood", "corp-mail.io"].join("@")} host ${fx.ipAddress}`,
 		}
+		writeSettings({ renderMode: "markers" })
 		const markerRun = await redactObjectStringsMeasured(structuredClone(input))
 		writeSettings({ renderMode: "tokens" })
 		resetRedactorEngine()
