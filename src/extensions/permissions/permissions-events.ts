@@ -149,7 +149,44 @@ export interface PermissionToolDecisionPayload {
 	sourceDetail: PermissionDecisionSourceDetail
 	/** Permission mode the decision was made under (for prompts: when the prompt opened). */
 	permissionMode: PermissionMode
+	/** Present only on `mode_flap` rejections: which mode changes dismissed the
+	 *  prompts of THIS tool call before the re-evaluation loop exhausted. Sources
+	 *  are recorded per dismissal (repeats included); telemetry serializes them
+	 *  as a sorted, deduplicated set. */
+	modeFlap?: {
+		/** Dismissal count, including repeated sources. */
+		modeChangeCount: number
+		/** Reason of each dismissal, in order. */
+		modeChangeSources: ModeChangeReason[]
+	}
 }
+
+/** Compile-time exhaustiveness guard: a ModeChangeReason union member that is
+ *  not listed in MODE_CHANGE_REASON_VALUES fails this assignment — the
+ *  telemetry filter can never silently drop a new reason. */
+const _ALL_MODE_CHANGE_REASONS_LISTED: Exclude<
+	ModeChangeReason,
+	(typeof MODE_CHANGE_REASON_VALUES)[number]
+> extends never
+	? true
+	: never = true
+
+/** Runtime-validated ModeChangeReason vocabulary — consumers (telemetry)
+ *  use it to drop out-of-contract values before export. The `satisfies` (not
+ *  a `: readonly ModeChangeReason[]` annotation) keeps the literal union —
+ *  an annotation widens it and silently disarms the exhaustiveness guard
+ *  below. */
+export const MODE_CHANGE_REASON_VALUES = [
+	"user_shift_tab",
+	"ferment_elevation",
+	"ferment_restore",
+	"plan_approval",
+	"questionnaire_promotion",
+	"cloud_spawn_failed",
+	"command",
+	"session_start",
+	"controller",
+] as const satisfies readonly ModeChangeReason[]
 
 // ---------------------------------------------------------------------------
 // Plan approved

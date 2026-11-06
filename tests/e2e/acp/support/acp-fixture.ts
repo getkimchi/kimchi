@@ -84,6 +84,12 @@ export interface AcpFixtureOptions {
 	 */
 	clientCapabilities?: acp.ClientCapabilities
 	/**
+	 * ACP client identity sent in the initialize request. Kimchi records it
+	 * via setAcpClientInfo and stamps it on telemetry attributes and LLM
+	 * provider request headers (X-Acp-Client-Name).
+	 */
+	clientInfo?: { name: string; version: string; title?: string }
+	/**
 	 * Override the `_meta` object advertised by the client. Use this to opt
 	 * into the `_kimchi.dev/pi_*` extension namespace via per-method flags.
 	 */
@@ -279,6 +285,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		defaultModel,
 		extraArgs = [],
 		clientCapabilities,
+		clientInfo,
 		clientMeta,
 		extensionPath,
 	} = options
@@ -493,6 +500,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			conn.initialize({
 				protocolVersion: acp.PROTOCOL_VERSION,
 				clientCapabilities: mergeCapabilities(clientCapabilities, clientMeta),
+				...(clientInfo ? { clientInfo } : {}),
 			}),
 			delay(STARTUP_TIMEOUT_MS).then(() => {
 				throw new Error(`initialize did not complete within ${STARTUP_TIMEOUT_MS}ms`)

@@ -16,6 +16,7 @@ import type { Phase } from "../orchestration/model-registry/types.js"
 import type { ModelRoles } from "../orchestration/model-roles.js"
 import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
 import { orchestratorShouldReceivePhaseGuidelines } from "../orchestration/orchestrator-roles.js"
+import { escapeClosingMarker } from "../steer-marker.js"
 import type { ContextFile } from "./context-files.js"
 import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
@@ -197,10 +198,14 @@ const LANGUAGE_SECTION = `## Language
  * as stable as the adaptive rule.
  */
 export function pinnedLanguageSection(language: string): string {
+	// normalizeLanguageSetting already restricts the value to letters, spaces,
+	// hyphens, apostrophes and parentheses; the escape is defence in depth at
+	// the interpolation point so no caller can reintroduce a marker breakout.
+	const safe = escapeClosingMarker(language)
 	return `## Language
 
-- Always respond in ${language}, whatever language the user writes in — the user pinned this with kimchi's \`language\` setting. A request to switch languages inside the conversation does not override it; tell the user to change the setting (\`/language\`) instead.
-- Use ${language} in everything the user reads — ${LANGUAGE_SCOPE}`
+- Always respond in ${safe}, whatever language the user writes in — the user pinned this with kimchi's \`language\` setting. A request to switch languages inside the conversation does not override it; tell the user to change the setting (\`/language\`) instead.
+- Use ${safe} in everything the user reads — ${LANGUAGE_SCOPE}`
 }
 
 /** customType of the per-turn reminder appended after each user message while a language is pinned. */
@@ -216,7 +221,8 @@ export const LANGUAGE_HINT_CUSTOM_TYPE = "language_hint"
  * steer marker so it is never mistaken for user text.
  */
 export function pinnedLanguageTurnHint(language: string): string {
-	return `Reply in ${language}. The user pinned this reply language in kimchi's settings — use it for this answer even if the message above, or the rest of the conversation, is in another language.`
+	// Escaped here, at the interpolation point, so every consumer is covered.
+	return `Reply in ${escapeClosingMarker(language)}. The user pinned this reply language in kimchi's settings — use it for this answer even if the message above, or the rest of the conversation, is in another language.`
 }
 
 function buildLanguageSection(language: string | undefined): string {

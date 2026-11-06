@@ -10,3 +10,29 @@ export function toolNamesFromSection(systemPrompt: string): string {
 	if (after === undefined) throw new Error("## Available Tools section missing from system prompt")
 	return after.split("\n")[0]
 }
+
+/**
+ * Register `handler` under `event` in a test harness's handler map,
+ * composing with any earlier registration for the same event. Test-only —
+ * the real extension runner invokes EVERY handler registered for an event,
+ * so a plain `Map.set` would shadow earlier listeners once an event gains a
+ * second one (e.g. `agent_start`, `session_shutdown`) and tests would
+ * silently exercise only the last registration.
+ */
+export function composeHandlerRegistration(
+	handlers: Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>,
+	event: string,
+	handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown,
+): void {
+	const previous = handlers.get(event)
+	handlers.set(
+		event,
+		previous
+			? async (composedEvent: unknown, composedCtx: unknown) => {
+					const first = await previous(composedEvent, composedCtx)
+					const second = await handler(composedEvent, composedCtx)
+					return second ?? first
+				}
+			: handler,
+	)
+}
