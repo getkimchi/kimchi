@@ -5,9 +5,11 @@ URL spans) as stable per-session tokens (`[EMAIL_ADDRESS_1]`,
 `[IP_ADDRESS_2]`) instead of `[REDACTED-EMAIL_ADDRESS]` markers in
 everything the model and the session file see, and substitutes originals
 back only at **presentation boundaries** — the TUI transcript and the ACP
-stream. Token mode is the shipping default; marker mode is selected
-explicitly or applied automatically as the org-locked and
-degrade-safe fallback (see Failure modes).
+stream. Token mode is the shipping default everywhere, including
+org-locked deployments (the org lock pins the resource, never the
+presentation); marker mode survives only as an explicit settings opt-in
+in unlocked deployments and as the settings-error degrade fallback
+(see Failure modes).
 
 ```json
 { "redaction": { "renderMode": "markers" } }
