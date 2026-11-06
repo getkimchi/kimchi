@@ -190,7 +190,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	yolo: {
 		type: "boolean",
-		description: "Start in yolo mode (run freely, no classifier - DANGER)",
+		description: "Start in yolo mode (run freely, no classifier; deny rules still apply - DANGER)",
 	},
 	"dangerously-skip-permissions": {
 		type: "boolean",

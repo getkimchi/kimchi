@@ -3340,6 +3340,31 @@ describe("subagent inherits parent session permission mode", () => {
 
 		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
 	})
+
+	it("regression: child inheriting yolo from parent enforces deny rules (blocklist beats approval-skip)", async () => {
+		process.env[`${PERMISSIONS_ENV_KEY}_${PARENT_SESSION_ID}`] = "yolo"
+		process.env[PARENT_SESSION_ID_ENV_KEY] = PARENT_SESSION_ID
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+
+		const harness = createPermissionsHarness(["bash"], { "deny-tool": "bash(gh *)" })
+
+		const childCtx = {
+			...createMockContext([]),
+			sessionManager: { getSessionId: () => CHILD_SESSION_ID, getEntries: () => [] },
+		} as unknown as ExtensionContext
+		await harness.fire("session_start", {}, childCtx)
+
+		// The child (sub-agent worker) inherits the parent's yolo mode …
+		expect(getPermissionMode(CHILD_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "user" })
+
+		// … but the user's blocklist still denies the tool call.
+		expect(await harness.fire("tool_call", { toolName: "bash", input: { command: "gh --version" } }, childCtx)).toEqual(
+			{
+				block: true,
+				reason: "Denied by rule bash(gh *) [cli]",
+			},
+		)
+	})
 })
 
 describe("permission mode session-log persistence", () => {
@@ -4157,13 +4182,181 @@ describe("permissions:tool_decision emissions", () => {
 		return decisions
 	}
 
-	it("yolo bypass emits accept/config/yolo_bypass with permissionMode yolo", async () => {
+	it("yolo still auto-approves unmatched commands (yolo_bypass)", async () => {
 		const harness = createPermissionsHarness(["bash", "write"], { yolo: true })
 		const decisions = collectDecisions(harness)
 		await harness.fire("session_start", {}, createMockContext([]))
 
 		expect(
-			await harness.fire("tool_call", tcall("bash", { command: "rm -rf /tmp/x" }), createMockContext([])),
+			await harness.fire("tool_call", tcall("bash", { command: "git status" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "yolo_bypass",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks a command matching a user deny rule (blocklist beats approval-skip)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([]))).toEqual({
+			block: true,
+			reason: "Denied by rule bash(gh *) [cli]",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks builtin-deny programs (sudo)", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "sudo echo hi" }), createMockContext([]))).toEqual({
+			block: true,
+			reason: "Denied by rule bash(sudo *) [builtin]",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks a denied program hidden behind a pipe", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "echo hi | gh --version" }), createMockContext([])),
+		).toEqual({
+			block: true,
+			reason: "Denied by rule bash(gh *) [cli]",
+		})
+	})
+
+	it("regression: yolo blocks builtin-deny rm -rf on absolute paths", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: "rm -rf /tmp/x" }), createMockContext([]))).toEqual(
+			{
+				block: true,
+				reason: "Denied by rule bash(rm -rf /*) [builtin]",
+			},
+		)
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks hard-blocked commands when no rule matches", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("bash", { command: "rm -rf ~/kimchi-repro-does-not-exist" }),
+				createMockContext([]),
+			),
+		).toEqual({
+			block: true,
+			reason: "Blocked in yolo mode (hard-blocked command): rm -rf ~/kimchi-repro-does-not-exist",
+		})
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "reject",
+				sourceDetail: "yolo_hard_block",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("regression: yolo blocks fork bombs", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(await harness.fire("tool_call", tcall("bash", { command: ":(){ :|:& };:" }), createMockContext([]))).toEqual(
+			expect.objectContaining({ block: true }),
+		)
+	})
+
+	it("regression: yolo blocks builtin-deny file writes (.env)", async () => {
+		const harness = createPermissionsHarness(["write"], { yolo: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("write", { path: ".env", content: "X=1" }), createMockContext([])),
+		).toEqual({
+			block: true,
+			reason: "Denied by rule write(.env) [builtin]",
+		})
+	})
+
+	it("yolo honors allow rules overriding builtin deny", async () => {
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "allow-tool": "bash(sudo echo hi)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "sudo echo hi" }), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "rule",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
+	it("--dangerously-skip-permissions keeps the documented full bypass", async () => {
+		const harness = createPermissionsHarness(["bash"], {
+			"dangerously-skip-permissions": true,
+			"deny-tool": "bash(gh *)",
+		})
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([])),
 		).toBeUndefined()
 
 		expect(decisions).toEqual([
