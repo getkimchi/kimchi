@@ -48,7 +48,6 @@ export const AVAILABLE_EXT_METHODS = {
 	// cancel aborts. Advertised to clients via `_meta["kimchi.dev"].sso`.
 	sso_begin: `_${CAPABILITIES_KEY}/sso_begin`,
 	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
-	sso_select_org: `_${CAPABILITIES_KEY}/sso_select_org`,
 	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,
