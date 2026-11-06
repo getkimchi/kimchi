@@ -1,8 +1,4 @@
-# CI-tier measurement of the three consolidated perf PRs, each individually
-# and combined, plus master as the same-run baseline. Temporary list; the
-# full 126-entry list is restored before merge.
+# Higher-rep re-verify of the combined tree vs master, to settle the
+# session-CPU question from the 2-rep run. Temporary; restored before merge.
 776e745a4e5bd0df9a8ce747201daef29098c446 master-baseline
-6bb6620ae7d6f180d48c45b0aeb485722462242c pr1-1665-first-tick
-a6f960ae49ece8cb0082ae112d62c2cb8f6c5ff5 pr2-1673-gate-settle
-5461c4ecee1e5928e10c4f4a3d89e801b2a2e73f pr3-1672-cheap-pass
 96886d858d0af24c22f12193ce8c399c20d4598b combined-3pr

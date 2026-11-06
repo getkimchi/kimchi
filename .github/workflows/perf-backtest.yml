@@ -7,6 +7,11 @@ name: Perf gate backtest
 
 on:
   workflow_dispatch:
+    inputs:
+      reps:
+        description: "Reps per scenario"
+        default: "2"
+        required: false
   pull_request:
     paths:
       - '.github/workflows/perf-backtest.yml'
@@ -85,7 +90,7 @@ jobs:
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           python3 tools/perf/gate.py --selfcheck
-          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION"
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}"
 
       - name: Advisory lanes (healthy/fresh idle, large tool outputs store on vs off)
         # Runs even when the gate step fails: old binaries miss today's budgets,
@@ -94,7 +99,7 @@ jobs:
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           for sc in idle_healthy idle_fresh bigtools bigtools_off; do
-            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps 2 --idle 90 \
+            python3 tools/perf/scenarios.py --binary dist/bin/kimchi --scenario "$sc" --reps "${{ inputs.reps || 2 }}" --idle 90 \
               --out "$RUNNER_TEMP/perf-gate-runs/$sc.jsonl" --expect-version "$VERSION" || echo "$sc failed"
           done
 
