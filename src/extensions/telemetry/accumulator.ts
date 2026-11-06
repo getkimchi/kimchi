@@ -163,12 +163,12 @@ export function collectMetrics(state: CumulativeState): MetricData[] {
 		}
 	}
 	for (const [key, count] of Object.entries(state.editDecisions)) {
-		const [toolName, decision, language, source] = key.split("|")
+		const [toolName, decision, language, decisionSource] = key.split("|")
 		out.push({
 			name: "claude_code.code_edit_tool.decision",
 			type: "Sum",
 			value: count,
-			attrs: { tool_name: toolName, decision, language, source },
+			attrs: { tool_name: toolName, decision, language, decision_source: decisionSource },
 		})
 	}
 	return out

@@ -406,6 +406,60 @@ describe("pii-redaction extension — event emission wiring", () => {
 		expect(emitted).toEqual([])
 	})
 
+	// Regression for the double-reporting class of bug: one tool result with the
+	// same PII mirrored into content and details is scanned by three hooks in
+	// sequence (tool_result -> message_end -> before_provider_request) and must
+	// report each redacted copy exactly once, from the first hook that
+	// introduces the marker.
+	it("reports each redacted copy exactly once across the disk and provider hooks", async () => {
+		const { api, invoke, emitted } = makePi()
+		piiRedactionExtension(api)
+
+		const EMAIL = ["jane.doe", "acmecorp.com"].join(String.fromCharCode(64))
+		const PATH = ["", "Users", "alice", ".aws", "credentials"].join("/")
+		const TEXT = `mail ${EMAIL} key ${PATH}`
+
+		// 1. tool_result owns both copies.
+		const results = (await invoke("tool_result", {
+			content: [{ type: "text", text: TEXT }],
+			details: { display: { output: TEXT } },
+		})) as unknown as Array<{ content: Array<{ text?: string }>; details?: unknown }>
+		const hook = results[0]
+		expect(emitted).toHaveLength(2)
+		expect(emitted).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					channel: PII_REDACTION_EVENTS.REDACTED,
+					payload: expect.objectContaining({ surface: "tool_result", entity_type: "EMAIL_ADDRESS", count: 2 }),
+				}),
+				expect.objectContaining({
+					channel: PII_REDACTION_EVENTS.REDACTED,
+					payload: expect.objectContaining({ surface: "tool_result", entity_type: "LOCAL_PATH", count: 2 }),
+				}),
+			]),
+		)
+
+		// 2. message_end re-walks the same copy: markers net out.
+		emitted.length = 0
+		const message = { role: "toolResult", content: hook?.content, details: hook?.details }
+		await invoke("message_end", { message })
+		expect(emitted).toEqual([])
+
+		// 3. The request hook re-scans for the provider: still netted, no events.
+		const payload = { payload: { messages: [message] } }
+		await invoke("before_provider_request", payload)
+		expect(emitted).toEqual([])
+
+		// 4. A second request hits the reference cache: no scan, no re-emission.
+		await invoke("before_provider_request", { payload: { messages: [message] } })
+		expect(emitted).toEqual([])
+
+		// The provider payload is scrubbed for both categories.
+		const sent = JSON.stringify(payload)
+		expect(sent).not.toContain(EMAIL)
+		expect(sent).not.toContain(PATH)
+	})
+
 	it("emits nothing when the resource is off — zero I/O", async () => {
 		setResourceOverride(PII_REDACTION_RESOURCE_ID, false)
 		const { api, invoke, emitted } = makePi()
