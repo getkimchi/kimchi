@@ -9,6 +9,13 @@
  * Events are defined at the *semantic* level — what nudge fired and why —
  * not the call-site level, so the contract survives mechanism swaps.
  *
+ * A fired event does not always correspond to a delivered steer message:
+ * some kinds arm a check whose instructions ride a later channel (e.g.
+ * `todo_checkin` with reason `checkin` arms the todo gate at user-input
+ * receipt and delivers no message — reconciliation instructions ride the
+ * first blocked work tool). Outcome attribution keys on the fired event's
+ * steer_id and closes when the check reconciles, not when a message lands.
+ *
  * Privacy: payloads carry structured fields only (kind, short reason code,
  * session-shape flags). Never raw tool args, command text, file paths, or
  * free-text reason strings — mirroring loop-guard-events.ts.

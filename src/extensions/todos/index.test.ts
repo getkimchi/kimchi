@@ -9,7 +9,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { isResourceEnabled } from "../../resources/store.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { STEER_EVENTS } from "../steer-events.js"
-import { __resetCheckinGate, getPendingCheckins, hasEffectivePendingCheckin } from "./checkin-gate.js"
+import {
+	__resetCheckinGate,
+	disposeCheckinGateSession,
+	getPendingCheckins,
+	hasEffectivePendingCheckin,
+	isGateBlockedToolCall,
+} from "./checkin-gate.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import todosExtension from "./index.js"
 import { __resetReconciliationBookkeeping, getInputRevision } from "./reconciliation.js"
@@ -77,6 +83,18 @@ function steerCallsByReason(sendMessage: unknown, reason: string): unknown[][] {
 	return vi
 		.mocked(sendMessage as ExtensionAPI["sendMessage"])
 		.mock.calls.filter(([message]) => (message as { details?: { reason?: string } }).details?.reason === reason)
+}
+
+/** Fire a genuine immediate (steered/idle) user input. The revision advances
+ *  at receipt and the check arms synchronously — no instruction steer is
+ *  queued (see deliverGenuineInput). Shared by every describe that arms the
+ *  check via user input. */
+function fireInput(
+	harness: ReturnType<typeof createTodosHarness>,
+	ctx: ExtensionContext,
+	text = "Now do it differently",
+): Promise<unknown> {
+	return harness.fire("input", { type: "input", text, source: "interactive" }, ctx)
 }
 
 function createContext(
@@ -768,12 +786,6 @@ describe("todo check-in gate", () => {
 	const fireWork = (harness: ReturnType<typeof createTodosHarness>, ctx: ExtensionContext, toolCallId: string) =>
 		harness.fire("tool_call", { type: "tool_call", toolCallId, toolName: "bash", input: {} }, ctx)
 
-	const fireInput = (
-		harness: ReturnType<typeof createTodosHarness>,
-		ctx: ExtensionContext,
-		text = "Now do it differently",
-	) => harness.fire("input", { type: "input", text, source: "interactive" }, ctx)
-
 	beforeEach(() => {
 		__resetTodoStore()
 		__resetCheckinGate()
@@ -798,14 +810,18 @@ describe("todo check-in gate", () => {
 		const result = await fireWork(harness, ctx, "w1")
 		expect(result).toMatchObject({ block: true })
 		expect((result as { reason?: string }).reason).toContain("check-in pending (input revision 1)")
+		// Byte-exact head pin: the telemetry classifier regex-matches this
+		// shape, so the contract is asserted against literals, not constants.
+		expect((result as { reason?: string }).reason).toMatch(/^⏸ Todo check-in pending \(input revision 1\)\. /)
 		expect((result as { reason?: string }).reason).toContain("[in_progress] #1 task")
 
-		// One hidden instruction per accepted input revision.
-		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+		// No instruction steer is queued at receipt (ordering hazard); the
+		// block reason above carries the instructions.
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
-		// Repeated blocked calls return current instructions without new steers.
+		// Repeated blocked calls keep returning instructions without new steers.
 		await fireWork(harness, ctx, "w2")
-		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
 		// Reconciliation tools pass through while the gate is open.
 		expect(
@@ -818,6 +834,97 @@ describe("todo check-in gate", () => {
 				ctx,
 			),
 		).toEqual({ block: false })
+	})
+
+	it("registers blocked tool calls for the collapsed transcript display, disposed with the session", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		await fireInput(harness, ctx)
+		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
+		expect(isGateBlockedToolCall("w1")).toBe(true)
+		// Reconciliation calls admitted while gated are never registered.
+		expect(
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+		).toEqual({ block: false })
+		expect(isGateBlockedToolCall("m1")).toBe(false)
+
+		// Reconciliation releases the gate but the historical row stays
+		// collapsed; the entry leaves only with the session.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+		expect(isGateBlockedToolCall("w1")).toBe(true)
+		disposeCheckinGateSession("session")
+		expect(isGateBlockedToolCall("w1")).toBe(false)
+	})
+
+	it("arms the gate without queueing an instruction steer — the block reason carries the instructions", async () => {
+		// Any instruction sent around the user's message races the steering
+		// queue: upstream awaits all input handlers before enqueueing the
+		// message, and later-registered handlers park on real I/O (@file
+		// reads, clipboard vision gate), so even a deferred send can be
+		// delivered ahead of — and mistaken for — the message it refers to.
+		// The gate arms at receipt; reconciliation instructions ride the
+		// first blocked work tool instead.
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		await fireInput(harness, ctx, "Change of course")
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
+		expect(getPendingCheckins("session")).toHaveLength(1)
+
+		const result = await fireWork(harness, ctx, "w1")
+		expect(result).toMatchObject({ block: true })
+		expect((result as { reason?: string }).reason).toContain("check-in pending (input revision 1)")
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
+	})
+
+	it("coalesces rapid inputs into the newest revision without queuing steers", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		await fireInput(harness, ctx, "First redirection")
+		await fireInput(harness, ctx, "Second redirection")
+
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
+		const pending = getPendingCheckins("session")
+		expect(pending).toHaveLength(1)
+		expect(pending[0]?.inputRevision).toBe(2)
+		const result = await fireWork(harness, ctx, "w1")
+		expect((result as { reason?: string }).reason).toContain("check-in pending (input revision 2)")
+	})
+
+	it("labels the plan-submission reminder as a harness message, not the user's", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
+		await harness.fire("tool_execution_end", { toolName: "submit_plan", isError: false }, ctx)
+
+		const [message] = steerCallsByReason(harness.sendMessage, "plan_submission")[0] as [
+			{ customType: string; display: boolean; content: string },
+		]
+		expect(message.customType).toBe("todo-checkin")
+		expect(message.display).toBe(false)
+		expect(message.content).toContain("harness reminder, not the user's message")
 	})
 
 	it("releases work after a real write and after a successful confirmation", async () => {
@@ -1592,12 +1699,6 @@ describe("plan-submission check-in gate", () => {
 	const submitPlan = (harness: ReturnType<typeof createTodosHarness>, ctx: ExtensionContext) =>
 		harness.fire("tool_execution_end", { toolName: "submit_plan", isError: false }, ctx)
 
-	const fireInput = (
-		harness: ReturnType<typeof createTodosHarness>,
-		ctx: ExtensionContext,
-		text = "Now do it differently",
-	) => harness.fire("input", { type: "input", text, source: "interactive" }, ctx)
-
 	beforeEach(() => {
 		__resetTodoStore()
 		__resetCheckinGate()
@@ -1676,7 +1777,7 @@ describe("plan-submission check-in gate", () => {
 		const steers = steerCallsByReason(harness.sendMessage, "plan_submission")
 		expect(steers).toHaveLength(1)
 		const text = JSON.stringify(steers[0])
-		expect(text).toContain("the plan was submitted for review")
+		expect(text).toContain("The plan was submitted for review")
 		expect(text).toContain("[in_progress] #1 Finalize plan")
 		expect(text).toContain("input revision 0")
 
@@ -1804,7 +1905,9 @@ describe("plan-submission check-in gate", () => {
 		// User input arrived during the review window: the user_input check and
 		// its instruction are already in place.
 		await harness.fire("input", { type: "input", text: "One more thing", source: "interactive" }, ctx)
-		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(1)
+		// The user_input check is already in place; no instruction steer is
+		// queued at receipt.
+		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
 		await submitPlan(harness, ctx)
 

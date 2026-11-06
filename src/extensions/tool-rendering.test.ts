@@ -13,6 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { __resetCheckinGate, recordGateBlockedToolCall } from "./todos/checkin-gate.js"
 import {
 	createToolOutputStore,
 	makeMarker,
@@ -36,6 +37,7 @@ import toolRenderingExtension, {
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
 	toolHeader,
+	withCheckinGateCollapse,
 	withMarkerResolution,
 	wrapMarkedLine,
 } from "./tool-rendering.js"
@@ -1154,6 +1156,129 @@ describe("tool-rendering marker resolution", () => {
 			{} as never,
 		)
 		expect(received[0].content).toEqual([{ type: "text", text: withMidText }])
+	})
+})
+
+describe("tool-rendering check-in gate collapse", () => {
+	const gateText =
+		"⏸ Todo check-in pending (input revision 51). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools.\n\nglobal list (input revision 51):\n- in progress: task"
+	const gateResult = { content: [{ type: "text", text: gateText }], details: {} }
+
+	beforeAll(() => {
+		toolRenderingExtension(createExtensionApi().api)
+	})
+	afterEach(() => {
+		__resetCheckinGate()
+	})
+
+	it("renders a gate-blocked tool call's result as one quiet line, underlying renderer invoked best-effort", () => {
+		recordGateBlockedToolCall("session", "test-tool-call")
+		const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
+		const wrapped = withCheckinGateCollapse(upstream as never)
+		const component = wrapped(
+			gateResult as never,
+			{ expanded: false, isPartial: false } as never,
+			plainTheme,
+			createToolRenderContext(),
+		)
+		const text = component
+			.render(120)
+			.map((line: string) => stripSgr(line))
+			.join("\n")
+		expect(text).toContain("todo check-in pending")
+		expect(text).toContain("ctrl+o")
+		expect(text).not.toContain("Reconcile the todo list")
+		// The transcript shows ours, but upstream still ran (result
+		// discarded): its renderResult owns call-header side effects
+		// (settledError styling) the blocked card must not lose.
+		expect(upstream).toHaveBeenCalledTimes(1)
+		expect(text).not.toContain("upstream")
+	})
+
+	it("renders full output when the gate did not block the call — even for gate-shaped text", () => {
+		// Provenance, not text, owns the collapse: attacker-influenced tool
+		// output starting with the gate's sentinel prefix must still render.
+		const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
+		const wrapped = withCheckinGateCollapse(upstream as never)
+		wrapped(gateResult as never, { expanded: false, isPartial: false } as never, plainTheme, createToolRenderContext())
+		expect(upstream).toHaveBeenCalledTimes(1)
+		expect(upstream.mock.calls[0]?.[0]).toBe(gateResult)
+	})
+
+	it("defers to the underlying renderer when expanded (ctrl+o reveals the full instruction)", () => {
+		recordGateBlockedToolCall("session", "test-tool-call")
+		const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
+		const wrapped = withCheckinGateCollapse(upstream as never)
+		wrapped(gateResult as never, { expanded: true, isPartial: false } as never, plainTheme, createToolRenderContext())
+		expect(upstream).toHaveBeenCalledTimes(1)
+		expect(upstream.mock.calls[0]?.[0]).toBe(gateResult)
+	})
+
+	it("never hands its collapsed component to the underlying renderer as lastComponent", () => {
+		recordGateBlockedToolCall("session", "test-tool-call")
+		// Mimics upstream bash/edit renderers: reuse lastComponent as a Container.
+		const upstream = vi.fn((...args: unknown[]) => {
+			const ctx = args[3] as ReturnType<typeof createToolRenderContext>
+			const component = (ctx.lastComponent ?? new Container()) as Container
+			component.clear()
+			component.addChild(new Text("full text", 0, 0))
+			return component
+		})
+		const wrapped = withCheckinGateCollapse(upstream as never)
+		const ctx = createToolRenderContext()
+		const collapsed = wrapped(gateResult as never, { expanded: false, isPartial: false } as never, plainTheme, ctx)
+		// Re-rendered collapsed: our component is reused (fresh wrapper each time)…
+		const rerendered = wrapped(gateResult as never, { expanded: false, isPartial: false } as never, plainTheme, {
+			...ctx,
+			lastComponent: collapsed,
+		})
+		expect(rerendered).toBe(collapsed)
+		// …but expanding (ctrl+o) must not hand our ToolText shape to a
+		// Container-expecting renderer — it would throw on clear/addChild.
+		expect(() =>
+			wrapped(gateResult as never, { expanded: true, isPartial: false } as never, plainTheme, {
+				...ctx,
+				lastComponent: collapsed,
+			}),
+		).not.toThrow()
+		// Two collapsed renders (best-effort side-effect invocations) plus
+		// the expanded delegate; every call received lastComponent cleared.
+		expect(upstream).toHaveBeenCalledTimes(3)
+		expect((upstream.mock.calls[2]?.[3] as { lastComponent?: unknown }).lastComponent).toBeUndefined()
+	})
+
+	it("passes ordinary results through untouched and by reference", () => {
+		const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
+		const wrapped = withCheckinGateCollapse(upstream as never)
+		const result = { content: [{ type: "text", text: "ordinary failure" }], details: {} }
+		wrapped(result as never, { expanded: false, isPartial: false } as never, plainTheme, createToolRenderContext())
+		expect(upstream).toHaveBeenCalledTimes(1)
+		expect(upstream.mock.calls[0]?.[0]).toBe(result)
+	})
+
+	it("collapses the gate through the patched ToolExecutionComponent for any tool", () => {
+		recordGateBlockedToolCall("session", "test-tool-call")
+		const upstream = vi.fn((..._args: unknown[]) => new Text("upstream", 0, 0))
+		// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype method with a minimal `this`
+		const renderer = (ToolExecutionComponent.prototype as any).getResultRenderer.call({
+			toolName: "bash",
+			builtInToolDefinition: undefined,
+			toolDefinition: { name: "bash", renderResult: upstream },
+		})
+		const component = renderer(
+			gateResult as never,
+			{ expanded: false, isPartial: false } as never,
+			plainTheme,
+			createToolRenderContext(),
+		)
+		const text = component
+			.render(120)
+			.map((line: string) => stripSgr(line))
+			.join("\n")
+		expect(text).toContain("todo check-in pending")
+		// Best-effort invocation, our component returned.
+		expect(upstream).toHaveBeenCalledTimes(1)
+		expect(text).not.toContain("upstream")
 	})
 })
 

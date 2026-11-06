@@ -49,6 +49,7 @@ import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 
@@ -827,10 +828,11 @@ function patchToolExecutionRenderers(): void {
 		if (!renderer && typeof originalGetResultRenderer === "function") {
 			renderer = originalGetResultRenderer.call(this)
 		}
-		// Every renderer (upstream and ours) renders through this wrapper so
+		// Every renderer (upstream and ours) renders through these wrappers so
 		// externalized tool results never show their raw markers in the
-		// transcript — resolved from the mirror transiently, per render.
-		return renderer ? withMarkerResolution(renderer) : undefined
+		// transcript — resolved from the mirror transiently, per render — and
+		// check-in-gate blocks render collapsed into one line.
+		return renderer ? withCheckinGateCollapse(withMarkerResolution(renderer)) : undefined
 	}
 
 	proto[TOOL_EXECUTION_PATCH_FLAG] = true
@@ -889,6 +891,56 @@ export function withMarkerResolution(renderer: UpstreamResultRenderer): Upstream
 		return renderer(changed ? { ...result, content } : result, options, theme, ctx)
 	}
 }
+
+/**
+ * Wraps any result renderer so a tool call the todo check-in gate blocked
+ * renders as one quiet transcript line instead of the gate's full block
+ * reason. The reason is written for the model — it must reach the
+ * conversation untouched (the model reconciles from it) — so the collapse
+ * is display-only, and the expanded view (ctrl+o) defers to the underlying
+ * renderer, mirroring the validation-dump truncation UX.
+ *
+ * Detection is provenance-based, not content-based: the gate records the
+ * blocked call's id at block time (checkin-gate.ts), which tool output
+ * cannot forge — a text-prefix match on result content would let
+ * attacker-influenced output hide its own transcript rendering. Gate state
+ *  is volatile, so resumed sessions render historical gate rows uncollapsed.
+ *  The returned component follows the validation-dump truncation wrapper's
+ *  `lastComponent` reuse contract (never handed back to upstream).
+ */
+export function withCheckinGateCollapse(renderer: UpstreamResultRenderer): UpstreamResultRenderer {
+	return (result, options, theme, ctx) => {
+		// Keep ours for reuse below, but never hand it to the underlying
+		// renderer: a shape mismatch (our ToolText vs their Container) would
+		// make it throw or lose content — the truncation wrapper's exact
+		// hazard documented at createErrorTruncatingResultRenderer.
+		const ours = ctx.lastComponent && checkinGateComponents.has(ctx.lastComponent) ? ctx.lastComponent : undefined
+		if (ours) ctx.lastComponent = undefined
+		if (options.expanded || !isGateBlockedToolCall(ctx.toolCallId)) return renderer(result, options, theme, ctx)
+		// When taking over, the underlying renderer is still invoked
+		// (best-effort, result discarded) — same contract as the truncation
+		// wrapper: the edit/write renderResult performs call-header side effects
+		// (settledError styling), and the blocked card must not lose them.
+		try {
+			renderer(result, options, theme, ctx)
+		} catch {
+			/* noop — side effects only */
+		}
+		const component = makeText(ours, withBranch(theme.fg("muted", CHECKIN_GATE_DISPLAY_LINE), theme))
+		checkinGateComponents.add(component)
+		return component
+	}
+}
+
+/** Collapsed components we returned, keyed for reuse and never handed to
+ *  the underlying renderer as `lastComponent` (see above). Tracked on the
+ *  component, not per wrapper instance: upstream resolves a fresh renderer
+ *  on every render. */
+const checkinGateComponents = new WeakSet<Component>()
+
+/** Single transcript line shown for a check-in-gated tool result. */
+const CHECKIN_GATE_DISPLAY_LINE =
+	"⏸ todo check-in pending — model asked to reconcile its task list · ctrl+o for full text"
 
 /**
  * Components rendered by the truncation wrapper. Ownership is tracked on the
