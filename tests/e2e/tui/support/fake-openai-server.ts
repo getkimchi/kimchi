@@ -43,6 +43,9 @@ export interface FakeResponseScript {
 	/** Final streamed finish reason. Defaults to the existing tool-call-aware value.
 	 *  `content_filter` simulates a gateway guardrail refusing the request. */
 	finishReason?: "stop" | "tool_calls" | "content_filter"
+	/** Guardrail stop details written flat on the content_filter finish chunk —
+	 *  the guardrail proxy's refusal shape (guardrail_name, flagged_checks, category). */
+	guardrailRefusal?: { guardrail_name: string; flagged_checks: string[]; category: string }
 	/** Text chunks emitted as `delta.content` (the visible assistant response). */
 	stream?: string[]
 	/**
@@ -514,6 +517,17 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				prompt_tokens: script.usage.prompt_tokens,
 				completion_tokens: script.usage.completion_tokens,
 			},
+		})
+	} else if (script.guardrailRefusal) {
+		writeSse(res, {
+			id: "chatcmpl_fake",
+			object: "chat.completion.chunk",
+			created: unixNow(),
+			model: responseModel,
+			choices: [finalChunk],
+			guardrail_name: script.guardrailRefusal.guardrail_name,
+			flagged_checks: script.guardrailRefusal.flagged_checks,
+			category: script.guardrailRefusal.category,
 		})
 	} else {
 		chunk([finalChunk])

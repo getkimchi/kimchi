@@ -112,7 +112,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
-import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
+import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -1951,14 +1951,20 @@ export class KimchiAcpAgent implements Agent {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
 					// canned text may already be streamed and can't be retracted, so
-					// the reason goes out as a separate message.
+					// the notice — the message's text after the refused-turns
+					// rewrite — goes out as a separate message.
 					turn.lastAssistantError = undefined
+					const notice = refusalText(msg)
+					// Mark the notice as sent so forwardUnsentMessageText below does
+					// not emit the replaced content a second time when nothing was
+					// streamed before the refusal.
+					entry.streamedText.set(0, notice)
 					this.send({
 						sessionId,
 						update: {
 							sessionUpdate: "agent_message_chunk",
 							messageId: `km.${randomUUID()}`,
-							content: { type: "text", text: REFUSAL_MESSAGE },
+							content: { type: "text", text: notice },
 						},
 					})
 				} else if (msg.stopReason === "error") {

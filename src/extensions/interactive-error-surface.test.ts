@@ -7,6 +7,7 @@ import {
 	default as interactiveErrorSurfaceExtension,
 	interceptShowError,
 } from "./interactive-error-surface.js"
+import { REFUSAL_MESSAGE } from "./refused-turns.js"
 
 const VLLM_RAW =
 	'{"detail":"InternalServerError: Hosted_vllmException - Cannot connect to host serverless-glm-5-2-fp8.castai-llms.svc.cluster.local.:11434 ssl:<ssl.SSLContext object at 0x7a0e79ee8e40> [Connect call failed (\'10.30.0.226\', 11434)]"}'
@@ -101,6 +102,19 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 	it("does NOT set pending state for non-retryable errors", () => {
 		const { emitMessageEnd } = createHarness()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
+		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	// A refusal is a turn outcome, not a provider error: even in the legacy shape
+	// (exact REFUSAL_MESSAGE on an error stop) it must pass through untouched — no
+	// classification, no sanitization, no Retrying placeholder, no raw preservation.
+	it("leaves refusal-marked messages untouched", () => {
+		const { emitMessageEnd } = createHarness()
+		const message = { role: "assistant", stopReason: "error", errorMessage: REFUSAL_MESSAGE }
+
+		emitMessageEnd(message)
+
+		expect(message.errorMessage).toBe(REFUSAL_MESSAGE)
 		expect(__getPendingProviderError()).toBeUndefined()
 	})
 

@@ -4,6 +4,7 @@ import { classifyLLMGatewayError } from "../llm-gateway-error.js"
 import { formatSanitizedErrorMessage } from "../sanitized-error-message.js"
 import { RATE_LIMIT_MAX_WAIT_MS, rateLimitWaitMs } from "../upstream-retry-patch.js"
 import { preserveRawErrorMessage } from "./error-preservation.js"
+import { isRefusal } from "./refused-turns.js"
 
 interface PendingProviderError {
 	readonly rawMessage: string
@@ -102,6 +103,10 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 			lastPendingProviderError = undefined
 			return
 		}
+		// A refused turn is a turn outcome, not a provider error: its notice must never
+		// be classified, sanitized, or replaced here. Current refusals stop with
+		// "stop" and return above; this guard covers the legacy refusal shape.
+		if (isRefusal(message)) return
 		if (typeof message.errorMessage !== "string") return
 		const classified = classifyLLMGatewayError(message.errorMessage)
 		if (!classified) return

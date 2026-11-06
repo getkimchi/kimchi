@@ -2,6 +2,7 @@ import { expect, test } from "@microsoft/tui-test"
 import { waitForText } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import {
+	DETAILED_REFUSED_TURN_RESPONSES,
 	FOLLOW_UP_REPLY,
 	REFUSAL_REASON,
 	REFUSAL_TEXT,
@@ -21,6 +22,29 @@ test("a refused prompt shows the usage-policy reason and does not poison the nex
 			terminal.submit(REFUSED_PROMPT)
 			await waitForText(terminal, REFUSAL_REASON)
 			await expect(terminal.getByText(REFUSAL_TEXT)).not.toBeVisible()
+
+			terminal.submit("hi")
+			await expect(terminal.getByText(FOLLOW_UP_REPLY, { full: true })).toBeVisible()
+
+			const requests = chatRequests(fixture)
+			expect(requests.some(sendsRefusedPrompt)).toBe(true)
+			expect(sendsRefusedPrompt(requests[requests.length - 1])).toBe(false)
+		},
+	)
+})
+
+test("a guardrail refusal with stop details shows the safeguards notice, not an error", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{ artifactName: "refused-turn-details", responses: DETAILED_REFUSED_TURN_RESPONSES },
+		async (fixture) => {
+			terminal.submit(REFUSED_PROMPT)
+			// The notice is the assistant's message text — informational, so the
+			// canned refusal text and an error line must never appear.
+			await waitForText(terminal, "Safeguards stopped the response above")
+			await waitForText(terminal, "offensive_intent")
+			await expect(terminal.getByText(REFUSAL_TEXT)).not.toBeVisible()
+			await expect(terminal.getByText("Error:")).not.toBeVisible()
 
 			terminal.submit("hi")
 			await expect(terminal.getByText(FOLLOW_UP_REPLY, { full: true })).toBeVisible()
