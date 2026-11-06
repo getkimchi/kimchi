@@ -242,6 +242,7 @@ import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 import { RemoteAgentSession } from "./manager/remote-agent-session.js"
 import type { RemoteRunState } from "./remote-run-persistence.js"
+import { applyAndEmitLoaded } from "./settings.js"
 import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
@@ -2215,5 +2216,19 @@ describe("Agent tool session-cwd agent resolution", () => {
 		// be the project agent's type, not the general-purpose fallback.
 		expect(managerInstance.spawn.mock.calls[0][2]).toBe("issue1677-reviewer")
 		expect(result.content[0]?.text ?? "").not.toContain("Unknown agent type")
+	})
+
+	it("applies project agent settings from the session cwd on session_start", async () => {
+		// Settings half of the cwd fix: .kimchi/agents.json must be read from
+		// the session's project, not the launch directory (an ACP server hosts
+		// sessions in several projects; the bootstrap call ran at process cwd).
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const sessionCwd = "/tmp/issue1677-session-project"
+
+		const ctx = { cwd: sessionCwd, sessionManager: { getBranch: () => [] } }
+		for (const handler of pi._handlers.get("session_start") ?? []) await handler(undefined, ctx)
+
+		expect(vi.mocked(applyAndEmitLoaded).mock.calls.some((c) => c[2] === sessionCwd)).toBe(true)
 	})
 })

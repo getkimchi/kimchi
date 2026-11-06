@@ -1341,14 +1341,10 @@ export default function (pi: ExtensionAPI) {
 	)
 	activeManager = manager
 
-	pi.on("session_start", async (_event, ctx) => {
-		manager.clearCompleted()
-		// Re-discover custom agents using the new session's cwd, so a session
-		// that started in a different project picks up that project's
-		// .kimchi/agents/ directory and forgets the previous one.
-		reloadCustomAgents(ctx.cwd)
-		// Same for project agent settings (.kimchi/agents.json): the session
-		// cwd differs from process.cwd() for ACP sessions and worktrees.
+	// Agents and their settings both live under the session's .kimchi/ — one
+	// helper so no surface can refresh one without the other.
+	const reloadProjectAgentState = (cwd: string) => {
+		reloadCustomAgents(cwd)
 		applyAndEmitLoaded(
 			{
 				setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
@@ -1357,8 +1353,15 @@ export default function (pi: ExtensionAPI) {
 				setDefaultJoinMode,
 			},
 			(event, payload) => pi.events.emit(event, payload),
-			ctx.cwd,
+			cwd,
 		)
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		manager.clearCompleted()
+		// Sessions can live in a different project than the process cwd (ACP,
+		// worktrees) — pick up that project's agents and settings.
+		reloadProjectAgentState(ctx.cwd)
 	})
 
 	pi.on("session_before_switch", () => {
@@ -1682,16 +1685,7 @@ export default function (pi: ExtensionAPI) {
 	const typeListText = buildTypeListText()
 
 	// Pre-session bootstrap; session_start reloads with ctx.cwd.
-	applyAndEmitLoaded(
-		{
-			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
-			setDefaultMaxTurns,
-			setGraceTurns,
-			setDefaultJoinMode,
-		},
-		(event, payload) => pi.events.emit(event, payload),
-		process.cwd(),
-	)
+	reloadProjectAgentState(process.cwd())
 
 	// ---- Agent tool ----
 
