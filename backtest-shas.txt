@@ -1,4 +1,8 @@
-# Re-measure v1.7.0 alone: its row in run 41946561423 landed on a Neoverse-V3
-# runner (majority Neoverse-N2), making its numbers incomparable. Temporary
-# single-entry list; the full 126-entry list is restored before merge.
-5c6359c284c80a064a27e69031308dee7b35bae5 v1.7.0
+# CI-tier measurement of the three consolidated perf PRs, each individually
+# and combined, plus master as the same-run baseline. Temporary list; the
+# full 126-entry list is restored before merge.
+776e745a4 master-baseline
+6bb6620ae pr1-1665-first-tick
+a6f960ae4 pr2-1673-gate-settle
+5461c4ece pr3-1672-cheap-pass
+96886d858 combined-3pr
