@@ -170,7 +170,7 @@ type AgentWaitOutcome = "completed" | "timed_out" | "aborted"
 /**
  * Bounded, interruptible wait on an agent's run promise.
  * Resolves "completed" when the agent settles (success or failure), or early
- * on cap timeout / abort signal. Never rejects.
+ * on cap timeout / abort signal. Never rejePATS.
  */
 function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSignal): Promise<AgentWaitOutcome> {
 	return new Promise((resolve) => {
@@ -497,7 +497,7 @@ export interface AutoResumeShape {
  * yields `undefined` and silently drops the note. Exported for unit testing. */
 export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
 	if (!beforeAbortReason) return ""
-	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflePATS the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
 }
 
 /** True when a ferment step worker was killed by its own budget on a first
@@ -726,7 +726,7 @@ export function getActiveAgentModelIds(): string[] {
 
 /**
  * Returns a read-only snapshot of the agent record for task validation.
- * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
+ * The returned object is a shallow copy — nested objePATS (session, lifetimeUsage,
  * etc.) are shared references. Callers MUST NOT mutate nested properties;
  * doing so would corrupt the live agent's state in the manager.
  */
@@ -925,12 +925,18 @@ export default function (pi: ExtensionAPI) {
 		return new Text(`${theme.fg("error", "✗")} ${theme.bold(entry.data.message)}`, 0, 0)
 	})
 
-	const reloadCustomAgents = (cwd: string = process.cwd()) => {
+	// cwd is required: `process.cwd()` is the server-process cwd, which differs
+	// from the session cwd for ACP sessions and worktrees — a default here
+	// silently drops project agents (see findAgentFile below).
+	const reloadCustomAgents = (cwd: string) => {
 		const userAgents = loadCustomAgents(cwd)
 		registerAgents(userAgents)
 	}
 
-	reloadCustomAgents()
+	// Pre-session bootstrap: no ExtensionContext exists yet, so the launch
+	// directory is the only cwd available. `session_start` reloads with
+	// `ctx.cwd` as soon as a session exists.
+	reloadCustomAgents(process.cwd())
 
 	const agentActivity = new Map<string, AgentActivity>()
 
@@ -1346,6 +1352,18 @@ export default function (pi: ExtensionAPI) {
 		// that started in a different project picks up that project's
 		// .kimchi/agents/ directory and forgets the previous one.
 		reloadCustomAgents(ctx.cwd)
+		// Same for project agent settings (.kimchi/agents.json): the session
+		// cwd differs from process.cwd() for ACP sessions and worktrees.
+		applyAndEmitLoaded(
+			{
+				setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
+				setDefaultMaxTurns,
+				setGraceTurns,
+				setDefaultJoinMode,
+			},
+			(event, payload) => pi.events.emit(event, payload),
+			ctx.cwd,
+		)
 	})
 
 	pi.on("session_before_switch", () => {
@@ -1668,6 +1686,10 @@ export default function (pi: ExtensionAPI) {
 
 	const typeListText = buildTypeListText()
 
+	// Pre-session bootstrap: no ExtensionContext exists yet, so the launch
+	// directory is the only cwd available. `session_start` reloads with
+	// `ctx.cwd` as soon as a session exists (same contract as
+	// reloadCustomAgents above).
 	applyAndEmitLoaded(
 		{
 			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
@@ -1676,6 +1698,7 @@ export default function (pi: ExtensionAPI) {
 			setDefaultJoinMode,
 		},
 		(event, payload) => pi.events.emit(event, payload),
+		process.cwd(),
 	)
 
 	// ---- Agent tool ----
@@ -1858,9 +1881,9 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 				widget.setUICtx(ctx.ui as UICtx)
 
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 
-				// Capture the session facts every post-run path needs BEFORE the
+				// Capture the session faPATS every post-run path needs BEFORE the
 				// first await: the race below can run for minutes, and a session
 				// replace/fork/reload mid-run invalidates this per-call ctx (every
 				// property read throws — see ../stale-ctx.ts), which must not turn a
@@ -2642,13 +2665,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 	// ---- /agents interactive menu ----
 
-	const projectAgentsDir = (cwd = process.cwd()) => join(cwd, ".kimchi", "agents")
+	const projectAgentsDir = (cwd: string) => join(cwd, ".kimchi", "agents")
 	const personalAgentsDir = () => join(getAgentDir(), "agents")
 
-	function findAgentFile(
-		name: string,
-		cwd = process.cwd(),
-	): { path: string; location: "project" | "personal" } | undefined {
+	function findAgentFile(name: string, cwd: string): { path: string; location: "project" | "personal" } | undefined {
 		// The project location is gated on project trust: an untrusted repo's
 		// shipped agent files are only reachable through explicit user action
 		// (naming the agent), but even that must not read untrusted content.
@@ -2682,7 +2702,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 	}
 
 	async function showAgentsMenu(ctx: ExtensionCommandContext) {
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		const allNames = getAllTypes()
 
 		const options: string[] = []
@@ -2864,7 +2884,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			if (edited !== undefined && edited !== content) {
 				const { writeFileSync } = await import("node:fs")
 				writeFileSync(file.path, edited, "utf-8")
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 				ctx.ui.notify(`Updated ${file.path}`, "info")
 			}
 		} else if (choice === "Delete") {
@@ -2872,7 +2892,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const confirmed = await ctx.ui.confirm("Delete agent", `Delete ${name} from ${file.location} (${file.path})?`)
 				if (confirmed) {
 					unlinkSync(file.path)
-					reloadCustomAgents()
+					reloadCustomAgents(ctx.cwd)
 					ctx.ui.notify(`Deleted ${file.path}`, "info")
 				}
 			}
@@ -2883,7 +2903,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			)
 			if (confirmed) {
 				unlinkSync(file.path)
-				reloadCustomAgents()
+				reloadCustomAgents(ctx.cwd)
 				ctx.ui.notify(`Restored default ${name}`, "info")
 			}
 		} else if (choice.startsWith("Eject")) {
@@ -2933,7 +2953,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, content, "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info")
 	}
 
@@ -2948,7 +2968,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 			const updated = content.replace(/^---\n/, "---\nenabled: false\n")
 			const { writeFileSync } = await import("node:fs")
 			writeFileSync(file.path, updated, "utf-8")
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Disabled ${name} (${file.path})`, "info")
 			return
 		}
@@ -2965,7 +2985,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 		const targetPath = join(targetDir, `${name}.md`)
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, "---\nenabled: false\n---\n", "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Disabled ${name} (${targetPath})`, "info")
 	}
 
@@ -2979,11 +2999,11 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 		if (updated.trim() === "---\n---" || updated.trim() === "---\n---\n") {
 			unlinkSync(file.path)
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Enabled ${name} (removed ${file.path})`, "info")
 		} else {
 			writeFileSync(file.path, updated, "utf-8")
-			reloadCustomAgents()
+			reloadCustomAgents(ctx.cwd)
 			ctx.ui.notify(`Enabled ${name} (${file.path})`, "info")
 		}
 	}
@@ -3063,7 +3083,7 @@ Write the file using the write tool. Only write the file, nothing else.`
 			return
 		}
 
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 
 		if (existsSync(targetPath)) {
 			ctx.ui.notify(`Created ${targetPath}`, "info")
@@ -3181,7 +3201,7 @@ ${systemPrompt}
 
 		const { writeFileSync } = await import("node:fs")
 		writeFileSync(targetPath, content, "utf-8")
-		reloadCustomAgents()
+		reloadCustomAgents(ctx.cwd)
 		ctx.ui.notify(`Created ${targetPath}`, "info")
 	}
 
@@ -3257,8 +3277,11 @@ ${systemPrompt}
 	}
 
 	function notifyApplied(ctx: ExtensionCommandContext, successMsg: string) {
-		const { message, level } = saveAndEmitChanged(snapshotSettings(), successMsg, (event, payload) =>
-			pi.events.emit(event, payload),
+		const { message, level } = saveAndEmitChanged(
+			snapshotSettings(),
+			successMsg,
+			(event, payload) => pi.events.emit(event, payload),
+			ctx.cwd,
 		)
 		ctx.ui.notify(message, level)
 	}
