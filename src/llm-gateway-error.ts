@@ -153,7 +153,7 @@ const ALTERNATIVE_OBJECT_RE =
  *  characters — including ANSI escape introducers — so a crafted
  *  model_gone body cannot repaint or clear the user's screen. Newlines and
  *  tabs have no business in a slug/reason either, so they go too. */
-function stripControlChars(value: string): string {
+export function stripControlChars(value: string): string {
 	// biome-ignore lint/complexity/useRegexLiterals: string pattern on purpose — noControlCharactersInRegex only flags literals, and the control ranges here are the whole point.
 	return value.replace(new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g"), "")
 }

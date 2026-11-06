@@ -143,7 +143,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
-import refusedTurnsExtension from "./extensions/refused-turns.js"
+import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -240,6 +240,10 @@ installPiNativeCompatibilityShim()
 // suppressed / sanitized before reaching the terminal. Must run before any
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
+// Carve AssistantMessageComponent's rendering for refused turns: print the
+// notice as warning-colored plain text instead of markdown. Must run before any
+// component instance is constructed.
+applyRefusalNoticeRenderingPatch()
 applyInteractiveModelSessionPatch()
 // No-op pi's install/update ping (pi.dev/api/report-install) on the
 // InteractiveMode prototype — belt-and-braces on top of PI_TELEMETRY=0 in
@@ -1018,6 +1022,12 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				// Order matters: refused-turns rewrites a refused assistant message into
+				// a normally-stopped notice (text + REFUSAL_MARKER) before
+				// interactive-error-surface's message_end runs below, so the refusal never
+				// passes through gateway classification, sanitization, or the Retrying
+				// placeholder. Keep refused-turns ahead of interactive-error-surface in
+				// this list.
 				refusedTurnsExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,
