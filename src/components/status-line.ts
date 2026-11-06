@@ -797,7 +797,7 @@ function buildShellsSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 /** Extension status key the memory extension sets to the number of recalled
  *  facts currently in context (cleared when the delivery ledger empties or
  *  the session toggle disables memory). */
-const MEMORY_STATUS_KEY = "memory"
+export const MEMORY_STATUS_KEY = "memory"
 
 /** Extension-status-driven like shells: renders the recalled-fact count only
  *  after memory has delivered facts into the conversation, unless the user

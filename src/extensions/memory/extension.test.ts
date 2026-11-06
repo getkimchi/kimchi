@@ -1,6 +1,9 @@
+import type { AgentSideConnection } from "@agentclientprotocol/sdk"
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
+import { MEMORY_STATUS_KEY } from "../../components/status-line.js"
+import { createAcpUIContext } from "../../modes/acp/acp-ui-context.js"
 import { createCommandContext, createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { adminDeleteFacts, adminListFacts, adminSearchFacts, runAdminCommand } from "./admin.js"
@@ -497,7 +500,7 @@ describe("memory extension", () => {
 		)
 		await start(startEvent("set up the repo"), ctx)
 		// The status-line segment mirrors the delivery ledger: 1 fact in context.
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual(["memory", "1"])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
 	})
 
 	it("updates the memory status as turn recall delivers more facts", async () => {
@@ -509,9 +512,9 @@ describe("memory extension", () => {
 		const ctx = createContext()
 		await start(startEvent("drift topic 1"), ctx)
 		await start(startEvent("drift topic 2"), ctx)
-		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === "memory")
-		expect(calls).toContainEqual(["memory", "1"])
-		expect(calls.at(-1)).toEqual(["memory", "2"])
+		const calls = vi.mocked(ctx.ui.setStatus).mock.calls.filter((call) => call[0] === MEMORY_STATUS_KEY)
+		expect(calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
+		expect(calls.at(-1)).toEqual([MEMORY_STATUS_KEY, "2"])
 	})
 
 	it("clears the memory status when the session toggle disables memory", async () => {
@@ -521,10 +524,10 @@ describe("memory extension", () => {
 		)
 		const ctx = createContext()
 		await start(startEvent("turn 1"), ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual(["memory", "1"])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
 		setSessionMemoryOverride(ctx.sessionManager, false)
 		await start(startEvent("turn 2"), ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual(["memory", undefined])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_STATUS_KEY, undefined])
 	})
 
 	it("clears the memory status when compaction resets the delivery ledger", async () => {
@@ -534,9 +537,9 @@ describe("memory extension", () => {
 		)
 		const ctx = createContext()
 		await start(startEvent("set up the repo"), ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual(["memory", "1"])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls).toContainEqual([MEMORY_STATUS_KEY, "1"])
 		getHandler("session_compact")({ type: "session_compact" }, ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual(["memory", undefined])
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.at(-1)).toEqual([MEMORY_STATUS_KEY, undefined])
 	})
 
 	it("never sets the memory status without a UI", async () => {
@@ -546,7 +549,7 @@ describe("memory extension", () => {
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		await start(startEvent("set up the repo"), ctx)
-		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== "memory")).toBe(true)
+		expect(vi.mocked(ctx.ui.setStatus).mock.calls.every((call) => call[0] !== MEMORY_STATUS_KEY)).toBe(true)
 	})
 
 	it("clears the recall indicator even when retrieval fails", async () => {
@@ -907,5 +910,50 @@ describe("memory extension — digest selection gate", () => {
 		} finally {
 			consoleError.mockRestore()
 		}
+	})
+})
+
+describe("memory status over the ACP bridge", () => {
+	it("forwards the delivered count and the disable clear to ACP clients", async () => {
+		// Real ACP ui context over a minimal fake conn — setStatus forwards
+		// unconditionally (no capability gate), proving the composition the
+		// docs claim: hasUI guard → extension emission → _kimchi.dev/pi_notify.
+		const extNotification = vi.fn(async (_method: string, _params: Record<string, unknown>) => {})
+		const conn = { extNotification } as unknown as AgentSideConnection
+		const acpUi = createAcpUIContext(conn, "sess-1", undefined, vi.fn())
+		const ctx = createContext({ ui: acpUi })
+		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])
+		const { start } = await setup(
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+		)
+		await start(startEvent("set up the repo"), ctx)
+		await new Promise((r) => setImmediate(r))
+
+		const memoryStatusCalls = () =>
+			extNotification.mock.calls.filter(
+				(call) =>
+					call[0] === "_kimchi.dev/pi_notify" &&
+					(call[1] as { method?: string; statusKey?: string }).method === "setStatus" &&
+					(call[1] as { statusKey?: string }).statusKey === MEMORY_STATUS_KEY,
+			)
+
+		// The delivered count reached the ACP client with the exact wire shape.
+		expect(memoryStatusCalls().length).toBeGreaterThanOrEqual(1)
+		expect(memoryStatusCalls()[0]?.[1]).toEqual({
+			id: expect.any(String),
+			type: "extension_ui_request",
+			method: "setStatus",
+			sessionId: "sess-1",
+			statusKey: MEMORY_STATUS_KEY,
+			statusText: "1",
+		})
+
+		// Session toggle off (what the ACP set_memory_enabled ext-method
+		// writes): the clear must reach ACP clients as statusText undefined.
+		setSessionMemoryOverride(ctx.sessionManager, false)
+		await start(startEvent("turn 2"), ctx)
+		await new Promise((r) => setImmediate(r))
+		const cleared = memoryStatusCalls().at(-1)?.[1] as { statusText?: string } | undefined
+		expect(cleared?.statusText).toBeUndefined()
 	})
 })

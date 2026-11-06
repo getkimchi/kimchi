@@ -41,6 +41,7 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
+import { MEMORY_STATUS_KEY } from "../../components/status-line.js"
 import { loadConfig } from "../../config.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import {
@@ -267,7 +268,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				// at the next agent start would clear it too, but a stale count
 				// shouldn't linger between management commands.
 				if (ctx.hasUI && getSessionMemoryOverride(ctx.sessionManager) === false) {
-					ctx.ui.setStatus("memory", undefined)
+					ctx.ui.setStatus(MEMORY_STATUS_KEY, undefined)
 				}
 				const output = result.useJson ? result.json : result.text
 				if (!ctx.hasUI) {
@@ -386,14 +387,17 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 		}
 
-		// Status-line segment (`memory`): the number of recalled facts currently
+		// Status-line segment (MEMORY_STATUS_KEY, shared with
+		// src/components/status-line.ts): the number of recalled facts currently
 		// in context. Set after any digest / turn-recall delivery, cleared when
 		// the delivery ledger empties (toggle flip, compaction) — the segment
-		// renders only after memory has actually delivered facts. ACP clients
-		// receive the same key/text through the setStatus bridge.
+		// renders only after memory has actually delivered facts. ACP passes a
+		// real uiContext (server.ts bindExtensions), so hasUI is true there and
+		// the count reaches IDE clients via the setStatus bridge
+		// (acp-ui-context.ts forwards it as _kimchi.dev/pi_notify).
 		const updateMemoryStatus = (ctx: ExtensionContext): void => {
 			if (!ctx.hasUI) return
-			ctx.ui.setStatus("memory", deliveredFacts.length > 0 ? String(deliveredFacts.length) : undefined)
+			ctx.ui.setStatus(MEMORY_STATUS_KEY, deliveredFacts.length > 0 ? String(deliveredFacts.length) : undefined)
 		}
 
 		const getSearcher = async (): Promise<MemorySearcher | undefined> => {

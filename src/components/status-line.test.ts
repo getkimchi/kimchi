@@ -21,6 +21,7 @@ import {
 	buildScriptPayload,
 	buildStatusLineSegments,
 	entriesAssistantUsageTotals,
+	MEMORY_STATUS_KEY,
 	renderFittedLine,
 	type SegmentId,
 	SHELLS_STATUS_KEY,
@@ -1039,7 +1040,9 @@ describe("StatusLine segment coverage", () => {
 	describe("memory segment", () => {
 		function memoryData(count: string | undefined) {
 			const data = createMockStatusLineData()
-			vi.mocked(data.getExtensionStatuses).mockReturnValue(new Map(count === undefined ? [] : [["memory", count]]))
+			vi.mocked(data.getExtensionStatuses).mockReturnValue(
+				new Map(count === undefined ? [] : [[MEMORY_STATUS_KEY, count]]),
+			)
 			return data
 		}
 
