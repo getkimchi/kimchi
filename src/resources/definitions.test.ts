@@ -112,6 +112,16 @@ describe("resource definitions", () => {
 		})
 	})
 
+	it("registers side chat (/btw) as a default-on experimental extension", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.side-chat")).toMatchObject({
+			kind: "extensions",
+			experimental: true,
+			label: "Side chat",
+			defaultEnabled: true,
+			restartRequired: true,
+		})
+	})
+
 	it("registers PII redaction as a default-off extension resource", () => {
 		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.pii-redaction")).toMatchObject({
 			kind: "extensions",

@@ -1,6 +1,7 @@
 /**
- * Side chat (experimental, TUI fullscreen only). Enabled via /resources →
- * Experimental → "Side chat" (`extensions.side-chat`), restart required.
+ * Side chat (experimental, TUI fullscreen only). Enabled by default; turn
+ * it off via /resources → Experimental → "Side chat" (`extensions.side-chat`),
+ * restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
  * - select text in either transcript and click "Add to side chat" to quote
