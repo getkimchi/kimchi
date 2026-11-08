@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import type { KimchiFixture } from "./support/kimchi-fixture.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { pinStatusLineElements, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -32,7 +32,10 @@ test("LSP system prompt names the session's active language in a Python project"
 			artifactName: "lsp-active-python",
 			responses: [{ stream: ["Done."] }],
 			env: { KIMCHI_LSP_BINARIES: "pyright-langserver" },
-			seedHome: (_homeDir, workDir) => {
+			seedHome: (homeDir, workDir) => {
+				// The lsp segment is opt-in (hidden by default): pin it so the
+				// active-server status renders in the footer.
+				pinStatusLineElements(homeDir, "lsp")
 				writeFileSync(join(workDir, "pyproject.toml"), '[project]\nname = "test"\nversion = "0.1.0"\n')
 			},
 		},

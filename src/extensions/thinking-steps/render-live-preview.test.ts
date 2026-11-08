@@ -317,6 +317,46 @@ describe("deriveThinkingSteps caching", () => {
 		expect(elapsedMs).toBeLessThan(300) // warm-up reduces variance; 300ms is safe headroom
 	})
 
+	it("derives an unterminated long step without quadratic backtracking", () => {
+		// Same size, same 16 KB summary cap, same amount of work: the only difference is
+		// whether runs end at a period or run into a newline. The old matcher
+		// (`[^.!?\n]+(?:[.!?]+|$)`) backtracked from every start position on the latter.
+		// Ratio, not an absolute bound, so a slow runner moves both sides together:
+		// 32x before the linear split, 1.4x after.
+		const measure = (text: string) => {
+			clearStepDerivationCacheForTesting()
+			deriveThinkingSteps(makeBlocks(text))
+			clearStepDerivationCacheForTesting()
+			const start = performance.now()
+			deriveThinkingSteps(makeBlocks(text))
+			return performance.now() - start
+		}
+		const open = "analyzing the diff output and comparing results ".repeat(8000)
+		const punctuated = "analyzing the diff output, comparing results. ".repeat(8000)
+		measure(open) // warm both shapes so JIT state is shared
+		measure(punctuated)
+		const openMs = measure(open)
+		const punctuatedMs = measure(punctuated)
+		expect(openMs).toBeLessThan(Math.max(punctuatedMs * 8, 5))
+	})
+
+	it("summarizes a newline-terminated step like the same step without one", () => {
+		// The split changed which sentence fragments reach the summarizer, so pin the
+		// observable result rather than the fragment list.
+		const bodies = [
+			"The build failed because boom. Then the suite stayed red.",
+			"reviewing the diff\nrunning the tests\nThe build failed because boom\nwrapping up.",
+		]
+		for (const body of bodies) {
+			clearStepDerivationCacheForTesting()
+			const withoutNewline = deriveThinkingSteps(makeBlocks(body))[0]
+			clearStepDerivationCacheForTesting()
+			const withNewline = deriveThinkingSteps(makeBlocks(`${body}\n`))[0]
+			expect(withNewline?.summary).toBe(withoutNewline?.summary)
+			expect(withNewline?.hasExplicitFailure).toBe(withoutNewline?.hasExplicitFailure)
+		}
+	})
+
 	it("does not retain snapshots of the growing final step", () => {
 		clearStepDerivationCacheForTesting()
 		for (let index = 1; index <= 20; index += 1) {

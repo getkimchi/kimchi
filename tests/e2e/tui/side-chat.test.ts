@@ -29,6 +29,15 @@ function enableSideChat(homeDir: string): void {
 	)
 }
 
+/** Strip only the fixture's hermetic side-chat opt-out so the resource's default (on) applies. */
+function sideChatDefaultOn(homeDir: string): void {
+	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+	const resources = settings.resources as Record<string, unknown> | undefined
+	if (resources) delete resources["extensions.side-chat"]
+	writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen" }), "utf-8")
+}
+
 /** Side chat transcripts kept next to the main sessions: `side-chats/<main session id>/<side chat id>.jsonl`. */
 function sideChatFiles(homeDir: string): string[] {
 	return readdirSync(homeDir, { recursive: true, encoding: "utf-8" })
@@ -43,6 +52,24 @@ function clickText(terminal: Terminal, text: string, offset = 0): void {
 	expect(row).toBeGreaterThanOrEqual(0)
 	terminal.mousePress(lines[row].indexOf(text) + offset, row)
 }
+
+test("a fresh settings.json gets /btw by default", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "side-chat-default-on",
+			extraArgs: ["--plan=false"],
+			seedHome: sideChatDefaultOn,
+			responses: [{ match: isSideRequest, stream: ["Use the LRU cache."] }],
+		},
+		async (_fixture, trace) => {
+			terminal.submit("/btw Which cache?")
+			await waitForText(terminal, "Use the LRU cache.", { full: false })
+			expect(viewText(terminal)).toContain("Side chat · Which cache?")
+			trace.step("/btw loads from the resource default — no explicit enable — and opens the docked side chat")
+		},
+	)
+})
 
 test("side chat answers next to the session and wraps up into a steer for the main agent", async ({ terminal }) => {
 	await runKimchiSession(

@@ -112,7 +112,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
 import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
-import { isRefusal, REFUSAL_MESSAGE } from "../../extensions/refused-turns.js"
+import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -633,7 +633,7 @@ export class KimchiAcpAgent implements Agent {
 		// out-of-band: the client launches `kimchi login` as a separate process,
 		// so this method is never called for it.
 		//
-		// NOTE: the experimental CAST AI SSO (OAuth code + PKCE) login is NOT
+		// NOTE: the experimental Kimchi SSO (OAuth code + PKCE) login is NOT
 		// offered here. ACP clients cannot reliably answer the manual-code prompt
 		// the SSH/headless path needs, so ACP keeps this web-app handoff; SSO
 		// credentials created by the TUI still work in ACP sessions (the
@@ -1754,6 +1754,19 @@ export class KimchiAcpAgent implements Agent {
 				// A held plan-review turn seeing the follow-up turn begin: pi events
 				// derive "decision applied with work" — no extension notification.
 				if (turn?.planReviewHeld) turn.planReviewExecuting = true
+				// Cancel raced the run start (acp-tck ACP-CANCEL-001/002):
+				// pi-mono's session.abort() drops the abort when it lands after
+				// _startRun marked the session active (_agentRunAbortRequested is only
+				// consulted BETWEEN chained continues) but before agent.prompt() gave
+				// the agent its AbortController (agent.activeRun is still undefined).
+				// A cancel in that window only set turn.cancelled — the first model
+				// call then streams to completion and the prompt response arrives
+				// minutes late. agent_start is the first signal that the run (and its
+				// AbortController) actually exists, so re-issue the abort for a
+				// cancelled turn here. abort() is idempotent for an idle agent and
+				// fire-and-forget: the subscriber runs synchronously inside pi's
+				// event loop, so it must not be awaited.
+				if (turn?.cancelled) void entry.session.abort()
 				return
 			}
 			case "agent_settled": {
@@ -1938,14 +1951,22 @@ export class KimchiAcpAgent implements Agent {
 					// A refusal is a turn outcome, not a failure: report it as
 					// stopReason "refusal" with the reason the user can act on. The
 					// canned text may already be streamed and can't be retracted, so
-					// the reason goes out as a separate message.
+					// the notice — the message's text after the refused-turns
+					// rewrite — goes out as a separate message.
 					turn.lastAssistantError = undefined
+					const notice = refusalText(msg)
+					// Mark every text block as sent so forwardUnsentMessageText below
+					// does not emit the replaced content a second time — whatever
+					// block layout the refused-turns rewrite produces.
+					for (const [index, block] of msg.content.entries()) {
+						if (block.type === "text") entry.streamedText.set(index, block.text)
+					}
 					this.send({
 						sessionId,
 						update: {
 							sessionUpdate: "agent_message_chunk",
 							messageId: `km.${randomUUID()}`,
-							content: { type: "text", text: REFUSAL_MESSAGE },
+							content: { type: "text", text: notice },
 						},
 					})
 				} else if (msg.stopReason === "error") {

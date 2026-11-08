@@ -1,3 +1,4 @@
+import { createServer } from "node:http"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
@@ -155,6 +156,55 @@ describe("startCallbackServer", () => {
 		expect(res.status).toBe(404)
 
 		server.close()
+	})
+
+	it("advertises localhost for OAuth-code flows and binds ::1 as well as 127.0.0.1", async () => {
+		const state = generateState()
+		const server = await startCallbackServer(state, { mode: "code" })
+		expect(server.url).toBe(`http://localhost:${server.port}/callback`)
+
+		// The dual-stack hijack regression: a browser resolving localhost to ::1
+		// must reach the same callback handler, not whatever else squats on the
+		// port. Skips silently on hosts with no IPv6 loopback.
+		try {
+			const res = await fetch(`http://[::1]:${server.port}/callback?code=V6&state=${state}`, {
+				signal: AbortSignal.timeout(2000),
+			})
+			expect(res.status).toBe(200)
+			expect((await server.result).code).toBe("V6")
+		} catch (err) {
+			// ECONNREFUSED on ::1 → host has no IPv6 loopback; v4-only is correct there.
+			const code = ((err as NodeJS.ErrnoException).cause as NodeJS.ErrnoException | undefined)?.code
+			if (code !== "ECONNREFUSED") throw err
+			server.close()
+		}
+	})
+
+	it("fails loudly with the port-in-use message when another process holds ::1 on the fixed port", async () => {
+		// Reproduces the production hijack: something else (an MCP browser helper,
+		// a stale login) is already listening on the registered loopback port
+		// *only* on ::1 — previously invisible to the IPv4-only bind, and the
+		// browser-sent code silently 404'd on the foreign server. Now the login
+		// must fail at startup with the actionable message.
+		const squatter = createServer()
+		await new Promise<void>((res) => squatter.listen(0, "::1", res))
+		const squatterAddr = squatter.address()
+		if (!squatterAddr || typeof squatterAddr === "string") {
+			squatter.close()
+			throw new Error("This host has no IPv6 loopback — test cannot run")
+		}
+		try {
+			await expect(
+				startCallbackServer(generateState(), { mode: "code", port: { kind: "fixed", value: squatterAddr.port } }),
+			).rejects.toThrow(/in use/)
+		} catch (err) {
+			// Hosts without IPv6 loopback: the ::1 squat itself fails to bind on
+			// some platforms — the expectation above then can't be meaningful.
+			const code = (err as NodeJS.ErrnoException).code
+			if (code !== "EADDRNOTAVAIL" && code !== "EAFNOSUPPORT") throw err
+		} finally {
+			squatter.close()
+		}
 	})
 
 	it("times out after the configured duration", async () => {

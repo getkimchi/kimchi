@@ -17,6 +17,7 @@ import { formatCount } from "../extensions/format.js"
 import { getMultiModelEnabled } from "../extensions/multi-model.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { getCurrentPhase, peekActiveTags } from "../extensions/tags.js"
+import { getActiveAnchor } from "../shared/active-anchor.js"
 import { thinkingSelection } from "../thinking-selection.js"
 
 /** Stable identifier used by compaction steps to find segments. */
@@ -37,6 +38,7 @@ export type SegmentId =
 	| "dap"
 	| "work-pr"
 	| "shells"
+	| "work-tree"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -226,7 +228,7 @@ export function buildScriptPayload(
 		},
 		credits: billing?.amount ?? null,
 		budget: billing?.budget ?? null,
-		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd },
+		workspace: { cwd: ctx.cwd, current_dir: ctx.cwd, anchor_dir: getActiveAnchor() ?? null },
 		status,
 		session: {
 			cost_usd: costUsd,
@@ -445,6 +447,7 @@ function joinSegments(segments: Segment[], sep: string): string {
 const SHED_ORDER: SegmentId[] = [
 	"dap",
 	"lsp",
+	"work-tree",
 	"work-pr",
 	"team",
 	"tags",
@@ -666,8 +669,8 @@ function buildPermissionsSegment(
 	return { id: "permissions", text: mode, width: visibleWidth(mode) }
 }
 
-function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const dapStatus = statusLineData.getExtensionStatuses().get("dap")
 	if (!dapStatus) return null
 	// Same label/value styling as the LSP segment: dim the "DAP:" label,
@@ -680,8 +683,8 @@ function buildDapSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvide
 	return { id: "dap", text, width: visibleWidth(text) }
 }
 
-function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+function buildLspSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const lspStatus = statusLineData.getExtensionStatuses().get("lsp")
 	if (!lspStatus) return null
 	// Style "LSP:" as dimmed label, server names as accent. Preserve the
@@ -710,7 +713,7 @@ const WORK_PR_STATUS = /^(?:([^ ]+) · )?(PR|MR) ([#!]\d+)(?: (.+))?$/
  * Only the PR number stands out, accented and underlined as the link; the label and state stay muted. The state
  * is extra detail, so the compaction ladder drops it first (`PR #7 open` → `PR #7`).
  *
- * Extension-status-driven like lsp/dap: renders whenever the pull-request-status
+ * Extension-status-driven: renders whenever the pull-request-status
  * extension sets a status, unless the user opted out via `hidden`.
  */
 function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
@@ -722,7 +725,7 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	const statusBranch = match?.[1] ?? (!status.includes(" ") ? status : undefined)
 	if (statusBranch) {
 		// Git's watcher updates before the next provider poll; never render a link for the old checkout.
-		const branch = statusLineData.getGitBranch()
+		const branch = statuses.get("work-branch") ?? statusLineData.getGitBranch()
 		if (!branch || branch === "detached") return null
 		if (branch !== statusBranch) {
 			const text = accentText(theme, branch)
@@ -745,6 +748,15 @@ function buildWorkPrSegment(theme: Theme, statusLineData: ReadonlyFooterDataProv
 	if (!state) return { id: "work-pr", text: compact, width: visibleWidth(compact) }
 	const text = `${compact} ${dimText(theme, state)}`
 	return { id: "work-pr", text, width: visibleWidth(text), raw: { kind: "work-pr", compact } }
+}
+
+/** The linked worktree the session's commands run in, as the PR status extension sets it. */
+function buildWorkTreeSegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("work-tree")
+	if (!status) return null
+	// Directory only: the branch lives in the work-pr segment next to this one.
+	const text = `${dimText(theme, "⎇")} ${dimText(theme, status)}`
+	return { id: "work-tree", text, width: visibleWidth(text) }
 }
 
 function buildBudgetSegment(theme: Theme, pinned: boolean): Segment | null {
@@ -835,7 +847,7 @@ export function buildStatusLineSegments(
 	{ ctx, theme, statusLineData }: StatusLineBuildContext,
 	pinned: ReadonlySet<SegmentId>,
 	// Opt-out set for defaultVisible, extension-status-driven segments
-	// (lsp/dap/work-pr): they render whenever their extension sets a status, so
+	// (work-pr/shells): they render whenever their extension sets a status, so
 	// the customize UI hides them here instead of through pinning.
 	hidden: ReadonlySet<SegmentId> = new Set<SegmentId>(),
 ): Segment[] {
@@ -855,8 +867,9 @@ export function buildStatusLineSegments(
 		buildPhaseSegment(ctx, theme, pinned.has("phase")),
 		buildTagsSegment(theme, tags, pinned.has("tags")),
 		buildTeamSegment(theme, tags, pinned.has("team")),
-		buildLspSegment(theme, statusLineData, hidden.has("lsp")),
-		buildDapSegment(theme, statusLineData, hidden.has("dap")),
+		buildLspSegment(theme, statusLineData, pinned.has("lsp")),
+		buildDapSegment(theme, statusLineData, pinned.has("dap")),
+		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),

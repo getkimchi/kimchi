@@ -124,7 +124,7 @@ export interface FetchModelsOptions {
 	allowCachedFallback?: boolean
 	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
 	requireActiveModels?: boolean
-	/** CAST AI SSO: organization id sent as `X-CastAi-Organization-Id` on the metadata
+	/** Kimchi SSO: organization id sent as `X-CastAi-Organization-Id` on the metadata
 	 * fetch and stamped into every Kimchi provider's models.json headers. */
 	organizationId?: string
 }
@@ -389,7 +389,7 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string, or
 		byProvider.set(m.provider, group)
 	}
 
-	// CAST AI SSO credentials are organization-scoped: the gateway routes by
+	// Kimchi SSO credentials are organization-scoped: the gateway routes by
 	// `X-CastAi-Organization-Id`. Key-based logins pass no org (undefined) so a
 	// provider rebuilt after a key login drops any stale SSO header.
 	const providerHeaders = (upstreamProvider: string) => ({

@@ -16,11 +16,18 @@ import statusExtension, {
 	resolveLoginMethod,
 	summarizeMcpSnapshot,
 } from "./index.js"
+import { requestStatusIdentityRefresh } from "./refresh.js"
 
 const configState = vi.hoisted(() => ({
 	savedKey: undefined as string | undefined,
 	envKey: undefined as string | undefined,
 }))
+
+const gatewayState = vi.hoisted(() => ({
+	oauth: undefined as { token: string; organizationId?: string; organizationName?: string } | undefined,
+}))
+
+const authPathState = vi.hoisted(() => ({ value: "/does/not/exist/auth.json" }))
 
 vi.mock("../../config.js", () => ({
 	// loadConfig merges the env override, like the real implementation does.
@@ -29,11 +36,28 @@ vi.mock("../../config.js", () => ({
 	getSavedApiKey: () => configState.savedKey,
 	getApiKeySource: () => (configState.envKey ? "environment" : "config"),
 }))
-// Deterministic, empty auth store for the gatherStatusRows path.
-vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => "/does/not/exist/auth.json" }))
+// Deterministic, empty auth store for the gatherStatusRows path; SSO tests
+// point it at a real temp file via authPathState.
+vi.mock("../login/flow.js", () => ({ getKimchiAuthPath: () => authPathState.value }))
 vi.mock("../../api/me.js", () => ({ getMe: vi.fn() }))
 vi.mock("../../api/organizations.js", () => ({ getOrganization: vi.fn(), verifyApiKey: vi.fn() }))
 vi.mock("../../utils.js", () => ({ getVersion: () => "9.9.9-test" }))
+// Credentials: config key wins, otherwise the injected SSO (oauth) state.
+vi.mock("../../auth/gateway-credentials.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../auth/gateway-credentials.js")>()
+	return {
+		...actual,
+		resolveGatewayCredentials: (config: { apiKey: string }) =>
+			config.apiKey
+				? { token: config.apiKey, source: "api-key" as const }
+				: (gatewayState.oauth ?? { token: "", source: "none" as const }),
+	}
+})
+
+beforeEach(() => {
+	gatewayState.oauth = undefined
+	authPathState.value = "/does/not/exist/auth.json"
+})
 
 function model(id: string): Model<string> {
 	return {
@@ -273,6 +297,48 @@ describe("resolveLoginMethod", () => {
 		).toBe("Third-party provider (anthropic)")
 	})
 
+	it("reports Kimchi SSO when auth.json holds the kimchi OAuth credential", () => {
+		writeFileSync(authPath(), JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-token", refresh: "r" } }))
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: undefined,
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Kimchi SSO")
+	})
+
+	it("lists third-party providers alongside Kimchi SSO", () => {
+		writeFileSync(
+			authPath(),
+			JSON.stringify({
+				"kimchi-dev": { type: "oauth", access: "oauth-token" },
+				anthropic: { type: "oauth", access: "y" },
+			}),
+		)
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: undefined,
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Kimchi SSO · third-party: anthropic")
+	})
+
+	it("keeps the saved-key precedence over a stored SSO credential", () => {
+		writeFileSync(authPath(), JSON.stringify({ "kimchi-dev": { type: "oauth", access: "oauth-token" } }))
+		expect(
+			resolveLoginMethod({
+				envApiKey: undefined,
+				configApiKey: "c",
+				apiKeySource: "config",
+				authPath: authPath(),
+			}),
+		).toBe("Kimchi account")
+	})
+
 	it("reports Not logged in when nothing is configured", () => {
 		expect(
 			resolveLoginMethod({
@@ -410,7 +476,7 @@ describe("status command handler", () => {
 			])
 		})
 		expect(getMe).toHaveBeenCalledOnce()
-		expect(getOrganization).toHaveBeenCalledWith("key-1", "org-1")
+		expect(getOrganization).toHaveBeenCalledWith("key-1", "org-1", { organizationId: undefined })
 	})
 
 	it("fetches identity for a key that appears after session start", async () => {
@@ -420,13 +486,14 @@ describe("status command handler", () => {
 		await startSession()
 		expect(getMe).not.toHaveBeenCalled()
 
+		// The handler awaits the just-triggered refetch — the fresh rows land on
+		// this open, not the next one.
 		configState.savedKey = "key-after-login"
-		await runStatus()
+		const rows = await runStatus()
 
-		expect(getMe).toHaveBeenCalledWith("key-after-login")
-		await vi.waitFor(async () => {
-			expect(await runStatus()).toContain("Email:          you@example.com")
-		})
+		expect(getMe).toHaveBeenCalledWith("key-after-login", { organizationId: undefined })
+		expect(rows).toContain("Email:          you@example.com")
+		expect(rows).toContain("Organization:   CAST AI (org-1)")
 	})
 
 	it("refetches identity when the key changes", async () => {
@@ -441,7 +508,7 @@ describe("status command handler", () => {
 		await startSession()
 
 		expect(getMe).toHaveBeenCalledTimes(2)
-		expect(getMe).toHaveBeenLastCalledWith("key-2")
+		expect(getMe).toHaveBeenLastCalledWith("key-2", { organizationId: undefined })
 	})
 
 	it("starts each extension instance without cached identity", async () => {
@@ -454,14 +521,25 @@ describe("status command handler", () => {
 			expect(await first.runStatus()).toContain("Email:          you@example.com")
 		})
 
+		// Hung identity fetches must not hold the panel: the handler's wait is
+		// bounded, so advance past it instead of really waiting. With both
+		// chains pending, the new instance renders without any identity rows.
 		vi.mocked(getMe).mockReturnValue(new Promise(() => {}))
+		vi.mocked(verifyApiKey).mockReturnValue(new Promise(() => {}))
 		const second = setup()
 		second.ctx.mode = "rpc"
 
-		const rows = await second.runStatus()
+		vi.useFakeTimers()
+		try {
+			const status = second.runStatus()
+			await vi.advanceTimersByTimeAsync(10_000)
+			const rows = await status
 
-		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
-		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
+			expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
+			expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("summarizes the MCP snapshot published on the event bus", async () => {
@@ -478,6 +556,111 @@ describe("status command handler", () => {
 		})
 
 		expect(await runStatus()).toContain("MCP servers:    1 connected, 0 disabled, 0 failed · /mcp")
+	})
+
+	it("refreshes identity when a login completion requests it", async () => {
+		configState.savedKey = "key-1"
+		mockIdentity()
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+		await startSession()
+		expect(getMe).toHaveBeenCalledWith("key-1", { organizationId: undefined })
+
+		// Simulate a mid-session login swapping the credential.
+		configState.savedKey = "key-2"
+		requestStatusIdentityRefresh()
+
+		const rows = await runStatus()
+		expect(getMe).toHaveBeenLastCalledWith("key-2", { organizationId: undefined })
+		expect(rows).toContain("Email:          you@example.com")
+		expect(rows).toContain("Organization:   CAST AI (org-1)")
+	})
+})
+
+describe("status handler with Kimchi SSO credentials", () => {
+	beforeEach(() => {
+		configState.savedKey = undefined
+		configState.envKey = undefined
+		vi.mocked(getMe).mockReset()
+		vi.mocked(verifyApiKey).mockReset()
+		vi.mocked(getOrganization).mockReset()
+	})
+
+	it("shows the SSO login method and identity, routing every platform call with the org header", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "status-sso-"))
+		authPathState.value = join(dir, "auth.json")
+		writeFileSync(
+			authPathState.value,
+			JSON.stringify({
+				"kimchi-dev": { type: "oauth", access: "oauth-token", orgId: "org-9", orgName: "My organization" },
+			}),
+		)
+		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
+		mockIdentity()
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		await startSession()
+		const rows = await runStatus()
+
+		expect(rows.slice(0, 4)).toEqual([
+			"Version:        9.9.9-test",
+			"Login method:   Kimchi SSO",
+			// The fetched organization replaces the credential-seeded one.
+			"Organization:   CAST AI (org-1)",
+			"Email:          you@example.com",
+		])
+		expect(getMe).toHaveBeenCalledWith("oauth-token", { organizationId: "org-9" })
+		expect(verifyApiKey).toHaveBeenCalledWith("oauth-token", { organizationId: "org-9" })
+		expect(getOrganization).toHaveBeenCalledWith("oauth-token", "org-1", { organizationId: "org-9" })
+	})
+
+	it("keeps the credential-stamped organization when the API resolves a blank name", async () => {
+		// Production: GET /v1/organizations/{id} returns name "" for the personal
+		// organization — the fetched org must not blank out the seeded one.
+		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
+		vi.mocked(getMe).mockResolvedValue({ id: "user-1", email: "you@example.com" })
+		vi.mocked(verifyApiKey).mockResolvedValue({ organizationId: "org-9" })
+		vi.mocked(getOrganization).mockResolvedValue({ id: "org-9", name: "" })
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		await startSession()
+		const rows = await runStatus()
+
+		expect(rows).toContain("Organization:   My organization (org-9)")
+		expect(rows).toContain("Email:          you@example.com")
+	})
+
+	it("keeps the credential-stamped organization when the SSO identity fetches fail", async () => {
+		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
+		vi.mocked(getMe).mockRejectedValue(new Error("boom"))
+		vi.mocked(verifyApiKey).mockRejectedValue(new Error("boom"))
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+
+		await startSession()
+		const rows = await runStatus()
+
+		expect(rows).toContain("Organization:   My organization (org-9)")
+		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
+		expect(getOrganization).not.toHaveBeenCalled()
+	})
+
+	it("clears identity rows after logout", async () => {
+		gatewayState.oauth = { token: "oauth-token", organizationId: "org-9", organizationName: "My organization" }
+		mockIdentity()
+		const { ctx, startSession, runStatus } = setup()
+		ctx.mode = "rpc"
+		await startSession()
+		expect(await runStatus()).toContain("Organization:   CAST AI (org-1)")
+
+		// Logout removes the credential from the store.
+		gatewayState.oauth = undefined
+
+		const rows = await runStatus()
+		expect(rows.some((r) => r.startsWith("Organization:"))).toBe(false)
+		expect(rows.some((r) => r.startsWith("Email:"))).toBe(false)
 	})
 })
 

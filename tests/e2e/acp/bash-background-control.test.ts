@@ -512,7 +512,10 @@ it(
 							id: "spawn",
 							function: {
 								name: "bash",
-								arguments: JSON.stringify({ command: 'sleep 25 && echo "ACP-STEER-"DONE-9b2e' }),
+								// 8 s: still outlives the whole exchange (the scripted turns add ~4 s) while
+								// leaving room inside the 30 s test budget; at 25 s the test passed with
+								// only 200-700 ms to spare and timed out on loaded runners.
+								arguments: JSON.stringify({ command: 'sleep 8 && echo "ACP-STEER-"DONE-9b2e' }),
 							},
 						},
 					],

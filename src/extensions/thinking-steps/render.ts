@@ -1,7 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
-import { deriveThinkingSteps } from "./parse.js"
-import { getActiveThinkingState, getCurrentThinkingScopeKey, getThinkingStepsMode } from "./state.js"
+import { getActiveThinkingState, getThinkingStepsMode } from "./state.js"
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
 interface RenderOptions {
@@ -426,13 +425,16 @@ export class ThinkingStepsComponent implements Component {
 		private readonly theme: ThinkingThemeLike,
 		private readonly messageTimestamp: number,
 		blocks: ThinkingSourceBlock[],
-		scopeKey?: string,
-		cacheOwner?: object,
+		scopeKey: string,
+		cacheOwner: object,
+		// Shared across every component rendering this message (memoized per
+		// message content) — treat as read-only; never mutate in place.
+		precomputedSteps: DerivedThinkingStep[],
 	) {
 		this.blocks = blocks
-		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey()
-		this.cacheOwner = cacheOwner ?? this
-		this.steps = deriveThinkingSteps(blocks)
+		this.scopeKey = scopeKey
+		this.cacheOwner = cacheOwner
+		this.steps = precomputedSteps
 	}
 
 	render(width: number): string[] {

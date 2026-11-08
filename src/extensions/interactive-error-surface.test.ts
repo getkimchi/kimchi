@@ -7,6 +7,7 @@ import {
 	default as interactiveErrorSurfaceExtension,
 	interceptShowError,
 } from "./interactive-error-surface.js"
+import { REFUSAL_NOTICE_LEAD } from "./refused-turns.js"
 
 const VLLM_RAW =
 	'{"detail":"InternalServerError: Hosted_vllmException - Cannot connect to host serverless-glm-5-2-fp8.castai-llms.svc.cluster.local.:11434 ssl:<ssl.SSLContext object at 0x7a0e79ee8e40> [Connect call failed (\'10.30.0.226\', 11434)]"}'
@@ -211,6 +212,24 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 	it("ignores user-role messages", () => {
 		const { emitMessageEnd } = createHarness()
 		emitMessageEnd({ role: "user", stopReason: "error", errorMessage: VLLM_RAW })
+		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	it("leaves a refused turn untouched", () => {
+		// The shape refused-turns writes on message_end, which runs first: a
+		// normal stop with the never-rendered refusal marker on errorMessage.
+		const { emitMessageEnd } = createHarness()
+		const refused = {
+			role: "assistant",
+			content: [{ type: "text", text: REFUSAL_NOTICE_LEAD }],
+			stopReason: "stop",
+			errorMessage: "kimchi:refusal",
+		}
+
+		emitMessageEnd(refused)
+
+		expect(refused.errorMessage).toBe("kimchi:refusal")
+		expect(refused.stopReason).toBe("stop")
 		expect(__getPendingProviderError()).toBeUndefined()
 	})
 })

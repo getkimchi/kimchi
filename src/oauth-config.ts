@@ -1,7 +1,7 @@
 /**
- * Per-region OAuth (Authorization Code + PKCE) metadata for CAST AI SSO login.
+ * Per-region OAuth (Authorization Code + PKCE) metadata for Kimchi SSO login.
  *
- * Each region maps to its CAST AI Auth0 tenant (authorize/token URLs) plus the
+ * Each region maps to its Kimchi Auth0 tenant (authorize/token URLs) plus the
  * native-app client id. The client id is a public identifier, not a secret, so
  * built-in defaults are safe to ship.
  *
@@ -30,10 +30,12 @@ export interface KimchiOAuthConfig {
 	tokenUrl: string
 	clientId: string
 	/** `audience` param for authorize and token requests (RFC 8707). Defaults
-	 * to https://app.kimchi.dev — without an audience Auth0 issues
-	 * session-bound tokens whose refresh grant is rejected. */
+	 * to the region's webAppUrl — without an audience Auth0 issues
+	 * session-bound tokens whose refresh grant is rejected, and a hardcoded
+	 * audience that doesn't match the tenant's registered API fails authorize
+	 * with `access_denied — Service not found`. */
 	audience?: string
-	/** GET endpoint listing the user's organizations (Cast AI users API):
+	/** GET endpoint listing the user's organizations (Kimchi users API):
 	 * `${castApiUrl}/v1/organizations`. */
 	organizationsUrl: string
 	/** True: credential.access carries the ID token; false: the access token. */
@@ -48,7 +50,7 @@ interface RegionOAuthDefaults {
 
 // Per-region native-app clients. Client ids are public identifiers, not
 // secrets. The redirect URI is exactly `http://localhost:8765/callback`
-// (see CAST_AI_SSO_CALLBACK_PORT), offline_access is allowed, and
+// (see KIMCHI_SSO_CALLBACK_PORT), offline_access is allowed, and
 // refresh-token rotation must stay OFF — the credential fan-out shares one
 // refresh token across providers (see src/pi-auth.ts).
 const REGION_OAUTH_DEFAULTS: Partial<Record<RegionId, RegionOAuthDefaults>> = {
@@ -92,8 +94,8 @@ export function oauthConfigForRegion(region: KimchiRegion): KimchiOAuthConfig | 
 		authorizeUrl: nonEmptyEnv("KIMCHI_OAUTH_AUTHORIZE_URL") ?? defaults.authorizeUrl,
 		tokenUrl: nonEmptyEnv("KIMCHI_OAUTH_TOKEN_URL") ?? defaults.tokenUrl,
 		clientId,
-		audience: nonEmptyEnv("KIMCHI_OAUTH_AUDIENCE") ?? "https://app.kimchi.dev",
-		// The org listing lives on the Cast AI users API (castApiUrl), not the
+		audience: nonEmptyEnv("KIMCHI_OAUTH_AUDIENCE") ?? region.webAppUrl,
+		// The org listing lives on the Kimchi users API (castApiUrl), not the
 		// Auth0 tenant — full-URL env override for dev/test (mock AS setups).
 		organizationsUrl: nonEmptyEnv("KIMCHI_ORGANIZATIONS_URL") ?? `${region.castApiUrl}/v1/organizations`,
 		useIdToken: boolEnv("KIMCHI_OAUTH_USE_ID_TOKEN") ?? true,

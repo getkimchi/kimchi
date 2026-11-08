@@ -2,7 +2,7 @@
  * Right-hand side chat pane: header (≡ history, ✕ close), scrollable
  * transcript or history list, editor, hints.
  *
- * Mirrors upstream InteractiveMode's event → component mapping for the
+ * Mirrors InteractiveMode's event → component mapping for the
  * transcript so side-chat output looks like the main chat, and paints the
  * whole pane with its own background through a harness compositor.
  */

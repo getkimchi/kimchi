@@ -64,7 +64,9 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 			const wanted = value === LANGUAGE_AUTO ? undefined : value
 			const effective = loadConfig({ cwd: process.cwd() }).language
 			if (effective === wanted) return undefined
-			return `warning: this project's .kimchi/config.json pins language "${effective}", which overrides the global value here — edit that file to change it for this project`
+			// `effective` undefined means the project set "auto" (resolved to unset
+			// by loadConfig) — name the project's value, not the resolved one.
+			return `warning: this project's .kimchi/config.json pins language "${effective ?? LANGUAGE_AUTO}", which overrides the global value here — edit that file to change it for this project`
 		},
 		formatWritten: (key, value) =>
 			value === LANGUAGE_AUTO

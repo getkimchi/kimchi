@@ -144,7 +144,7 @@ import promptSummaryExtension from "./extensions/prompt-summary.js"
 import pullRequestStatusExtension from "./extensions/pull-request-status/index.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
-import refusedTurnsExtension from "./extensions/refused-turns.js"
+import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
@@ -228,6 +228,7 @@ import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from 
 import { runSecureExport } from "./utils/export-post-process.js"
 import { runExportOffloaded } from "./utils/export-worker.js"
 import { captureSessionStart } from "./utils/session-metadata-store.js"
+import { resolveExportSystemPrompt } from "./utils/session-system-prompt-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
@@ -240,6 +241,10 @@ installPiNativeCompatibilityShim()
 // suppressed / sanitized before reaching the terminal. Must run before any
 // InteractiveMode instance is constructed.
 applyInteractiveErrorSurfacePatch()
+// Carve AssistantMessageComponent's rendering for refused turns: print the
+// notice as warning-colored plain text instead of markdown. Must run before any
+// component instance is constructed.
+applyRefusalNoticeRenderingPatch()
 applyInteractiveModelSessionPatch()
 // No-op pi's install/update ping (pi.dev/api/report-install) on the
 // InteractiveMode prototype — belt-and-braces on top of PI_TELEMETRY=0 in
@@ -366,6 +371,21 @@ async function cliMain(): Promise<void> {
 	// a child process) transforms it before the single atomic publish. A
 	// redaction engine failure aborts the export — never an unredacted file.
 	// The wrapper is async; upstream's handleExportCommand awaits it.
+	//
+	// Both patches share resolveExportSystemPromptFor below: the JSONL header
+	// and the HTML payload systemPrompt come from the per-session capture
+	// (what the model actually ran with), NOT the session getter — pi 1.3.0
+	// never records the forced prompt in the transcript, so the getter resolves
+	// to pi's base prompt once the session is idle.
+	const resolveExportSystemPromptFor = (session: {
+		sessionManager: { getSessionId(): string }
+		systemPrompt?: unknown
+	}): string | undefined =>
+		resolveExportSystemPrompt(
+			session.sessionManager.getSessionId(),
+			typeof session.systemPrompt === "string" ? session.systemPrompt : undefined,
+		)
+
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
 	const _origExportToJsonl = (AgentSession as any).prototype.exportToJsonl
 	// biome-ignore lint/suspicious/noExplicitAny: monkey-patching an abstract class prototype
@@ -382,7 +402,7 @@ async function cliMain(): Promise<void> {
 				runExportOffloaded({
 					mode: "jsonl",
 					filePath: tempPath,
-					systemPrompt: typeof this.systemPrompt === "string" ? this.systemPrompt : undefined,
+					systemPrompt: resolveExportSystemPromptFor(this),
 				}),
 		})
 	}
@@ -399,6 +419,9 @@ async function cliMain(): Promise<void> {
 		outputPath?: string,
 		options?: { themeName?: string } | string,
 	) {
+		// The HTML payload's top-level systemPrompt is likewise sourced from the
+		// per-session capture: upstream embeds `agent.state.systemPrompt`
+		// (pi's base prompt) in the payload, which the pipeline overrides.
 		return await runSecureExport({
 			mode: "html",
 			outputPath,
@@ -407,7 +430,12 @@ async function cliMain(): Promise<void> {
 				cwd: this.sessionManager.getCwd(),
 			},
 			upstreamExport: (tempPath) => _origExportToHtml.call(this, tempPath, options),
-			pipeline: (tempPath) => runExportOffloaded({ mode: "html", filePath: tempPath }),
+			pipeline: (tempPath) =>
+				runExportOffloaded({
+					mode: "html",
+					filePath: tempPath,
+					systemPrompt: resolveExportSystemPromptFor(this),
+				}),
 		})
 	}
 	const helpOrVersion = isHelpOrVersionArgs(originalArgs)
@@ -996,6 +1024,12 @@ async function cliMain(): Promise<void> {
 				modelGuardExtension,
 				orphanToolResultRepairExtension,
 				orphanToolResultSanitizerExtension,
+				// Order matters: refused-turns rewrites a refused assistant message into
+				// a normally-stopped notice (text + REFUSAL_MARKER) before
+				// interactive-error-surface's message_end runs below, so the refusal never
+				// passes through gateway classification, sanitization, or the Retrying
+				// placeholder. Keep refused-turns ahead of interactive-error-surface in
+				// this list.
 				refusedTurnsExtension,
 				idleGcExtension,
 				sessionMemoryStatsExtension,

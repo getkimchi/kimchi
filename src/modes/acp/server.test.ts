@@ -697,8 +697,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir"
 
 		beforeEach(() => {
-			// EU companion methods are gated behind experimental features; these
-			// capability tests cover the ungated (flag-on) behaviour.
+			// The self-hosted companion method is gated behind experimental features;
+			// these capability tests cover the ungated (flag-on) behaviour.
 			setExperimentalFeaturesEnabled(true)
 			// Clean up and create temp agent dir
 			try {
@@ -946,7 +946,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			}
 		})
 
-		it("omits the EU companion method when EU is experimental-gated", async () => {
+		it("advertises the EU companion method without the flag; omits gated self-hosted", async () => {
 			setExperimentalFeaturesEnabled(false)
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
@@ -955,7 +955,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us"])
+			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
@@ -1939,6 +1939,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+	})
+
+	// Cancel while pi-mono is still in session.prompt()'s pre-run awaits:
+	// session.abort() finds no active run and is dropped, so the run starts
+	// streaming anyway. The server must re-abort when agent_start reveals the
+	// turn is already cancelled.
+	it("re-aborts on agent_start when cancel landed before the run existed", async () => {
+		let abortCalls = 0
+		let runMayStart = false
+		fake.promptImpl = async () => {
+			// Park here so the cancel below lands in the pre-run window.
+			while (!runMayStart) await delay(5)
+			fake.emit({ type: "agent_start" })
+			// The agent_start re-abort is what stops the run.
+			while (abortCalls < 2) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			abortCalls++
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+		runMayStart = true
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		// The original (dropped) cancel abort plus the agent_start re-abort.
+		expect(abortCalls).toBeGreaterThanOrEqual(2)
 	})
 
 	// Cancel path where pi-mono surfaces abortion as a rejection instead of a
@@ -3803,6 +3836,34 @@ describe("KimchiAcpAgent per-message model attribution", () => {
 				},
 			},
 		])
+	})
+
+	it("emits a refusal notice exactly once, whatever text blocks the refused message carries", async () => {
+		// The refusal path sends the notice as its own chunk; every text block of
+		// the refused message must count as sent, not only index 0, or the
+		// message_end catch-up re-emits part of the notice.
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "message_end",
+				message: partialMessage({
+					content: [
+						{ type: "text", text: "first paragraph" },
+						{ type: "text", text: "second paragraph" },
+					],
+					stopReason: "stop",
+					errorMessage: "kimchi:refusal",
+				}),
+			})
+			fake.emit(agentEnd())
+		}
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		expect(result.stopReason).toBe("refusal")
+		const texts = updates
+			.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content: { text: string } }).content.text)
+		expect(texts).toEqual(["first paragraph\nsecond paragraph"])
 	})
 
 	it("emits a zero-length correction chunk when responseModel arrives only at message_end", async () => {

@@ -206,11 +206,10 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
 		id: SIDE_CHAT_RESOURCE_ID,
 		kind: "extensions",
-		experimental: true,
 		label: "Side chat",
 		description:
 			"Branch a side chat docked to the right of the session (/btw): quote transcript selections, then /wrap a steering prompt back to the main agent. Fullscreen TUI only.",
-		defaultEnabled: false,
+		defaultEnabled: true,
 		restartRequired: true,
 	},
 	{

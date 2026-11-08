@@ -11,6 +11,7 @@ import * as MULTI_MODEL from "../extensions/multi-model.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import { __clearModelThinkingLevelsForTest, registerModelThinkingLevels } from "../models.js"
+import { setActiveAnchor } from "../shared/active-anchor.js"
 import {
 	branchAssistantUsageTotals,
 	buildContextCompact,
@@ -130,6 +131,8 @@ function createMockStatusLineData(opts?: {
 	workPr?: string
 	workPrUrl?: string
 	gitBranch?: string | null
+	workTree?: string
+	workBranch?: string
 }): ReadonlyFooterDataProvider {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
@@ -140,13 +143,64 @@ function createMockStatusLineData(opts?: {
 	if (opts?.dap) statuses.set("dap", opts.dap)
 	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
 	if (opts?.workPrUrl) statuses.set("work-pr-url", opts.workPrUrl)
+	if (opts?.workTree) statuses.set("work-tree", opts.workTree)
+	if (opts?.workBranch) statuses.set("work-branch", opts.workBranch)
 	return {
 		getExtensionStatuses: vi.fn(() => statuses),
 		getGitBranch: vi.fn(() => (opts?.gitBranch === undefined ? "feature" : opts.gitBranch)),
 	} as unknown as ReadonlyFooterDataProvider
 }
 
+describe("work-tree segment", () => {
+	it("names the active worktree directory in the status line, not under custom scripts", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({ workTree: ".worktrees/branch" }),
+		}
+		const segments = buildStatusLineSegments(context, new Set())
+		const segment = segments.find((segment) => segment.id === "work-tree")
+		expect(stripAnsi(segment?.text ?? "")).toBe("⎇ .worktrees/branch")
+		expect(visibleWidth(renderFittedLine(segments, 60, context.theme))).toBeLessThanOrEqual(60)
+		// A custom status line script carries its own worktree line; the controls line does not repeat it.
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "work-tree")).toBe(false)
+		context.statusLineData = createMockStatusLineData()
+		expect(buildStatusLineSegments(context, new Set()).some((segment) => segment.id === "work-tree")).toBe(false)
+	})
+
+	it("cross-checks the work-pr branch against the anchored worktree branch before linking", () => {
+		const context = {
+			ctx: createMockContext(),
+			theme: createMockTheme(),
+			statusLineData: createMockStatusLineData({
+				workPr: "feature · PR #7 open",
+				workPrUrl: "https://github.com/example/repo/pull/7",
+				gitBranch: "master",
+				workBranch: "feature",
+			}),
+		}
+		const segments = buildStatusLineSegments(context, new Set())
+		// The session's own checkout says master, but the anchored worktree branch matches, so the PR link renders.
+		expect(stripAnsi(segments.find((segment) => segment.id === "work-pr")?.text ?? "")).toContain("#7")
+	})
+})
+
 describe("buildScriptPayload", () => {
+	it("exposes the active anchor directory to status line scripts", () => {
+		const ctx = createMockContext()
+		expect(buildScriptPayload(ctx, "idle", 0, 0, 0).workspace).toEqual({
+			cwd: ctx.cwd,
+			current_dir: ctx.cwd,
+			anchor_dir: null,
+		})
+		setActiveAnchor("/repo/.worktrees/feature")
+		try {
+			expect(buildScriptPayload(ctx, "idle", 0, 0, 0).workspace.anchor_dir).toBe("/repo/.worktrees/feature")
+		} finally {
+			setActiveAnchor(undefined)
+		}
+	})
+
 	it.each(["PR #7 open", "MR !7 closed"])("keeps the checked-out branch beside a linked %s", (label) => {
 		const status = `fix/current-branch · ${label}`
 		const url = "https://github.com/example/repo/pull/7"
@@ -1599,44 +1653,46 @@ describe("status line priority shedding", () => {
 
 	it("sheds lsp before any core segment", () => {
 		const data = createMockStatusLineData({ permissionsMode: "● default", lsp: "LSP:typescript-language-server" })
-		const wide = renderVisibleWith(data, 100)
-		expect(wide).toContain("typescript-language-server")
+		withPinned(["lsp"], () => {
+			const wide = renderVisibleWith(data, 100)
+			expect(wide).toContain("typescript-language-server")
 
-		const narrow = renderVisibleWith(data, 70)
-		expect(narrow).not.toContain("typescript-language-server")
-		expect(narrow).toContain("m-m (claude-opus-4-6)")
-		expect(narrow).toContain("● default")
+			const narrow = renderVisibleWith(data, 70)
+			expect(narrow).not.toContain("typescript-language-server")
+			expect(narrow).toContain("m-m (claude-opus-4-6)")
+			expect(narrow).toContain("● default")
+		})
 	})
 
-	it("shows lsp/dap segments by default and hides them via the hidden config", () => {
+	it("hides lsp/dap segments by default and shows them via the pinned config", () => {
 		const data = createMockStatusLineData({
 			permissionsMode: "● default",
 			lsp: "LSP:typescript-language-server",
 			dap: "DAP:js-debug",
 		})
 
-		const shown = renderVisibleWith(data, 200)
-		expect(shown).toContain("typescript-language-server")
-		expect(shown).toContain("js-debug")
+		// Statuses are set but the segments are not pinned: nothing renders.
+		const hiddenByDefault = renderVisibleWith(data, 200)
+		expect(hiddenByDefault).not.toContain("typescript-language-server")
+		expect(hiddenByDefault).not.toContain("js-debug")
 
-		// Hidden is an opt-out per segment: hiding lsp leaves dap visible.
-		withHidden(["lsp"], () => {
+		// Pinning is an opt-in per segment: pinning lsp leaves dap hidden.
+		withPinned(["lsp"], () => {
 			const visible = renderVisibleWith(data, 200)
-			expect(visible).not.toContain("typescript-language-server")
-			expect(visible).toContain("js-debug")
+			expect(visible).toContain("typescript-language-server")
+			expect(visible).not.toContain("js-debug")
 		})
 
-		withHidden(["lsp", "dap"], () => {
+		withPinned(["lsp", "dap"], () => {
 			const visible = renderVisibleWith(data, 200)
-			expect(visible).not.toContain("typescript-language-server")
-			expect(visible).not.toContain("js-debug")
+			expect(visible).toContain("typescript-language-server")
+			expect(visible).toContain("js-debug")
 		})
 	})
 
-	it("hidden work-pr is omitted while other defaultVisible segments remain", () => {
+	it("hidden work-pr is omitted", () => {
 		const data = createMockStatusLineData({
 			permissionsMode: "● default",
-			lsp: "LSP:typescript-language-server",
 			workPr: "feature · PR #7 open",
 			gitBranch: "feature",
 		})
@@ -1645,7 +1701,6 @@ describe("status line priority shedding", () => {
 		withHidden(["work-pr"], () => {
 			const visible = renderVisibleWith(data, 200)
 			expect(visible).not.toContain("PR #7")
-			expect(visible).toContain("typescript-language-server")
 		})
 	})
 })
