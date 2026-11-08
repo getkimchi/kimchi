@@ -1,6 +1,6 @@
 /**
- * Side chat (experimental, TUI fullscreen only). Enabled via /resources →
- * Experimental → "Side chat" (`extensions.side-chat`), restart required.
+ * Side chat (TUI fullscreen only). Enabled by default; turn it off via
+ * /resources → "Side chat" (`extensions.side-chat`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
  * - select text in either transcript and click "Add to side chat" to quote
@@ -23,12 +23,13 @@
  *
  * The harness patch is installed only when this (resource-gated) extension
  * loads; every compositor and interceptor registered here is removed again on
- * `session_shutdown`, because Pi re-runs the factory on `/new`, `/resume` and
+ * `session_shutdown`, because the harness re-runs the factory on `/new`, `/resume` and
  * `/reload` and the previous instance's context is stale by then.
  */
 
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { parseSideChatCommand } from "./autocomplete.js"
 import { btwCompletions, parseBtwArgs } from "./command.js"
 import { PaneDivider } from "./divider.js"
@@ -93,6 +94,10 @@ interface OpenOptions {
 }
 
 export default function sideChatExtension(pi: ExtensionAPI) {
+	// ACP has no split view and no InteractiveMode to patch, so nothing here
+	// can work; registering /btw there would advertise a command that only
+	// ever warns. Skip the extension's whole surface in ACP sessions.
+	if (IS_ACP_MODE) return
 	const harnessReady = installSideChatHarnessPatch()
 	let active: ActiveSideChat | undefined
 	/** Removes the pill compositor/interceptor registered for the current session. */
