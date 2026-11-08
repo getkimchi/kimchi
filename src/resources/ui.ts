@@ -213,7 +213,7 @@ function tabDescription(tab: ResourceTab): string {
 		case "skills":
 			return "Bundled Kimchi skills."
 		case "experimental":
-			return "Experimental Kimchi features — some are on by default."
+			return "Opt-in Kimchi features that are still experimental."
 	}
 }
 

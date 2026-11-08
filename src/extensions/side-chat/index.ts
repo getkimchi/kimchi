@@ -1,7 +1,6 @@
 /**
- * Side chat (experimental, TUI fullscreen only). Enabled by default; turn
- * it off via /resources → Experimental → "Side chat" (`extensions.side-chat`),
- * restart required.
+ * Side chat (TUI fullscreen only). Enabled by default; turn it off via
+ * /resources → "Side chat" (`extensions.side-chat`), restart required.
  *
  * A Cursor-style side chat docked to the right of the main session:
  * - select text in either transcript and click "Add to side chat" to quote
@@ -24,7 +23,7 @@
  *
  * The harness patch is installed only when this (resource-gated) extension
  * loads; every compositor and interceptor registered here is removed again on
- * `session_shutdown`, because Pi re-runs the factory on `/new`, `/resume` and
+ * `session_shutdown`, because the harness re-runs the factory on `/new`, `/resume` and
  * `/reload` and the previous instance's context is stale by then.
  */
 
