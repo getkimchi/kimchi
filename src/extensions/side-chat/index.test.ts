@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from "vitest"
+import type * as AcpState from "../../modes/acp/state.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import type * as Harness from "./harness.js"
 import sideChatExtension from "./index.js"
 
 const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0 }))
+const acpMode = vi.hoisted(() => ({ current: false }))
+
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal<typeof AcpState>()),
+	get IS_ACP_MODE() {
+		return acpMode.current
+	},
+}))
 
 vi.mock("./harness.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof Harness>()
@@ -61,6 +70,19 @@ describe("side chat extension", () => {
 		await pi.emit("session_start", { type: "session_start", reason: "startup" }, createContext({ hasUI: false }))
 
 		expect(live).toEqual({ compositors: 0, mouseInterceptors: 0 })
+	})
+})
+
+describe("side chat in ACP mode", () => {
+	it("registers no /btw command or shortcuts, so ACP never advertises a TUI-only command", () => {
+		acpMode.current = true
+		try {
+			const pi = setup()
+			expect(pi.registerCommand).not.toHaveBeenCalled()
+			expect(pi.registerShortcut).not.toHaveBeenCalled()
+		} finally {
+			acpMode.current = false
+		}
 	})
 })
 

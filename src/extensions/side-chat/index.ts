@@ -30,6 +30,7 @@
 
 import { randomUUID } from "node:crypto"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { parseSideChatCommand } from "./autocomplete.js"
 import { btwCompletions, parseBtwArgs } from "./command.js"
 import { PaneDivider } from "./divider.js"
@@ -94,6 +95,10 @@ interface OpenOptions {
 }
 
 export default function sideChatExtension(pi: ExtensionAPI) {
+	// ACP has no split view and no InteractiveMode to patch, so nothing here
+	// can work; registering /btw there would advertise a command that only
+	// ever warns. Skip the extension's whole surface in ACP sessions.
+	if (IS_ACP_MODE) return
 	const harnessReady = installSideChatHarnessPatch()
 	let active: ActiveSideChat | undefined
 	/** Removes the pill compositor/interceptor registered for the current session. */
