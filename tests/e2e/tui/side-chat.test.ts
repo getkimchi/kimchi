@@ -29,11 +29,12 @@ function enableSideChat(homeDir: string): void {
 	)
 }
 
-/** Strip the fixture's hermetic opt-out so the resource's default (on) applies. */
+/** Strip only the fixture's hermetic side-chat opt-out so the resource's default (on) applies. */
 function sideChatDefaultOn(homeDir: string): void {
 	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
-	delete settings.resources
+	const resources = settings.resources as Record<string, unknown> | undefined
+	if (resources) delete resources["extensions.side-chat"]
 	writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen" }), "utf-8")
 }
 

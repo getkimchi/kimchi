@@ -5,7 +5,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import type * as Harness from "./harness.js"
 import sideChatExtension from "./index.js"
 
-const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0 }))
+const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0, harnessInstalls: 0 }))
 const acpMode = vi.hoisted(() => ({ current: false }))
 
 vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
@@ -31,6 +31,10 @@ vi.mock("./harness.js", async (importOriginal) => {
 		...actual,
 		addCompositor: counted(actual.addCompositor, "compositors"),
 		addMouseInterceptor: counted(actual.addMouseInterceptor, "mouseInterceptors"),
+		installSideChatHarnessPatch: () => {
+			live.harnessInstalls++
+			return actual.installSideChatHarnessPatch()
+		},
 	}
 })
 
@@ -57,11 +61,17 @@ describe("side chat extension", () => {
 		await pi.emit("session_start", { type: "session_start", reason: "new" }, ctx)
 		await pi.emit("session_start", { type: "session_start", reason: "reload" }, ctx)
 
-		expect(live).toEqual({ compositors: 1, mouseInterceptors: 1 })
+		expect({ compositors: live.compositors, mouseInterceptors: live.mouseInterceptors }).toEqual({
+			compositors: 1,
+			mouseInterceptors: 1,
+		})
 
 		await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
 
-		expect(live).toEqual({ compositors: 0, mouseInterceptors: 0 })
+		expect({ compositors: live.compositors, mouseInterceptors: live.mouseInterceptors }).toEqual({
+			compositors: 0,
+			mouseInterceptors: 0,
+		})
 	})
 
 	it("registers no pill without a UI", async () => {
@@ -69,7 +79,10 @@ describe("side chat extension", () => {
 
 		await pi.emit("session_start", { type: "session_start", reason: "startup" }, createContext({ hasUI: false }))
 
-		expect(live).toEqual({ compositors: 0, mouseInterceptors: 0 })
+		expect({ compositors: live.compositors, mouseInterceptors: live.mouseInterceptors }).toEqual({
+			compositors: 0,
+			mouseInterceptors: 0,
+		})
 	})
 })
 
@@ -77,9 +90,11 @@ describe("side chat in ACP mode", () => {
 	it("registers no /btw command or shortcuts, so ACP never advertises a TUI-only command", () => {
 		acpMode.current = true
 		try {
+			const installsBefore = live.harnessInstalls
 			const pi = setup()
 			expect(pi.registerCommand).not.toHaveBeenCalled()
 			expect(pi.registerShortcut).not.toHaveBeenCalled()
+			expect(live.harnessInstalls).toBe(installsBefore)
 		} finally {
 			acpMode.current = false
 		}
