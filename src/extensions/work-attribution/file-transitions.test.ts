@@ -141,6 +141,9 @@ beforeEach(() => {
 	repo = join(root, "repo")
 	mkdirSync(repo)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+	// These drives assert the reconciled outcome seconds after session_start; keep
+	// the production 5s first-tick deferral out of them.
+	vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
 	git("init", "-q")
 	git("config", "user.name", "Test")
 	git("config", "user.email", "test@example.test")
