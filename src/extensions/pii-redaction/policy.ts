@@ -397,7 +397,9 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 			}
 		} else {
 			disabled.add(entity)
-			if (!engineExclusions.includes(entity)) engineExclusions.push(entity)
+			// Custom entities have no engine detector to exclude; only engine
+			// names join the engine list (mirroring the ON branch's guard).
+			if (!customDefs.has(entity) && !engineExclusions.includes(entity)) engineExclusions.push(entity)
 		}
 	}
 	engineExclusions.sort()
@@ -418,7 +420,15 @@ function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: Local
 		[...disabled].sort(),
 		customPatterns.map((c) => [c.name, c.category, c.regex.source, c.regex.flags, c.secretGroup ?? 0]),
 	])
-	return { engineExclusions, disabledEntities: disabled, customPatterns, categories, signature }
+	// The result is memoized in a process-global cache — freeze the one mutable
+	// field so no consumer (TUI or ACP session) can corrupt the shared view.
+	return {
+		engineExclusions: Object.freeze(engineExclusions) as unknown as string[],
+		disabledEntities: disabled,
+		customPatterns,
+		categories,
+		signature,
+	}
 }
 
 /**

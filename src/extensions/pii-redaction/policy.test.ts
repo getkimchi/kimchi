@@ -96,6 +96,20 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		expect(resolved.engineExclusions).not.toContain("US_SSN")
 	})
 
+	it("OFF on a custom entity does not pollute the engine exclusion list", () => {
+		const resolved = resolveRedactionPolicy(undefined, {
+			customEntities: [{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" }],
+			entities: { ACME_EMPLOYEE_ID: "off" },
+		})
+		expect(resolved.disabledEntities.has("ACME_EMPLOYEE_ID")).toBe(true)
+		expect(resolved.engineExclusions).not.toContain("ACME_EMPLOYEE_ID")
+	})
+
+	it("the memoized result's engineExclusions is frozen against consumer mutation", () => {
+		const resolved = resolveRedactionPolicy()
+		expect(Object.isFrozen(resolved.engineExclusions)).toBe(true)
+	})
+
 	it("an anchor-required entity ON cannot un-exclude its bare detector even against a legacy list", () => {
 		// The legacy list excluded URL at the engine. A managed entities.URL=on
 		// must keep it excluded — anchor_required ON means "anchored patterns
