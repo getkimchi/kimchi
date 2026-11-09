@@ -783,7 +783,12 @@ function isBase64From(text: string, start: number): boolean {
 /** Base64 chars needed to decode the 12 bytes the image signatures below inspect. */
 const IMAGE_SIGNATURE_BASE64_CHARS = 16
 
-/** Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature. */
+/**
+ * Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature —
+ * deliberately just those four: the formats vision providers accept. Other
+ * image/* subtypes keep being scanned (fail-closed), never reaching a
+ * provider as images anyway.
+ */
 function hasImageSignature(text: string, start: number): boolean {
 	// Line breaks are legal base64: collect signature chars past them, else a
 	// break inside the window shrinks it and WebP's 12-byte check falls short.
