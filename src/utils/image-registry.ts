@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
@@ -67,6 +67,22 @@ export function addImage(id: number, image: ImageContent): ImageRegistryEntry {
 	const entry: ImageRegistryEntry = { id, path, mimeType: image.mimeType, sha1 }
 	entries.set(id, entry)
 	return entry
+}
+
+/**
+ * Reconstruct the ImageContent for a registered id by reading its cached
+ * file back from disk. Returns null for unknown ids, missing files, or
+ * read failures — used to resolve `[Image #N]` markers that reference an
+ * earlier turn's attachment.
+ */
+export function getImageContentById(id: number): ImageContent | null {
+	const entry = entries.get(id)
+	if (!entry || !existsSync(entry.path)) return null
+	try {
+		return { type: "image", data: readFileSync(entry.path).toString("base64"), mimeType: entry.mimeType }
+	} catch {
+		return null
+	}
 }
 
 /**
