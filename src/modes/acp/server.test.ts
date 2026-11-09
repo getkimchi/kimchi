@@ -68,6 +68,9 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// Mocked (real by default) so region-config tests can inject a region
+		// without touching the developer's real ~/.config/kimchi/config.json.
+		resolveEndpoints: vi.fn(actual.resolveEndpoints),
 		// The set_onboarding_flag ext-method writes the shared config's
 		// onboarding namespace; mock it so server-level tests don't touch the
 		// real config file. Write semantics are covered by the handler's own
@@ -138,7 +141,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
+import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
@@ -156,6 +159,7 @@ import {
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
+import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
@@ -990,26 +994,23 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		// The plain kimchi-sso follows the configured region; a region without an
 		// Auth0 tenant (self-hosted) cannot offer it, so only the pins remain.
+		// The region is injected through the resolveEndpoints mock — tests must
+		// never write the developer's real ~/.config/kimchi/config.json (it can
+		// hold their API key and region settings).
 		it("omits the plain kimchi-sso method when the configured region has no SSO tenant", async () => {
-			vi.stubEnv("KIMCHI_REGION", "self-hosted")
-			onTestFinished(() => {
-				vi.unstubAllEnvs()
-			})
-			const configDir = join(homedir(), ".config", "kimchi")
-			mkdirSync(configDir, { recursive: true })
-			writeFileSync(
-				join(configDir, "config.json"),
-				JSON.stringify({
-					region: "self-hosted",
-					selfHostedEndpoints: {
+			const actualConfig = await vi.importActual<typeof import("../../config.js")>("../../config.js")
+			vi.mocked(resolveEndpoints).mockImplementation(() => ({
+				...regionEndpoints(
+					discoveredSelfHostedRegion({
 						api: "https://kimchi.example.com/api",
 						console: "https://kimchi.example.com",
 						llm: "https://kimchi.example.com/llm",
-					},
-				}),
-			)
+					}),
+				),
+				llmEndpoint: "https://kimchi.example.com/llm",
+			}))
 			onTestFinished(() => {
-				rmSync(join(configDir, "config.json"), { force: true })
+				vi.mocked(resolveEndpoints).mockImplementation(actualConfig.resolveEndpoints)
 			})
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],

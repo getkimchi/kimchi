@@ -42,6 +42,7 @@ import {
 	generateOAuthState,
 	type KimchiOrganization,
 	type listUserOrganizations as listUserOrganizationsProd,
+	OAuthTokenError,
 } from "../../../cli-auth/oauth.js"
 import type { KimchiOAuthConfig } from "../../../oauth-config.js"
 import { isRegionId, type RegionId } from "../../../regions.js"
@@ -135,6 +136,10 @@ interface PendingSsoFlow {
 	config: KimchiOAuthConfig
 	verifier: string
 	callbackServer: CallbackServer
+	/** Aborted by discard(): cancels an in-flight token exchange or org fetch
+	 * so a cancelled sign-in can never complete (review: sso_cancel must stop
+	 * the whole continuation, not just the loopback server). */
+	abortController: AbortController
 	expiresAtMs: number
 	/** `browser`: waiting for the loopback callback; `org`: holding the
 	 * exchanged token until the client picks an organization. */
@@ -167,7 +172,16 @@ export class SsoFlowManager {
 	/** `_kimchi.dev/sso_begin` — start the loopback server + build the URL. */
 	async begin(params: Record<string, unknown>): Promise<SsoBeginResponse> {
 		if (this.flow) {
-			throw ssoError("SSO_IN_PROGRESS", "A CAST AI SSO sign-in is already in progress on this connection")
+			// Reap an expired-but-unreaped flow first: a browser-phase flow whose
+			// sso_await was never called (or a parked multi-org flow past its
+			// window) has nothing watching expiresAtMs — without this, a dead flow
+			// would block new logins with SSO_IN_PROGRESS (contract: expired →
+			// restart the flow).
+			if ((this.deps.now ?? Date.now)() > this.flow.expiresAtMs) {
+				this.discard(this.flow)
+			} else {
+				throw ssoError("SSO_IN_PROGRESS", "A CAST AI SSO sign-in is already in progress on this connection")
+			}
 		}
 
 		let region: RegionId
@@ -219,6 +233,7 @@ export class SsoFlowManager {
 			config,
 			verifier,
 			callbackServer,
+			abortController: new AbortController(),
 			expiresAtMs,
 			phase: "browser",
 		}
@@ -267,6 +282,7 @@ export class SsoFlowManager {
 			this.discard(flow)
 			throw ssoError("SSO_REQUEST_NOT_FOUND", "No organization selection is pending for this requestId")
 		}
+		this.assertFlowAlive(flow)
 		// Persist + fan out the org-scoped credential; nothing was written
 		// before this point (contract §3.2).
 		await this.deps.settleCredential(credential, org)
@@ -304,22 +320,38 @@ export class SsoFlowManager {
 			const result = await this.raceWithExpiry(flow, flow.callbackServer.result)
 			this.assertUsableCallbackResult(result)
 
-			const credential = await this.deps.exchangeAuthorizationCode(
-				flow.config,
-				result.code,
-				flow.verifier,
-				flow.callbackServer.url,
-				// No caller abort: cancellation goes through sso_cancel, which
-				// tears the flow down directly.
-				new AbortController().signal,
-			)
+			let credential: OAuthCredentials
+			try {
+				credential = await this.deps.exchangeAuthorizationCode(
+					flow.config,
+					result.code,
+					flow.verifier,
+					flow.callbackServer.url,
+					// Aborted by sso_cancel/discard so a cancelled sign-in never
+					// completes (review finding: cancel must stop the continuation).
+					flow.abortController.signal,
+				)
+			} catch (error) {
+				if (flow.abortController.signal.aborted) {
+					throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
+				}
+				// Token-endpoint failures are IdP interactions: map to the typed
+				// code (preserving the RFC 6749 error when one came back) instead
+				// of an unclassifiable internal error (review finding).
+				const detail = error instanceof Error ? error.message : String(error)
+				throw ssoError(
+					"SSO_IDP_ERROR",
+					`CAST AI sign-in failed: ${detail}`,
+					error instanceof OAuthTokenError && error.code ? { oauthError: error.code } : undefined,
+				)
+			}
 
 			let organizations: KimchiOrganization[]
 			try {
 				organizations = await this.deps.listUserOrganizations(
 					flow.config.organizationsUrl,
 					credential.access,
-					new AbortController().signal,
+					flow.abortController.signal,
 				)
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error)
@@ -330,6 +362,7 @@ export class SsoFlowManager {
 			}
 			if (organizations.length === 1) {
 				const org = organizations[0]
+				this.assertFlowAlive(flow)
 				await this.deps.settleCredential(credential, org)
 				// Terminal success consumes the flow.
 				this.discard(flow)
@@ -345,14 +378,18 @@ export class SsoFlowManager {
 			// Any terminal failure consumes the flow. The org_selection_required
 			// path above returns normally, so it keeps the flow alive.
 			this.discard(flow)
+			if (flow.abortController.signal.aborted && !(error instanceof RequestError)) {
+				// The abort surfaced as a plain cancellation error from the token/
+				// org fetch — report it as the cancelled requestId it is.
+				throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
+			}
 			throw error
 		}
 	}
 
 	/** Map a callback-server outcome to either an authorization code or a
-	 * typed error. Non-IdP callback failures (state mismatch, missing code)
-	 * surface as SSO_IDP_ERROR with the underlying message preserved; the
-	 * server's own give-up resolves with a "timed out" error. */
+	 * typed error, classifying by the typed `outcome` discriminant — never by
+	 * matching on message text (same rule as CallbackPortInUseError). */
 	private assertUsableCallbackResult(result: CallbackResult): asserts result is CallbackResult & { code: string } {
 		if (result.errorCode) {
 			// RFC 6749 error from the IdP ("access_denied", "invalid_grant", …) —
@@ -361,14 +398,18 @@ export class SsoFlowManager {
 				oauthError: result.errorCode,
 			})
 		}
-		if (result.error) {
-			if (result.error.includes("timed out")) {
+		switch (result.outcome) {
+			case "timeout":
 				throw ssoError("SSO_CALLBACK_TIMEOUT", "The sign-in window timed out before the browser completed")
-			}
-			if (result.error === "Login cancelled") {
+			case "cancelled":
 				throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
-			}
-			throw ssoError("SSO_IDP_ERROR", result.error)
+			case "code":
+			case "token":
+				break
+			default:
+				// "error" (state mismatch, missing deliverable, unexpected server
+				// error) or an older server without the discriminant.
+				throw ssoError("SSO_IDP_ERROR", result.error ?? "CAST AI sign-in failed")
 		}
 		if (!result.code) {
 			throw ssoError("SSO_IDP_ERROR", "The OAuth callback carried no authorization code")
@@ -396,13 +437,24 @@ export class SsoFlowManager {
 
 	/** Tear down the flow: close the callback server (resolves a pending
 	 * browser wait with "Login cancelled", which runBrowserWait maps to
-	 * SSO_REQUEST_NOT_FOUND) and delete the entry. Safe to call twice. */
+	 * SSO_REQUEST_NOT_FOUND), abort any in-flight completion, and delete the
+	 * entry. Safe to call twice. */
 	private discard(flow: PendingSsoFlow): void {
 		if (this.flow === flow) this.flow = undefined
+		flow.abortController.abort()
 		try {
 			flow.callbackServer.close()
 		} catch {
 			// The server may already be closed — idempotent by contract.
+		}
+	}
+
+	/** Refuse to settle a flow that was cancelled/expired while its completion
+	 * was in flight: discard() cleared the map entry, so a missing entry means
+	 * the credential must not be persisted. */
+	private assertFlowAlive(flow: PendingSsoFlow): void {
+		if (this.flow !== flow) {
+			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
 		}
 	}
 }

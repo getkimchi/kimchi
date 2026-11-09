@@ -10,6 +10,7 @@ import { RequestError } from "@agentclientprotocol/sdk"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CallbackPortInUseError, type CallbackResult, type CallbackServer } from "../../../cli-auth/callback-server.js"
+import type { KimchiOrganization } from "../../../cli-auth/oauth.js"
 import type { KimchiOAuthConfig } from "../../../oauth-config.js"
 import {
 	type SsoAwaitResponse,
@@ -44,7 +45,7 @@ function makeFakeCallbackServer(url = "http://localhost:8765/callback"): FakeCal
 		}),
 		close: () => {
 			fake.closeCalls++
-			resolveResult({ error: "Login cancelled" })
+			resolveResult({ error: "Login cancelled", outcome: "cancelled" })
 		},
 	}
 	fake.settle = resolveResult
@@ -87,8 +88,15 @@ function makeHarness(overrides: Partial<SsoFlowManagerDeps> = {}): Harness {
 		organizationsUrl: "https://api.cast.ai/v1/organizations",
 		useIdToken: true,
 	}
-	const exchangeAuthorizationCode = vi.fn(async () => makeCredential())
-	const listUserOrganizations = vi.fn(async () => [{ id: "org-1", name: "Acme" }])
+	const exchangeAuthorizationCode = vi.fn(
+		async (_config: KimchiOAuthConfig, _code: string, _verifier: string, _url: string, _signal: AbortSignal) =>
+			makeCredential(),
+	)
+	const listUserOrganizations = vi.fn(
+		async (_url: string, _bearer: string, _signal: AbortSignal): Promise<KimchiOrganization[]> => [
+			{ id: "org-1", name: "Acme" },
+		],
+	)
 	const settleCredential = vi.fn(async () => {})
 	const deps: SsoFlowManagerDeps = {
 		configuredRegion: () => "us",
@@ -209,13 +217,33 @@ describe("SsoFlowManager", () => {
 			await h.manager.begin({})
 			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
 		})
+
+		// Review finding: a browser-phase flow whose sso_await was never called
+		// has no expiry timer — without reaping, a long-dead flow would block new
+		// logins with SSO_IN_PROGRESS (contract: expired → restart the flow).
+		it("reaps an expired abandoned flow so a later begin starts cleanly", async () => {
+			const h = makeHarness()
+			const abandoned = await h.manager.begin({})
+			h.clock.now += 600_001
+
+			const retry = await h.manager.begin({})
+			expect(retry.requestId).not.toBe(abandoned.requestId)
+			// The abandoned flow is dead: its requestId no longer resolves.
+			await expectSsoError(h.manager.awaitResult({ requestId: abandoned.requestId }), "SSO_REQUEST_NOT_FOUND")
+		})
+
+		it("still rejects SSO_IN_PROGRESS for a live flow even after a previous flow expired", async () => {
+			const h = makeHarness()
+			await h.manager.begin({})
+			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+		})
 	})
 
 	describe("sso_await", () => {
 		it("auto-selects a single organization, settles the credential, and consumes the flow", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code" })
+			h.server.settle({ code: "the-code", outcome: "code" })
 
 			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
 				status: "authenticated",
@@ -241,7 +269,7 @@ describe("SsoFlowManager", () => {
 				{ id: "org-456", name: "Acme Staging" },
 			])
 			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code" })
+			h.server.settle({ code: "the-code", outcome: "code" })
 
 			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
 				status: "org_selection_required",
@@ -262,7 +290,7 @@ describe("SsoFlowManager", () => {
 		it("maps an IdP error code from the callback to SSO_IDP_ERROR with data.oauthError", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
-			h.server.settle({ error: "access_denied", errorCode: "access_denied" })
+			h.server.settle({ error: "access_denied", errorCode: "access_denied", outcome: "error" })
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_IDP_ERROR", {
 				oauthError: "access_denied",
 			})
@@ -271,14 +299,17 @@ describe("SsoFlowManager", () => {
 		it("maps the loopback server's timeout to SSO_CALLBACK_TIMEOUT", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
-			h.server.settle({ error: "Browser login timed out -- please try again" })
+			h.server.settle({ error: "Browser login timed out -- please try again", outcome: "timeout" })
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_CALLBACK_TIMEOUT")
 		})
 
 		it("maps a state-mismatch callback failure to SSO_IDP_ERROR and consumes the flow", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
-			h.server.settle({ error: "OAuth state mismatch — the sign-in attempt was rejected for your protection" })
+			h.server.settle({
+				error: "OAuth state mismatch — the sign-in attempt was rejected for your protection",
+				outcome: "error",
+			})
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_IDP_ERROR")
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
 		})
@@ -287,13 +318,13 @@ describe("SsoFlowManager", () => {
 			const failing = makeHarness()
 			failing.listUserOrganizations.mockRejectedValue(new Error("HTTP 500"))
 			const begin = await failing.manager.begin({})
-			failing.server.settle({ code: "the-code" })
+			failing.server.settle({ code: "the-code", outcome: "code" })
 			await expectSsoError(failing.manager.awaitResult({ requestId: begin.requestId }), "SSO_ORG_FETCH_FAILED")
 
 			const empty = makeHarness()
 			empty.listUserOrganizations.mockResolvedValue([])
 			const begin2 = await empty.manager.begin({})
-			empty.server.settle({ code: "the-code" })
+			empty.server.settle({ code: "the-code", outcome: "code" })
 			await expectSsoError(empty.manager.awaitResult({ requestId: begin2.requestId }), "SSO_NO_ORGANIZATIONS")
 		})
 
@@ -333,7 +364,7 @@ describe("SsoFlowManager", () => {
 				{ id: "org-456", name: "Acme Staging" },
 			])
 			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code" })
+			h.server.settle({ code: "the-code", outcome: "code" })
 			await h.manager.awaitResult({ requestId: begin.requestId })
 
 			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })).resolves.toEqual({
@@ -359,7 +390,7 @@ describe("SsoFlowManager", () => {
 				{ id: "org-456", name: "Acme Staging" },
 			])
 			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code" })
+			h.server.settle({ code: "the-code", outcome: "code" })
 			await h.manager.awaitResult({ requestId: begin.requestId })
 
 			await expectSsoError(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-999" }), "SSO_UNKNOWN_ORG")
@@ -404,6 +435,35 @@ describe("SsoFlowManager", () => {
 			expect(h.manager.cancel({})).toEqual({})
 		})
 
+		// Review finding: cancel must stop an in-flight completion, not just the
+		// loopback server — a cancelled sign-in must never persist a credential.
+		it("aborts an in-flight completion: a cancelled flow never settles", async () => {
+			const h = makeHarness()
+			h.exchangeAuthorizationCode.mockImplementation(
+				(_config: KimchiOAuthConfig, _code: string, _verifier: string, _url: string, signal: AbortSignal) =>
+					new Promise<OAuthCredentials>((_resolve, reject) => {
+						// cancel() can land before the exchange even starts (abort
+						// fires synchronously; an already-aborted signal never
+						// dispatches the event).
+						if (signal.aborted) {
+							reject(new Error("Login cancelled"))
+							return
+						}
+						signal.addEventListener("abort", () => reject(new Error("Login cancelled")), { once: true })
+					}),
+			)
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			const pending = h.manager.awaitResult({ requestId: begin.requestId })
+
+			expect(h.manager.cancel({ requestId: begin.requestId })).toEqual({})
+
+			await expectSsoError(pending, "SSO_REQUEST_NOT_FOUND")
+			expect(h.settleCredential).not.toHaveBeenCalled()
+			// The connection is free for a fresh login.
+			await expect(h.manager.begin({})).resolves.toEqual(expect.objectContaining({ requestId: expect.any(String) }))
+		})
+
 		it("cancels without a requestId targets the active flow", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
@@ -418,7 +478,7 @@ describe("SsoFlowManager", () => {
 			const begin = await h.manager.begin({})
 			const first = h.manager.awaitResult({ requestId: begin.requestId })
 			const second = h.manager.awaitResult({ requestId: begin.requestId })
-			h.server.settle({ code: "the-code" })
+			h.server.settle({ code: "the-code", outcome: "code" })
 			await expect(first).resolves.toEqual({ status: "authenticated", org: { id: "org-1", name: "Acme" } })
 			await expect(second).resolves.toEqual({ status: "authenticated", org: { id: "org-1", name: "Acme" } })
 			expect(h.settleCredential).toHaveBeenCalledTimes(1)

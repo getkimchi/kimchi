@@ -54,6 +54,9 @@ export interface CallbackResult {
 	error?: string
 	/** RFC 6749 `error` value when the IdP returned one (OAuth flows only). */
 	errorCode?: string
+	/** Typed outcome so consumers classify without matching on `error` text
+	 * (a copy tweak in the messages here must not misroute callers). */
+	outcome?: "code" | "token" | "timeout" | "cancelled" | "error"
 }
 
 export interface CallbackServer {
@@ -144,7 +147,7 @@ export function startCallbackServer(
 					const heading = mode === "code" ? "Sign-in failed" : "Login error"
 					res.writeHead(400, { "Content-Type": "text/html", Connection: "close" })
 					res.end(oauthErrorHtml(heading, errorMsg))
-					finish({ error: errorMsg })
+					finish({ error: errorMsg, outcome: "error" })
 					return
 				}
 
@@ -155,7 +158,7 @@ export function startCallbackServer(
 					const errorMsg = errorDescription || error
 					res.writeHead(200, { "Content-Type": "text/html", Connection: "close" })
 					res.end(oauthErrorHtml("Authentication failed", errorMsg))
-					finish({ error: errorMsg, errorCode: error })
+					finish({ error: errorMsg, errorCode: error, outcome: "error" })
 					return
 				}
 
@@ -169,19 +172,19 @@ export function startCallbackServer(
 					const pageTitle = mode === "code" ? "Missing code" : "Missing token"
 					res.writeHead(400, { "Content-Type": "text/html", Connection: "close" })
 					res.end(oauthErrorHtml(pageTitle, errorMsg))
-					finish({ error: errorMsg })
+					finish({ error: errorMsg, outcome: "error" })
 					return
 				}
 
 				// Success
 				res.writeHead(200, { "Content-Type": "text/html", Connection: "close" })
 				res.end(oauthSuccessHtml(options.successMessage ?? SUCCESS_MESSAGE))
-				finish(mode === "code" ? { code: deliverable } : { token: deliverable })
+				finish(mode === "code" ? { code: deliverable, outcome: "code" } : { token: deliverable, outcome: "token" })
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err)
 				res.writeHead(500, { "Content-Type": "text/plain", Connection: "close" })
 				res.end("Internal server error")
-				finish({ error: `Unexpected server error: ${message}` })
+				finish({ error: `Unexpected server error: ${message}`, outcome: "error" })
 				req.socket.destroy()
 			}
 		}
@@ -241,6 +244,7 @@ export function startCallbackServer(
 						// conceivable noise, so v4-only is an acceptable fallback.
 					}
 				}
+=======
 
 				return port
 			})
@@ -248,7 +252,7 @@ export function startCallbackServer(
 				if (port === undefined) return
 
 				timeoutTimer = setTimeout(() => {
-					finish({ error: "Browser login timed out -- please try again" })
+					finish({ error: "Browser login timed out -- please try again", outcome: "timeout" })
 				}, CALLBACK_TIMEOUT_MS)
 
 				const resultPromise = new Promise<CallbackResult>((resolve) => {
@@ -264,7 +268,7 @@ export function startCallbackServer(
 					url: `http://${mode === "code" ? "localhost" : "127.0.0.1"}:${port}${CALLBACK_PATH}`,
 					result: resultPromise,
 					close: () => {
-						finish({ error: "Login cancelled" })
+						finish({ error: "Login cancelled", outcome: "cancelled" })
 					},
 				})
 			})
