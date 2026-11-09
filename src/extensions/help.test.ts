@@ -1,9 +1,11 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, onTestFinished, vi } from "vitest"
+import { createCommandContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 import helpExtension from "./help.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
@@ -12,7 +14,6 @@ vi.mock("./terminal-compat/keyboard-capability.js", () => ({
 	getKittyKeyboardSupport: () => keyboardCapabilityMock.kittySupport,
 }))
 
-type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>
 type OverlayFactory = (
 	tui: { requestRender: () => void; terminal: { rows: number; cols: number } },
 	theme: Theme,
@@ -20,6 +21,8 @@ type OverlayFactory = (
 	done: () => void,
 ) => Component
 
+// Identity theme: the assertions below match on plain text (`Ctrl+1\s+Rate…`),
+// which ANSI colour codes from the shared testTheme would split.
 function plainTheme(): Theme {
 	return {
 		fg: (_color: string, text: string) => text,
@@ -32,27 +35,29 @@ function plainTheme(): Theme {
 	} as unknown as Theme
 }
 
-async function mountHelpOverlay(): Promise<Component> {
-	let handler: CommandHandler | undefined
-	const pi = {
-		registerCommand: (_name: string, def: { handler: CommandHandler }) => {
-			handler = def.handler
-		},
-	} as unknown as ExtensionAPI
-	helpExtension(pi)
+/** Register the extension against the shared ExtensionAPI mock and return the /help handler. */
+function registerHelp(): (args: string, ctx: ExtensionCommandContext) => Promise<void> {
+	const harness = createExtensionApi()
+	helpExtension(harness.api)
+	const handler = harness.getRegisteredCommand("help").handler
 	expect(handler).toBeDefined()
+	return handler as (args: string, ctx: ExtensionCommandContext) => Promise<void>
+}
 
+async function mountHelpOverlay(): Promise<Component> {
+	const handler = registerHelp()
 	let component: Component | undefined
-	const ctx = {
-		mode: "tui",
-		ui: {
-			custom: vi.fn(async (factory: OverlayFactory) => {
-				component = factory({ requestRender: vi.fn(), terminal: { rows: 40, cols: 80 } }, plainTheme(), {}, () => {})
-				return undefined
-			}),
-		},
-	} as unknown as ExtensionContext
-	await handler?.("", ctx)
+	const ctx = createCommandContext()
+	vi.mocked(ctx.ui.custom).mockImplementation(async (factory) => {
+		component = (factory as unknown as OverlayFactory)(
+			{ requestRender: vi.fn(), terminal: { rows: 40, cols: 80 } },
+			plainTheme(),
+			{},
+			() => {},
+		)
+		return undefined
+	})
+	await handler("", ctx)
 	expect(component).toBeDefined()
 	return component as Component
 }
@@ -124,7 +129,6 @@ describe("help — slash command list", () => {
 		"memory-residency",
 		"session-costs",
 		"budget",
-		"btw",
 		"clear",
 		// advanced or undocumented surfaces
 		"plugins",
@@ -182,7 +186,7 @@ describe("help — slash command list", () => {
 	})
 
 	it("lists, or explicitly excludes, every command kimchi registers", () => {
-		// The inverse guard: this PR back-filled 13 user-facing commands that had
+		// The inverse guard: this PR back-filled 14 user-facing commands that had
 		// shipped without a /help entry. A new command must now be listed or
 		// named in INTERNAL_COMMANDS — silent omission is no longer possible.
 		const unaccounted = [...registeredCommandNames()].filter(
@@ -208,17 +212,11 @@ describe("help — slash command list", () => {
 	it("prints the user-facing commands that were missing from the list", async () => {
 		// The non-TUI branch prints every row at once (the overlay scrolls, so a
 		// 40-row render would only show the top of the list).
-		let handler: CommandHandler | undefined
-		const pi = {
-			registerCommand: (_name: string, def: { handler: CommandHandler }) => {
-				handler = def.handler
-			},
-		} as unknown as ExtensionAPI
-		helpExtension(pi)
-		const notify = vi.fn()
-		await handler?.("", { mode: "rpc", ui: { notify } } as unknown as ExtensionContext)
-		const text = String(notify.mock.calls[0]?.[0])
-		for (const name of ["work", "theme", "processes", "branch", "update", "teleport", "status", "hooks"]) {
+		const handler = registerHelp()
+		const ctx: ExtensionCommandContext = { ...createCommandContext(), mode: "rpc" }
+		await handler("", ctx)
+		const text = String(vi.mocked(ctx.ui.notify).mock.calls[0]?.[0])
+		for (const name of ["work", "theme", "processes", "branch", "btw", "update", "teleport", "status", "hooks"]) {
 			expect(text).toContain(`/${name}`)
 		}
 		expect(text).not.toContain("/multi-model")
