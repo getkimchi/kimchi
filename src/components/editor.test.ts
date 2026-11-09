@@ -22,10 +22,26 @@ function makeEditorTheme(): EditorTheme {
 	}
 }
 
-function makeKeybindings(): KeybindingsManager {
+function makeKeybindings(overrides: { matches?: (data: string, action: string) => boolean } = {}): KeybindingsManager {
 	return {
-		matches: (_data: string, _action: string) => false,
+		matches: overrides.matches ?? ((_data: string, _action: string) => false),
 	} as unknown as KeybindingsManager
+}
+
+// Fixture where "\x7f" is bound to deleteCharBackward (default backspace),
+// "\x1b\x7f" to deleteWordBackward (default alt+backspace), "\x1b[3~" to
+// deleteCharForward (default Del key), and "\x1b[H" to cursorLineStart (Home).
+function makeBackspaceKeybindings(): KeybindingsManager {
+	return makeKeybindings({
+		matches: (data, action) =>
+			(action === "tui.editor.deleteCharBackward" && data === "\x7f") ||
+			(action === "tui.editor.deleteWordBackward" && data === "\x1b\x7f") ||
+			(action === "tui.editor.deleteCharForward" && data === "\x1b[3~") ||
+			(action === "tui.editor.deleteWordForward" && data === "\x1bd") ||
+			(action === "tui.editor.cursorLineStart" && data === "\x1b[H") ||
+			(action === "tui.editor.cursorRight" && data === "\x1b[C") ||
+			(action === "tui.editor.cursorLeft" && data === "\x1b[D"),
+	})
 }
 
 function makeTheme(): Theme {
@@ -36,9 +52,9 @@ function makeTheme(): Theme {
 	} as unknown as Theme
 }
 
-function makeEditor(): { editor: PromptEditor; tui: TUI } {
+function makeEditor(keybindings?: KeybindingsManager): { editor: PromptEditor; tui: TUI } {
 	const tui = makeTui()
-	const editor = new PromptEditor(tui, makeEditorTheme(), makeKeybindings(), makeTheme())
+	const editor = new PromptEditor(tui, makeEditorTheme(), keybindings ?? makeKeybindings(), makeTheme())
 	return { editor, tui }
 }
 
@@ -50,6 +66,215 @@ function stripAnsi(s: string): string {
 }
 
 describe("PromptEditor", () => {
+	describe("bracketed-paste image-drop interception", () => {
+		const OPEN = "\x1b[200~"
+		const CLOSE = "\x1b[201~"
+
+		it("offers a complete paste to the drop handler and consumes it when accepted", () => {
+			const { editor } = makeEditor()
+			const seen: string[] = []
+			editor.onImagePathDrop = (text) => {
+				seen.push(text)
+				return true
+			}
+			editor.handleInput(`${OPEN}/tmp/cat.png${CLOSE}`)
+			expect(seen).toEqual(["/tmp/cat.png"])
+			// Consumed: the raw path never lands in the editor text.
+			expect(editor.getText()).toBe("")
+		})
+
+		it("falls back to upstream text insertion when the handler rejects the paste", () => {
+			const { editor } = makeEditor()
+			editor.onImagePathDrop = () => false
+			editor.handleInput(`${OPEN}/tmp/notes.txt${CLOSE}`)
+			expect(editor.getText()).toBe("/tmp/notes.txt")
+		})
+
+		it("inserts nothing when no drop handler is registered", () => {
+			const { editor } = makeEditor()
+			editor.handleInput(`${OPEN}/tmp/cat.png${CLOSE}`)
+			expect(editor.getText()).toBe("/tmp/cat.png")
+		})
+
+		it("preserves segment order around a consumed drop (before and after text)", () => {
+			const { editor } = makeEditor()
+			editor.onImagePathDrop = () => true
+			editor.handleInput(`describe ${OPEN}/tmp/cat.png${CLOSE} please`)
+			expect(editor.getText()).toBe("describe  please")
+		})
+
+		it("handles multiple drops in one chunk, in order", () => {
+			const { editor } = makeEditor()
+			const seen: string[] = []
+			editor.onImagePathDrop = (text) => {
+				seen.push(text)
+				return true
+			}
+			editor.handleInput(`${OPEN}/tmp/a.png${CLOSE}${OPEN}/tmp/b.png${CLOSE}`)
+			expect(seen).toEqual(["/tmp/a.png", "/tmp/b.png"])
+			expect(editor.getText()).toBe("")
+		})
+
+		it("re-emits unhandled pastes intact while still consuming handled ones", () => {
+			const { editor } = makeEditor()
+			editor.onImagePathDrop = (text) => text.endsWith(".png")
+			editor.handleInput(`${OPEN}/tmp/a.png${CLOSE}${OPEN}/tmp/notes.txt${CLOSE}`)
+			expect(editor.getText()).toBe("/tmp/notes.txt")
+		})
+
+		it("leaves incomplete pastes to upstream buffering without calling the handler", () => {
+			const { editor } = makeEditor()
+			const seen: string[] = []
+			editor.onImagePathDrop = (text) => {
+				seen.push(text)
+				return true
+			}
+			// Opener without closer in this chunk → multi-chunk paste. The drop
+			// handler must not see partial content; upstream buffers it and (when
+			// the closer arrives) inserts the path as plain text.
+			editor.handleInput(`${OPEN}/tmp/cat`)
+			expect(seen).toEqual([])
+			editor.handleInput(`.png${CLOSE}`)
+			expect(seen).toEqual([])
+			expect(editor.getText()).toBe("/tmp/cat.png")
+		})
+	})
+
+	describe("atomic [Image #N] markers", () => {
+		// Records every marker-set sync the editor emits after input.
+		function watchEdits(editor: PromptEditor): Set<number>[] {
+			const edits: Set<number>[] = []
+			editor.onImageMarkersEdited = (ids) => edits.push(ids)
+			return edits
+		}
+
+		it("a single backspace after a marker deletes it whole and emits the empty set", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("fix ")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("atomic marker deletion works even without a registered edit listener", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("fix ")
+		})
+
+		it("marker mid-line is deleted atomically once trailing text is gone", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("see [Image #2] now")
+			// Delete " now" character by character — the marker stays intact.
+			for (let i = 0; i < 4; i++) editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("see [Image #2]")
+			expect(edits).toEqual([])
+			// The very next backspace swallows the whole marker.
+			editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("see ")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("ordinary backspace is unaffected when there is no trailing marker", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("hello")
+			editor.handleInput("\x7f")
+			expect(editor.getText()).toBe("hell")
+			expect(edits).toEqual([])
+		})
+
+		it("alt+backspace (word delete) after a marker deletes it whole", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("fix [Image #1]")
+			editor.handleInput("\x1b\x7f")
+			expect(editor.getText()).toBe("fix ")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("alt+backspace still deletes word-wise when no marker trails the cursor", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("world hello")
+			editor.handleInput("\x1b\x7f")
+			expect(editor.getText()).toBe("world ")
+			expect(edits).toEqual([])
+		})
+
+		it("forward-delete (Del) with the cursor before a marker deletes it whole", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("[Image #1] fix")
+			editor.handleInput("\x1b[H") // Home — cursor to marker start
+			editor.handleInput("\x1b[3~") // Del
+			expect(editor.getText()).toBe(" fix")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("forward-delete is unaffected when no marker follows the cursor", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("hi")
+			editor.handleInput("\x1b[H")
+			editor.handleInput("\x1b[3~")
+			expect(editor.getText()).toBe("i")
+			expect(edits).toEqual([])
+		})
+
+		it("alt+d (word delete forward) before a marker deletes it whole", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("[Image #1] fix")
+			editor.handleInput("\x1b[H")
+			editor.handleInput("\x1bd")
+			expect(editor.getText()).toBe(" fix")
+			expect(edits).toEqual([new Set()])
+		})
+
+		it("alt+d still deletes word-wise when no marker follows the cursor", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("hello world")
+			editor.handleInput("\x1b[H")
+			editor.handleInput("\x1bd")
+			expect(editor.getText()).toBe(" world")
+			expect(edits).toEqual([])
+		})
+
+		it("completing a marker by typing its closing bracket emits the new set", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			const edits = watchEdits(editor)
+			editor.setText("look [Image #1")
+			editor.handleInput("]")
+			expect(edits).toEqual([new Set([1])])
+		})
+
+		it("right arrow jumps over a marker as one atom", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.setText("x[Image #1]y")
+			editor.handleInput("\x1b[H")
+			editor.handleInput("\x1b[C")
+			expect(editor.getCursor().col).toBe(1)
+			editor.handleInput("\x1b[C")
+			expect(editor.getCursor().col).toBe(11)
+			editor.handleInput("\x1b[C")
+			expect(editor.getCursor().col).toBe(12)
+		})
+
+		it("left arrow jumps back over a marker as one atom", () => {
+			const { editor } = makeEditor(makeBackspaceKeybindings())
+			editor.setText("x[Image #1]y")
+			editor.handleInput("\x1b[D")
+			expect(editor.getCursor().col).toBe(11)
+			editor.handleInput("\x1b[D")
+			expect(editor.getCursor().col).toBe(1)
+		})
+	})
+
 	describe("render — no indicator", () => {
 		it("renders top border, single content row, bottom border when empty", () => {
 			const { editor } = makeEditor()
