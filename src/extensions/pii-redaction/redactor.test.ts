@@ -1381,3 +1381,30 @@ describe("token mode — composition and tally parity", () => {
 		expect(result.report.entities).toEqual({})
 	})
 })
+
+describe("redactObjectStrings — image payloads are binary, not text", () => {
+	// Real-session shape: base64 of an ordinary PNG happened to contain a run
+	// matching the crates.io token pattern. Replacing it corrupted the image,
+	// and the provider rejected every later turn with a 400.
+	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
+	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC`
+
+	it.each([
+		["internal image block", { type: "image", mimeType: "image/png", data: base64 }],
+		["Anthropic source block", { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } }],
+		["Google inlineData part", { inlineData: { mimeType: "image/png", data: base64 } }],
+		["OpenAI image_url part", { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }],
+		["OpenAI Responses input_image part", { type: "input_image", image_url: `data:image/png;base64,${base64}` }],
+	])("leaves %s byte-identical", async (_name, block) => {
+		expect(await redactObjectStrings({ role: "user", content: [block] })).toEqual({ role: "user", content: [block] })
+	})
+
+	it.each([
+		["data field without an image mime type", { mimeType: "text/plain", data: tokenShaped }],
+		["image block whose data is not base64", { mimeType: "image/png", data: `note: ${tokenShaped}` }],
+		["data URL with text after the payload", { url: `data:image/png;base64,AAAA ${tokenShaped}` }],
+		["non-image data URL", { url: `data:text/plain;base64,${tokenShaped}` }],
+	])("still scans %s", async (_name, block) => {
+		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
+	})
+})

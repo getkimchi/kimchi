@@ -753,6 +753,34 @@ export async function redactText(text: string): Promise<string> {
 	return redactTextCounted(text, (err) => console.error("PII redaction scan failed, returning original text:", err))
 }
 
+/** Whether `text` from `start` on is one unbroken, non-empty base64 payload. */
+function isBase64From(text: string, start: number): boolean {
+	let end = text.length
+	while (end > start && text.length - end < 2 && text.charCodeAt(end - 1) === 61) end--
+	if (end === start) return false
+	for (let i = start; i < end; i++) {
+		const c = text.charCodeAt(i)
+		const isBase64Char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47
+		if (!isBase64Char) return false
+	}
+	return true
+}
+
+const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+;base64,/i
+
+/** A complete `data:image/...;base64,` URL (OpenAI-style request payloads). */
+function isImageDataUrl(text: string): boolean {
+	const prefix = IMAGE_DATA_URL_PREFIX.exec(text.slice(0, 128))
+	return prefix !== null && isBase64From(text, prefix[0].length)
+}
+
+/** The base64 `data` of an image block: internal/Google `mimeType`, Anthropic `media_type`. */
+function isImageBlockData(key: PropertyKey, value: unknown, block: Record<PropertyKey, unknown>): boolean {
+	if (key !== "data" || typeof value !== "string") return false
+	const mime = block.mimeType ?? block.media_type
+	return typeof mime === "string" && mime.toLowerCase().startsWith("image/") && isBase64From(value, 0)
+}
+
 /**
  * Deep-walk any JSON-serializable structure and redact all string values.
  *
@@ -760,6 +788,10 @@ export async function redactText(text: string): Promise<string> {
  * semantics: every string walked, trace-ID keys passed through unchanged,
  * sensitive-key string values force-redacted, enumerable symbols preserved.
  * Only the per-string redaction function differs (fail-open vs fail-closed).
+ *
+ * Image payloads are the one exception: base64 is binary, so a secret-shaped
+ * run in it is coincidence, and splicing a marker in corrupts the image. Only
+ * strictly valid base64 is exempt; anything else in those fields is scanned.
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
@@ -768,6 +800,7 @@ async function redactObjectStringsWith<T>(
 	onScannedPair?: (input: string, output: string) => void,
 ): Promise<T> {
 	if (typeof obj === "string") {
+		if (isImageDataUrl(obj)) return obj
 		const out = await redactString(obj)
 		onScannedPair?.(obj, out)
 		return out as T
@@ -795,6 +828,7 @@ async function redactObjectStringsWith<T>(
 				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
+				if (isImageBlockData(key, value, source)) return Promise.resolve(value)
 				// Redact any string value stored under a sensitive key name.
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
