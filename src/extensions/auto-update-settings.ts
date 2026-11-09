@@ -14,8 +14,8 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { acquireUpdaterLock } from "../update/lock.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { loadAutoUpdateSetting, saveAutoUpdateSetting } from "../update/settings.js"
-import { saveLastInstalled } from "../update/state.js"
-import { applyUpdate, checkForUpdate, parseCanarySha7 } from "../update/workflow.js"
+import { loadLastInstalled, saveLastInstalled } from "../update/state.js"
+import { applyUpdate, checkForUpdate, parseCanarySha7, readInstalledVersion } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 import { createAutoUpdateTipProvider } from "./auto-update/tips.js"
 import { registerTipProvider } from "./tips/registry.js"
@@ -33,6 +33,10 @@ export {
 export interface ManualUpdateResult {
 	ok: boolean
 	message: string
+}
+
+function withoutTagPrefix(version: string): string {
+	return version.replace(/^v/, "")
 }
 
 /**
@@ -62,6 +66,16 @@ export async function runManualUpdate(): Promise<ManualUpdateResult> {
 		})
 		if (!check.hasUpdate) {
 			return { ok: true, message: `Already up to date (${getVersion()})` }
+		}
+		// This session's version is cached for its lifetime, so the check still
+		// reports an update after a background tick installed it. Both the record
+		// and the files must agree: `/update` is also how a user repairs an install
+		// the record no longer describes.
+		const target = withoutTagPrefix(check.tag)
+		const recorded = loadLastInstalled()
+		const installed = readInstalledVersion()
+		if (recorded && withoutTagPrefix(recorded.tag) === target && installed && withoutTagPrefix(installed) === target) {
+			return { ok: true, message: `${check.latestVersion} is already installed. Restart your terminal.` }
 		}
 		try {
 			await applyUpdate({ tag: check.tag })

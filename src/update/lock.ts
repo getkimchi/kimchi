@@ -127,12 +127,12 @@ export function acquireUpdaterLock(opts: AcquireOptions = {}): UpdaterLock | nul
 	const heartbeatMs = opts.heartbeatMs ?? LOCK_HEARTBEAT_MS
 	const linkFile = opts.linkFile ?? linkSync
 
-	const tmpPath = `${lockPath}.${process.pid}.tmp`
 	for (let attempt = 0; attempt < 2; attempt++) {
 		// Kept apart from the publish below: mkdir also throws EEXIST when a file
 		// blocks the path, and only the publish's EEXIST means "the lock exists".
 		const owner: LockContents = { pid: process.pid, at: now(), nonce: randomUUID() }
 		const content = JSON.stringify(owner)
+		const tmpPath = holderTmpPath(lockPath, owner)
 		try {
 			mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 })
 			writeFileSync(tmpPath, content, { mode: 0o600 })
@@ -173,9 +173,17 @@ export function acquireUpdaterLock(opts: AcquireOptions = {}): UpdaterLock | nul
 	return null
 }
 
+/** A temp path no other holder shares, so one holder's write can never be
+ *  published as another's record. */
+function holderTmpPath(lockPath: string, owner: LockContents): string {
+	return `${lockPath}.${owner.pid}.${owner.nonce}.tmp`
+}
+
 /** Create `lockPath` from `tmpPath`, failing with EEXIST if it already exists.
- *  Filesystems without hard links fall back to an exclusive create, which keeps
- *  the exclusion but can briefly expose an empty file to a rival's read. */
+ *  Filesystems without hard links fall back to an exclusive create, which can
+ *  briefly expose an empty file. A rival can judge that file corrupt and move it
+ *  aside while our write lands in it, so the write is read back: if our content
+ *  isn't at `lockPath`, we lost the lock and report EEXIST. */
 function publishExclusive(
 	tmpPath: string,
 	lockPath: string,
@@ -187,6 +195,9 @@ function publishExclusive(
 	} catch (err) {
 		if (!HARD_LINK_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? "")) throw err
 		writeFileSync(lockPath, content, { flag: "wx", mode: 0o600 })
+		if (readRawLock(lockPath) !== content) {
+			throw Object.assign(new Error("lock was claimed during publish"), { code: "EEXIST" })
+		}
 	}
 }
 
@@ -267,7 +278,7 @@ function startHeartbeat(lockPath: string, owner: LockContents, now: () => number
 			// Publish atomically: rename replaces the target in one step, so a
 			// concurrent acquirer can never read a truncated lock and treat it
 			// as abandoned.
-			const tmp = `${lockPath}.${process.pid}.tmp`
+			const tmp = holderTmpPath(lockPath, owner)
 			writeFileSync(tmp, JSON.stringify(owner), { mode: 0o600 })
 			renameSync(tmp, lockPath)
 		} catch {

@@ -17,6 +17,23 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { acquireUpdaterLock, LOCK_STALE_MS } from "./lock.js"
 
+const fsHooks = vi.hoisted(() => ({
+	afterWrite: undefined as ((path: string, options: unknown) => void) | undefined,
+}))
+
+// Passes every write through, and lets a test act right after one lands: the
+// only way to reach the gap between a write and the step that follows it.
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return {
+		...actual,
+		writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
+			actual.writeFileSync(...args)
+			fsHooks.afterWrite?.(String(args[0]), args[2])
+		},
+	}
+})
+
 let dir: string
 let lockPath: string
 
@@ -26,6 +43,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	fsHooks.afterWrite = undefined
+	vi.useRealTimers()
 	rmSync(dir, { recursive: true, force: true })
 })
 
@@ -192,6 +211,40 @@ describe("acquireUpdaterLock", () => {
 		expect(readdirSync(dir)).toEqual(["updater.lock"])
 		expect(acquireUpdaterLock({ lockPath, linkFile: unsupported, heartbeatMs: 0 })).toBeNull()
 		first?.release()
+	})
+
+	it("does not share a temp file between a holder's heartbeat and another acquire", () => {
+		vi.useFakeTimers()
+		const tmpWrites: string[] = []
+		fsHooks.afterWrite = (path) => {
+			if (path.endsWith(".tmp")) tmpWrites.push(path)
+		}
+
+		const holder = acquireUpdaterLock({ lockPath, heartbeatMs: 1000 })
+		vi.advanceTimersByTime(1000)
+		expect(acquireUpdaterLock({ lockPath, heartbeatMs: 0 })).toBeNull()
+
+		const [holderAcquire, heartbeat, rivalAcquire] = tmpWrites
+		expect(tmpWrites).toHaveLength(3)
+		expect(heartbeat).toBe(holderAcquire)
+		expect(rivalAcquire).not.toBe(heartbeat)
+		holder?.release()
+	})
+
+	it("does not take the lock when a rival claims a half-published fallback create", () => {
+		const unsupported = vi.fn(() => {
+			throw Object.assign(new Error("link not supported"), { code: "ENOTSUP" })
+		})
+		const rival = JSON.stringify({ pid: process.pid, at: Date.now(), nonce: "rival" })
+		fsHooks.afterWrite = (path, options) => {
+			if (path !== lockPath || (options as { flag?: string }).flag !== "wx") return
+			fsHooks.afterWrite = undefined
+			renameSync(lockPath, `${lockPath}.claimed`)
+			writeFileSync(lockPath, rival)
+		}
+
+		expect(acquireUpdaterLock({ lockPath, linkFile: unsupported, heartbeatMs: 0 })).toBeNull()
+		expect(readFileSync(lockPath, "utf-8")).toBe(rival)
 	})
 })
 

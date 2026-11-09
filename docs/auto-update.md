@@ -107,6 +107,9 @@ file can't be written at all (a read-only or root-owned cache), it goes ahead
 without the lock rather than reporting an install that isn't happening. And a
 successful install records the last-installed tag, so other sessions (and
 this session's next tick) dedup the release instead of reinstalling it.
+`/update` applies the same dedup, so it doesn't reinstall a release a tick
+already installed, but only when the record and the installed files agree: it
+stays usable for repairing an install the record no longer describes.
 
 ## Why background updates
 

@@ -19,6 +19,8 @@ const mockGetVersion = vi.fn(() => "1.0.0")
 const mockParseCanarySha7 = vi.fn(() => null as string | null)
 const mockAcquireUpdaterLock = vi.fn()
 const mockSaveLastInstalled = vi.fn()
+const mockLoadLastInstalled = vi.fn(() => null as { tag: string } | null)
+const mockReadInstalledVersion = vi.fn(() => null as string | null)
 
 vi.mock("../update/paths.js", () => ({
 	isHomebrewInstall: mockIsHomebrewInstall,
@@ -36,9 +38,11 @@ vi.mock("../update/workflow.js", () => ({
 	checkForUpdate: mockCheckForUpdate,
 	applyUpdate: mockApplyUpdate,
 	parseCanarySha7: mockParseCanarySha7,
+	readInstalledVersion: mockReadInstalledVersion,
 }))
 vi.mock("../update/state.js", () => ({
 	saveLastInstalled: mockSaveLastInstalled,
+	loadLastInstalled: mockLoadLastInstalled,
 }))
 vi.mock("../utils.js", () => ({
 	getVersion: mockGetVersion,
@@ -73,6 +77,10 @@ function resetMocks(): void {
 	mockAcquireUpdaterLock.mockReset()
 	mockAcquireUpdaterLock.mockReturnValue({ release: vi.fn() })
 	mockSaveLastInstalled.mockReset()
+	mockLoadLastInstalled.mockReset()
+	mockLoadLastInstalled.mockReturnValue(null)
+	mockReadInstalledVersion.mockReset()
+	mockReadInstalledVersion.mockReturnValue(null)
 	mockCheckForUpdate.mockResolvedValue({
 		currentVersion: "1.0.0",
 		latestVersion: "1.0.0",
@@ -222,6 +230,46 @@ describe("runManualUpdate — happy path", () => {
 		const result = await runManualUpdate()
 		expect(result.ok).toBe(true)
 		expect(mockSaveLastInstalled).toHaveBeenCalledWith("v1.1.0")
+	})
+})
+
+describe("runManualUpdate — release already installed by a background tick", () => {
+	const available = {
+		currentVersion: "1.0.0",
+		latestVersion: "2.0.0",
+		tag: "v2.0.0",
+		releaseUrl: "",
+		hasUpdate: true,
+		cached: false,
+	}
+
+	beforeEach(() => {
+		mockCheckForUpdate.mockResolvedValue(available)
+		mockApplyUpdate.mockResolvedValue(undefined)
+	})
+
+	it("skips the install when the record and the files both name the release", async () => {
+		mockLoadLastInstalled.mockReturnValue({ tag: "v2.0.0" })
+		mockReadInstalledVersion.mockReturnValue("2.0.0")
+
+		const result = await runManualUpdate()
+
+		expect(mockApplyUpdate).not.toHaveBeenCalled()
+		expect(result).toEqual({ ok: true, message: "2.0.0 is already installed. Restart your terminal." })
+	})
+
+	it.each([
+		{ name: "no record exists", record: null, onDisk: "2.0.0" },
+		{ name: "the record names another release", record: { tag: "v1.5.0" }, onDisk: "2.0.0" },
+		{ name: "an older version was put back on disk", record: { tag: "v2.0.0" }, onDisk: "1.0.0" },
+		{ name: "the installed version cannot be read", record: { tag: "v2.0.0" }, onDisk: null },
+	])("installs when $name", async ({ record, onDisk }) => {
+		mockLoadLastInstalled.mockReturnValue(record)
+		mockReadInstalledVersion.mockReturnValue(onDisk)
+
+		await runManualUpdate()
+
+		expect(mockApplyUpdate).toHaveBeenCalledWith({ tag: "v2.0.0" })
 	})
 })
 
