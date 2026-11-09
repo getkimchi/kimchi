@@ -111,10 +111,44 @@ describe("help — slash command list", () => {
 	// /mcp through the proxy in src/extensions/mcp/index.ts (which drops the
 	// adapter's pi-mcp / mcp-adapter aliases).
 	const DEPENDENCY_COMMANDS = new Set(["mcp"])
+	// Registered commands deliberately kept out of /help. Adding a command to
+	// src/ without listing it here or in SLASH_COMMANDS fails the inverse guard,
+	// so the curation decision is always explicit.
+	const INTERNAL_COMMANDS = new Set([
+		// debugging / developer switches
+		"cc-spinner",
+		"cc-theme",
+		"cc-tools",
+		"thinking-steps",
+		"strip-images",
+		"memory-residency",
+		"session-costs",
+		"budget",
+		"btw",
+		"clear",
+		// advanced or undocumented surfaces
+		"plugins",
+		"ssh-config",
+		"remote-run",
+		"ferment-v2",
+		// feature-gated: the command only exists when extensions.memory is enabled
+		"memory",
+		// deprecated since the Auto default (#1357); kept for role configuration
+		"multi-model",
+		// matched by the constant scan but not slash commands
+		"mcp-keyring-helper",
+		"plannotator-review",
+	])
 
-	/** Every command name registered anywhere in src/ (non-test files): the
-	 *  literal `registerCommand("name"` form plus the `*_COMMAND = "name"`
-	 *  constants a few extensions pass instead (todos, ferment-v2). */
+	/** Every command name registered anywhere in src/ (non-test `.ts` files).
+	 *  Supported registration forms — anything else is invisible to the scan
+	 *  and fails the guard below with "no extension registers it":
+	 *    - `registerCommand("name"` with a double-quoted literal (biome enforces
+	 *      double quotes repo-wide, so single quotes never occur);
+	 *    - a `const *_COMMAND* = "name"` constant passed to registerCommand
+	 *      (todos, ferment-v2). This also picks up two constants that are not
+	 *      slash commands (mcp-keyring-helper, plannotator-review); they are
+	 *      listed in INTERNAL_COMMANDS so the inverse guard ignores them. */
 	function registeredCommandNames(): Set<string> {
 		const srcRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 		const names = new Set<string>()
@@ -144,6 +178,22 @@ describe("help — slash command list", () => {
 		for (const name of Object.keys(SLASH_COMMANDS)) {
 			if (PI_BUILTIN_COMMANDS.has(name) || DEPENDENCY_COMMANDS.has(name)) continue
 			expect(registered.has(name), `/${name} is listed in /help but no extension registers it`).toBe(true)
+		}
+	})
+
+	it("lists, or explicitly excludes, every command kimchi registers", () => {
+		// The inverse guard: this PR back-filled 13 user-facing commands that had
+		// shipped without a /help entry. A new command must now be listed or
+		// named in INTERNAL_COMMANDS — silent omission is no longer possible.
+		const unaccounted = [...registeredCommandNames()].filter(
+			(name) => !(name in SLASH_COMMANDS) && !INTERNAL_COMMANDS.has(name) && !DEPENDENCY_COMMANDS.has(name),
+		)
+		expect(unaccounted, "registered but neither in /help nor in INTERNAL_COMMANDS").toEqual([])
+		// And the exclusion list must not go stale either.
+		const registered = registeredCommandNames()
+		for (const name of INTERNAL_COMMANDS) {
+			expect(registered.has(name), `INTERNAL_COMMANDS names /${name}, which nothing registers any more`).toBe(true)
+			expect(SLASH_COMMANDS, `/${name} is both excluded and listed`).not.toHaveProperty(name)
 		}
 	})
 

@@ -37,7 +37,10 @@ describe("GENERAL_TIPS", () => {
 		// /help list is itself checked against the registered commands
 		// (help.test.ts), so this transitively keeps tips off dead commands.
 		for (const tip of GENERAL_TIPS) {
-			const commands = [...tip.message.matchAll(/`\/([a-z][a-z0-9-]*)/g)].map((m) => m[1])
+			// A command mention is `/name` at the start of the text or after
+			// whitespace, a backtick or an opening bracket; `//` (URLs) and
+			// in-word slashes ("on/off") are not mentions.
+			const commands = [...tip.message.matchAll(/(?:^|[\s`([])\/([a-z][a-z0-9-]*)/g)].map((m) => m[1])
 			for (const command of commands) {
 				expect(SLASH_COMMANDS, `${tip.id} names /${command}`).toHaveProperty(command)
 			}
