@@ -1,25 +1,29 @@
 // ACP extension methods for the CAST AI SSO login (LLM-4134).
 //
-// Wire names: `_kimchi.dev/sso_begin|sso_await|sso_select_org|sso_cancel` —
-// sessionless, driven stepwise by the client (Studio) per the frozen wire
-// contract (kimchi-studio branch `research/wire-contract-oauth-acp`):
+// Wire names: `_kimchi.dev/sso_begin|sso_await|sso_cancel` — sessionless,
+// driven stepwise by the client (Studio) per the frozen wire contract
+// (kimchi-studio branch `research/wire-contract-oauth-acp`) as amended by
+// LLM-4138: organization selection happens in the browser during the OAuth
+// flow (the Auth0-hosted login page), so the interactive org-list step of the
+// original contract (`org_selection_required` / `sso_select_org`) is dropped.
 //
 //   sso_begin {region?} → {requestId, authorizeUrl, expiresAt}
 //       Starts the loopback callback server (fixed port 8765) and builds the
 //       Auth0 Authorization Code + PKCE URL. Returns WITHOUT opening a
 //       browser — the client opens `authorizeUrl` itself.
 //   sso_await {requestId} → {status:"authenticated", org}
-//                          | {status:"org_selection_required", organizations}
-//       Waits for the browser callback, exchanges the code, lists orgs.
-//       Single org auto-selects and settles (persist + fan-out); multi-org
-//       holds the token in memory keyed by requestId — nothing is persisted
-//       until an org is chosen.
-//   sso_select_org {requestId, orgId} → {status:"authenticated", org}
+//       Waits for the browser callback, exchanges the code, reads the
+//       browser-chosen organization and settles immediately (persist +
+//       fan-out the org-scoped credential, refresh models/sessions).
+//       Zero organizations is a defensive SSO_NO_ORGANIZATIONS: the stored
+//       credential must always carry an org id.
 //   sso_cancel {requestId?} → {} — idempotent, never errors.
 //
 // Region comes from the `region` param (or the configured region), never from
 // `setPendingOAuthRegion` — that single-slot global is a TUI selector seam and
-// racy with two clients (contract §2).
+// racy with two clients (contract §2). A user switching regions on the login
+// page lands on a different tenant and the code exchange fails: surfaced as
+// an actionable SSO_IDP_ERROR; no cross-tenant handling (LLM-4138).
 //
 // Errors are JSON-RPC error objects with `data.code` so clients branch on
 // machine codes, never message text (contract §3). One flow per connection
@@ -65,7 +69,6 @@ export type SsoErrorCode =
 	| "SSO_IDP_ERROR"
 	| "SSO_ORG_FETCH_FAILED"
 	| "SSO_NO_ORGANIZATIONS"
-	| "SSO_UNKNOWN_ORG"
 
 export function ssoError(code: SsoErrorCode, message: string, extra?: Record<string, unknown>): RequestError {
 	return new RequestError(SSO_JSON_RPC_ERROR_CODE, message, { code, ...extra })
@@ -90,20 +93,15 @@ export type SsoOrganization = {
 	name: string
 }
 
-export type SsoAwaitResponse =
-	| { status: "authenticated"; org: SsoOrganization }
-	| { status: "org_selection_required"; organizations: SsoOrganization[] }
-
-export type SsoSelectOrgResponse = { status: "authenticated"; org: SsoOrganization }
+export type SsoAwaitResponse = { status: "authenticated"; org: SsoOrganization }
 
 // ---------------------------------------------------------------------------
 // Flow manager
 // ---------------------------------------------------------------------------
 
 /** Pending-flow TTL. The loopback callback server itself gives up after 5
- * minutes; 10 minutes keeps an `org_selection_required` flow selectable a
- * while longer and bounds the whole flow (contract §3.1: "TTL ≈ the
- * callback-server lifetime; expiresAt makes it explicit"). */
+ * minutes; 10 minutes bounds the whole flow generously (contract §3.1: "TTL ≈
+ * the callback-server lifetime; expiresAt makes it explicit"). */
 export const SSO_FLOW_TTL_MS = 600_000
 
 /** Success-page copy shown in the browser after the loopback callback. Same
@@ -141,16 +139,8 @@ interface PendingSsoFlow {
 	 * the whole continuation, not just the loopback server). */
 	abortController: AbortController
 	expiresAtMs: number
-	/** `browser`: waiting for the loopback callback; `org`: holding the
-	 * exchanged token until the client picks an organization. */
-	phase: "browser" | "org"
-	credential?: OAuthCredentials
-	organizations?: KimchiOrganization[]
 	/** Shared wait so concurrent/repeat `sso_await` calls settle once. */
 	awaitPromise?: Promise<SsoAwaitResponse>
-	/** Shared settle so concurrent `sso_select_org` calls persist exactly once
-	 * (settleSsoCredential is a read-modify-write of models.json/auth.json). */
-	settlePromise?: Promise<SsoSelectOrgResponse>
 }
 
 function requireStringParam(params: Record<string, unknown>, name: string): string {
@@ -176,10 +166,9 @@ export class SsoFlowManager {
 	async begin(params: Record<string, unknown>): Promise<SsoBeginResponse> {
 		if (this.flow) {
 			// Reap an expired-but-unreaped flow first: a browser-phase flow whose
-			// sso_await was never called (or a parked multi-org flow past its
-			// window) has nothing watching expiresAtMs — without this, a dead flow
-			// would block new logins with SSO_IN_PROGRESS (contract: expired →
-			// restart the flow).
+			// sso_await was never called has nothing watching expiresAtMs — without
+			// this, a dead flow would block new logins with SSO_IN_PROGRESS
+			// (contract: expired → restart the flow).
 			if ((this.deps.now ?? Date.now)() > this.flow.expiresAtMs) {
 				this.discard(this.flow)
 			} else {
@@ -238,7 +227,6 @@ export class SsoFlowManager {
 			callbackServer,
 			abortController: new AbortController(),
 			expiresAtMs,
-			phase: "browser",
 		}
 		this.flow = flow
 
@@ -253,61 +241,12 @@ export class SsoFlowManager {
 		}
 	}
 
-	/** `_kimchi.dev/sso_await` — wait for the browser leg. */
+	/** `_kimchi.dev/sso_await` — wait for the browser leg and settle. */
 	async awaitResult(params: Record<string, unknown>): Promise<SsoAwaitResponse> {
 		const requestId = requireStringParam(params, "requestId")
 		const flow = this.flowById(requestId)
-		if (flow.phase === "org") {
-			// Repeat await while selection is pending: re-serve the same list.
-			return { status: "org_selection_required", organizations: [...(flow.organizations ?? [])] }
-		}
 		flow.awaitPromise ??= this.runBrowserWait(flow)
 		return flow.awaitPromise
-	}
-
-	/** `_kimchi.dev/sso_select_org` — complete a multi-org login. */
-	async selectOrg(params: Record<string, unknown>): Promise<SsoSelectOrgResponse> {
-		const requestId = requireStringParam(params, "requestId")
-		const orgId = requireStringParam(params, "orgId")
-		const flow = this.flowById(requestId)
-		if (flow.phase !== "org" || !flow.organizations) {
-			this.discard(flow)
-			throw ssoError("SSO_REQUEST_NOT_FOUND", "No organization selection is pending for this requestId")
-		}
-		const org = flow.organizations.find((candidate) => candidate.id === orgId)
-		if (!org) {
-			throw ssoError("SSO_UNKNOWN_ORG", `Organization ${orgId} is not available to this account`)
-		}
-		const credential = flow.credential
-		if (!credential) {
-			// phase "org" always carries the exchanged token; guarded for the
-			// type system rather than cast away.
-			this.discard(flow)
-			throw ssoError("SSO_REQUEST_NOT_FOUND", "No organization selection is pending for this requestId")
-		}
-		// Memoized settle: concurrent select_org calls share one persist, and a
-		// failed settle consumes the flow (same terminal semantics as the
-		// single-org branch in runBrowserWait).
-		flow.settlePromise ??= this.settleOrg(flow, credential, org)
-		return flow.settlePromise
-	}
-
-	private async settleOrg(
-		flow: PendingSsoFlow,
-		credential: OAuthCredentials,
-		org: KimchiOrganization,
-	): Promise<SsoSelectOrgResponse> {
-		this.assertFlowAlive(flow)
-		try {
-			// Persist + fan out the org-scoped credential; nothing was written
-			// before this point (contract §3.2).
-			await this.deps.settleCredential(credential, org)
-		} catch (error) {
-			this.discard(flow)
-			throw error
-		}
-		this.discard(flow)
-		return { status: "authenticated", org }
 	}
 
 	/** `_kimchi.dev/sso_cancel` — abort mid-flow; idempotent, never errors. */
@@ -334,7 +273,8 @@ export class SsoFlowManager {
 	}
 
 	/** Race the callback result against the flow TTL; map outcomes to typed
-	 * errors; settle single-org flows; park multi-org flows for select_org. */
+	 * errors; settle the browser-chosen organization immediately (LLM-4138:
+	 * org selection happens on the Auth0-hosted login page). */
 	private async runBrowserWait(flow: PendingSsoFlow): Promise<SsoAwaitResponse> {
 		try {
 			const result = await this.raceWithExpiry(flow, flow.callbackServer.result)
@@ -357,15 +297,22 @@ export class SsoFlowManager {
 				}
 				// Token-endpoint failures are IdP interactions: map to the typed
 				// code (preserving the RFC 6749 error when one came back) instead
-				// of an unclassifiable internal error (review finding).
+				// of an unclassifiable internal error (review finding). The region
+				// hint is part of the message because LLM-4138 adds a region
+				// dropdown on the login page: a user switching region mid-flow
+				// lands on a different tenant and the exchange fails — the only
+				// fix is restarting the sign-in for the wanted region.
 				const detail = error instanceof Error ? error.message : String(error)
 				throw ssoError(
 					"SSO_IDP_ERROR",
-					`CAST AI sign-in failed: ${detail}`,
+					`CAST AI sign-in failed: ${detail}. If you switched regions on the CAST AI login page, the authorization belongs to a different region — start the sign-in again for the region you want.`,
 					error instanceof OAuthTokenError && error.code ? { oauthError: error.code } : undefined,
 				)
 			}
 
+			// LLM-4138: the login page performed the org selection, so the
+			// listing is read to identify the browser-chosen org and settle
+			// immediately — no interactive selection step on the ACP surface.
 			let organizations: KimchiOrganization[]
 			try {
 				organizations = await this.deps.listUserOrganizations(
@@ -378,25 +325,30 @@ export class SsoFlowManager {
 				throw ssoError("SSO_ORG_FETCH_FAILED", `Fetching your CAST AI organizations failed: ${detail}`)
 			}
 			if (organizations.length === 0) {
+				// Defensive (LLM-4138): the stored credential must always carry an
+				// org id — a browser leg that yields no org cannot be persisted.
 				throw ssoError("SSO_NO_ORGANIZATIONS", "This CAST AI account has no organizations")
 			}
-			if (organizations.length === 1) {
-				const org = organizations[0]
-				this.assertFlowAlive(flow)
-				await this.deps.settleCredential(credential, org)
-				// Terminal success consumes the flow.
-				this.discard(flow)
-				return { status: "authenticated", org }
+			if (organizations.length > 1) {
+				// The browser leg should have scoped the session to one org.
+				// Auto-picking one would silently scope the credential wrong, and
+				// the interactive org-list step was dropped from the ACP wire
+				// (LLM-4138) — the only fix is signing in again.
+				throw ssoError(
+					"SSO_IDP_ERROR",
+					`The CAST AI login returned ${organizations.length} organizations; sign in again and pick one organization on the CAST AI login page.`,
+				)
 			}
-			// Multi-org: hold the token in memory keyed by requestId — the stored
-			// credential must always carry an org id, so nothing persists yet.
-			flow.phase = "org"
-			flow.credential = credential
-			flow.organizations = organizations
-			return { status: "org_selection_required", organizations: [...organizations] }
+			const org = organizations[0]
+			this.assertFlowAlive(flow)
+			// Persist + fan out the org-scoped credential; nothing was written
+			// before this point (contract §3.2).
+			await this.deps.settleCredential(credential, org)
+			// Terminal success consumes the flow.
+			this.discard(flow)
+			return { status: "authenticated", org }
 		} catch (error) {
-			// Any terminal failure consumes the flow. The org_selection_required
-			// path above returns normally, so it keeps the flow alive.
+			// Any terminal failure consumes the flow.
 			this.discard(flow)
 			if (flow.abortController.signal.aborted && !(error instanceof RequestError)) {
 				// The abort surfaced as a plain cancellation error from the token/

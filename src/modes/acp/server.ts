@@ -807,16 +807,12 @@ export class KimchiAcpAgent implements Agent {
 			}
 		}
 
-		const result = await this.sso.awaitResult({ requestId: begin.requestId })
-		if (result.status === "org_selection_required") {
-			// Cancel the parked flow so a retry starts clean (otherwise it would
-			// trip SSO_IN_PROGRESS), then fail with the contract's actionable error.
-			this.sso.cancel({ requestId: begin.requestId })
-			throw RequestError.internalError(
-				undefined,
-				"This CAST AI account has multiple organizations. Sign in via Kimchi Studio or run `kimchi login` to select one.",
-			)
-		}
+		// LLM-4138: sso_await settles directly to authenticated with the
+		// browser-chosen org (selection happens on the Auth0-hosted login page).
+		// Any terminal failure — including the multi-org listing, which the
+		// manager maps to an actionable SSO_IDP_ERROR — propagates and consumes
+		// the flow, so a retry starts clean.
+		await this.sso.awaitResult({ requestId: begin.requestId })
 		return {}
 	}
 
@@ -1527,8 +1523,6 @@ export class KimchiAcpAgent implements Agent {
 				return this.sso.begin(params)
 			case AVAILABLE_EXT_METHODS.sso_await:
 				return this.sso.awaitResult(params)
-			case AVAILABLE_EXT_METHODS.sso_select_org:
-				return this.sso.selectOrg(params)
 			case AVAILABLE_EXT_METHODS.sso_cancel:
 				return this.sso.cancel(params)
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:

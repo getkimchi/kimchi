@@ -12,13 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { CallbackPortInUseError, type CallbackResult, type CallbackServer } from "../../../cli-auth/callback-server.js"
 import type { KimchiOrganization } from "../../../cli-auth/oauth.js"
 import type { KimchiOAuthConfig } from "../../../oauth-config.js"
-import {
-	type SsoAwaitResponse,
-	type SsoBeginResponse,
-	type SsoErrorCode,
-	SsoFlowManager,
-	type SsoFlowManagerDeps,
-} from "./sso.js"
+import { type SsoBeginResponse, type SsoErrorCode, SsoFlowManager, type SsoFlowManagerDeps } from "./sso.js"
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -262,7 +256,11 @@ describe("SsoFlowManager", () => {
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
 		})
 
-		it("returns org_selection_required for a multi-org account and parks the flow", async () => {
+		// LLM-4138: org selection happens in the browser, so the listing must
+		// resolve to exactly one org — a multi-org listing means the browser leg
+		// did not scope the session, and auto-picking would persist the wrong
+		// org. Surface an actionable SSO_IDP_ERROR instead of parking the flow.
+		it("fails a multi-org listing with an actionable SSO_IDP_ERROR and consumes the flow", async () => {
 			const h = makeHarness()
 			h.listUserOrganizations.mockResolvedValue([
 				{ id: "org-123", name: "Acme" },
@@ -271,20 +269,28 @@ describe("SsoFlowManager", () => {
 			const begin = await h.manager.begin({})
 			h.server.settle({ code: "the-code", outcome: "code" })
 
-			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
-				status: "org_selection_required",
-				organizations: [
-					{ id: "org-123", name: "Acme" },
-					{ id: "org-456", name: "Acme Staging" },
-				],
-			})
-			// Nothing persists until an org is chosen.
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_IDP_ERROR")
+			// Nothing persists and the flow is consumed.
 			expect(h.settleCredential).not.toHaveBeenCalled()
-			// A repeat await re-serves the same list.
-			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
-				status: "org_selection_required",
-				organizations: expect.any(Array),
-			} satisfies Partial<SsoAwaitResponse>)
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+		})
+
+		// LLM-4138: the login page has a region dropdown — a user switching
+		// region mid-flow lands on a different tenant and the exchange fails.
+		// The SSO_IDP_ERROR must tell them what to do; no cross-tenant handling.
+		it("hints at the region switch when the code exchange fails", async () => {
+			const h = makeHarness()
+			h.exchangeAuthorizationCode.mockRejectedValue(new Error("invalid_grant"))
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			const error = await h.manager.awaitResult({ requestId: begin.requestId }).then(
+				() => {
+					throw new Error("expected rejection")
+				},
+				(e: unknown) => e as RequestError,
+			)
+			expect(error.message).toContain("switched regions")
+			expect(error.message).toContain("start the sign-in again")
 		})
 
 		it("maps an IdP error code from the callback to SSO_IDP_ERROR with data.oauthError", async () => {
@@ -353,102 +359,6 @@ describe("SsoFlowManager", () => {
 			const expectation = expectSsoError(pending, "SSO_CALLBACK_TIMEOUT")
 			await vi.advanceTimersByTimeAsync(20)
 			await expectation
-		})
-	})
-
-	describe("sso_select_org", () => {
-		it("completes a multi-org login with the chosen org and consumes the flow", async () => {
-			const h = makeHarness()
-			h.listUserOrganizations.mockResolvedValue([
-				{ id: "org-123", name: "Acme" },
-				{ id: "org-456", name: "Acme Staging" },
-			])
-			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code", outcome: "code" })
-			await h.manager.awaitResult({ requestId: begin.requestId })
-
-			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })).resolves.toEqual({
-				status: "authenticated",
-				org: { id: "org-456", name: "Acme Staging" },
-			})
-			expect(h.settleCredential).toHaveBeenCalledTimes(1)
-			expect(h.settleCredential).toHaveBeenCalledWith(expect.objectContaining({ access: "id-token" }), {
-				id: "org-456",
-				name: "Acme Staging",
-			})
-			// Consumed.
-			await expectSsoError(
-				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" }),
-				"SSO_REQUEST_NOT_FOUND",
-			)
-		})
-
-		// Review finding: concurrent select_org calls must settle exactly once —
-		// settleCredential is a read-modify-write of the shared credential store.
-		it("settles shared concurrent select_org calls exactly once", async () => {
-			const h = makeHarness()
-			h.listUserOrganizations.mockResolvedValue([
-				{ id: "org-123", name: "Acme" },
-				{ id: "org-456", name: "Acme Staging" },
-			])
-			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code", outcome: "code" })
-			await h.manager.awaitResult({ requestId: begin.requestId })
-
-			const first = h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })
-			const second = h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })
-			await expect(first).resolves.toEqual({ status: "authenticated", org: { id: "org-456", name: "Acme Staging" } })
-			await expect(second).resolves.toEqual({ status: "authenticated", org: { id: "org-456", name: "Acme Staging" } })
-			expect(h.settleCredential).toHaveBeenCalledTimes(1)
-		})
-
-		// Failure semantics match the single-org branch: a failed settle consumes
-		// the flow, so a retry gets SSO_REQUEST_NOT_FOUND instead of re-running
-		// a partially-settled persist.
-		it("consumes the flow when the settle tail fails", async () => {
-			const h = makeHarness()
-			h.listUserOrganizations.mockResolvedValue([
-				{ id: "org-123", name: "Acme" },
-				{ id: "org-456", name: "Acme Staging" },
-			])
-			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code", outcome: "code" })
-			await h.manager.awaitResult({ requestId: begin.requestId })
-			h.settleCredential.mockRejectedValueOnce(new Error("disk full"))
-
-			// The raw persist failure surfaces, and the flow is consumed with it —
-			// a retry gets SSO_REQUEST_NOT_FOUND instead of re-running a
-			// partially-settled persist.
-			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" })).rejects.toThrow("disk full")
-			await expectSsoError(
-				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" }),
-				"SSO_REQUEST_NOT_FOUND",
-			)
-		})
-
-		it("rejects an unknown org with SSO_UNKNOWN_ORG without consuming the flow", async () => {
-			const h = makeHarness()
-			h.listUserOrganizations.mockResolvedValue([
-				{ id: "org-123", name: "Acme" },
-				{ id: "org-456", name: "Acme Staging" },
-			])
-			const begin = await h.manager.begin({})
-			h.server.settle({ code: "the-code", outcome: "code" })
-			await h.manager.awaitResult({ requestId: begin.requestId })
-
-			await expectSsoError(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-999" }), "SSO_UNKNOWN_ORG")
-			// Still pending — the client can retry with a valid id.
-			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" })).resolves.toEqual({
-				status: "authenticated",
-				org: { id: "org-123", name: "Acme" },
-			})
-		})
-
-		it("rejects selection when no organization selection is pending", async () => {
-			const h = makeHarness()
-			const begin = await h.manager.begin({})
-			// Flow still in the browser phase (await never called).
-			await expectSsoError(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-1" }), "SSO_REQUEST_NOT_FOUND")
 		})
 	})
 
