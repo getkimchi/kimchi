@@ -6,6 +6,7 @@ import {
 	addImage,
 	clearAllImages,
 	getAllImages,
+	getImageContentById,
 	getImagesByIds,
 	parseImageReferences,
 	setImageCacheDir,
@@ -35,6 +36,18 @@ describe("image-registry", () => {
 		} catch {
 			// ignore
 		}
+	})
+
+	it("getImageContentById reconstructs the registered image from its cached file", () => {
+		addImage(7, makeImage())
+		expect(getImageContentById(7)).toEqual(makeImage())
+	})
+
+	it("getImageContentById returns null for unknown ids and missing files", () => {
+		expect(getImageContentById(3)).toBeNull()
+		const entry = addImage(4, makeImage())
+		rmSync(entry.path)
+		expect(getImageContentById(4)).toBeNull()
 	})
 
 	it("writes a file on addImage and registers the entry", () => {
