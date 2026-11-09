@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { SLASH_COMMANDS } from "../slash-commands.js"
 import { GENERAL_TIPS } from "./general-tips.js"
 import { renderTipRow } from "./tip-row.js"
 import type { TipCandidate } from "./types.js"
@@ -12,10 +13,9 @@ describe("GENERAL_TIPS", () => {
 		const messages = GENERAL_TIPS.map((tip) => tip.message)
 
 		expect(messages).toContain("Press `shift+tab` to change permissions mode.")
-		expect(messages).toContain("Run `/settings > Themes` to change colors.")
-		expect(messages).toContain("Use `ctrl+p` or `/model` to select multi-model for auto routing.")
-		expect(messages).toContain("Use `/model` to select single model for entire session")
-		expect(messages).toContain("Use `/agents` to manage agents or display running agents sessions")
+		expect(messages).toContain("Run `/theme` to change colors.")
+		expect(messages).toContain("Auto picks a model per request; use `/model` to pin one for the session.")
+		expect(messages).toContain("Use `/agents` to manage agents or see running agent sessions.")
 		expect(messages).toContain("Use `/processes` to inspect running Bash scripts and output.")
 		expect(messages).toContain("Tag requests in Analytics: `/tags add key:value` (e.g. project:myapp).")
 		expect(messages).toContain("Run `/work` to see your work and its PRs.")
@@ -23,6 +23,25 @@ describe("GENERAL_TIPS", () => {
 		expect(messages).toContain("Name a branch with `/branch <name>`; resume it with `-r <id>`.")
 		expect(messages).toContain("Use `kimchi --verbose` when output looks off.")
 		expect(messages).toContain("Run `/bug` to create GitHub issue with a bug report (PII-scrubbed).")
+	})
+
+	it("no longer recommends multi-model routing or roles (deprecated since the Auto default, #1357)", () => {
+		for (const tip of GENERAL_TIPS) {
+			expect(tip.message, tip.id).not.toMatch(/multi-model/i)
+			expect(tip.id).not.toMatch(/multi-model/)
+		}
+	})
+
+	it("only names slash commands that /help lists (so every tip points at a real, discoverable command)", () => {
+		// A tip that names `/foo` must refer to a command users can find; the
+		// /help list is itself checked against the registered commands
+		// (help.test.ts), so this transitively keeps tips off dead commands.
+		for (const tip of GENERAL_TIPS) {
+			const commands = [...tip.message.matchAll(/`\/([a-z][a-z0-9-]*)/g)].map((m) => m[1])
+			for (const command of commands) {
+				expect(SLASH_COMMANDS, `${tip.id} names /${command}`).toHaveProperty(command)
+			}
+		}
 	})
 
 	it("fits every built-in tip in an 80-column row without truncation", () => {
