@@ -22,6 +22,7 @@ interface McpFixtureEventBase {
 interface McpFixtureEventDetails {
 	initialized: { clientName?: string; extensionCapabilities: string[] }
 	tools_listed: Record<string, never>
+	tool_list_changed_sent: Record<string, never>
 	resources_listed: Record<string, never>
 	resource_read: { uri: string }
 	tool_called: { name: string; arguments: Record<string, unknown> }
@@ -117,6 +118,7 @@ export type McpFixtureScenario =
 	| "oauth-split-issuer-flaky-prm"
 	| "oauth-refresh-revoked"
 	| "oauth-manual-revoke"
+	| "tools-change"
 	| "ui-app"
 
 export type McpFixtureToolResponse =

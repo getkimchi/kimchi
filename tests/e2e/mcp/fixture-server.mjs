@@ -86,6 +86,11 @@ function createFixtureServer() {
 		{ name: "kimchi-mcp-e2e-fixture", version: "1.0.0" },
 		{ capabilities: { tools: {}, resources: {} } },
 	)
+	// tools-change: the catalog grows only after rotate_tools runs, and the
+	// change notification is sent WITHOUT advertising tools.listChanged - the
+	// relay shape (Studio slack-wrapper, gateways aggregating plugin servers)
+	// the harness must still consume to refresh tool metadata.
+	let catalogRotated = false
 
 	server.oninitialized = () =>
 		record("initialized", {
@@ -154,6 +159,25 @@ function createFixtureServer() {
 							},
 						]
 					: []),
+				...(scenario === "tools-change"
+					? [
+							{
+								name: "rotate_tools",
+								description: "Add late_tool to the fixture catalog and emit notifications/tools/list_changed",
+								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+							},
+						]
+					: []),
+				...(scenario === "tools-change" && catalogRotated
+					? [
+							{
+								name: "late_tool",
+								description: "Fixture tool that appears only after the notification-driven refresh",
+								inputSchema: { type: "object", properties: {}, additionalProperties: false },
+								annotations: { readOnlyHint: true },
+							},
+						]
+					: []),
 			],
 		}
 	})
@@ -195,6 +219,14 @@ function createFixtureServer() {
 	server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 		const { name, arguments: args } = request.params
 		record("tool_called", { name, arguments: args ?? {} })
+		if (scenario === "tools-change" && name === "rotate_tools") {
+			catalogRotated = true
+			await server.sendToolListChanged()
+			record("tool_list_changed_sent", {})
+			return {
+				content: [{ type: "text", text: "Fixture catalog rotated; late_tool is now available." }],
+			}
+		}
 		if (scenario === "oauth-manual-revoke" && name === "revoke_auth") {
 			oauthManualRevoked = true
 			record("oauth_manual_revoke", {})
