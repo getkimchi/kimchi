@@ -34,7 +34,8 @@ function sideChatDefaultOn(homeDir: string): void {
 	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
 	const resources = settings.resources as Record<string, unknown> | undefined
-	if (resources) delete resources["extensions.side-chat"]
+	// JSON.stringify drops undefined-valued keys, so the opt-out is stripped.
+	if (resources) resources["extensions.side-chat"] = undefined
 	writeFileSync(path, JSON.stringify({ ...settings, tuiMode: "fullscreen" }), "utf-8")
 }
 

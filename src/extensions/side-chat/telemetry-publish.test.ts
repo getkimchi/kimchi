@@ -322,9 +322,7 @@ describe("side-chat lifecycle fact publishing", () => {
 		sideState.promptError = new Error("provider unreachable")
 
 		await pi.getRegisteredCommand("btw").handler("question that fails to deliver?", ctx)
-		await vi.waitFor(() =>
-			expect(openPanel().infos.some((text) => text.includes("Side chat error"))).toBe(true),
-		)
+		await vi.waitFor(() => expect(openPanel().infos.some((text) => text.includes("Side chat error"))).toBe(true))
 		sideState.promptError = undefined
 		openPanel().submit("retry the question?")
 		await vi.waitFor(() =>
