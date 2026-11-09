@@ -1874,11 +1874,12 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
-	 * Display-only deep substitution for tool args/results (rawInput,
-	 * rawOutput). substituteTokensDeep rebuilds plain objects — the
-	 * in-memory args stay tokenized because they are shared with execution.
-	 * Use displayOptionalRecord when the source itself may be undefined
-	 * (wireSafeToolResult's output).
+	 * Display-only deep substitution for tool RESULTS (rawOutput).
+	 * substituteTokensDeep rebuilds plain objects — the in-memory values
+	 * stay tokenized because they are shared with agent state. rawInput is
+	 * NOT put through this: args are what the tool executed, and what ran
+	 * is the literal token. Use displayOptionalRecord when the source
+	 * itself may be undefined (wireSafeToolResult's output).
 	 */
 	private displayRecord(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
 		const vault = vaultForSession(sessionId)
@@ -1895,12 +1896,6 @@ export class KimchiAcpAgent implements Agent {
 	}
 
 	/**
-	 * Display-only substitution across a ToolCallContent array — text items
-	 * substituted in place, images and anything else passed through
-	 * untouched. Generic over the item type so callers keep their element
-	 * types (ToolCallContent here).
-	 */
-	/**
 	 * Display-only substitution across a ToolCallContent array. Text takes
 	 * the ACP wrapper shape toolResultContent emits —
 	 * `{ type: "content", content: { type: "text", text } }` — so the nested
@@ -1908,7 +1903,8 @@ export class KimchiAcpAgent implements Agent {
 	 * displays what landed on disk, and what landed is the literal token
 	 * (side effects never substitute) — showing the original there would
 	 * misrepresent the file's actual content, the same way a substituted
-	 * permission prompt would mislead an approval.
+	 * permission prompt would mislead an approval. Generic over the item
+	 * type so callers keep their element types (ToolCallContent here).
 	 */
 	private displayContent<T>(sessionId: string, content: T[] | undefined): T[] | undefined {
 		if (content === undefined) return undefined
@@ -2198,7 +2194,12 @@ export class KimchiAcpAgent implements Agent {
 							toolName: block.name,
 							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
 							piToolCallId: block.id,
-							rawInput: this.displayRecord(sessionId, block.arguments),
+							// No display substitution for args: this card shows what the tool
+							// DID, and the executed payload keeps its tokens (message_end
+							// tokenizes arguments in place before execution) — substituting
+							// would render a command that never ran. Same by-design contract
+							// as permission prompts and diffs.
+							rawInput: block.arguments,
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
@@ -2265,15 +2266,17 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const rawInput = this.displayRecord(sessionId, toolCall.arguments)
-					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
+					// No display substitution: the card shows what the tool DID and the
+					// executed payload keeps its tokens (message_end tokenizes arguments
+					// in place before execution).
+					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
 						title,
 						kind,
 						locations,
-						rawInput,
+						rawInput: toolCall.arguments,
 						// Arguments are complete but the call hasn't been approved or
 						// started executing yet, so ACP status stays `pending`.
 						status: "pending",
@@ -2396,19 +2399,16 @@ export class KimchiAcpAgent implements Agent {
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
-				// Display substitution: the tool card's args/title show originals;
-				// the executed payload keeps its tokens.
-				const rawInput = this.displayRecord(sessionId, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
+					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						title,
 						kind,
 						locations,
-						rawInput,
+						rawInput: event.args,
 						status: "in_progress",
 					})
 					this.send({ sessionId, update })
@@ -2417,7 +2417,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						toolName: event.toolName,
-						rawInput,
+						rawInput: event.args,
 						status: "in_progress",
 						cwd: entry.cwd,
 					})
@@ -2778,7 +2778,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						rawInput: this.displayRecord(sessionId, args),
+						rawInput: args,
 						cwd: record?.cwd,
 					}),
 				})

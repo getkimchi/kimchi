@@ -11,6 +11,7 @@ import {
 	substituteTokens,
 	substituteTokensDeep,
 	tokenFor,
+	tokensToMarkers,
 	vaultForPaint,
 	vaultForSession,
 } from "./vault.js"
@@ -337,6 +338,15 @@ describe("session lifecycle", () => {
 		if (!vault) throw new Error("vault missing after start")
 		expect(tokenFor(vault, "EMAIL_ADDRESS", "bob.smith@acme.com")).toBe("[EMAIL_ADDRESS_5]")
 		expect(tokenFor(vault, "URL", "https://acme.com")).toBe("[URL_3]")
+	})
+
+	it("tokensToMarkers converts vault tokens to markers, leaves markers and unknown shapes alone", () => {
+		const vault = createTokenVault()
+		const token = tokenFor(vault, "EMAIL_ADDRESS", "x")
+		// Counter resets in beforeEach → token is [EMAIL_ADDRESS_1].
+		expect(tokensToMarkers(`a: ${token}, m: [REDACTED-CREDIT_CARD], misc: [lowercase_1] [AB]`)).toBe(
+			"a: [REDACTED-EMAIL_ADDRESS], m: [REDACTED-CREDIT_CARD], misc: [lowercase_1] [AB]",
+		)
 	})
 
 	it("deepStrings walks objects, arrays and primitives with a depth cap", () => {

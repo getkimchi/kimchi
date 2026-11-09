@@ -1359,6 +1359,20 @@ describe("token mode — composition and tally parity", () => {
 		expect(JSON.stringify(result)).toContain("[REDACTED-EMAIL_ADDRESS]")
 	})
 
+	it("strict export converts tokens already stored in the input to markers (exports leak nothing reversible)", async () => {
+		// The export walk starts from STORED session entries, which token mode
+		// keeps tokenized — a strict pass over those strings used to ship the
+		// token (and implicitly the vault-resolvable original) out the door.
+		writeSettings({ renderMode: "tokens" })
+		resetRedactorEngine()
+		const vault = createTokenVault()
+		const stored = await redactObjectStringsMeasured({ a: `mail ${fx.email}` }, vault)
+		expect(JSON.stringify(stored.redacted)).toContain("[EMAIL_ADDRESS_1]")
+		const exported = await redactObjectStringsStrict(stored.redacted)
+		expect(JSON.stringify(exported)).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(JSON.stringify(exported)).not.toContain("[EMAIL_ADDRESS_1]")
+	})
+
 	it("excluded entities drop detections in token mode exactly as in marker mode", async () => {
 		writeSettings({ renderMode: "tokens", excludedEntities: [...getDefaultExcludedEntities(), "EMAIL_ADDRESS"] })
 		resetRedactorEngine()

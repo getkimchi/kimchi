@@ -22,7 +22,7 @@
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
 import { getRedactionConfig, type RedactionRenderMode } from "./config.js"
 import { getDefaultExcludedEntities } from "./entity-tiers.js"
-import { TOKENIZED_ENTITIES, type TokenVault, tokenFor } from "./vault.js"
+import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
 
 /**
  * One atomic view of the redaction policy: the engine, the engine-level
@@ -986,6 +986,12 @@ export function mergeReports(target: RedactionReport, source: RedactionReport): 
  * original text. Exports fail closed — an unredacted transcript must never
  * be published.
  *
+ * Reversible tokens already stored in the export input (token mode keeps
+ * session files tokenized) are converted to markers with `tokensToMarkers`:
+ * an export contains no recoverable form of any original. That conversion
+ * is vault-independent and lossy — the right shape for data leaving the
+ * machine.
+ *
  * Returns a **new** structure; callers must assign the result.
  */
 export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
@@ -999,7 +1005,11 @@ export async function redactObjectStringsStrict<T>(obj: T): Promise<T> {
 	if (settingsError) {
 		throw new Error(`redaction settings invalid: ${settingsError.message}`)
 	}
-	return redactObjectStringsWith(obj, (text) => redactTextWithSnapshot(text, snapshot), snapshot)
+	return redactObjectStringsWith(
+		obj,
+		async (text) => tokensToMarkers(await redactTextWithSnapshot(text, snapshot)),
+		snapshot,
+	)
 }
 
 /** A pi-ai message with optional role/content fields. */

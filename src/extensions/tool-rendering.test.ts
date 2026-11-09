@@ -81,12 +81,21 @@ describe("paint substitution (pii-redaction token mode)", () => {
 		expect(view.render(60).join("\n")).toContain(`more ${original}`)
 	})
 
-	it("toolHeader substitutes the arg summary", async () => {
+	it("toolHeader keeps the arg summary tokenized (what the tool DID, e.g. the executed command)", async () => {
 		const original = "[EMAIL_ADDRESS_15]"
 		const token = await paintTokenFor(original)
 		const header = toolHeader("bash", `mail ${token}`, plainTheme, "● ")
-		expect(header).toContain(`mail ${original}`)
-		expect(header).not.toContain(token)
+		expect(header).toContain(`mail ${token}`)
+		expect(header).not.toContain(original)
+	})
+
+	it("VerbatimToolText path: pass-through for what-landed-on-disk panes (diff previews)", async () => {
+		const original = "[EMAIL_ADDRESS_16]"
+		const token = await paintTokenFor(original)
+		const view = new ToolText(`-old ${token}\n+new ${token}`, { noSubstitute: true })
+		const rendered = view.render(60).join("\n")
+		expect(rendered).toContain(`-old ${token}`)
+		expect(rendered).not.toContain(original)
 	})
 
 	it("renders tokens verbatim with no vault (markers mode / post-restart)", () => {

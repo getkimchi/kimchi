@@ -45,20 +45,21 @@ import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 /**
  * How engine detections are rendered in stored output:
  * - `tokens` (default): `[<ENTITY>_N]` — stable per-session reversible
- *   tokens; originals resolve only at presentation (see tokenization-vault
+ *   tokens; originals resolve only at presentation (see
+ *   docs/pii-redaction-tokens.md and vault.ts)
  * - `markers`: `[REDACTED-<ENTITY>]` — opt-in flat markers (settings or
  *   degrade fallback), the historical shape
- *   implementation notes), exports and telemetry stay tokenized
  *
  * Local opt-in via settings.json `redaction.renderMode`; org-locked
- * deployments are always markers.
+ * deployments follow the same tokens default (the org lock pins the
+ * resource, never the presentation).
  */
 export type RedactionRenderMode = "markers" | "tokens"
 
 export interface RedactionConfig {
 	/** Whether PII/secret redaction is active. */
 	enabled: boolean
-	/** Detection rendering mode (default `markers`). */
+	/** Detection rendering mode (default `tokens`). */
 	renderMode: RedactionRenderMode
 	/**
 	 * Entity types excluded at engine level: local settings.json

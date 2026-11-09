@@ -190,6 +190,24 @@ export function* deepStrings(value: unknown, depth = 0): Generator<string> {
 }
 
 /**
+ * Token → marker shape: `[EMAIL_ADDRESS_12]` → `[REDACTED-EMAIL_ADDRESS]`.
+ * Same split-from-the-right glyph run as SEED_RE, so every token this file
+ * can issue or seed from converts. Suffix digits are dropped wholesale.
+ */
+const TOKEN_TO_MARKER_RE = /\[([A-Z][A-Z0-9_]{0,40})_\d+\]/g
+
+/**
+ * Convert every token-shaped span in `text` to its marker equivalent,
+ * vault-independent and lossy (the value is gone). For the strict export
+ * walk: stored session entries are tokenized and exports must reveal
+ * nothing — not even the vault-resolvable original — so exports are the
+ * ONE surface where tokens degrade forward into irreversible markers.
+ */
+export function tokensToMarkers(text: string): string {
+	return text.replace(TOKEN_TO_MARKER_RE, (_span, entity: string) => `[REDACTED-${entity}]`)
+}
+
+/**
  * Replace every vault-known token in `text` with its original value.
  * Unknown tokens (never allocated, foreign-session, or allocated in a
  * vault that no longer exists) pass through VERBATIM: substitution must

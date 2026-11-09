@@ -1001,10 +1001,12 @@ export function toolHeader(tool: string, summary: string, theme: Theme, prefix =
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
 	let result = `${prefix}${label}`
-	// Display-only token substitution for the arg summary (bash command,
-	// grep pattern, path…): the user sees originals while the executed
-	// payload keeps its tokens.
-	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", paintText(summary))}`
+	// No token substitution in the summary: the header shows WHAT THE TOOL
+	// DID (the executed command/args), and what ran is the literal token
+	// (message_end tokenizes toolCall.arguments before execution — same by-
+	// design contract as permission prompts and diff previews). Only read-
+	// or-said surfaces (message text, thinking, tool RESULT panes) substitute.
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
 	if (timer) result += ` ${theme.fg("dim", timer)}`
 	return result
 }
@@ -1341,19 +1343,28 @@ function paintText(text: string): string {
 
 export class ToolText extends Text {
 	private value = ""
+	private noSubstitute: boolean
 	private toolCachedValue?: string
 	private toolCachedWidth?: number
 	private toolCachedLines?: string[]
 
-	constructor(text = "") {
+	/** Opt out of token substitution — for what-the-tool-DID panes (diff previews),
+	 * where the literal tokens are what landed on disk and painting originals
+	 * over them would misrepresent the file. */
+	constructor(text = "", opts?: { noSubstitute?: boolean }) {
 		super("", 0, 0)
-		this.value = paintText(text)
+		this.noSubstitute = opts?.noSubstitute === true
+		this.value = this.noSubstitute ? text : paintText(text)
+	}
+
+	getNoSubstitute(): boolean {
+		return this.noSubstitute
 	}
 
 	setText(text: string): void {
-		const substituted = paintText(text)
-		if (this.value === substituted) return
-		this.value = substituted
+		const next = this.noSubstitute ? text : paintText(text)
+		if (this.value === next) return
+		this.value = next
 		this.invalidate()
 	}
 
@@ -1389,6 +1400,16 @@ export class ToolText extends Text {
 
 function makeText(last: Component | undefined, text: string): Text {
 	const component = last instanceof ToolText ? last : new ToolText()
+	component.setText(text)
+	return component
+}
+
+/** makeText for what-the-tool-DID panes (the edit/multi-edit preview body): its
+ * diff lines show what landed on disk — the literal token — so they render
+ * verbatim. A shared component with a default makeText never downgrades: a new
+ * verbatim mode creates a fresh component. */
+function makeVerbatimText(last: Component | undefined, text: string): Text {
+	const component = last instanceof ToolText && last.getNoSubstitute() ? last : new ToolText("", { noSubstitute: true })
 	component.setText(text)
 	return component
 }
@@ -4902,7 +4923,9 @@ export default function (pi: ExtensionAPI) {
 						})
 				}
 				const body = ctx.state._ptDisplay as string | undefined
-				return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
+				// The preview is a diff of what landed on disk — tokens verbatim (F4,
+				// parity with ACP's displayContent diff pass-through).
+				return makeVerbatimText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
 				if (isPartial) {

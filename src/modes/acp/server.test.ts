@@ -13207,7 +13207,7 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(chunks(updates, "token-a")).toEqual([])
 	})
 
-	it("tool-call display substitutes title, rawInput, content, and rawOutput live", async () => {
+	it("tool-call display keeps title/rawInput tokenized (what ran) while content/rawOutput substitute (what it read)", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const fake = new FakeAgentSession("token-tools")
 		const localAgent = new KimchiAcpAgent(conn, {
@@ -13253,9 +13253,11 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		const call = updates.find((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")?.update as
 			| { title?: string; rawInput?: { command?: string } }
 			| undefined
-		// Display shows originals; the executed payload keeps its tokens.
-		expect(call?.title).toBe(`mail ${original}`)
-		expect(call?.rawInput?.command).toBe(`mail ${original}`)
+		// Args and title are what the tool DID — the literal token executed, so
+		// the card shows the token (substituting would show a command that
+		// never ran; same by-design contract as permission prompts/diffs).
+		expect(call?.title).toBe(`mail ${token}`)
+		expect(call?.rawInput?.command).toBe(`mail ${token}`)
 
 		const done = updates
 			.filter(
@@ -13282,7 +13284,7 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
 	})
 
-	it("replay substitutes user, thinking, text, and tool display while the vault lives", async () => {
+	it("replay substitutes user, thinking, text, and tool RESULTS while the vault lives (args/title stay tokens)", async () => {
 		const fake = new FakeAgentSession("token-replay")
 		// Install the vault BEFORE loadSession so replay paints through it.
 		const lifecycle = extApi()
@@ -13323,8 +13325,8 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		const call = updates.find((u) => u.update.sessionUpdate === "tool_call")?.update as
 			| { title?: string; rawInput?: { command?: string } }
 			| undefined
-		expect(call?.title).toBe(`mail ${original}`)
-		expect(call?.rawInput?.command).toBe(`mail ${original}`)
+		expect(call?.title).toBe(`mail ${token}`)
+		expect(call?.rawInput?.command).toBe(`mail ${token}`)
 		const done = updates.find(
 			(u) =>
 				u.update.sessionUpdate === "tool_call_update" && (u.update as { content?: unknown[] }).content !== undefined,
