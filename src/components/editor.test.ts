@@ -138,6 +138,31 @@ describe("PromptEditor", () => {
 			expect(seen).toEqual([])
 			expect(editor.getText()).toBe("/tmp/cat.png")
 		})
+
+		it("consumes a complete drop even when the chunk's trailing paste is incomplete", () => {
+			const { editor } = makeEditor()
+			const seen: string[] = []
+			editor.onImagePathDrop = (text) => {
+				seen.push(text)
+				return true
+			}
+			// A drop coalesced with the beginning of a second (split) paste: the
+			// complete paste is still offered to the handler; only the trailing
+			// incomplete remainder goes to upstream buffering.
+			editor.handleInput(`${OPEN}/tmp/a.png${CLOSE}tail ${OPEN}/tmp/par`)
+			expect(seen).toEqual(["/tmp/a.png"])
+			editor.handleInput(`tial.png${CLOSE}`)
+			expect(editor.getText()).toBe("tail /tmp/partial.png")
+		})
+
+		it("remaps shift+enter in a text segment adjacent to a drop", () => {
+			const { editor } = makeEditor()
+			editor.onImagePathDrop = () => true
+			// Terminals can coalesce a shift+enter and a bracketed paste into one
+			// chunk; the standalone remap must still apply to the text segment.
+			editor.handleInput(`\x1b\r${OPEN}/tmp/a.png${CLOSE}`)
+			expect(editor.getText()).toBe("\n")
+		})
 	})
 
 	describe("atomic [Image #N] markers", () => {

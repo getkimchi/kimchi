@@ -3,6 +3,7 @@ import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
 import { isKittyProtocolActive, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
+import { leadingImageMarker, parseImageMarkers, trailingImageMarker } from "../utils/image-marker.js"
 
 const CHEVRON_WIDTH = 2
 const PLACEHOLDER_TEXT = "ask anything or type / for commands"
@@ -164,13 +165,7 @@ export class PromptEditor extends CustomEditor {
 
 	/** The set of `[Image #N]` marker numbers currently in the draft. */
 	private imageMarkersPresent(): Set<number> {
-		const ids = new Set<number>()
-		for (const line of this.getLines()) {
-			for (const m of line.matchAll(/\[Image #(\d+)\]/g)) {
-				ids.add(Number(m[1]))
-			}
-		}
-		return ids
+		return parseImageMarkers(this.getLines().join("\n"))
 	}
 
 	/**
@@ -187,7 +182,7 @@ export class PromptEditor extends CustomEditor {
 		const { line, col } = this.getCursor()
 		if (col === 0) return false
 		const beforeCursor = (this.getLines()[line] ?? "").slice(0, col)
-		const marker = beforeCursor.match(/\[Image #(\d+)\]$/)
+		const marker = trailingImageMarker(beforeCursor)
 		if (!marker) return false
 		// Word-backspace is replayed as single-char backspaces (\x7f) so the
 		// whole marker goes in one atomic pass instead of stopping at "#1]".
@@ -195,7 +190,7 @@ export class PromptEditor extends CustomEditor {
 		// let upstream do the plain word-wise delete instead.
 		const replay = isWordBackspace && this.kb.matches("\x7f", "tui.editor.deleteCharBackward") ? "\x7f" : backspaceData
 		if (isWordBackspace && replay !== "\x7f") return false
-		for (let i = 0; i < marker[0].length; i++) {
+		for (let i = 0; i < marker.length; i++) {
 			super.handleInput(replay)
 		}
 		return true
@@ -212,7 +207,7 @@ export class PromptEditor extends CustomEditor {
 	private deleteHeadingImageMarker(deleteData: string, isWordForward: boolean): boolean {
 		const { line, col } = this.getCursor()
 		const afterCursor = (this.getLines()[line] ?? "").slice(col)
-		const marker = afterCursor.match(/^\[Image #(\d+)\]/)
+		const marker = leadingImageMarker(afterCursor)
 		if (!marker) return false
 		const replay = isWordForward
 			? this.kb.matches("\x1b[3~", "tui.editor.deleteCharForward")
@@ -220,7 +215,7 @@ export class PromptEditor extends CustomEditor {
 				: null
 			: deleteData
 		if (replay === null) return false
-		for (let i = 0; i < marker[0].length; i++) {
+		for (let i = 0; i < marker.length; i++) {
 			super.handleInput(replay)
 		}
 		return true
@@ -235,9 +230,9 @@ export class PromptEditor extends CustomEditor {
 	private jumpOverImageMarker(cursorData: string, forward: boolean): boolean {
 		const { line, col } = this.getCursor()
 		const text = this.getLines()[line] ?? ""
-		const marker = forward ? text.slice(col).match(/^\[Image #\d+\]/) : text.slice(0, col).match(/\[Image #\d+\]$/)
+		const marker = forward ? leadingImageMarker(text.slice(col)) : trailingImageMarker(text.slice(0, col))
 		if (!marker) return false
-		for (let i = 0; i < marker[0].length; i++) {
+		for (let i = 0; i < marker.length; i++) {
 			super.handleInput(cursorData)
 		}
 		return true
@@ -251,17 +246,21 @@ export class PromptEditor extends CustomEditor {
 	 *
 	 * Returns true when `data` was fully routed (every segment processed, even
 	 * when no paste was consumed). Returns false only when upstream should
-	 * process `data` itself: no paste tokens at all, or an incomplete paste
-	 * (opener without a closer in the same chunk) that upstream's multi-chunk
-	 * buffering must handle unchanged.
+	 * process `data` itself: nothing but an incomplete paste (opener without a
+	 * closer in the same chunk) that upstream's multi-chunk buffering must
+	 * handle unchanged. A chunk that starts with complete segments and ENDS
+	 * with an incomplete paste is still routed — only the incomplete remainder
+	 * is handed to upstream's buffering.
 	 */
 	private routeBracketedPastes(data: string, dropHandler: (pastedText: string) => boolean): boolean {
 		const OPEN = "\x1b[200~"
 		const CLOSE = "\x1b[201~"
-		// Tokenize first: any incomplete paste aborts the whole divert so
-		// upstream's multi-chunk buffering handles it unchanged.
+		// Tokenize first — complete text/paste segments in order. An opener with
+		// no closer captures the rest of the chunk into `remainder`, which
+		// upstream buffers unchanged for the next chunk(s) to complete.
 		const segments: { pasted: string | null; text: string }[] = []
 		let rest = data
+		let remainder: string | null = null
 		while (rest.length > 0) {
 			const open = rest.indexOf(OPEN)
 			if (open === -1) {
@@ -270,22 +269,42 @@ export class PromptEditor extends CustomEditor {
 				break
 			}
 			const close = rest.indexOf(CLOSE, open + OPEN.length)
-			if (close === -1) return false
+			if (close === -1) {
+				if (open > 0) segments.push({ pasted: null, text: rest.slice(0, open) })
+				remainder = rest.slice(open)
+				rest = ""
+				break
+			}
 			if (open > 0) segments.push({ pasted: null, text: rest.slice(0, open) })
 			segments.push({ pasted: rest.slice(open + OPEN.length, close), text: "" })
 			rest = rest.slice(close + CLOSE.length)
 		}
-		if (!segments.some((s) => s.pasted !== null)) return false
+		// A lone incomplete paste leaves the whole chunk to upstream buffering.
+		if (segments.length === 0) return false
 		for (const segment of segments) {
 			if (segment.pasted === null) {
-				if (segment.text.length > 0) super.handleInput(segment.text)
+				if (segment.text.length > 0) this.handleTextSegment(segment.text)
 				continue
 			}
 			if (segment.pasted.length === 0 || !dropHandler(segment.pasted)) {
 				super.handleInput(`${OPEN}${segment.pasted}${CLOSE}`)
 			}
 		}
+		if (remainder !== null) super.handleInput(remainder)
 		return true
+	}
+
+	/**
+	 * Process a plain-text segment lying between/around bracketed pastes.
+	 * Applies the same shift+enter remap as dispatchInput so a chunk that
+	 * coalesces shift+enter with a paste cannot lose its newline.
+	 */
+	private handleTextSegment(text: string): void {
+		if (!isKittyProtocolActive() && (text === "\x1b\r" || text === "\x1b\n")) {
+			super.handleInput("\n")
+			return
+		}
+		super.handleInput(text)
 	}
 
 	render(width: number): string[] {

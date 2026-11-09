@@ -249,11 +249,13 @@ export function setPasteImageHandler(handler: () => void): void {
 }
 
 // Registered by the clipboard-image extension: given a complete bracketed
-// paste payload (typically a file drop), return true to consume it before
-// the editor inserts it as text.
-let imageDropHandler: ((pastedText: string) => boolean) | undefined
+// paste payload (typically a file drop) and the current session cwd, return
+// true to consume it before the editor inserts it as text. The cwd is
+// threaded through from the editor's session — drops never resolve against
+// the long-lived process cwd.
+let imageDropHandler: ((pastedText: string, cwd: string) => boolean) | undefined
 
-export function setImageDropHandler(handler: (pastedText: string) => boolean): void {
+export function setImageDropHandler(handler: (pastedText: string, cwd: string) => boolean): void {
 	imageDropHandler = handler
 }
 
@@ -505,7 +507,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 				editor.onPasteImage = pasteImageHandler
 			}
 			if (imageDropHandler) {
-				editor.onImagePathDrop = imageDropHandler
+				const dropHandler = imageDropHandler
+				// Capture this session's cwd with the handler — the editor is
+				// rebuilt per session, so the closure always resolves drops
+				// against the session they belong to.
+				editor.onImagePathDrop = (text) => dropHandler(text, ctx.cwd)
 			}
 			if (imageMarkersEditedHandler) {
 				editor.onImageMarkersEdited = imageMarkersEditedHandler

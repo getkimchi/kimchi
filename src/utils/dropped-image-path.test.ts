@@ -21,24 +21,24 @@ afterEach(() => {
 
 describe("droppedImagePathCandidate", () => {
 	it("accepts a plain absolute path to a local image", () => {
-		const match = droppedImagePathCandidate(join(dir, "cat.png"))
+		const match = droppedImagePathCandidate(join(dir, "cat.png"), dir)
 		expect(match?.resolvedPath).toBe(join(dir, "cat.png"))
 		expect(match?.image.mimeType).toBe("image/png")
 	})
 
 	it("accepts a double-quoted path with spaces", () => {
-		const match = droppedImagePathCandidate(`"${join(dir, "my cat.jpg")}"`)
+		const match = droppedImagePathCandidate(`"${join(dir, "my cat.jpg")}"`, dir)
 		expect(match?.resolvedPath).toBe(join(dir, "my cat.jpg"))
 		expect(match?.image.mimeType).toBe("image/jpeg")
 	})
 
 	it("accepts a single-quoted and a backtick-quoted path", () => {
-		expect(droppedImagePathCandidate(`'${join(dir, "cat.png")}'`)?.resolvedPath).toBe(join(dir, "cat.png"))
-		expect(droppedImagePathCandidate(`\`${join(dir, "cat.png")}\``)?.resolvedPath).toBe(join(dir, "cat.png"))
+		expect(droppedImagePathCandidate(`'${join(dir, "cat.png")}'`, dir)?.resolvedPath).toBe(join(dir, "cat.png"))
+		expect(droppedImagePathCandidate(`\`${join(dir, "cat.png")}\``, dir)?.resolvedPath).toBe(join(dir, "cat.png"))
 	})
 
 	it("accepts a shell-escaped path (backslash-space) from a terminal drop", () => {
-		const match = droppedImagePathCandidate(join(dir, "my cat.jpg").replace(" ", "\\ "))
+		const match = droppedImagePathCandidate(join(dir, "my cat.jpg").replace(" ", "\\ "), dir)
 		expect(match?.resolvedPath).toBe(join(dir, "my cat.jpg"))
 	})
 
@@ -46,10 +46,10 @@ describe("droppedImagePathCandidate", () => {
 		// `\c` must stay `\c`; a Windows path with a real image extension would
 		// resolve via the drive root, which does not exist here → null, but the
 		// important part is the candidate was not mangled into `C:dir...`
-		const escaped = droppedImagePathCandidate(`${dir.replaceAll("/", "\\").replaceAll(" ", "_")}\\cat.png`)
+		const escaped = droppedImagePathCandidate(`${dir.replaceAll("/", "\\").replaceAll(" ", "_")}\\cat.png`, dir)
 		expect(escaped).toBeNull()
 		// Sanity: same path with forward slashes does resolve.
-		expect(droppedImagePathCandidate(join(dir, "cat.png"))?.resolvedPath).toBe(join(dir, "cat.png"))
+		expect(droppedImagePathCandidate(join(dir, "cat.png"), dir)?.resolvedPath).toBe(join(dir, "cat.png"))
 	})
 
 	it("resolves a relative path against cwd", () => {
@@ -58,32 +58,32 @@ describe("droppedImagePathCandidate", () => {
 	})
 
 	it("rejects multi-token payloads (path plus prose)", () => {
-		expect(droppedImagePathCandidate(`${join(dir, "cat.png")} look at this`)).toBeNull()
+		expect(droppedImagePathCandidate(`${join(dir, "cat.png")} look at this`, dir)).toBeNull()
 	})
 
 	it("rejects two dropped files in one payload", () => {
-		expect(droppedImagePathCandidate(`${join(dir, "cat.png")} ${join(dir, "cat.png")}`)).toBeNull()
+		expect(droppedImagePathCandidate(`${join(dir, "cat.png")} ${join(dir, "cat.png")}`, dir)).toBeNull()
 	})
 
 	it("rejects multi-line payloads", () => {
-		expect(droppedImagePathCandidate(`${join(dir, "cat.png")}\nhello`)).toBeNull()
+		expect(droppedImagePathCandidate(`${join(dir, "cat.png")}\nhello`, dir)).toBeNull()
 	})
 
 	it("rejects non-image files", () => {
-		expect(droppedImagePathCandidate(join(dir, "notes.txt"))).toBeNull()
+		expect(droppedImagePathCandidate(join(dir, "notes.txt"), dir)).toBeNull()
 	})
 
 	it("rejects URLs and file:// URIs", () => {
-		expect(droppedImagePathCandidate("https://example.com/cat.png")).toBeNull()
-		expect(droppedImagePathCandidate(`file://${join(dir, "cat.png")}`)).toBeNull()
+		expect(droppedImagePathCandidate("https://example.com/cat.png", dir)).toBeNull()
+		expect(droppedImagePathCandidate(`file://${join(dir, "cat.png")}`, dir)).toBeNull()
 	})
 
 	it("rejects missing files silently", () => {
-		expect(droppedImagePathCandidate(join(dir, "missing.png"))).toBeNull()
+		expect(droppedImagePathCandidate(join(dir, "missing.png"), dir)).toBeNull()
 	})
 
 	it("rejects empty payloads", () => {
-		expect(droppedImagePathCandidate("")).toBeNull()
-		expect(droppedImagePathCandidate("   ")).toBeNull()
+		expect(droppedImagePathCandidate("", dir)).toBeNull()
+		expect(droppedImagePathCandidate("   ", dir)).toBeNull()
 	})
 })

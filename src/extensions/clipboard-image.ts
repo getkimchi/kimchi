@@ -1,9 +1,10 @@
 import { join } from "node:path"
 import type { ImageContent } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
 import { droppedImagePathCandidate } from "../utils/dropped-image-path.js"
+import { buildImageMarker, parseImageMarkers, stripImageMarkers } from "../utils/image-marker.js"
 import { addImage, clearAllImages, getImageContentById, setImageCacheDir } from "../utils/image-registry.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
 import {
@@ -46,12 +47,22 @@ export function __resetClipboardImageForTest(): void {
 	pendingImages = []
 	removedDrops = new Map()
 	imageCounter = 0
+	inlineIdHighWater = 0
 	currentCtx = null
 	clipboardHasImage = false
 }
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
 let imageCounter = 0
+// Highest inline id assigned this session (draft or submit). Deleting a
+// marker detaches its drop but never frees the number — a fresh drop must
+// never collide with a live pending id (which would corrupt the registry:
+// addImage would skip the file write but overwrite the entry's metadata).
+let inlineIdHighWater = 0
+function nextInlineId(): number {
+	inlineIdHighWater = Math.max(inlineIdHighWater, imageCounter) + 1
+	return inlineIdHighWater
+}
 
 const CLIPBOARD_POLL_INTERVAL_MS = 1000
 let clipboardPollId: ReturnType<typeof setInterval> | null = null
@@ -109,63 +120,18 @@ function checkClipboard(): void {
 
 function buildImageMarkerPrefix(ids: number[]): string {
 	if (ids.length === 0) return ""
-	return ids.map((id) => `[Image #${id}]`).join(" ")
+	return ids.map(buildImageMarker).join(" ")
 }
-
-/** `[Image #N]` tokens present in a draft, keyed for inline-marker lookup. */
-function inlineMarkersInText(text: string): Set<number> {
-	const markers = new Set<number>()
-	for (const m of text.matchAll(/\[Image #(\d+)\]/g)) markers.add(Number(m[1]))
-	return markers
-}
-
-/** Remove the `[Image #N]` tokens for the given ids from `text` (one trailing space each). */
-function stripInlineMarkers(text: string, ids: number[]): string {
-	if (ids.length === 0) return text
-	const re = new RegExp(`\\[Image #(?:${ids.join("|")})\\] ?`, "g")
-	return text.replace(re, "")
-}
-
-setPasteImageHandler(() => {
-	handlePaste().catch((err) => {
-		console.error("Clipboard paste handler error:", err)
-	})
-})
 
 /**
- * File-drop paste: a terminal drag-and-drop arrives as a bracketed paste of
- * the file path. When it is a single readable local image, consume the paste
- * and render `[Image #N]` inline at the drop position instead of the raw
- * path. The number continues the session's image sequence (imageCounter +
- * pending), matching the id the image receives at submit.
+ * The single detach/re-arm reconcile, used by the editor's markers-edited
+ * channel AND by submit (a setEditorText restore bypasses that channel):
+ * a pending drop whose `[Image #N]` marker vanished from the draft detaches
+ * into `removedDrops` (the indicator follows the draft); a parked drop whose
+ * marker is complete again re-arms into pending — unless a live pending drop
+ * already owns that id (a re-typed marker is not an owner transfer).
  */
-setImageDropHandler((pastedText) => {
-	const match = droppedImagePathCandidate(pastedText, currentCtx?.cwd ?? process.cwd())
-	if (!match) return false
-	const base64 = Buffer.from(match.image.bytes).toString("base64")
-	const n = imageCounter + pendingImages.length + 1
-	pendingImages.push({
-		image: { type: "image", data: base64, mimeType: match.image.mimeType },
-		inlineId: n,
-		sourcePath: match.resolvedPath,
-	})
-	// A fresh drop is the canonical owner of its number — any older detached
-	// entry with the same id must not be re-armed alongside it.
-	removedDrops.delete(n)
-	updateIndicator()
-	insertTextAtPromptCursor(`[Image #${n}]`)
-	return true
-})
-
-/**
- * Marker-set sync: every edit that changes which `[Image #N]` markers are in
- * the draft (backspace, bulk delete, undo, kill-ring yank, plain typing) is
- * reported by the editor. A pending drop whose marker vanished detaches
- * immediately (parking in `removedDrops` so the indicator empties at once);
- * a marker that becomes complete again — e.g. undo fully restoring it —
- * re-arms its drop right away instead of waiting for submit.
- */
-setImageMarkersEditedHandler((present) => {
+function reconcileInlineMarkers(present: Set<number>): void {
 	let changed = false
 	for (let i = pendingImages.length - 1; i >= 0; i--) {
 		const p = pendingImages[i]
@@ -183,7 +149,44 @@ setImageMarkersEditedHandler((present) => {
 		}
 	}
 	if (changed) updateIndicator()
+}
+
+setPasteImageHandler(() => {
+	handlePaste().catch((err) => {
+		console.error("Clipboard paste handler error:", err)
+	})
 })
+
+/**
+ * File-drop paste: a terminal drag-and-drop arrives as a bracketed paste of
+ * the file path. When it is a single readable local image, consume the paste
+ * and render `[Image #N]` inline at the drop position instead of the raw
+ * path. The number is monotonic for the session (nextInlineId), matching
+ * the id the image receives at submit; a deleted marker's id is never reused.
+ * The ui layer threads the session cwd in — drops never resolve against the
+ * long-lived process cwd.
+ */
+setImageDropHandler((pastedText, cwd) => {
+	const match = droppedImagePathCandidate(pastedText, cwd)
+	if (!match) return false
+	const base64 = Buffer.from(match.image.bytes).toString("base64")
+	const n = nextInlineId()
+	pendingImages.push({
+		image: { type: "image", data: base64, mimeType: match.image.mimeType },
+		inlineId: n,
+		sourcePath: match.resolvedPath,
+	})
+	updateIndicator()
+	insertTextAtPromptCursor(buildImageMarker(n))
+	return true
+})
+
+/**
+ * Marker-set sync: every edit that changes which `[Image #N]` markers are in
+ * the draft (backspace, bulk delete, undo, kill-ring yank, plain typing) is
+ * reported by the editor and reconciled live — see reconcileInlineMarkers.
+ */
+setImageMarkersEditedHandler(reconcileInlineMarkers)
 
 async function handlePaste(): Promise<void> {
 	const { clipboard: native, error } = getNativeClipboard()
@@ -224,15 +227,14 @@ async function handlePaste(): Promise<void> {
 		data: base64,
 		mimeType: image.mimeType,
 	}
-	// Same inline-marker flow as editor drops: the paste takes the session's
-	// next number up front and renders `[Image #N]` inline at the cursor, so
-	// the draft shows the attachment instead of hiding it behind the pending
-	// indicator. The number continues the session sequence (imageCounter +
-	// pending), matching the id the image receives at submit.
-	const n = imageCounter + pendingImages.length + 1
+	// Same inline-marker flow as editor drops: the paste takes a fresh
+	// monotonic number up front and renders `[Image #N]` inline at the cursor,
+	// so the draft shows the attachment instead of hiding it behind the
+	// pending indicator. The number matches the id it receives at submit.
+	const n = nextInlineId()
 	pendingImages.push({ image: imageContent, inlineId: n })
 	updateIndicator()
-	insertTextAtPromptCursor(`[Image #${n}]`)
+	insertTextAtPromptCursor(buildImageMarker(n))
 	// Paste is accepted regardless of the current model's capabilities — the
 	// submit-time vision gate is the single choke point. The text-only hint
 	// rides the pending-image indicator (not a chat warning, which cannot be
@@ -262,7 +264,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		},
 	})
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event: SessionStartEvent, ctx) => {
 		if (clipboardPollId !== null) {
 			clearInterval(clipboardPollId)
 			clipboardPollId = null
@@ -271,11 +273,16 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		// Only a REPLACEMENT session starts clean. The very first session_start
 		// can fire moments AFTER the editor already accepted a paste/drop (the
 		// prompt renders before the session finishes starting); clearing then
-		// would silently lose attachments the user already made.
-		if (sessionSeen) {
+		// would silently lose attachments the user already made. An extension
+		// reload re-fires session_start for the SAME session (reason "reload"):
+		// resetting there would wipe live pending drops, restart numbering at
+		// #1 (colliding with transcript markers) and delete the live image
+		// cache — so "reload" never counts as a replacement.
+		if (sessionSeen && event.reason !== "reload") {
 			pendingImages = []
 			removedDrops = new Map()
 			imageCounter = 0
+			inlineIdHighWater = 0
 			// On-demand sessions never re-probe, so a hint left by a previous
 			// proactive session would advertise an image that was not read again.
 			clipboardHasImage = false
@@ -355,6 +362,16 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			},
 		}))
 
+		// A drop whose inline marker vanished from the submitted draft counts
+		// as detached; a marker restored via a path that bypasses the editor's
+		// edit channel (a setEditorText restore, e.g. an earlier gate cancel)
+		// re-arms here. This runs BEFORE the gate outcome and BEFORE the
+		// retained merge, so a cancelled gate cannot leave an entry
+		// double-booked in pending+removed, and a re-armed entry flows into
+		// the retained record for the cancel path.
+		const presentMarkers = parseImageMarkers(event.text)
+		reconcileInlineMarkers(presentMarkers)
+
 		// Gather every attachment source before any marker/registry mutation.
 		// Retention merges a prior cancelled/intercepted submission: same draft
 		// reuses retained attachments (no duplicate paths); a changed draft
@@ -368,25 +385,16 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			generation: gateGeneration,
 		})
 
-		// A drop whose inline `[Image #N]` marker is no longer in the draft
-		// counts as detached: it parks in `removedDrops` (indicator-consistent,
-		// no silent re-attach). Conversely, a removed drop whose marker is
-		// complete again — e.g. undo fully restored it — re-arms here.
-		const presentMarkers = inlineMarkersInText(event.text)
+		// Attach inline entries whose marker survived; entries without a
+		// surviving marker stay parked in `removedDrops` (retained-record
+		// copies of a previously cancelled attempt can reach here without
+		// touching pendingImages).
 		const keptPasted: PendingImage[] = []
 		for (const p of record.pasted) {
 			if (p.inlineId === null || presentMarkers.has(p.inlineId)) {
 				keptPasted.push(p)
 			} else {
 				removedDrops.set(p.inlineId, p)
-			}
-		}
-		for (const [id, entry] of [...removedDrops]) {
-			// Skip ids already owned by a live pending drop (a re-drop of the
-			// same number after a deletion) — otherwise the image attaches twice.
-			if (presentMarkers.has(id) && !keptPasted.some((p) => p.inlineId === id)) {
-				keptPasted.push(entry)
-				removedDrops.delete(id)
 			}
 		}
 
@@ -418,7 +426,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 				// path text stays in place (existing behavior). An empty text
 				// consumes the submission.
 				const inlineIds = keptPasted.flatMap((p) => (p.inlineId === null ? [] : [p.inlineId]))
-				const trimmed = stripInlineMarkers(event.text, inlineIds).trim()
+				const trimmed = stripImageMarkers(event.text, inlineIds).trim()
 				return trimmed ? { action: "transform" as const, text: trimmed, images: [] } : { action: "handled" as const }
 			}
 			// proceed: checked switch succeeded — submit on the new model below.
