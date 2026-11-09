@@ -1586,9 +1586,7 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		writeSettings({ entities: { ACME_EMPLOYEE_ID: "off" } })
 		await setOrgPolicyForTests({
 			redaction: {
-				customEntities: [
-					{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" },
-				],
+				customEntities: [{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" }],
 			},
 		})
 		resetRedactorEngine()

@@ -186,9 +186,9 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 
 	it("catastrophic-backtracking shapes throw (nested quantifier AND quantified alternation)", () => {
 		for (const pattern of ["(a+)+", "(\\d{2,})*", "(a|a)*b", "(a|aa)+c", "(ABC|DEF){2,4}"]) {
-			expect(() =>
-				parseLocalPolicy({ customEntities: [{ name: "ACME_X", category: "secrets", pattern }] }),
-			).toThrow(/ReDoS/)
+			expect(() => parseLocalPolicy({ customEntities: [{ name: "ACME_X", category: "secrets", pattern }] })).toThrow(
+				/ReDoS/,
+			)
 		}
 	})
 
@@ -201,12 +201,9 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 
 	it("managed parse drops catastrophic patterns too", () => {
 		let dropped: string[] = []
-		parseManagedPolicy(
-			{ customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(a|a)*b" }] },
-			(reasons) => {
-				dropped = reasons
-			},
-		)
+		parseManagedPolicy({ customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(a|a)*b" }] }, (reasons) => {
+			dropped = reasons
+		})
 		expect(dropped.join(" ")).toMatch(/ReDoS/)
 	})
 
