@@ -65,6 +65,14 @@ describe("/pr-reporting status", () => {
 		expect(text).toContain("Event retry    in about 1 min")
 		expect(text).toContain("Last event ACK 2026-10-08T11:59:59.000Z")
 	})
+	it("counts bodies frozen into notes (pendingId) as queued", () => {
+		// After the by-reference migration the body lives in its note: an inline-only count would
+		// report an empty queue while bodies are pending (or failing) delivery.
+		const inline = entry("1", { pending })
+		const frozen = entry("2", { pendingId: "ab".repeat(32), pendingMarkers: [] })
+		const status = statusText(state([inline, frozen]), undefined, now)
+		expect(status.text).toContain("Repositories   2 queued · 0 acknowledged")
+	})
 	it("shows a persisted batch even when no pending event rows remain", () => {
 		const status = statusText(state([]), undefined, now, [
 			{
