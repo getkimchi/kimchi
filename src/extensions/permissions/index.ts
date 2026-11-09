@@ -31,6 +31,7 @@ import * as PromptSupplementRegistry from "../../shared/planning/prompt-suppleme
 import { getToolsForProfile, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -399,7 +400,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (mode === "yolo" && initiatedBy === "user") {
 			// The DANGER flag keeps the full bypass (deny rules included) — say so
 			// instead of the yolo-mode wording, which is only true without it.
-			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true
+			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true || isInSandboxCluster()
 			ctx.ui.setStatus(
 				"permissions-warning",
 				dangerBypass
@@ -1449,10 +1450,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// YOLO mode: skip approval prompts and the classifier — but the user's
 				// blocklist still wins. Deny rules (and the allow rules that can override
 				// builtin denies) are evaluated first, then the hard-block net for bash
-				// commands no rule matched. Only --dangerously-skip-permissions keeps
-				// the documented full bypass.
+				// commands no rule matched. Only --dangerously-skip-permissions — or a
+				// session inside the sandbox cluster (ephemeral throwaway machines are
+				// that flag's documented use case, and those sessions enter yolo via
+				// the ACP client with no flag of their own) — keeps the full bypass.
 				if (mode === "yolo") {
-					if (pi.getFlag(DANGEROUS_BYPASS_FLAG) !== true) {
+					if (pi.getFlag(DANGEROUS_BYPASS_FLAG) !== true && !isInSandboxCluster()) {
 						const match = evaluateRules(allRules(), toolName, input)
 						if (match.decision === "deny") {
 							emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))

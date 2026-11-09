@@ -4442,6 +4442,34 @@ describe("permissions:tool_decision emissions", () => {
 		expect(warningCalls(dangerCtx)[0]).toContain("including your deny rules")
 	})
 
+	it("sandbox-context yolo keeps the full bypass (sandbox sessions have no flag of their own)", async () => {
+		// Sandbox worker sessions enter yolo via the ACP client with no
+		// --dangerously-skip-permissions flag; inside the sandbox cluster the
+		// full bypass is restored (ephemeral throwaway machines, no UI to prompt).
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
+		const harness = createPermissionsHarness(["bash"], { yolo: true, "deny-tool": "bash(gh *)" })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// Deny rule does not block …
+		expect(
+			await harness.fire("tool_call", tcall("bash", { command: "gh --version" }), createMockContext([])),
+		).toBeUndefined()
+		// … and neither does the hard-block net.
+		expect(
+			await harness.fire(
+				"tool_call",
+				tcall("bash", { command: "sudo apt-get install ripgrep" }, "tc-2"),
+				createMockContext([]),
+			),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{ toolCallId: "tc-1", toolName: "bash", decision: "accept", sourceDetail: "yolo_bypass", permissionMode: "yolo" },
+			{ toolCallId: "tc-2", toolName: "bash", decision: "accept", sourceDetail: "yolo_bypass", permissionMode: "yolo" },
+		])
+	})
+
 	it("edit tool decisions carry no file path", async () => {
 		const harness = createPermissionsHarness(["write"], { yolo: true })
 		const decisions = collectDecisions(harness)
