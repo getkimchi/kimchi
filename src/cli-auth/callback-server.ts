@@ -244,7 +244,6 @@ export function startCallbackServer(
 						// conceivable noise, so v4-only is an acceptable fallback.
 					}
 				}
-=======
 
 				return port
 			})
