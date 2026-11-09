@@ -20,6 +20,7 @@ import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
 import { isWorkId } from "../shared/work-id.js"
 import { getVersion } from "../utils.js"
+import { derefToolArgsForExecution } from "./pii-redaction/vault.js"
 import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
@@ -628,15 +629,28 @@ export function createWorkAttributionExtension(
 			if (isDefaultToolEnabled("edit")) {
 				pi.registerTool({
 					...createEditToolDefinition(ctx.cwd),
+					// Execution-side deref (vault.ts EXEC_DEREF_TOOLS): model-issued
+					// tokens resolve to the user's real values for file mutation;
+					// stored args stay tokenized.
 					execute: (id, params, signal, update, executionCtx) =>
-						createTrackedEditTool(executionCtx, id).execute(id, params, signal, update),
+						createTrackedEditTool(executionCtx, id).execute(
+							id,
+							derefToolArgsForExecution(executionCtx.sessionManager?.getSessionId?.(), "edit", params),
+							signal,
+							update,
+						),
 				})
 			}
 			if (isDefaultToolEnabled("write")) {
 				pi.registerTool({
 					...createWriteToolDefinition(ctx.cwd),
 					execute: (id, params, signal, update, executionCtx) =>
-						createTrackedWriteTool(executionCtx, id).execute(id, params, signal, update),
+						createTrackedWriteTool(executionCtx, id).execute(
+							id,
+							derefToolArgsForExecution(executionCtx.sessionManager?.getSessionId?.(), "write", params),
+							signal,
+							update,
+						),
 				})
 			}
 		})

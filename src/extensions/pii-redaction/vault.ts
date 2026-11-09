@@ -246,6 +246,63 @@ export function substituteTokensDeep(vault: TokenVault, value: unknown): unknown
 }
 
 // ---------------------------------------------------------------------------
+// Execution-side dereference (the mirrored half of display substitution).
+//
+// The industry-standard agent-harness shape (Cover, Shadow, PrivAiTe, Veil,
+// privacy-proxy): restore is the CORRECTNESS path — local file-mutation
+// tools execute with the user's real values, over already-complete args,
+// while the model's context, session files, and unknown/networked tools
+// keep placeholders. Only the tools in EXEC_DEREF_TOOLS ever receive
+// originals (allowlist + passthrough default): bash, MCP, agents and any
+// other tool keep their tokenized args, so no deref path can route an
+// original into outbound traffic. The transient execution copy is the only
+// destination: stored args stay tokenized (the did-surface tests pin it).
+// ---------------------------------------------------------------------------
+
+/**
+ * File-mutation tools whose execute passes args through vault dereference.
+ * Execution and display BOTH consult this one constant: a surface mirrors
+ * what execution will do, card for card.
+ */
+export const EXEC_DEREF_TOOLS: ReadonlySet<string> = new Set(["edit", "write"])
+// NOTE: apply_patch is intentionally NOT in the allowlist — there is no
+// tool-registration seam for it in this codebase (only renderers for the
+// tool name), so its execute is unreachable; including it would make the
+// display claim about execution untrue. Join when a seam exists.
+
+/**
+ * Return `value` with every vault-known token replaced by its original, for
+ * the EXECUTION copy of allowlisted tool args. `substituted` reports whether
+ * anything changed; when false (no vault-known token anywhere), the ORIGINAL
+ * object is returned — no rebuild, reference-identical, so byte-faithful
+ * callers can assert the passthrough. Unknown or confabulated tokens pass
+ * verbatim (substituteTokens' contract): they cannot abort a tool call.
+ */
+export function dereferenceToolArgs<T>(vault: TokenVault | undefined, value: T): { args: T; substituted: boolean } {
+	if (!vault) return { args: value, substituted: false }
+	let substituted = false
+	for (const text of deepStrings(value)) {
+		if (text.includes("[") && substituteTokens(vault, text) !== text) {
+			substituted = true
+			break
+		}
+	}
+	if (!substituted) return { args: value, substituted: false }
+	return { args: substituteTokensDeep(vault, value) as T, substituted: true }
+}
+
+/**
+ * The single entry point every tool-registration execute uses: resolves the
+ * session vault and apply the EXEC_DEREF_TOOLS allowlist. A missing vault
+ * (markers mode, dead/resumed session, redaction off) or a non-allowlisted
+ * tool returns `params` untouched.
+ */
+export function derefToolArgsForExecution<T>(sessionId: string | undefined, toolName: string, params: T): T {
+	if (!EXEC_DEREF_TOOLS.has(toolName)) return params
+	return dereferenceToolArgs(vaultForSession(sessionId), params).args
+}
+
+// ---------------------------------------------------------------------------
 // Session lifecycle (module-global — the ACP server hosts concurrent
 // sessions in one process, so this state must key by session id and tear
 // down scoped to its owner, per the shared-state rules).

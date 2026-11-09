@@ -49,7 +49,22 @@ import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
-import { substituteTokens, vaultForPaint } from "./pii-redaction/vault.js"
+import {
+	dereferenceToolArgs,
+	derefToolArgsForExecution,
+	substituteTokens,
+	vaultForPaint,
+	vaultForSession,
+} from "./pii-redaction/vault.js"
+
+/**
+ * The shape of a redaction span the model can carry: an irreversible marker
+ * or a reversible token. Used to recognize when an edit's "Could not find"
+ * outcome is about a redacted span (F2's residual: markers mode, dead
+ * vaults, and confabulated tokens never dereference).
+ */
+const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
+
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -997,16 +1012,25 @@ function shortPath(cwd: string, filePath: string): string {
 // Status dot — flickers green/gray while pending
 // ---------------------------------------------------------------------------
 
-export function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", timer?: string): string {
+export function toolHeader(
+	tool: string,
+	summary: string,
+	theme: Theme,
+	prefix = "",
+	timer?: string,
+	mirrorExecution = false,
+): string {
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
 	let result = `${prefix}${label}`
-	// No token substitution in the summary: the header shows WHAT THE TOOL
-	// DID (the executed command/args), and what ran is the literal token
-	// (message_end tokenizes toolCall.arguments before execution — same by-
-	// design contract as permission prompts and diff previews). Only read-
-	// or-said surfaces (message text, thinking, tool RESULT panes) substitute.
-	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
+	// By default the summary stays tokenized: it shows WHAT THE TOOL DID,
+	// and a byte-faithful tool (bash, grep…) ran the literal token
+	// (message_end tokenizes toolCall.arguments before execution). Only
+	// read-or-said surfaces (message text, thinking, tool RESULT panes)
+	// substitute. mirrorExecution is set by edit/write — those dereference
+	// vault tokens at execute time (EXEC_DEREF_TOOLS), so for them the
+	// originals ARE what runs and the header shows exactly that.
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", mirrorExecution ? paintText(summary) : summary)}`
 	if (timer) result += ` ${theme.fg("dim", timer)}`
 	return result
 }
@@ -1341,30 +1365,49 @@ function paintText(text: string): string {
 	return vault ? substituteTokens(vault, text) : text
 }
 
+/**
+ * F2 residual: when an edit's "Could not find" spans args carrying a
+ * redaction shape that execution could NOT dereference (markers mode, a
+ * dead vault, or a confabulated token), append guidance pointing at the
+ * real cause and its escape hatch instead of leaving the model to retry
+ * an unmatchable exact-match. Successful derefs that still miss mean the
+ * file changed — nothing added. The stored assistant message args stay
+ * tokenized; this text goes only into the tool RESULT (redacted on the
+ * way into storage like any other result content).
+ */
+export function explainRedactedEditFailure<T>(result: T, originalParams: unknown, substituted: boolean): T {
+	if (substituted || !result || typeof result !== "object") return result
+	const r = result as { isError?: boolean; content?: Array<{ type?: string; text?: string }> }
+	if (r.isError !== true) return result
+	const text = (r.content ?? [])
+		.filter((c) => c.type === "text" && typeof c.text === "string")
+		.map((c) => c.text)
+		.join("\n")
+	if (!text.includes("Could not find")) return result
+	if (!REDACTED_SPAN_RE.test(JSON.stringify(originalParams))) return result
+	const guidance =
+		"NOTE: the searched text contains a redacted span ([REDACTED-<TYPE>] marker or [<TYPE>_N] token). " +
+		"These are placeholders; the file holds the original value, which is never exposed to the model. " +
+		"To edit this file, exclude the entity type via redaction.excludedEntities in settings.json or disable PII redaction for the session."
+	r.content = [...(r.content ?? []), { type: "text", text: guidance }]
+	return result
+}
+
 export class ToolText extends Text {
 	private value = ""
-	private noSubstitute: boolean
 	private toolCachedValue?: string
 	private toolCachedWidth?: number
 	private toolCachedLines?: string[]
 
-	/** Opt out of token substitution — for what-the-tool-DID panes (diff previews),
-	 * where the literal tokens are what landed on disk and painting originals
-	 * over them would misrepresent the file. */
-	constructor(text = "", opts?: { noSubstitute?: boolean }) {
+	constructor(text = "") {
 		super("", 0, 0)
-		this.noSubstitute = opts?.noSubstitute === true
-		this.value = this.noSubstitute ? text : paintText(text)
-	}
-
-	getNoSubstitute(): boolean {
-		return this.noSubstitute
+		this.value = paintText(text)
 	}
 
 	setText(text: string): void {
-		const next = this.noSubstitute ? text : paintText(text)
-		if (this.value === next) return
-		this.value = next
+		const substituted = paintText(text)
+		if (this.value === substituted) return
+		this.value = substituted
 		this.invalidate()
 	}
 
@@ -1400,16 +1443,6 @@ export class ToolText extends Text {
 
 function makeText(last: Component | undefined, text: string): Text {
 	const component = last instanceof ToolText ? last : new ToolText()
-	component.setText(text)
-	return component
-}
-
-/** makeText for what-the-tool-DID panes (the edit/multi-edit preview body): its
- * diff lines show what landed on disk — the literal token — so they render
- * verbatim. A shared component with a default makeText never downgrades: a new
- * verbatim mode creates a fresh component. */
-function makeVerbatimText(last: Component | undefined, text: string): Text {
-	const component = last instanceof ToolText && last.getNoSubstitute() ? last : new ToolText("", { noSubstitute: true })
 	component.setText(text)
 	return component
 }
@@ -4707,7 +4740,13 @@ export default function (pi: ExtensionAPI) {
 			description: writeTool.description,
 			parameters: writeTool.parameters,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): the model
+				// issued tokens; the file gets the user's real values. params stay
+				// tokenized in the stored assistant message; everything below runs
+				// on the dereferenced execution copy — including the result diff,
+				// which therefore shows what actually landed.
+				const execParams = derefToolArgsForExecution(ctx.sessionManager?.getSessionId?.(), "write", params)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const sessionCwd = ctx.cwd
 				const fullPath = fp ? resolve(sessionCwd, fp) : ""
 				const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
@@ -4718,8 +4757,8 @@ export default function (pi: ExtensionAPI) {
 				} catch {
 					old = null
 				}
-				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
-				const content = params.content ?? ""
+				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, execParams, signal, onUpdate)
+				const content = execParams.content ?? ""
 				if (old !== null && old !== content) {
 					const diff = parseDiff(old, content)
 					result.details = {
@@ -4752,7 +4791,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
+				// write is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer, true)
 				return makeText(ctx.lastComponent, hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
@@ -4840,12 +4880,21 @@ export default function (pi: ExtensionAPI) {
 			description: editTool.description,
 			parameters: editTool.parameters,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): a model-issued
+				// token in oldText no longer beats the exact-match gate — ops run on
+				// the dereferenced execution copy, which is also what the result
+				// details (and so the diff preview) describe.
+				const { args: execParams, substituted } = dereferenceToolArgs(
+					vaultForSession(ctx.sessionManager?.getSessionId?.()),
+					params,
+				)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const trackedTool = createTrackedEditTool(ctx, toolCallId)
-				const operations = getEditOperations(params)
+				const operations = getEditOperations(execParams)
 				const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
-				const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
-				if (operations.length === 0) return result
+				const result = await trackedTool.execute(toolCallId, execParams, signal, onUpdate)
+				const explained = explainRedactedEditFailure(result, params, substituted)
+				if (operations.length === 0) return explained
 				const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
 				const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
 				if (operations.length === 1) {
@@ -4890,7 +4939,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
+				// edit is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer, true)
 				if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
 				const diffWidth = branchDiffWidth()
 				const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
@@ -4923,9 +4973,11 @@ export default function (pi: ExtensionAPI) {
 						})
 				}
 				const body = ctx.state._ptDisplay as string | undefined
-				// The preview is a diff of what landed on disk — tokens verbatim (F4,
-				// parity with ACP's displayContent diff pass-through).
-				return makeVerbatimText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
+				// The preview mirrors execution: edit/write dereference vault tokens
+				// at execute time (EXEC_DEREF_TOOLS), so showing the originals IS
+				// showing what lands on disk. A dead/absent vault paints verbatim —
+				// exactly what execution would do then.
+				return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
 				if (isPartial) {

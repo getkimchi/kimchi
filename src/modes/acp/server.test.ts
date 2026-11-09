@@ -13207,7 +13207,7 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(chunks(updates, "token-a")).toEqual([])
 	})
 
-	it("tool-call display keeps title/rawInput tokenized (what ran) while content/rawOutput substitute (what it read)", async () => {
+	it("tool-call display mirrors execution: bash stays tokenized, edit shows originals; content/rawOutput substitute", async () => {
 		const { conn, updates } = makeRecordingConn()
 		const fake = new FakeAgentSession("token-tools")
 		const localAgent = new KimchiAcpAgent(conn, {
@@ -13234,6 +13234,12 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 				args: { command: `mail ${token}` },
 			})
 			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "edit",
+				args: { path: "c.txt", oldText: token, newText: token },
+			})
+			fake.emit({
 				type: "tool_execution_end",
 				toolCallId: "tc-1",
 				toolName: "bash",
@@ -13253,11 +13259,17 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		const call = updates.find((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")?.update as
 			| { title?: string; rawInput?: { command?: string } }
 			| undefined
-		// Args and title are what the tool DID — the literal token executed, so
-		// the card shows the token (substituting would show a command that
-		// never ran; same by-design contract as permission prompts/diffs).
+		// Bash executes its byte-faithful tokenized args — the card shows the
+		// token (substituting would show a command that never ran).
 		expect(call?.title).toBe(`mail ${token}`)
 		expect(call?.rawInput?.command).toBe(`mail ${token}`)
+		// edit dereferences vault tokens at execute (EXEC_DEREF_TOOLS): the
+		// original bytes are what lands, so the card shows the original.
+		const editCall = updates
+			.filter((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")
+			.map((u) => u.update as { rawInput?: { newText?: string } })
+			.find((u) => u.rawInput?.newText !== undefined)
+		expect(editCall?.rawInput?.newText).toBe(original)
 
 		const done = updates
 			.filter(
@@ -13284,7 +13296,7 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
 	})
 
-	it("replay substitutes user, thinking, text, and tool RESULTS while the vault lives (args/title stay tokens)", async () => {
+	it("replay substitutes user, thinking, text, and tool RESULTS while the vault lives; args mirror execution (bash tokens, edit originals)", async () => {
 		const fake = new FakeAgentSession("token-replay")
 		// Install the vault BEFORE loadSession so replay paints through it.
 		const lifecycle = extApi()
@@ -13302,11 +13314,13 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 					{ type: "thinking", thinking: `user wrote ${token}`, redacted: false },
 					{ type: "text", text: `got it, ${token} noted` },
 					{ type: "toolCall", id: "tc-r1", name: "bash", arguments: { command: `mail ${token}` } },
+					{ type: "toolCall", id: "tc-r2", name: "edit", arguments: { path: "c.txt", newText: token } },
 				],
 				"a1",
 				"u1",
 			),
 			toolResultEntry("tc-r1", "bash", `sent to ${token}`, false, "tr1", "a1"),
+			toolResultEntry("tc-r2", "edit", "edited", false, "tr2", "a1"),
 		]
 		const { conn, updates } = makeRecordingConn()
 		const agent = new KimchiAcpAgent(conn, {
@@ -13327,6 +13341,13 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 			| undefined
 		expect(call?.title).toBe(`mail ${token}`)
 		expect(call?.rawInput?.command).toBe(`mail ${token}`)
+		// edit replayed with a live vault shows the originals — execution of an
+		// allowlisted file-mutation tool would deref, so display mirrors it.
+		const editCall = updates
+			.filter((u) => u.update.sessionUpdate === "tool_call")
+			.map((u) => u.update as { rawInput?: { newText?: string } })
+			.find((u) => u.rawInput?.newText !== undefined)
+		expect(editCall?.rawInput?.newText).toBe(original)
 		const done = updates.find(
 			(u) =>
 				u.update.sessionUpdate === "tool_call_update" && (u.update as { content?: unknown[] }).content !== undefined,

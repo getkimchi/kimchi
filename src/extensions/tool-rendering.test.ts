@@ -25,6 +25,7 @@ import {
 } from "./tool-output-store.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
+	explainRedactedEditFailure,
 	formatToolTimer,
 	GREP_NO_MATCHES_SENTINEL,
 	getToolElapsedMs,
@@ -81,7 +82,7 @@ describe("paint substitution (pii-redaction token mode)", () => {
 		expect(view.render(60).join("\n")).toContain(`more ${original}`)
 	})
 
-	it("toolHeader keeps the arg summary tokenized (what the tool DID, e.g. the executed command)", async () => {
+	it("toolHeader keeps the arg summary tokenized for byte-faithful tools (bash ran the literal token)", async () => {
 		const original = "[EMAIL_ADDRESS_15]"
 		const token = await paintTokenFor(original)
 		const header = toolHeader("bash", `mail ${token}`, plainTheme, "● ")
@@ -89,18 +90,41 @@ describe("paint substitution (pii-redaction token mode)", () => {
 		expect(header).not.toContain(original)
 	})
 
-	it("VerbatimToolText path: pass-through for what-landed-on-disk panes (diff previews)", async () => {
+	it("toolHeader mirrors execution for edit/write (EXEC_DEREF_TOOLS): originals are what lands", async () => {
 		const original = "[EMAIL_ADDRESS_16]"
 		const token = await paintTokenFor(original)
-		const view = new ToolText(`-old ${token}\n+new ${token}`, { noSubstitute: true })
-		const rendered = view.render(60).join("\n")
-		expect(rendered).toContain(`-old ${token}`)
-		expect(rendered).not.toContain(original)
+		const header = toolHeader("edit", `c.txt ${token}`, plainTheme, "● ", undefined, true)
+		expect(header).toContain(`c.txt ${original}`)
+		expect(header).not.toContain(token)
 	})
 
 	it("renders tokens verbatim with no vault (markers mode / post-restart)", () => {
 		const view = new ToolText("out: [EMAIL_ADDRESS_99]")
 		expect(view.render(60).join("\n")).toContain("out: [EMAIL_ADDRESS_99]")
+	})
+
+	it("explainRedactedEditFailure appends the redaction story to Could-not-find errors over token-shaped args", () => {
+		// Fresh objects per case: the helper appends INTO the result, mirroring
+		// the surrounding execute, which reassigns result.details in place.
+		const base = () => ({
+			isError: true as const,
+			content: [
+				{ type: "text" as const, text: "Could not find the exact text in c.txt. The old text must match exactly." },
+			],
+		})
+		const out = explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, false)
+		expect(out.content).toHaveLength(2)
+		expect(out.content[1].text).toContain("redacted span")
+		expect(out.content[1].text).toContain("redaction.excludedEntities")
+		// Markers-shaped args get the same guidance.
+		const outMarker = explainRedactedEditFailure(base(), { oldText: "buyer [REDACTED-EMAIL_ADDRESS]" }, false)
+		expect(outMarker.content).toHaveLength(2)
+		// No shape, no guidance; and a SUCCESSFUL deref (file changed) stays quiet.
+		expect(explainRedactedEditFailure(base(), { oldText: "plain" }, false).content).toHaveLength(1)
+		expect(explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, true).content).toHaveLength(1)
+		// Non-error results pass through untouched.
+		const ok = { content: [] }
+		expect(explainRedactedEditFailure(ok, { oldText: "x [EMAIL_ADDRESS_9]" }, false)).toBe(ok)
 	})
 })
 const plainTheme = {

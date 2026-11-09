@@ -37,13 +37,17 @@ in unlocked deployments and as the settings-error degrade fallback
 
 ## Agent editing and redacted spans
 
-An agent's `edit` cannot match a redacted span: exact-match editing needs
-the file bytes, and the model's view of the file is the token — the edit
-fails with "could not find the exact text". A `write` of what the model
-believes the content to be lands the token. Marker mode has always behaved
-this way; token mode doesn't change it. The escape hatch is
-`redaction.excludedEntities` for files you want the agent to edit against
-real values.
+Token mode edits work: `edit` and `write` dereference vault tokens at
+execute time (see The substitution rule), so an `oldText` of what the model
+saw matches a file holding the original, and a `write` lands real bytes. The
+model never sees the PII while moving it.
+
+Marker mode stays uneditable by design: exact-match editing needs bytes the
+model never receives, and there is no vault to dereference. A "Could not
+find" failure there gains a note naming the cause and the escape hatch,
+`redaction.excludedEntities` in settings.json (or disabling redaction for
+the session). The same note fires in token mode when the span is a literal
+unknown token or the vault is gone.
 
 ## The vault
 
@@ -63,20 +67,35 @@ cannot return a wrong value — worst case it renders the token verbatim.
 
 ## The substitution rule
 
-A surface gets originals only when it shows what the model **read or said**.
-Surfaces that show what it **did** stay tokenized:
+Display mirrors execution, card for card. A surface shows exactly the bytes
+the underlying action runs or lands — no more, no less:
 
-- **Read or said → originals.** Message text, thinking, tool RESULT panes,
-  `rawOutput`, replayed history. The display is terminal; nothing downstream
-  consumes it, and painting the original answers "what did the agent see?"
-  honestly.
-- **Did → tokens.** Tool-call arguments and titles, permission prompts, diff
-  previews (they record what landed on disk), print mode. The executed
-  payload keeps its tokens — `message_end` tokenizes tool-call arguments in
-  place before the tool runs — so painting the original would display a
-  command, file content, or approval that never existed. It also hides the
-  real failure mode: an agent that tries to write your email into a file can
-  only write the token, because it never saw the email.
+- **Local file mutation dereferences at execute time** (`edit`, multi-edit,
+  `write` — the `EXEC_DEREF_TOOLS` allowlist in vault.ts): the model's
+  tokens are substituted back to originals in the transient execution copy,
+  so an edit whose `oldText` carries `[EMAIL_ADDRESS_1]` matches a file
+  holding the real address, and a `write` lands the real bytes. This is the
+  standard agent-harness pattern (Cover, Veil, PrivAiTe, privacy-proxy):
+  local actions run with real values inside the local trust boundary; the
+  privacy wall is the model's context, not the user's own filesystem. Cards,
+  diff previews, and permission prompts for these tools therefore show the
+  ORIGINAL — that is what executes.
+- **Everything else executes byte-faithfully.** `bash`, MCP tools, agents,
+  and any non-allowlisted tool runs its literal tokenized args (message_end
+  tokenizes tool-call arguments in place). Their cards, headers, and
+  permission prompts show the token — painting the original there would
+  display a command that never ran. This allowlist-plus-passthrough shape
+  keeps unknown and networked tools from ever receiving originals, so no
+  deref path can route PII into outbound traffic.
+- **A dead or absent vault changes both sides at once.** Markers mode, a
+  post-restart replay, or redaction-off: execution cannot dereference, and
+  every display renders tokens verbatim. The display and the file stay
+  truthful in the degraded state too.
+
+A planted token-shaped string in untrusted content (a malicious repo file
+saying `[EMAIL_ADDRESS_1]`) can only resolve against THIS session's live
+vault; it can cause the corresponding real value to be written into a LOCAL
+file via edit/write — never into bash, MCP, or any outbound channel.
 
 ## Where originals exist
 
@@ -90,13 +109,16 @@ Surfaces that show what it **did** stay tokenized:
 | ACP `agent_message_chunk` stream | markers | **originals** | substituted server-side before emission; the client is the user's own IDE — same trust domain as the TUI terminal |
 | ACP `agent_thought_chunk` stream | markers | **originals** | same per-block desanitizer path as message chunks; a token split across the block's last deltas drains at message end |
 | ACP tool-call results (content, rawOutput) | markers | **originals** | what the tool READ — substituted at emission; the executed payload keeps its tokens. Streaming arg deltas (`rawOutput.delta` previews) degrade to verbatim tokens mid-stream — terminal emissions show originals |
-| ACP tool-call arguments and titles | markers | tokens | what the tool DID — the literal token executed; substituting would display a command that never ran (same by-design contract as permission prompts) |
+| ACP tool-call arguments and titles — edit/write | markers | **originals** | mirrors execution: these tools deref at execute time (EXEC_DEREF_TOOLS) |
+| ACP tool-call arguments and titles — bash/MCP/other | markers | tokens | byte-faithful execution; the literal token is what ran |
 | ACP replay while the vault lives | markers | **originals** | a same-process attach/load substitutes from the live vault; post-restart replay degrades to tokens (below) |
-| Permission prompts (ACP `session/request_permission`, TUI approval) | markers | tokens | **by design** — an approval decides execution, and what executes is the literal token; showing the original would mislead the approval |
+| Permission prompts — edit/write (ACP `session/request_permission`, TUI approval) | markers | **originals** | an approval decides execution, and execution derefs: the original is what lands |
+| Permission prompts — bash/MCP/other | markers | tokens | an approval decides execution, and what executes is the literal token |
 | Print mode / JSON event stream (`--print`, `--mode json`) | markers | tokens | upstream's print path reads the tokenized session state; no kimchi-side substitution seam exists in v1 — known gap pending an upstream output-transform hook |
 | Tool-result display panes | markers | **originals** | TUI `ToolText` (default) and ACP tool-call content substitute at paint/emission; result-text logic (sentinel comparison, error classification) runs on the tokenized source |
-| TUI tool headers (executed command/args summary) | markers | tokens | what the tool DID, same contract as ACP arguments/titles |
-| Diff previews (TUI edit preview, ACP diffs) | markers | tokens | a diff records what landed on disk, and what landed is the literal token. TUI renders the preview through a no-substitute `ToolText`; ACP passes diffs through untouched |
+| TUI tool headers — edit/write | markers | **originals** | mirrors execution (deref at execute) |
+| TUI tool headers — bash/other | markers | tokens | byte-faithful execution |
+| Diff previews (TUI edit preview, ACP diffs) | markers | **originals** | the diff records what landed on disk, and edit/write execution lands the dereferenced original. ACP substitutes diff items from a live vault; the TUI edit preview paints through the substituting `ToolText`. Both render verbatim when no vault can answer |
 | Thinking blocks (visible) | markers | **originals** | the TUI thinking render and ACP `agent_thought_chunk` both substitute; provider-encrypted thinking (`redacted: true`) has no plaintext to substitute |
 | After process restart | markers | tokens (viewport verbatim) | vault gone; degraded, never wrong |
 

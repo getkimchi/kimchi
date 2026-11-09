@@ -2,6 +2,7 @@ import type { AgentSideConnection, PermissionOption, ToolCall } from "@agentclie
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import type { PermissionChoice, ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
 import type { ApprovalOutcome } from "../../extensions/permissions/prompts.js"
+import { EXEC_DEREF_TOOLS, substituteTokensDeep, vaultForSession } from "../../extensions/pii-redaction/vault.js"
 import { buildToolCallShape } from "./tool-calls/utils.js"
 import { requestWithAbort } from "./utils.js"
 
@@ -30,11 +31,23 @@ export function createAcpPermissionPrompter(
 			})
 
 			const acpToolCallId = resolveAcpToolCallId(req.toolCallId, req.toolName)
+			// The approval must mirror what execution will DO with the args:
+			// byte-faithful tools (bash, MCP…) run the literal token, so the
+			// prompt shows the token; edit/write deref at execute time
+			// (EXEC_DEREF_TOOLS), so the prompt shows the original — that is
+			// the content the approval actually writes.
+			let rawInput = req.input
+			if (EXEC_DEREF_TOOLS.has(req.toolName)) {
+				const vault = vaultForSession(sessionId)
+				if (vault && rawInput && typeof rawInput === "object") {
+					rawInput = substituteTokensDeep(vault, rawInput) as typeof rawInput
+				}
+			}
 			const toolCall: ToolCall = buildToolCallShape({
 				toolCallId: acpToolCallId,
 				piToolCallId: req.toolCallId,
 				toolName: req.toolName,
-				rawInput: req.input,
+				rawInput,
 				status: "pending",
 				cwd,
 			})

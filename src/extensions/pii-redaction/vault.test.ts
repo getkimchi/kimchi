@@ -5,6 +5,8 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import {
 	createTokenVault,
 	deepStrings,
+	dereferenceToolArgs,
+	derefToolArgsForExecution,
 	installVaultLifecycle,
 	resetTokenVaults,
 	seedTokenCountersFromTexts,
@@ -347,6 +349,62 @@ describe("session lifecycle", () => {
 		expect(tokensToMarkers(`a: ${token}, m: [REDACTED-CREDIT_CARD], misc: [lowercase_1] [AB]`)).toBe(
 			"a: [REDACTED-EMAIL_ADDRESS], m: [REDACTED-CREDIT_CARD], misc: [lowercase_1] [AB]",
 		)
+	})
+
+	describe("dereferenceToolArgs / derefToolArgsForExecution", () => {
+		it("deep-substitutes vault-known tokens across nested args (edit edits[] and write content)", () => {
+			const vault = createTokenVault()
+			const token = tokenFor(vault, "EMAIL_ADDRESS", "[EMAIL_ADDRESS_53]")
+			const args = {
+				path: "contacts.txt",
+				edits: [
+					{ oldText: `owner: ${token}\ncity: x`, newText: `replacement keeps ${token}` },
+					{ oldText: "plain", newText: "plain2" },
+				],
+			}
+			const { args: out, substituted } = dereferenceToolArgs(vault, args)
+			expect(substituted).toBe(true)
+			expect(out).toEqual({
+				path: "contacts.txt",
+				edits: [
+					{ oldText: "owner: [EMAIL_ADDRESS_53]\ncity: x", newText: "replacement keeps [EMAIL_ADDRESS_53]" },
+					{ oldText: "plain", newText: "plain2" },
+				],
+			})
+			// Stored args stay tokenized: the input object is never mutated.
+			expect((args.edits[0] as { newText: string }).newText).toContain(token)
+		})
+
+		it("returns the original object (substituted: false) when no vault-known token is present", () => {
+			const vault = createTokenVault()
+			const args = { content: "mailto [EMAIL_ADDRESS_99] unknown" }
+			const { args: out, substituted } = dereferenceToolArgs(vault, args)
+			expect(substituted).toBe(false)
+			expect(out).toBe(args)
+		})
+
+		it("no vault (markers mode, dead session) returns the args untouched", () => {
+			const args = { content: "[EMAIL_ADDRESS_1]" }
+			const { args: out, substituted } = dereferenceToolArgs(undefined, args)
+			expect(substituted).toBe(false)
+			expect(out).toBe(args)
+		})
+
+		it("derefToolArgsForExecution applies the allowlist and resolves by session id", async () => {
+			const { start } = startShutdownPair(() => true)
+			await start({}, createContext({ sessionManager: { getSessionId: () => "d1" } }))
+			const vault = vaultForSession("d1")
+			if (!vault) throw new Error("d1 vault missing")
+			const token = tokenFor(vault, "EMAIL_ADDRESS", "[EMAIL_ADDRESS_52]")
+			const editArgs = { oldText: token }
+			expect(derefToolArgsForExecution("d1", "edit", editArgs)).toEqual({ oldText: "[EMAIL_ADDRESS_52]" })
+			const bashArgs = { command: token }
+			// Non-allowlisted tools keep byte-faithful (tokenized) args.
+			expect(derefToolArgsForExecution("d1", "bash", bashArgs)).toBe(bashArgs)
+			// Unknown session (post-restart, redaction off): passthrough.
+			expect(derefToolArgsForExecution("dead", "edit", { oldText: token })).toEqual({ oldText: token })
+			expect(derefToolArgsForExecution(undefined, "edit", { oldText: token })).toEqual({ oldText: token })
+		})
 	})
 
 	it("deepStrings walks objects, arrays and primitives with a depth cap", () => {
