@@ -1389,6 +1389,11 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 	const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
 	const base64 = `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==`
 	const fromBytes = (head: string) => `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+	// A break inside the first 16 base64 chars shrinks the signature window.
+	const breakInSignature = (head: string) => {
+		const raw = `${Buffer.from(head, "latin1").toString("base64")}${tokenShaped}A`.padEnd(64, "A")
+		return `${raw.slice(0, 8)}\n${raw.slice(8)}`
+	}
 
 	it.each([
 		["internal image block", { type: "image", mimeType: "image/png", data: base64 }],
@@ -1404,6 +1409,15 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["JPEG bytes", { mimeType: "image/jpeg", data: fromBytes("\xff\xd8\xff") }],
 		["GIF bytes", { mimeType: "image/gif", data: fromBytes("GIF89a") }],
 		["WebP bytes", { mimeType: "image/webp", data: fromBytes("RIFF\x10\0\0\0WEBP") }],
+		[
+			"WebP with a break inside its signature",
+			{ mimeType: "image/webp", data: breakInSignature("RIFF\x10\0\0\0WEBP") },
+		],
+		[
+			"data URL with a long name parameter",
+			{ image_url: { url: `data:image/png;name=${"a".repeat(200)};base64,${base64}` } },
+		],
+		["image data URL in an array under image_url", { image_url: [{ url: `data:image/png;base64,${base64}` }] }],
 	])("leaves %s byte-identical", async (_name, block) => {
 		expect(await redactObjectStrings({ role: "user", content: [block] })).toEqual({ role: "user", content: [block] })
 	})

@@ -785,12 +785,19 @@ const IMAGE_SIGNATURE_BASE64_CHARS = 16
 
 /** Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature. */
 function hasImageSignature(text: string, start: number): boolean {
-	const head = Buffer.from(text.slice(start, start + IMAGE_SIGNATURE_BASE64_CHARS), "base64").toString("latin1")
+	// Line breaks are legal base64: collect signature chars past them, else a
+	// break inside the window shrinks it and WebP's 12-byte check falls short.
+	let head = ""
+	for (let i = start; i < text.length && head.length < IMAGE_SIGNATURE_BASE64_CHARS; i++) {
+		const c = text.charCodeAt(i)
+		if (c !== LINE_FEED && c !== CARRIAGE_RETURN) head += text[i]
+	}
+	const decoded = Buffer.from(head, "base64").toString("latin1")
 	return (
-		head.startsWith("\x89PNG\r\n\x1a\n") ||
-		head.startsWith("\xff\xd8\xff") ||
-		head.startsWith("GIF8") ||
-		(head.startsWith("RIFF") && head.slice(8, 12) === "WEBP")
+		decoded.startsWith("\x89PNG\r\n\x1a\n") ||
+		decoded.startsWith("\xff\xd8\xff") ||
+		decoded.startsWith("GIF8") ||
+		(decoded.startsWith("RIFF") && decoded.slice(8, 12) === "WEBP")
 	)
 }
 
@@ -798,8 +805,6 @@ function isImageBase64From(text: string, start: number): boolean {
 	return hasImageSignature(text, start) && isBase64From(text, start)
 }
 
-/** Bounds the prefix match so a huge string is never handed to the regex. */
-const DATA_URL_PREFIX_MAX_CHARS = 128
 const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
 const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["image_url", "imageUrl"])
 
@@ -808,7 +813,9 @@ function isImageDataUrlField(key: PropertyKey, value: string, parentKey: Propert
 	if (!IMAGE_URL_KEYS.has(key) && !(key === "url" && parentKey !== undefined && IMAGE_URL_KEYS.has(parentKey))) {
 		return false
 	}
-	const prefix = IMAGE_DATA_URL_PREFIX.exec(value.slice(0, DATA_URL_PREFIX_MAX_CHARS))
+	// The ^ anchor keeps the regex cheap on huge non-URL strings; a match ends
+	// at the first comma, which base64 cannot contain.
+	const prefix = IMAGE_DATA_URL_PREFIX.exec(value)
 	return prefix !== null && isImageBase64From(value, prefix[0].length)
 }
 
@@ -831,6 +838,9 @@ function isImageBlockData(key: PropertyKey, value: string, block: Record<Propert
  * coincidence, and splicing a marker in corrupts the image. Base64 is exempt
  * only in image fields, when well-formed and carrying a real image signature;
  * typed arrays (Bedrock's bytes) hold no strings and pass through intact.
+ * Bytes after the signature are trusted wholesale — plaintext EXIF/tEXt
+ * metadata and anything smuggled past the prefix flow through unredacted —
+ * because scanning inside would corrupt the very payload it means to protect.
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
@@ -847,7 +857,7 @@ async function redactObjectStringsWith<T>(
 	if (ArrayBuffer.isView(obj)) return obj
 	if (Array.isArray(obj)) {
 		return Promise.all(
-			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair)),
+			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair, parentKey)),
 		) as Promise<T>
 	}
 	if (obj !== null && typeof obj === "object") {
