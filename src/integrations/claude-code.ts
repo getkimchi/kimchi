@@ -24,7 +24,9 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back on (#1507).
  * Callers pass `process.env` as `userEnv`; without it the default always
  * applies. Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
- * "false" and "" as not disabled.
+ * "false" and "" as not disabled. It also applies the settings.json `env`
+ * block over the process env, so under `kimchi claude` a value written there
+ * by `setup-tools` (or by hand) still beats the one returned here.
  */
 export function claudeCodeEnv(
 	apiKey: string,
