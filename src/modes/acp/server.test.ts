@@ -989,6 +989,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				"kimchi-sso-eu",
 				"kimchi-agent",
 				"kimchi-agent-us",
+				"kimchi-agent-eu",
 			])
 		})
 
