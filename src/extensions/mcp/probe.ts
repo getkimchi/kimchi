@@ -9,7 +9,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
+import { Client, type ListToolsResult, RegistrationRejectedError } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
@@ -27,10 +27,22 @@ type SdkTool = ListToolsResult["tools"][number]
 export type ProbeTool = Pick<SdkTool, "name"> &
 	Partial<Pick<SdkTool, "title" | "description" | "inputSchema" | "annotations">>
 
+/** Stable machine-readable classifications for probe errors. */
+export type ProbeErrorCode = "dcr_rejected"
+
 export interface ProbeResult {
 	tools: ProbeTool[]
 	needsAuth: boolean
 	error: string | null
+	/**
+	 * Why auth is required, from the adapter's needs-auth message (e.g. a
+	 * rejected refresh token). Set on every auth-required result, including
+	 * non-interactive probes whose `error` stays null so callers keep their
+	 * "auth required" affordance mapping.
+	 */
+	authReason?: string
+	/** Machine-readable error classification (e.g. "dcr_rejected" when the server only accepts pre-registered OAuth clients). */
+	errorCode?: ProbeErrorCode
 	/**
 	 * Set when credential inspection failed because the user declined the macOS
 	 * keychain consent dialog for a legacy item. Distinct from a generic error:
@@ -41,6 +53,36 @@ export interface ProbeResult {
 	/** Outcome of an optional single tool invocation (`--call`). */
 	call?: ProbeCallResult
 }
+
+/**
+ * The adapter classifies Dynamic Client Registration rejections (its
+ * `RegistrationRejectedError`, explained by `explainRegistrationRejection`)
+ * with the stable hint text below; the SDK's own HTTP 400 message is matched
+ * too for versions where the hint is absent.
+ */
+// Classification is advisory only: nothing branches a trust decision on
+// errorCode. Message patterns are deliberately SECONDARY to the typed
+// RegistrationRejectedError check (a remote server's error text is
+// server-controlled and could mimic the signal).
+const DCR_REJECTION_PATTERNS = [
+	/dynamic client registration rejected/i,
+	/only accepts pre-registered OAuth clients/i,
+	/does not support dynamic client registration/i,
+]
+
+function isDcrRejectionMessage(message: string | null | undefined): boolean {
+	return message != null && DCR_REJECTION_PATTERNS.some((pattern) => pattern.test(message))
+}
+
+/** `{ error, errorCode? }` for a probe result; errorCode is only set when the message classifies. */
+function classifiedError(message: string | null): { error: string | null; errorCode?: ProbeErrorCode } {
+	const errorCode = isDcrRejectionMessage(message) ? ("dcr_rejected" as const) : undefined
+	return errorCode === undefined ? { error: message } : { error: message, errorCode }
+}
+
+/** Server names follow one rule everywhere: no path separators, consecutive dots (path-traversal guard for name-keyed credential paths), or control characters (log-forging guard — names flow into warnings and recovery messages). */
+export const SERVER_NAME_PATTERN_SOURCE = "^(?!.*\\.\\.)[^/\\\\\\x00-\\x1f\\x7f]+$"
+export const SERVER_NAME_PATTERN = new RegExp(SERVER_NAME_PATTERN_SOURCE)
 
 export interface ProbeCallResult {
 	ok: boolean
@@ -287,11 +329,38 @@ function hasOAuthCredentials(serverName: string, serverUrl: string): boolean {
 	}
 }
 
-function resolveProbeName(name: string, definition: ServerEntry): string {
-	if (!definition.url) return name
+/** Why a probe is isolated under a throwaway name instead of the durable server name. */
+export type ThrowawayReason = "url-mismatch" | "unverifiable"
+
+interface ProbeNameResolution {
+	probeName: string
+	throwawayReason: ThrowawayReason | null
+}
+
+/**
+ * Picks the account name the probe connects under. The durable server name is
+ * used whenever the stored account can be proven to match the configured URL
+ * (or none exists). Two isolation cases remain:
+ *
+ * - **url-mismatch**: an account exists but is bound to a different URL. An
+ *   explicit Connect (`allowOverwrite`) probes under the durable name so the
+ *   fresh login replaces the stale binding — the adapter's
+ *   updateTokens/updateClientInfo already reset an entry whose serverUrl
+ *   changes. A background probe keeps the throwaway name so it cannot clobber
+ *   or publish credentials under the wrong URL.
+ * - **unverifiable**: the account cannot be inspected at all. Never reuse the
+ *   durable name — preservation is fail-closed. A throwaway probe must never
+ *   open a browser: its credentials are deleted by the finally-block logout,
+ *   so a consent completed under it discards the fresh login on every try
+ *   (the "connected successfully but keeps asking me to sign in" loop).
+ */
+function resolveProbeName(name: string, definition: ServerEntry, allowOverwrite: boolean): ProbeNameResolution {
+	const durable: ProbeNameResolution = { probeName: name, throwawayReason: null }
+	if (!definition.url) return durable
+	let urlMismatch = false
 	try {
 		const urlStatus = inspectMcpOAuthTokensForUrl(name, definition.url)
-		if (urlStatus.status === "present") return name
+		if (urlStatus.status === "present") return durable
 		if (urlStatus.status === "absent" || urlStatus.status === "unavailable") {
 			// "unavailable" is not a vector for skipping inspection: the adapter
 			// collapses a declined keychain consent (a legacy ACL item) to its
@@ -300,8 +369,9 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 			// cached McpKeychainDeniedError so the probe surfaces the
 			// re-authenticate state instead of looping an anonymous connect.
 			const account = inspectMcpCredentialAccount(name)
-			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
-			if (account.status === "present" && account.serverUrl === definition.url) return name
+			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return durable
+			if (account.status === "present" && account.serverUrl === definition.url) return durable
+			if (account.status === "present") urlMismatch = true
 		}
 	} catch (error) {
 		// A declined keychain consent is a user state, not an inspection failure:
@@ -315,7 +385,8 @@ function resolveProbeName(name: string, definition: ServerEntry): string {
 			`MCP probe: could not inspect stored credentials for "${name}": ${error instanceof Error ? error.message : String(error)}`,
 		)
 	}
-	return `__probe_${randomUUID()}`
+	if (urlMismatch && allowOverwrite) return durable
+	return { probeName: `__probe_${randomUUID()}`, throwawayReason: urlMismatch ? "url-mismatch" : "unverifiable" }
 }
 
 async function emitHandlers(host: ProbeHost, event: "session_start" | "session_shutdown"): Promise<void> {
@@ -402,9 +473,11 @@ export class UpstreamMcpProbe implements McpProbe {
 			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
 			for (const warning of warnings) console.warn(warning)
 		}
-		let probeName: string
+		let resolution: ProbeNameResolution
 		try {
-			probeName = resolveProbeName(name, definition)
+			// Explicit Connect (authenticate=true) may overwrite a stale entry bound
+			// to a different URL; background probes never do.
+			resolution = resolveProbeName(name, definition, options.authenticate === true)
 		} catch (error) {
 			if (error instanceof McpKeychainDeniedError) {
 				// Fail closed exactly like an unverifiable credential: never reuse the
@@ -416,7 +489,12 @@ export class UpstreamMcpProbe implements McpProbe {
 			}
 			throw error
 		}
-		const throwaway = probeName !== name
+		const probeName = resolution.probeName
+		const throwaway = resolution.throwawayReason !== null
+		// Only a durable-name probe may run any OAuth consent (connect-time or
+		// interactive): a throwaway probe's credentials are deleted by the
+		// finally-block logout, so consenting under it discards the fresh login.
+		const mayAutoAuth = options.authenticate === true && !throwaway
 		const serverUrl = definition.url
 		const hasHeaders = Boolean(definition.headers && Object.keys(definition.headers).length > 0)
 		// Exact mirror of the adapter's supportsOAuth gate and its return ordering
@@ -455,7 +533,8 @@ export class UpstreamMcpProbe implements McpProbe {
 				scriptMode: false,
 				// Upstream only starts OAuth after a needs-auth connection result
 				// and its supportsOAuth check; public and bearer servers skip it.
-				autoAuth: options.authenticate === true,
+				// Never under a throwaway name (see mayAutoAuth above).
+				autoAuth: mayAutoAuth,
 				sampling: false,
 				elicitation: false,
 			},
@@ -480,8 +559,7 @@ export class UpstreamMcpProbe implements McpProbe {
 			// 60s probe deadline (a slow consent would surface as "Probe timed out
 			// after 60 seconds" with needsAuth: false), so suspend it and race the
 			// connect against the interactive consent budget instead.
-			const connectAuthWindow =
-				options.authenticate === true && supportsOAuthLike ? createInteractiveAuthWindow(authAbort) : null
+			const connectAuthWindow = mayAutoAuth && supportsOAuthLike ? createInteractiveAuthWindow(authAbort) : null
 			if (connectAuthWindow) deadline.suspendDeadline()
 			let connected: GatewayResult
 			try {
@@ -494,7 +572,27 @@ export class UpstreamMcpProbe implements McpProbe {
 				if (connectAuthWindow && error === connectAuthWindow.timeoutError) {
 					// The auth signal is already aborted, so upstream's flow has unwound;
 					// report the expiry as a needs-auth result.
-					return { tools: [], needsAuth: true, error: connectAuthWindow.timeoutError.message }
+					return {
+						tools: [],
+						needsAuth: true,
+						error: connectAuthWindow.timeoutError.message,
+						authReason: connectAuthWindow.timeoutError.message,
+					}
+				}
+				// A DCR rejection thrown by the adapter instead of returned as a result
+				// still classifies, so callers can react without parsing text. The SDK
+				// raises RegistrationRejectedError (sometimes surfaced as the explained
+				// wrapper's cause); message patterns are the fallback.
+				const typedDcr =
+					error instanceof RegistrationRejectedError
+						? error
+						: error instanceof Error && error.cause instanceof RegistrationRejectedError
+							? error.cause
+							: undefined
+				const thrownMessage =
+					typedDcr !== undefined ? typedDcr.message : error instanceof Error ? error.message : String(error)
+				if (typedDcr !== undefined || isDcrRejectionMessage(thrownMessage)) {
+					return { tools: [], needsAuth: false, error: thrownMessage, errorCode: "dcr_rejected" }
 				}
 				throw error
 			} finally {
@@ -506,14 +604,32 @@ export class UpstreamMcpProbe implements McpProbe {
 			signal.throwIfAborted()
 			const details = resultDetails(connected)
 			if (details.error === "auth_required") {
+				const reason = String(details.message ?? resultMessage(connected))
+				// Bare-URL servers (no oauth block) with an unverifiable account reach
+				// the same dead background loop; spell out the recovery path instead of
+				// leaving a bare "Authorization required".
+				if (options.authenticate === true && resolution.throwawayReason === "unverifiable") {
+					const recovery =
+						`Stored credentials for the MCP server "${name}" could not be verified ` +
+						"(keychain unavailable or locked). Retry, or run " +
+						`"kimchi mcp forget-grant ${name}" and sign in again. If the server is ` +
+						`new, check that the configured URL matches the URL used during sign-in.`
+					console.warn(recovery)
+					return { tools: [], needsAuth: true, error: recovery, authReason: reason }
+				}
 				return {
 					tools: [],
 					needsAuth: true,
-					error: options.authenticate ? String(details.message ?? resultMessage(connected)) : null,
+					// Non-interactive probes keep error null (callers map it to their
+					// "auth required" affordance); authReason always carries the why.
+					error: options.authenticate ? reason : null,
+					...(reason ? { authReason: reason } : {}),
+					...(isDcrRejectionMessage(reason) ? { errorCode: "dcr_rejected" as const } : {}),
 				}
 			}
 			if (details.error) {
-				return { tools: [], needsAuth: false, error: String(details.message ?? resultMessage(connected)) }
+				const message = String(details.message ?? resultMessage(connected))
+				return { tools: [], needsAuth: false, ...classifiedError(message) }
 			}
 
 			// Anonymous tools/list (e.g. Google's hosted MCP endpoints) means a successful
@@ -521,9 +637,23 @@ export class UpstreamMcpProbe implements McpProbe {
 			// report needs-auth, driving the TUI's /mcp-auth flow when authenticate=true.
 			if (declaresOAuth && serverUrl && !hasCredentials) {
 				// Never drive OAuth under a throwaway name — the finally-block logout
-				// would discard the just-consented credentials.
-				if (options.authenticate !== true || throwaway) {
-					return { tools: [...capturedTools.values()], needsAuth: true, error: null }
+				// would discard the just-consented credentials. When the isolation is
+				// because the stored account could not be verified, an interactive
+				// caller gets the recovery path spelled out instead of a silent
+				// needs-auth.
+				if (!mayAutoAuth) {
+					const unverifiableError =
+						options.authenticate === true && resolution.throwawayReason === "unverifiable"
+							? `Stored credentials for "${name}" could not be verified, so sign-in was skipped to protect them. Retry, or run "kimchi mcp forget-grant ${name}" and sign in again.`
+							: null
+					const declaredReason =
+						unverifiableError ?? "The server declares OAuth but no stored credentials match this URL"
+					return {
+						tools: [...capturedTools.values()],
+						needsAuth: true,
+						error: unverifiableError,
+						authReason: declaredReason,
+					}
 				}
 				// The first connect may already have auto-authenticated (401-at-connect
 				// servers store tokens inside attemptAutoAuth); re-inspect so a successful
@@ -564,7 +694,12 @@ export class UpstreamMcpProbe implements McpProbe {
 						}
 						// The anonymous connect already listed the tools; a denied consent
 						// must not make the catalog disappear.
-						return { tools: [...capturedTools.values()], needsAuth: true, error: authFailureMessage }
+						return {
+							tools: [...capturedTools.values()],
+							needsAuth: true,
+							authReason: authFailureMessage ?? undefined,
+							...classifiedError(authFailureMessage),
+						}
 					}
 					const reconnected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
 					signal.throwIfAborted()
@@ -572,13 +707,20 @@ export class UpstreamMcpProbe implements McpProbe {
 					if (reconnectDetails.error === "auth_required") {
 						// A denied/failed interactive attempt can still land here (e.g. tokens
 						// stored but rejected on reconnect); don't discard its reason.
-						return { tools: [...capturedTools.values()], needsAuth: true, error: authFailureMessage ?? null }
+						return {
+							tools: [...capturedTools.values()],
+							needsAuth: true,
+							authReason: authFailureMessage ?? undefined,
+							...classifiedError(authFailureMessage),
+						}
 					}
 					if (reconnectDetails.error) {
 						return {
 							tools: [],
 							needsAuth: false,
-							error: String(reconnectDetails.message ?? resultMessage(reconnected)),
+							...classifiedError(
+								reconnectDetails.message !== undefined ? String(reconnectDetails.message) : resultMessage(reconnected),
+							),
 						}
 					}
 				}

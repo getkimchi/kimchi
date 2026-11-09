@@ -6,10 +6,15 @@
  * the result as JSON to stdout, and exits.
  *
  * The `name` field selects the OAuth token-store key. Remote probes use that
- * durable name for a new account or credentials proven to match the URL. If
- * an account exists but its URL cannot be matched, they probe under a
- * throwaway `__probe_<uuid>` name and clean it up afterwards, so credentials
- * for an undiscoverable previous URL cannot be overwritten.
+ * durable name for a new account or credentials proven to match the URL. An
+ * explicit authenticated Connect also re-claims the durable name when the
+ * stored account is bound to a different URL — the fresh sign-in replaces the
+ * stale binding (the adapter resets an entry whose serverUrl changes), so the
+ * consent the user just completed is not discarded. Background probes in that
+ * case, and any probe whose account cannot be verified at all, run under a
+ * throwaway `__probe_<uuid>` name and clean it up afterwards — and a
+ * throwaway probe never opens a browser, so credentials for an
+ * undiscoverable previous URL cannot be overwritten.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -20,28 +25,40 @@
  * Output: { "tools": [{ "name": "..." }], "needsAuth": false }
  * Exit:   0 on success (including needs-auth), 1 on error
  *
+ * Results also carry `authReason` (why the login is needed, e.g. a rejected
+ * refresh token) and `errorCode` (`"dcr_rejected"` when the server only
+ * accepts pre-registered OAuth clients), so callers can show the why without
+ * parsing log text. `error` stays null on non-interactive auth-required
+ * probes so existing "Auth required" mappings keep working.
+ *
  * `--call <toolName>` optionally invokes one tool through the connected
  * session after tools/list; `--args <json>` supplies its arguments (default
  * `{}`). The outcome is reported in the output's `call` field and a failed
  * call exits 1 (the catalog is still returned).
  *
  * `kimchi mcp forget-grant` — one-shot OAuth grant forget; invocation contract and consent budget: docs/mcp-forget-grant.md
+ *
+ * `kimchi mcp inspect-grant <server-name> --json` — presence-only grant view
+ * (serverUrl, token presence booleans, expiry, scope; never token values) for
+ * diagnosing re-auth loops. Same doc.
  */
 
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { Value } from "typebox/value"
 import { forgetMcpOAuthGrant } from "../extensions/mcp/forget-oauth-grant.js"
+import { inspectMcpOAuthGrant } from "../extensions/mcp/inspect-oauth-grant.js"
 import {
 	McpKeychainDeniedError,
 	McpKeychainUnavailableError,
 	verifyMcpKeyringRuntime,
 } from "../extensions/mcp/keyring-require-bridge.js"
-import { type ProbeResult, UpstreamMcpProbe } from "../extensions/mcp/probe.js"
-
-const SERVER_NAME_PATTERN_SOURCE = "^(?!.*\\.\\.)[^/\\\\]+$"
-/** Server names follow one rule everywhere: no path separators or consecutive dots (guards path traversal in name-keyed credential paths). */
-const SERVER_NAME_PATTERN = new RegExp(SERVER_NAME_PATTERN_SOURCE)
+import {
+	type ProbeResult,
+	SERVER_NAME_PATTERN,
+	SERVER_NAME_PATTERN_SOURCE,
+	UpstreamMcpProbe,
+} from "../extensions/mcp/probe.js"
 
 /**
  * TypeBox schema for the probe stdin input.
@@ -86,52 +103,77 @@ export async function runMcp(args: string[]): Promise<number | undefined> {
 	if (subcommand === "forget-grant") {
 		return runForgetGrant(args.slice(1))
 	}
+	if (subcommand === "inspect-grant") {
+		return runInspectGrant(args.slice(1))
+	}
 
 	// Future: `kimchi mcp list`, `kimchi mcp status`, etc.
 	process.stderr.write(`Unknown mcp subcommand: ${subcommand ?? "(none)"}\n`)
 	process.stderr.write("Usage: kimchi mcp probe --json < server-config.json\n")
 	process.stderr.write("       kimchi mcp keyring-check --json\n")
 	process.stderr.write("       kimchi mcp forget-grant <server-name> --json\n")
+	process.stderr.write("       kimchi mcp inspect-grant <server-name> --json\n")
 	return 1
 }
 
-type ForgetGrantFailureReason = "invalid-input" | "denied" | "unavailable" | "error"
+type GrantCommandFailureReason = "invalid-input" | "denied" | "unavailable" | "error"
 
-async function runForgetGrant(args: string[]): Promise<number> {
+/**
+ * Shared runner for the grant subcommands (forget-grant / inspect-grant):
+ * same arg shape (`<server-name> --json`), same failure reason mapping, same
+ * `emitJson` output contract — they differ only in usage text and which grant
+ * function they call. Keep that single seam here; new subcommands add a usage
+ * string and a function reference, nothing else.
+ */
+async function runGrantCommand(
+	args: string[],
+	subcommand: { usage: string; run: (name: string) => object },
+): Promise<number> {
 	if (!args.includes("--json")) {
-		return emitForgetGrantFailure(null, "--json flag is required", "invalid-input")
+		return emitGrantFailure(null, "--json flag is required", "invalid-input")
 	}
 	const positional = args.filter((arg) => arg !== "--json")
 	const name = positional.length === 1 ? positional[0] : undefined
 	// Reject unknown flags as well: without this, `--name=x` would be treated
-	// as the server name and "successfully" forget a nonexistent server.
+	// as the server name and the subcommand would "succeed" against a
+	// nonexistent server.
 	if (name === undefined || name.startsWith("-") || !SERVER_NAME_PATTERN.test(name)) {
-		return emitForgetGrantFailure(
+		return emitGrantFailure(
 			name ?? null,
-			`Expected exactly one server name with no path separators or '..': kimchi mcp forget-grant <server-name> --json`,
+			`Expected exactly one server name with no path separators or '..': ${subcommand.usage}`,
 			"invalid-input",
 		)
 	}
 	try {
-		return emitJson({ ok: true, name, ...forgetMcpOAuthGrant(name) }, 0)
+		return emitJson({ ok: true, name, ...subcommand.run(name) }, 0)
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error)
-		const reason: ForgetGrantFailureReason =
+		const reason: GrantCommandFailureReason =
 			error instanceof McpKeychainDeniedError
 				? "denied"
 				: error instanceof McpKeychainUnavailableError
 					? "unavailable"
 					: "error"
-		return emitForgetGrantFailure(name, message, reason)
+		return emitGrantFailure(name, message, reason)
 	}
 }
 
-function emitForgetGrantFailure(
-	name: string | null,
-	message: string,
-	reason: ForgetGrantFailureReason,
-): Promise<number> {
+function emitGrantFailure(name: string | null, message: string, reason: GrantCommandFailureReason): Promise<number> {
 	return emitJson({ ok: false, name, error: message, reason }, 1)
+}
+
+function runForgetGrant(args: string[]): Promise<number> {
+	return runGrantCommand(args, {
+		usage: "kimchi mcp forget-grant <server-name> --json",
+		run: forgetMcpOAuthGrant,
+	})
+}
+
+function runInspectGrant(args: string[]): Promise<number> {
+	return runGrantCommand(args, {
+		usage: "kimchi mcp inspect-grant <server-name> --json",
+		run: inspectMcpOAuthGrant,
+	})
 }
 
 async function runKeyringCheck(args: string[]): Promise<number> {
@@ -226,7 +268,9 @@ async function runProbe(args: string[]): Promise<number> {
 			cwd: process.cwd(),
 			...(call ? { call } : {}),
 		})
-		if (result.error && !result.needsAuth) return await emitError(result.error, null)
+		// Exit 1, but keep the full result (incl. errorCode classification) so
+		// scripted callers can distinguish diagnosable root causes.
+		if (result.error && !result.needsAuth) return await emitResult(result, 1)
 		// A requested tool call that failed exits 1 with the full result (catalog
 		// included) so the caller can see both the failure and what was available.
 		if (result.call && !result.call.ok) return await emitResult(result, 1)
