@@ -61,11 +61,17 @@ describe("runEnv", () => {
 	})
 
 	it("marks unset variables as not set", async () => {
-		vi.stubEnv("KIMCHI_REGION", "")
-		vi.unstubAllEnvs()
+		// A raw delete is the only way to simulate "not exported". The host
+		// environment may export KIMCHI_REGION (e.g. eu-region CI), so capture
+		// and restore it — the delete is NOT covered by vi.unstubAllEnvs().
+		const previous = process.env.KIMCHI_REGION
 		delete process.env.KIMCHI_REGION
-		await runEnv(["--values"])
-		expect(logs.join("\n")).toContain("(not set)")
+		try {
+			await runEnv(["--values"])
+			expect(logs.join("\n")).toContain("(not set)")
+		} finally {
+			if (previous !== undefined) process.env.KIMCHI_REGION = previous
+		}
 	})
 
 	it("treats an explicitly empty value as not set — never as a masked secret", async () => {
@@ -83,5 +89,37 @@ describe("runEnv", () => {
 		const output = logs.join("\n")
 		expect(output).toContain("Usage: kimchi env")
 		expect(output).not.toContain("KIMCHI_API_KEY")
+	})
+
+	it("redacts credentials embedded in URL-valued variables", async () => {
+		vi.stubEnv("KIMCHI_PROXY", "http://[REDACTED-URL_WITH_CREDENTIALS]@proxy.internal:8080")
+		await runEnv(["--values"])
+		const nameIdx = logs.findIndex((l) => l.includes("KIMCHI_PROXY"))
+		expect(nameIdx).toBeGreaterThanOrEqual(0)
+		const valueLine = logs.slice(nameIdx, nameIdx + 2).join("\n")
+		expect(valueLine).not.toContain("ci-user")
+		expect(valueLine).not.toContain("s3cret-pass")
+		expect(valueLine).toContain("set: http://****@proxy.internal:8080")
+	})
+
+	it("leaves credential-free and non-URL values untouched", async () => {
+		vi.stubEnv("KIMCHI_PROXY", "http://proxy.internal:8080")
+		vi.stubEnv("KIMCHI_TAGS", "env:dbg,run:42")
+		await runEnv(["--values"])
+		const output = logs.join("\n")
+		expect(output).toContain("set: http://proxy.internal:8080")
+		expect(output).toContain("set: env:dbg,run:42")
+	})
+
+	it("rejects unknown arguments with usage and a non-zero exit", async () => {
+		const errors: string[] = []
+		vi.spyOn(console, "error").mockImplementation((msg?: unknown) => {
+			errors.push(String(msg))
+		})
+		expect(await runEnv(["--bogus"])).not.toBe(0)
+		const stderr = errors.join("\n")
+		expect(stderr).toContain("Usage: kimchi env")
+		expect(stderr).toContain('"--bogus"')
+		expect(logs.join("\n")).not.toContain("KIMCHI_API_KEY")
 	})
 })
