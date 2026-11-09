@@ -7,6 +7,14 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
+// A real 8x8 red RGB PNG (well-formed IHDR/IDAT/IEND with CRCs). Upstream pi
+// validates attached images via processImage (dist/utils/image-process.js),
+// which resizes through Photon/WASM; signature-only stubs no longer pass.
+const VALID_PNG_BYTES = Buffer.from(
+	"iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC",
+	"base64",
+)
+
 const VISION_MODEL: FakeModel = {
 	slug: "vision",
 	displayName: "Fake Vision",
@@ -30,7 +38,7 @@ test("dropped image renders as [Image #1] instead of the file path", async ({ te
 			initialModel: "vision",
 			responses: [{ stream: ["I can see your dropped image."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {
@@ -72,7 +80,7 @@ test("backspace after a dropped-image marker deletes it atomically and detaches 
 			initialModel: "vision",
 			responses: [{ stream: ["No image attached."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {
@@ -112,7 +120,7 @@ test("alt+backspace after a dropped-image marker deletes it atomically and detac
 			initialModel: "vision",
 			responses: [{ stream: ["No image attached."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {
@@ -146,7 +154,7 @@ test("undo after a dropped-image marker removes it and detaches the image", asyn
 			initialModel: "vision",
 			responses: [{ stream: ["No image attached."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {
@@ -182,7 +190,7 @@ test("a typed [Image #1] marker re-attaches the earlier turn's image", async ({ 
 			initialModel: "vision",
 			responses: [{ stream: ["First answer."] }, { stream: ["Second answer."] }],
 			seedHome: (_homeDir, workDir) => {
-				writeFileSync(join(workDir, "cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+				writeFileSync(join(workDir, "cat.png"), VALID_PNG_BYTES)
 			},
 		},
 		async (fixture, trace) => {
