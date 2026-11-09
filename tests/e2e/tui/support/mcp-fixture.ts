@@ -122,6 +122,7 @@ export type McpFixtureScenario =
 	| "oauth-offline-access-scope"
 	| "oauth-split-issuer-flaky-prm"
 	| "oauth-refresh-revoked"
+	| "oauth-rotating-refresh"
 	| "oauth-manual-revoke"
 	| "tools-change"
 	| "ui-app"

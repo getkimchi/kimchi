@@ -71,6 +71,14 @@ const oauthRefreshToken = "kimchi-e2e-oauth-refresh-token"
 const googleLike = scenario === "oauth-google-like"
 const googleLikeConsentedClients = new Set()
 const googleLikeIssuedRefreshTokens = new Set()
+// oauth-rotating-refresh: single-use rotating refresh tokens. Every accepted
+// refresh grant retires the presented token and mints a new one; presenting a
+// retired token is rejected with the invalid_grant description the production
+// server sends ("Unknown or invalid refresh token"), which reproduces the
+// cross-process refresh race two sessions sharing one stored token can hit.
+const rotatingRefreshInitial = process.env.KIMCHI_MCP_FIXTURE_OAUTH_REFRESH_TOKEN ?? oauthRefreshToken
+const rotatingRefreshRetired = new Set()
+let rotatingRefreshCurrent = rotatingRefreshInitial
 const fixtureBehavior = process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR
 	? JSON.parse(process.env.KIMCHI_MCP_FIXTURE_BEHAVIOR)
 	: {}
@@ -706,6 +714,7 @@ async function runHttpFixture() {
 					const expiresIn =
 						scenario === "oauth-expiring" ||
 						scenario === "oauth-split-issuer-flaky-prm" ||
+						scenario === "oauth-rotating-refresh" ||
 						(scenario === "oauth-refresh-revoked" && authorizationCodeGrants === 0) ||
 						googleLike
 							? 1
@@ -714,6 +723,11 @@ async function runHttpFixture() {
 					oauthManualRevoked = false
 					authorizationCodes.delete(code)
 					let refreshTokenValue = oauthRefreshToken
+					if (scenario === "oauth-rotating-refresh") {
+						rotatingRefreshRetired.add(rotatingRefreshCurrent)
+						rotatingRefreshCurrent = `kimchi-e2e-rt-${randomUUID()}`
+						refreshTokenValue = rotatingRefreshCurrent
+					}
 					if (googleLike) {
 						refreshTokenValue = authorization.googleLikeGrantRefreshToken ? `kimchi-e2e-rt-${randomUUID()}` : undefined
 						if (refreshTokenValue) googleLikeIssuedRefreshTokens.add(refreshTokenValue)
@@ -743,6 +757,29 @@ async function runHttpFixture() {
 				if (grantType === "refresh_token" && scenario === "oauth-manual-revoke" && oauthManualRevoked) {
 					record("oauth_refresh_rejected", {})
 					sendJson(response, 400, { error: "invalid_grant" })
+					return
+				}
+				if (grantType === "refresh_token" && scenario === "oauth-rotating-refresh") {
+					const presented = params.get("refresh_token")
+					if (presented === rotatingRefreshCurrent) {
+						rotatingRefreshRetired.add(presented)
+						rotatingRefreshCurrent = `kimchi-e2e-rt-${randomUUID()}`
+						record("oauth_token_issued", { grantType, expiresIn: 1, rotated: true })
+						oauthAccessTokenExpiresAt = Date.now() + 1_000
+						sendJson(response, 200, {
+							access_token: oauthAccessToken,
+							token_type: "Bearer",
+							expires_in: 1,
+							refresh_token: rotatingRefreshCurrent,
+							scope: "mcp:tools",
+						})
+						return
+					}
+					record("oauth_refresh_rejected", { stale: rotatingRefreshRetired.has(presented) })
+					sendJson(response, 400, {
+						error: "invalid_grant",
+						error_description: "Unknown or invalid refresh token",
+					})
 					return
 				}
 				if (

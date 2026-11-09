@@ -145,6 +145,14 @@
 #     default is scoped to connectionless (url-based) servers because era
 #     negotiation on stdio costs a sacrificial process spawn - stdio entries
 #     keep the legacy handshake unless they pin a version explicitly.
+#   - Refresh-token rotation across sessions: getValidToken refreshed with the
+#     process-cached entry, so a token another session had already rotated was
+#     rejected invalid_grant ("Unknown or invalid refresh token") and pushed
+#     the session into a full re-auth mid-session; the cache is now dropped
+#     before the refresh so the SDK reads the current token from shared
+#     storage. Upstream issue pending at https://github.com/nicobailon/pi-mcp-adapter
+#     (remove when upstream re-reads shared credentials before refreshing)
+
 diff --git a/agent-dir.ts b/agent-dir.ts
 index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091faf8ad4007 100644
 --- a/agent-dir.ts
@@ -182,9 +190,6 @@ index 089da2c3eb4768f1e8a213cb347d0e873e6303a4..70b62c58a61af76129b7c6875d0091fa
      }
      return manifest.piConfig
    } catch {
-#   - Remote /mcp-auth fallback: no upstream issue yet; remove when upstream
-#     ships a protocol-capable auth flow for non-TUI modes (rpc/ACP hosts can
-#     drive ui.select/ui.input but not AltScreen overlays)
 diff --git a/commands.ts b/commands.ts
 index 40bb5f9a6c9f10bb45ea466710e181b58857e771..8a336eeacb7574deb0cee67b68fa4b95b3368d2c 100644
 --- a/commands.ts
@@ -510,18 +515,21 @@ index 5e7800bf2f4e447daa3278933f0deb9d473dfca6..0f07d5c7843846000cc6c61f57a6edee
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4bd86596c 100644
+index 274849a3a2a60a176db5c16dc003d1aea204e18b..a35e876fc28e2387c6b9108fc67b62f1302b1732 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
-@@ -5,7 +5,7 @@
+@@ -5,9 +5,9 @@
   */
  import { auth as runSdkAuth, extractWWWAuthenticateParams, LATEST_PROTOCOL_VERSION, RegistrationRejectedError, UnauthorizedError, validateClientMetadataUrl, } from "@modelcontextprotocol/client";
  import open from "open";
 -import { getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
 +import { DEFAULT_OAUTH_CALLBACK_PATH, getConfiguredOAuthCallbackPort, getOAuthCallbackPort, McpOAuthProvider, } from "./mcp-oauth-provider.js";
  import { ensureCallbackServer, waitForCallback, cancelPendingCallback, stopCallbackServer, stopCallbackServerIfIdle, releaseCallbackServer, } from "./mcp-callback-server.js";
- import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, OAuthCredentialStoreError, } from "./mcp-auth.js";
+-import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, OAuthCredentialStoreError, } from "./mcp-auth.js";
++import { getAuthForUrl, getAuthEntry, clearAllCredentials, clearClientInfo, clearCodeVerifier, getOAuthState, clearOAuthState, getAuthBaseDir, beginOAuthRevocation, captureOAuthAuthority, invalidateAuthEntryCache, OAuthCredentialStoreError, } from "./mcp-auth.js";
  import { isServerDisabled } from "./types.js";
+ import { formatTerminalError, interpolateEnvVars } from "./utils.js";
+ import { createOAuthFetch, oauthHeaderResolver, resolveOAuthHeaders } from "./mcp-auth-fetch.js";
 @@ -400,6 +400,42 @@ export async function startAuth(serverName, serverUrl, definition, options = {},
          existingPendingAuth.authority();
          return { authorizationUrl: existingPendingAuth.authorizationUrl };
@@ -565,6 +573,19 @@ index 274849a3a2a60a176db5c16dc003d1aea204e18b..75bfbd5285ad64b7bd43260747235aa4
      const redirectTarget = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
      const manualRedirect = redirectTarget?.mode === "manual";
      const oauthState = generateState();
+@@ -956,6 +992,12 @@ export async function getValidToken(serverName, serverUrl, options = {}) {
+     }
+     if (expired === true && entry.tokens.refreshToken) {
+         console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`);
++        // Another session may have rotated the stored refresh token while this
++        // process held a cached entry. Refreshing with the retired token is
++        // rejected invalid_grant ("Unknown or invalid refresh token") and
++        // pushes the session into a needless full re-auth, so re-read shared
++        // storage before the SDK refresh uses a token from this cache.
++        invalidateAuthEntryCache(serverName);
+         try {
+             const config = options.definition ? extractOAuthConfig(options.definition) : {};
+             const fetchFn = createOAuthFetch(serverUrl, pluginAwareOAuthHeaders(options.definition), signal);
 diff --git a/dist/mcp-oauth-provider.js b/dist/mcp-oauth-provider.js
 index 5eeb166a4b2c7794c0bfd1e76b5044948e048dae..2bb75716742d2fabbfea59203f571ac74a9f8099 100644
 --- a/dist/mcp-oauth-provider.js
@@ -922,13 +943,6 @@ index c07af5aaca2ff5a871b7f1be4652a5c384185264..fee77375bd1222b2c03ffbb60f0c416c
      });
    };
  }
-#   - Out-of-band OAuth re-auth healing: the tool-call 401 recovery path and
-#     the call-path readiness gates never re-read the shared credential store
-#     for a plain OAuth server in needs-auth, so a live session stayed broken
-#     after re-authentication elsewhere (settings probe, another chat) wrote a
-#     fresh credential; upstream tracking issue pending at
-#     https://github.com/nicobailon/pi-mcp-adapter (remove when upstream
-#     retries needs-auth routes against the store without an interactive flow)
 diff --git a/init.ts b/init.ts
 index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acbb5eab015 100644
 --- a/init.ts
