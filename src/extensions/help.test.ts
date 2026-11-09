@@ -126,9 +126,6 @@ describe("help — slash command list", () => {
 		"cc-tools",
 		"thinking-steps",
 		"strip-images",
-		"memory-residency",
-		"session-costs",
-		"budget",
 		"clear",
 		// advanced or undocumented surfaces
 		"plugins",
@@ -186,7 +183,7 @@ describe("help — slash command list", () => {
 	})
 
 	it("lists, or explicitly excludes, every command kimchi registers", () => {
-		// The inverse guard: this PR back-filled 14 user-facing commands that had
+		// The inverse guard: this PR back-filled 17 user-facing commands that had
 		// shipped without a /help entry. A new command must now be listed or
 		// named in INTERNAL_COMMANDS — silent omission is no longer possible.
 		const unaccounted = [...registeredCommandNames()].filter(
@@ -216,7 +213,20 @@ describe("help — slash command list", () => {
 		const ctx: ExtensionCommandContext = { ...createCommandContext(), mode: "rpc" }
 		await handler("", ctx)
 		const text = String(vi.mocked(ctx.ui.notify).mock.calls[0]?.[0])
-		for (const name of ["work", "theme", "processes", "branch", "btw", "update", "teleport", "status", "hooks"]) {
+		for (const name of [
+			"work",
+			"theme",
+			"processes",
+			"branch",
+			"btw",
+			"session-costs",
+			"budget",
+			"memory-residency",
+			"update",
+			"teleport",
+			"status",
+			"hooks",
+		]) {
 			expect(text).toContain(`/${name}`)
 		}
 		expect(text).not.toContain("/multi-model")
