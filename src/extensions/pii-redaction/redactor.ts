@@ -1085,6 +1085,9 @@ export function mergeReports(target: RedactionReport, source: RedactionReport): 
 		target.entities[entity] = (target.entities[entity] ?? 0) + count
 	}
 	for (const [entity, category] of Object.entries(source.categories)) {
+		// First attribution wins within one invocation (content before details).
+		// A custom entity whose category the operator redefines mid-session may
+		// attribute its tail to the earlier category — telemetry-only ambiguity.
 		target.categories[entity] ??= category
 	}
 }

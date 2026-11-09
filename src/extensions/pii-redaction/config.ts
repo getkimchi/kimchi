@@ -131,6 +131,7 @@ function getManagedRedactionPolicy(): RedactionPolicy | undefined {
 
 /** Read the current config: resources-system enablement + resolved policy + render mode. */
 export function getRedactionConfig(): RedactionConfig {
+	const managed = getManagedRedactionPolicy()
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
 	// settings file is never opened — only the managed policy applies; the
 	// presentation follows the tokens default (the org lock pins the
@@ -139,13 +140,13 @@ export function getRedactionConfig(): RedactionConfig {
 		return {
 			enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
 			renderMode: "tokens",
-			resolved: resolveRedactionPolicy(getManagedRedactionPolicy()),
+			resolved: resolveRedactionPolicy(managed),
 		}
 	}
 	return {
 		enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
 		renderMode: readRenderModeSetting() ?? "tokens",
-		resolved: resolveRedactionPolicy(getManagedRedactionPolicy(), readLocalRedactionInput()),
+		resolved: resolveRedactionPolicy(managed, readLocalRedactionInput(managed)),
 	}
 }
 
@@ -157,7 +158,7 @@ export function getRedactionConfig(): RedactionConfig {
  * file is wrong instead of running with silently different redaction
  * behavior than they wrote down.
  */
-function readLocalRedactionInput(): LocalRedactionInput | undefined {
+function readLocalRedactionInput(managed?: RedactionPolicy): LocalRedactionInput | undefined {
 	const settings = readJsonCached(getResourceSettingsPath())
 	const redaction = settings.redaction
 	if (redaction === undefined) return undefined
@@ -175,7 +176,10 @@ function readLocalRedactionInput(): LocalRedactionInput | undefined {
 	}
 	if (legacyRaw !== undefined) return { legacyExcluded: parseLegacyExcludedEntities(legacyRaw) }
 	if (!hasPolicyKeys) return undefined
-	return parseLocalPolicy(block)
+	// Custom entities defined by the org are valid local `entities` keys:
+	// resolution merges the two custom-def layers, so the toggle must parse.
+	const managedCustomNames = new Set((managed?.customEntities ?? []).map((c) => c.name))
+	return parseLocalPolicy(block, managedCustomNames)
 }
 
 /**

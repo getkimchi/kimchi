@@ -1582,6 +1582,21 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		expect(result).toContain(fx.ipAddress)
 	})
 
+	it("a local entity toggle can name a managed custom entity", async () => {
+		writeSettings({ entities: { ACME_EMPLOYEE_ID: "off" } })
+		await setOrgPolicyForTests({
+			redaction: {
+				customEntities: [
+					{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" },
+				],
+			},
+		})
+		resetRedactorEngine()
+		const input = "assigned to E123456"
+		// Local OFF governs the org-defined entity; no parse throw, no redaction.
+		expect(await redactTextOrThrow(input)).toBe(input)
+	})
+
 	it("an unrecognized managed entry drops with a log instead of breaking the pipeline", async () => {
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 		await setOrgPolicyForTests({

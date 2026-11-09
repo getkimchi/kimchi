@@ -8,6 +8,7 @@ import {
 	isKnownEntity,
 	isRedactionCategory,
 	listRedactionCatalog,
+	listRegisteredEntities,
 	REDACTION_CATEGORIES,
 } from "./entity-tiers.js"
 import { applyCustomPatterns, CUSTOM_PATTERN_NAMES, createRedactionEngine, detectAndCompose } from "./redactor.js"
@@ -134,6 +135,14 @@ describe("entity tier registry", () => {
 	it("every registered entity except GUID has exactly one category; every category member is registered", () => {
 		const catalog = listRedactionCatalog()
 		expect(catalog.length).toBeGreaterThan(100)
+		// Reverse direction too: a future tier-array addition forgotten in
+		// CATEGORY_GROUPS must fail here — it would silently become
+		// non-configurable (local toggle throws, telemetry attributes "custom").
+		const cataloged = new Set(catalog.map((e) => e.entity))
+		for (const name of listRegisteredEntities()) {
+			if (name === "GUID") continue
+			expect(cataloged.has(name), `${name} is registered but has no category entry`).toBe(true)
+		}
 		// Sorted by entity name (stable wire for the console), no duplicates.
 		expect(catalog.map((e) => e.entity)).toEqual([...catalog.map((e) => e.entity)].sort((a, b) => a.localeCompare(b)))
 		for (let i = 1; i < catalog.length; i++) {

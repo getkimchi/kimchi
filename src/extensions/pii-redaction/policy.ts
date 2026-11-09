@@ -140,6 +140,8 @@ interface ParseContext {
 	mode: ParseMode
 	/** Tolerant mode collects reasons here; the caller logs one line. */
 	dropped: string[]
+	/** Custom entity names being defined in the OTHER layer (managed when parsing local) — valid `entities` keys. */
+	extraEntityNames?: ReadonlySet<string>
 }
 
 function invalid(ctx: ParseContext, reason: string): undefined {
@@ -171,11 +173,11 @@ function parseStateMap(
 				continue
 			}
 		} else {
-			if (!isKnownEntity(key) && !customNames.has(key)) {
+			if (!isKnownEntity(key) && !customNames.has(key) && !ctx.extraEntityNames?.has(key)) {
 				invalid(ctx, `unknown entity "${key}"`)
 				continue
 			}
-			if (!customNames.has(key) && getEntityCategory(key) === undefined) {
+			if (!customNames.has(key) && !ctx.extraEntityNames?.has(key) && getEntityCategory(key) === undefined) {
 				invalid(ctx, `entity "${key}" is not configurable`)
 				continue
 			}
@@ -289,8 +291,8 @@ function parsePolicy(raw: unknown, ctx: ParseContext): RedactionPolicy | undefin
  * entity names, malformed custom entities, and invalid states throw — a
  * settings typo must be visible, not silently switch redaction behavior.
  */
-export function parseLocalPolicy(raw: unknown): RedactionPolicy {
-	return parsePolicy(raw, { mode: "strict", dropped: [] }) ?? {}
+export function parseLocalPolicy(raw: unknown, extraEntityNames?: ReadonlySet<string>): RedactionPolicy {
+	return parsePolicy(raw, { mode: "strict", dropped: [], extraEntityNames }) ?? {}
 }
 
 /**
@@ -324,6 +326,12 @@ const RESOLUTION_CACHE_MAX = 16
  * input is the legacy excluded list, it replaces the engine exclusions
  * wholesale (its pre-policy meaning) and the managed policy still applies
  * per key on top.
+ *
+ * CONTRACT: policy inputs must come from parseLocalPolicy / parseManagedPolicy
+ * (or be assembled with identical validation in tests) — this function
+ * compiles custom patterns without revalidating; a direct construction
+ * would bypass the ReDoS gate, the entry/pattern caps, and the name-
+ * collision check.
  */
 export function resolveRedactionPolicy(managed?: RedactionPolicy, local?: LocalRedactionInput): ResolvedRedaction {
 	const key = JSON.stringify([managed ?? null, local ?? null])

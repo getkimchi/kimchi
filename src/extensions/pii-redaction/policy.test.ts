@@ -94,10 +94,20 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		// drops US_SSN from the list.
 		expect(resolved.engineExclusions).toContain("LOCAL_PATH")
 		expect(resolved.engineExclusions).not.toContain("US_SSN")
-		// anchor_required entity ON keeps its engine bare detector excluded —
-		// the managed state cannot do what legacy lists can.
-		const anchoredOn = resolveRedactionPolicy({ entities: { URL: "on" } }, { legacyExcluded: ["GUID"] })
-		expect(anchoredOn.engineExclusions).not.toContain("URL") // legacy semantics: list governs
+	})
+
+	it("an anchor-required entity ON cannot un-exclude its bare detector even against a legacy list", () => {
+		// The legacy list excluded URL at the engine. A managed entities.URL=on
+		// must keep it excluded — anchor_required ON means "anchored patterns
+		// run", never the bare shape; only the legacy list itself re-enables it.
+		const anchoredOn = resolveRedactionPolicy(
+			{ entities: { URL: "on", GENERIC_SECRET: "off" } },
+			{ legacyExcluded: ["GUID", "URL", "GENERIC_SECRET"] },
+		)
+		expect(anchoredOn.engineExclusions).toContain("URL")
+		expect(anchoredOn.disabledEntities.has("URL")).toBe(false)
+		// OFF removes GENERIC_SECRET's anchored coverage on top of the legacy list.
+		expect(anchoredOn.disabledEntities.has("GENERIC_SECRET")).toBe(true)
 	})
 })
 

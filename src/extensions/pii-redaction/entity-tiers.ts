@@ -322,6 +322,11 @@ export function isKnownEntity(name: string): boolean {
 	return ENTITY_TIERS.has(name)
 }
 
+/** Every registered entity name (includes GUID). For drift guards. */
+export function listRegisteredEntities(): readonly string[] {
+	return [...ENTITY_TIERS.keys()]
+}
+
 /** The tier for a registered entity, undefined for unknown names. */
 export function getEntityTier(name: string): EntityTier | undefined {
 	return ENTITY_TIERS.get(name)

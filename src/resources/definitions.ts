@@ -217,7 +217,7 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "PII redaction",
 		description:
-			"Redact PII and secrets from prompts, tool results, and stored sessions. Tier policy: checksum-validated and prefixed detectors on; bare-shape detectors (dates, national IDs, unsigned secrets) off unless context-anchored. Tune locally via settings.json: redaction.excludedEntities.",
+			"Redact PII and secrets from prompts, tool results, and stored sessions. Tier policy: checksum-validated and prefixed detectors on; bare-shape detectors (dates, national IDs, unsigned secrets) off unless context-anchored. Tune via settings.json redaction.categories / redaction.entities (docs/pii-redaction-policy.md).",
 		defaultEnabled: false,
 		restartRequired: true,
 	},
