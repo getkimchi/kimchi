@@ -85,16 +85,43 @@ function steerCallsByReason(sendMessage: unknown, reason: string): unknown[][] {
 		.mock.calls.filter(([message]) => (message as { details?: { reason?: string } }).details?.reason === reason)
 }
 
-/** Fire a genuine immediate (steered/idle) user input. The revision advances
- *  at receipt and the check arms synchronously — no instruction steer is
- *  queued (see deliverGenuineInput). Shared by every describe that arms the
- *  check via user input. */
-function fireInput(
+/** Receive a genuine immediate (steered/idle) user input without delivering
+ *  it: the input is recorded for attribution, but nothing arms — the revision
+ *  advances and the check arms when its user message enters history
+ *  (message_start). Tests asserting the window between receipt and delivery
+ *  use this, then deliver explicitly. */
+function receiveInput(
 	harness: ReturnType<typeof createTodosHarness>,
 	ctx: ExtensionContext,
 	text = "Now do it differently",
 ): Promise<unknown> {
 	return harness.fire("input", { type: "input", text, source: "interactive" }, ctx)
+}
+
+/** Deliver a user message: the revision advances and the check arms here, in
+ *  step with the model seeing the direction. Shared by every describe that
+ *  arms the check via user input. */
+function deliverInput(
+	harness: ReturnType<typeof createTodosHarness>,
+	ctx: ExtensionContext,
+	text = "Now do it differently",
+): Promise<unknown> {
+	return harness.fire(
+		"message_start",
+		{ type: "message_start", message: { role: "user", content: [{ type: "text", text }] } },
+		ctx,
+	)
+}
+
+/** Fire a genuine immediate (steered/idle) user input and its delivery — the
+ *  common case: receipt and delivery bracket no other events. */
+async function fireInput(
+	harness: ReturnType<typeof createTodosHarness>,
+	ctx: ExtensionContext,
+	text = "Now do it differently",
+): Promise<void> {
+	await receiveInput(harness, ctx, text)
+	await deliverInput(harness, ctx, text)
 }
 
 function createContext(
@@ -1033,6 +1060,86 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
 	})
 
+	it("a work tool admitted between input receipt and delivery executes; the first admission after delivery is blocked", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// The gate only holds work against direction the model has seen:
+		// receipt records the input, and the window between receipt and the
+		// message entering history admits freely.
+		expect(await fireWork(harness, ctx, "before-input")).toEqual({ block: false })
+		await receiveInput(harness, ctx, "Change direction")
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "in-window")).toEqual({ block: false })
+
+		// Delivery arms the check in step with the model seeing the message:
+		// the next work admission is blocked with the instructions.
+		await deliverInput(harness, ctx, "Change direction")
+		expect(getInputRevision("session")).toBe(1)
+		const blocked = (await fireWork(harness, ctx, "after-delivery")) as { block: boolean; reason?: string }
+		expect(blocked.block).toBe(true)
+		expect(blocked.reason).toContain("input revision 1")
+	})
+
+	it("a swallowed input leaves no wedge — work flows, no confirmation is owed", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// A later input handler consumes the submission ({ action: "handled" },
+		// e.g. a cancelled vision gate): no message ever enters history, so the
+		// input never gets a revision and no check ever arms.
+		await receiveInput(harness, ctx, "cancelled paste")
+		expect(getInputRevision("session")).toBe(0)
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+
+		// The next delivered input arms against exactly its own revision.
+		await fireInput(harness, ctx, "Start over")
+		expect(getInputRevision("session")).toBe(1)
+		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
+	})
+
+	it("harness custom messages and unrecorded user messages neither advance the revision nor arm the gate", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// Hidden steers and reminders carry role "custom" — always excluded.
+		await harness.fire(
+			"message_start",
+			{
+				type: "message_start",
+				message: { role: "custom", customType: "todo-checkin", content: [{ type: "text", text: "reconcile" }] },
+			},
+			ctx,
+		)
+		// An extension-sourced user message (e.g. a plan-confirmation reply)
+		// has no recorded input behind it.
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "Plan approved, proceed" } },
+			ctx,
+		)
+
+		expect(getInputRevision("session")).toBe(0)
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "w1")).toEqual({ block: false })
+	})
+
 	it("defers the check for queued follow-up input until the message is delivered", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])
@@ -1073,15 +1180,15 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
 		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
-		// A steered input after the follow-up advanced at receipt; its
-		// message_start is attributed to that input, not to the queued
-		// follow-up.
+		// A steered input after the follow-up: receipt records the text only —
+		// its message_start is attributed to that input, not to the queued
+		// follow-up, and advances the revision there.
 		await harness.fire(
 			"input",
 			{ type: "input", text: "Steering now", source: "interactive", streamingBehavior: "steer" },
 			ctx,
 		)
-		expect(getInputRevision("session")).toBe(2)
+		expect(getInputRevision("session")).toBe(1)
 		await harness.fire(
 			"message_start",
 			{ type: "message_start", message: { role: "user", content: "Steering now" } },
@@ -1118,7 +1225,7 @@ describe("todo check-in gate", () => {
 			ctx,
 		)
 		await harness.fire("input", { type: "input", text: "continue", source: "interactive" }, ctx)
-		expect(getInputRevision("session")).toBe(4)
+		expect(getInputRevision("session")).toBe(3)
 		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "continue" } }, ctx)
 		expect(getInputRevision("session")).toBe(4)
 	})
@@ -1135,9 +1242,10 @@ describe("todo check-in gate", () => {
 		// The session's own prompt is delivered while the queue is still
 		// empty — its recent entry must still be consumed, or it would block
 		// every later follow-up. This prompt's text is rewritten at delivery
-		// (skill expansion), so it never text-matches: agent_end clears it.
+		// (skill expansion), so it never text-matches: the positional fallback
+		// consumes it and advances there.
 		await harness.fire("input", { type: "input", text: "/skill:review", source: "interactive" }, ctx)
-		expect(getInputRevision("session")).toBe(1)
+		expect(getInputRevision("session")).toBe(0)
 		await harness.fire(
 			"message_start",
 			{
@@ -1146,6 +1254,7 @@ describe("todo check-in gate", () => {
 			},
 			ctx,
 		)
+		expect(getInputRevision("session")).toBe(1)
 
 		// A follow-up queued during that run, delivered with its text rewritten:
 		// the positional fallback now runs (recent was consumed/reset).
@@ -1204,9 +1313,9 @@ describe("todo check-in gate", () => {
 		})
 
 		// The run starts with a rewritten prompt (skill expansion): its recent
-		// entry never text-matches, and no agent_end has fired yet.
+		// entry never text-matches — consumed positionally at delivery.
 		await harness.fire("input", { type: "input", text: "/skill:review", source: "interactive" }, ctx)
-		expect(getInputRevision("session")).toBe(1)
+		expect(getInputRevision("session")).toBe(0)
 		await harness.fire(
 			"message_start",
 			{
@@ -1215,6 +1324,7 @@ describe("todo check-in gate", () => {
 			},
 			ctx,
 		)
+		expect(getInputRevision("session")).toBe(1)
 
 		// A follow-up queued during that run, delivered BEFORE the agent_end
 		// reset reaches it: the empty-queue drop already drained the rewritten
@@ -1246,16 +1356,17 @@ describe("todo check-in gate", () => {
 		})
 
 		// A later input handler swallows this input ({ action: "handled" }, e.g. a
-		// cancelled vision gate): it advances at receipt but no message_start follows.
+		// cancelled vision gate): no message_start follows, so it never gets a
+		// revision — there is no pending check to wedge.
 		await harness.fire("input", { type: "input", text: "cancelled paste", source: "interactive" }, ctx)
 		// The next prompt is delivered and text-matches; the older swallowed entry
 		// can never be delivered, so it is dropped with the match.
 		await harness.fire("input", { type: "input", text: "Start", source: "interactive" }, ctx)
 		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "Start" } }, ctx)
-		expect(getInputRevision("session")).toBe(2)
+		expect(getInputRevision("session")).toBe(1)
 		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "in_progress" }] }, "session", {
 			origin: "tool",
-			inputRevision: 2,
+			inputRevision: 1,
 		})
 
 		// A rewritten follow-up in the same run reaches the positional fallback.
@@ -1269,7 +1380,7 @@ describe("todo check-in gate", () => {
 			{ type: "message_start", message: { role: "user", content: "Review skill: full instructions" } },
 			ctx,
 		)
-		expect(getInputRevision("session")).toBe(3)
+		expect(getInputRevision("session")).toBe(2)
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 	})
 
@@ -1284,8 +1395,8 @@ describe("todo check-in gate", () => {
 		await harness.fire("input", { type: "input", text: "Start", source: "interactive" }, ctx)
 		await harness.fire("message_start", { type: "message_start", message: { role: "user", content: "Start" } }, ctx)
 
-		// A rewritten follow-up is queued, then two identical steers arrive; each
-		// advances at receipt.
+		// A rewritten follow-up is queued, then two identical steers arrive;
+		// receipt records the texts only — nothing advances yet.
 		await harness.fire(
 			"input",
 			{ type: "input", text: "/skill:review", source: "interactive", streamingBehavior: "followUp" },
@@ -1298,7 +1409,7 @@ describe("todo check-in gate", () => {
 				ctx,
 			)
 		}
-		expect(getInputRevision("session")).toBe(3)
+		expect(getInputRevision("session")).toBe(1)
 
 		// Each delivery consumes only its own entry (the oldest match): the second
 		// steer must not be mistaken for the queued follow-up.
@@ -1902,11 +2013,16 @@ describe("plan-submission check-in gate", () => {
 		await harness.fire("session_start", { reason: "new" }, ctx)
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 
-		// User input arrived during the review window: the user_input check and
+		// User input delivered during the review window: the user_input check and
 		// its instruction are already in place.
 		await harness.fire("input", { type: "input", text: "One more thing", source: "interactive" }, ctx)
-		// The user_input check is already in place; no instruction steer is
-		// queued at receipt.
+		await harness.fire(
+			"message_start",
+			{ type: "message_start", message: { role: "user", content: "One more thing" } },
+			ctx,
+		)
+		// The user_input check arms without queueing an instruction steer — the
+		// block reason carries the instructions.
 		expect(steerCallsByReason(harness.sendMessage, "user_input")).toHaveLength(0)
 
 		await submitPlan(harness, ctx)

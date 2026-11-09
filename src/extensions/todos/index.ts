@@ -326,11 +326,11 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// the same scope — writes to one list never silence pressure on another.
 	const stalenessTracker = createIntervalSteerTracker()
 
-	// A queued follow-up (streamingBehavior "followUp") is delivered only
-	// after the current run ends. Arming the check at receipt would block
-	// work against a direction the model cannot see yet — and a blind
-	// confirmation would consume the revision before the message lands. The
-	// texts below are delivered (message_start) in queue order.
+	// Expected user-message deliveries, recorded from the input event and
+	// consumed by the message_start handler: a queued follow-up
+	// (streamingBehavior "followUp") is delivered only after the current run
+	// ends, and its text lands here, to be delivered (message_start) in queue
+	// order. Entries carry no revision — revisions are assigned at delivery.
 	const deferredCheckinInputs = new Map<string, string[]>()
 
 	// Recent steered/idle input texts, consumed by the user message they
@@ -385,6 +385,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 	const deliverGenuineInput = (ctx: ExtensionContext) => {
 		const sessionId = ctx.sessionManager.getSessionId()
+		// The user message has entered history (message_start): the model sees
+		// its direction, so advancing the revision and arming the check here
+		// makes every pending revision one the model has seen.
 		const revision = advanceInputRevision(sessionId)
 		// Publish the effective enforcement state first: a release while
 		// checks are pending must stop surfaces from showing a pause, while
@@ -422,49 +425,46 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	}
 
 	// Genuine user input (interactive or rpc — never extension injections or
-	// replayed history) advances the session's input revision. A newer input
-	// invalidates earlier reconciliation: what must be reconciled changed.
-	// The input event has receive semantics, not acceptance semantics: another
-	// handler may still consume the submission afterwards ({ action: "handled" }
-	// — e.g. a cancelled vision gate), leaving a pending check against a
-	// revision the model never saw. Bounded and self-correcting — the next
-	// real input re-arms the check legitimately.
+	// replayed history) is recorded for delivery attribution only. Nothing is
+	// armed at receipt: the revision advances and the check arms when the user
+	// message enters history (message_start). A write admitted between receipt
+	// and delivery executes unrestricted — the gate can only hold work against
+	// a direction the model has seen — and an input swallowed after receipt
+	// (a later handler returning { action: "handled" }, e.g. a cancelled
+	// vision gate) leaves nothing behind.
 	pi.on("input", (event, ctx) => {
 		if (event.source === "extension") return
-		// Follow-ups are queued until the current run ends: defer the revision
-		// advance and check until the message is actually delivered.
+		const sessionId = ctx.sessionManager.getSessionId()
+		// Follow-ups are queued until the current run ends. The texts below
+		// are delivered (message_start) in queue order.
 		if (event.streamingBehavior === "followUp") {
-			const sessionId = ctx.sessionManager.getSessionId()
 			deferredCheckinInputs.set(sessionId, [...(deferredCheckinInputs.get(sessionId) ?? []), event.text])
 			return
 		}
-		// Steered and idle inputs advance at receipt; remember the text so the
-		// user message it produces is attributed to this input (not to a queued
-		// follow-up) at message_start.
-		const sessionId = ctx.sessionManager.getSessionId()
-		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text].slice(-4))
-		deliverGenuineInput(ctx)
+		// Steered and idle inputs deliver within the run that received them;
+		// remember the text so the user message it produces is attributed to
+		// this input (instead of to a queued follow-up) at message_start.
+		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text])
 	})
 
-	// Delivery point for queued follow-ups: the user message entering
-	// history. A user message has one of three causes, resolved in order:
-	// 1. a steered/idle input that already advanced at receipt — matched
-	//    against the recent input texts;
+	// The delivery point for genuine user input — the user message entering
+	// history: this is where the session's input revision advances and the
+	// check-in gate arms. A user message has one of three causes, resolved
+	// in order:
+	// 1. a steered/idle input recorded at receipt — exact text match;
 	// 2. a delivered follow-up whose queued text survived upstream's queueing
 	//    untouched — exact match;
-	// 3. a delivered follow-up whose text was rewritten after the input event
-	//    (skill/template expansion, a later input handler's transform) —
-	//    consumed positionally, but only when no unconsumed immediate input
-	//    could have produced this message, so a stale queue entry (dropped by
-	//    upstream's clearQueue, e.g. an Esc pull-back) can never
-	//    double-advance a later resubmission of the same text.
-	// NOTE: extension-sourced follow-ups (e.g. the ferment plan-confirmation
-	// reply, ferment/events.ts) are filtered at the input event, so they are
-	// neither queued here nor recorded in recent — but their delivery still
-	// produces a user message_start. They are sent at turn_end, after any
-	// user follow-up queued during the run, so they cannot overtake one today;
-	// if that ordering ever changes, the delivery attribution must key on the
-	// message's source rather than position.
+	// 3. an input whose text was rewritten after the input event (skill/
+	//    template expansion, a later input handler's transform) — consumed
+	//    positionally. When both an unconsumed immediate input and queued
+	//    follow-ups exist, positional consumption is refused: the producer
+	//    is ambiguous, so no revision is assigned (under-arming — the next
+	//    delivery re-arms legitimately).
+	// A message with no recorded input at all (extension-sourced, e.g. the
+	// ferment plan-confirmation reply, ferment/events.ts) is not advanced or
+	// armed: its direction is not the user's. Harness custom messages
+	// (steers, reminders, the todo state block) have role "custom" and are
+	// excluded by the role check above.
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "user") return
 		const sessionId = ctx.sessionManager.getSessionId()
@@ -475,40 +475,35 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// user message, not only when a follow-up is pending. A session's own
 		// prompt is delivered while the queue is still empty, and a leftover
 		// recent entry would both swallow a repeated follow-up text and block
-		// the positional fallback below. Rewritten prompts (whose delivered
-		// text no longer matches the input event's) never text-match and are
-		// cleared by the agent_end reset below.
+		// the positional fallback below.
 		const recent = recentImmediateInputs.get(sessionId) ?? []
 		// First match, not last: idle and steered prompts are delivered in
 		// arrival order, so with repeated texts the delivered message is the
 		// oldest matching entry.
 		const recentIndex = recent.indexOf(text)
-		const fromImmediateInput = recentIndex !== -1
-		if (fromImmediateInput) {
+		if (recentIndex !== -1) {
 			// Drop the match and every older entry: an entry older than the one
 			// just delivered belongs to an input that will never be delivered
 			// (swallowed by a later input handler, e.g. a cancelled vision gate)
 			// and would otherwise block the positional fallback below.
 			recent.splice(0, recentIndex + 1)
 			recentImmediateInputs.set(sessionId, recent)
+			deliverGenuineInput(ctx)
+			return
 		}
 		const queue = deferredCheckinInputs.get(sessionId)
 		if (!queue || queue.length === 0) {
 			// No follow-up is pending, so this message can only be an idle or
 			// steered prompt's delivery. A rewritten prompt's entry never
-			// text-matches — drop the oldest unconsumed recent entry anyway,
-			// mirroring the follow-up fallback below: every user message
-			// corresponds to exactly one input, so unconsumed entries cannot
-			// linger past this message and block a follow-up delivery that
-			// arrives before the agent_end reset.
-			if (!fromImmediateInput && recent.length > 0) {
+			// text-matches — consume the oldest unconsumed entry positionally:
+			// every user message corresponds to exactly one input, so unconsumed
+			// entries cannot linger past this message and block a follow-up
+			// delivery that arrives before the agent_end reset.
+			if (recent.length > 0) {
 				recent.shift()
 				recentImmediateInputs.set(sessionId, recent)
+				deliverGenuineInput(ctx)
 			}
-			return
-		}
-		if (fromImmediateInput) {
-			// Produced by an input that already advanced at receipt.
 			return
 		}
 		const index = queue.indexOf(text)
@@ -546,8 +541,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		const sessionId = ctx.sessionManager.getSessionId()
 
 		// Capture the admitted input revision for todo write tools: a write
-		// can only acknowledge the input accepted when its call was admitted,
-		// never newer input that arrived while the call was executing.
+		// can only acknowledge the input delivered when its call was admitted,
+		// never a user message that entered history while the call was
+		// executing. Revisions are assigned at delivery (message_start), so
+		// the snapshot always names input the model has seen.
 		if (isTodoWriteToolName(toolName)) {
 			recordAdmittedInputRevision(sessionId, event.toolCallId, getInputRevision(sessionId))
 			return { block: false }
