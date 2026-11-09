@@ -659,6 +659,105 @@ describe("permissions plan-mode tool visibility", () => {
 		expect(harness.pi.setActiveTools).toHaveBeenCalledTimes(initialApplications + 1)
 	})
 
+	it("appends the plan-mode MCP note when the gateway is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({
+			systemPrompt: expect.stringMatching(
+				/^BASE\n\nPlan mode is active: the `mcp` gateway.*are hidden while plan mode is on.*$/,
+			),
+		})
+	})
+
+	it("appends — never replaces — so earlier handlers' sections (e.g. the memory digest) survive", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		// Simulate another before_agent_start handler having appended its
+		// section before permissions ran: the note must land AFTER it.
+		const prior = "BASE\n\n## Memory digest\n- fact one"
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: prior }, createMockContext([]))
+
+		const text = (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? ""
+		expect(text.startsWith(prior)).toBe(true)
+		expect(text).toContain("Plan mode is active: the `mcp` gateway")
+	})
+
+	it("appends the note when a non-read-only MCP direct tool is hidden by plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__salesforce__update_record"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		expect(harness.activeTools()).not.toContain("mcp__salesforce__update_record")
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("detects MCP tools registered after session start (the note is computed per request, not from the enter-time snapshot)", async () => {
+		const harness = createPermissionsHarness(["read"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		vi.mocked(harness.pi.getAllTools).mockReturnValue([
+			{ name: "read", description: "read tool" },
+			{ name: "mcp", description: "mcp tool" },
+		] as never)
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toEqual({ systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway") })
+	})
+
+	it("adds no note in plan mode when no MCP tools are configured", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("adds no note for a read-only MCP direct tool that plan mode keeps visible", async () => {
+		const harness = createPermissionsHarness(["read", "mcp__atlassian__search"], { plan: true })
+		const unregister = registerReadOnlyToolProvider(harness.pi, () => ["mcp__atlassian__search"])
+		try {
+			await harness.fire("session_start", {}, createMockContext([]))
+			expect(harness.activeTools()).toContain("mcp__atlassian__search")
+
+			const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+			expect(result).toBeUndefined()
+		} finally {
+			unregister()
+		}
+	})
+
+	it("adds no note outside plan mode even with MCP tools configured", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"])
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const result = await harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))
+
+		expect(result).toBeUndefined()
+	})
+
+	it("stops appending the note after the session leaves plan mode", async () => {
+		const harness = createPermissionsHarness(["read", "mcp"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		await expect(harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([]))).resolves.toEqual({
+			systemPrompt: expect.stringContaining("Plan mode is active: the `mcp` gateway"),
+		})
+
+		await harness.commands.get("permissions")?.handler("mode default", createMockContext([]))
+		expect(harness.activeTools()).toContain("mcp")
+
+		await expect(
+			harness.fire("before_agent_start", { systemPrompt: "BASE" }, createMockContext([])),
+		).resolves.toBeUndefined()
+	})
+
 	it("keeps annotated MCP tools visible and callable regardless of their name", async () => {
 		const names = ["atlassian_getJiraIssue", "docs_stats"]
 		const harness = createPermissionsHarness(["read", ...names], { plan: true })
