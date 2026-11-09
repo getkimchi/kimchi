@@ -111,20 +111,83 @@ const CUSTOM_ENTITY_FLAGS_RE = /^[imsu]{0,4}$/
 const MAX_CUSTOM_ENTITIES = 50
 const MAX_PATTERN_LENGTH = 512
 /**
- * ReDoS gate: reject a quantified group whose body contains alternation or
- * a quantifier (`(a|a)*`, `(a|aa)+c`, `(a+)+`, `(\d{2,})*`). Both shapes
- * backtrack exponentially, and the settle-bounded scan CANNOT preempt
- * them — `String.replace` runs synchronously, so the Promise.race timeout
- * never fires while the event loop is stuck inside the regex (verified:
- * `(a|a)*b` over a 34-char run of `a` does not return in 180s on Node 22).
- * Pattern validation is therefore the only line of defense for custom
- * entities. Deliberately approximate in both directions: full detection
- * needs a real parser, safe alternations like `(emp|hr)_id?` get rejected
- * when the group is quantified, and specially nested variants slip past —
- * the gate exists so the obvious catastrophic shapes fail visibly at
- * parse, not as a guarantee.
+ * ReDoS gate: reject a quantified group whose BODY — including every
+ * nested group — contains alternation or another quantifier (`(a|a)*`,
+ * `(a|aa)+c`, `(a+)+`, `(\d{2,})*`, and nested wrappings like `((a)|(a))*`
+ * or `(a|(b|a))*`). These shapes backtrack exponentially, and the
+ * settle-bounded scan CANNOT preempt them — `String.replace` runs
+ * synchronously, so the Promise.race timeout never fires while the event
+ * loop is stuck inside the regex (verified: `(a|a)*b` over a 34-char run
+ * of `a` does not return in 180s on Node 22). Pattern validation is
+ * therefore the only line of defense for custom entities. Deliberately
+ * approximate: full detection needs a real parser, and safe alternations
+ * like `(emp|hr)_id?` get rejected when the group is quantified — the
+ * gate exists so catastrophic shapes fail visibly at parse, not as a
+ * guarantee.
  */
-const RE_DOS_GROUP_RE = /\([^()]*(?:\||[+*]|\{\d+(?:,\d*)?\})[^()]*\)(?:[+*]|\{\d+(?:,\d*)?\})/
+export function hasReDoSRisk(pattern: string): boolean {
+	// Per-open-group bookkeeping: does its subtree (itself + nested groups)
+	// contain alternation or a quantifier at any depth. A group whose
+	// closing paren is followed by a quantifier is rejected when either
+	// signal propagated to its frame.
+	const stack: { alt: boolean; quant: boolean }[] = []
+	let inClass = false
+	const isQuantifierAt = (i: number): boolean => {
+		const c = pattern[i + 1]
+		return c === "*" || c === "+" || (c === "{" && /\d/.test(pattern[i + 2] ?? ""))
+	}
+	for (let i = 0; i < pattern.length; i++) {
+		const ch = pattern[i]
+		if (ch === "\\") {
+			i++
+			continue
+		}
+		if (inClass) {
+			if (ch === "]") inClass = false
+			continue
+		}
+		if (ch === "[") {
+			inClass = true
+			continue
+		}
+		if (ch === "(") {
+			stack.push({ alt: false, quant: false })
+			continue
+		}
+		if (ch === ")") {
+			const frame = stack.pop()
+			if (!frame) break // unbalanced — the compile check reports the real error
+			const quantified = isQuantifierAt(i)
+			if (quantified && (frame.alt || frame.quant)) return true
+			const parent = stack[stack.length - 1]
+			if (parent) {
+				parent.alt ||= frame.alt
+				parent.quant ||= frame.quant || quantified
+			}
+			continue
+		}
+		const current = stack[stack.length - 1]
+		if (!current) continue
+		if (ch === "|") current.alt = true
+		if (ch === "*" || ch === "+" || (ch === "{" && /\d/.test(pattern[i + 1] ?? ""))) {
+			current.quant = true
+		}
+	}
+	return false
+}
+
+/**
+ * The number of capture groups the compiled pattern exposes, so
+ * `secretGroup` can be validated against reality: the replace callback
+ * reads `args[secretGroup - 1]` and anything beyond the last group is the
+ * match offset or undefined, silently corrupting the redacted output.
+ * `new RegExp(pattern + "|").exec("")` always matches the empty
+ * alternative, and non-participating groups keep their slots as undefined.
+ */
+export function countPatternCaptureGroups(pattern: string, flags?: string): number {
+	const result = new RegExp(`${pattern}|`, flags ? `g${flags}`.replace("g", "") : "").exec("")
+	return (result?.length ?? 1) - 1
+}
 
 const MANAGED_STATE_MAP: Record<string, RedactionState> = {
 	KIMCHI_REDACTION_STATE_ON: "on",
@@ -227,10 +290,6 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.pattern must be 1..${MAX_PATTERN_LENGTH} characters`)
 			continue
 		}
-		if (RE_DOS_GROUP_RE.test(pattern)) {
-			invalid(ctx, `${label}.pattern has a quantified group with alternation or a nested quantifier (ReDoS risk)`)
-			continue
-		}
 		const flags = e.flags
 		if (flags !== undefined && (typeof flags !== "string" || !CUSTOM_ENTITY_FLAGS_RE.test(flags))) {
 			invalid(ctx, `${label}.flags must be a subset of "imsu"`)
@@ -241,11 +300,22 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.secretGroup must be a positive integer`)
 			continue
 		}
+		if (hasReDoSRisk(pattern)) {
+			invalid(ctx, `${label}.pattern has a quantified group with alternation or a nested quantifier (ReDoS risk)`)
+			continue
+		}
 		const compiled = `${pattern}`
 		try {
 			new RegExp(`(?:${compiled})`, `g${typeof flags === "string" ? flags : ""}`)
 		} catch (err) {
 			invalid(ctx, `${label}.pattern does not compile: ${err instanceof Error ? err.message : String(err)}`)
+			continue
+		}
+		if (
+			secretGroup !== undefined &&
+			(secretGroup as number) > countPatternCaptureGroups(compiled, typeof flags === "string" ? flags : undefined)
+		) {
+			invalid(ctx, `${label}.secretGroup exceeds the pattern's capture-group count`)
 			continue
 		}
 		seen.add(name)

@@ -20,7 +20,7 @@
  */
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
-import { getRedactionConfig, type RedactionRenderMode } from "./config.js"
+import { getManagedRedactionPolicy, getRedactionConfig, type RedactionRenderMode } from "./config.js"
 import { type RedactionPattern, resolveRedactionPolicy } from "./policy.js"
 import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
 
@@ -110,7 +110,9 @@ function resolveSnapshot(): EngineSnapshot {
 			)
 		}
 		configError = error
-		config = { enabled: true, renderMode: "markers", resolved: resolveRedactionPolicy() }
+		// Keep the org's own rules live — its policy parses independently and
+		// must not fall off because of a local settings typo it did not write.
+		config = { enabled: true, renderMode: "markers", resolved: resolveRedactionPolicy(getManagedRedactionPolicy()) }
 	}
 	const signature = [config.resolved.signature, config.renderMode].join("\u0002")
 	if (current && signature === current.signature) return current

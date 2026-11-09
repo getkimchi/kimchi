@@ -446,7 +446,10 @@ interface CategoryEntry {
 const ENTITY_CATEGORIES: ReadonlyMap<string, CategoryEntry> = (() => {
 	const map = new Map<string, CategoryEntry>()
 	for (const [category, defaultOn, members] of CATEGORY_GROUPS) {
-		for (const name of members) map.set(name, { category, defaultOn })
+		for (const name of members) {
+			if (map.has(name)) throw new Error(`entity "${name}" appears in two CATEGORY_GROUPS entries`)
+			map.set(name, { category, defaultOn })
+		}
 	}
 	return map
 })()

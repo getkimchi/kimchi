@@ -79,7 +79,7 @@ export function emitRedactionFacts(pi: ExtensionAPI, surface: RedactionSurface, 
 		const payload: PiiRedactedPayload = {
 			surface,
 			entity_type,
-			category: report.categories[entity_type] ?? "custom",
+			category: report.categories?.[entity_type] ?? "custom",
 			count,
 			strings_scanned: report.stringsScanned,
 			is_subagent: isSubagent,

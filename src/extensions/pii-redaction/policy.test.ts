@@ -206,6 +206,33 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		}
 	})
 
+	it("coded catastrophic shapes inside wrapping groups throw (the flat-detector bypass)", () => {
+		for (const pattern of ["((a)|(a))*", "(a|(b|a))*", "((a+))+", "((a|b)c)+"]) {
+			expect(() => parseLocalPolicy({ customEntities: [{ name: "ACME_X", category: "secrets", pattern }] })).toThrow(
+				/ReDoS/,
+			)
+		}
+	})
+
+	it("nested benign alternation stays allowed (quantified inner alternation, unquantified wrapper)", () => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "log[(](debug|info|warn)[)]" }],
+		})
+		expect(policy.customEntities?.[0].name).toBe("ACME_X")
+	})
+
+	it("secretGroup beyond the actual group count throws", () => {
+		expect(() =>
+			parseLocalPolicy({
+				customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 2 }],
+			}),
+		).toThrow(/capture-group/)
+		const ok = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "E(\\d{6})", secretGroup: 1 }],
+		})
+		expect(ok.customEntities?.[0].secretGroup).toBe(1)
+	})
+
 	it("safe alternation in an unquantified group passes", () => {
 		const policy = parseLocalPolicy({
 			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(?:emp|hr)[-_ ]?id[:=][A-Z0-9]{6}" }],

@@ -769,6 +769,17 @@ describe("settings validation failure — degrade, never silently bypass", () =>
 		expect(getRedactionConfigError()).toBeDefined()
 	})
 
+	it("a broken local settings file does not knock out the org's own rules", async () => {
+		await setOrgPolicyForTests({ redaction: { categories: { emails: "KIMCHI_REDACTION_STATE_OFF" } } })
+		writeSettings({ excludedEntities: ["SSN"] }) // unknown: real name is US_SSN
+		resetRedactorEngine()
+		const result = await redactText(`mail ${fx.email}`)
+		// The org said emails pass through; a local typo it did not write
+		// must not silently re-enable them in the degraded snapshot.
+		expect(result).toContain(fx.email)
+		expect(getRedactionConfigError()).toBeDefined()
+	})
+
 	it("the strict export path fails closed on the same typo", async () => {
 		writeSettings({ excludedEntities: ["SSN"] })
 		resetRedactorEngine()
@@ -1472,6 +1483,11 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
 		invalidateJsonCache(getResourceSettingsPath())
 	}
+
+	it("unknown key inside the redaction section throws (fail-visible)", () => {
+		writeSettings({ categoriis: { secrets: "off" } })
+		expect(() => getRedactionConfig()).toThrow(/unknown property/)
+	})
 
 	it("entity OFF passes that type through; other types still redact", async () => {
 		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })

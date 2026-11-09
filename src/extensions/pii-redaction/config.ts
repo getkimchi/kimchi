@@ -63,6 +63,9 @@ import {
 } from "./policy.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 
+/** Keys the local `redaction` settings section understands; anything else throws (fail-visible). */
+const KNOWN_REDACTION_KEYS = new Set(["renderMode", "excludedEntities", "categories", "entities", "customEntities"])
+
 /**
  * How engine detections are rendered in stored output:
  * - `tokens` (default): `[<ENTITY>_N]` — stable per-session reversible
@@ -121,12 +124,32 @@ export function getRedactionRenderMode(): RedactionRenderMode {
  * silently (and the strict export path never fails closed on managed input:
  * the operator did not write it and cannot fix it).
  */
-function getManagedRedactionPolicy(): RedactionPolicy | undefined {
+// The org-policy redaction object is parsed on EVERY redacted event via
+// getRedactionConfig; identity-memoize it so a wire value that changed
+// nothing re-parses zero work and the drop-log fires once per distinct
+// wire value, not once per event.
+const managedParseMemo = new WeakMap<object, RedactionPolicy | undefined>()
+
+/**
+ * The organization's own keyset, resolved on its own — exported so the
+ * snapshot's degrade path can keep the org's rules live even when a
+ * malformed LOCAL settings.json crashed the full resolution: the org did
+ * not write the local file and its policy must not fall off because of
+ * someone else's typo.
+ */
+export function getManagedRedactionPolicy(): RedactionPolicy | undefined {
 	const raw = getOrgPolicy()?.redaction
 	if (raw === undefined) return undefined
-	return parseManagedPolicy(raw, (reasons) => {
+	if (managedParseMemo.has(raw as object)) return managedParseMemo.get(raw as object)
+	const parsed = parseManagedPolicy(raw, (reasons) => {
 		console.error(`[pii-redaction] dropped ${reasons.length} unrecognized org redaction entries: ${reasons.join("; ")}`)
 	})
+	try {
+		managedParseMemo.set(raw as object, parsed)
+	} catch {
+		// Primitive wire values cannot key a WeakMap — rare and bounded; skip.
+	}
+	return parsed
 }
 
 /** Read the current config: resources-system enablement + resolved policy + render mode. */
@@ -166,6 +189,14 @@ function readLocalRedactionInput(managed?: RedactionPolicy): LocalRedactionInput
 		throw new Error('settings.json "redaction" must be an object')
 	}
 	const block = redaction as Record<string, unknown>
+	// Unknown keys throw: the whole-message-replace model lets the platform
+	// add keys later, but a local settings typo must fail visibly — the
+	// operator wrote it and can fix it.
+	for (const key of Object.keys(block)) {
+		if (!KNOWN_REDACTION_KEYS.has(key)) {
+			throw new Error(`settings.json "redaction": unknown property "${key}"`)
+		}
+	}
 	const legacyRaw = block.excludedEntities
 	const hasPolicyKeys =
 		block.categories !== undefined || block.entities !== undefined || block.customEntities !== undefined
