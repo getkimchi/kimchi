@@ -9,6 +9,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 const {
 	mockSetPendingImageIndicator,
 	mockSetPasteImageHandler,
+	mockSetImageDropHandler,
+	mockSetImageMarkersEditedHandler,
+	mockInsertTextAtPromptCursor,
 	mockGetNativeClipboard,
 	mockAddImage,
 	mockClearAllImages,
@@ -18,6 +21,9 @@ const {
 } = vi.hoisted(() => ({
 	mockSetPendingImageIndicator: vi.fn(),
 	mockSetPasteImageHandler: vi.fn(),
+	mockSetImageDropHandler: vi.fn(),
+	mockSetImageMarkersEditedHandler: vi.fn(),
+	mockInsertTextAtPromptCursor: vi.fn(),
 	mockGetNativeClipboard: vi.fn(),
 	mockAddImage: vi.fn(),
 	mockClearAllImages: vi.fn(),
@@ -32,6 +38,9 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("./ui.js", () => ({
 	setPasteImageHandler: mockSetPasteImageHandler,
+	setImageDropHandler: mockSetImageDropHandler,
+	setImageMarkersEditedHandler: mockSetImageMarkersEditedHandler,
+	insertTextAtPromptCursor: mockInsertTextAtPromptCursor,
 	setPendingImageIndicator: mockSetPendingImageIndicator,
 }))
 
@@ -47,7 +56,13 @@ vi.mock("../utils/image-registry.js", () => ({
 	addImage: mockAddImage,
 	clearAllImages: mockClearAllImages,
 	setImageCacheDir: mockSetImageCacheDir,
+	// Stateful stand-in for getImageContentById: mockAddImage records into
+	// registryStore so marker references to earlier turns resolve.
+	getImageContentById: (id: number) => registryStore.get(id) ?? null,
 }))
+
+// Backing store for the mocked image registry (addImage writes, resolves read).
+const registryStore = new Map<number, ImageContent>()
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
@@ -171,8 +186,18 @@ describe("clipboard-image extension", () => {
 	// beforeEach can clear the mock — so capture the reference once in
 	// beforeAll and assert it in a dedicated test so failures are attributed.
 	let pasteHandler: (() => void) | undefined
+	let dropHandler: ((text: string) => boolean) | undefined
+	let markersEditedHandler: ((present: Set<number>) => void) | undefined
+	function markersEdited(present: Set<number>): void {
+		if (!markersEditedHandler) throw new Error("markers-edited handler not registered")
+		markersEditedHandler(present)
+	}
 	beforeAll(() => {
 		pasteHandler = mockSetPasteImageHandler.mock.calls[0]?.[0] as (() => void) | undefined
+		dropHandler = mockSetImageDropHandler.mock.calls[0]?.[0] as ((text: string) => boolean) | undefined
+		markersEditedHandler = mockSetImageMarkersEditedHandler.mock.calls[0]?.[0] as
+			| ((present: Set<number>) => void)
+			| undefined
 	})
 
 	it("registers its paste handler at module scope", () => {
@@ -193,6 +218,12 @@ describe("clipboard-image extension", () => {
 		getHandler<unknown, void>(resetPi, "session_shutdown")(void 0, makeMockCtx())
 		__resetVisionGateForTest()
 		vi.clearAllMocks()
+		// The mocked registry stays stateful across clearAllMocks: addImage records
+		// entries so later marker references resolve via getImageContentById.
+		registryStore.clear()
+		mockAddImage.mockImplementation((id: number, image: ImageContent) => {
+			registryStore.set(id, image)
+		})
 		vi.useFakeTimers()
 	})
 
@@ -458,6 +489,269 @@ describe("clipboard-image extension", () => {
 			const result = await callInput(pi, ctx, { text: `open ${missing}`, images: [], source: "interactive" })
 			expect(result).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("image file drops (inline [Image #N] markers)", () => {
+		const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+		let tmpDir: string
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "drop-img-ext-"))
+		})
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true })
+		})
+
+		function drop(text: string): boolean {
+			if (!dropHandler) throw new Error("drop handler not registered")
+			return dropHandler(text)
+		}
+
+		function startVisionSession(): { pi: ExtensionAPI; ctx: ExtensionContext } {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			return { pi, ctx }
+		}
+
+		it("registers its drop handler at module scope", () => {
+			expect(dropHandler).toBeTypeOf("function")
+		})
+
+		it("consumes a local-image drop and inserts [Image #1] at the cursor", () => {
+			startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+
+			expect(drop(p)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toMatch(/^📎 1 image /)
+		})
+
+		it("rejects non-image and multi-token drops without touching the editor", () => {
+			startVisionSession()
+			const p = join(tmpDir, "notes.txt")
+			writeFileSync(p, "hello")
+			expect(drop(p)).toBe(false)
+			expect(drop("/tmp/a.png /tmp/b.png")).toBe(false)
+			expect(mockInsertTextAtPromptCursor).not.toHaveBeenCalled()
+		})
+
+		it("continues the session sequence after prior attachments", async () => {
+			const { pi, ctx } = startVisionSession()
+			await callInput(pi, ctx, { text: "setup", images: [img("aaa")], source: "interactive" })
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+
+			expect(drop(p)).toBe(true)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
+		})
+
+		it("submit keeps the inline marker in place with no duplicate prefix", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+
+			const result = (await callInput(pi, ctx, {
+				text: "look [Image #1] please",
+				images: [],
+				source: "interactive",
+			})) as { action: string; text: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.text).toBe("look [Image #1] please")
+			expect(result.images).toHaveLength(1)
+			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
+		})
+
+		it("marker removal detaches the pending drop and clears the indicator", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+
+			markersEdited(new Set())
+			// Pending attachment gone — the indicator reverts (no clipboard here).
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toBeNull()
+
+			const result = await callInput(pi, ctx, { text: "plain text", images: [], source: "interactive" })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("a draft whose marker was deleted attaches nothing — no silent re-numbering", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p) // inlineId 1; user then deletes the marker text by other means
+
+			const result = await callInput(pi, ctx, {
+				text: "just text",
+				images: [],
+				source: "interactive",
+			})
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("re-dropping after a removal attaches once under the reused number", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			markersEdited(new Set()) // removedDrops{1}, pending empty
+			drop(p) // fresh drop takes #1 as canonical owner
+
+			const result = (await callInput(pi, ctx, {
+				text: "see [Image #1]",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+			expect(mockAddImage.mock.calls.filter((c) => c[0] === 1)).toHaveLength(1)
+		})
+
+		it("a marker fully restored after removal (undo) re-arms the same image", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			markersEdited(new Set())
+
+			const result = (await callInput(pi, ctx, {
+				text: "look [Image #1] again",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; text: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.text).toBe("look [Image #1] again")
+			expect(result.images).toHaveLength(1)
+			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
+		})
+
+		it("a restored marker re-arms immediately — the indicator returns before submit", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			markersEdited(new Set())
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toBeNull()
+
+			// Undo fully restores the marker — the drop is pending again at once.
+			markersEdited(new Set([1]))
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toMatch(/^📎 1 image \(/)
+
+			const result = (await callInput(pi, ctx, {
+				text: "look [Image #1] again",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+		})
+
+		describe("registry references (typed/pasted markers from an earlier turn)", () => {
+			it("a marker matching a previous turn's image re-attaches it", async () => {
+				const { pi, ctx } = startVisionSession()
+				await callInput(pi, ctx, { text: "what is this?", images: [img("first-turn")], source: "interactive" })
+
+				const second = (await callInput(pi, ctx, {
+					text: "[Image #1] describe it again",
+					images: [],
+					source: "interactive",
+				})) as { action?: string; text: string; images: ImageContent[] }
+				expect(second.action).toBe("transform")
+				// Marker stays inline (not duplicated as a prefix).
+				expect(second.text).toBe("[Image #1] describe it again")
+				expect(second.images).toEqual([img("first-turn")])
+			})
+
+			it("an unknown marker id stays plain text with no attachment", async () => {
+				const { pi, ctx } = startVisionSession()
+				const result = await callInput(pi, ctx, {
+					text: "[Image #42] hmm",
+					images: [],
+					source: "interactive",
+				})
+				expect(result).toBeUndefined()
+				expect(mockAddImage).not.toHaveBeenCalled()
+			})
+
+			it("a typed marker claims its number for prefix numbering", async () => {
+				const { pi, ctx } = startVisionSession()
+				await callInput(pi, ctx, { text: "what is this?", images: [img("first-turn")], source: "interactive" })
+				// Second turn: a fresh clipboard image plus a typed reference to #1.
+				const second = (await callInput(pi, ctx, {
+					text: "[Image #1] versus this one",
+					images: [img("second-turn")],
+					source: "interactive",
+				})) as { action?: string; text: string; images: ImageContent[] }
+				expect(second.action).toBe("transform")
+				// The fresh image must not reuse the visible marker's number.
+				expect(second.text).toBe("[Image #2] [Image #1] versus this one")
+				// Incoming attachments precede pasted/referenced ones (fixed order).
+				expect(second.images).toEqual([img("second-turn"), img("first-turn")])
+			})
+		})
+
+		it("clipboard paste + drop submit numbers each attachment correctly", async () => {
+			mockReadClipboardImage.mockResolvedValue({ bytes: PNG_BYTES, mimeType: "image/png" })
+			const { pi, ctx } = startVisionSession()
+			pasteHandler?.()
+			await settle()
+			const p = join(tmpDir, "shot.webp")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
+
+			const result = (await callInput(pi, ctx, {
+				text: "check [Image #2]",
+				images: [],
+				source: "interactive",
+			})) as { text: string; images: ImageContent[] }
+			expect(result.text).toBe("[Image #1] check [Image #2]")
+			expect(result.images).toHaveLength(2)
+			// #1 is the clipboard paste (prefix-numbered), #2 the dropped webp.
+			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
+			expect(mockAddImage).toHaveBeenCalledWith(2, expect.objectContaining({ mimeType: "image/webp" }))
+		})
+
+		it("vision-gate remove strips inline markers referencing the dropped image", async () => {
+			const { pi, ctx, resolveDialog } = startGateSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+
+			const resultP = callInput(pi, ctx, { text: "fix [Image #1] please", images: [], source: "interactive" })
+			resolveDialog(0, { kind: "remove" })
+
+			await expect(resultP).resolves.toEqual({ action: "transform", text: "fix please", images: [] })
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("vision-gate cancel retains the drop so a resubmit attaches it once", async () => {
+			const { pi, ctx, custom, resolveDialog } = startGateSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+
+			const first = callInput(pi, ctx, { text: "fix [Image #1] please", images: [], source: "interactive" })
+			resolveDialog(0, { kind: "cancel" })
+			await expect(first).resolves.toEqual({ action: "handled" })
+			expect(ctx.ui.setEditorText).toHaveBeenCalledWith("fix [Image #1] please")
+
+			const retry = callInput(pi, ctx, { text: "fix [Image #1] please", images: [], source: "interactive" })
+			expect(custom).toHaveBeenCalledTimes(2)
+			resolveDialog(1, { kind: "switch", model: SWITCH_TARGET })
+			const result = (await retry) as { action: string; text: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.text).toBe("fix [Image #1] please")
+			expect(result.images).toHaveLength(1)
+			expect(mockAddImage).toHaveBeenCalledTimes(1)
 		})
 	})
 

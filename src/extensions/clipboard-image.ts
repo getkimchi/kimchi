@@ -3,9 +3,16 @@ import type { ImageContent } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getNativeClipboard } from "../utils/clipboard-native-harness.js"
 import { readClipboardImage } from "../utils/clipboard-read.js"
-import { addImage, clearAllImages, setImageCacheDir } from "../utils/image-registry.js"
+import { droppedImagePathCandidate } from "../utils/dropped-image-path.js"
+import { addImage, clearAllImages, getImageContentById, setImageCacheDir } from "../utils/image-registry.js"
 import { extractTypedImagePaths } from "../utils/typed-image-paths.js"
-import { setPasteImageHandler, setPendingImageIndicator } from "./ui.js"
+import {
+	insertTextAtPromptCursor,
+	setImageDropHandler,
+	setImageMarkersEditedHandler,
+	setPasteImageHandler,
+	setPendingImageIndicator,
+} from "./ui.js"
 import {
 	clearRetained as clearRetainedSubmission,
 	consumePathSuppression,
@@ -14,6 +21,7 @@ import {
 	getVisionGateSessionGeneration,
 	mergeRetainedSubmission,
 	type PathAttachment,
+	type PendingImage,
 	registerVisionGateSideEffects,
 	resetVisionGateState,
 	runVisionGate,
@@ -21,7 +29,11 @@ import {
 } from "./vision-gate.js"
 import { modelSupportsImages, needsVisionSwitch } from "./vision-support.js"
 
-let pendingImages: ImageContent[] = []
+let pendingImages: PendingImage[] = []
+// Dropped images the user detached by deleting their inline `[Image #N]`
+// marker. Remembered (keyed by the marker number) so a marker that becomes
+// complete again — e.g. via undo — re-arms the attachment at submit.
+let removedDrops: Map<number, PendingImage> = new Map()
 let currentCtx: ExtensionContext | null = null
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
@@ -81,16 +93,82 @@ function checkClipboard(): void {
 	}
 }
 
-function buildImageMarkerPrefix(startIndex: number, count: number): string {
-	if (count <= 0) return ""
-	const markers = Array.from({ length: count }, (_, i) => `[Image #${startIndex + i}]`)
-	return markers.join(" ")
+function buildImageMarkerPrefix(ids: number[]): string {
+	if (ids.length === 0) return ""
+	return ids.map((id) => `[Image #${id}]`).join(" ")
+}
+
+/** `[Image #N]` tokens present in a draft, keyed for inline-marker lookup. */
+function inlineMarkersInText(text: string): Set<number> {
+	const markers = new Set<number>()
+	for (const m of text.matchAll(/\[Image #(\d+)\]/g)) markers.add(Number(m[1]))
+	return markers
+}
+
+/** Remove the `[Image #N]` tokens for the given ids from `text` (one trailing space each). */
+function stripInlineMarkers(text: string, ids: number[]): string {
+	if (ids.length === 0) return text
+	const re = new RegExp(`\\[Image #(?:${ids.join("|")})\\] ?`, "g")
+	return text.replace(re, "")
 }
 
 setPasteImageHandler(() => {
 	handlePaste().catch((err) => {
 		console.error("Clipboard paste handler error:", err)
 	})
+})
+
+/**
+ * File-drop paste: a terminal drag-and-drop arrives as a bracketed paste of
+ * the file path. When it is a single readable local image, consume the paste
+ * and render `[Image #N]` inline at the drop position instead of the raw
+ * path. The number continues the session's image sequence (imageCounter +
+ * pending), matching the id the image receives at submit.
+ */
+setImageDropHandler((pastedText) => {
+	const match = droppedImagePathCandidate(pastedText, currentCtx?.cwd ?? process.cwd())
+	if (!match) return false
+	const base64 = Buffer.from(match.image.bytes).toString("base64")
+	const n = imageCounter + pendingImages.length + 1
+	pendingImages.push({
+		image: { type: "image", data: base64, mimeType: match.image.mimeType },
+		inlineId: n,
+		sourcePath: match.resolvedPath,
+	})
+	// A fresh drop is the canonical owner of its number — any older detached
+	// entry with the same id must not be re-armed alongside it.
+	removedDrops.delete(n)
+	updateIndicator()
+	insertTextAtPromptCursor(`[Image #${n}]`)
+	return true
+})
+
+/**
+ * Marker-set sync: every edit that changes which `[Image #N]` markers are in
+ * the draft (backspace, bulk delete, undo, kill-ring yank, plain typing) is
+ * reported by the editor. A pending drop whose marker vanished detaches
+ * immediately (parking in `removedDrops` so the indicator empties at once);
+ * a marker that becomes complete again — e.g. undo fully restoring it —
+ * re-arms its drop right away instead of waiting for submit.
+ */
+setImageMarkersEditedHandler((present) => {
+	let changed = false
+	for (let i = pendingImages.length - 1; i >= 0; i--) {
+		const p = pendingImages[i]
+		if (p && p.inlineId !== null && !present.has(p.inlineId)) {
+			pendingImages.splice(i, 1)
+			removedDrops.set(p.inlineId, p)
+			changed = true
+		}
+	}
+	for (const [id, entry] of [...removedDrops]) {
+		if (present.has(id) && !pendingImages.some((p) => p.inlineId === id)) {
+			pendingImages.push(entry)
+			removedDrops.delete(id)
+			changed = true
+		}
+	}
+	if (changed) updateIndicator()
 })
 
 async function handlePaste(): Promise<void> {
@@ -132,7 +210,7 @@ async function handlePaste(): Promise<void> {
 		data: base64,
 		mimeType: image.mimeType,
 	}
-	pendingImages.push(imageContent)
+	pendingImages.push({ image: imageContent, inlineId: null })
 	updateIndicator()
 	// Paste is accepted regardless of the current model's capabilities — the
 	// submit-time vision gate is the single choke point. The text-only hint
@@ -143,7 +221,7 @@ async function handlePaste(): Promise<void> {
 function updateIndicator(): void {
 	const count = pendingImages.length
 	if (count > 0) {
-		const totalRawBytes = pendingImages.reduce((sum, img) => sum + Math.floor((img.data.length * 3) / 4), 0)
+		const totalRawBytes = pendingImages.reduce((sum, img) => sum + Math.floor((img.image.data.length * 3) / 4), 0)
 		const kb = Math.max(1, Math.round(totalRawBytes / 1024))
 		const label = count === 1 ? "image" : "images"
 		const visionHint = needsVisionSwitch(currentCtx?.model) ? " · ⚠ text-only" : ""
@@ -170,6 +248,7 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		}
 		currentCtx = ctx
 		pendingImages = []
+		removedDrops = new Map()
 		imageCounter = 0
 		// On-demand sessions never re-probe, so a hint left by a previous
 		// proactive session would advertise an image that was not read again.
@@ -261,7 +340,39 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			generation: gateGeneration,
 		})
 
-		const totalImages = record.incoming.length + record.pasted.length + record.paths.size
+		// A drop whose inline `[Image #N]` marker is no longer in the draft
+		// counts as detached: it parks in `removedDrops` (indicator-consistent,
+		// no silent re-attach). Conversely, a removed drop whose marker is
+		// complete again — e.g. undo fully restored it — re-arms here.
+		const presentMarkers = inlineMarkersInText(event.text)
+		const keptPasted: PendingImage[] = []
+		for (const p of record.pasted) {
+			if (p.inlineId === null || presentMarkers.has(p.inlineId)) {
+				keptPasted.push(p)
+			} else {
+				removedDrops.set(p.inlineId, p)
+			}
+		}
+		for (const [id, entry] of [...removedDrops]) {
+			// Skip ids already owned by a live pending drop (a re-drop of the
+			// same number after a deletion) — otherwise the image attaches twice.
+			if (presentMarkers.has(id) && !keptPasted.some((p) => p.inlineId === id)) {
+				keptPasted.push(entry)
+				removedDrops.delete(id)
+			}
+		}
+
+		// A `[Image #N]` marker that matches neither a live drop nor a re-armed
+		// one references an earlier turn's attachment: resolve it against the
+		// on-disk registry so sending `[Image #3] describe it` re-attaches the
+		// image the marker was sent with. Unknown ids stay plain text.
+		for (const id of presentMarkers) {
+			if (keptPasted.some((p) => p.inlineId === id)) continue
+			const image = getImageContentById(id)
+			if (image) keptPasted.push({ image, inlineId: id })
+		}
+
+		const totalImages = record.incoming.length + keptPasted.length + record.paths.size
 		if (totalImages === 0) {
 			if (isInteractiveTui) clearRetainedSubmission()
 			if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
@@ -273,9 +384,13 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			if (outcome.kind === "handled") return { action: "handled" as const }
 			if (outcome.kind === "remove") {
 				if (suppressedPaths) consumePathSuppression(event.text, gateGeneration)
-				// Original trimmed text, no images, no markers, no registry or
-				// counter mutation. An empty text consumes the submission.
-				const trimmed = event.text.trim()
+				// Original trimmed text, no images, no registry or counter mutation.
+				// Inline `[Image #N]` markers for the removed pending images are
+				// stripped too — they reference attachments that are gone. Typed
+				// path text stays in place (existing behavior). An empty text
+				// consumes the submission.
+				const inlineIds = keptPasted.flatMap((p) => (p.inlineId === null ? [] : [p.inlineId]))
+				const trimmed = stripInlineMarkers(event.text, inlineIds).trim()
 				return trimmed ? { action: "transform" as const, text: trimmed, images: [] } : { action: "handled" as const }
 			}
 			// proceed: checked switch succeeded — submit on the new model below.
@@ -284,21 +399,44 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 
 		// Accepted submission: commit markers/registry/counter from the merged
 		// record, transferring retained attachments into the transform exactly
-		// once, then clear the retained record.
-		const images = [...record.incoming, ...record.pasted, ...record.paths.values()]
+		// once, then clear the retained record. Attachment order is unchanged
+		// (incoming, pasted, typed paths).
+		const prepared: { image: ImageContent; inlineId: number | null }[] = [
+			...record.incoming.map((image) => ({ image, inlineId: null })),
+			...keptPasted.map((p) => ({ image: p.image, inlineId: p.inlineId })),
+			...[...record.paths.values()].map((image) => ({ image, inlineId: null })),
+		]
 		pendingImages = []
 		updateIndicator()
 
-		const startIndex = imageCounter + 1
-		imageCounter += images.length
-		// Persist each image to disk and register under its [Image #N] id.
-		images.forEach((image, i) => {
-			const id = startIndex + i
-			addImage(id, image)
+		// An inline `[Image #N]` marker still present in the draft keeps its
+		// drop-time number — the id the user saw in the editor is the id the
+		// image is registered under, and no prefix marker is duplicated in
+		// front of the text. Everything else (clipboard pastes, typed paths)
+		// is prefix-numbered from the session counter, skipping numbers
+		// claimed by inline markers.
+		// Every marker id mentioned in the draft is claimed — including typed
+		// markers that resolved via the registry or matched nothing at all —
+		// so prefix-numbered attachments never collide with visible markers.
+		const inlineTaken = new Set<number>(presentMarkers)
+		let nextFree = imageCounter + 1
+		const prefixIds: number[] = []
+		const images: ImageContent[] = prepared.map((p) => {
+			let id: number
+			if (p.inlineId !== null && presentMarkers.has(p.inlineId)) {
+				id = p.inlineId
+			} else {
+				while (inlineTaken.has(nextFree)) nextFree++
+				id = nextFree++
+				prefixIds.push(id)
+			}
+			imageCounter = Math.max(imageCounter, id)
+			addImage(id, p.image)
+			return p.image
 		})
-		const prefix = buildImageMarkerPrefix(startIndex, images.length)
+		const prefix = buildImageMarkerPrefix(prefixIds)
 		const trimmed = event.text.trimStart()
-		const text = trimmed ? `${prefix} ${trimmed}` : prefix
+		const text = prefix ? (trimmed ? `${prefix} ${trimmed}` : prefix) : trimmed
 		clearRetainedSubmission()
 
 		return { action: "transform" as const, text, images }
