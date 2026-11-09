@@ -69,7 +69,7 @@ import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works
 import { PNG_SIGNATURE } from "../utils/image-utils.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
-import clipboardImageExtension from "./clipboard-image.js"
+import clipboardImageExtension, { __resetClipboardImageForTest } from "./clipboard-image.js"
 import { __resetVisionGateForTest } from "./vision-gate.js"
 
 type InputEventShape = Omit<InputEvent, "type">
@@ -565,6 +565,43 @@ describe("clipboard-image extension", () => {
 			expect(result.text).toBe("look [Image #1] please")
 			expect(result.images).toHaveLength(1)
 			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
+		})
+
+		it("a drop made before the first session_start survives session setup", async () => {
+			__resetClipboardImageForTest()
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			expect(drop(p)).toBe(true)
+
+			// The prompt renders before the session finishes starting: a late
+			// first session_start must not wipe the pending drop.
+			startSession(pi, ctx)
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #1] what's this?",
+				images: [],
+				source: "interactive",
+			})) as { action: string; text: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.text).toBe("[Image #1] what's this?")
+			expect(result.images).toHaveLength(1)
+		})
+
+		it("a replacement session still clears pending drops", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+
+			// A second session_start replaces the session: pending state resets.
+			startSession(pi, makeMockCtx())
+
+			const result = await callInput(pi, ctx, { text: "[Image #1]", images: [], source: "interactive" })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 
 		it("marker removal detaches the pending drop and clears the indicator", async () => {

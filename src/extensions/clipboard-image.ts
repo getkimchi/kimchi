@@ -35,6 +35,20 @@ let pendingImages: PendingImage[] = []
 // complete again — e.g. via undo — re-arms the attachment at submit.
 let removedDrops: Map<number, PendingImage> = new Map()
 let currentCtx: ExtensionContext | null = null
+// Whether any session_start has fired in this process. The first one must
+// not wipe pending state (drops/pastes can predate it); only replacement
+// sessions reset.
+let sessionSeen = false
+
+/** @internal — test hook resetting module state between unit tests. */
+export function __resetClipboardImageForTest(): void {
+	sessionSeen = false
+	pendingImages = []
+	removedDrops = new Map()
+	imageCounter = 0
+	currentCtx = null
+	clipboardHasImage = false
+}
 // Per-session running counter of images attached to user turns. Resets on
 // session_start so that a new conversation always begins at #1.
 let imageCounter = 0
@@ -247,19 +261,26 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 			clipboardPollId = null
 		}
 		currentCtx = ctx
-		pendingImages = []
-		removedDrops = new Map()
-		imageCounter = 0
-		// On-demand sessions never re-probe, so a hint left by a previous
-		// proactive session would advertise an image that was not read again.
-		clipboardHasImage = false
-		// Reset the vision gate's retained state, suppressions, deferred latch,
-		// and dialog ownership so a replacement session starts clean.
-		resetVisionGateState()
+		// Only a REPLACEMENT session starts clean. The very first session_start
+		// can fire moments AFTER the editor already accepted a paste/drop (the
+		// prompt renders before the session finishes starting); clearing then
+		// would silently lose attachments the user already made.
+		if (sessionSeen) {
+			pendingImages = []
+			removedDrops = new Map()
+			imageCounter = 0
+			// On-demand sessions never re-probe, so a hint left by a previous
+			// proactive session would advertise an image that was not read again.
+			clipboardHasImage = false
+			// Reset the vision gate's retained state, suppressions, deferred latch,
+			// and dialog ownership so a replacement session starts clean.
+			resetVisionGateState()
+			clearAllImages()
+		}
+		sessionSeen = true
 		const sessionDir = ctx.sessionManager?.getSessionDir?.() ?? null
 		const dir = sessionDir ? join(sessionDir, "image-cache") : null
 		setImageCacheDir(dir)
-		clearAllImages()
 		updateIndicator()
 		// Linux shells out to wl-paste/xclip; polling can open transient
 		// surfaces that steal focus on Wayland. macOS matches that on-demand
