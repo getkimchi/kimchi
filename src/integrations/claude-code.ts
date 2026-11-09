@@ -20,24 +20,21 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * and we want it to use AUTH_TOKEN with our key.
  *
  * CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS defaults to "1", which also turns
- * off Claude Code's MCP tool search. A value already set in `userEnv` (the
- * shell env, or the existing settings.json `env` block) wins, so
- * `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back on (#1507).
+ * off Claude Code's MCP tool search. A value set in `userEnv` (the shell env)
+ * wins, so `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back
+ * on (#1507). Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
+ * "false" and "" as not disabled.
  */
 export function claudeCodeEnv(
 	apiKey: string,
 	baseUrl: string = resolveEndpoints().anthropicBaseUrl,
-	options?: { telemetryEnabled?: boolean; userEnv?: Record<string, unknown> },
+	options?: { telemetryEnabled?: boolean; userEnv?: Record<string, string | undefined> },
 ): Record<string, string> {
-	const userBetas = options?.userEnv?.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
 	const env: Record<string, string> = {
 		ANTHROPIC_BASE_URL: baseUrl,
 		ANTHROPIC_API_KEY: "",
 		ANTHROPIC_AUTH_TOKEN: apiKey,
-		// settings.json may hold a JSON number or boolean; Claude Code honours those too.
-		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: ["string", "number", "boolean"].includes(typeof userBetas)
-			? String(userBetas)
-			: "1",
+		CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: options?.userEnv?.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS ?? "1",
 	}
 	if (options?.telemetryEnabled) {
 		env.CLAUDE_CODE_ENABLE_TELEMETRY = "1"
@@ -79,8 +76,10 @@ export function injectClaudeCodeEnv(
 	apiKey: string,
 	options?: { telemetryEnabled?: boolean },
 ): void {
-	const pairs = claudeCodeEnv(apiKey, baseUrl, { ...options, userEnv: env })
+	const pairs = claudeCodeEnv(apiKey, baseUrl, { ...options, userEnv: process.env })
 	for (const [k, v] of Object.entries(pairs)) {
+		// A betas value already in settings.json is the user's choice: keep it as written.
+		if (k === "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" && env[k] != null) continue
 		env[k] = v
 	}
 	if (!options?.telemetryEnabled) {

@@ -94,6 +94,15 @@ describe("claudeCodeEnv", () => {
 })
 
 describe("injectClaudeCodeEnv", () => {
+	beforeEach(() => {
+		// The writer reads the shell value; keep the developer's own env out of these tests.
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", undefined)
+	})
+
+	afterEach(() => {
+		vi.unstubAllEnvs()
+	})
+
 	it("merges into an existing env block without removing unrelated keys", () => {
 		const env: Record<string, unknown> = { FOO: "bar" }
 		injectClaudeCodeEnv(env, "https://b", "k")
@@ -115,14 +124,14 @@ describe("injectClaudeCodeEnv", () => {
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
-	it("keeps a JSON number or boolean CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS from settings.json", () => {
+	it("keeps a JSON number or boolean CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS untouched", () => {
 		const zero: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 0 }
 		injectClaudeCodeEnv(zero, "https://b", "k")
-		expect(zero.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+		expect(zero.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(0)
 
 		const off: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: false }
 		injectClaudeCodeEnv(off, "https://b", "k")
-		expect(off.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("false")
+		expect(off.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(false)
 	})
 
 	it("keeps an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS, which Claude Code reads as not disabled", () => {
@@ -137,8 +146,22 @@ describe("injectClaudeCodeEnv", () => {
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
 	})
 
-	it("sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when settings.json does not have it", () => {
+	it("sets CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when neither settings.json nor the shell has it", () => {
 		const env: Record<string, unknown> = {}
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
+	it("writes the shell CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS when settings.json does not have it", () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = {}
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("keeps the settings.json CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS over the shell value", () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1" }
 		injectClaudeCodeEnv(env, "https://b", "k")
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
 	})
@@ -318,6 +341,17 @@ describe("claude-code tool registration", () => {
 		const written = JSON.parse(readFileSync(settings, "utf-8"))
 		expect(written.env.ANTHROPIC_AUTH_TOKEN).toBe("fresh-key")
 		expect(written.env.OTEL_LOGS_EXPORTER).toBeUndefined()
+	})
+
+	it("write() records a shell CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 in a fresh settings.json", async () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		onTestFinished(() => {
+			vi.unstubAllEnvs()
+		})
+		await byId("claudecode")?.write("global", "k", TEST_MODELS)
+
+		const written = JSON.parse(readFileSync(join(scratchHome, ".claude", "settings.json"), "utf-8"))
+		expect(written.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
 	it("write() includes OTEL env vars when telemetryEnabled is true", async () => {
