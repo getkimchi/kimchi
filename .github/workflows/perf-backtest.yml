@@ -1,7 +1,7 @@
-# Release-series backtest: re-measures any set of releases (default: every
-# release since v1.0.0 plus the master baseline) with the current harness
-# (gated + advisory lanes) for the release-series report. Dispatched on
-# demand — the label drives the artifact name. With calibrate=true the gate
+# Release-series backtest: re-measures any set of releases or commits with
+# the current harness (gated + advisory lanes) for the release-series report.
+# Dispatched on demand with the entries passed in the dispatch input — no
+# committed list, so nothing fires by accident. With calibrate=true the gate
 # also rewrites budgets.json from a fully green run and uploads it for
 # review; nothing is committed by CI.
 name: Perf gate backtest
@@ -9,6 +9,9 @@ name: Perf gate backtest
 on:
   workflow_dispatch:
     inputs:
+      entries:
+        description: "Lines: SHA [LABEL] — the trees to measure"
+        required: true
       reps:
         description: "Reps per scenario"
         default: "2"
@@ -31,13 +34,18 @@ jobs:
     outputs:
       list: ${{ steps.split.outputs.list }}
     steps:
-      - uses: actions/checkout@v4
       - id: split
         # One entry per line: "SHA [LABEL]". The optional label names the
         # artifact, so the same SHA can appear several times (repeat jobs).
+        env:
+          ENTRIES: ${{ inputs.entries }}
         run: |
-          LIST=$(grep -v '^#' backtest-shas.txt | grep -v '^$' \
+          LIST=$(printf '%s\n' "$ENTRIES" | grep -v '^#' | grep -v '^$' \
             | jq -R 'split(" ") | map(select(. != "")) | {sha: .[0], label: (.[1] // .[0])}' | jq -cs .)
+          if [ "$LIST" = "[]" ]; then
+            echo "no entries: pass lines of 'SHA [LABEL]' in the entries input" >&2
+            exit 1
+          fi
           echo "list=$LIST" >> "$GITHUB_OUTPUT"
 
   backtest:
