@@ -20,9 +20,10 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * and we want it to use AUTH_TOKEN with our key.
  *
  * CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS defaults to "1", which also turns
- * off Claude Code's MCP tool search. A value set in `userEnv` (the shell env)
- * wins, so `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back
- * on (#1507). Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
+ * off Claude Code's MCP tool search. A value set in `userEnv` wins, so
+ * `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0` turns tool search back on (#1507).
+ * Callers pass `process.env` as `userEnv`; without it the default always
+ * applies. Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
  * "false" and "" as not disabled.
  */
 export function claudeCodeEnv(
@@ -77,9 +78,18 @@ export function injectClaudeCodeEnv(
 	options?: { telemetryEnabled?: boolean },
 ): void {
 	const pairs = claudeCodeEnv(apiKey, baseUrl, { ...options, userEnv: process.env })
+	const shellBetas = process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
 	for (const [k, v] of Object.entries(pairs)) {
-		// A betas value already in settings.json is the user's choice: keep it as written.
-		if (k === "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" && env[k] != null) continue
+		// A betas value already in settings.json is kept as written (JSON type included),
+		// unless the shell sets a different one: that is how a "1" written by an earlier
+		// setup-tools gets replaced (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 kimchi setup-tools`).
+		if (
+			k === "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS" &&
+			env[k] != null &&
+			(shellBetas === undefined || String(env[k]) === shellBetas)
+		) {
+			continue
+		}
 		env[k] = v
 	}
 	if (!options?.telemetryEnabled) {

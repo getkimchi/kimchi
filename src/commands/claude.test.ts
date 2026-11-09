@@ -33,6 +33,7 @@ describe("runClaude", () => {
 	})
 
 	function launchedEnv(): Record<string, string> {
+		expect(runForeground).toHaveBeenCalledTimes(1)
 		return vi.mocked(runForeground).mock.calls[0][2] as Record<string, string>
 	}
 
@@ -42,6 +43,14 @@ describe("runClaude", () => {
 		expect(await runClaude([])).toBe(0)
 
 		expect(launchedEnv().CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+	})
+
+	it("passes an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS from the shell through unchanged", async () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "")
+
+		expect(await runClaude([])).toBe(0)
+
+		expect(launchedEnv().CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("")
 	})
 
 	it("lets the user turn experimental betas (and MCP tool search) back on", async () => {

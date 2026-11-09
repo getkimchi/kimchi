@@ -41,6 +41,11 @@ describe("claudeCodeEnv", () => {
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
+	it("passes an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS through, which Claude Code reads as not disabled", () => {
+		const env = claudeCodeEnv("k", undefined, { userEnv: { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "" } })
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("")
+	})
+
 	it("defaults CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS to 1 when the user env does not set it", () => {
 		const env = claudeCodeEnv("k", undefined, { userEnv: { FOO: "bar" } })
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
@@ -159,11 +164,19 @@ describe("injectClaudeCodeEnv", () => {
 		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
 	})
 
-	it("keeps the settings.json CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS over the shell value", () => {
+	it("replaces a settings.json CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS when the shell sets a different one", () => {
+		// The "1" an earlier setup-tools wrote is replaced by CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 kimchi setup-tools.
 		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
 		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1" }
 		injectClaudeCodeEnv(env, "https://b", "k")
-		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+	})
+
+	it("keeps the settings.json JSON type when the shell sets the same value", () => {
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
+		const env: Record<string, unknown> = { CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: 0 }
+		injectClaudeCodeEnv(env, "https://b", "k")
+		expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe(0)
 	})
 
 	it("adds OTEL env vars when telemetryEnabled is true", () => {
