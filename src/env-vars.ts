@@ -61,10 +61,6 @@ export const ENV_VARS: EnvVarDef[] = [
 		description: "Comma-separated resource ids (hooks/tools/extensions) to enable for this invocation only",
 	},
 	{
-		name: "KIMCHI_REDACTION_ENABLED",
-		description: "Enable/disable PII redaction of prompts (1 to enable; 0/false to disable). Off by default",
-	},
-	{
 		name: "KIMCHI_PROXY",
 		description: "HTTP(S) proxy URL for outbound traffic; takes precedence over HTTP(S)_PROXY",
 	},
@@ -106,6 +102,10 @@ export const ENV_VARS: EnvVarDef[] = [
 		description: "Concurrency limit for memory-capture drain jobs (default: 6)",
 	},
 	{
+		name: "KIMCHI_MEMORY_DECISION_GATE",
+		description: "Memory decision gates: `off` disables every gate; a comma subset enables exactly those",
+	},
+	{
 		name: "KIMCHI_FERMENTS_DIR",
 		description: "Override the directory where ferment state is stored",
 	},
@@ -126,8 +126,50 @@ export const ENV_VARS: EnvVarDef[] = [
 		description: "Enable debug dumps of assembled prompts (set by kimchi when prompt debugging starts)",
 	},
 	{
-		name: "KIMCHI_WHEEL_SCROLL_LINES",
-		description: "Mouse-wheel scroll lines in the TUI (overrides the tui.wheelScrollLines config value)",
+		name: "KIMCHI_STREAM_IDLE_TIMEOUT_MS",
+		description: "Idle timeout for outbound HTTP in ms (0 disables; wins over the httpIdleTimeoutMs setting)",
+	},
+
+	// tool-output externalization (docs/memory-residency.md)
+	{
+		name: "KIMCHI_TOOL_OUTPUT_STORE",
+		description: "Set to `off` to disable externalizing tool outputs to disk (residency escape hatch)",
+	},
+	{
+		name: "KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES",
+		description: "Byte threshold above which tool outputs are externalized to disk (default: 65536)",
+	},
+
+	// adaptive idle garbage collection (docs/memory-residency.md)
+	{
+		name: "KIMCHI_IDLE_GC",
+		description: "Set to `off` to disable adaptive idle garbage collection",
+	},
+	{
+		name: "KIMCHI_IDLE_GC_DELAY_MS",
+		description: "Delay (ms) before an adaptive idle GC collection runs",
+	},
+	{
+		name: "KIMCHI_GC_GROWTH_BYTES",
+		description: "Heap growth (bytes) that triggers an adaptive GC collection",
+	},
+	{
+		name: "KIMCHI_GC_MIN_INTERVAL_MS",
+		description: "Minimum interval (ms) between adaptive GC collections",
+	},
+
+	// documents extension (src/extensions/documents)
+	{
+		name: "KIMCHI_DOCUMENT_MAX_MB",
+		description: "Maximum document size in MB accepted by the documents commands",
+	},
+	{
+		name: "KIMCHI_SOFFICE",
+		description: "Path to the LibreOffice `soffice` binary (takes precedence over PATH and OS install locations)",
+	},
+	{
+		name: "KIMCHI_PDF_FONT_DIR",
+		description: "Directory of .ttf/.otf fonts for PDF rendering when the OS font dirs have nothing suitable",
 	},
 ]
 
@@ -152,6 +194,12 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_HOOK_EVENT",
 	"KIMCHI_TOOL_NAME",
 	"KIMCHI_TOOL_INPUT_COMMAND",
+	// internal binary / install plumbing
+	"KIMCHI_QUICKJS_WASM_PATH",
+	"KIMCHI_BRIDGE_BIN_DIR",
+	"KIMCHI_BRIDGE_PREFIX",
+	"KIMCHI_LSP_IDLE_EVICT_MS",
+	"KIMCHI_MANAGES_MCP_PROJECT_TRUST",
 	"PI_PACKAGE_DIR",
 	"PI_CODING_AGENT_DIR",
 	"PI_SKIP_VERSION_CHECK",
@@ -171,10 +219,14 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DISABLE_NUDGE_BASH_CONTROL_CHECKIN",
 	"KIMCHI_DISABLE_NUDGE_CONTINUATION",
 	"KIMCHI_DISABLE_NUDGE_PLANNING_STOP",
+	"KIMCHI_DISABLE_NUDGE_TODO_CHECKIN",
 	"KIMCHI_DISABLE_GUARD_LOOP",
 	"KIMCHI_DISABLE_GUARD_BASH_TOOL",
 	"KIMCHI_DISABLE_GUARD_EXPLORATION",
 	"KIMCHI_DISABLE_GUARD_REVIEW_WRITE",
+	// debugging / pi-mono plumbing
+	"KIMCHI_DEBUG_TOOL_SURFACE",
+	"PI_TELEMETRY",
 	// test overrides
 	"KIMCHI_TEST_HARNESS",
 	"KIMCHI_TUI_E2E_CLIPBOARD_IMAGE",
@@ -183,6 +235,20 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DAP_BINARIES",
 	"KIMCHI_IDE_LOCKFILE_DIR",
 	"KIMCHI_MCP_E2E_KEYRING_DIR",
+	"KIMCHI_E2E_FAKE_BROWSER_OPEN",
+	"KIMCHI_E2E_BASH_BLOCKING_TIMEOUT_SECONDS",
+	"KIMCHI_E2E_COMPLETION_REMINDER_MS",
+	"KIMCHI_E2E_BASH_HANDOFF_SECONDS",
+	"KIMCHI_E2E_STATIC_TODO_SPINNER",
+	"KIMCHI_E2E_COST_REPORT_REFRESH_MS",
+	"KIMCHI_E2E_RECONCILIATION_INTERVAL_MS",
+	// OAuth dev/mock endpoint overrides (src/oauth-config.ts)
+	"KIMCHI_OAUTH_CLIENT_ID",
+	"KIMCHI_OAUTH_AUTHORIZE_URL",
+	"KIMCHI_OAUTH_TOKEN_URL",
+	"KIMCHI_OAUTH_AUDIENCE",
+	"KIMCHI_ORGANIZATIONS_URL",
+	"KIMCHI_OAUTH_USE_ID_TOKEN",
 ]
 
 /**
@@ -193,4 +259,15 @@ export const IGNORED_ENV_VARS: string[] = [
  * references count as "used" in the stale check; for every other list,
  * only non-test code does.
  */
-export const TEST_SUITE_ENV_VARS: string[] = ["KIMCHI_SHOW_OAUTH_PAGE", "PI_MCP_CONFIG_MODE"]
+export const TEST_SUITE_ENV_VARS: string[] = [
+	"KIMCHI_SHOW_OAUTH_PAGE",
+	"PI_MCP_CONFIG_MODE",
+	// stubbed only by the login test suite; nothing in non-test src reads it
+	"KIMCHI_CONFIG_PATH",
+	// literal appears only in tests — oauth-config.ts builds the
+	// region-tagged client-id var dynamically via `${KIMCHI_OAUTH_CLIENT_ID_${regionTag}}`
+	"KIMCHI_OAUTH_CLIENT_ID_US",
+	// consumed by dependencies, referenced only from our tests
+	"PI_MCP_ADAPTER_TEST_AUTH_STORE",
+	"PI_OFFLINE",
+]
