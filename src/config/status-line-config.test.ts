@@ -103,16 +103,16 @@ describe("STATUS_LINE_ELEMENTS", () => {
 		}
 	})
 
-	it("marks lsp, dap, work-pr and memory as defaultVisible (shown unless hidden, no pin needed)", () => {
-		for (const id of ["lsp", "dap", "work-pr", "memory", "shells"] as const) {
+	it("marks work-pr and shells as defaultVisible (shown unless hidden, no pin needed)", () => {
+		for (const id of ["work-pr", "shells"] as const) {
 			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
 			expect(el).toBeDefined()
 			expect(el).toMatchObject({ defaultVisible: true })
 		}
 	})
 
-	it("marks lsp and dap as pin-to-show — hidden by default, opted in via pinned", () => {
-		for (const id of ["lsp", "dap"] as const) {
+	it("marks lsp, dap and memory as pin-to-show — hidden by default, opted in via pinned", () => {
+		for (const id of ["lsp", "dap", "memory"] as const) {
 			const el = STATUS_LINE_ELEMENTS.find((element) => element.id === id)
 			expect(el).toBeDefined()
 			expect(el?.defaultVisible).not.toBe(true)

@@ -132,8 +132,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 	{
 		id: "memory",
 		label: "Memory",
-		description: "Recalled memories in context (shown after first recall)",
-		defaultVisible: true,
+		description: "Recalled/saved memory counts (off by default — pin to show)",
 	},
 ]
 

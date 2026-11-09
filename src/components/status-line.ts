@@ -803,12 +803,12 @@ export const MEMORY_STATUS_KEY = "memory"
  *  an incremental capture commits; grows per session). */
 export const MEMORY_SAVED_STATUS_KEY = "memory-saved"
 
-/** Extension-status-driven like shells: renders the recalled/saved counts
- *  after memory first delivers or captures something, unless the user
- *  opted out via `hidden`. Each half renders only when its value is
- *  present. */
-function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, hidden: boolean): Segment | null {
-	if (hidden) return null
+/** Extension-status-driven like shells, but pinned-only (off by default):
+ *  renders the recalled/saved counts after memory first delivers or
+ *  captures something, only when the user pinned the element. Each half
+ *  renders only when its value is present. */
+function buildMemorySegment(theme: Theme, statusLineData: ReadonlyFooterDataProvider, pinned: boolean): Segment | null {
+	if (!pinned) return null
 	const statuses = statusLineData.getExtensionStatuses()
 	const recalled = Number(statuses.get(MEMORY_STATUS_KEY))
 	const saved = Number(statuses.get(MEMORY_SAVED_STATUS_KEY))
@@ -901,7 +901,7 @@ export function buildStatusLineSegments(
 		buildDapSegment(theme, statusLineData, pinned.has("dap")),
 		buildWorkTreeSegment(theme, statusLineData),
 		buildWorkPrSegment(theme, statusLineData, hidden.has("work-pr")),
-		buildMemorySegment(theme, statusLineData, hidden.has("memory")),
+		buildMemorySegment(theme, statusLineData, pinned.has("memory")),
 		buildAgentsSegment(theme, pinned.has("agents")),
 		buildShellsSegment(theme, statusLineData, hidden.has("shells")),
 	].filter((s): s is Segment => s !== null)
