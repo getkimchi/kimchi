@@ -452,8 +452,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// remember the text so the user message it produces is attributed to
 		// this input (instead of to a queued follow-up) at message_start.
 		// Uncapped on purpose: entries are live expectations — capping would
-		// silently drop the oldest and lose its arming. The list is cleared at
-		// agent_end, so it never holds more than one run's undelivered inputs.
+		// silently drop the oldest and lose its arming. Entries are consumed by
+		// their delivery (exact or positional — exactly one per delivered user
+		// message), so the list cannot outgrow its undelivered inputs.
 		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text])
 	})
 
@@ -469,8 +470,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	//    untouched — exact match;
 	// 3. an input whose text was rewritten after the input event (skill/
 	//    template expansion, a later input handler's transform) — consumed
-	//    positionally; immediate expectations are preferred because every
-	//    pending immediate delivers before every queued follow-up.
+	//    positionally; immediate expectations are preferred because in the
+	//    normal case every pending immediate delivers before every queued
+	//    follow-up (steers inject into the current run; follow-ups deliver
+	//    only after it ends).
 	// A message with no recorded input at all (extension-sourced, e.g. the
 	// ferment plan-confirmation reply, ferment/events.ts) is not advanced or
 	// armed: its direction is not the user's. Harness custom messages
@@ -511,9 +514,8 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			// No follow-up is pending, so this message can only be an idle or
 			// steered prompt's delivery. A rewritten prompt's entry never
 			// text-matches — consume the oldest unconsumed entry positionally:
-			// every user message corresponds to exactly one input, so unconsumed
-			// entries cannot linger past this message and block a follow-up
-			// delivery that arrives before the agent_end reset.
+			// every user message corresponds to exactly one input, so consuming
+			// here keeps the list in lockstep with deliveries.
 			if (recent.length > 0) {
 				recent.shift()
 				recentImmediateInputs.set(sessionId, recent)
@@ -530,12 +532,14 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			queue.splice(0, index + 1)
 		} else if (recent.length > 0) {
 			// No text match anywhere — a rewritten text: consume positionally,
-			// preferring the immediate expectations. Every pending immediate
-			// delivers before every queued follow-up (steers inject into the
-			// current run; follow-ups deliver only after it ends), so a
-			// rewrite's producer is the oldest immediate entry whenever one
-			// exists. A drained follow-up (Esc pull-back, ACP cancel) can leave
-			// a permanently stale queue entry — it must not suppress arming for
+			// preferring the immediate expectations. In the normal case every
+			// pending immediate delivers before every queued follow-up (steers
+			// inject into the current run; follow-ups deliver only after it
+			// ends — a parked steer whose handler outlives the run is the only
+			// exception, and it is caught by exact match), so a rewrite's
+			// producer is the oldest immediate entry whenever one exists. A
+			// drained follow-up (Esc pull-back, ACP cancel) can leave a
+			// permanently stale queue entry — it must not suppress arming for
 			// later rewritten prompts.
 			recent.shift()
 			recentImmediateInputs.set(sessionId, recent)
