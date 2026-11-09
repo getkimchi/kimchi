@@ -1,7 +1,7 @@
 import type { KeybindingsManager } from "@earendil-works/pi-coding-agent"
 import { CustomEditor, type Theme } from "@earendil-works/pi-coding-agent"
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui"
-import { isKittyProtocolActive, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
+import { isKittyProtocolActive, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG } from "../ansi.js"
 
 const CHEVRON_WIDTH = 2
@@ -10,6 +10,12 @@ const PLACEHOLDER_TEXT = "ask anything or type / for commands"
 // biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escapes
 const ANSI_RE = /\x1b\[[^m]*m/g
 const SCROLL_INDICATOR_RE = /^─── ([↑↓] \d+ more )/
+
+function setsEqual(a: Set<number>, b: Set<number>): boolean {
+	if (a.size !== b.size) return false
+	for (const item of a) if (!b.has(item)) return false
+	return true
+}
 
 function rebuildBorder(baseLine: string, targetWidth: number, borderFn: (s: string) => string): string {
 	const raw = baseLine.replace(ANSI_RE, "")
@@ -28,6 +34,21 @@ export class PromptEditor extends CustomEditor {
 	private _pendingImageIndicator: string | null = null
 	private _sessionIndicator: string | null = null
 	private _ideSelectionIndicator: string | null = null
+	/**
+	 * Registered by the clipboard-image extension (via ui.ts). Called with the
+	 * content of a complete bracketed paste before insertion; return true to
+	 * consume it (e.g. a dropped image path rendered as an inline marker).
+	 */
+	onImagePathDrop?: (pastedText: string) => boolean
+	/**
+	 * Registered by the clipboard-image extension (via ui.ts). Fired whenever
+	 * input processing changes the set of `[Image #N]` markers in the draft,
+	 * by ANY edit (backspace, bulk delete, undo, kill-ring yank, typing).
+	 * The extension reconciles its pending drops against the reported set:
+	 * a vanished marker detaches its image (indicator updates immediately),
+	 * a fully restored marker (e.g. undo) re-arms it.
+	 */
+	onImageMarkersEdited?: (presentIds: Set<number>) => void
 
 	constructor(tui: TUI, editorTheme: EditorTheme, keybindings: KeybindingsManager, appTheme: Theme) {
 		super(tui, editorTheme, keybindings)
@@ -107,6 +128,15 @@ export class PromptEditor extends CustomEditor {
 			this.expandHandler()
 			return
 		}
+		const markersBefore = this.imageMarkersPresent()
+		this.dispatchInput(data)
+		const markersAfter = this.imageMarkersPresent()
+		if (!setsEqual(markersBefore, markersAfter)) {
+			this.onImageMarkersEdited?.(markersAfter)
+		}
+	}
+
+	private dispatchInput(data: string): void {
 		// tmux and some terminals send \x1b\r for Shift+Enter. Upstream parses
 		// it as alt+enter when kitty protocol is not active, so app.message.followUp
 		// intercepts it before Editor.handleInput can create a newline. Route it
@@ -118,7 +148,144 @@ export class PromptEditor extends CustomEditor {
 			super.handleInput("\n")
 			return
 		}
+		const isCharBackspace =
+			this.kb.matches(data, "tui.editor.deleteCharBackward") || matchesKey(data, "shift+backspace")
+		const isWordBackspace = this.kb.matches(data, "tui.editor.deleteWordBackward")
+		if ((isCharBackspace || isWordBackspace) && this.deleteTrailingImageMarker(data, isWordBackspace)) return
+		const isCharForwardDelete = this.kb.matches(data, "tui.editor.deleteCharForward")
+		const isWordForwardDelete = this.kb.matches(data, "tui.editor.deleteWordForward")
+		if ((isCharForwardDelete || isWordForwardDelete) && this.deleteHeadingImageMarker(data, isWordForwardDelete)) return
+		if (this.kb.matches(data, "tui.editor.cursorRight") && this.jumpOverImageMarker(data, true)) return
+		if (this.kb.matches(data, "tui.editor.cursorLeft") && this.jumpOverImageMarker(data, false)) return
+		const dropHandler = this.onImagePathDrop
+		if (dropHandler && this.routeBracketedPastes(data, dropHandler)) return
 		super.handleInput(data)
+	}
+
+	/** The set of `[Image #N]` marker numbers currently in the draft. */
+	private imageMarkersPresent(): Set<number> {
+		const ids = new Set<number>()
+		for (const line of this.getLines()) {
+			for (const m of line.matchAll(/\[Image #(\d+)\]/g)) {
+				ids.add(Number(m[1]))
+			}
+		}
+		return ids
+	}
+
+	/**
+	 * Backspace (char- or word-wise) immediately after an `[Image #N]` marker
+	 * deletes the whole marker in one keystroke (mirrors upstream's atomic
+	 * `[paste #N]` deletion — pi-tui's private marker segmentation can't cover
+	 * custom marker formats, so we re-emit a single-character backspace once
+	 * per marker character through upstream's own handler and keep
+	 * cursor/render handling entirely upstream-owned; replaying a
+	 * word-backspace verbatim would stop mid-marker at its inner boundary).
+	 * Detaching the pending image flows through onImageMarkersEdited.
+	 */
+	private deleteTrailingImageMarker(backspaceData: string, isWordBackspace: boolean): boolean {
+		const { line, col } = this.getCursor()
+		if (col === 0) return false
+		const beforeCursor = (this.getLines()[line] ?? "").slice(0, col)
+		const marker = beforeCursor.match(/\[Image #(\d+)\]$/)
+		if (!marker) return false
+		// Word-backspace is replayed as single-char backspaces (\x7f) so the
+		// whole marker goes in one atomic pass instead of stopping at "#1]".
+		// Remapping edge: if \x7f no longer means char-backspace, bail out and
+		// let upstream do the plain word-wise delete instead.
+		const replay = isWordBackspace && this.kb.matches("\x7f", "tui.editor.deleteCharBackward") ? "\x7f" : backspaceData
+		if (isWordBackspace && replay !== "\x7f") return false
+		for (let i = 0; i < marker[0].length; i++) {
+			super.handleInput(replay)
+		}
+		return true
+	}
+
+	/**
+	 * Forward-delete (Del / ctrl+d / alt+d) with the cursor directly before an
+	 * `[Image #N]` marker deletes the whole marker in one keystroke — the
+	 * mirror of deleteTrailingImageMarker. Word-forward (alt+d) is replayed as
+	 * single-char forward-deletes (\x1b[3~) so it cannot stop mid-marker; if
+	 * the user's keybindings moved delete-forward away from that sequence the
+	 * interception bails out and upstream's plain word-wise delete applies.
+	 */
+	private deleteHeadingImageMarker(deleteData: string, isWordForward: boolean): boolean {
+		const { line, col } = this.getCursor()
+		const afterCursor = (this.getLines()[line] ?? "").slice(col)
+		const marker = afterCursor.match(/^\[Image #(\d+)\]/)
+		if (!marker) return false
+		const replay = isWordForward
+			? this.kb.matches("\x1b[3~", "tui.editor.deleteCharForward")
+				? "\x1b[3~"
+				: null
+			: deleteData
+		if (replay === null) return false
+		for (let i = 0; i < marker[0].length; i++) {
+			super.handleInput(replay)
+		}
+		return true
+	}
+
+	/**
+	 * Plain arrow-key motion treats an `[Image #N]` marker as one atom: moving
+	 * right onto a marker lands after it, moving left off a marker lands
+	 * before it (replay of the same cursor input, once per character).
+	 * Shift+arrow selection keeps upstream's char-wise granularity.
+	 */
+	private jumpOverImageMarker(cursorData: string, forward: boolean): boolean {
+		const { line, col } = this.getCursor()
+		const text = this.getLines()[line] ?? ""
+		const marker = forward ? text.slice(col).match(/^\[Image #\d+\]/) : text.slice(0, col).match(/\[Image #\d+\]$/)
+		if (!marker) return false
+		for (let i = 0; i < marker[0].length; i++) {
+			super.handleInput(cursorData)
+		}
+		return true
+	}
+
+	/**
+	 * Offer each complete bracketed paste in `data` to `onImagePathDrop` before
+	 * upstream insertion, preserving segment order: text before the paste is
+	 * processed first, unhandled pastes are re-emitted with their bracket
+	 * escapes intact, and bytes after the paste are processed last.
+	 *
+	 * Returns true when `data` was fully routed (every segment processed, even
+	 * when no paste was consumed). Returns false only when upstream should
+	 * process `data` itself: no paste tokens at all, or an incomplete paste
+	 * (opener without a closer in the same chunk) that upstream's multi-chunk
+	 * buffering must handle unchanged.
+	 */
+	private routeBracketedPastes(data: string, dropHandler: (pastedText: string) => boolean): boolean {
+		const OPEN = "\x1b[200~"
+		const CLOSE = "\x1b[201~"
+		// Tokenize first: any incomplete paste aborts the whole divert so
+		// upstream's multi-chunk buffering handles it unchanged.
+		const segments: { pasted: string | null; text: string }[] = []
+		let rest = data
+		while (rest.length > 0) {
+			const open = rest.indexOf(OPEN)
+			if (open === -1) {
+				segments.push({ pasted: null, text: rest })
+				rest = ""
+				break
+			}
+			const close = rest.indexOf(CLOSE, open + OPEN.length)
+			if (close === -1) return false
+			if (open > 0) segments.push({ pasted: null, text: rest.slice(0, open) })
+			segments.push({ pasted: rest.slice(open + OPEN.length, close), text: "" })
+			rest = rest.slice(close + CLOSE.length)
+		}
+		if (!segments.some((s) => s.pasted !== null)) return false
+		for (const segment of segments) {
+			if (segment.pasted === null) {
+				if (segment.text.length > 0) super.handleInput(segment.text)
+				continue
+			}
+			if (segment.pasted.length === 0 || !dropHandler(segment.pasted)) {
+				super.handleInput(`${OPEN}${segment.pasted}${CLOSE}`)
+			}
+		}
+		return true
 	}
 
 	render(width: number): string[] {
