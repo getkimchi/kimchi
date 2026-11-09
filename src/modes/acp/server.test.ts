@@ -13133,4 +13133,243 @@ describe("ACP token substitution (pii-redaction token mode)", () => {
 		expect(bOut).toBe("b:user-b@acme.com.done")
 		expect(bOut).not.toContain(secretA)
 	})
+
+	const thinkingDelta = (delta: string, contentIndex = 0): AgentSessionEvent => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			delta,
+			contentIndex,
+			partial: {} as unknown as AssistantMessage,
+		},
+		message: {} as unknown as AssistantMessage,
+	})
+
+	const messageEndWithContent = (content: AssistantMessage["content"]): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	const thoughts = (all: SessionNotification[], sessionId: string) =>
+		all
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_thought_chunk")
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	const textsOf = (all: SessionNotification[], sessionId: string, kind: string) =>
+		all
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === kind)
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	it("substitutes thinking deltas and drains a trailing held token at message end", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const vault = vaultForSession("token-a")
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_23]"
+		const token = "[EMAIL_ADDRESS_1]"
+		// Seed the vault's substitution direction directly — allocation order
+		// is irrelevant to what this test asserts.
+		vault.fromToken.set(token, original)
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		// Split across deltas substitutes seamlessly; a token landing at the
+		// very END of the stream is held (it could still extend) and drains
+		// as the block's final thought chunk at message_end.
+		fake.emit(thinkingDelta(`about ${token.slice(0, 6)}`))
+		fake.emit(thinkingDelta(`${token.slice(6)} and `))
+		fake.emit(thinkingDelta(token))
+		fake.emit(messageEndWithContent([{ type: "thinking", thinking: `about ${token} and ${token}` }]))
+		fake.emit(agentEnd())
+
+		expect(thoughts(updates, "token-a").join("")).toBe(`about ${original} and ${original}`)
+		// Thinking never leaks into message chunks.
+		expect(chunks(updates, "token-a")).toEqual([])
+	})
+
+	it("tool-call display substitutes title, rawInput, content, and rawOutput live", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession("token-tools")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", res.sessionId)
+		const vault = vaultForSession(res.sessionId)
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_22]"
+		const token = tokenFor(vault, "EMAIL_ADDRESS", original)
+
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: `mail ${token}` },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: `sent to ${token}` }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		const promptPromise = localAgent.prompt({ sessionId: res.sessionId, prompt: [{ type: "text", text: "go" }] })
+		await vi.waitFor(() => {
+			expect(fake.promptCalls).toHaveLength(1)
+		})
+		await delay(30)
+		fake.emit({ type: "agent_settled", aborted: false })
+		await promptPromise
+
+		const call = updates.find((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")?.update as
+			| { title?: string; rawInput?: { command?: string } }
+			| undefined
+		// Display shows originals; the executed payload keeps its tokens.
+		expect(call?.title).toBe(`mail ${original}`)
+		expect(call?.rawInput?.command).toBe(`mail ${original}`)
+
+		const done = updates
+			.filter(
+				(u) =>
+					u.sessionId === res.sessionId &&
+					u.update.sessionUpdate === "tool_call_update" &&
+					(u.update as { status?: string }).status === "completed",
+			)
+			.map(
+				(u) =>
+					u.update as {
+						content?: Array<{ type: string; text?: string }>
+						rawOutput?: { content?: Array<{ type: string; text?: string }> }
+					},
+			)
+		expect(done).toHaveLength(1)
+		const finished = done[0] as
+			| {
+					content?: Array<{ type: string; content?: { type: string; text?: string } }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		expect(finished?.content?.[0]?.content?.text).toBe(`sent to ${original}`)
+		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
+	})
+
+	it("replay substitutes user, thinking, text, and tool display while the vault lives", async () => {
+		const fake = new FakeAgentSession("token-replay")
+		// Install the vault BEFORE loadSession so replay paints through it.
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-replay")
+		const vault = vaultForSession("token-replay")
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_21]"
+		const token = tokenFor(vault, "EMAIL_ADDRESS", original)
+
+		fake.branch = [
+			userTextEntry(`my mail is ${token}`, "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "thinking", thinking: `user wrote ${token}`, redacted: false },
+					{ type: "text", text: `got it, ${token} noted` },
+					{ type: "toolCall", id: "tc-r1", name: "bash", arguments: { command: `mail ${token}` } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r1", "bash", `sent to ${token}`, false, "tr1", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			// loadSession resolves through sessionLoader, not sessionFactory.
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "token-replay", cwd: "/tmp", mcpServers: [] })
+
+		expect(textsOf(updates, "token-replay", "user_message_chunk").join("")).toBe(`my mail is ${original}`)
+		expect(textsOf(updates, "token-replay", "agent_thought_chunk").join("")).toBe(`user wrote ${original}`)
+		expect(textsOf(updates, "token-replay", "agent_message_chunk").join("")).toBe(`got it, ${original} noted`)
+
+		const call = updates.find((u) => u.update.sessionUpdate === "tool_call")?.update as
+			| { title?: string; rawInput?: { command?: string } }
+			| undefined
+		expect(call?.title).toBe(`mail ${original}`)
+		expect(call?.rawInput?.command).toBe(`mail ${original}`)
+		const done = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { content?: unknown[] }).content !== undefined,
+		)?.update as
+			| {
+					content?: Array<{ type: string; text?: string }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		const finished = done as
+			| {
+					content?: Array<{ type: string; content?: { type: string; text?: string } }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		expect(finished?.content?.[0]?.content?.text).toBe(`sent to ${original}`)
+		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
+	})
+
+	it("replay without a vault (post-restart) renders tokens verbatim", async () => {
+		const fake = new FakeAgentSession("token-replay-dead")
+		const token = "[EMAIL_ADDRESS_7]"
+		fake.branch = [
+			userTextEntry(`my mail is ${token}`, "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "thinking", thinking: `user wrote ${token}`, redacted: false },
+					{ type: "text", text: `got it, ${token} noted` },
+				],
+				"a1",
+				"u1",
+			),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			// loadSession resolves through sessionLoader, not sessionFactory.
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "token-replay-dead", cwd: "/tmp", mcpServers: [] })
+
+		expect(textsOf(updates, "token-replay-dead", "user_message_chunk").join("")).toBe(`my mail is ${token}`)
+		expect(textsOf(updates, "token-replay-dead", "agent_thought_chunk").join("")).toBe(`user wrote ${token}`)
+		expect(textsOf(updates, "token-replay-dead", "agent_message_chunk").join("")).toBe(`got it, ${token} noted`)
+	})
 })

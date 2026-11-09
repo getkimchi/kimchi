@@ -2,10 +2,11 @@
 
 Token mode renders identifier detections (emails, IPs, phones, person and
 URL spans) as stable per-session tokens (`[EMAIL_ADDRESS_1]`,
-`[IP_ADDRESS_2]`) instead of `[REDACTED-EMAIL_ADDRESS]` markers in
-everything the model and the session file see, and substitutes originals
-back only at **presentation boundaries** — the TUI transcript and the ACP
-stream. Token mode is the shipping default everywhere, including
+`[IP_ADDRESS_2]`) instead of `[REDACTED-EMAIL_ADDRESS]` markers in everything
+the model and the session file see, and substitutes originals back only at
+**presentation boundaries** — the TUI transcript (message text, the thinking
+view, tool panes) and the ACP stream (message chunks, thought chunks,
+tool-call display, and replay while the vault lives). Token mode is the shipping default everywhere, including
 org-locked deployments (the org lock pins the resource, never the
 presentation); marker mode survives only as an explicit settings opt-in
 in unlocked deployments and as the settings-error degrade fallback
@@ -60,8 +61,13 @@ cannot return a wrong value — worst case it renders the token verbatim.
 | Telemetry (`pii_redaction.*`) | entity counts | entity counts | identical counts both modes |
 | TUI transcript | markers | **originals** | `registerMarkdownTransformer` sees full text per repaint, stateless substitution |
 | ACP `agent_message_chunk` stream | markers | **originals** | substituted server-side before emission; the client is the user's own IDE — same trust domain as the TUI terminal |
-| Tool-result display panes | markers | tokens | not part of the paint path in v1 |
-| Thinking blocks (visible) | markers | tokens | the patched thinking renderer does not substitute; collapse in v1 |
+| ACP `agent_thought_chunk` stream | markers | **originals** | same per-block desanitizer path as message chunks; a token split across the block's last deltas drains at message end |
+| ACP tool-call display (title, rawInput/rawOutput, content) | markers | **originals** | substituted at emission; the executed payload keeps its tokens. Streaming arg deltas (`rawOutput.delta` previews) degrade to verbatim tokens mid-stream — terminal emissions show originals |
+| ACP replay while the vault lives | markers | **originals** | a same-process attach/load substitutes from the live vault; post-restart replay degrades to tokens (below) |
+| Permission prompts (ACP `session/request_permission`, TUI approval) | markers | tokens | **by design** — an approval decides execution, and what executes is the literal token; showing the original would mislead the approval |
+| Print mode / JSON event stream (`--print`, `--mode json`) | markers | tokens | upstream's print path reads the tokenized session state; no kimchi-side substitution seam exists in v1 — known gap pending an upstream output-transform hook |
+| Tool-result display panes | markers | **originals** | TUI `ToolText`/`toolHeader` and ACP tool-call content substitute at paint/emission; result-text logic (sentinel comparison, error classification) runs on the tokenized source |
+| Thinking blocks (visible) | markers | **originals** | the TUI thinking render and ACP `agent_thought_chunk` both substitute; provider-encrypted thinking (`redacted: true`) has no plaintext to substitute |
 | After process restart | markers | tokens (viewport verbatim) | vault gone; degraded, never wrong |
 
 ## Vault lifetime

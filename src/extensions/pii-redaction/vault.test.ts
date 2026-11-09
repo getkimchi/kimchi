@@ -9,6 +9,7 @@ import {
 	resetTokenVaults,
 	seedTokenCountersFromTexts,
 	substituteTokens,
+	substituteTokensDeep,
 	tokenFor,
 	vaultForPaint,
 	vaultForSession,
@@ -100,6 +101,41 @@ describe("substituteTokens", () => {
 		const b = createTokenVault()
 		const token = tokenFor(a, "EMAIL_ADDRESS", "jane.doe@acme.com")
 		expect(substituteTokens(b, `x ${token}`)).toBe(`x ${token}`)
+	})
+})
+
+describe("substituteTokensDeep", () => {
+	it("substitutes nested strings in plain objects and arrays", () => {
+		const vault = createTokenVault()
+		const email = tokenFor(vault, "EMAIL_ADDRESS", "[EMAIL_ADDRESS_20]")
+		const ip = tokenFor(vault, "IP_ADDRESS", "[IP_ADDRESS_2]")
+		const value = { command: `mail ${email}`, nested: { to: [email, ip], count: 2 } }
+		const out = substituteTokensDeep(vault, value) as typeof value
+		expect(out.command).toBe("mail [EMAIL_ADDRESS_20]")
+		expect(out.nested.to).toEqual(["[EMAIL_ADDRESS_20]", "[IP_ADDRESS_2]"])
+		expect(out.nested.count).toBe(2)
+	})
+
+	it("rebuilds plain objects — the input keeps its tokens", () => {
+		const vault = createTokenVault()
+		const email = tokenFor(vault, "EMAIL_ADDRESS", "[EMAIL_ADDRESS_19]")
+		const value = { command: `mail ${email}` }
+		const out = substituteTokensDeep(vault, value) as typeof value
+		expect(out).not.toBe(value)
+		expect(out.command).toBe("mail [EMAIL_ADDRESS_19]")
+		expect(value.command).toBe(`mail ${email}`)
+	})
+
+	it("passes unknown tokens, markers, and non-object values through", () => {
+		const vault = createTokenVault()
+		tokenFor(vault, "EMAIL_ADDRESS", "[EMAIL_ADDRESS_18]")
+		const date = new Date(0)
+		expect(substituteTokensDeep(vault, "contact [EMAIL_ADDRESS_99]")).toBe("contact [EMAIL_ADDRESS_99]")
+		expect(substituteTokensDeep(vault, null)).toBe(null)
+		expect(substituteTokensDeep(vault, date)).toBe(date)
+		expect(substituteTokensDeep(vault, [{ type: "text", text: "marker [REDACTED-EMAIL_ADDRESS] stays" }])).toEqual([
+			{ type: "text", text: "marker [REDACTED-EMAIL_ADDRESS] stays" },
+		])
 	})
 })
 

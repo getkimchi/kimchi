@@ -10,9 +10,11 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { Container, ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "./pii-redaction/vault.js"
 import { __resetCheckinGate, recordGateBlockedToolCall } from "./todos/checkin-gate.js"
 import {
 	createToolOutputStore,
@@ -36,6 +38,7 @@ import toolRenderingExtension, {
 	summarizeMcpToolInvocationArgs,
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
+	ToolText,
 	toolHeader,
 	withCheckinGateCollapse,
 	withMarkerResolution,
@@ -48,6 +51,49 @@ const OSC133_C = "\x1b]133;C\x07"
 const SGR_RE = new RegExp(`${"\x1b"}\\[[0-9;]*m`, "g")
 
 const stripSgr = (line: string): string => line.replace(SGR_RE, "")
+
+describe("paint substitution (pii-redaction token mode)", () => {
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	// Install the production vault lifecycle and fire its session_start for
+	// one session id — exactly what sets the TUI paint vault (vaultForPaint)
+	// that ToolText/toolHeader consult, without the whole extension.
+	async function paintTokenFor(original: string): Promise<string> {
+		const { api, emit } = createExtensionApi()
+		installVaultLifecycle(api, () => true)
+		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => "paint" } }))
+		const vault = vaultForSession("paint")
+		if (!vault) throw new Error("paint vault missing")
+		return tokenFor(vault, "EMAIL_ADDRESS", original)
+	}
+
+	it("ToolText substitutes vault-known tokens at construction and setText", async () => {
+		const original = "[EMAIL_ADDRESS_14]"
+		const token = await paintTokenFor(original)
+		const view = new ToolText(`out: ${token}`)
+		expect(view.render(60).join("\n")).toContain(`out: ${original}`)
+		view.setText(`more ${token}`)
+		expect(view.render(60).join("\n")).toContain(`more ${original}`)
+	})
+
+	it("toolHeader substitutes the arg summary", async () => {
+		const original = "[EMAIL_ADDRESS_15]"
+		const token = await paintTokenFor(original)
+		const header = toolHeader("bash", `mail ${token}`, plainTheme, "● ")
+		expect(header).toContain(`mail ${original}`)
+		expect(header).not.toContain(token)
+	})
+
+	it("renders tokens verbatim with no vault (markers mode / post-restart)", () => {
+		const view = new ToolText("out: [EMAIL_ADDRESS_99]")
+		expect(view.render(60).join("\n")).toContain("out: [EMAIL_ADDRESS_99]")
+	})
+})
 const plainTheme = {
 	fg: (_name: string, value: string) => value,
 	bold: (value: string) => value,

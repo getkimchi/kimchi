@@ -49,6 +49,7 @@ import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { substituteTokens, vaultForPaint } from "./pii-redaction/vault.js"
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -1000,7 +1001,10 @@ export function toolHeader(tool: string, summary: string, theme: Theme, prefix =
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
 	let result = `${prefix}${label}`
-	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
+	// Display-only token substitution for the arg summary (bash command,
+	// grep pattern, path…): the user sees originals while the executed
+	// payload keeps its tokens.
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", paintText(summary))}`
 	if (timer) result += ` ${theme.fg("dim", timer)}`
 	return result
 }
@@ -1321,6 +1325,20 @@ export function wrapMarkedLine(line: string, width: number): string[] {
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`))
 }
 
+/**
+ * Presentation-side token substitution for tool panes — the same
+ * contract as the pii-redaction markdown transformer (full text,
+ * stateless, every paint): tool result/input panes are NOT part of the
+ * markdown paint path. Unknown tokens pass through verbatim; no vault
+ * (markers mode) → passthrough. Display only — never applied to executed
+ * payloads or to the result text logic (sentinel comparison, error
+ * classification) that runs before this layer.
+ */
+function paintText(text: string): string {
+	const vault = vaultForPaint()
+	return vault ? substituteTokens(vault, text) : text
+}
+
 export class ToolText extends Text {
 	private value = ""
 	private toolCachedValue?: string
@@ -1329,12 +1347,13 @@ export class ToolText extends Text {
 
 	constructor(text = "") {
 		super("", 0, 0)
-		this.value = text
+		this.value = paintText(text)
 	}
 
 	setText(text: string): void {
-		if (this.value === text) return
-		this.value = text
+		const substituted = paintText(text)
+		if (this.value === substituted) return
+		this.value = substituted
 		this.invalidate()
 	}
 

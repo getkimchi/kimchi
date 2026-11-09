@@ -204,6 +204,29 @@ export function substituteTokens(vault: TokenVault, text: string): string {
 	return text.replace(TOKEN_RE, (token) => vault.fromToken.get(token) ?? token)
 }
 
+/**
+ * Deep display substitution: rebuild `value` with every nested string
+ * substituted (arrays recursed, plain objects rebuilt key-for-key; every
+ * other value — numbers, null, class instances like Date — returned as-is,
+ * since rebuilding them would drop their prototype). For display-only
+ * surfaces whose token-bearing strings sit inside JSON argument/result
+ * objects (ACP rawInput/rawOutput). Plain objects are rebuilt rather
+ * than mutated: the in-memory tool args are shared with execution, and
+ * the executed payload must keep its tokens.
+ */
+export function substituteTokensDeep(vault: TokenVault, value: unknown): unknown {
+	if (typeof value === "string") return substituteTokens(vault, value)
+	if (Array.isArray(value)) return value.map((item) => substituteTokensDeep(vault, item))
+	if (value !== null && typeof value === "object") {
+		const proto = Object.getPrototypeOf(value)
+		if (proto !== Object.prototype && proto !== null) return value
+		const out: Record<string, unknown> = {}
+		for (const [key, entry] of Object.entries(value)) out[key] = substituteTokensDeep(vault, entry)
+		return out
+	}
+	return value
+}
+
 // ---------------------------------------------------------------------------
 // Session lifecycle (module-global — the ACP server hosts concurrent
 // sessions in one process, so this state must key by session id and tear
