@@ -77,17 +77,9 @@ export const ENV_VARS: EnvVarDef[] = [
 		description: "Ollama endpoint URL fallback when OLLAMA_HOST is unset",
 	},
 	{
-		name: "KIMCHI_REMOTE_ENDPOINT",
-		description: "Override the platform API URL (defaults to the configured region's endpoint)",
-	},
-	{
 		name: "KIMCHI_BASE_URL",
 		description:
 			"Override the LLM gateway base URL (chat, router, search; wins over the configured region's endpoints)",
-	},
-	{
-		name: "KIMCHI_WEB_APP_URL",
-		description: "Override the web app URL used for login and browser hand-offs",
 	},
 	{
 		name: "KIMCHI_REMOTE_RUN",
@@ -98,64 +90,13 @@ export const ENV_VARS: EnvVarDef[] = [
 		description: "Set to `off` to skip memory capture entirely for the session",
 	},
 	{
-		name: "KIMCHI_MEMORY_DRAIN_CONCURRENCY",
-		description: "Concurrency limit for memory-capture drain jobs (default: 6)",
-	},
-	{
-		name: "KIMCHI_MEMORY_DECISION_GATE",
-		description: "Memory decision gates: `off` disables every gate; a comma subset enables exactly those",
-	},
-	{
-		name: "KIMCHI_FERMENTS_DIR",
-		description: "Override the directory where ferment state is stored",
-	},
-	{
-		name: "KIMCHI_AUTO_GIT_INIT",
-		description: "Set to 1 to run `git init` without prompting in non-interactive ferment flows",
-	},
-	{
-		name: "KIMCHI_SANDBOX",
-		description: "Mark the process as running inside a sandbox cluster (1/true)",
-	},
-	{
-		name: "KIMCHI_PROXY_HELPER",
-		description: "Explicit proxy-helper binary override used by the SSH proxy support",
-	},
-	{
-		name: "KIMCHI_DEBUG_PROMPTS",
-		description: "Enable debug dumps of assembled prompts (set by kimchi when prompt debugging starts)",
-	},
-	{
 		name: "KIMCHI_STREAM_IDLE_TIMEOUT_MS",
 		description: "Idle timeout for outbound HTTP in ms (0 disables; wins over the httpIdleTimeoutMs setting)",
 	},
 
-	// tool-output externalization (docs/memory-residency.md)
-	{
-		name: "KIMCHI_TOOL_OUTPUT_STORE",
-		description: "Set to `off` to disable externalizing tool outputs to disk (residency escape hatch)",
-	},
-	{
-		name: "KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES",
-		description: "Byte threshold above which tool outputs are externalized to disk (default: 65536)",
-	},
-
-	// adaptive idle garbage collection (docs/memory-residency.md)
 	{
 		name: "KIMCHI_IDLE_GC",
 		description: "Set to `off` to disable adaptive idle garbage collection",
-	},
-	{
-		name: "KIMCHI_IDLE_GC_DELAY_MS",
-		description: "Delay (ms) before an adaptive idle GC collection runs",
-	},
-	{
-		name: "KIMCHI_GC_GROWTH_BYTES",
-		description: "Heap growth (bytes) that triggers an adaptive GC collection",
-	},
-	{
-		name: "KIMCHI_GC_MIN_INTERVAL_MS",
-		description: "Minimum interval (ms) between adaptive GC collections",
 	},
 
 	// documents extension (src/extensions/documents)
@@ -194,7 +135,15 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_HOOK_EVENT",
 	"KIMCHI_TOOL_NAME",
 	"KIMCHI_TOOL_INPUT_COMMAND",
+	// dev/staging endpoint overrides (same category as the OAuth overrides below)
+	"KIMCHI_REMOTE_ENDPOINT",
+	"KIMCHI_WEB_APP_URL",
+	// sentinel set by the container orchestrator, not by users
+	"KIMCHI_SANDBOX",
+	// debugging (set by kimchi itself when prompt debugging starts)
+	"KIMCHI_DEBUG_PROMPTS",
 	// internal binary / install plumbing
+	"KIMCHI_PROXY_HELPER",
 	"KIMCHI_QUICKJS_WASM_PATH",
 	"KIMCHI_BRIDGE_BIN_DIR",
 	"KIMCHI_BRIDGE_PREFIX",
@@ -204,6 +153,8 @@ export const IGNORED_ENV_VARS: string[] = [
 	"PI_CODING_AGENT_DIR",
 	"PI_SKIP_VERSION_CHECK",
 	// curator / ferment workflows
+	"KIMCHI_FERMENTS_DIR",
+	"KIMCHI_AUTO_GIT_INIT",
 	"KIMCHI_SESSION_REVIEW",
 	"KIMCHI_REVIEW_THRESHOLD",
 	"KIMCHI_REVIEW_LOG",
@@ -224,6 +175,15 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DISABLE_GUARD_BASH_TOOL",
 	"KIMCHI_DISABLE_GUARD_EXPLORATION",
 	"KIMCHI_DISABLE_GUARD_REVIEW_WRITE",
+	// memory pipeline tuning (src/extensions/memory)
+	"KIMCHI_MEMORY_DRAIN_CONCURRENCY",
+	"KIMCHI_MEMORY_DECISION_GATE",
+	// tool-output residency + adaptive idle-GC tuning (docs/memory-residency.md)
+	"KIMCHI_TOOL_OUTPUT_STORE",
+	"KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES",
+	"KIMCHI_IDLE_GC_DELAY_MS",
+	"KIMCHI_GC_GROWTH_BYTES",
+	"KIMCHI_GC_MIN_INTERVAL_MS",
 	// debugging / pi-mono plumbing
 	"KIMCHI_DEBUG_TOOL_SURFACE",
 	"PI_TELEMETRY",
