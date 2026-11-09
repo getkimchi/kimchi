@@ -14,6 +14,26 @@ function dim(text: string): string {
 const MASKED_VALUE = "****"
 const NOT_SET = "(not set)"
 
+/**
+ * Word-wrap `text` so no line exceeds `width` columns. Long descriptions
+ * (e.g. telemetry's) would otherwise wrap at the terminal edge and land at
+ * column 0, visually breaking out of the description column.
+ */
+function wrapText(text: string, width: number): string[] {
+	const lines: string[] = []
+	let line = ""
+	for (const word of text.split(" ")) {
+		if (line && line.length + 1 + word.length > width) {
+			lines.push(line)
+			line = word
+		} else {
+			line = line ? `${line} ${word}` : word
+		}
+	}
+	if (line) lines.push(line)
+	return lines
+}
+
 function displayValue(def: EnvVarDef): string {
 	const raw = process.env[def.name]
 	// An explicitly empty value is effectively unset — never render it as a
@@ -78,10 +98,20 @@ export async function runEnv(args: string[]): Promise<number> {
 	console.log(bold("Environment variables recognised by kimchi"))
 	console.log()
 	const pad = Math.max(...ENV_VARS.map((v) => v.name.length))
+	// Continuation lines (wrapped descriptions and value lines) align with the
+	// description column, not column 0.
+	const descIndent = `  ${"".padEnd(pad)}  `
+	// Piped output has no terminal width; 80 mirrors the common default.
+	const columns = process.stdout.columns ?? 80
+	const descWidth = Math.max(columns - descIndent.length, 20)
 	for (const def of ENV_VARS) {
-		console.log(`  ${def.name.padEnd(pad)}  ${def.description}`)
+		const [first, ...rest] = wrapText(def.description, descWidth)
+		console.log(`  ${def.name.padEnd(pad)}  ${first}`)
+		for (const cont of rest) {
+			console.log(`${descIndent}${cont}`)
+		}
 		if (showValues) {
-			console.log(`  ${"".padEnd(pad)}  ${displayValue(def)}`)
+			console.log(`${descIndent}${displayValue(def)}`)
 		}
 	}
 	return 0

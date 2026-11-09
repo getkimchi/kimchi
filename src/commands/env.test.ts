@@ -20,11 +20,37 @@ describe("runEnv", () => {
 	it("exits 0 and prints every user-facing variable with its description", async () => {
 		expect(await runEnv([])).toBe(0)
 		const output = logs.join("\n")
+		// Descriptions wrap at the terminal width — flatten wrapped lines before
+		// asserting on the full description text.
+		const flattened = output.replace(/\s*\n\s*/g, " ")
 		for (const def of ENV_VARS) {
 			expect(output, `missing ${def.name}`).toContain(def.name)
-			expect(output, `missing description for ${def.name}`).toContain(def.description)
+			expect(flattened, `missing description for ${def.name}`).toContain(def.description)
 		}
 	})
+
+	it("aligns wrapped description continuations with the description column", async () => {
+		await runEnv(["--values"])
+		const descCol = 2 + Math.max(...ENV_VARS.map((v) => v.name.length)) + 2
+		for (const line of logs) {
+			// Bare console.log() calls land in the mock as "undefined"; the
+			// header sits at column 0. Only entry and continuation rows matter.
+			if (!line.trim() || line === "undefined" || line.includes("Environment variables recognised")) continue
+			const indent = line.length - line.trimStart().length
+			// Each output row is either an entry (variable name, indent 2) or a
+			// wrapped description / value line aligned to the description column.
+			expect([2, descCol], `line "${line.trim().slice(0, 40)}"`).toContain(indent)
+		}
+	})
+
+	/** Value line of a registry entry — skips wrapped description lines. */
+	function valueLineFor(name: string): string {
+		const nameIdx = logs.findIndex((l) => l.includes(name))
+		expect(nameIdx, `entry for ${name}`).toBeGreaterThanOrEqual(0)
+		const valueIdx = logs.findIndex((l, idx) => idx > nameIdx && (/set: /.test(l) || l.includes(NOT_SET)))
+		return valueIdx >= 0 ? logs[valueIdx] : ""
+	}
+	const NOT_SET = "(not set)"
 
 	it("never prints internal/dev variables", async () => {
 		await runEnv([])
@@ -77,9 +103,7 @@ describe("runEnv", () => {
 	it("treats an explicitly empty value as not set — never as a masked secret", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", "")
 		await runEnv(["--values"])
-		const nameIdx = logs.findIndex((l) => l.includes("KIMCHI_API_KEY"))
-		expect(nameIdx).toBeGreaterThanOrEqual(0)
-		const valueLine = logs.slice(nameIdx, nameIdx + 2).join("\n")
+		const valueLine = valueLineFor("KIMCHI_API_KEY")
 		expect(valueLine).toContain("(not set)")
 		expect(valueLine).not.toContain("set: ****")
 	})
@@ -94,9 +118,7 @@ describe("runEnv", () => {
 	it("redacts credentials embedded in URL-valued variables", async () => {
 		vi.stubEnv("KIMCHI_PROXY", "http://[REDACTED-URL_WITH_CREDENTIALS]@proxy.internal:8080")
 		await runEnv(["--values"])
-		const nameIdx = logs.findIndex((l) => l.includes("KIMCHI_PROXY"))
-		expect(nameIdx).toBeGreaterThanOrEqual(0)
-		const valueLine = logs.slice(nameIdx, nameIdx + 2).join("\n")
+		const valueLine = valueLineFor("KIMCHI_PROXY")
 		expect(valueLine).not.toContain("ci-user")
 		expect(valueLine).not.toContain("s3cret-pass")
 		expect(valueLine).toContain("set: http://****@proxy.internal:8080")
