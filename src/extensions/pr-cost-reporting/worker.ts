@@ -5,6 +5,7 @@ import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../au
 import { loadConfig } from "../../config.js"
 import { canonicalPlatformApiUrl } from "../../regions.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
+import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
@@ -16,6 +17,7 @@ import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
+import { legacyInputSignature } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
@@ -30,26 +32,47 @@ import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
+	deadLetterFrozenSnapshot,
 	deferFrozenSnapshot,
+	type FreshReportingState,
+	type FrozenSnapshot,
 	freezeSnapshots,
 	frozenSnapshotPending,
+	HOLD_EXPIRY_MS,
 	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
+	type ReportingState,
 	readReportingState,
+	readReportingStateFresh,
 	recordReportingError,
+	reportingOwnStateHash,
+	reportingOwnWrites,
 	reportingProducer,
+	reportingStateContentHash,
 	reportingStatePath,
+	reportingStateVersion,
+	runWithReportingOwnWrites,
 	type ServerLimit,
 	type SnapshotAck,
 	trimFrozenSnapshot,
+	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
+/** Failed repository-identity lookups wait this long before retrying, inside and outside a pass. */
+const LOOKUP_RETRY_MS = 30_000
+
+/** Cache keys are `[<agentDir>,<repository>]` JSON pairs; this prefix matches every key of one agent
+ * directory (and only that directory — the trailing comma stops "dir" matching "dir2"), so deadline
+ * scans never need the repository half of a key. Keep it in lockstep with the `cacheKey` builder. */
+function agentCacheKeyPrefix(agentDir: string): string {
+	return `[${JSON.stringify(agentDir)},`
+}
 const RESPONSE_BYTES = 64 * 1024
 /** How often the reporting state file is stat-polled for a mid-pass opt-out. */
 const OPT_OUT_POLL_MS = 250
@@ -109,13 +132,13 @@ function safeEndpoint(value: string): boolean {
 }
 
 /** Both transports share the same cancellation, opt-out polling and lease boundary. */
-async function reportingDelivery(
+async function reportingDelivery<T>(
 	agentDir: string,
 	signal: AbortSignal,
 	assertLease: () => void,
 	deadline: number,
-	deliver: (signal: AbortSignal, check: () => void) => Promise<void>,
-): Promise<void> {
+	deliver: (signal: AbortSignal, check: () => void) => Promise<T>,
+): Promise<T> {
 	const controller = new AbortController()
 	const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()))
 	timer.unref()
@@ -155,12 +178,43 @@ async function reportingDelivery(
 		poller = startStatPoller(statePath, OPT_OUT_POLL_MS, reread)
 	} catch {}
 	try {
-		await deliver(combined, check)
+		return await deliver(combined, check)
 	} finally {
 		controller.abort()
 		poller?.stop()
 		poller = undefined
 		clearTimeout(timer)
+	}
+}
+
+/** The due-relevant fields of a frozen row — pass gates reproduce the delivery loop's selection from them. */
+export interface FrozenDueMeta {
+	/** The frozen row's own id: one pass can carry several rows of one key, so marks key on it. */
+	id: string
+	key: string
+	account: string
+	held: boolean
+	/** The body was dead-lettered and no retry will ever select it again. */
+	dead: boolean
+	hasContent: boolean
+	urgent: boolean
+	retryAt: number
+	uploadedAt?: number
+}
+
+function frozenDueMeta(job: FrozenSnapshot): FrozenDueMeta {
+	return {
+		id: job.id,
+		key: job.key,
+		account: accountKey(job.entry.account),
+		held: job.entry.held === true,
+		dead: job.entry.dead !== undefined,
+		// Mirrors the delivery loop's pause skip word for word: a body with zero requests and zero
+		// pull requests withdraws nothing, so it goes out even on a paused account.
+		hasContent: (job.entry.pending?.requests.length ?? 0) > 0 || (job.entry.pending?.pullRequests.length ?? 0) > 0,
+		urgent: job.entry.urgent === true,
+		retryAt: job.entry.retryAt,
+		uploadedAt: job.entry.uploadedAt,
 	}
 }
 
@@ -171,11 +225,17 @@ export function deliverSnapshots(
 	signal: AbortSignal,
 	assertLease: () => void,
 	deadline = Date.now() + PASS_MS,
-): Promise<void> {
+): Promise<{ frozen: FrozenDueMeta[]; paused: { account: string; retryAt: number }[] } | undefined> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const state = await freezeSnapshots(agentDir, check)
-		if (!state.enabled) return
+		if (!state.enabled) return undefined
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
+		// Pass-scoped signature cache: every durable write renames the file, so an unchanged
+		// (mtime, size, ino) means the parse is still current and the mega-byte reread is skipped.
+		// Seeded without a signature: stat seeding would pair the freeze pass's state with a
+		// signature read after it, hiding a write that landed between the two, so the first
+		// HTTP call binds state+signature itself.
+		let queueFile: FreshReportingState = { state }
 		/** The configured credential: API key, or the SSO token from auth.json. */
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
@@ -196,18 +256,35 @@ export function deliverSnapshots(
 			)
 		const now = Date.now()
 		// Withdrawals free space, so an account-wide limit only holds snapshots that add claims.
-		const paused = new Set(
+		// The map carries each pause's deadline so the pass-gate stamp can absorb pauses this pass
+		// learned mid-flight — a pass-start snapshot of `state.paused` would miss them and the gate
+		// would re-open the full pass for sibling rows of the paused account until the pause thawed.
+		const paused = new Map(
 			Object.entries(state.paused ?? {})
 				.filter(([, pause]) => pause.retryAt > now)
-				.map(([account]) => account),
+				.map(([account, pause]) => [account, pause.retryAt] as const),
 		)
+		// Attempt outcomes, recorded as they happen: the row's new retry deadline and its
+		// new uploadedAt (both moves stamp the upload-window clock the due filter reads),
+		// or null when the row is gone (acknowledged or replaced mid-flight) and stops being
+		// due. The stamp derives its post-attempt picture from these; re-reading the whole
+		// queue after delivery would mean a second full parse of every frozen body per pass.
+		// UploadedAt is THIS side's attempt time; the queue's internal timestamp may lag a
+		// millisecond — immaterial against a five-minute window, and never a risk of over-close.
+		// Marks key on the frozen row id: a legacy replacement leaves several pending rows of one
+		// key in a single pass, and their outcomes must not overwrite each other.
+		const dueMarks = new Map<string, { retryAt: number; uploadedAt?: number; dead?: boolean } | null>()
 
 		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
 		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
 		const due = frozen
-			.filter(
-				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
-			)
+			.filter(({ key, entry }) => {
+				const live = state.entries[key] ?? entry
+				// A settled body is refused by the server as long as its bytes are: neither the live
+				// entry's own mark nor an older frozen note's mark ever selects for delivery again.
+				const dead = live.dead !== undefined || entry.dead !== undefined
+				return !live.held && !dead && entry.retryAt <= now && !inUploadWindow(entry, now)
+			})
 			.sort((a, b) => {
 				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
 				if (priority) return priority
@@ -219,6 +296,18 @@ export function deliverSnapshots(
 				return revision < 0n ? -1 : revision > 0n ? 1 : a.entry.retryAt - b.entry.retryAt
 			})
 		let attempts = 0
+		// One account verification per pass for the configured credential; a multi-entry queue
+		// sends api-keys:verify once, not once per upload attempt. The result is keyed on the
+		// credential so a mid-pass change re-verifies instead of reusing the stale verdict.
+		let passVerify:
+			| {
+					key: string
+					apiUrl: string
+					result:
+						| { ok: { apiUrl: string } & Awaited<ReturnType<typeof verifyApiKey>> }
+						| { status: number | undefined; retryAfterMs: number | null; message: string }
+			  }
+			| undefined
 		for (const job of due) {
 			const entry = job.entry
 			const snapshot = entry.pending
@@ -252,7 +341,9 @@ export function deliverSnapshots(
 
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
-				const current = await readReportingState(agentDir)
+				const fresh = await readReportingStateFresh(agentDir, queueFile)
+				queueFile = fresh
+				const current = fresh.state
 				assertCurrent()
 				if (!current.enabled || current.entries[job.key]?.held || !frozenSnapshotPending(agentDir, job))
 					throw new Error("PR reporting snapshot changed")
@@ -276,16 +367,34 @@ export function deliverSnapshots(
 				return bounded
 			}
 			try {
-				const verified = {
-					apiUrl,
-					...(await verifyApiKey(key, {
-						endpoint: apiUrl,
-						organizationId,
-						fetch: fetchBounded,
-						signal: combined,
-						retry: { maxRetries: 0 },
-					})),
-				}
+				let verified: { apiUrl: string } & Awaited<ReturnType<typeof verifyApiKey>>
+				if (passVerify?.key === key && passVerify.apiUrl === apiUrl && "ok" in passVerify.result)
+					verified = passVerify.result.ok
+				else if (passVerify?.key === key && passVerify.apiUrl === apiUrl && !("ok" in passVerify.result)) {
+					status = passVerify.result.status
+					retryAfterMs = passVerify.result.retryAfterMs
+					errorMessage = passVerify.result.message
+					throw new Error(errorMessage)
+				} else
+					try {
+						verified = {
+							apiUrl,
+							...(await verifyApiKey(key, {
+								endpoint: apiUrl,
+								organizationId,
+								fetch: fetchBounded,
+								signal: combined,
+								retry: { maxRetries: 0 },
+							})),
+						}
+						passVerify = { key, apiUrl, result: { ok: verified } }
+					} catch {
+						// Only an HTTP-level failure is credential-scoped and safe to replay within the pass;
+						// a throw from the per-job state guard (held/replaced/trimmed) belongs to this entry alone.
+						if (status !== undefined && !combined.aborted && !signal.aborted)
+							passVerify = { key, apiUrl, result: { status, retryAfterMs, message: errorMessage } }
+						throw new Error(errorMessage)
+					}
 				assertCurrent()
 				if (!isWorkAccount(verified) || !sameWorkAccount(entry.account, verified)) {
 					errorMessage = "PR reporting is waiting for the original account"
@@ -312,6 +421,7 @@ export function deliverSnapshots(
 				const ack: SnapshotAck = await response.json()
 				assertCurrent()
 				await acknowledgeFrozenSnapshot(agentDir, job, ack, assertCurrent)
+				dueMarks.set(job.id, null)
 				trackPRCostMetric({ kind: "delivery", outcome: "success" })
 			} catch {
 				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
@@ -330,32 +440,95 @@ export function deliverSnapshots(
 						return true
 					}
 				}
-				if (gone()) continue
+				if (gone()) {
+					dueMarks.set(job.id, null)
+					continue
+				}
+				// Settled rows are kept for the record but are never due again: the stamp carries
+				// the dead flag instead of any retry deadline.
+				const settle = async () => {
+					await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+					dueMarks.set(job.id, { retryAt: 0, dead: true })
+				}
 				try {
 					if (limit) {
-						await limitFrozenSnapshot(agentDir, job, limit, Date.now() + jitter(LIMIT_RETRY_MS), assertOwnership)
-						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.add(accountKey(entry.account))
+						const attemptedAt = Date.now()
+						const limitRetryAt = attemptedAt + jitter(LIMIT_RETRY_MS)
+						await limitFrozenSnapshot(agentDir, job, limit, limitRetryAt, assertOwnership)
+						dueMarks.set(job.id, { retryAt: limitRetryAt, uploadedAt: attemptedAt })
+						if (limit.scope && ACCOUNT_SCOPES.includes(limit.scope)) paused.set(accountKey(entry.account), limitRetryAt)
 						else if (limit.scope === "snapshot" && limit.limit === "bytes") {
 							// The server's own byte cap rejected this body; trim it to the cap it stated, so the
 							// retry carries a body the server can accept instead of resending it for hours.
-							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
+							// A successful trim REPLACES the row entirely (due immediately: attempts and the
+							// window clock reset) — overwrite any earlier mark with that reality.
+							if (await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)) dueMarks.set(job.id, { retryAt: 0 })
 						}
-					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
-						// The server rejected this body for its size; the next pass retries the halved one.
-					} else
+					} else if (uploadAttempted && status === 410) {
+						// Explicitly gone: the server cannot say this about a missing route; settle.
+						await settle()
+					} else if (uploadAttempted && status === 404 && (entry.defer404s ?? 0) >= 2) {
+						// The third spaced 404: a durable deletion. A single 404 can be an undeployed
+						// or rolled-back /pr-cost-snapshots route while api-keys:verify still answers,
+						// and those windows last minutes, so a lone 404 must never settle the queue
+						// tail — it falls through to the normal defer below. defer404s counts only
+						// consecutive 404 answers (any other defer resets it), so a count of 2 here
+						// means this is the third spaced refusal of the same body; unrelated defers
+						// (timeouts, 5xx) never push a body toward settlement.
+						await settle()
+					} else if (uploadAttempted && status === 413) {
+						if (await trimFrozenSnapshot(agentDir, job, assertOwnership))
+							// The server rejected this body for its size; its halved replacement is due
+							// immediately (attempts and the window clock reset).
+							dueMarks.set(job.id, { retryAt: 0 })
+						else {
+							// Halving reached its floor and the server still refuses the size: settle
+							// the body instead of deferring the same refusal forever.
+							await settle()
+						}
+					} else {
+						const attemptedAt = Date.now()
+						const nextRetryAt = attemptedAt + retryDelay(status, entry.attempts, retryAfterMs)
 						await deferFrozenSnapshot(
 							agentDir,
 							job,
-							Date.now() + retryDelay(status, entry.attempts, retryAfterMs),
+							nextRetryAt,
 							errorMessage,
 							assertOwnership,
+							uploadAttempted && status === 404,
 						)
+						dueMarks.set(job.id, { retryAt: nextRetryAt, uploadedAt: attemptedAt })
+					}
 				} catch (error) {
-					if (gone()) continue
+					if (gone()) {
+						dueMarks.set(job.id, null)
+						continue
+					}
 					throw error
 				}
 			}
 		}
+		// Attempts above moved retry bookkeeping on the rows the pass started with: the stamp must
+		// carry POST-attempt due times — otherwise every failing entry's stale retryAt would re-open
+		// on the next tick and a failing queue would never sleep between attempts. The post-attempt
+		// picture is derived, not re-read: each attempt's new deadline was computed by this loop,
+		// acknowledged/replaced rows drop out, and rows never attempted keep the pass-start picture.
+		// The paused accounts ride along (deadline included) so the stamp can absorb mid-pass pauses.
+		const delivered = frozen
+			.map((row) => frozenDueMeta(row))
+			.filter((meta) => dueMarks.get(meta.id) !== null)
+			.map((meta) => {
+				const mark = dueMarks.get(meta.id)
+				return mark
+					? {
+							...meta,
+							retryAt: mark.retryAt,
+							uploadedAt: mark.uploadedAt,
+							dead: mark.dead ?? meta.dead,
+						}
+					: meta
+			})
+		return { frozen: delivered, paused: [...paused].map(([account, retryAt]) => ({ account, retryAt })) }
 	})
 }
 
@@ -369,6 +542,8 @@ export function deliverEvents(
 ): Promise<void> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const backend = backendFor(agentDir)
+		// Pass-scoped signature cache; details at the snapshots deliver path below the events loop.
+		let queueFile: FreshReportingState = {}
 		for (let attempt = 0; attempt < 3; attempt++) {
 			check()
 			const due = readOutboxStatus(agentDir).filter(
@@ -410,7 +585,9 @@ export function deliverEvents(
 			}
 			const fetchBounded: typeof fetch = async (input, init) => {
 				assertCurrent()
-				const current = await readReportingState(agentDir)
+				const fresh = await readReportingStateFresh(agentDir, queueFile)
+				queueFile = fresh
+				const current = fresh.state
 				assertCurrent()
 				if (!current.enabled) throw new Error("PR reporting is disabled")
 				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
@@ -558,6 +735,156 @@ export function deliverEvents(
 
 const CAPTURE_FAILED = "PR reporting could not capture a complete inventory; previous reports were retained"
 
+/**
+ * Pass gate: an unchanged, not-due tick costs one file stat plus cheap ledger counters instead of a
+ * full freeze + capture + deliver cycle (which reads and deep-validates a queue of up to 24 MiB).
+ * The signature covers every input a pass consumes:
+ * - state.json's sidecar version: every writer — this process or another session — bumps a tiny
+ *   monotonic counter next to it on every real change (queueing, acknowledgements, opt-outs,
+ *   delivery bookkeeping, frozen-trim rewrites). The stamp is pass-start version plus this
+ *   process's own bump count, so a pass's own writes never re-open it and any other writer does.
+ *   Raw content-identical rewrites never bump it (update() never writes those at all).
+ * - recordCount: ledger rows appended by capture between ticks, in any process.
+ * - dirtyWorks: a flagged projection forces repair regardless of row count.
+ * - dataVersion: PRAGMA data_version plus an own-commit counter — any ledger write in ANY process
+ *   (receipts, outbox schedule notes, frozen-trim writes) moves it; this connection's own writes are
+ *   counted explicitly (ownCommits) because Bun:sqlite never bumps the pragma for same-connection
+ *   commits, so the sum is the only way both directions move the marker.
+ * - legacy journal stat identity: imported only inside passes, so it must open the gate itself.
+ * Time is the remaining input, and the snapshot due filter (worker.ts `due`) reads exactly the
+ * fields FrozenDueMeta and the stamp-time holds carry: held, dead, retryAt, urgency, the warm
+ * upload-window fields and account pauses — plus the earliest hold deadline queueSnapshots
+ * releases, stamped so a quiet tick still wakes for it. Frozen rows are content-addressed and every row mutation
+ * rides through queue.ts's update() (state.json) or a ledger commit (dataVersion), so a stamped
+ * gate cannot go stale behind a matching signature. Only isTelemetryEnabled is consulted live: an
+ * in-session toggle changes reporting duty without touching any file or ledger.
+ */
+interface PassGate {
+	signature: string
+	frozen: FrozenDueMeta[]
+	/** Held flag per queue key at the last sweep — the live key wins over frozen metadata. */
+	liveHeld: Record<string, boolean>
+	/** Dead-lettered flag per queue key at the last sweep — the live key wins over frozen metadata. */
+	liveDead: Record<string, boolean>
+	/** Earliest hold deadline; when it passes the freeze sweep releases the hold, so the pass opens. */
+	nextHoldExpiryAt?: number
+	/** Account pauses at the last sweep (retryAt thaws by clock, so frozen stamps stay exact). */
+	pauses: { account: string; retryAt: number }[]
+	/** Failed repository-identity lookups live only in repositoryCache; the next retry opens the pass. */
+	nextLookupRetryAt?: number
+	/** A pass that ran out of time leaves its changed records marked; translation continues next pass. */
+	captureDone: boolean
+	/** Next scheduled event-upload time across still-open outbox accounts (their own backoff note). */
+	eventsRetryAt?: number
+	enabled: boolean
+	followsTelemetry: boolean
+}
+const passGates = new Map<string, PassGate>()
+
+/** The ledger slots of a probe: every writer rides through the reconcile lease, so they read live. */
+function probeLedgerSlots(agentDir: string): string {
+	const backend = backendFor(agentDir)
+	return [
+		// Records are insert-only, so the rowid watermark tracks appends O(1) where COUNT(*) was O(n).
+		backend.recordWatermark(),
+		backend.dataVersion(),
+		backend.dirtyWorks().length,
+	].join(":")
+}
+
+/** True when this stamp says any frozen snapshot could match the delivery loop's selection this tick. */
+function gateHasDue(gate: PassGate, now: number): boolean {
+	const enabled = gate.followsTelemetry ? isTelemetryEnabled() : gate.enabled
+	if (!enabled) return false
+	if (gate.nextLookupRetryAt !== undefined && now >= gate.nextLookupRetryAt) return true
+	if (!gate.captureDone) return true
+	if (gate.eventsRetryAt !== undefined && now >= gate.eventsRetryAt) return true
+	if (gate.nextHoldExpiryAt !== undefined && now >= gate.nextHoldExpiryAt) return true
+	const paused = new Set(gate.pauses.filter((pause) => pause.retryAt > now).map((pause) => pause.account))
+	for (const meta of gate.frozen) {
+		// Mirrors the delivery loop's `due` pick and its per-attempt account-pause skip: a held key or a
+		// paused account with claims never goes out, anything else due re-opens the pass.
+		const held = gate.liveHeld[meta.key] ?? meta.held
+		const dead = meta.dead || gate.liveDead[meta.key] === true
+		if (held || dead || (paused.has(meta.account) && meta.hasContent)) continue
+		const inWindow =
+			!meta.urgent &&
+			meta.uploadedAt !== undefined &&
+			meta.uploadedAt <= now &&
+			now - meta.uploadedAt < UPLOAD_INTERVAL_MS
+		if (meta.retryAt <= now && !inWindow) return true
+	}
+	return false
+}
+
+/**
+ * Stamp-time picture of a sweep: the signature of what the pass actually consumed (NOT a fresh probe —
+ * a write landing mid-pass must reopen the next tick, and a post-pass probe would silently absorb it),
+ * plus every held/pause/enabled field gateHasDue reads.
+ */
+async function passGateStamp(
+	agentDir: string,
+	state: ReportingState,
+	frozen: FrozenDueMeta[],
+	signature: string,
+	// Accounts this pass paused mid-flight (not yet in the pass-start `state`): without them the
+	// stamp's pause list is stale by exactly the passes that learned a pause, and sibling rows of
+	// the paused account re-open the full pass on every tick until the pause thaws.
+	midPassPauses: { account: string; retryAt: number }[],
+): Promise<PassGate> {
+	// Failed lookups (no resolved identity, not permanently unsupported) retry at checkedAt +
+	// LOOKUP_RETRY_MS, from the same skip window repositoryIdentities applies inside a pass.
+	const prefix = agentCacheKeyPrefix(agentDir)
+	let nextLookupRetryAt: number | undefined
+	for (const [key, cached] of repositoryCache)
+		if (key.startsWith(prefix) && cached.value === undefined && cached.unsupported !== true) {
+			const retryAt = cached.checkedAt + LOOKUP_RETRY_MS
+			if (nextLookupRetryAt === undefined || retryAt < nextLookupRetryAt) nextLookupRetryAt = retryAt
+		}
+	let eventsRetryAt: number | undefined
+	let unstampedOutbox = false
+	for (const status of readOutboxStatus(agentDir)) {
+		// An open account without a backoff note says "attempt now": keep opening until one appears.
+		if ((status.sendable > 0 || status.batches > 0) && !status.retry) unstampedOutbox = true
+		if (status.retry && (eventsRetryAt === undefined || status.retry.retryAt < eventsRetryAt))
+			eventsRetryAt = status.retry.retryAt
+	}
+	let nextHoldExpiryAt: number | undefined
+	// Only a hold with a parked body can wake something up; the freeze sweep releases those.
+	for (const entry of Object.values(state.entries))
+		if (
+			entry.heldAt !== undefined &&
+			(entry.pending !== undefined || entry.pendingId !== undefined) &&
+			entry.dead === undefined
+		) {
+			// A settled entry can never deliver from a wakeup: it must not hold the gate open.
+			const expires = entry.heldAt + HOLD_EXPIRY_MS
+			if (nextHoldExpiryAt === undefined || expires < nextHoldExpiryAt) nextHoldExpiryAt = expires
+		}
+	return {
+		signature,
+		frozen,
+		liveHeld: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.held === true])),
+		liveDead: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.dead !== undefined])),
+		nextHoldExpiryAt,
+		// Mid-pass pauses win over the pass-start snapshot: their deadline is the newer verdict.
+		pauses: [
+			...midPassPauses,
+			...Object.entries(state.paused ?? []).map(([account, pause]) => ({ account, retryAt: pause.retryAt })),
+		].filter((pause, index, all) => all.findIndex((other) => other.account === pause.account) === index),
+		nextLookupRetryAt,
+		captureDone: backendFor(agentDir).markedRecords().length === 0,
+		eventsRetryAt: unstampedOutbox ? Number.NEGATIVE_INFINITY : eventsRetryAt,
+		enabled: state.enabled,
+		followsTelemetry: state.followsTelemetry === true,
+	}
+}
+
+/** Test hook: drop pass-gate records (does not touch on-disk state). */
+export function resetReportingPassGates(): void {
+	passGates.clear()
+}
+
 /** Runs after local pricing, under the existing reconciliation lease, in sessions that may upload. */
 export async function reconcileReporting(
 	agentDir: string,
@@ -565,24 +892,90 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
-	const state = await freezeSnapshots(agentDir, () => {
-		assertLease()
-		signal.throwIfAborted()
+	const versionBefore = reportingStateVersion(agentDir)
+	const ownBefore = reportingOwnWrites(agentDir)
+	// Legacy journals are imported only inside passes, so their stat identity opens the gate itself;
+	// without it a torn-append repair or a late-arriving record could wait forever.
+	const journalBefore = legacyInputSignature(agentDir)
+	// The state slot unions the sidecar version with the file's content hash: the sidecar is bumped
+	// only by writers running this code, so an older build sharing the agentDir (a staggered
+	// rollout, or a legacy external writer) can rewrite state.json without moving it. The hash opens
+	// for changed foreign bytes of any vintage while a content-identical rewrite keeps the gate
+	// asleep; own writes absorb through the post-pass recompute below.
+	const stateBefore = await reportingStateContentHash(agentDir)
+	const signatureBefore = [versionBefore, stateBefore ?? "", probeLedgerSlots(agentDir), journalBefore].join(":")
+	const gate = passGates.get(agentDir)
+	// Nothing moved and nothing could go out: this tick delays nothing by skipping its cycle.
+	if (gate?.signature === signatureBefore && !gateHasDue(gate, Date.now())) return
+	// Only writes from inside this pass's own async context are absorbed into the stamp below; a
+	// same-process write arriving anywhere else (command handler, another session) re-opens the
+	// next tick normally.
+	return runWithReportingOwnWrites(agentDir, async () => {
+		const state = await freezeSnapshots(agentDir, () => {
+			assertLease()
+			signal.throwIfAborted()
+		})
+		if (!state.enabled) {
+			// The sweep's own migration writes (which run even while disabled) are absorbed like the
+			// enabled path — version delta plus the hash of what this pass itself last wrote; with no
+			// own write the pre-pass hash stands, so any foreign change re-opens. The stamp's content
+			// lands before the ledger read: its outbox repair may commit to the ledger itself.
+			// The disabled path never delivers, so no pause can be learned mid-flight: `[]`.
+			const stamp = await passGateStamp(agentDir, state, [], "", [])
+			passGates.set(agentDir, {
+				...stamp,
+				signature: [
+					versionBefore + (reportingOwnWrites(agentDir) - ownBefore),
+					reportingOwnStateHash(agentDir) ?? stateBefore ?? "",
+					probeLedgerSlots(agentDir),
+					journalBefore,
+				].join(":"),
+			})
+			return
+		}
+		try {
+			await captureEvents(agentDir, signal, assertLease)
+		} catch {
+			if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
+		}
+		// Reports already queued go out with their own time even when this pass could not capture a new inventory.
+		if (signal.aborted) return
+		let delivered: Awaited<ReturnType<typeof deliverSnapshots>> | undefined
+		try {
+			delivered = await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+			await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+		} catch {
+			if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
+		}
+		// Stamp only a completed, quiet sweep: a failed or aborted pass leaves the next tick fully open.
+		// A still-open outbox no longer blocks the stamp — its own backoff note reopens the gate when due.
+		if (delivered !== undefined && !signal.aborted) {
+			// The stamp absorbs exactly what THIS process wrote during the pass: the version slot starts
+			// from pass start plus this process's own state.json bumps, so a failing entry's own retry
+			// bookkeeping does not re-open the very next tick — but any other session's bump differs
+			// from the stamp and re-opens exactly once, and a foreign journal append rides its own
+			// stat slot the same way. Ledger slots read live post-pass: their writers all ride this
+			// same reconcile lease, so nothing they track can be moved by anyone else mid-pass.
+			// passGateStamp's own outbox repair may commit to the ledger itself: stamp the content
+			// first, THEN read the ledger slots — every writer this process could be is ordered before.
+			// The paused accounts the pass learned mid-flight ride into the stamp too: without them
+			// the gate would treat sibling rows of a just-paused account as due and re-open the full
+			// pass on every tick until the pause thaws.
+			const stamp = await passGateStamp(agentDir, state, delivered.frozen, "", delivered.paused)
+			// The state slot hashes what THIS pass last wrote when it wrote (any foreign bytes landing
+			// after that write differ from the stamp and re-open); with no own write the pre-pass hash
+			// stands, so any on-disk change still re-opens. Re-reading the file instead would absorb a
+			// foreign write that lands between the pass's last write and the hash computation.
+			const stateAfter = reportingOwnStateHash(agentDir) ?? stateBefore
+			const signatureAfter = [
+				versionBefore + (reportingOwnWrites(agentDir) - ownBefore),
+				stateAfter ?? "",
+				probeLedgerSlots(agentDir),
+				journalBefore,
+			].join(":")
+			passGates.set(agentDir, { ...stamp, signature: signatureAfter })
+		}
 	})
-	if (!state.enabled) return
-	try {
-		await captureEvents(agentDir, signal, assertLease)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, CAPTURE_FAILED)
-	}
-	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
-	if (signal.aborted) return
-	try {
-		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
-		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
-	} catch {
-		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
-	}
 }
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
@@ -814,7 +1207,7 @@ async function repositoryIdentities(
 	)) {
 		const key = cacheKey(repository)
 		const cached = repositoryCache.get(key)
-		if (cached?.value || cached?.unsupported || (cached && Date.now() - cached.checkedAt < 30_000)) continue
+		if (cached?.value || cached?.unsupported || (cached && Date.now() - cached.checkedAt < LOOKUP_RETRY_MS)) continue
 		// Reserve time to persist and deliver known groups even when discovery is slow.
 		if (Date.now() >= deadline - 2000) break
 		check()
