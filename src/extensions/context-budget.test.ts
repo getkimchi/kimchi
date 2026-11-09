@@ -84,17 +84,19 @@ const BUDGET = {
 	 *  and is measured by the print slice below); ~1% headroom over
 	 *  measured 6225 after pi 1.3.0 grew the upstream builtin tool
 	 *  definitions again (master measured 5938 on 0.85).
+	 *  Measured 5108 across the 13-tool canonical set after the todos
+	 *  surface collapsed six verbs (+the two-tool intermediate) into one
+	 *  edit/full-list/confirm `todos` tool; ~4% headroom pinned below.
 	 *  Dev
 	 *  sessions in a repo WITH a detected language server will exceed this by
 	 *  the five gated lsp_* tools — that is by design, see LSP_TOOL_NAMES in
 	 *  lsp.ts. */
-	toolSurface: 6350,
-	/** Print-mode slice (17 tools — the canonical surface minus questionnaire,
-	 *  which the registration gates drop in headless --print
-	 *  runs; includes the redesigned bash_control schema, the confirm_todos
-	 *  check-in tool, and the document-support growth in the checks tool; ~2%
-	 *  headroom over measured 5582 after pi 1.3.0). */
-	printToolSurface: 5700,
+	toolSurface: 5300,
+	/** Print-mode slice (12 tools — the canonical surface minus questionnaire
+	 *  and set_phase, which the registration gates drop in headless --print
+	 *  runs; includes the redesigned bash_control schema and document-support
+	 *  growth in the checks tool; ~3% headroom over measured 4482). */
+	printToolSurface: 4600,
 	/** Per-tool cap: any single tool above this many est tokens must be deliberate. */
 	singleTool: 1400,
 }
@@ -264,12 +266,7 @@ describe("context budget", () => {
 				"grep",
 				"find",
 				"ls",
-				"create_todos",
-				"update_todos",
-				"mark_todo",
-				"add_todo",
-				"clear_todos",
-				"confirm_todos",
+				"todos",
 				"web_search",
 				"web_fetch",
 				"questionnaire",
@@ -313,10 +310,10 @@ describe("context budget", () => {
 		const { tools } = await withPrintGate({ print: true }, () => measureCanonicalToolSurface())
 
 		const names = new Set(tools.map((tool) => tool.name))
-		// The interactive surface is the canonical tool set above; in print mode
-		// the registration gate must remove questionnaire.
+		// The interactive surface is the canonical 13-tool set above; in print mode
+		// the registration gates remove questionnaire and set_phase.
 		expect(names.has("questionnaire"), "questionnaire must be gated out of --print sessions").toBe(false)
-		expect(tools.length).toBe(17)
+		expect(tools.length).toBe(12)
 
 		const total = tools.reduce((sum, tool) => sum + tool.tokensEstimated, 0)
 		expect(

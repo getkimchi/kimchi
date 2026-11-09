@@ -73,7 +73,7 @@
 	},
 	{
 		"tool": "edit",
-		"message": "⏸ Todo check-in pending (input revision 1). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, pa",
+		"message": "⏸ Todo check-in pending (input revision 1). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obso",
 		"expect": {
 			"kind": "blocked",
 			"message": "Todo check-in gate"
@@ -81,7 +81,7 @@
 	},
 	{
 		"tool": "bash",
-		"message": "⏸ Todo check-in pending (input revision 2). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, pa",
+		"message": "⏸ Todo check-in pending (input revision 2). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obso",
 		"expect": {
 			"kind": "blocked",
 			"message": "Todo check-in gate"

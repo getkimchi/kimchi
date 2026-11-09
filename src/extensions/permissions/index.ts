@@ -85,7 +85,7 @@ import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { CONFIRM_TODOS_TOOL_NAME, TODO_TOOL_NAMES } from "../todos/tool.js"
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
 import { classifyToolCallViaBreaker } from "./classifier-breaker.js"
@@ -234,7 +234,6 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
-	CONFIRM_TODOS_TOOL_NAME,
 	WORKER_REPORT_TOOL_NAME,
 ]
 
@@ -1745,9 +1744,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				// Tools REMOVED (adhoc / planning-only, no longer visible):
 				//   - questionnaire          (adhoc-only; superseded by ask_user)
 				//
-				// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
-				// mark_todo, clear_todos) are shared core — they remain visible in
-				// all modes including ferment.
+				// Note: the todos lifecycle tool (todos) is shared core — it remains
+				// visible in all modes including ferment.
 				//
 				// Tools ADDED (ferment-mode, newly visible):
 				//   - ask_user               (interactive routing — TUI in interactive mode,

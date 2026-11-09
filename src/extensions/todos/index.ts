@@ -76,7 +76,7 @@ import {
 	restoreTodoStoreFromDetails,
 	subscribeTodoStore,
 } from "./store.js"
-import { CONFIRM_TODOS_TOOL_NAME, registerTodosTool } from "./tool.js"
+import { isTodoConfirmInput, isTodoConfirmResult, registerTodosTool } from "./tool.js"
 import { TODO_STATUS, type TodoScope } from "./types.js"
 import {
 	clearTodoCrowding,
@@ -178,7 +178,7 @@ function clearEarlyNudgeFired(sessionId: string): void {
 }
 
 const TODO_EARLY_NUDGE_MESSAGE = markHarnessSteer(
-	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the create_todos call with your next work tool call in the same turn.",
+	"You are working on a multi-step task without a todo list. Consider creating one to plan your approach — pair the todos call with your next work tool call in the same turn.",
 )
 
 const TODOS_RESOURCE_ID = "extensions.todos"
@@ -187,15 +187,15 @@ export const TODO_CHECKIN_CUSTOM_TYPE = "todo-checkin"
 
 /** Prerequisites for check-in enforcement, rechecked at every enforcement
  *  point: the resource enabled, the kill switch off, and an active
- *  reconciliation tool. The todo tools are scope-agnostic (every write
- *  tool and confirm_todos accepts a scope argument), so registration is
- *  checked globally rather than per pending scope. When these are
- *  unavailable the gate releases (work is not blocked). */
+ *  reconciliation tool. The todos tool is scope-agnostic (every call
+ *  accepts a scope argument), so registration is checked globally rather
+ *  than per pending scope. When these are unavailable the gate releases
+ *  (work is not blocked). */
 function isCheckinEnforcementAvailable(pi: ExtensionAPI): boolean {
 	if (!isResourceEnabled(TODOS_RESOURCE_ID)) return false
 	if (isSteerDisabled("todo_checkin")) return false
 	const tools = pi.getActiveTools()
-	return tools.some(isTodoWriteToolName) || tools.includes(CONFIRM_TODOS_TOOL_NAME)
+	return tools.some(isTodoWriteToolName)
 }
 
 function renderCheckinList(scope: TodoScope, sessionId: string): string {
@@ -243,8 +243,10 @@ function describeWorkToolCall(event: ToolCallEvent): string {
  *  the current instructions on every blocked call — without queuing
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
+	const scopeHint =
+		pending.length > 1 ? " Each pending list needs its own confirmation — pass the matching scope to todos." : ""
 	return [
-		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed. Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them (or their updated equivalents) yourself.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with todos, passing {confirm: ${revision}}${scopeHint}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed. Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them (or their updated equivalents) yourself.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
@@ -260,7 +262,7 @@ function checkinBlockReason(pending: readonly CheckinPending[], sessionId: strin
  *  shares that turn before further work tools. */
 function planSubmissionCheckinText(sessionId: string, revision: number): string {
 	return [
-		`Todo check-in (input revision ${revision}): harness reminder, not the user's message. The plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
+		`Todo check-in (input revision ${revision}): harness reminder, not the user's message. The plan was submitted for review, and work completed while finalizing it may not be reflected in the list below. Before starting further work tools, reconcile the list — mark finished work completed, remove items the submitted plan supersedes — or, when the list is still accurate, confirm it with todos, passing {confirm: ${revision}}. A text-only reply needs no tool call; the check stays pending until work resumes.`,
 		...checkinListBlocks([GLOBAL_TODO_SCOPE], sessionId, revision),
 	].join("\n")
 }
@@ -579,9 +581,9 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		deliverGenuineInput(ctx)
 	})
 
-	// Work-tool admission gate. Only reconciliation tools (todo writes,
-	// confirm_todos) pass through; every other tool is blocked while any
-	// relevant check is pending — including submit_plan, deliberately: the
+	// Work-tool admission gate. Only todos calls pass through; every other
+	// tool is blocked while any relevant check is pending — including
+	// submit_plan, deliberately: the
 	// plan handoff must carry reconciled todos, so a stale list cannot be
 	// frozen into the user-review boundary. The block reason carries
 	// current instructions on every call.
@@ -596,12 +598,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// executing. Revisions are assigned at delivery (message_start), so
 		// the snapshot always names input the model has seen.
 		if (isTodoWriteToolName(toolName)) {
-			recordAdmittedInputRevision(sessionId, event.toolCallId, getInputRevision(sessionId))
+			// Confirm calls (todos({confirm})) carry their own revision
+			// validation, leave no bookkeeping behind, and are never blocked.
+			if (!isTodoConfirmInput(event.input)) {
+				recordAdmittedInputRevision(sessionId, event.toolCallId, getInputRevision(sessionId))
+			}
 			return { block: false }
 		}
-		// confirm_todos carries its own revision validation and is never a
-		// blocked "work tool" while the gate is open.
-		if (toolName === CONFIRM_TODOS_TOOL_NAME) return { block: false }
 
 		// Read-only tools (including questionnaire) pass while gated: they
 		// cannot make the list staler, and the model may need to inspect state
@@ -757,6 +760,12 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		if (event.isError) return
 		const sessionId = ctx.sessionManager.getSessionId()
 
+		// Confirm calls (todos({confirm})) are neither a write nor work: they
+		// do not satisfy early-nudge adoption and never increment work or
+		// staleness counters. Checked FIRST: confirmed or not, the call made
+		// no store change and must not count for anything.
+		if (isTodoWriteToolName(event.toolName) && isTodoConfirmResult(event.result?.details)) return
+
 		// A todo write within the nudge-outcome window = the model complied
 		// with the early nudge.
 		if (isTodoWriteToolName(event.toolName)) {
@@ -769,14 +778,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 			}
 			return
 		}
-		// confirm_todos is neither a write nor work: it does not satisfy
-		// early-nudge adoption and never increments work or staleness
-		// counters.
-		if (event.toolName === CONFIRM_TODOS_TOOL_NAME) return
 
 		// submit_plan ends the turn for user review — the plan handoff is a
 		// request boundary for todo hygiene (see armPlanSubmissionCheckin).
-		// Like confirm_todos, the submission is neither write nor work: it
+		// Like a confirm, the submission is neither write nor work: it
 		// never increments the counters, so a model that pairs its final todo
 		// write with submit_plan stays suppressed.
 		if (event.toolName === SUBMIT_PLAN_TOOL_NAME) {
@@ -927,7 +932,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		sendHiddenSteer(
 			pi,
 			TODO_CLOSURE_CUSTOM_TYPE,
-			`The turn ended with unfinished todos. Check bookkeeping against the work already done in this conversation. Use only todo tools if corrections are needed: mark fully finished work completed and remove obsolete items with update_todos. Preserve deferred, blocked, uncertain, and awaiting-approval work; do not claim an abandoned approach succeeded. Do not perform task work, request approval, or repeat the final answer. If nothing needs correcting, stop.\n\n${JSON.stringify(todos)}`,
+			`The turn ended with unfinished todos. Check bookkeeping against the work already done in this conversation. Use only todo tools if corrections are needed: mark fully finished work completed with todos update, drop obsolete items with todos remove. Preserve deferred, blocked, uncertain, and awaiting-approval work; do not claim an abandoned approach succeeded. Do not perform task work, request approval, or repeat the final answer. If nothing needs correcting, stop.\n\n${JSON.stringify(todos)}`,
 			{ reason: "terminal-turn-closure" },
 		)
 	})

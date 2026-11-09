@@ -3812,10 +3812,9 @@ describe("plan mode assumption detection", () => {
 			// Adhoc-only tools must NOT be present (per the tool-swap contract at
 			// permissions/index.ts:524-562).
 			expect(toolSet).not.toContain("questionnaire")
-			// Todo lifecycle tools are shared core — they ARE present in ferment
+			// Note: the todos lifecycle tool is shared core — it IS present in ferment
 			// mode (used for step-level sub-task tracking during implementation).
-			expect(toolSet).toContain("update_todos")
-			expect(toolSet).toContain("add_todo")
+			expect(toolSet).toContain("todos")
 			// Shared core tools MUST remain visible.
 			expect(toolSet).toContain("read")
 		} finally {
@@ -8622,14 +8621,7 @@ describe("inline worker permissions", () => {
 
 	it.each(["plan", "default"] as const)("keeps control-plane and inspection tools free in %s mode", async (mode) => {
 		const { worker, workerCtx } = await setup(mode === "plan" ? { plan: true } : {})
-		for (const toolName of [
-			"submit_agent_report",
-			"confirm_todos",
-			"create_todos",
-			"Skill",
-			"web_search",
-			"debug_locals",
-		]) {
+		for (const toolName of ["submit_agent_report", "todos", "Skill", "web_search", "debug_locals"]) {
 			expect(await call(worker, workerCtx, toolName, {})).toBeUndefined()
 		}
 		expect(classifyToolCall).not.toHaveBeenCalled()

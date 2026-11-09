@@ -21,7 +21,7 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "implement widget rendering", status: "in_progress" },
@@ -60,15 +60,14 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
 })
 
 /**
- * Regression: todo lifecycle tools (create_todos, update_todos, add_todo,
- * mark_todo, clear_todos) must be visible during ferment execution. They were
- * previously cataloged as `modes: ["adhoc"]`, which excluded them from both
- * planning-ferment and implementation-ferment profiles. Now cataloged as
- * `modes: ["shared"]` (SHARED_CORE_TOOLS), they should be available in every
- * mode including ferment.
+ * Regression: the todos lifecycle tool must be visible during ferment
+ * execution. The todo tools were previously cataloged as `modes: ["adhoc"]`,
+ * which excluded them from both planning-ferment and implementation-ferment
+ * profiles. Now cataloged as `modes: ["shared"]` (SHARED_CORE_TOOLS), they
+ * should be available in every mode including ferment.
  *
  * This test starts a ferment via `/ferment`, scopes it, and then has the model
- * call `update_todos` during the ferment. If the tool were not visible, the
+ * call `todos` during the ferment. If the tool were not visible, the
  * tool call would be rejected by the runtime and the todo widget would never
  * appear.
  */
@@ -90,14 +89,14 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 									ferment_id: "__FERMENT_ID__",
 									title: "Test Ferment",
 									goal: "Verify todo tools work during ferment execution.",
-									success_criteria: ["update_todos tool call succeeds during ferment"],
+									success_criteria: ["todos tool call succeeds during ferment"],
 									constraints: [],
 									assumptions: "The ferment lifecycle is active.",
 									phases: [
 										{
 											name: "Implementation",
-											goal: "Call update_todos during the ferment.",
-											steps: [{ description: "Write a todo list via update_todos.", verify: "true" }],
+											goal: "Call todos during the ferment.",
+											steps: [{ description: "Write a todo list via todos.", verify: "true" }],
 										},
 									],
 									questions: [],
@@ -128,13 +127,13 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 						},
 					],
 				},
-				// Turn 5: model calls update_todos during implementation.
+				// Turn 5: model calls todos during implementation.
 				{
 					stream: ["I'll track my work with todos."],
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "write the code", status: "in_progress" },
@@ -186,18 +185,18 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			terminal.submit("")
 			trace.step("confirmed 'Start execution'")
 
-			// Stage 7: model calls update_todos — if the tool were not visible during
+			// Stage 7: model calls todos — if the tool were not visible during
 			// the ferment, this call would be rejected and the todo widget would
 			// never render. Seeing the widget proves the tool was available.
 			// The aggregate header counts all scopes: 2 ferment phase todos (written
 			// by the bridge on phase activation) + 2 global todos from the model.
 			await waitForText(terminal, "Todos · 0/4", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("todo widget appeared — update_todos succeeded during ferment")
+			trace.step("todo widget appeared — todos succeeded during ferment")
 
 			// The 3-row viewport shows the ferment scope window; the global scope
 			// group (label + 2 model-written todos) rolls out below.
 			await waitForText(terminal, "Todos · Ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "Write a todo list via update_todos", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Write a todo list via todos", { timeoutMs: INPUT_TIMEOUT_MS })
 			await waitForText(terminal, "↓ 3 more", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("todo items visible during ferment")
 		},
@@ -219,7 +218,7 @@ test("todo widget summary reflects mixed-status counts", async ({ terminal }) =>
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "pending item", status: "pending" },
@@ -270,7 +269,7 @@ test("todo widget shows long lists as a scrollable viewport and collapses on tog
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: Array.from({ length: 19 }, (_, index) => ({
 										content: `task ${index + 1}`,
@@ -331,7 +330,7 @@ test("todo widget anchors completed overflow at the end", async ({ terminal }) =
 					toolCalls: [
 						{
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: Array.from({ length: 19 }, (_, index) => ({
 										content: `task ${index + 1}`,

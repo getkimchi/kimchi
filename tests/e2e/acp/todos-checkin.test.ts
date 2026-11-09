@@ -41,13 +41,13 @@ describe("ACP integration — todo closure and check-in gate", () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-todos-checkin",
 			responses: [
-				// Prompt 1: plan only. The create_todos write reconciles, so the
+				// Prompt 1: plan only. The todos write reconciles, so the
 				// text-only answer needs no cleanup continuation.
 				{
 					toolCalls: [
 						{
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [{ content: "Publish after approval", status: "pending" }],
 								}),
@@ -63,8 +63,12 @@ describe("ACP integration — todo closure and check-in gate", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "mark_todo",
-								arguments: JSON.stringify({ id: 1, status: "pending", note: "Deferred until approval" }),
+								name: "todos",
+								arguments: JSON.stringify({
+									todos: [
+										{ id: 1, content: "Publish after approval", status: "pending", note: "Deferred until approval" },
+									],
+								}),
 							},
 						},
 					],
@@ -77,11 +81,8 @@ describe("ACP integration — todo closure and check-in gate", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "confirm_todos",
-								arguments: JSON.stringify({
-									inputRevision: 3,
-									expected: [{ id: 1, status: "pending" }],
-								}),
+								name: "todos",
+								arguments: JSON.stringify({ confirm: 3 }),
 							},
 						},
 					],
@@ -96,8 +97,10 @@ describe("ACP integration — todo closure and check-in gate", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "mark_todo",
-								arguments: JSON.stringify({ id: 1, status: "pending", note: "Still deferred" }),
+								name: "todos",
+								arguments: JSON.stringify({
+									todos: [{ id: 1, content: "Publish after approval", status: "pending", note: "Still deferred" }],
+								}),
 							},
 						},
 					],
@@ -203,7 +206,7 @@ describe("ACP integration — gated-input revision supersession", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({ todos: [{ content: "Verify the input", status: "pending" }] }),
 							},
 						},
@@ -233,8 +236,8 @@ describe("ACP integration — gated-input revision supersession", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "confirm_todos",
-								arguments: JSON.stringify({ inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+								name: "todos",
+								arguments: JSON.stringify({ confirm: 2 }),
 							},
 						},
 					],
@@ -244,8 +247,8 @@ describe("ACP integration — gated-input revision supersession", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "confirm_todos",
-								arguments: JSON.stringify({ inputRevision: 3, expected: [{ id: 1, status: "pending" }] }),
+								name: "todos",
+								arguments: JSON.stringify({ confirm: 3 }),
 							},
 						},
 					],
@@ -298,7 +301,7 @@ describe("ACP integration — gated-input revision supersession", () => {
 		// confirmation was rejected as stale, only revision 3 released work,
 		// no block ever carried revision 3, and the work ran.
 		const history = JSON.stringify(providerBodies(fixture))
-		expect(history).toContain("The accepted input revision is now 3 (you confirmed revision 2)")
+		expect(history).toContain("The accepted input revision is now 3 (you confirmed 2)")
 		expect(history).toContain("Confirmed 1 todos")
 		expect(history).not.toContain("check-in pending (input revision 3)")
 		expect(history).toContain("resumed")
@@ -324,7 +327,7 @@ describe("ACP integration — staleness escalation", () => {
 					toolCalls: [
 						{
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({ todos: [{ content: "Long task", status: "in_progress" }] }),
 							},
 						},
@@ -334,24 +337,24 @@ describe("ACP integration — staleness escalation", () => {
 				// The 51st work call is blocked: the list aged past 50 while
 				// ignoring delivered boundary-30+ reminders, so the gate opened.
 				workCall(50),
-				// A wrong confirmation is rejected with the actual state…
+				// A wrong-revision confirmation is rejected with the actual state…
 				{
 					toolCalls: [
 						{
 							function: {
-								name: "confirm_todos",
-								arguments: JSON.stringify({ inputRevision: 1, expected: [{ id: 1, status: "completed" }] }),
+								name: "todos",
+								arguments: JSON.stringify({ confirm: 7 }),
 							},
 						},
 					],
 				},
-				// …and the matching one resumes work.
+				// …and the pending revision resumes work.
 				{
 					toolCalls: [
 						{
 							function: {
-								name: "confirm_todos",
-								arguments: JSON.stringify({ inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }),
+								name: "todos",
+								arguments: JSON.stringify({ confirm: 1 }),
 							},
 						},
 					],
@@ -385,8 +388,8 @@ describe("ACP integration — staleness escalation", () => {
 		expect(history).toContain("50 changes since the global todo list was last updated")
 		// The gate blocked the 51st work call with the check-in reason.
 		expect(history).toContain("check-in pending (input revision 1)")
-		// The wrong confirmation was rejected with the actual state…
-		expect(history).toContain("status mismatches")
+		// The wrong-revision confirmation was rejected with the actual state…
+		expect(history).toContain("accepted input revision is now 1")
 		expect(history).toContain("[in_progress] #1 Long task")
 		// …the right one resumed work.
 		expect(history).toContain("Confirmed 1 todos")

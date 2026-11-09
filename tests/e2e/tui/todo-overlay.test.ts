@@ -22,9 +22,9 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 					stream: ["Setting up todos."],
 					toolCalls: [
 						{
-							id: "call_create_todos",
+							id: "call_write_todos",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "sticky panel", status: "pending" },
@@ -89,7 +89,7 @@ test("completed todos stop pinning the overlay", async ({ terminal }) => {
 	)
 })
 
-test("todo overlay stays visible after non-todo work and hides when clear_todos is called", async ({ terminal }) => {
+test("todo overlay stays visible after non-todo work and hides when the list is cleared", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -102,7 +102,7 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 						{
 							id: "call_leave_active_todo",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									todos: [
 										{ content: "create branch", status: "completed" },
@@ -129,12 +129,12 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 				// follow-up mechanism was removed (commit 3c7b939b). The
 				// overlay stays visible; the user must prompt again to clear.
 				{ stream: ["Work finished."] },
-				// Turn 4: user prompts to clear → model calls clear_todos.
+				// Turn 4: user prompts to clear → model clears with an empty todos write.
 				{
 					toolCalls: [
 						{
 							id: "call_clear_reconciled_todos",
-							function: { name: "clear_todos", arguments: JSON.stringify({}) },
+							function: { name: "todos", arguments: JSON.stringify({ todos: [] }) },
 						},
 					],
 				},
@@ -152,13 +152,13 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 			await waitForTurnToSettle(fixture.fake.requests)
 			trace.step("terminal turn completed — overlay stays visible")
 
-			// User explicitly prompts to clear todos → model calls clear_todos
+			// User explicitly prompts to clear todos → model clears the list
 			// → overlay hides.
 			terminal.submit("clear the todos")
 			trace.step("submitted 'clear the todos'")
 
 			await waitForWidgetToHide(terminal)
-			trace.step("clear_todos executed — overlay hidden")
+			trace.step("list cleared — overlay hidden")
 		},
 	)
 })

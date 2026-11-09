@@ -38,7 +38,7 @@ function toolResponse(name: string, args: Record<string, unknown>) {
 
 function stalePlanResponses() {
 	return [
-		toolResponse("create_todos", { todos: [{ content: "Finalize the plan", status: "in_progress" }] }),
+		toolResponse("todos", { todos: [{ content: "Finalize the plan", status: "in_progress" }] }),
 		toolResponse("bash", { command: "printf 'finalize 1\\n'" }),
 		toolResponse("bash", { command: "printf 'finalize 2\\n'" }),
 		submitPlanResponse(),
@@ -100,7 +100,7 @@ describe("ACP integration — plan review held prompt", () => {
 				responses: [
 					...stalePlanResponses(),
 					toolResponse("bash", { command: "printf 'blocked until reconciliation\\n'" }),
-					toolResponse("mark_todo", { id: 1, status: "completed" }),
+					toolResponse("todos", { update: [{ id: 1, status: "completed" }] }),
 					toolResponse("bash", { command: "printf 'executed\\n'" }),
 					{ stream: ["Plan executed with reconciled todos."] },
 				],
