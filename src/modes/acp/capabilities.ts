@@ -42,14 +42,14 @@ export const AVAILABLE_EXT_METHODS = {
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
-	// CAST AI SSO login (LLM-4134, amended by LLM-4138): stepwise, sessionless
-	// flow driven by the client — begin returns the authorize URL without
-	// opening a browser, await waits for the browser leg and settles with the
-	// browser-chosen org, cancel aborts. Advertised to clients via
-	// `_meta["kimchi.dev"].sso`.
+	// Cast AI SSO login: stepwise, sessionless flow driven by the client —
+	// begin returns the authorize URL without opening a browser, await waits
+	// for the browser leg and settles with the browser-chosen org, cancel
+	// aborts. Advertised to clients via `_meta["kimchi.dev"].sso`.
 	sso_begin: `_${CAPABILITIES_KEY}/sso_begin`,
 	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
 	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
+
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
 	import_discover: `_${CAPABILITIES_KEY}/import_discover`,
 	import_apply: `_${CAPABILITIES_KEY}/import_apply`,

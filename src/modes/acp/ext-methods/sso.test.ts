@@ -1,5 +1,5 @@
-// Unit tests for the CAST AI SSO ext-method state machine
-// (`_kimchi.dev/sso_*`, LLM-4134). The manager is driven with injected fakes
+// Unit tests for the Cast AI SSO ext-method state machine
+// (`_kimchi.dev/sso_*`). The manager is driven with injected fakes
 // for every IO seam (loopback server, token exchange, org listing, settle
 // tail, clock) so the tests cover the wire contract's outcomes without
 // network, ports, or real time: happy path, multi-org, cancel mid-wait,
@@ -64,7 +64,6 @@ interface Harness {
 	server: FakeCallbackServer
 	exchangeAuthorizationCode: ReturnType<typeof vi.fn>
 	listUserOrganizations: ReturnType<typeof vi.fn>
-	settleCredential: ReturnType<typeof vi.fn>
 	startCallbackServer: ReturnType<typeof vi.fn>
 	/** Mutable test clock backing deps.now. */
 	clock: { now: number }
@@ -92,7 +91,6 @@ function makeHarness(overrides: Partial<SsoFlowManagerDeps> = {}): Harness {
 			{ id: "org-1", name: "Acme" },
 		],
 	)
-	const settleCredential = vi.fn(async () => {})
 	const deps: SsoFlowManagerDeps = {
 		configuredRegion: () => "us",
 		oauthConfigForRegion: (region) =>
@@ -107,7 +105,6 @@ function makeHarness(overrides: Partial<SsoFlowManagerDeps> = {}): Harness {
 		startCallbackServer: vi.fn(async () => server.server),
 		exchangeAuthorizationCode,
 		listUserOrganizations,
-		settleCredential,
 		now: () => clock.now,
 		...overrides,
 	}
@@ -116,7 +113,6 @@ function makeHarness(overrides: Partial<SsoFlowManagerDeps> = {}): Harness {
 		server,
 		exchangeAuthorizationCode,
 		listUserOrganizations,
-		settleCredential,
 		startCallbackServer: deps.startCallbackServer as unknown as ReturnType<typeof vi.fn>,
 		clock,
 		manager: new SsoFlowManager(deps),
@@ -174,7 +170,7 @@ describe("SsoFlowManager", () => {
 			expect(begin.expiresAt).toBe(new Date(h.clock.now + 600_000).toISOString())
 			expect(h.deps.startCallbackServer).toHaveBeenCalledWith(expect.any(String), {
 				mode: "code",
-				successMessage: expect.stringContaining("CAST AI"),
+				successMessage: expect.stringContaining("Cast AI"),
 				port: { kind: "fixed", value: 8765 },
 			})
 		})
@@ -280,12 +276,18 @@ describe("SsoFlowManager", () => {
 				"http://localhost:8765/callback",
 				expect.anything(),
 			)
-			expect(h.settleCredential).toHaveBeenCalledTimes(1)
+			// The credential rides on the manager for the caller's settle tail,
+			// consumed on read.
+			expect(h.manager.takeSettledCredential()).toEqual({
+				credential: expect.anything(),
+				org: { id: "org-1", name: "Acme" },
+			})
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
 			// Consumed: a later await no longer knows the requestId.
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
 		})
 
-		// LLM-4138: org selection happens in the browser, so the listing must
+		// org selection happens in the browser, so the listing must
 		// resolve to exactly one org — a multi-org listing means the browser leg
 		// did not scope the session, and auto-picking would persist the wrong
 		// org. Surface an actionable SSO_IDP_ERROR instead of parking the flow.
@@ -299,12 +301,12 @@ describe("SsoFlowManager", () => {
 			h.server.settle({ code: "the-code", outcome: "code" })
 
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_IDP_ERROR")
-			// Nothing persists and the flow is consumed.
-			expect(h.settleCredential).not.toHaveBeenCalled()
+			// Nothing settles and the flow is consumed.
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
 		})
 
-		// LLM-4138: the login page has a region dropdown — a user switching
+		// the login page has a region dropdown — a user switching
 		// region mid-flow lands on a different tenant and the exchange fails.
 		// The SSO_IDP_ERROR must tell them what to do; no cross-tenant handling.
 		it("hints at the region switch when the code exchange fails", async () => {
@@ -441,7 +443,7 @@ describe("SsoFlowManager", () => {
 			expect(h.manager.cancel({ requestId: begin.requestId })).toEqual({})
 
 			await expectSsoError(pending, "SSO_REQUEST_NOT_FOUND")
-			expect(h.settleCredential).not.toHaveBeenCalled()
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
 			// The connection is free for a fresh login.
 			await expect(h.manager.begin({})).resolves.toEqual(expect.objectContaining({ requestId: expect.any(String) }))
 		})
@@ -455,7 +457,7 @@ describe("SsoFlowManager", () => {
 	})
 
 	describe("concurrent awaits", () => {
-		it("settles shared awaits once (settleCredential runs a single time)", async () => {
+		it("shares one flow completion across concurrent awaits, exposing the settled credential once", async () => {
 			const h = makeHarness()
 			const begin = await h.manager.begin({})
 			const first = h.manager.awaitResult({ requestId: begin.requestId })
@@ -463,7 +465,11 @@ describe("SsoFlowManager", () => {
 			h.server.settle({ code: "the-code", outcome: "code" })
 			await expect(first).resolves.toEqual({ status: "authenticated", org: { id: "org-1", name: "Acme" } })
 			await expect(second).resolves.toEqual({ status: "authenticated", org: { id: "org-1", name: "Acme" } })
-			expect(h.settleCredential).toHaveBeenCalledTimes(1)
+			expect(h.manager.takeSettledCredential()).toEqual({
+				credential: expect.anything(),
+				org: { id: "org-1", name: "Acme" },
+			})
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
 		})
 	})
 })

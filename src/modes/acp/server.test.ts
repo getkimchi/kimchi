@@ -22,6 +22,7 @@ import type {
 	TextContent,
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -85,6 +86,13 @@ vi.mock("../../config.js", async (importOriginal) => {
 // Mock the model cache refresh so tests don't hit the network.
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
+	applyOrganizationHeader: vi.fn(),
+}))
+// Hermetic settle tail: keep clearPiAuth/syncPiAuth real (logout tests use
+// them against temp dirs) but stub the OAuth credential fan-out.
+vi.mock("../../pi-auth.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../pi-auth.js")>()),
+	syncOAuthCredentialToKimchiProviders: vi.fn(),
 }))
 // Pin getVersion() so initialize() agentInfo assertions are deterministic
 // and don't depend on the repo's package.json.
@@ -915,8 +923,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			expect(response.authMethods).toHaveLength(7)
-			// SSO is the default: advertised before Agent Auth (LLM-4134).
-			expect(response.authMethods?.[0]).toMatchObject({ id: "kimchi-sso", name: "CAST AI SSO" })
+			// SSO is the default: advertised before Agent Auth.
+			expect(response.authMethods?.[0]).toMatchObject({ id: "kimchi-sso", name: "Cast AI SSO" })
 			expect(response.authMethods?.[3]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
@@ -950,13 +958,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			])
 			expect(response.authMethods?.[1]).toMatchObject({
 				id: "kimchi-sso-us",
-				name: "CAST AI SSO (US)",
-				description: "Sign in with your CAST AI account (United States region)",
+				name: "Cast AI SSO (US)",
+				description: "Sign in with your Cast AI account (United States region)",
 			})
 			expect(response.authMethods?.[2]).toMatchObject({
 				id: "kimchi-sso-eu",
-				name: "CAST AI SSO (EU)",
-				description: "Sign in with your CAST AI account (Europe region)",
+				name: "Cast AI SSO (EU)",
+				description: "Sign in with your Cast AI account (Europe region)",
 			})
 			expect(response.authMethods?.[4]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
 			expect(response.authMethods?.[5]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
@@ -1026,7 +1034,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(ids).toContain("kimchi-sso-eu")
 		})
 
-		// Capability signal for the stepwise SSO ext methods (LLM-4134): clients
+		// Capability signal for the stepwise SSO ext methods: clients
 		// gate their SSO UI on `_meta["kimchi.dev"].sso === true`.
 		it('advertises the sso capability flag in _meta["kimchi.dev"]', async () => {
 			const testAgent = new KimchiAcpAgent(makeConn(), {
@@ -1139,9 +1147,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		)
 	}
 
-	/** Injectable fake for the SSO flow manager (LLM-4134): records the wire
+	/** Injectable fake for the SSO flow manager: records the wire
 	 * calls authenticate() and the sso_* ext methods make and plays canned
-	 * outcomes. Partial stub — only the three manager methods the server
+	 * outcomes. Partial stub — only the manager methods the server
 	 * touches. */
 	function makeFakeSsoManager(
 		outcomes: {
@@ -1163,15 +1171,25 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			return outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
 		})
 		const cancel = vi.fn(() => ({}))
+		const settledCredential = {
+			credential: { access: "castai_v1_sso-token" } as OAuthCredentials,
+			org: { id: "org-1", name: "Acme" },
+		}
+		const takeSettledCredential = vi.fn(() => (outcomes.awaitResultError !== undefined ? undefined : settledCredential))
 		// Single cast at the injection seam: the object is typed against the
 		// Pick the server actually consumes, so a new consumed method breaks the
 		// type check instead of silently staying behind.
-		const manager = { begin, awaitResult, cancel } as Pick<SsoFlowManager, "begin" | "awaitResult" | "cancel">
+		const manager = { begin, awaitResult, cancel, takeSettledCredential } as Pick<
+			SsoFlowManager,
+			"begin" | "awaitResult" | "cancel" | "takeSettledCredential"
+		>
 		return {
 			manager: manager as SsoFlowManager,
 			begin,
 			awaitResult,
 			cancel,
+			takeSettledCredential,
+			settledCredential,
 		}
 	}
 
@@ -1386,7 +1404,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 		})
 
-		// ---- CAST AI SSO (LLM-4134): the plain authenticate() path ----
+		// ---- Cast AI SSO: the plain authenticate() path ----
 
 		it("authenticates with kimchi-sso-us: drives the stepwise SSO flow with the region pin", async () => {
 			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
@@ -1394,12 +1412,15 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				vi.unstubAllEnvs()
 			})
 			const sso = makeFakeSsoManager()
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-				ssoManager: sso.manager,
-			})
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
 
 			const result = await testAgent.authenticate({ methodId: "kimchi-sso-us" })
 
@@ -1407,6 +1428,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			// Region pinned from the method id — never setPendingOAuthRegion.
 			expect(sso.begin).toHaveBeenCalledWith({ region: "us" })
 			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			// The settle tail runs server-side on the settled credential.
+			expect(sso.takeSettledCredential).toHaveBeenCalled()
+			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_sso-token", {
+				allowCachedFallback: true,
+				organizationId: "org-1",
+			})
 			// The web-app Agent Auth handoff is a different method — untouched.
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
 			expect(writeApiKey).not.toHaveBeenCalled()
@@ -1419,19 +1446,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				vi.unstubAllEnvs()
 			})
 			const sso = makeFakeSsoManager()
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-				ssoManager: sso.manager,
-			})
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
 
 			await testAgent.authenticate({ methodId: "kimchi-sso" })
 
 			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
 		})
 
-		// LLM-4138: org selection happens on the Auth0-hosted login page, so a
+		// org selection happens on the Auth0-hosted login page, so a
 		// multi-org listing surfaces as the manager's actionable SSO_IDP_ERROR —
 		// there is no parked flow to cancel and no interactive picker here.
 		it("propagates the manager's multi-org SSO_IDP_ERROR", async () => {
@@ -1442,15 +1472,18 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const sso = makeFakeSsoManager({
 				awaitResultError: ssoError(
 					"SSO_IDP_ERROR",
-					"The CAST AI login returned 2 organizations; sign in again and pick one organization on the CAST AI login page.",
+					"The Cast AI login returned 2 organizations; sign in again and pick one organization on the Cast AI login page.",
 				),
 			})
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-				ssoManager: sso.manager,
-			})
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
 
 			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow(
 				/2 organizations.*login page/s,
@@ -1459,12 +1492,15 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		it("dispatches the _kimchi.dev/sso_* ext methods to the shared manager", async () => {
 			const sso = makeFakeSsoManager()
-			const testAgent = new KimchiAcpAgent(makeConn(), {
-				extensionFactories: [],
-				agentDir: tempAgentDir,
-				sessionFactory: async () => asSession(fake),
-				ssoManager: sso.manager,
-			})
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
 
 			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_begin, { region: "eu" })
 			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_await, { requestId: "req-1" })

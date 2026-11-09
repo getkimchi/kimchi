@@ -1,20 +1,21 @@
-// ACP extension methods for the CAST AI SSO login (LLM-4134).
+// ACP extension methods for the Cast AI SSO login.
 //
 // Wire names: `_kimchi.dev/sso_begin|sso_await|sso_cancel` — sessionless,
 // driven stepwise by the client (Studio) per the frozen wire contract
-// (kimchi-studio branch `research/wire-contract-oauth-acp`) as amended by
-// LLM-4138: organization selection happens in the browser during the OAuth
-// flow (the Auth0-hosted login page), so the interactive org-list step of the
-// original contract (`org_selection_required` / `sso_select_org`) is dropped.
-//
+// (kimchi-studio branch `research/wire-contract-oauth-acp`): organization
+// selection happens in the browser during the OAuth flow (the Auth0-hosted
+// login page), so the original contract's interactive org-list step
+// (`org_selection_required` / `sso_select_org`) was dropped by amendment.
 //   sso_begin {region?} → {requestId, authorizeUrl, expiresAt}
 //       Starts the loopback callback server (fixed port 8765) and builds the
 //       Auth0 Authorization Code + PKCE URL. Returns WITHOUT opening a
 //       browser — the client opens `authorizeUrl` itself.
 //   sso_await {requestId} → {status:"authenticated", org}
-//       Waits for the browser callback, exchanges the code, reads the
-//       browser-chosen organization and settles immediately (persist +
-//       fan-out the org-scoped credential, refresh models/sessions).
+//       Waits for the browser callback, exchanges the code, and resolves
+//       with the browser-chosen organization. The credential rides on the
+//       manager for the caller's settle tail (persist + fan-out the
+//       org-scoped credential, refresh models/sessions) via
+//       takeSettledCredential().
 //       Zero organizations is a defensive SSO_NO_ORGANIZATIONS: the stored
 //       credential must always carry an org id.
 //   sso_cancel {requestId?} → {} — idempotent, never errors.
@@ -23,7 +24,7 @@
 // `setPendingOAuthRegion` — that single-slot global is a TUI selector seam and
 // racy with two clients (contract §2). A user switching regions on the login
 // page lands on a different tenant and the code exchange fails: surfaced as
-// an actionable SSO_IDP_ERROR; no cross-tenant handling (LLM-4138).
+// an actionable SSO_IDP_ERROR; no cross-tenant handling.
 //
 // Errors are JSON-RPC error objects with `data.code` so clients branch on
 // machine codes, never message text (contract §3). One flow per connection
@@ -109,7 +110,7 @@ export const SSO_FLOW_TTL_MS = 600_000
 
 /** Success-page copy shown in the browser after the loopback callback. Same
  * spirit as the ACP Agent Auth copy: client-neutral, no terminal wording. */
-const SSO_CALLBACK_SUCCESS_MESSAGE = "Signed in with CAST AI. You can close this window and return to Kimchi."
+const SSO_CALLBACK_SUCCESS_MESSAGE = "Signed in with Cast AI. You can close this window and return to Kimchi."
 
 /** How long after a discard the loopback port may still be draining.
  * closeServer defers socket destruction (~100ms) and server.close() releases
@@ -127,13 +128,6 @@ export interface SsoFlowManagerDeps {
 	startCallbackServer: typeof startCallbackServerProd
 	exchangeAuthorizationCode: typeof exchangeAuthorizationCodeProd
 	listUserOrganizations: typeof listUserOrganizationsProd
-	/**
-	 * Settle tail for an authenticated credential: persist + fan out the
-	 * org-scoped credential, clear stale marks, refresh model cache and open
-	 * sessions. Injected because it touches server-owned state (agentDir,
-	 * sessions) and the shared credential store.
-	 */
-	settleCredential: (credential: OAuthCredentials, org: KimchiOrganization) => Promise<void>
 	/** Injectable clock for expiry; defaults to Date.now. */
 	now?: () => number
 	/** Injectable TTL for tests; defaults to {@link SSO_FLOW_TTL_MS}. */
@@ -174,11 +168,26 @@ export class SsoFlowManager {
 	private flow?: PendingSsoFlow
 	/** When the last flow was discarded — drives the callback-port drain retry. */
 	private lastDiscardedAtMs = 0
+	/** Credential + org from the last successful flow, awaiting the caller's
+	 * settle tail. Consumed by takeSettledCredential(). */
+	private settled?: { credential: OAuthCredentials; org: KimchiOrganization }
 
 	constructor(private readonly deps: SsoFlowManagerDeps) {}
 
+	/** The credential + org settled by the last successful flow, for the
+	 * caller's settle tail (persist + fan out + session refresh). Consumed
+	 * on read; undefined when nothing settled since. */
+	takeSettledCredential(): { credential: OAuthCredentials; org: KimchiOrganization } | undefined {
+		const settled = this.settled
+		this.settled = undefined
+		return settled
+	}
+
 	/** `_kimchi.dev/sso_begin` — start the loopback server + build the URL. */
 	async begin(params: Record<string, unknown>): Promise<SsoBeginResponse> {
+		// Drop any credential left over by an earlier flow whose settle tail the
+		// caller never picked up — a new login supersedes it.
+		this.settled = undefined
 		if (this.flow) {
 			// Reap an expired-but-unreaped flow first: a browser-phase flow whose
 			// sso_await was never called has nothing watching expiresAtMs — without
@@ -187,7 +196,7 @@ export class SsoFlowManager {
 			if ((this.deps.now ?? Date.now)() > this.flow.expiresAtMs) {
 				this.discard(this.flow)
 			} else {
-				throw ssoError("SSO_IN_PROGRESS", "A CAST AI SSO sign-in is already in progress on this connection")
+				throw ssoError("SSO_IN_PROGRESS", "A Cast AI SSO sign-in is already in progress on this connection")
 			}
 		}
 
@@ -209,7 +218,7 @@ export class SsoFlowManager {
 		}
 		const config = this.deps.oauthConfigForRegion(region)
 		if (!config) {
-			throw ssoError("SSO_UNAVAILABLE_REGION", `CAST AI SSO is not available in the ${region} region`)
+			throw ssoError("SSO_UNAVAILABLE_REGION", `Cast AI SSO is not available in the ${region} region`)
 		}
 
 		const verifier = generateCodeVerifier()
@@ -282,8 +291,8 @@ export class SsoFlowManager {
 	}
 
 	/** Race the callback result against the flow TTL; map outcomes to typed
-	 * errors; settle the browser-chosen organization immediately (LLM-4138:
-	 * org selection happens on the Auth0-hosted login page). */
+	 * errors; resolve with the browser-chosen organization (selection happens
+	 * on the Auth0-hosted login page). */
 	private async runBrowserWait(flow: PendingSsoFlow): Promise<SsoAwaitResponse> {
 		try {
 			const result = await this.raceWithExpiry(flow, flow.callbackServer.result)
@@ -307,22 +316,22 @@ export class SsoFlowManager {
 				}
 				// Token-endpoint failures are IdP interactions: map to the typed
 				// code (preserving the RFC 6749 error when one came back) instead
-				// of an unclassifiable internal error. The region
-				// hint is part of the message because LLM-4138 adds a region
-				// dropdown on the login page: a user switching region mid-flow
-				// lands on a different tenant and the exchange fails — the only
-				// fix is restarting the sign-in for the wanted region.
+				// of an unclassifiable internal error. The region hint is part
+				// of the message because the login page has a region dropdown:
+				// a user switching region mid-flow lands on a different tenant
+				// and the exchange fails — the only fix is restarting the
+				// sign-in for the wanted region.
 				const detail = error instanceof Error ? error.message : String(error)
 				throw ssoError(
 					"SSO_IDP_ERROR",
-					`CAST AI sign-in failed: ${detail}. If you switched regions on the CAST AI login page, the authorization belongs to a different region — start the sign-in again for the region you want.`,
+					`Cast AI sign-in failed: ${detail}. If you switched regions on the Cast AI login page, the authorization belongs to a different region — start the sign-in again for the region you want.`,
 					error instanceof OAuthTokenError && error.code ? { oauthError: error.code } : undefined,
 				)
 			}
 
-			// LLM-4138: the login page performed the org selection, so the
-			// listing is read to identify the browser-chosen org and settle
-			// immediately — no interactive selection step on the ACP surface.
+			// The login page performed the org selection, so the listing is read
+			// to identify the browser-chosen org — no interactive selection step
+			// on the ACP surface.
 			let organizations: KimchiOrganization[]
 			try {
 				organizations = await this.deps.listUserOrganizations(
@@ -332,28 +341,29 @@ export class SsoFlowManager {
 				)
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error)
-				throw ssoError("SSO_ORG_FETCH_FAILED", `Fetching your CAST AI organizations failed: ${detail}`)
+				throw ssoError("SSO_ORG_FETCH_FAILED", `Fetching your Cast AI organizations failed: ${detail}`)
 			}
 			if (organizations.length === 0) {
-				// Defensive (LLM-4138): the stored credential must always carry an
-				// org id — a browser leg that yields no org cannot be persisted.
-				throw ssoError("SSO_NO_ORGANIZATIONS", "This CAST AI account has no organizations")
+				// Defensive: the stored credential must always carry an org id —
+				// a browser leg that yields no org cannot be persisted.
+				throw ssoError("SSO_NO_ORGANIZATIONS", "This Cast AI account has no organizations")
 			}
 			if (organizations.length > 1) {
 				// The browser leg should have scoped the session to one org.
 				// Auto-picking one would silently scope the credential wrong, and
-				// the interactive org-list step was dropped from the ACP wire
-				// (LLM-4138) — the only fix is signing in again.
+				// the interactive org-list step was dropped from the ACP wire —
+				// the only fix is signing in again.
 				throw ssoError(
 					"SSO_IDP_ERROR",
-					`The CAST AI login returned ${organizations.length} organizations; sign in again and pick one organization on the CAST AI login page.`,
+					`The Cast AI login returned ${organizations.length} organizations; sign in again and pick one organization on the Cast AI login page.`,
 				)
 			}
 			const org = organizations[0]
 			this.assertFlowAlive(flow)
-			// Persist + fan out the org-scoped credential; nothing was written
-			// before this point (contract §3.2).
-			await this.deps.settleCredential(credential, org)
+			// The credential rides on the manager for the caller's settle tail
+			// (persist + fan out + session refresh) — nothing was written before
+			// this point (contract §3.2).
+			this.settled = { credential, org }
 			// Terminal success consumes the flow.
 			this.discard(flow)
 			return { status: "authenticated", org }
@@ -376,7 +386,7 @@ export class SsoFlowManager {
 		if (result.errorCode) {
 			// RFC 6749 error from the IdP ("access_denied", "invalid_grant", …) —
 			// preserved distinctly so Studio can act on it (contract §3.2).
-			throw ssoError("SSO_IDP_ERROR", `CAST AI sign-in failed: ${result.errorCode}`, {
+			throw ssoError("SSO_IDP_ERROR", `Cast AI sign-in failed: ${result.errorCode}`, {
 				oauthError: result.errorCode,
 			})
 		}
@@ -391,7 +401,7 @@ export class SsoFlowManager {
 			default:
 				// "error" (state mismatch, missing deliverable, unexpected server
 				// error) or an older server without the discriminant.
-				throw ssoError("SSO_IDP_ERROR", result.error ?? "CAST AI sign-in failed")
+				throw ssoError("SSO_IDP_ERROR", result.error ?? "Cast AI sign-in failed")
 		}
 		if (!result.code) {
 			throw ssoError("SSO_IDP_ERROR", "The OAuth callback carried no authorization code")

@@ -65,6 +65,12 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import open from "open"
 import { getParsedCliArgs } from "../../cli-args.js"
+import {
+	authMethodRegion,
+	isSsoAuthMethodId,
+	KIMCHI_AGENT_AUTH_METHOD_ID,
+	KIMCHI_SSO_AUTH_METHOD_ID,
+} from "../../cli-auth/auth-methods.js"
 import { startCallbackServer } from "../../cli-auth/callback-server.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { exchangeAuthorizationCode, type KimchiOrganization, listUserOrganizations } from "../../cli-auth/oauth.js"
@@ -162,7 +168,7 @@ import {
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
-import { SsoFlowManager } from "./ext-methods/sso.js"
+import { SsoFlowManager, type SsoFlowManagerDeps } from "./ext-methods/sso.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -191,17 +197,7 @@ import type { FileChange, PendingFileChange, SessionTurnTarget, TurnContext, Tur
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
 
-/** Auth method ID for Agent Auth (browser-based OAuth). Used in both
- * initialize() declaration and authenticate() validation to avoid typo drift. */
-const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
-
-/** Auth method ID for CAST AI SSO (OAuth code + PKCE). The base id follows
- * the configured region; region-pinned `kimchi-sso-<regionId>` companions
- * authenticate against that region. Same two-level scheme as Agent Auth. */
-const KIMCHI_SSO_AUTH_METHOD_ID = "kimchi-sso"
-
-/**
- * Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
+/** Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
  * addition to `kimchi-agent` — the advertised list doubles as the capability
  * signal: new Studio versions show a region picker only when these methods
  * exist, while old Studio ignores them and keeps calling `kimchi-agent`.
@@ -214,46 +210,36 @@ function regionAuthMethod(region: KimchiRegion): AuthMethod {
 	}
 }
 
-/** Region-pinned CAST AI SSO methods (`kimchi-sso-<regionId>`), advertised
+/** Region-pinned Cast AI SSO methods (`kimchi-sso-<regionId>`), advertised
  * before `kimchi-agent` so clients that pick the first method get SSO as the
- * default (LLM-4134). Derived from `ssoAvailableRegions()` — SSO exists only
+ * default. Derived from `ssoAvailableRegions()` — SSO exists only
  * where an Auth0 tenant is registered (us/eu), NOT everywhere
  * `selectableRegions()` lists; the legacy EU gate stays experimental. */
 function ssoRegionAuthMethod(region: KimchiRegion): AuthMethod {
 	return {
 		id: `${KIMCHI_SSO_AUTH_METHOD_ID}-${region.id}`,
-		name: `CAST AI SSO (${region.id.toUpperCase()})`,
-		description: `Sign in with your CAST AI account (${region.label} region)`,
+		name: `Cast AI SSO (${region.id.toUpperCase()})`,
+		description: `Sign in with your Cast AI account (${region.label} region)`,
 	}
-}
-
-/** True for `kimchi-sso` and its region-pinned companions. */
-function isSsoAuthMethodId(methodId: string): boolean {
-	return methodId === KIMCHI_SSO_AUTH_METHOD_ID || methodId.startsWith(`${KIMCHI_SSO_AUTH_METHOD_ID}-`)
-}
-
-/** Region an auth method logs in to; undefined for an unknown method. Both
- * base ids follow the configured region; the `-<regionId>` companions are
- * pinned to that region. Region resolution is per-method-id on purpose — the
- * TUI's `setPendingOAuthRegion` global is single-slot and racy with two ACP
- * clients, so the ACP surface never touches it. */
-function authMethodRegion(methodId: string): RegionId | undefined {
-	if (methodId === KIMCHI_AGENT_AUTH_METHOD_ID || methodId === KIMCHI_SSO_AUTH_METHOD_ID) {
-		return resolveEndpoints().region
-	}
-	for (const prefix of [`${KIMCHI_AGENT_AUTH_METHOD_ID}-`, `${KIMCHI_SSO_AUTH_METHOD_ID}-`]) {
-		if (methodId.startsWith(prefix)) {
-			const suffix = methodId.slice(prefix.length)
-			return isRegionId(suffix) ? suffix : undefined
-		}
-	}
-	return undefined
 }
 
 /** Copy shown on the OAuth callback success page when the flow was launched by
  * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
  * must not assume the terminal CLI. */
 export const ACP_SUCCESS_MESSAGE = "You are now connected to Kimchi. You can close this window and start using it."
+
+/** IO deps for the SSO flow manager: region-aware Auth0 tenant config, the
+ * loopback callback server, token exchange, and org listing. The manager is
+ * created per connection (one-flow-per-connection rule). */
+const SSO_FLOW_MANAGER_DEPS: SsoFlowManagerDeps = {
+	configuredRegion: () => resolveEndpoints().region,
+	// Map the region id through the registry: oauthConfigForRegion
+	// consumes the full KimchiRegion (castApiUrl etc.).
+	oauthConfigForRegion: (region) => oauthConfigForRegion(REGIONS[region]),
+	startCallbackServer,
+	exchangeAuthorizationCode,
+	listUserOrganizations,
+}
 
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
@@ -303,10 +289,6 @@ export interface RunAcpOptions {
 	sessionLister?: AcpSessionLister
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
-	/** Override for tests. Defaults to the production {@link SsoFlowManager}.
-	 * Shared by the `kimchi-sso*` authenticate() path and the `_kimchi.dev/sso_*`
-	 * ext methods so one-flow-per-connection holds across both. */
-	ssoManager?: SsoFlowManager
 	/**
 	 * Isolated MCP probe used by `_kimchi.dev/probe_mcp_server`. Injected so
 	 * tests can stub it; production uses the upstream-adapter-backed probe.
@@ -561,24 +543,17 @@ export class KimchiAcpAgent implements Agent {
 	constructor(
 		private readonly conn: AgentSideConnection,
 		options: RunAcpOptions,
+		/** Test seam: production always builds the default manager. Shared by
+		 * the `kimchi-sso*` authenticate() path and the `_kimchi.dev/sso_*` ext
+		 * methods so one-flow-per-connection holds across both. */
+		ssoManager?: SsoFlowManager,
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 		this.mcpProbe = options.mcpProbe
-		this.sso =
-			options.ssoManager ??
-			new SsoFlowManager({
-				configuredRegion: () => resolveEndpoints().region,
-				// Map the region id through the registry: oauthConfigForRegion
-				// consumes the full KimchiRegion (castApiUrl etc.).
-				oauthConfigForRegion: (region) => oauthConfigForRegion(REGIONS[region]),
-				startCallbackServer,
-				exchangeAuthorizationCode,
-				listUserOrganizations,
-				settleCredential: (credential, org) => this.settleSsoCredential(credential, org),
-			})
+		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
 			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
@@ -600,7 +575,7 @@ export class KimchiAcpAgent implements Agent {
 
 		// ACP Registry compliance: advertise at least one auth method.
 		//
-		// CAST AI SSO first (LLM-4134): clients that pick the first advertised
+		// Cast AI SSO first: clients that pick the first advertised
 		// method get SSO as the default. `kimchi-sso` follows the configured
 		// region and is only advertised when that region has an Auth0 tenant
 		// (mirrors the TUI selector hiding SSO for self-hosted); the pinned
@@ -614,8 +589,8 @@ export class KimchiAcpAgent implements Agent {
 				? [
 						{
 							id: KIMCHI_SSO_AUTH_METHOD_ID,
-							name: "CAST AI SSO",
-							description: "Sign in with your CAST AI account",
+							name: "Cast AI SSO",
+							description: "Sign in with your Cast AI account",
 						},
 					]
 				: []),
@@ -665,8 +640,8 @@ export class KimchiAcpAgent implements Agent {
 					// as `resource_link` chunks carrying
 					// `_meta["kimchi.dev"].type = "artifact"`.
 					artifacts: true,
-					// CAST AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
-					// methods (LLM-4134). Clients gate their SSO UI on this flag.
+					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
+					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
 				}),
 			},
@@ -713,15 +688,10 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
 		}
 
-		// CAST AI SSO (OAuth code + PKCE) rides the stepwise ext-method manager
-		// (LLM-4134). Previously SSO was deliberately not offered here — ACP
-		// clients cannot answer the manual-code prompt the SSH/headless path
-		// needs — but the loopback callback works on localhost, so the plain
-		// path now opens the browser harness-side and auto-selects a single org;
-		// multi-org accounts fail with the actionable hand-off (no interactive
-		// org picker exists on this surface — contract §6.4). Studio itself
-		// drives the `_kimchi.dev/sso_*` ext methods instead and opens the URL
-		// itself; see sso.ts.
+		// Cast AI SSO (OAuth code + PKCE) rides the stepwise ext-method manager:
+		// the loopback callback works on localhost, so the plain path opens the
+		// browser harness-side. Studio drives the `_kimchi.dev/sso_*` ext methods
+		// itself; see ext-methods/sso.ts.
 		if (isSsoAuthMethodId(params.methodId)) {
 			return this.authenticateViaSso(region)
 		}
@@ -783,7 +753,7 @@ export class KimchiAcpAgent implements Agent {
 		return {}
 	}
 
-	/** Plain-authenticate CAST AI SSO path (non-Studio ACP clients): reuse the
+	/** Plain-authenticate Cast AI SSO path (non-Studio ACP clients): reuse the
 	 * stepwise ext-method flow but open the browser harness-side. Shares the
 	 * manager's one-flow-per-connection slot, so it serializes with the ext
 	 * methods (SSO_IN_PROGRESS protects against interleaved logins). */
@@ -802,25 +772,26 @@ export class KimchiAcpAgent implements Agent {
 				this.sso.cancel({ requestId: begin.requestId })
 				throw RequestError.internalError(
 					undefined,
-					`Could not open a browser for CAST AI sign-in. Open ${begin.authorizeUrl} manually, then retry.`,
+					`Could not open a browser for Cast AI sign-in. Open ${begin.authorizeUrl} manually, then retry.`,
 				)
 			}
 		}
 
-		// LLM-4138: sso_await settles directly to authenticated with the
+		// sso_await settles directly to authenticated with the
 		// browser-chosen org (selection happens on the Auth0-hosted login page).
 		// Any terminal failure — including the multi-org listing, which the
 		// manager maps to an actionable SSO_IDP_ERROR — propagates and consumes
 		// the flow, so a retry starts clean.
 		await this.sso.awaitResult({ requestId: begin.requestId })
+		const settled = this.sso.takeSettledCredential()
+		if (settled) await this.settleSsoCredential(settled.credential, settled.org)
 		return {}
 	}
 
 	/**
-	 * Settle tail of a successful CAST AI SSO login — shared by the
-	 * authenticate() path above and the `_kimchi.dev/sso_*` ext methods (via
-	 * the manager's settleCredential dep). Mirrors completeKimchiSsoLogin in
-	 * the login extension (TUI):
+	 * Settle tail of a successful Cast AI SSO login — shared by the
+	 * authenticate() path above and the `_kimchi.dev/sso_*` ext methods. Mirrors
+	 * completeKimchiSsoLogin in the login extension (TUI):
 	 *
 	 * 1. Drop a stale config.json apiKey: the startup sync mirrors it into
 	 *    auth.json and would overwrite the OAuth entries at the next launch.
@@ -1517,13 +1488,20 @@ export class KimchiAcpAgent implements Agent {
 					modelsPath: join(this.agentDir, "models.json"),
 				})
 			case AVAILABLE_EXT_METHODS.sso_begin:
-				// CAST AI SSO (LLM-4134): stepwise login driven by the client.
+				// Cast AI SSO: stepwise login driven by the client.
 				// Sessionless; the manager owns the one-flow-per-connection rule,
 				// region resolution (per-param, never setPendingOAuthRegion), and
 				// the typed data.code errors. See ext-methods/sso.ts.
 				return this.sso.begin(params)
-			case AVAILABLE_EXT_METHODS.sso_await:
-				return this.sso.awaitResult(params)
+			case AVAILABLE_EXT_METHODS.sso_await: {
+				// A settled browser leg persists nothing itself — the server applies
+				// the settle tail (persist + fan out + session refresh) so the
+				// manager stays free of agent-owned state.
+				const response = await this.sso.awaitResult(params)
+				const settled = this.sso.takeSettledCredential()
+				if (settled) await this.settleSsoCredential(settled.credential, settled.org)
+				return response
+			}
 			case AVAILABLE_EXT_METHODS.sso_cancel:
 				return this.sso.cancel(params)
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
