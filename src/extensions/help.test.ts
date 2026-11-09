@@ -147,8 +147,10 @@ describe("help — slash command list", () => {
 		}
 	})
 
-	it("marks multi-model as deprecated and describes /resources as the resources manager", () => {
-		expect(SLASH_COMMANDS["multi-model"].hint).toMatch(/deprecated/i)
+	it("no longer lists the deprecated /multi-model and describes /resources as the resources manager", () => {
+		// Multi-model is deprecated since the Auto default (#1357); the command
+		// still exists for role configuration but is not advertised.
+		expect(SLASH_COMMANDS).not.toHaveProperty("multi-model")
 		expect(SLASH_COMMANDS.resources.hint).toMatch(/hooks, tools, extensions/)
 		expect(SLASH_COMMANDS.resources.hint).not.toMatch(/files, URLs, images/)
 	})
@@ -169,7 +171,6 @@ describe("help — slash command list", () => {
 		for (const name of ["work", "theme", "processes", "branch", "update", "teleport", "status", "hooks"]) {
 			expect(text).toContain(`/${name}`)
 		}
-		expect(text).toContain("/multi-model")
-		expect(text).toMatch(/deprecated/)
+		expect(text).not.toContain("/multi-model")
 	})
 })

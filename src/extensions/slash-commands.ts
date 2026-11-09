@@ -9,7 +9,6 @@ export const SLASH_COMMANDS = {
 	settings: { hint: "Open settings menu" },
 	model: { hint: "Switch to a specific model" },
 	"scoped-models": { hint: "Enable or disable models for Ctrl+P cycling" },
-	"multi-model": { hint: "Configure model roles (deprecated — Auto routes models now)" },
 	theme: { hint: "Select color theme" },
 	"customize-status-line": { hint: "Choose which status line elements are shown" },
 	status: { hint: "Show version, login, session, model, and MCP status" },
