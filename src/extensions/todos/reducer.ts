@@ -20,7 +20,7 @@ export interface ReplaceListResult {
 	details: WriteTodosDetails
 }
 
-function normalizeText(value: unknown): string | undefined {
+export function normalizeText(value: unknown): string | undefined {
 	const text = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : ""
 	return text.length > 0 ? text : undefined
 }
@@ -40,7 +40,7 @@ function normalizeTodoId(value: unknown): number | undefined {
 	return value
 }
 
-function normalizeOptionalText(value: unknown): string | undefined {
+export function normalizeOptionalText(value: unknown): string | undefined {
 	if (value === undefined) return undefined
 	const text = normalizeText(value)
 	return text && text.length > 0 ? text : undefined

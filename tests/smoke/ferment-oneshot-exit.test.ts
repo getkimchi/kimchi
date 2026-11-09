@@ -176,10 +176,20 @@ function oneShotCompletionScript(): FakeResponseScript[] {
 				{
 					id: "call_step_plan",
 					function: {
-						name: "add_todo",
+						name: "todos",
 						arguments: JSON.stringify({
-							content: "Run the lifecycle worker through the Agent tool and submit its report",
-							status: "pending",
+							todos: [
+								{
+									id: 1,
+									content: "[Step 1] Exercise a linked worker before completing the one-shot ferment.",
+									status: "in_progress",
+									activeForm: "Exercise a linked worker before completing the one-shot ferment.",
+								},
+								{
+									content: "Run the lifecycle worker through the Agent tool and submit its report",
+									status: "pending",
+								},
+							],
 						}),
 					},
 				},

@@ -481,11 +481,7 @@ describe("registry churn resnapshot", () => {
 		"list_ferments",
 		"questionnaire",
 		"submit_plan",
-		"create_todos",
-		"update_todos",
-		"add_todo",
-		"mark_todo",
-		"clear_todos",
+		"todos",
 		"Agent",
 		"set_phase",
 		"dispatch_to_cloud_agent",
@@ -494,10 +490,10 @@ describe("registry churn resnapshot", () => {
 		"set_model",
 		"list_models",
 	]
-	const PARTIAL_TOOLS_28 = FULL_TOOLS.filter(
+	const PARTIAL_TOOLS_24 = FULL_TOOLS.filter(
 		(n) => !["skill_view", "list_ferments", "set_phase", "list_models"].includes(n),
 	)
-	const PARTIAL_TOOLS_14 = PARTIAL_TOOLS_28.filter(
+	const PARTIAL_TOOLS_NARROW = PARTIAL_TOOLS_24.filter(
 		(n) =>
 			!["edit", "write", "bash_control", "mcp", "Agent", "dispatch_to_cloud_agent", "set_model"].includes(n) &&
 			!n.startsWith("mcp__"),
@@ -509,24 +505,24 @@ describe("registry churn resnapshot", () => {
 	it("a reapply against a mid-rebuild registry preserves the previously active tools", () => {
 		const pi = makeMockPi({ allTools: asTools(FULL_TOOLS) })
 		apply("idle", "adhoc", pi)
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(28)
 
-		// Registry shows 28 of 32.
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_28))
+		// Registry shows 24 of 28.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_24))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
 		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(28)
 
-		// Registry down to 14: the narrowing must not stack.
-		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_14))
+		// Registry narrowed further: the narrowing must not stack.
+		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(PARTIAL_TOOLS_NARROW))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
 		expect(lastActiveCall(pi)).toEqual(expect.arrayContaining(FULL_TOOLS))
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(28)
 
 		// Registry rebuilt; the next reapply converges.
 		;(pi.getAllTools as ReturnType<typeof vi.fn>).mockReturnValue(asTools(FULL_TOOLS))
 		expect(reapplyCurrentProfile(pi)).toBe(true)
-		expect(pi.getActiveTools()).toHaveLength(32)
+		expect(pi.getActiveTools()).toHaveLength(28)
 	})
 
 	it("implementation-ferment preserves previously active tools through a partial rebuild", () => {

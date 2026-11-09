@@ -87,7 +87,7 @@ export interface SteerOutcomePayload {
 	 *  todo check-in gate to distinguish reconciliation by write vs confirm
 	 *  and failed confirmation attempts (wrong expected set, stale input
 	 *  revision). Closed vocabulary — no free text. */
-	method?: "write" | "confirm" | "mismatch" | "stale_revision"
+	method?: "write" | "confirm" | "stale_revision"
 	/** steer_id of the fire this outcome belongs to. Emitters that track the
 	 *  fire pass it explicitly (the watcher-based kinds); everyone else is
 	 *  attributed automatically to the most recent fire of the same kind in

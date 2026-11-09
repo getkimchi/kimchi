@@ -20,7 +20,7 @@ for (const scenario of ["completed", "deferred", "ignored"] as const) {
 				artifactName: `todo-cleanup-${scenario}`,
 				models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 				responses: [
-					tool("create_todos", {
+					tool("todos", {
 						todos: [
 							{
 								content: deferred ? "Publish after approval" : "Verify input",
@@ -37,14 +37,40 @@ for (const scenario of ["completed", "deferred", "ignored"] as const) {
 					...(scenario === "ignored"
 						? [{ stream: ["Cleanup check finished."] } satisfies FakeResponseScript]
 						: [
-								tool("mark_todo", { id: 2, status: "completed" }),
-								tool("mark_todo", { id: 3, status: "completed" }),
-								tool(
-									"mark_todo",
-									deferred
-										? { id: 1, status: "pending", note: "Deferred until explicit approval" }
-										: { id: 1, status: "completed" },
-								),
+								tool("todos", {
+									todos: [
+										{
+											id: 1,
+											content: deferred ? "Publish after approval" : "Verify input",
+											status: deferred ? "pending" : "in_progress",
+										},
+										{ id: 2, content: "Collect results", status: "completed" },
+										{ id: 3, content: "Compare results", status: "pending" },
+									],
+								}),
+								tool("todos", {
+									todos: [
+										{
+											id: 1,
+											content: deferred ? "Publish after approval" : "Verify input",
+											status: deferred ? "pending" : "in_progress",
+										},
+										{ id: 2, content: "Collect results", status: "completed" },
+										{ id: 3, content: "Compare results", status: "completed" },
+									],
+								}),
+								tool("todos", {
+									todos: [
+										{
+											id: 1,
+											content: deferred ? "Publish after approval" : "Verify input",
+											status: deferred ? "pending" : "completed",
+											...(deferred ? { note: "Deferred until explicit approval" } : {}),
+										},
+										{ id: 2, content: "Collect results", status: "completed" },
+										{ id: 3, content: "Compare results", status: "completed" },
+									],
+								}),
 								{ stream: ["Cleanup check finished."] },
 							]),
 				],
@@ -97,18 +123,26 @@ test("check-in gate: changed-direction input reconciles the list before work res
 			artifactName: "todo-checkin-direction-change",
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
-				// Turn 1: plan only. The create_todos write reconciles, so the
+				// Turn 1: plan only. The todos write reconciles, so the
 				// text-only answer needs no cleanup continuation.
-				tool("create_todos", { todos: [{ content: "Publish after approval", status: "pending" }] }),
+				tool("todos", { todos: [{ content: "Publish after approval", status: "pending" }] }),
 				{ stream: ["Publishing is deferred."] },
 				// Turn 2 (new direction): reconcile first, then work, then ask.
-				tool("mark_todo", { id: 1, status: "in_progress", note: "Verifying before publish" }),
+				tool("todos", {
+					todos: [
+						{ id: 1, content: "Publish after approval", status: "in_progress", note: "Verifying before publish" },
+					],
+				}),
 				tool("bash", { command: "printf '42\\n'" }),
 				{ stream: ["Verified 42. Should I publish?"] },
 				// Turn 3: text-only reply with the check still pending — the
 				// bounded closure check (no work tools in this request) fires.
 				{ stream: ["The total is 42."] },
-				tool("mark_todo", { id: 1, status: "pending", note: "Deferred until explicit approval" }),
+				tool("todos", {
+					todos: [
+						{ id: 1, content: "Publish after approval", status: "pending", note: "Deferred until explicit approval" },
+					],
+				}),
 				{ stream: ["Cleanup check finished."] },
 				// No work tool ran in this run, so the general continuation nudge
 				// still applies to the final text-only reply.
@@ -163,16 +197,18 @@ test("check-in gate: unchanged plan confirms without a write, then work proceeds
 			artifactName: "todo-checkin-confirm",
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
-				tool("create_todos", { todos: [{ content: "Publish after approval", status: "pending" }] }),
+				tool("todos", { todos: [{ content: "Publish after approval", status: "pending" }] }),
 				{ stream: ["Publishing is deferred."] },
-				// Turn 2: the plan still fits — confirm the exact id+status set
-				// (input revision 2) instead of writing, then work.
-				tool("confirm_todos", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+				// Turn 2: the plan still fits — confirm the unchanged list at
+				// input revision 2 instead of writing, then work.
+				tool("todos", { confirm: 2 }),
 				tool("bash", { command: "printf '42\\n'" }),
 				{ stream: ["Verified 42. Publishing still waits for approval."] },
 				// Work completed after the confirmation, so the bounded terminal
 				// closure check stays eligible: one cleanup continuation.
-				tool("mark_todo", { id: 1, status: "pending", note: "Deferred until approval" }),
+				tool("todos", {
+					todos: [{ id: 1, content: "Publish after approval", status: "pending", note: "Deferred until approval" }],
+				}),
 				{ stream: ["Cleanup check finished."] },
 			],
 		},
@@ -187,8 +223,8 @@ test("check-in gate: unchanged plan confirms without a write, then work proceeds
 			await waitForTurnToSettle(fixture.fake.requests)
 			// The gate arms silently at receipt: the turn's first request
 			// carries the user's direction with no harness reminder riding it.
-			// The scripted confirm (exact id+status set, revision 2) released
-			// the work tools without a store write.
+			// The scripted confirm (revision 2) released the work tools
+			// without a store write.
 			expect(chat()).toHaveLength(7)
 			const confirmTurn = chat()[2].body as { messages: { role: string; content: unknown }[] }
 			expect(JSON.stringify(confirmTurn.messages)).toContain("the publishing plan is unchanged")
@@ -211,16 +247,16 @@ test("check-in gate: ignoring staleness reminders escalates, a wrong confirm is 
 			artifactName: "todo-checkin-staleness-escalation",
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
-				tool("create_todos", { todos: [{ content: "Long task", status: "in_progress" }] }),
+				tool("todos", { todos: [{ content: "Long task", status: "in_progress" }] }),
 				// Fifty successful work calls without touching the list:
 				// reminders at 10/20/30/40/50, then the gate opens.
 				...Array.from({ length: 50 }, (_, index) => bash(index)),
 				// This call is blocked by the gate…
 				tool("bash", { command: "printf 'never runs\\n'" }),
-				// …the first confirmation attempt is wrong (status mismatch)…
-				tool("confirm_todos", { inputRevision: 1, expected: [{ id: 1, status: "completed" }] }),
-				// …the second one matches the current list and resumes work.
-				tool("confirm_todos", { inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }),
+				// …the first confirmation carries the wrong revision (rejected)…
+				tool("todos", { confirm: 2 }),
+				// …the second carries the pending revision and resumes work.
+				tool("todos", { confirm: 1 }),
 				tool("bash", { command: "printf 'resumed\\n'" }),
 				{ stream: ["All checked in and verified."] },
 			],
@@ -237,12 +273,12 @@ test("check-in gate: ignoring staleness reminders escalates, a wrong confirm is 
 			// The gate blocked the 51st work call with the check-in reason.
 			expect(history).toContain("check-in pending (input revision 1)")
 			// The wrong confirmation was rejected with the actual state…
-			expect(history).toContain("status mismatches")
+			expect(history).toContain("accepted input revision is now 1")
 			expect(history).toContain("[in_progress] #1 Long task")
 			// …and work resumed after the matching confirmation.
 			expect(viewText(terminal)).toContain("All checked in and verified.")
 			expect(viewText(terminal)).toContain("0/1")
-			trace.step("ignored reminders → gate → mismatch → confirm → work")
+			trace.step("ignored reminders → gate → stale revision → confirm → work")
 		},
 	)
 })
@@ -257,7 +293,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 			responses: [
 				// Turn 1: create the planning todo (the write reconciles).
-				tool("create_todos", { todos: [{ content: "Write the plan", status: "in_progress" }] }),
+				tool("todos", { todos: [{ content: "Write the plan", status: "in_progress" }] }),
 				// Work completed while finalizing the plan, without a reflecting
 				// todo write — the list goes structurally stale.
 				bash(1),
@@ -270,7 +306,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 				// Approval turn: the first work tool is blocked by the armed gate…
 				tool("bash", { command: "printf 'never runs\n'" }),
 				// …the model reconciles (the plan was written and submitted)…
-				tool("mark_todo", { id: 1, status: "completed" }),
+				tool("todos", { todos: [{ id: 1, content: "Write the plan", status: "completed" }] }),
 				// …and execution work proceeds.
 				tool("bash", { command: "printf 'executed\n'" }),
 				{ stream: ["Plan executed. Ready for the next task."] },
@@ -322,7 +358,7 @@ test("check-in gate: input while gated requires reconciliation against the lates
 			responses: [
 				// Turn 1: create the list, then answer. The create reconciles for
 				// revision 1, so the text-only answer needs no cleanup continuation.
-				tool("create_todos", { todos: [{ content: "Verify the input", status: "pending" }] }),
+				tool("todos", { todos: [{ content: "Verify the input", status: "pending" }] }),
 				{ stream: ["Tracking the task now."] },
 				// Turn 2 (input revision 2 — changed direction): work tools are
 				// blocked while the check is pending; a repeated attempt returns
@@ -337,10 +373,10 @@ test("check-in gate: input while gated requires reconciliation against the lates
 				// holds revision 2 from the block reason it saw, so its
 				// confirmation is stale — rejected with the current revision and
 				// the check stays pending.
-				tool("confirm_todos", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+				tool("todos", { confirm: 2 }),
 				// Reconciling against the latest direction (revision 3) is what
 				// unlocks the work tools.
-				tool("confirm_todos", { inputRevision: 3, expected: [{ id: 1, status: "pending" }] }),
+				tool("todos", { confirm: 3 }),
 				tool("bash", { command: "printf 'resumed with the new direction\\n'" }),
 				{ stream: ["All done with the new direction."] },
 				// Keepalive for the bounded closure/continuation turn after the
@@ -364,7 +400,7 @@ test("check-in gate: input while gated requires reconciliation against the lates
 			expect(history).toContain("check-in pending (input revision 2)")
 			// The newer direction superseded the pending check: the model's
 			// revision-2 confirmation was rejected as stale…
-			expect(history).toContain("The accepted input revision is now 3 (you confirmed revision 2)")
+			expect(history).toContain("The accepted input revision is now 3 (you confirmed 2)")
 			// …and only reconciliation against revision 3 released the work
 			// tools — no block ever carried revision 3, and work resumed.
 			expect(history).toContain("Confirmed 1 todos")
@@ -390,12 +426,16 @@ test("check-in gate: a mid-run message during a bash_control wait is delivered a
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
 			responses: [
 				// Turn 1: list exists; the create write reconciles turn 1's input.
-				tool("create_todos", { todos: [{ content: "Watch the long render", status: "in_progress" }] }),
+				tool("todos", { todos: [{ content: "Watch the long render", status: "in_progress" }] }),
 				{ stream: ["Watching the render."] },
 				// Turn 2: the input arms the gate (rev 2), so the model
 				// reconciles first (a write closes the check), then spawns a
 				// long background command and parks in a bash_control wait.
-				tool("mark_todo", { id: 1, status: "in_progress", note: "Tracking the render watch" }),
+				tool("todos", {
+					todos: [
+						{ id: 1, content: "Watch the long render", status: "in_progress", note: "Tracking the render watch" },
+					],
+				}),
 				{
 					stream: ["Waiting for the render to finish."],
 					toolCalls: [
@@ -406,7 +446,9 @@ test("check-in gate: a mid-run message during a bash_control wait is delivered a
 				// Turn 3: answer the mid-run message; the text-only run with
 				// an unfinished list gets its one bounded cleanup continuation.
 				{ stream: ["Render watch paused — what should change?"] },
-				tool("mark_todo", { id: 1, status: "pending", note: "Deferred until approval" }),
+				tool("todos", {
+					todos: [{ id: 1, content: "Watch the long render", status: "pending", note: "Deferred until approval" }],
+				}),
 				{ stream: ["Cleanup check finished."] },
 				{ stream: ["<done>"] },
 			],

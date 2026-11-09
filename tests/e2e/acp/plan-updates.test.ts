@@ -1,7 +1,7 @@
 // ACP integration: todo writes surface as stable-v1 `plan` session updates.
 //
 // IDEs (Zed natively) render `sessionUpdate: "plan"` as a live checklist.
-// This test drives create_todos / update_todos / clear_todos tool calls via a
+// This test drives todos writes (including an empty-list clear) via a
 // scripted model and asserts the plan snapshots the client receives: full-
 // replacement semantics, the mapped entry lifecycle (incl. activeForm content
 // and blocked Todo metadata), scope metadata under Plan._meta, empty entries
@@ -88,7 +88,16 @@ function fermentLifecycleResponses() {
 		// step list (its unfinished title anchor) before further work tools
 		// are admitted — marking the anchor is the natural reconciliation when
 		// completing the step. Auto-scopes to the active step list.
-		toolCallResponse("mark_todo", { id: 1, status: "completed" }),
+		toolCallResponse("todos", {
+			todos: [
+				{
+					id: 1,
+					content: `[Step 1] ${STEP_DESCRIPTION}`,
+					status: "completed",
+					activeForm: STEP_DESCRIPTION,
+				},
+			],
+		}),
 		toolCallResponse("complete_ferment_step", {
 			...ids,
 			step_id: STEP_ID,
@@ -185,7 +194,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 	it("emits replacement plan snapshots across create, update, and clear", async () => {
 		await startWith([
 			// Turn 1: create two todos, one in progress with an activeForm.
-			toolCallResponse("create_todos", {
+			toolCallResponse("todos", {
 				todos: [
 					{ id: 1, content: "wire emission", status: "in_progress", activeForm: "wiring emission" },
 					{ id: 2, content: "deploy", status: "blocked", note: "waiting on ops" },
@@ -193,7 +202,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 			}),
 			textResponse("Todos created."),
 			// Turn 2: complete the first, unblock the second into in_progress.
-			toolCallResponse("update_todos", {
+			toolCallResponse("todos", {
 				todos: [
 					{ id: 1, content: "wire emission", status: "completed" },
 					{ id: 2, content: "deploy", status: "in_progress", activeForm: "deploying" },
@@ -201,7 +210,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 			}),
 			textResponse("Todos updated."),
 			// Turn 3: clear the list entirely.
-			toolCallResponse("clear_todos", {}),
+			toolCallResponse("todos", { todos: [] }),
 			textResponse("Todos cleared."),
 		])
 		const sessionId = await newSession(fixture, fixture.workDir)
@@ -257,7 +266,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 
 	it("scopes plan notifications to the owning session", async () => {
 		await startWith([
-			toolCallResponse("create_todos", {
+			toolCallResponse("todos", {
 				todos: [{ id: 1, content: "session B task", status: "pending" }],
 			}),
 			textResponse("Session B todos created."),
@@ -276,7 +285,7 @@ describe("ACP integration — plan updates from todo writes", () => {
 	it("emits regular Todo updates while the session is in plan mode", async () => {
 		await startWith(
 			[
-				toolCallResponse("create_todos", {
+				toolCallResponse("todos", {
 					todos: [{ id: 1, content: "research the change", status: "in_progress" }],
 				}),
 				textResponse("Planning todos created."),

@@ -40,11 +40,14 @@ describe("todo session replay helpers", () => {
 		expect(isTodoWriteToolName("bash")).toBe(false)
 	})
 
-	it("accepts only valid todo result details", () => {
+	it("accepts only valid todo write result details", () => {
 		expect(isWriteTodosDetails(validDetails())).toBe(true)
 		expect(isWriteTodosDetails(validDetails({ schemaVersion: 999 as never }))).toBe(false)
 		expect(isWriteTodosDetails(validDetails({ todos: "not-an-array" as never }))).toBe(false)
 		expect(isWriteTodosDetails(null)).toBe(false)
+		// Confirm results share the shape but made no store change — replaying
+		// them on restore would invent a write.
+		expect(isWriteTodosDetails({ ...validDetails(), confirm: true })).toBe(false)
 	})
 
 	it("extracts details from custom and tool result entries", () => {

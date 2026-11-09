@@ -21,7 +21,7 @@ import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js
 import { getTodoScopeKey, normalizeTodoScope, validateExplicitTodoScope } from "../todos/scope.js"
 import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "../todos/session.js"
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+import { projectTodoCall, TODO_TOOL_NAMES, type TodosToolParams } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import {
@@ -157,7 +157,11 @@ function completesCurrentTodoList(
 	if (!todoState?.total) return false
 	const calls: ToolCall[] = []
 	for (const block of message.content) {
-		if (block.type === "toolCall" && isTodoWriteToolName(block.name)) calls.push(block)
+		// Fresh completion detection uses live tool names only: retired todo
+		// verbs classify as writes on the read side (transcripts, injects), but
+		// a fresh call to one errors as an unknown tool and its args never
+		// landed — it must not satisfy completion.
+		if (block.type === "toolCall" && (TODO_TOOL_NAMES as readonly string[]).includes(block.name)) calls.push(block)
 	}
 	if (!calls.length) return false
 	const argumentsFor = (call: (typeof calls)[number]): Record<string, unknown> | undefined =>
@@ -167,33 +171,21 @@ function completesCurrentTodoList(
 		if (explicit.error) return false
 		return getTodoScopeKey(explicit.scope ?? resolveTodoScope(sessionId)) === currentScopeKey
 	}
-	if (calls.every((call) => call.name === MARK_TODO_TOOL_NAME)) {
-		const completedIds = new Set<number>()
-		const todoIds = new Set(todoState.todos.map((todo) => todo.id))
-		for (const call of calls) {
-			const args = argumentsFor(call)
-			if (
-				!args ||
-				!targetsCurrentScope(args) ||
-				typeof args.id !== "number" ||
-				!todoIds.has(args.id) ||
-				args.status !== "completed"
-			)
-				return false
-			completedIds.add(args.id)
-		}
-		return todoState.todos.every((todo) => todo.status === "completed" || completedIds.has(todo.id))
-	}
-	if (calls.length !== 1 || calls[0].name !== UPDATE_TODOS_TOOL_NAME) return false
+	if (calls.length !== 1) return false
 	const args = argumentsFor(calls[0])
+	if (!args || !targetsCurrentScope(args)) return false
+	// Confirm calls close a check-in — they cannot complete a step. All
+	// other calls are judged by what they would store: an edit that flips
+	// the last open item counts exactly like a full completed list.
+	if (typeof args.confirm === "number") return false
+	const explicit = validateExplicitTodoScope(args.scope)
+	const scope = explicit.scope ?? resolveTodoScope(sessionId)
+	const projection = projectTodoCall(getTodosForScope(scope, sessionId), args as unknown as TodosToolParams)
 	return Boolean(
-		args &&
-			targetsCurrentScope(args) &&
-			Array.isArray(args.todos) &&
-			args.todos.length > 0 &&
-			args.todos.every(
-				(todo) =>
-					isRecord(todo) && typeof todo.content === "string" && todo.content.trim() && todo.status === "completed",
+		projection.kind === "projected" &&
+			projection.todos.length > 0 &&
+			projection.todos.every(
+				(todo) => typeof todo.content === "string" && todo.content.trim() && todo.status === "completed",
 			),
 	)
 }

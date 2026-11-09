@@ -152,8 +152,17 @@ test("stage compaction makes the next request carry the summary instead of the o
 					toolCalls: [
 						{
 							function: {
-								name: "mark_todo",
-								arguments: JSON.stringify({ id: 1, status: "completed" }),
+								name: "todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											id: 1,
+											content: "[Step 1] Emit a large blob and complete the step.",
+											status: "completed",
+											activeForm: "Emit a large blob and complete the step.",
+										},
+									],
+								}),
 							},
 						},
 					],

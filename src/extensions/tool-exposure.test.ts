@@ -333,12 +333,7 @@ const UPSTREAM_BUILTINS = ["read", "bash", "edit", "write", "grep", "find", "ls"
 const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	...UPSTREAM_BUILTINS,
 	// todos
-	"create_todos",
-	"update_todos",
-	"mark_todo",
-	"add_todo",
-	"clear_todos",
-	"confirm_todos",
+	"todos",
 	// web-search / web-fetch / questionnaire — web_fetch is part of the
 	// static surface (cache-stable tool surface: a mid-session reveal
 	// invalidates the prompt cache for everything after the tools block).
@@ -453,13 +448,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 21-tool surface and hides the 24 deferred tools", async () => {
+	it("advertises exactly the documented 16-tool surface and hides the 24 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(21)
+		expect(visible.size).toBe(16)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -490,7 +485,7 @@ describe("tool exposure at session start", () => {
 			)
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
-			expect(visible.size).toBe(17)
+			expect(visible.size).toBe(12)
 			for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
 				expect(harness.registered.has(name), `${name} must stay registered in --print`).toBe(true)
 			}

@@ -27,13 +27,13 @@ function textResponse(text: string) {
 	return { stream: [text] }
 }
 
-function todoToolCall(name: "create_todos" | "update_todos", contents: TodoLike[]) {
+function todoToolCall(contents: TodoLike[]) {
 	return {
 		stream: ["Updating todos."],
 		toolCalls: [
 			{
 				function: {
-					name,
+					name: "todos",
 					arguments: JSON.stringify({
 						todos: contents.map((todo, index) => ({
 							id: index + 1,
@@ -72,19 +72,19 @@ describe("ACP integration — todo session isolation", () => {
 			artifactName: "todo-session-isolation",
 			responses: [
 				// Session A turn 1: create two todos.
-				todoToolCall("create_todos", [
+				todoToolCall([
 					{ content: "alpha for A", status: "pending" },
 					{ content: "beta for A", status: "in_progress" },
 				]),
 				textResponse("Created todos for session A."),
 				// Session B turn 1: create two different todos.
-				todoToolCall("create_todos", [
+				todoToolCall([
 					{ content: "alpha for B", status: "pending" },
 					{ content: "beta for B", status: "pending" },
 				]),
 				textResponse("Created todos for session B."),
 				// Session A turn 2: mark alpha completed.
-				todoToolCall("update_todos", [
+				todoToolCall([
 					{ content: "alpha for A", status: "completed" },
 					{ content: "beta for A", status: "in_progress" },
 				]),

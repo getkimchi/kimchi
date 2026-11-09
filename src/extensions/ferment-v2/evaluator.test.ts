@@ -1317,7 +1317,7 @@ describe("Ferment V2 evaluator", () => {
 				toolName: "read",
 				toolCallId: "call-readme",
 			}),
-			...linkedToolMessages("call-todo", "mark_todo", { id: 1, status: "completed" }, "Todo completed"),
+			...linkedToolMessages("call-todo", "todos", { id: 1, status: "completed" }, "Todo completed"),
 			transcriptMessage("assistant", "Two sources verified."),
 		]
 
