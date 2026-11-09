@@ -23,13 +23,14 @@ import {
  */
 
 /**
- * A pending attachment assembled before submission. Clipboard-pasted images
- * have `inlineId: null` and are prefix-numbered at submit; editor path drops
- * carry the `[Image #N]` number shown inline when the user dropped the file.
+ * A pending attachment assembled before submission. Clipboard pastes and
+ * editor path drops both render a `[Image #N]` marker inline at the cursor
+ * when they attach, carrying that number in `inlineId`; `null` is kept for
+ * attachments without an inline origin.
  */
 export interface PendingImage {
 	image: ImageContent
-	/** Inline `[Image #N]` number assigned at drop time; null for clipboard pastes. */
+	/** Inline `[Image #N]` number assigned at paste/drop time. */
 	inlineId: number | null
 	/** Absolute file path for dropped-path images. */
 	sourcePath?: string

@@ -224,8 +224,15 @@ async function handlePaste(): Promise<void> {
 		data: base64,
 		mimeType: image.mimeType,
 	}
-	pendingImages.push({ image: imageContent, inlineId: null })
+	// Same inline-marker flow as editor drops: the paste takes the session's
+	// next number up front and renders `[Image #N]` inline at the cursor, so
+	// the draft shows the attachment instead of hiding it behind the pending
+	// indicator. The number continues the session sequence (imageCounter +
+	// pending), matching the id the image receives at submit.
+	const n = imageCounter + pendingImages.length + 1
+	pendingImages.push({ image: imageContent, inlineId: n })
 	updateIndicator()
+	insertTextAtPromptCursor(`[Image #${n}]`)
 	// Paste is accepted regardless of the current model's capabilities — the
 	// submit-time vision gate is the single choke point. The text-only hint
 	// rides the pending-image indicator (not a chat warning, which cannot be
@@ -430,12 +437,13 @@ export default function clipboardImageExtension(pi: ExtensionAPI): void {
 		pendingImages = []
 		updateIndicator()
 
-		// An inline `[Image #N]` marker still present in the draft keeps its
-		// drop-time number — the id the user saw in the editor is the id the
-		// image is registered under, and no prefix marker is duplicated in
-		// front of the text. Everything else (clipboard pastes, typed paths)
-		// is prefix-numbered from the session counter, skipping numbers
-		// claimed by inline markers.
+		// An inline `[Image #N]` marker still present in the draft keeps the
+		// number it was assigned at paste/drop time — the id the user saw in
+		// the editor is the id the image is registered under, and no prefix
+		// marker is duplicated in front of the text. Everything without an
+		// inline number (upstream incoming images, typed paths) is
+		// prefix-numbered from the session counter, skipping numbers claimed
+		// by inline markers.
 		// Every marker id mentioned in the draft is claimed — including typed
 		// markers that resolved via the registry or matched nothing at all —
 		// so prefix-numbered attachments never collide with visible markers.

@@ -735,24 +735,26 @@ describe("clipboard-image extension", () => {
 			})
 		})
 
-		it("clipboard paste + drop submit numbers each attachment correctly", async () => {
+		it("clipboard paste + drop keep their inline numbers at submit", async () => {
 			mockReadClipboardImage.mockResolvedValue({ bytes: PNG_BYTES, mimeType: "image/png" })
 			const { pi, ctx } = startVisionSession()
 			pasteHandler?.()
 			await settle()
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
 			const p = join(tmpDir, "shot.webp")
 			writeFileSync(p, PNG_BYTES)
 			drop(p)
 			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
 
 			const result = (await callInput(pi, ctx, {
-				text: "check [Image #2]",
+				text: "[Image #1] check [Image #2]",
 				images: [],
 				source: "interactive",
 			})) as { text: string; images: ImageContent[] }
 			expect(result.text).toBe("[Image #1] check [Image #2]")
 			expect(result.images).toHaveLength(2)
-			// #1 is the clipboard paste (prefix-numbered), #2 the dropped webp.
+			// #1 is the clipboard paste, #2 the dropped webp — both keep the
+			// inline numbers they attached under.
 			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
 			expect(mockAddImage).toHaveBeenCalledWith(2, expect.objectContaining({ mimeType: "image/webp" }))
 		})
@@ -793,6 +795,39 @@ describe("clipboard-image extension", () => {
 	})
 
 	describe("paste", () => {
+		it("inserts an inline [Image #N] marker at the cursor, continuing the session sequence", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+			await callInput(pi, ctx, { text: "setup", images: [img("first-turn")], source: "interactive" })
+
+			mockReadClipboardImage.mockResolvedValue({ bytes: Buffer.from([1, 2, 3, 4]), mimeType: "image/png" })
+			pasteHandler?.()
+			await settle()
+
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
+			expect(mockSetPendingImageIndicator).toHaveBeenLastCalledWith(expect.stringContaining("📎 1 image"))
+		})
+
+		it("a paste whose marker was deleted attaches nothing — the draft rules", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const ctx = makeMockCtx()
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue({ bytes: Buffer.from([1, 2, 3, 4]), mimeType: "image/png" })
+			pasteHandler?.()
+			await settle()
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
+
+			// The draft the user submits has no marker (deleted by hand) — same
+			// detach rules as dropped images: no silent re-attach.
+			const result = await callInput(pi, ctx, { text: "just text", images: [], source: "interactive" })
+			expect(result).toBeUndefined()
+			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
 		it("accepts the paste on a text-only model and shows the hint as an indicator segment, not a chat warning", async () => {
 			const pi = makeMockPi()
 			clipboardImageExtension(pi)
@@ -907,8 +942,9 @@ describe("clipboard-image extension", () => {
 
 			expect(mockReadClipboardImage).toHaveBeenCalledTimes(1)
 			expect(mockSetPendingImageIndicator).toHaveBeenCalledWith(expect.stringContaining("📎 1 image"))
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
 
-			const result = (await callInput(pi, ctx, { text: "look", images: [], source: "interactive" })) as {
+			const result = (await callInput(pi, ctx, { text: "[Image #1] look", images: [], source: "interactive" })) as {
 				text: string
 				images: ImageContent[]
 			}
@@ -1014,15 +1050,16 @@ describe("clipboard-image extension", () => {
 			})
 			pasteHandler?.()
 			await settle()
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #1]")
 
 			// Submit: the gate opens.
-			const resultP = callInput(pi, ctx, { text: "hello", images: [], source: "interactive" })
+			const resultP = callInput(pi, ctx, { text: "[Image #1] hello", images: [], source: "interactive" })
 			expect(custom).toHaveBeenCalledTimes(1)
 			dialogResolvers[0]?.({ kind: "cancel" })
 			await expect(resultP).resolves.toEqual({ action: "handled" })
 
 			// Resubmit the same draft: still one pasted image, gate reopens.
-			const resultP2 = callInput(pi, ctx, { text: "hello", images: [], source: "interactive" })
+			const resultP2 = callInput(pi, ctx, { text: "[Image #1] hello", images: [], source: "interactive" })
 			expect(custom).toHaveBeenCalledTimes(2)
 			dialogResolvers[1]?.({ kind: "switch", model: SWITCH_TARGET })
 			const result = (await resultP2) as { action: string; text: string; images: ImageContent[] }
@@ -1030,6 +1067,32 @@ describe("clipboard-image extension", () => {
 			expect(result.images).toHaveLength(1)
 			expect(result.text).toBe("[Image #1] hello")
 			expect(mockAddImage).toHaveBeenCalledTimes(1)
+		})
+
+		it("gate remove strips the pasted marker from the text", async () => {
+			const pi = makeMockPi()
+			clipboardImageExtension(pi)
+			const dialogResolvers: Array<(result: unknown) => void> = []
+			const custom = vi.fn(
+				() =>
+					new Promise((resolve) => {
+						dialogResolvers.push(resolve)
+					}),
+			)
+			const ctx = makeMockCtx({ model: TEXT_MODEL, ui: { custom: custom as ExtensionContext["ui"]["custom"] } })
+			startSession(pi, ctx)
+
+			mockReadClipboardImage.mockResolvedValue({ bytes: Buffer.from([9, 9, 9]), mimeType: "image/png" })
+			pasteHandler?.()
+			await settle()
+
+			const resultP = callInput(pi, ctx, { text: "[Image #1] hello", images: [], source: "interactive" })
+			dialogResolvers[0]?.({ kind: "remove" })
+
+			// The image is dropped and its inline marker is stripped — the marker
+			// references an attachment that is gone.
+			await expect(resultP).resolves.toEqual({ action: "transform", text: "hello", images: [] })
+			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 	})
 
