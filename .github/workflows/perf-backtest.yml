@@ -1,8 +1,9 @@
-# TEMPORARY — release re-crawl for the perf gate: re-measures every release
-# since v1.0.0 plus master and the unreleased fix stacks with the current
-# harness (gated + advisory lanes) for the release-series report. Runs only
-# on pushes to this PR that touch the two backtest files; the labelled SHA
-# list and this workflow's temporary edits come out before merge.
+# Release-series backtest: re-measures any set of releases (default: every
+# release since v1.0.0 plus the master baseline) with the current harness
+# (gated + advisory lanes) for the release-series report. Dispatched on
+# demand — the label drives the artifact name. With calibrate=true the gate
+# also rewrites budgets.json from a fully green run and uploads it for
+# review; nothing is committed by CI.
 name: Perf gate backtest
 
 on:
@@ -16,10 +17,6 @@ on:
         description: "Rewrite budgets.json from this run (uploaded as an artifact for review)"
         default: "false"
         required: false
-  pull_request:
-    paths:
-      - '.github/workflows/perf-backtest.yml'
-      - 'backtest-shas.txt'
 
 permissions:
   contents: read
