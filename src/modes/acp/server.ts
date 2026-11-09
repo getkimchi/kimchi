@@ -123,7 +123,18 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
-import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import type {
+	PermissionMode,
+	PermissionModeState,
+	SessionPermissionFlagController,
+} from "../../extensions/permissions/types.js"
+import { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
+import {
+	EXEC_DEREF_TOOLS,
+	substituteTokens,
+	substituteTokensDeep,
+	vaultForSession,
+} from "../../extensions/pii-redaction/vault.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
@@ -351,6 +362,15 @@ function cancelPendingPrompts(entry: SessionRecord): void {
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
+	/**
+	 * The prompter THIS record registered — threaded so every teardown of
+	 * the registry slot identity-checks it: a close/abort await window lets
+	 * a same-id respawn register first, and a by-key delete would then evict
+	 * the RESPAWN's live prompter.
+	 */
+	ownPrompter?: ReturnType<typeof createAcpPermissionPrompter>
+	/** Same identity discipline as ownPrompter, for the mode-controller registry slot. */
+	ownFlagController?: SessionPermissionFlagController
 	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
 	// its cwd private, but the ACP server needs it to resolve relative tool
 	// paths (pre-write reads for per-turn diffs).
@@ -398,6 +418,16 @@ type SessionRecord = {
 	 * message's last emitted block id.
 	 */
 	contentIndexToBlockId: Map<number, string>
+	/**
+	 * Per-assistant-message map from contentIndex → the token-stream
+	 * desanitizer for reversible redaction (pii-redaction token mode).
+	 * Deltas and the message_end remainder flow through one buffer per text
+	 * block so a token split across chunk boundaries substitutes
+	 * atomically. Created lazily ONLY when the session has an active token
+	 * vault; markers mode never allocates one. Cleared everywhere
+	 * contentIndexToBlockId is cleared — same per-message lifetime.
+	 */
+	streamDesanitizers: Map<number, StreamDesanitizer>
 	/**
 	 * Per-assistant-message map from pi-mono's contentIndex → text already
 	 * streamed to the client
@@ -847,6 +877,10 @@ export class KimchiAcpAgent implements Agent {
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const session = await this.sessionFactory(params)
+		// Captured for the identity-checked catch unwind: a concurrent
+		// attach of the same id may own the prompter registry by then.
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -863,7 +897,7 @@ export class KimchiAcpAgent implements Agent {
 			// way setSessionModel does for an explicit client change.
 			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -874,23 +908,24 @@ export class KimchiAcpAgent implements Agent {
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamDesanitizers: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Populate skill commands only after binding: extensions contribute
@@ -917,10 +952,15 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(session.sessionId)
-			unregisterSessionPermissionFlagController(session.sessionId)
-			clearPermissionModeEnv(session.sessionId)
-			session.dispose()
+			// Only when registration actually ran — an `undefined` expected
+			// value means UNCONDITIONAL delete, which could evict a concurrent
+			// same-id session's registry slots (e.g. loading a corrupted
+			// duplicate of a LIVE session's file hits this catch).
+			if (ownPrompter) unregisterAcpPrompter(session.sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(session.sessionId, ownFlagController)) {
+				clearPermissionModeEnv(session.sessionId)
+			}
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1155,15 +1195,16 @@ export class KimchiAcpAgent implements Agent {
 		const session = await this.sessionLoader(params)
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
 			// disagrees with the requested id would land under the wrong key in
 			// `sessions`. Subsequent session/prompt for params.sessionId would then
 			// fail with "unknown sessionId" while the file is still held open.
-			// Reject up front and dispose so we don't quietly diverge.
+			// Reject up front; the catch below tears the session down.
 			if (sessionId !== params.sessionId) {
-				session.dispose()
 				throw RequestError.invalidParams(
 					undefined,
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
@@ -1172,7 +1213,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -1185,23 +1226,24 @@ export class KimchiAcpAgent implements Agent {
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamDesanitizers: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Same post-binding skill population as newSession (see there).
@@ -1234,16 +1276,20 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sessionId)
-			unregisterSessionPermissionFlagController(sessionId)
-			clearPermissionModeEnv(sessionId)
+			if (ownPrompter) unregisterAcpPrompter(sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(sessionId, ownFlagController)) {
+				clearPermissionModeEnv(sessionId)
+			}
+			// Identity check: load and resume of one id coalesce separately, so
+			// a concurrent attach may already own the registry slot — tearing
+			// down the WINNER's record would kill a live session.
 			const existing = this.sessions.get(sessionId)
-			if (existing) {
+			if (existing && existing.session === session) {
 				this.sessions.delete(sessionId)
 				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
-			session.dispose()
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1625,9 +1671,10 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
-			unregisterAcpPrompter(entry.session.sessionId)
-			unregisterSessionPermissionFlagController(entry.session.sessionId)
-			clearPermissionModeEnv(entry.session.sessionId)
+			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
+			if (unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)) {
+				clearPermissionModeEnv(entry.session.sessionId)
+			}
 			const droppedQueue = this.drainQueue(entry)
 			notifyDroppedQueue(this.conn, entry.session.sessionId, droppedQueue, "shutdown")
 			await this.disposeSessionRecord(entry)
@@ -1643,9 +1690,10 @@ export class KimchiAcpAgent implements Agent {
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
-		unregisterAcpPrompter(sessionId)
-		unregisterSessionPermissionFlagController(sessionId)
-		clearPermissionModeEnv(sessionId)
+		unregisterAcpPrompter(sessionId, entry.ownPrompter)
+		if (unregisterSessionPermissionFlagController(sessionId, entry.ownFlagController)) {
+			clearPermissionModeEnv(sessionId)
+		}
 		entry.unsubscribe()
 		// Prompts parked behind an unsolicited run own no turn yet: resolve them
 		// as cancelled rather than leaving the client's request unanswered.
@@ -1733,7 +1781,15 @@ export class KimchiAcpAgent implements Agent {
 			sessionId,
 			update: {
 				sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
-				content: { type: "text", text: ame.delta },
+				content: {
+					type: "text",
+					// Presentation-side token substitution: the session file and
+					// provider keep `[ENTITY_N]` tokens; the user's IDE sees the
+					// original — text AND thinking deltas (both are user-facing display;
+					// thinking tails drain at message end in forwardThinkingTails).
+					// No session vault → markers mode passthrough.
+					text: this.pushText(sessionId, entry, ame.contentIndex, ame.delta),
+				},
 				messageId,
 				...spreadModelMeta(modelMeta),
 			},
@@ -1744,6 +1800,147 @@ export class KimchiAcpAgent implements Agent {
 			const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
 			entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
 		}
+	}
+
+	/**
+	 * Feed one text block's stream through its session desanitizer. No
+	 * vault → passthrough without allocating state (markers mode pays
+	 * zero cost).
+	 */
+	private pushText(sessionId: string, entry: SessionRecord, contentIndex: number, text: string): string {
+		let desanitizer = entry.streamDesanitizers.get(contentIndex)
+		if (!desanitizer) {
+			const vault = vaultForSession(sessionId)
+			if (!vault) return text
+			desanitizer = new StreamDesanitizer(vault)
+			entry.streamDesanitizers.set(contentIndex, desanitizer)
+		}
+		return desanitizer.push(text)
+	}
+
+	/**
+	 * Drain a block's desanitizer at block end. An empty result means no
+	 * desanitizer existed (markers mode) or nothing was held.
+	 */
+	private flushText(entry: SessionRecord, contentIndex: number): string {
+		const desanitizer = entry.streamDesanitizers.get(contentIndex)
+		if (!desanitizer) return ""
+		entry.streamDesanitizers.delete(contentIndex)
+		return desanitizer.flush()
+	}
+
+	/**
+	 * Thinking blocks' desanitizer tails. Streaming routes thinking deltas
+	 * through substitution, so a token split across the block's last deltas
+	 * is held back; the held tail goes out here as the block's final
+	 * agent_thought_chunk, on the id its streamed chunks used. Text blocks
+	 * drained in forwardUnsentMessageText above; any remaining desanitizer
+	 * after this pass (a block dropped from the final message) is flushed
+	 * and DISCARDED — content indexes restart at 0 next turn, so no
+	 * desanitizer may outlive the message that allocated its index.
+	 */
+	private forwardThinkingTails(sessionId: string, entry: SessionRecord, msg: AssistantMessage): void {
+		if (!Array.isArray(msg.content)) return
+		for (const [index, block] of msg.content.entries()) {
+			if (block.type !== "thinking") continue
+			const tail = this.flushText(entry, index)
+			if (!tail) continue
+			let messageId = entry.contentIndexToBlockId.get(index)
+			if (messageId === undefined) {
+				messageId = `km.${entry.nextBlockId++}`
+				entry.contentIndexToBlockId.set(index, messageId)
+			}
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_thought_chunk",
+					content: { type: "text", text: tail },
+					messageId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+		}
+		for (const index of [...entry.streamDesanitizers.keys()]) {
+			this.flushText(entry, index)
+		}
+	}
+
+	/**
+	 * Display-only token substitution for whole strings (titles, replayed
+	 * message text). No vault (markers mode, post-restart) → passthrough.
+	 * NEVER apply to permission prompts: an approval is a decision about
+	 * execution, and what executes is the literal token — the prompt must
+	 * show what will run, not the original it stands for.
+	 */
+	private displayText(sessionId: string, text: string): string {
+		const vault = vaultForSession(sessionId)
+		return vault ? substituteTokens(vault, text) : text
+	}
+
+	/**
+	 * Display-only deep substitution for tool RESULTS (rawOutput).
+	 * substituteTokensDeep rebuilds plain objects — the in-memory values
+	 * stay tokenized because they are shared with agent state. rawInput
+	 * comes through displayArgs instead (see below). Use
+	 * displayOptionalRecord when the source itself may be undefined
+	 * (wireSafeToolResult's output).
+	 */
+	/**
+	 * Display for tool-call ARGS mirrors execution: tools in
+	 * EXEC_DEREF_TOOLS (edit/write) execute on vault-dereferenced args, so
+	 * their cards show the originals — that IS what runs. Every other tool
+	 * executes its byte-faithful tokenized args, and its card must show the
+	 * same tokens. No vault (markers mode, post-restart) → passthrough:
+	 * execution would not deref then either.
+	 */
+	private displayArgs(sessionId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+		return EXEC_DEREF_TOOLS.has(toolName) ? this.displayRecord(sessionId, args) : args
+	}
+	private displayRecord(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
+		const vault = vaultForSession(sessionId)
+		return vault ? (substituteTokensDeep(vault, value) as Record<string, unknown>) : value
+	}
+
+	/** The undefined-tolerant twin of displayRecord, for optional sources. */
+	private displayOptionalRecord(
+		sessionId: string,
+		value: Record<string, unknown> | undefined,
+	): Record<string, unknown> | undefined {
+		if (value === undefined) return undefined
+		return this.displayRecord(sessionId, value)
+	}
+
+	/**
+	 * Display-only substitution across a ToolCallContent array. Text takes
+	 * the ACP wrapper shape toolResultContent emits —
+	 * `{ type: "content", content: { type: "text", text } }` — so the nested
+	 * payload substitutes. Diffs pass through untouched BY DESIGN: a diff
+	 * displays what landed on disk, and what landed is the literal token
+	 * (side effects never substitute) — showing the original there would
+	 * misrepresent the file's actual content, the same way a substituted
+	 * permission prompt would mislead an approval. Generic over the item
+	 * type so callers keep their element types (ToolCallContent here).
+	 */
+	private displayContent<T>(sessionId: string, content: T[] | undefined): T[] | undefined {
+		if (content === undefined) return undefined
+		const vault = vaultForSession(sessionId)
+		if (!vault) return content
+		return content.map((item) => {
+			const wrapper = item as { type?: unknown; content?: { type?: unknown; text?: unknown } } | null
+			if (
+				wrapper &&
+				typeof wrapper === "object" &&
+				wrapper.type === "content" &&
+				wrapper.content &&
+				typeof wrapper.content === "object" &&
+				wrapper.content.type === "text" &&
+				typeof wrapper.content.text === "string"
+			) {
+				return { ...item, content: { ...wrapper.content, text: substituteTokens(vault, wrapper.content.text) } } as T
+			}
+			return item
+		})
 	}
 
 	/**
@@ -1761,7 +1958,14 @@ export class KimchiAcpAgent implements Agent {
 		msg.content.forEach((block, index) => {
 			if (block.type !== "text") return
 			const streamed = entry.streamedText.get(index) ?? ""
-			if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+			const unstreamed = block.text === streamed || (streamed && !block.text.startsWith(streamed))
+			// Even an unstreamed-remainder block routes through the desanitizer
+			// (token substitution applies to this emission too), and a fully
+			// streamed block can STILL hold bytes back (a token cut by the last
+			// delta) — flush drains them. Empty emits drop out below.
+			const substituted = unstreamed ? "" : this.pushText(sessionId, entry, index, block.text.slice(streamed.length))
+			const emitted = substituted + this.flushText(entry, index)
+			if (!emitted) return
 			let messageId = entry.contentIndexToBlockId.get(index)
 			if (messageId === undefined) {
 				messageId = `km.${entry.nextBlockId++}`
@@ -1774,7 +1978,7 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: block.text.slice(streamed.length) },
+					content: { type: "text", text: emitted },
 					messageId,
 					...spreadModelMeta(modelMeta),
 				},
@@ -1821,6 +2025,26 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * The single emit→dispose teardown primitive: fire session_shutdown and
+	 * await extension handlers before dispose(), ALWAYS paired. Every
+	 * session teardown routes here — early attach-fail orphans (header-id
+	 * mismatch, registration unwind, newSession catch) and registered
+	 * sessions via disposeSessionRecord — because the vault lifecycle (and
+	 * every extension teardown keyed on it) listens for the session_shutdown
+	 * event, and disposing without emitting it would leak extension state
+	 * (token vaults, etc.) for a session that did start.
+	 */
+	private async disposeOrphanSession(session: AgentSession): Promise<void> {
+		try {
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		} catch {
+			// Teardown must not fail the caller: extension shutdown handlers
+			// are fail-quiet (matching disposeSessionRecord's contract).
+		}
+		session.dispose()
+	}
+
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
 		// Stop the adapter from publishing skill-refresh results: a discovery
@@ -1833,8 +2057,7 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		entry.session.dispose()
+		await this.disposeOrphanSession(entry.session)
 		this.skillWatcher?.removeSession(entry)
 	}
 
@@ -1949,6 +2172,7 @@ export class KimchiAcpAgent implements Agent {
 				// message's assignment.
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
+				entry.streamDesanitizers.clear()
 				entry.emittedModelMeta.clear()
 				// A resolved pick may already be known here (e.g. restored from the
 				// last session), so push the resolved label once per change so clients
@@ -1986,7 +2210,10 @@ export class KimchiAcpAgent implements Agent {
 							toolName: block.name,
 							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
 							piToolCallId: block.id,
-							rawInput: block.arguments,
+							// Args display mirrors execution (displayArgs): edit/write
+							// dereference at execute time, so their originals are what
+							// runs; every other tool keeps its tokens.
+							rawInput: this.displayArgs(sessionId, block.name, block.arguments as Record<string, unknown>),
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
@@ -2053,14 +2280,16 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
+					// Args display mirrors execution (displayArgs).
+					const rawInput = this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
+					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
 						title,
 						kind,
 						locations,
-						rawInput: toolCall.arguments,
+						rawInput,
 						// Arguments are complete but the call hasn't been approved or
 						// started executing yet, so ACP status stays `pending`.
 						status: "pending",
@@ -2082,6 +2311,7 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) {
 					this.publishModelOptionIfChanged(sessionId, entry)
 					this.forwardUnsentMessageText(sessionId, entry, msg)
+					this.forwardThinkingTails(sessionId, entry, msg)
 					this.correctEmittedModelMeta(sessionId, entry, msg)
 					return
 				}
@@ -2143,6 +2373,7 @@ export class KimchiAcpAgent implements Agent {
 				this.forwardUnsentMessageText(sessionId, entry, msg, (messageId, attribution) =>
 					turn.artifactBuffer.noteTextBlock(messageId, attribution),
 				)
+				this.forwardThinkingTails(sessionId, entry, msg)
 				this.correctEmittedModelMeta(sessionId, entry, msg)
 				const usage = msg.usage
 				if (usage) {
@@ -2181,16 +2412,17 @@ export class KimchiAcpAgent implements Agent {
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
+				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
+					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						title,
 						kind,
 						locations,
-						rawInput: event.args,
+						rawInput,
 						status: "in_progress",
 					})
 					this.send({ sessionId, update })
@@ -2199,7 +2431,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						toolName: event.toolName,
-						rawInput: event.args,
+						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
 					})
@@ -2223,7 +2455,7 @@ export class KimchiAcpAgent implements Agent {
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
-					content: partial,
+					content: this.displayContent(sessionId, partial),
 					status: "in_progress",
 				})
 				this.send({ sessionId, update })
@@ -2288,8 +2520,8 @@ export class KimchiAcpAgent implements Agent {
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
-					content: [...toolResultContent(event.result), ...diffs],
-					rawOutput: wireSafeToolResult(event.result),
+					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+					rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -2380,7 +2612,7 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					update: {
 						sessionUpdate: "user_message_chunk",
-						content: { type: "text", text },
+						content: { type: "text", text: this.displayText(sessionId, text) },
 					},
 				})
 			} else if (msg.role === "assistant") {
@@ -2490,7 +2722,7 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: textBuffer },
+					content: { type: "text", text: this.displayText(sessionId, textBuffer) },
 					...(messageId !== undefined ? { messageId } : {}),
 					...spreadModelMeta(modelMeta),
 				},
@@ -2514,7 +2746,7 @@ export class KimchiAcpAgent implements Agent {
 							sessionId,
 							update: {
 								sessionUpdate: "agent_thought_chunk",
-								content: { type: "text", text: part.text },
+								content: { type: "text", text: this.displayText(sessionId, part.text) },
 								...(messageId !== undefined ? { messageId } : {}),
 								...spreadModelMeta(modelMeta),
 							},
@@ -2534,7 +2766,7 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					update: {
 						sessionUpdate: "agent_thought_chunk",
-						content: { type: "text", text: stripAnsi(thinking) },
+						content: { type: "text", text: this.displayText(sessionId, stripAnsi(thinking)) },
 						...(messageId !== undefined ? { messageId } : {}),
 						...spreadModelMeta(modelMeta),
 					},
@@ -2560,7 +2792,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						rawInput: args,
+						rawInput: this.displayArgs(sessionId, name, args),
 						cwd: record?.cwd,
 					}),
 				})
@@ -2570,8 +2802,8 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						content: result ? toolResultContent(result) : [],
-						rawOutput: result ? wireSafeToolResult(result) : undefined,
+						content: this.displayContent(sessionId, result ? toolResultContent(result) : []),
+						rawOutput: this.displayOptionalRecord(sessionId, result ? wireSafeToolResult(result) : undefined),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -3378,7 +3610,7 @@ function registerPermissionFlagController(
 	session: AgentSession,
 	initialMode: PermissionModeState,
 	send: (params: SessionNotification) => void,
-): void {
+): SessionPermissionFlagController {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: initialMode,
 	})
@@ -3394,6 +3626,7 @@ function registerPermissionFlagController(
 			},
 		})
 	})
+	return permissionFlagController
 }
 
 const TITLE_MAX = 80

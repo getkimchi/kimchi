@@ -2,14 +2,55 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { ERROR_FG, ORANGE_FG, RST_FG, SUCCESS_FG } from "../../ansi.js"
 import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
+import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "../pii-redaction/vault.js"
 import {
 	buildPermissionChoices,
 	formatRiskBadge,
+	mirrorApprovalInput,
 	promptForApproval,
 	promptForCompoundApproval,
 	truncate,
 } from "./prompts.js"
+
+describe("mirrorApprovalInput (prompt mirrors execution)", () => {
+	async function liveVault(sessionId: string, original: string): Promise<string> {
+		const { api, emit } = createExtensionApi()
+		installVaultLifecycle(api as never, () => true)
+		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => sessionId } }))
+		const vault = vaultForSession(sessionId)
+		if (!vault) throw new Error("vault missing")
+		return tokenFor(vault, "EMAIL_ADDRESS", original)
+	}
+
+	it("edit/write inputs substitute vault tokens (the original is what the approval writes)", async () => {
+		resetTokenVaults()
+		const original = "[EMAIL_ADDRESS_51]"
+		const token = await liveVault("approval-edit", original)
+		expect(mirrorApprovalInput("edit", { path: "c.txt", oldText: token, newText: token }, "approval-edit")).toEqual({
+			path: "c.txt",
+			oldText: original,
+			newText: original,
+		})
+		expect(mirrorApprovalInput("write", { path: "c.txt", content: token }, "approval-edit")).toEqual({
+			path: "c.txt",
+			content: original,
+		})
+	})
+
+	it("byte-faithful tools stay tokenized even with a live vault; dead vault passes through", async () => {
+		resetTokenVaults()
+		const original = "[EMAIL_ADDRESS_50]"
+		const token = await liveVault("approval-bash", original)
+		expect(mirrorApprovalInput("bash", { command: `mail ${token}` }, "approval-bash")).toEqual({
+			command: `mail ${token}`,
+		})
+		// No vault for this id (markers mode, post-restart): untransformed.
+		expect(mirrorApprovalInput("edit", { oldText: token }, "dead")).toEqual({ oldText: token })
+		expect(mirrorApprovalInput("edit", { oldText: token }, undefined)).toEqual({ oldText: token })
+	})
+})
 
 describe("truncate helper", () => {
 	it("returns original string if under max length", () => {
