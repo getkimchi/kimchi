@@ -12,6 +12,10 @@ on:
         description: "Reps per scenario"
         default: "2"
         required: false
+      calibrate:
+        description: "Rewrite budgets.json from this run (uploaded as an artifact for review)"
+        default: "false"
+        required: false
   pull_request:
     paths:
       - '.github/workflows/perf-backtest.yml'
@@ -86,11 +90,14 @@ jobs:
         run: pnpm run build:binary
 
       - name: Run perf gate
-        # Direct python3 calls: old trees have no perf:* package scripts.
+        # Direct python3 calls: old trees have no perf:* package scripts. With
+        # calibrate=true the gate rewrites tools/perf/budgets.json in the
+        # workspace from a fully green run — uploaded below for human review
+        # and commit; nothing is committed by CI.
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           python3 tools/perf/gate.py --selfcheck
-          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}"
+          python3 tools/perf/gate.py --binary dist/bin/kimchi --out "$RUNNER_TEMP/perf-gate-runs" --expect-version "$VERSION" --reps "${{ inputs.reps || 2 }}" ${{ (inputs.calibrate == 'true') && '--calibrate' || '' }}
 
       - name: Advisory lanes (healthy/fresh idle, large tool outputs store on vs off)
         # Runs even when the gate step fails: old binaries miss today's budgets,
@@ -109,5 +116,13 @@ jobs:
         with:
           name: backtest-${{ matrix.entry.label }}
           path: ${{ runner.temp }}/perf-gate-runs/*.jsonl
+          if-no-files-found: ignore
+
+      - name: Upload calibrated budgets
+        if: inputs.calibrate == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: budgets-${{ matrix.entry.label }}
+          path: tools/perf/budgets.json
           if-no-files-found: ignore
 
