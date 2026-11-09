@@ -21,7 +21,7 @@
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
 import { getRedactionConfig, type RedactionRenderMode } from "./config.js"
-import { type CompiledCustomEntity, resolveRedactionPolicy } from "./policy.js"
+import { type RedactionPattern, resolveRedactionPolicy } from "./policy.js"
 import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
 
 /**
@@ -41,8 +41,8 @@ interface EngineSnapshot {
 	renderMode: RedactionRenderMode
 	/** Entities whose non-engine coverage is suspended (custom patterns, SECRET_FIELD). */
 	disabled: ReadonlySet<string>
-	/** User-defined custom patterns, appended after the built-in pass. */
-	customPatterns: readonly CompiledCustomEntity[]
+	/** Built-in customs plus any user-defined patterns, joined once at build time. */
+	patterns: readonly RedactionPattern[]
 	/** Universe entity → category, for telemetry attribution. */
 	categories: ReadonlyMap<string, string>
 	/** Joined policy signature the snapshot was built from. */
@@ -119,7 +119,8 @@ function resolveSnapshot(): EngineSnapshot {
 		exclusions: new Set(config.resolved.engineExclusions),
 		renderMode: config.renderMode,
 		disabled: config.resolved.disabledEntities,
-		customPatterns: config.resolved.customPatterns,
+		// Joined once here — the per-scan loop must not re-allocate on every string.
+		patterns: [...CUSTOM_PATTERNS, ...config.resolved.customPatterns],
 		categories: config.resolved.categories,
 		signature,
 	}
@@ -453,19 +454,15 @@ export async function detectAndComposeTokenized(
 // Custom redaction patterns not covered by @bulkhead-ai/core
 // ---------------------------------------------------------------------------
 
-interface CustomPattern {
-	name: string
-	regex: RegExp
-	/**
-	 * When set, only this capture group is replaced by the marker; the rest
-	 * of the match (the anchoring context) survives. Group 1 must be the
-	 * anchor, group 2 the secret. Bare patterns (no secretGroup) replace the
-	 * whole match, which is correct for prefixed shapes.
-	 */
-	secretGroup?: number
-}
-
-const CUSTOM_PATTERNS: CustomPattern[] = [
+/**
+ * secretGroup semantics shared with user-defined entities
+ * (policy.ts `RedactionPattern`): when set, only this capture group is
+ * replaced by the marker; the rest of the match (the anchoring context)
+ * survives. Group 1 is the anchor, group 2 the secret. Bare patterns (no
+ * secretGroup) replace the whole match, which is correct for prefixed
+ * shapes.
+ */
+const CUSTOM_PATTERNS: RedactionPattern[] = [
 	// CastAI API keys
 	{ name: "CASTAI_API_KEY", regex: /castai_v1_[A-Za-z0-9_-]{8,}/g },
 	// Bearer tokens (Authorization header or standalone). Anchor is captured
@@ -634,20 +631,20 @@ function isPreservedKey(key: string): boolean {
  * the ENGINE so their anchored re-additions here can fire (see config.ts /
  * entity-tiers.ts).
  *
- * User-defined patterns (`extra`, from redaction.customEntities) run after
- * the built-ins. An extra pattern can match an earlier marker's text — the
- * same caveat the built-in GENERIC_SECRET documents; user regexes are the
- * operator's responsibility.
+ * User-defined patterns (from redaction.customEntities) run after the
+ * built-ins — the snapshot passes the joined array via `patterns`. A user
+ * pattern can match an earlier marker's text — the same caveat the built-in
+ * GENERIC_SECRET documents; user regexes are the operator's responsibility.
  */
 export function applyCustomPatterns(
 	text: string,
 	disabled: ReadonlySet<string>,
 	onMatch?: (match: { name: string; secret: string }) => void,
-	extra?: readonly CompiledCustomEntity[],
+	patterns?: readonly RedactionPattern[],
 ): string {
 	let result = text
-	const patterns = extra === undefined ? CUSTOM_PATTERNS : [...CUSTOM_PATTERNS, ...extra]
-	for (const { name, regex, secretGroup } of patterns) {
+	const all = patterns ?? CUSTOM_PATTERNS
+	for (const { name, regex, secretGroup } of all) {
 		if (disabled.has(name)) continue
 		const marker = `[REDACTED-${name}]`
 		result = result.replace(regex, (match, ...args: unknown[]) => {
@@ -701,7 +698,7 @@ async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, va
 		snapshot.renderMode === "tokens" && vault
 			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault)
 			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
-	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.customPatterns)
+	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.patterns)
 }
 
 export async function redactTextOrThrow(text: string): Promise<string> {

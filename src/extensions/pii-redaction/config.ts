@@ -27,14 +27,14 @@
  *     throw. Mixing the policy keys with legacy `excludedEntities` throws.
  *
  * An absent `redaction` block (or an empty one) resolves to the tier
- * defaults byte-for-byte. Consumers split by failure policy: the strict
- * export path lets a validation error propagate (fail closed), while the
- * redactor's snapshot resolution degrades to the tier defaults with one loud
- * log so a settings typo can never silently switch the live pipeline's
- * redaction off. The org-managed policy (settings:resolve `kimchiRedaction`)
- * takes precedence over the local block per key (managed → local →
- * registry default); see `policy.ts` for the resolution contract and
- * `.kimchi/plans/redaction-precision.md` for compatibility notes.
+ * defaults byte-for-byte; the org-managed policy (settings:resolve
+ * `kimchiRedaction`) takes precedence over the local block per key
+ * (managed → local → registry default); see `policy.ts` for the resolution
+ * contract and `.kimchi/plans/redaction-precision.md` for compatibility
+ * notes. Consumers split by failure policy: the strict export path lets a
+ * validation error propagate (fail closed), while the redactor's snapshot
+ * resolution degrades to the tier defaults with one loud log so a settings
+ * typo can never silently switch the live pipeline's redaction off.
  *
  * Reads go through the stat-gated JSON cache shared with the resources
  * store, so per-event consultation is cheap and mid-session edits are
@@ -50,11 +50,13 @@
  */
 
 import { readJsonCached } from "../../config/json.js"
+import { getOrgPolicy } from "../../org-policy.js"
 import { getResourceSettingsPath, isResourceEnabled, isResourceLocked } from "../../resources/store.js"
-import { isKnownEntity } from "./entity-tiers.js"
 import {
 	type LocalRedactionInput,
+	parseLegacyExcludedEntities,
 	parseLocalPolicy,
+	parseManagedPolicy,
 	type RedactionPolicy,
 	type ResolvedRedaction,
 	resolveRedactionPolicy,
@@ -112,12 +114,19 @@ export function getRedactionRenderMode(): RedactionRenderMode {
 }
 
 /**
- * The org-managed redaction policy, undefined until the platform carriage
- * lands (settings:resolve `kimchiRedaction`). Kept behind a small function
- * so the K2 wiring touches only this seam.
+ * The org-managed redaction policy, carried as the raw kimchiRedaction wire
+ * value on OrgPolicy and normalized here by the tolerant parser: unknown
+ * categories/entities and invalid custom entries drop with one loud log —
+ * a platform value this harness predates must never switch redaction off
+ * silently (and the strict export path never fails closed on managed input:
+ * the operator did not write it and cannot fix it).
  */
 function getManagedRedactionPolicy(): RedactionPolicy | undefined {
-	return undefined
+	const raw = getOrgPolicy()?.redaction
+	if (raw === undefined) return undefined
+	return parseManagedPolicy(raw, (reasons) => {
+		console.error(`[pii-redaction] dropped ${reasons.length} unrecognized org redaction entries: ${reasons.join("; ")}`)
+	})
 }
 
 /** Read the current config: resources-system enablement + resolved policy + render mode. */
@@ -164,22 +173,9 @@ function readLocalRedactionInput(): LocalRedactionInput | undefined {
 			'settings.json "redaction": "excludedEntities" cannot be combined with categories/entities/customEntities',
 		)
 	}
-	if (legacyRaw !== undefined) return { legacyExcluded: readLegacyExcludedEntities(legacyRaw) }
+	if (legacyRaw !== undefined) return { legacyExcluded: parseLegacyExcludedEntities(legacyRaw) }
 	if (!hasPolicyKeys) return undefined
 	return parseLocalPolicy(block)
-}
-
-/** Validate the legacy list: array of known entity names (fail-visible). */
-function readLegacyExcludedEntities(raw: unknown): string[] {
-	if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) {
-		throw new Error('settings.json "redaction.excludedEntities" must be an array of strings')
-	}
-	for (const name of raw as string[]) {
-		if (!isKnownEntity(name)) {
-			throw new Error(`settings.json "redaction.excludedEntities": unknown entity "${name}"`)
-		}
-	}
-	return raw as string[]
 }
 
 /**

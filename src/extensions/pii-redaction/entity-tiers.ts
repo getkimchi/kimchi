@@ -468,11 +468,16 @@ export interface RedactionCatalogEntry {
 	defaultOn: boolean
 }
 
-/** The full configurable catalog (GUID excluded), sorted by entity name. */
-export function listRedactionCatalog(): RedactionCatalogEntry[] {
+/** Computed once — the catalog is a pure function of immutable registries. */
+const REDACTION_CATALOG: readonly RedactionCatalogEntry[] = (() => {
 	const entries: RedactionCatalogEntry[] = []
 	for (const [entity, { category, defaultOn }] of ENTITY_CATEGORIES) {
 		entries.push({ entity, tier: ENTITY_TIERS.get(entity) ?? "anchored", category, defaultOn })
 	}
 	return entries.sort((a, b) => a.entity.localeCompare(b.entity))
+})()
+
+/** The full configurable catalog (GUID excluded), sorted by entity name. */
+export function listRedactionCatalog(): readonly RedactionCatalogEntry[] {
+	return REDACTION_CATALOG
 }

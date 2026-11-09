@@ -84,8 +84,15 @@ function validateCachedPolicy(raw: unknown): OrgPolicy | undefined {
 	// the cache round trip.
 	const resources = parseResourcePolicyMap(source.resources, parseResourcePolicyName)
 	if (resources) policy.resources = resources
+	// Raw passthrough like the wire parser: shape-checked, validated on read.
+	const redaction = source.redaction
+	if (redaction !== null && typeof redaction === "object" && !Array.isArray(redaction)) {
+		const entries = redaction as Record<string, unknown>
+		if (Object.keys(entries).length > 0) policy.redaction = entries
+	}
 
-	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources) return undefined
+	if (!policy.allowedPermissionModes && policy.usageReporting === undefined && !policy.resources && !policy.redaction)
+		return undefined
 	return policy
 }
 

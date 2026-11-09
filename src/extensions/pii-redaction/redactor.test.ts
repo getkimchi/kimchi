@@ -1564,3 +1564,33 @@ describe("redaction policy — categories/entities/customEntities settings", () 
 		expect(result).toContain("[REDACTED-PHONE_NUMBER]")
 		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
 		expect(result).not.toContain(fx.email)
+	})
+
+	it("the org-managed policy applies per key above local settings", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		await setOrgPolicyForTests({
+			redaction: {
+				categories: { network: "KIMCHI_REDACTION_STATE_OFF" },
+				entities: { EMAIL_ADDRESS: "KIMCHI_REDACTION_STATE_ON" },
+			},
+		})
+		resetRedactorEngine()
+		// Managed entity state wins over the local OFF; managed category
+		// fills the IP key the local file never set.
+		const result = await redactTextOrThrow(`mail ${fx.email} bind ${fx.ipAddress}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain(fx.ipAddress)
+	})
+
+	it("an unrecognized managed entry drops with a log instead of breaking the pipeline", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		await setOrgPolicyForTests({
+			redaction: { categories: { future_category: "KIMCHI_REDACTION_STATE_OFF" } },
+		})
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`mail ${fx.email}`)
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(errSpy.mock.calls.map((call) => String(call[0])).join("\n")).toMatch(/dropped/)
+		errSpy.mockRestore()
+	})
+})

@@ -70,11 +70,15 @@ export interface RedactionPolicy {
  */
 export type LocalRedactionInput = RedactionPolicy | { legacyExcluded: string[] }
 
-export interface CompiledCustomEntity {
+/** One executable redaction regex — built-in custom pattern or user-defined entity. */
+export interface RedactionPattern {
 	name: string
-	category: string
 	regex: RegExp
 	secretGroup?: number
+}
+
+export interface CompiledCustomEntity extends RedactionPattern {
+	category: string
 }
 
 /**
@@ -107,13 +111,20 @@ const CUSTOM_ENTITY_FLAGS_RE = /^[imsu]{0,4}$/
 const MAX_CUSTOM_ENTITIES = 50
 const MAX_PATTERN_LENGTH = 512
 /**
- * ReDoS heuristic: a group whose body contains a quantifier and which is
- * itself quantified (`(a+)+`, `(\d{2,})*`…). Deliberately approximate —
- * full nested-quantifier detection needs a real parser; the pattern is
- * executed under the settle-bounded scan regardless, so a rejected pattern
- * is a hygiene win, not a security guarantee.
+ * ReDoS gate: reject a quantified group whose body contains alternation or
+ * a quantifier (`(a|a)*`, `(a|aa)+c`, `(a+)+`, `(\d{2,})*`). Both shapes
+ * backtrack exponentially, and the settle-bounded scan CANNOT preempt
+ * them — `String.replace` runs synchronously, so the Promise.race timeout
+ * never fires while the event loop is stuck inside the regex (verified:
+ * `(a|a)*b` over a 34-char run of `a` does not return in 180s on Node 22).
+ * Pattern validation is therefore the only line of defense for custom
+ * entities. Deliberately approximate in both directions: full detection
+ * needs a real parser, safe alternations like `(emp|hr)_id?` get rejected
+ * when the group is quantified, and specially nested variants slip past —
+ * the gate exists so the obvious catastrophic shapes fail visibly at
+ * parse, not as a guarantee.
  */
-const NESTED_QUANTIFIER_RE = /\([^()]*(?:[+*]|\{\d+(?:,\d*)?\})[^()]*\)(?:[+*]|\{\d+(?:,\d*)?\})/
+const RE_DOS_GROUP_RE = /\([^()]*(?:\||[+*]|\{\d+(?:,\d*)?\})[^()]*\)(?:[+*]|\{\d+(?:,\d*)?\})/
 
 const MANAGED_STATE_MAP: Record<string, RedactionState> = {
 	KIMCHI_REDACTION_STATE_ON: "on",
@@ -214,8 +225,8 @@ function parseCustomEntities(raw: unknown, ctx: ParseContext): CustomEntityDef[]
 			invalid(ctx, `${label}.pattern must be 1..${MAX_PATTERN_LENGTH} characters`)
 			continue
 		}
-		if (NESTED_QUANTIFIER_RE.test(pattern)) {
-			invalid(ctx, `${label}.pattern looks like a nested quantifier (ReDoS risk)`)
+		if (RE_DOS_GROUP_RE.test(pattern)) {
+			invalid(ctx, `${label}.pattern has a quantified group with alternation or a nested quantifier (ReDoS risk)`)
 			continue
 		}
 		const flags = e.flags
@@ -301,12 +312,33 @@ export function parseManagedPolicy(raw: unknown, onDropped?: (reasons: string[])
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolution memo: the inputs are plain parsed data, so identical settings
+ * resolve once for the process lifetime. Bounded — a distinct policy shows
+ * up at most per settings.json edit; the oldest entry goes after 16.
+ */
+const resolutionCache = new Map<string, ResolvedRedaction>()
+const RESOLUTION_CACHE_MAX = 16
+
+/**
  * Resolve managed and local policies into the executable view. When local
  * input is the legacy excluded list, it replaces the engine exclusions
  * wholesale (its pre-policy meaning) and the managed policy still applies
  * per key on top.
  */
 export function resolveRedactionPolicy(managed?: RedactionPolicy, local?: LocalRedactionInput): ResolvedRedaction {
+	const key = JSON.stringify([managed ?? null, local ?? null])
+	const hit = resolutionCache.get(key)
+	if (hit) return hit
+	const resolved = resolveRedactionPolicyUncached(managed, local)
+	resolutionCache.set(key, resolved)
+	if (resolutionCache.size > RESOLUTION_CACHE_MAX) {
+		const oldest = resolutionCache.keys().next().value
+		if (oldest !== undefined) resolutionCache.delete(oldest)
+	}
+	return resolved
+}
+
+function resolveRedactionPolicyUncached(managed?: RedactionPolicy, local?: LocalRedactionInput): ResolvedRedaction {
 	const legacy = local !== undefined && "legacyExcluded" in local ? local.legacyExcluded : undefined
 	const localPolicy = legacy !== undefined ? undefined : (local as RedactionPolicy | undefined)
 
@@ -381,7 +413,19 @@ export function resolveRedactionPolicy(managed?: RedactionPolicy, local?: LocalR
 	return { engineExclusions, disabledEntities: disabled, customPatterns, categories, signature }
 }
 
-/** The default resolved view — cost of a map walk, no engine construction. */
-export function resolveDefaultRedaction(): ResolvedRedaction {
-	return resolveRedactionPolicy()
+/**
+ * Validate the legacy `redaction.excludedEntities` setting: an array of
+ * known entity names. Throws fail-visible — the same convention as the
+ * policy keys, owned here so all redaction-input rules live in one module.
+ */
+export function parseLegacyExcludedEntities(raw: unknown): string[] {
+	if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) {
+		throw new Error('settings.json "redaction.excludedEntities" must be an array of strings')
+	}
+	for (const name of raw as string[]) {
+		if (!isKnownEntity(name)) {
+			throw new Error(`settings.json "redaction.excludedEntities": unknown entity "${name}"`)
+		}
+	}
+	return raw as string[]
 }

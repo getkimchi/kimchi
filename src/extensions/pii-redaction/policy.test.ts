@@ -174,12 +174,30 @@ describe("parseLocalPolicy — strict validation (fail-visible)", () => {
 		).toThrow(/collides/)
 	})
 
-	it("ReDoS-shaped nested quantifiers throw", () => {
-		expect(() =>
-			parseLocalPolicy({
-				customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(a+)+" }],
-			}),
-		).toThrow(/nested quantifier/)
+	it("catastrophic-backtracking shapes throw (nested quantifier AND quantified alternation)", () => {
+		for (const pattern of ["(a+)+", "(\\d{2,})*", "(a|a)*b", "(a|aa)+c", "(ABC|DEF){2,4}"]) {
+			expect(() =>
+				parseLocalPolicy({ customEntities: [{ name: "ACME_X", category: "secrets", pattern }] }),
+			).toThrow(/ReDoS/)
+		}
+	})
+
+	it("safe alternation in an unquantified group passes", () => {
+		const policy = parseLocalPolicy({
+			customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(?:emp|hr)[-_ ]?id[:=][A-Z0-9]{6}" }],
+		})
+		expect(policy.customEntities?.[0].name).toBe("ACME_X")
+	})
+
+	it("managed parse drops catastrophic patterns too", () => {
+		let dropped: string[] = []
+		parseManagedPolicy(
+			{ customEntities: [{ name: "ACME_X", category: "secrets", pattern: "(a|a)*b" }] },
+			(reasons) => {
+				dropped = reasons
+			},
+		)
+		expect(dropped.join(" ")).toMatch(/ReDoS/)
 	})
 
 	it("oversized patterns and bad flags throw", () => {

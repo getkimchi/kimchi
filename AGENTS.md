@@ -43,6 +43,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
 - [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
+- [docs/pii-redaction-policy.md](docs/pii-redaction-policy.md) — redaction categories/entities, local and org-managed policy, custom regex entities
 - [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration
 - [docs/ferment.md](docs/ferment.md) · [docs/ferment-v2.md](docs/ferment-v2.md) · [docs/ferment-storage-schema.md](docs/ferment-storage-schema.md) — autonomous project execution: concept, runtime, storage
 - [docs/hooks.md](docs/hooks.md) — lifecycle hooks (lint:fix, session-end, compaction timeout guard, work tracking)
