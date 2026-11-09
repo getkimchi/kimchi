@@ -126,7 +126,7 @@ describe("pii-redaction extension — event emission wiring", () => {
 		const { api, invoke } = makePi()
 		piiRedactionExtension(api)
 		const tokenShaped = ["cio", "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF"].join("")
-		const image = { type: "image", mimeType: "image/png", data: `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC` }
+		const image = { type: "image", mimeType: "image/png", data: `iVBORw0KGgoA/+${tokenShaped}/+AAAAElFTkSuQmCC==` }
 		const message = { role: "user", content: [{ type: "text", text: "mail alice@example.com" }, image] }
 
 		const [stored] = (await invoke("message_end", { message })) as [{ message: typeof message }]

@@ -753,32 +753,68 @@ export async function redactText(text: string): Promise<string> {
 	return redactTextCounted(text, (err) => console.error("PII redaction scan failed, returning original text:", err))
 }
 
-/** Whether `text` from `start` on is one unbroken, non-empty base64 payload. */
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+const IS_BASE64_CHAR = new Uint8Array(128)
+for (let i = 0; i < BASE64_ALPHABET.length; i++) IS_BASE64_CHAR[BASE64_ALPHABET.charCodeAt(i)] = 1
+const LINE_FEED = "\n".charCodeAt(0)
+const CARRIAGE_RETURN = "\r".charCodeAt(0)
+const PADDING = "=".charCodeAt(0)
+
+/**
+ * Whether `text` from `start` on is well-formed padded base64; line breaks are
+ * ignored. A char loop rather than a regex: image payloads run to many MB.
+ */
 function isBase64From(text: string, start: number): boolean {
-	let end = text.length
-	while (end > start && text.length - end < 2 && text.charCodeAt(end - 1) === 61) end--
-	if (end === start) return false
-	for (let i = start; i < end; i++) {
+	let chars = 0
+	let padding = 0
+	for (let i = start; i < text.length; i++) {
 		const c = text.charCodeAt(i)
-		const isBase64Char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47
-		if (!isBase64Char) return false
+		if (c === LINE_FEED || c === CARRIAGE_RETURN) continue
+		if (c === PADDING) {
+			if (++padding > 2) return false
+			continue
+		}
+		if (padding > 0 || IS_BASE64_CHAR[c] !== 1) return false
+		chars++
 	}
-	return true
+	return chars > 0 && (chars + padding) % 4 === 0
 }
 
-const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+;base64,/i
+/** Base64 chars needed to decode the 12 bytes the image signatures below inspect. */
+const IMAGE_SIGNATURE_BASE64_CHARS = 16
 
-/** A complete `data:image/...;base64,` URL (OpenAI-style request payloads). */
-function isImageDataUrl(text: string): boolean {
-	const prefix = IMAGE_DATA_URL_PREFIX.exec(text.slice(0, 128))
-	return prefix !== null && isBase64From(text, prefix[0].length)
+/** Whether base64 at `start` decodes to a PNG, JPEG, GIF or WebP signature. */
+function hasImageSignature(text: string, start: number): boolean {
+	const head = Buffer.from(text.slice(start, start + IMAGE_SIGNATURE_BASE64_CHARS), "base64").toString("latin1")
+	return (
+		head.startsWith("\x89PNG\r\n\x1a\n") ||
+		head.startsWith("\xff\xd8\xff") ||
+		head.startsWith("GIF8") ||
+		(head.startsWith("RIFF") && head.slice(8, 12) === "WEBP")
+	)
+}
+
+function isImageBase64From(text: string, start: number): boolean {
+	return hasImageSignature(text, start) && isBase64From(text, start)
+}
+
+/** Bounds the prefix match so a huge string is never handed to the regex. */
+const DATA_URL_PREFIX_MAX_CHARS = 128
+const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
+const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["url", "image_url", "imageUrl"])
+
+/** A complete image data URL under a key that carries image URLs in provider payloads. */
+function isImageDataUrlField(key: PropertyKey, value: string): boolean {
+	if (!IMAGE_URL_KEYS.has(key)) return false
+	const prefix = IMAGE_DATA_URL_PREFIX.exec(value.slice(0, DATA_URL_PREFIX_MAX_CHARS))
+	return prefix !== null && isImageBase64From(value, prefix[0].length)
 }
 
 /** The base64 `data` of an image block: internal/Google `mimeType`, Anthropic `media_type`. */
-function isImageBlockData(key: PropertyKey, value: unknown, block: Record<PropertyKey, unknown>): boolean {
-	if (key !== "data" || typeof value !== "string") return false
+function isImageBlockData(key: PropertyKey, value: string, block: Record<PropertyKey, unknown>): boolean {
+	if (key !== "data") return false
 	const mime = block.mimeType ?? block.media_type
-	return typeof mime === "string" && mime.toLowerCase().startsWith("image/") && isBase64From(value, 0)
+	return typeof mime === "string" && mime.toLowerCase().startsWith("image/") && isImageBase64From(value, 0)
 }
 
 /**
@@ -789,9 +825,10 @@ function isImageBlockData(key: PropertyKey, value: unknown, block: Record<Proper
  * sensitive-key string values force-redacted, enumerable symbols preserved.
  * Only the per-string redaction function differs (fail-open vs fail-closed).
  *
- * Image payloads are the one exception: base64 is binary, so a secret-shaped
- * run in it is coincidence, and splicing a marker in corrupts the image. Only
- * strictly valid base64 is exempt; anything else in those fields is scanned.
+ * Binary image payloads are the one exception: a secret-shaped run in them is
+ * coincidence, and splicing a marker in corrupts the image. Base64 is exempt
+ * only in image fields, when well-formed and carrying a real image signature;
+ * typed arrays (Bedrock's bytes) hold no strings and pass through intact.
  */
 async function redactObjectStringsWith<T>(
 	obj: T,
@@ -800,11 +837,11 @@ async function redactObjectStringsWith<T>(
 	onScannedPair?: (input: string, output: string) => void,
 ): Promise<T> {
 	if (typeof obj === "string") {
-		if (isImageDataUrl(obj)) return obj
 		const out = await redactString(obj)
 		onScannedPair?.(obj, out)
 		return out as T
 	}
+	if (ArrayBuffer.isView(obj)) return obj
 	if (Array.isArray(obj)) {
 		return Promise.all(
 			obj.map((item) => redactObjectStringsWith(item, redactString, snapshot, onScannedPair)),
@@ -828,7 +865,9 @@ async function redactObjectStringsWith<T>(
 				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
-				if (isImageBlockData(key, value, source)) return Promise.resolve(value)
+				if (typeof value === "string" && (isImageBlockData(key, value, source) || isImageDataUrlField(key, value))) {
+					return Promise.resolve(value)
+				}
 				// Redact any string value stored under a sensitive key name.
 				if (secretFieldRedacts && typeof key === "string" && typeof value === "string" && isSensitiveKey(key)) {
 					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
