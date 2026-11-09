@@ -4420,6 +4420,28 @@ describe("permissions:tool_decision emissions", () => {
 		])
 	})
 
+	it("yolo status warning reflects the DANGER flag's full bypass", async () => {
+		const warningCalls = (ctx: ExtensionContext) =>
+			vi
+				.mocked(ctx.ui.setStatus)
+				.mock.calls.filter(([id]) => id === "permissions-warning")
+				.map(([, text]) => text)
+
+		// Plain yolo: the warning must say deny rules still apply.
+		const yoloCtx = createMockContext([])
+		await createPermissionsHarness(["bash"], { yolo: true }).fire("session_start", {}, yoloCtx)
+		expect(warningCalls(yoloCtx)[0]).toContain("Your deny rules still apply")
+
+		// DANGER flag: the warning must not claim deny rules apply — they don't.
+		const dangerCtx = createMockContext([])
+		await createPermissionsHarness(["bash"], { "dangerously-skip-permissions": true }).fire(
+			"session_start",
+			{},
+			dangerCtx,
+		)
+		expect(warningCalls(dangerCtx)[0]).toContain("including your deny rules")
+	})
+
 	it("edit tool decisions carry no file path", async () => {
 		const harness = createPermissionsHarness(["write"], { yolo: true })
 		const decisions = collectDecisions(harness)

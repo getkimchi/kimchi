@@ -397,9 +397,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return
 		const { mode, initiatedBy } = getRuntimePermissionMode()
 		if (mode === "yolo" && initiatedBy === "user") {
+			// The DANGER flag keeps the full bypass (deny rules included) — say so
+			// instead of the yolo-mode wording, which is only true without it.
+			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true
 			ctx.ui.setStatus(
 				"permissions-warning",
-				"WARNING: permission prompts and the classifier are disabled in yolo mode. Your deny rules still apply. Recommended for sandbox environments only.",
+				dangerBypass
+					? "WARNING: ALL permission checks disabled, including your deny rules. Use only in throwaway/sandbox environments."
+					: "WARNING: permission prompts and the classifier are disabled in yolo mode. Your deny rules still apply. Recommended for sandbox environments only.",
 			)
 		} else if (!hasExecutableMode()) {
 			// Org policy is plan-only: no approved plan can ever proceed to
