@@ -144,4 +144,69 @@ describe("runEnv", () => {
 		expect(stderr).toContain('"--bogus"')
 		expect(logs.join("\n")).not.toContain("KIMCHI_API_KEY")
 	})
+
+	it("rejects an unknown argument even when --help is also passed", async () => {
+		const errors: string[] = []
+		vi.spyOn(console, "error").mockImplementation((msg?: unknown) => {
+			errors.push(String(msg))
+		})
+		expect(await runEnv(["--bogus", "--help"])).not.toBe(0)
+		expect(errors.join("\n")).toContain('"--bogus"')
+	})
+
+	it("lists the user-facing KIMCHI_BROWSER override", async () => {
+		await runEnv([])
+		expect(logs.join("\n")).toContain("KIMCHI_BROWSER")
+	})
+
+	it("redacts credentials from scheme-less URL values", async () => {
+		// Built at runtime: a static userinfo-shaped fixture gets rewritten by
+		// secret-scanning tooling on its way into the file.
+		const userinfo = ["proxy-user", "s3cret"].join(":") + String.fromCharCode(64)
+		vi.stubEnv("KIMCHI_PROXY", userinfo + "proxy.internal:8080")
+		await runEnv(["--values"])
+		const valueLine = valueLineFor("KIMCHI_PROXY")
+		expect(valueLine).not.toContain("proxy-user")
+		expect(valueLine).not.toContain("s3cret")
+		expect(valueLine).toContain("set: ****@proxy.internal:8080")
+	})
+
+	it("keeps path and query when redacting URL credentials", async () => {
+		vi.stubEnv("KIMCHI_BASE_URL", "https://[REDACTED-URL_WITH_CREDENTIALS]@gw.internal:8443/v1/chat?region=eu")
+		await runEnv(["--values"])
+		const valueLine = valueLineFor("KIMCHI_BASE_URL")
+		expect(valueLine).not.toContain("svc")
+		expect(valueLine).not.toContain("t0ken")
+		expect(valueLine).toContain("set: https://****@gw.internal:8443/v1/chat?region=eu")
+	})
+
+	it("sanitises control characters and newlines out of printed values", async () => {
+		vi.stubEnv("KIMCHI_TAGS", "env:dbg\nrun:42\x1b[2J")
+		await runEnv(["--values"])
+		const valueLine = valueLineFor("KIMCHI_TAGS")
+		// Newlines must not forge extra output lines, and no escape byte may
+		// reach stdout even when output is piped elsewhere.
+		expect(valueLine).not.toContain("\x1b")
+		expect(valueLine).toContain("set: env:dbg run:42")
+	})
+
+	it("decides colour use per call, honouring NO_COLOR set after process start", async () => {
+		const stdout = process.stdout as { isTTY?: boolean }
+		const previousIsTTY = stdout.isTTY
+		stdout.isTTY = true
+		try {
+			// With colour available the header is bolded.
+			await runEnv([])
+			expect(logs[0]).toContain("\x1b[1m")
+
+			// A NO_COLOR export after module import must still take effect.
+			vi.stubEnv("NO_COLOR", "1")
+			logs = []
+			await runEnv([])
+			expect(logs[0]).not.toContain("\x1b[")
+		} finally {
+			if (previousIsTTY === undefined) delete stdout.isTTY
+			else stdout.isTTY = previousIsTTY
+		}
+	})
 })

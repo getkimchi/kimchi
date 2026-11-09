@@ -20,19 +20,24 @@ const ENFORCED_PREFIX = /^(KIMCHI_|PI_|CASTAI_)/
 /**
  * Reference forms recognised in sources:
  *   process.env.KIMCHI_FOO
+ *   process.env?.KIMCHI_FOO                 (optional chaining)
  *   process.env["KIMCHI_FOO"]
  *   vi.stubEnv("KIMCHI_FOO", ...)
+ *   readE2eSeam("KIMCHI_FOO")               (src/** e2e seam helper)
+ *   parseEnvInt("KIMCHI_FOO", ...)          (numeric env helper)
  *
  * The FULL identifier is captured (not only its SCREAMING prefix part), so a
  * truncated match cannot silently alias a registered var — e.g. a typo like
  * `process.env.KIMCHI_TEST_HARNESSs` previously extracted KIMCHI_TEST_HARNESS
  * and passed by accident. Mixed-case prefixed names are reported as typos.
  *
- * Vars referenced only via a named constant (e.g. REGION_ENV) or set only in
- * object literals passed to child processes are not machine-detectable with
- * this pattern — keep their registry entries accurate by hand.
+ * Vars referenced only via a named constant (e.g. REGION_ENV,
+ * KIMCHI_DISABLE_REDACTION_EVENTS) or set only in object literals passed to
+ * child processes (KIMCHI_BIN) are not machine-detectable with this pattern —
+ * keep their registry entries accurate by hand.
  */
-const REFERENCE_RE = /(?:process\.env\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)/g
+const REFERENCE_RE =
+	/(?:process\.env\s*\??\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["']|readE2eSeam\(\s*["']|parseEnvInt\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)/g
 
 /** A well-formed env var name is entirely SCREAMING_SNAKE_CASE. */
 const SCREAMING = /^[A-Z][A-Z0-9_]+$/
@@ -74,7 +79,10 @@ function stripComments(source: string): string {
 function collectReferencedEnvVars(sources: Map<string, string>): Map<string, string[]> {
 	const referenced = new Map<string, string[]>()
 	for (const [file, source] of sources) {
-		for (const match of source.matchAll(REFERENCE_RE)) {
+		// Strip comments (as the stale check does) so prose like
+		// "// set process.env.KIMCHI_FOO to..." cannot trigger a spurious
+		// "unregistered" failure.
+		for (const match of stripComments(source).matchAll(REFERENCE_RE)) {
 			const name = match[1]
 			if (!ENFORCED_PREFIX.test(name)) continue
 			const files = referenced.get(name) ?? []

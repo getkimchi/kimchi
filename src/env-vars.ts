@@ -101,6 +101,11 @@ export const ENV_VARS: EnvVarDef[] = [
 
 	// documents extension (src/extensions/documents)
 	{
+		name: "KIMCHI_BROWSER",
+		description:
+			"Path to the Chromium-based browser binary used for document/PDF rendering (takes precedence over auto-detection)",
+	},
+	{
 		name: "KIMCHI_DOCUMENT_MAX_MB",
 		description: "Maximum document size in MB accepted by the documents commands",
 	},
@@ -181,6 +186,7 @@ export const IGNORED_ENV_VARS: string[] = [
 	// tool-output residency + adaptive idle-GC tuning (docs/memory-residency.md)
 	"KIMCHI_TOOL_OUTPUT_STORE",
 	"KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES",
+	"KIMCHI_TOOL_OUTPUT_CACHE_BYTES",
 	"KIMCHI_IDLE_GC_DELAY_MS",
 	"KIMCHI_GC_GROWTH_BYTES",
 	"KIMCHI_GC_MIN_INTERVAL_MS",
@@ -203,6 +209,16 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_E2E_COST_REPORT_REFRESH_MS",
 	"KIMCHI_E2E_RECONCILIATION_INTERVAL_MS",
 	"KIMCHI_E2E_FIRST_TICK_DELAY_MS",
+	// TUI-E2E seams read via readE2eSeam (src/extensions/remote-run, permissions)
+	"KIMCHI_E2E_FAKE_SANDBOX_GIT",
+	"KIMCHI_E2E_FAKE_REMOTE_COMPLETION",
+	"KIMCHI_E2E_FAKE_BROWSER_REVIEW",
+	"KIMCHI_E2E_FAKE_PLANNOTATOR_DECISION",
+	// hand-registered: read via a named constant the scan cannot see
+	// (src/extensions/pii-redaction/redaction-events.ts)
+	"KIMCHI_DISABLE_REDACTION_EVENTS",
+	// hand-registered: set by kimchi for child processes (update/install, bridge)
+	"KIMCHI_BIN",
 	// OAuth dev/mock endpoint overrides (src/oauth-config.ts)
 	"KIMCHI_OAUTH_CLIENT_ID",
 	"KIMCHI_OAUTH_AUTHORIZE_URL",

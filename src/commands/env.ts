@@ -1,14 +1,18 @@
 import { ENV_VARS, type EnvVarDef } from "../env-vars.js"
 
 // Keep piped output (`kimchi env > out.txt`, CI logs) free of escape codes.
-const COLOR = process.stdout.isTTY && !process.env.NO_COLOR
+// Computed per call: a long-lived process may see NO_COLOR change after
+// import, and tests drive isTTY/NO_COLOR directly.
+function colorEnabled(): boolean {
+	return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR
+}
 
 function bold(text: string): string {
-	return COLOR ? `\x1b[1m${text}\x1b[0m` : text
+	return colorEnabled() ? `\x1b[1m${text}\x1b[0m` : text
 }
 
 function dim(text: string): string {
-	return COLOR ? `\x1b[2m${text}\x1b[0m` : text
+	return colorEnabled() ? `\x1b[2m${text}\x1b[0m` : text
 }
 
 const MASKED_VALUE = "****"
@@ -40,7 +44,16 @@ function displayValue(def: EnvVarDef): string {
 	// masked secret, which would imply a real credential is configured.
 	if (raw === undefined || raw === "") return dim(NOT_SET)
 	if (def.secret) return `set: ${MASKED_VALUE}`
-	return `set: ${redactUrlCredentials(raw)}`
+	return `set: ${sanitizeValue(redactUrlCredentials(raw))}`
+}
+
+// Values land in terminals and pasted bug reports: drop control characters
+// (ESC byte of ANSI sequences, DEL, C0) and collapse any stray newline so a
+// value can never inject escape codes or forge extra output lines (e.g. a
+// fake `set: ****` row).
+function sanitizeValue(value: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
+	return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim()
 }
 
 /**
@@ -48,18 +61,23 @@ function displayValue(def: EnvVarDef): string {
  * embed basic-auth credentials in the userinfo part
  * (`http://[REDACTED-URL_WITH_CREDENTIALS]@proxy:8080`). Output is designed to be shared
  * (`kimchi env --values > out.txt`, CI logs, bug reports), so mask the
- * credentials while keeping host/port — the part that carries diagnostic
- * value. Non-URL values pass through unchanged.
+ * credentials while keeping host/port/path — the part that carries
+ * diagnostic value. Non-URL values pass through unchanged.
  */
 function redactUrlCredentials(raw: string): string {
 	try {
 		const url = new URL(raw)
-		if (!url.username && !url.password) return raw
-		// Keep protocol + host (the diagnostic part), mask credentials.
-		return `${url.protocol}//${MASKED_VALUE}@${url.host}`
+		if (url.username || url.password) {
+			// Keep protocol + host + path/query (the diagnostic part), mask credentials.
+			const path = url.pathname === "/" ? "" : url.pathname
+			return `${url.protocol}//${MASKED_VALUE}@${url.host}${path}${url.search}`
+		}
 	} catch {
-		return raw
+		// Not a parseable URL — the scheme-less userinfo fallback below applies.
 	}
+	// Scheme-less proxy syntax (`user:pw@host:8080`) is common in the wild;
+	// mask anything userinfo-shaped so it can never print in the clear.
+	return raw.replace(/(^|\/\/)[^/@\s:]+(:[^/@\s]*)?@/, `$1${MASKED_VALUE}@`)
 }
 
 /**
@@ -81,16 +99,17 @@ function printUsage(stream: typeof console.log): void {
 }
 
 export async function runEnv(args: string[]): Promise<number> {
-	if (args.includes("--help") || args.includes("-h")) {
-		printUsage(console.log)
-		return 0
-	}
-
+	// Unknown args win over --help: a typo'd flag next to -h must not exit 0.
 	const unknown = args.filter((a) => !ACCEPTED_FLAGS.includes(a as (typeof ACCEPTED_FLAGS)[number]))
 	if (unknown.length > 0) {
 		console.error(`kimchi env: unknown argument: ${unknown.map((a) => `"${a}"`).join(", ")}`)
 		printUsage(console.error)
 		return 1
+	}
+
+	if (args.includes("--help") || args.includes("-h")) {
+		printUsage(console.log)
+		return 0
 	}
 
 	const showValues = args.includes("--values") || args.includes("-v")
