@@ -65,6 +65,7 @@ interface Harness {
 	exchangeAuthorizationCode: ReturnType<typeof vi.fn>
 	listUserOrganizations: ReturnType<typeof vi.fn>
 	settleCredential: ReturnType<typeof vi.fn>
+	startCallbackServer: ReturnType<typeof vi.fn>
 	/** Mutable test clock backing deps.now. */
 	clock: { now: number }
 	manager: SsoFlowManager
@@ -116,6 +117,7 @@ function makeHarness(overrides: Partial<SsoFlowManagerDeps> = {}): Harness {
 		exchangeAuthorizationCode,
 		listUserOrganizations,
 		settleCredential,
+		startCallbackServer: deps.startCallbackServer as unknown as ReturnType<typeof vi.fn>,
 		clock,
 		manager: new SsoFlowManager(deps),
 	}
@@ -204,6 +206,33 @@ describe("SsoFlowManager", () => {
 				}),
 			})
 			await expectSsoError(h.manager.begin({}), "CALLBACK_PORT_BUSY")
+			// No drain context (nothing was discarded on this manager): a held
+			// port fails fast, one attempt only.
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(1)
+		})
+
+		// closeServer defers socket destruction (~100ms), so a begin immediately
+		// after a cancel/terminal outcome can race the port release. One bounded
+		// retry covers the drain window; a genuinely held port still fails fast.
+		it("retries once through the port drain window after a cancelled flow", async () => {
+			const h = makeHarness({ portRetryDelayMs: 1 })
+			const first = await h.manager.begin({})
+			h.manager.cancel({ requestId: first.requestId })
+			h.startCallbackServer.mockRejectedValueOnce(new CallbackPortInUseError(8765))
+
+			await expect(h.manager.begin({})).resolves.toMatchObject({ requestId: expect.any(String) })
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(3) // first flow + failed retry + retry
+		})
+
+		it("does not retry the drain window when the previous flow ended long ago", async () => {
+			const h = makeHarness({ portRetryDelayMs: 1 })
+			const first = await h.manager.begin({})
+			h.manager.cancel({ requestId: first.requestId })
+			h.startCallbackServer.mockRejectedValue(new CallbackPortInUseError(8765))
+			h.clock.now += 5_000 // past the drain window
+
+			await expectSsoError(h.manager.begin({}), "CALLBACK_PORT_BUSY")
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(2) // attempt + no retry
 		})
 
 		it("enforces one flow per connection with SSO_IN_PROGRESS", async () => {
@@ -212,9 +241,9 @@ describe("SsoFlowManager", () => {
 			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
 		})
 
-		// Review finding: a browser-phase flow whose sso_await was never called
-		// has no expiry timer — without reaping, a long-dead flow would block new
-		// logins with SSO_IN_PROGRESS (contract: expired → restart the flow).
+		// A browser-phase flow whose sso_await was never called has no expiry
+		// timer — without reaping, a long-dead flow would block new logins with
+		// SSO_IN_PROGRESS (contract: expired → restart the flow).
 		it("reaps an expired abandoned flow so a later begin starts cleanly", async () => {
 			const h = makeHarness()
 			const abandoned = await h.manager.begin({})
@@ -388,8 +417,8 @@ describe("SsoFlowManager", () => {
 			expect(h.manager.cancel({})).toEqual({})
 		})
 
-		// Review finding: cancel must stop an in-flight completion, not just the
-		// loopback server — a cancelled sign-in must never persist a credential.
+		// Cancel must stop an in-flight completion, not just the loopback
+		// server — a cancelled sign-in must never persist a credential.
 		it("aborts an in-flight completion: a cancelled flow never settles", async () => {
 			const h = makeHarness()
 			h.exchangeAuthorizationCode.mockImplementation(

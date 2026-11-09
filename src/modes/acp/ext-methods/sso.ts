@@ -71,7 +71,10 @@ export type SsoErrorCode =
 	| "SSO_NO_ORGANIZATIONS"
 
 export function ssoError(code: SsoErrorCode, message: string, extra?: Record<string, unknown>): RequestError {
-	return new RequestError(SSO_JSON_RPC_ERROR_CODE, message, { code, ...extra })
+	// `message` rides the standard top-level JSON-RPC error field; it is also
+	// duplicated into `data` because contract §3 describes `data: { code,
+	// message }` — clients branch on `data.code` but may render `data.message`.
+	return new RequestError(SSO_JSON_RPC_ERROR_CODE, message, { code, message, ...extra })
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,14 @@ export const SSO_FLOW_TTL_MS = 600_000
  * spirit as the ACP Agent Auth copy: client-neutral, no terminal wording. */
 const SSO_CALLBACK_SUCCESS_MESSAGE = "Signed in with CAST AI. You can close this window and return to Kimchi."
 
+/** How long after a discard the loopback port may still be draining.
+ * closeServer defers socket destruction (~100ms) and server.close() releases
+ * the bind asynchronously, so a begin immediately after a cancel/terminal
+ * outcome can race the port release. */
+const CALLBACK_PORT_DRAIN_WINDOW_MS = 2_000
+/** How long to wait before the single drain-retry. */
+const CALLBACK_PORT_RETRY_DELAY_MS = 250
+
 export interface SsoFlowManagerDeps {
 	/** Region used when `sso_begin` carries none (the configured region). */
 	configuredRegion: () => RegionId | undefined
@@ -127,6 +138,8 @@ export interface SsoFlowManagerDeps {
 	now?: () => number
 	/** Injectable TTL for tests; defaults to {@link SSO_FLOW_TTL_MS}. */
 	flowTtlMs?: number
+	/** Injectable drain-retry delay for tests; defaults to 250ms. */
+	portRetryDelayMs?: number
 }
 
 interface PendingSsoFlow {
@@ -159,6 +172,8 @@ function requireStringParam(params: Record<string, unknown>, name: string): stri
  */
 export class SsoFlowManager {
 	private flow?: PendingSsoFlow
+	/** When the last flow was discarded — drives the callback-port drain retry. */
+	private lastDiscardedAtMs = 0
 
 	constructor(private readonly deps: SsoFlowManagerDeps) {}
 
@@ -201,13 +216,7 @@ export class SsoFlowManager {
 		const state = generateOAuthState()
 		let callbackServer: CallbackServer
 		try {
-			callbackServer = await this.deps.startCallbackServer(state, {
-				mode: "code",
-				successMessage: SSO_CALLBACK_SUCCESS_MESSAGE,
-				// The redirect URI is registered with Auth0 as exactly
-				// http://localhost:8765/callback — the port is non-negotiable.
-				port: { kind: "fixed", value: CAST_AI_SSO_CALLBACK_PORT },
-			})
+			callbackServer = await this.startCallbackServerToleratingDrain(state)
 		} catch (error) {
 			if (error instanceof CallbackPortInUseError) {
 				throw ssoError(
@@ -288,7 +297,8 @@ export class SsoFlowManager {
 					flow.verifier,
 					flow.callbackServer.url,
 					// Aborted by sso_cancel/discard so a cancelled sign-in never
-					// completes (review finding: cancel must stop the continuation).
+					// completes — cancel stops the whole continuation, not just
+					// the loopback server.
 					flow.abortController.signal,
 				)
 			} catch (error) {
@@ -297,7 +307,7 @@ export class SsoFlowManager {
 				}
 				// Token-endpoint failures are IdP interactions: map to the typed
 				// code (preserving the RFC 6749 error when one came back) instead
-				// of an unclassifiable internal error (review finding). The region
+				// of an unclassifiable internal error. The region
 				// hint is part of the message because LLM-4138 adds a region
 				// dropdown on the login page: a user switching region mid-flow
 				// lands on a different tenant and the exchange fails — the only
@@ -390,7 +400,8 @@ export class SsoFlowManager {
 
 	/** Reject with SSO_CALLBACK_TIMEOUT once the flow's TTL passes. The
 	 * loopback server resolves its result on its own 5-minute timer, so this
-	 * race mainly guards the tail (and the parked multi-org window). */
+	 * race mainly guards a callback that never arrives on a manager whose flow
+	 * TTL is shorter than the server's. */
 	private raceWithExpiry<T>(flow: PendingSsoFlow, promise: Promise<T>): Promise<T> {
 		const now = this.deps.now ?? Date.now
 		const remainingMs = flow.expiresAtMs - now()
@@ -407,12 +418,37 @@ export class SsoFlowManager {
 		return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
 	}
 
+	/** Start the loopback server, retrying once through the drain window: a
+	 * begin immediately after a cancel/terminal outcome can otherwise fail with
+	 * a spurious CALLBACK_PORT_BUSY while the just-closed server releases port
+	 * 8765. A genuinely held port (another Kimchi surface) still fails fast. */
+	private async startCallbackServerToleratingDrain(state: string): Promise<CallbackServer> {
+		const start = () =>
+			this.deps.startCallbackServer(state, {
+				mode: "code",
+				successMessage: SSO_CALLBACK_SUCCESS_MESSAGE,
+				// The redirect URI is registered with Auth0 as exactly
+				// http://localhost:8765/callback — the port is non-negotiable.
+				port: { kind: "fixed", value: CAST_AI_SSO_CALLBACK_PORT },
+			})
+		try {
+			return await start()
+		} catch (error) {
+			if (!(error instanceof CallbackPortInUseError)) throw error
+			const now = this.deps.now ?? Date.now
+			if (now() - this.lastDiscardedAtMs >= CALLBACK_PORT_DRAIN_WINDOW_MS) throw error
+			await new Promise((resolve) => setTimeout(resolve, this.deps.portRetryDelayMs ?? CALLBACK_PORT_RETRY_DELAY_MS))
+			return start()
+		}
+	}
+
 	/** Tear down the flow: close the callback server (resolves a pending
 	 * browser wait with "Login cancelled", which runBrowserWait maps to
 	 * SSO_REQUEST_NOT_FOUND), abort any in-flight completion, and delete the
 	 * entry. Safe to call twice. */
 	private discard(flow: PendingSsoFlow): void {
 		if (this.flow === flow) this.flow = undefined
+		this.lastDiscardedAtMs = (this.deps.now ?? Date.now)()
 		flow.abortController.abort()
 		try {
 			flow.callbackServer.close()

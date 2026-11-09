@@ -839,8 +839,9 @@ export class KimchiAcpAgent implements Agent {
 		clearApiKey()
 		// `region` rides the credential extras (untyped in pi-ai's OAuthCredentials,
 		// same access pattern as the login extension's completeKimchiSsoLogin).
-		if (isRegionId((credential as { region?: unknown }).region)) {
-			writeRegion((credential as { region?: unknown }).region as RegionId)
+		const credentialRegion = (credential as { region?: unknown }).region
+		if (isRegionId(credentialRegion)) {
+			writeRegion(credentialRegion)
 		}
 		const modelsPath = join(this.agentDir, "models.json")
 		await updateModelsConfig(modelsPath, credential.access, {
