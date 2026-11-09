@@ -1,18 +1,7 @@
-import { ANSI, fg } from "../ansi.js"
 import { CLI_OPTIONS, type CliOptionDef } from "../cli-args.js"
+import { bold, dim } from "./console-style.js"
 import { listPackageCommands } from "./package-commands.js"
 import { COMMANDS } from "./registry.js"
-
-const SECTION_HEADER = "\x1b[1m"
-const RESET = "\x1b[0m"
-
-function bold(text: string): string {
-	return `${SECTION_HEADER}${text}${RESET}`
-}
-
-function dim(text: string): string {
-	return fg(ANSI.dim, text)
-}
 
 interface FlagDoc {
 	name: string
@@ -31,18 +20,6 @@ function flagDocFromCliOption(name: string, def: CliOptionDef): FlagDoc {
 
 const KIMCHI_FLAGS: FlagDoc[] = Object.entries(CLI_OPTIONS).map(([name, def]) => flagDocFromCliOption(name, def))
 
-const KIMCHI_ENV: FlagDoc[] = [
-	{ name: "KIMCHI_API_KEY", description: "Kimchi API key (overrides config.json apiKey)" },
-	{ name: "KIMCHI_PERMISSIONS", description: "Initial permissions mode: default | plan | auto | yolo" },
-	{
-		name: "KIMCHI_TELEMETRY_ENABLED",
-		description:
-			"Override telemetry (1/true to enable, 0/false to disable). On by default; an organization policy can enforce the effective state.",
-	},
-	{ name: "KIMCHI_TAGS", description: "Comma-separated `key:value` tags applied to every LLM request" },
-	{ name: "KIMCHI_NO_UPDATE_CHECK", description: "Disable the background self-update probe" },
-]
-
 function printSection(rows: FlagDoc[], pad: number): void {
 	for (const row of rows) {
 		console.log(`  ${row.name.padEnd(pad)}${row.description}`)
@@ -54,10 +31,11 @@ function maxNameWidth(rows: FlagDoc[]): number {
 }
 
 /**
- * Print a self-contained help screen: kimchi-specific subcommands, flags, and
- * env vars only. We deliberately don't delegate to pi-coding-agent's printer —
- * that would surface options and env vars (e.g. ANTHROPIC_API_KEY) and
- * extension-management commands that are not exposed by kimchi.
+ * Print a self-contained help screen: kimchi-specific subcommands and flags
+ * only (env vars are delegated to `kimchi env`). We deliberately don't
+ * delegate to pi-coding-agent's printer — that would surface options and env
+ * vars (e.g. ANTHROPIC_API_KEY) and extension-management commands that are
+ * not exposed by kimchi.
  *
  * Flags listed here are forwarded verbatim to pi-coding-agent's parser when
  * the user runs the harness (no subcommand). Keep the list curated: only flags
@@ -93,7 +71,9 @@ export async function printMergedHelp(): Promise<void> {
 	console.log()
 
 	console.log(bold("Environment variables:"))
-	printSection(KIMCHI_ENV, maxNameWidth(KIMCHI_ENV) + 2)
+	console.log(
+		`  Run ${bold("kimchi env")} to list supported variables (add ${bold("--values")} to see which are currently set).`,
+	)
 	console.log()
 
 	console.log(bold("Examples:"))
