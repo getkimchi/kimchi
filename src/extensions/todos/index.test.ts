@@ -1109,6 +1109,28 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
 	})
 
+	it("a steered input delivered after agent_end (parked input handler) still advances and arms", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+
+		// A steer received mid-run whose input handler parks past the run's
+		// end: its message is enqueued into the idle agent and delivers at the
+		// next run's steering poll — the expectation must survive agent_end.
+		await receiveInput(harness, ctx, "Steer it")
+		await harness.fire("agent_end", {}, ctx)
+		expect(getPendingCheckins("session")).toHaveLength(0)
+		expect(await fireWork(harness, ctx, "in-the-gap")).toEqual({ block: false })
+
+		await deliverInput(harness, ctx, "Steer it")
+		expect(getInputRevision("session")).toBe(1)
+		expect(await fireWork(harness, ctx, "after-late-delivery")).toMatchObject({ block: true })
+	})
+
 	it("a drained follow-up expectation does not suppress arming for the next rewritten immediate input", async () => {
 		const harness = createTodosHarness()
 		const ctx = createContext("session", [])

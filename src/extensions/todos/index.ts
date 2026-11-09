@@ -336,6 +336,13 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// Recent steered/idle input texts, consumed by the user message they
 	// produce: lets the message_start consumer attribute a user message to
 	// the immediate input that caused it, instead of to a queued follow-up.
+	// Deliberately not cleared at agent_end: a steered input can outlive its
+	// run when a later input handler parks on real I/O (documents/intake
+	// @file reads, the clipboard vision gate) — the parked steer is enqueued
+	// into the idle agent and delivers at the next run's steering poll, and
+	// its expectation must still be there to arm. Stale entries from
+	// swallowed inputs self-drain: each positional consumption removes
+	// exactly one, and deliveries advance exactly once regardless.
 	const recentImmediateInputs = new Map<string, string[]>()
 
 	/** Reset one list's staleness bookkeeping — epoch, counter, and reminder
@@ -539,15 +546,6 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		}
 		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
 		deliverGenuineInput(ctx)
-	})
-
-	// Run boundary: idle and steered prompts are delivered within the run
-	// that received them, and a rewritten one never text-matches — so any
-	// recent entry still held here can no longer produce a message. Reset
-	// the attribution list so leftovers cannot block the next follow-up
-	// delivery's positional fallback.
-	pi.on("agent_end", (_event, ctx) => {
-		recentImmediateInputs.delete(ctx.sessionManager.getSessionId())
 	})
 
 	// Work-tool admission gate. Only reconciliation tools (todo writes,
