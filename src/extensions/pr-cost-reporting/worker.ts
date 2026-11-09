@@ -5,6 +5,7 @@ import { GATEWAY_ORGANIZATION_HEADER, resolveGatewayCredentials } from "../../au
 import { loadConfig } from "../../config.js"
 import { canonicalPlatformApiUrl } from "../../regions.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
+import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { boundedResponse, parseRetryAfterMs } from "../../utils/http.js"
 import { plainURL } from "../../utils/url.js"
 import { pullRequestKey } from "../pull-request-status/links.js"
@@ -16,6 +17,7 @@ import type { PullRequestCostReport } from "../work-attribution/costs.js"
 import { isWorkAccount, isWorkScope, platformApiUrl, sameWorkAccount } from "../work-attribution/scope.js"
 import { importWorkRecordsAsync, object, type WorkRecord } from "../work-attribution/summary.js"
 import { buildEvents } from "./events.js"
+import { legacyInputSignature } from "./ledger/import.js"
 import {
 	acknowledgeBatch,
 	deliveryRetry,
@@ -30,21 +32,27 @@ import type { Acknowledgement } from "./protocol.js"
 import {
 	ACCOUNT_SCOPES,
 	acknowledgeFrozenSnapshot,
+	deadLetterFrozenSnapshot,
 	deferFrozenSnapshot,
+	type FrozenSnapshot,
 	freezeSnapshots,
 	frozenSnapshotPending,
+	HOLD_EXPIRY_MS,
 	inUploadWindow,
 	LIMIT_NAMES,
 	LIMIT_SCOPES,
 	limitFrozenSnapshot,
 	pendingFrozenSnapshots,
+	type ReportingState,
 	readReportingState,
 	recordReportingError,
 	reportingProducer,
+	reportingStateFileSignature,
 	reportingStatePath,
 	type ServerLimit,
 	type SnapshotAck,
 	trimFrozenSnapshot,
+	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
 import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
@@ -109,13 +117,13 @@ function safeEndpoint(value: string): boolean {
 }
 
 /** Both transports share the same cancellation, opt-out polling and lease boundary. */
-async function reportingDelivery(
+async function reportingDelivery<T>(
 	agentDir: string,
 	signal: AbortSignal,
 	assertLease: () => void,
 	deadline: number,
-	deliver: (signal: AbortSignal, check: () => void) => Promise<void>,
-): Promise<void> {
+	deliver: (signal: AbortSignal, check: () => void) => Promise<T>,
+): Promise<T> {
 	const controller = new AbortController()
 	const timer = setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now()))
 	timer.unref()
@@ -155,12 +163,40 @@ async function reportingDelivery(
 		poller = startStatPoller(statePath, OPT_OUT_POLL_MS, reread)
 	} catch {}
 	try {
-		await deliver(combined, check)
+		return await deliver(combined, check)
 	} finally {
 		controller.abort()
 		poller?.stop()
 		poller = undefined
 		clearTimeout(timer)
+	}
+}
+
+/** The due-relevant fields of a frozen row — pass gates reproduce the delivery loop's selection from them. */
+export interface FrozenDueMeta {
+	key: string
+	account: string
+	held: boolean
+	/** The body was dead-lettered and no retry will ever select it again. */
+	dead: boolean
+	hasContent: boolean
+	urgent: boolean
+	retryAt: number
+	uploadedAt?: number
+}
+
+function frozenDueMeta(job: FrozenSnapshot): FrozenDueMeta {
+	return {
+		key: job.key,
+		account: accountKey(job.entry.account),
+		held: job.entry.held === true,
+		dead: job.entry.dead !== undefined,
+		// Mirrors the delivery loop's pause skip word for word: a body with zero requests and zero
+		// pull requests withdraws nothing, so it goes out even on a paused account.
+		hasContent: (job.entry.pending?.requests.length ?? 0) > 0 || (job.entry.pending?.pullRequests.length ?? 0) > 0,
+		urgent: job.entry.urgent === true,
+		retryAt: job.entry.retryAt,
+		uploadedAt: job.entry.uploadedAt,
 	}
 }
 
@@ -171,11 +207,12 @@ export function deliverSnapshots(
 	signal: AbortSignal,
 	assertLease: () => void,
 	deadline = Date.now() + PASS_MS,
-): Promise<void> {
+): Promise<FrozenDueMeta[] | undefined> {
 	return reportingDelivery(agentDir, signal, assertLease, deadline, async (combined, check) => {
 		const state = await freezeSnapshots(agentDir, check)
-		if (!state.enabled) return
+		if (!state.enabled) return undefined
 		const frozen = await pendingFrozenSnapshots(agentDir, check, Math.min(deadline, Date.now() + PASS_MS / 2))
+		const meta = frozen.map((row) => frozenDueMeta(row))
 		/** The configured credential: API key, or the SSO token from auth.json. */
 		const configuredCredentials = () => resolveGatewayCredentials(loadConfig({ cwd }))
 		const configuredKey = configuredCredentials().token
@@ -205,9 +242,13 @@ export function deliverSnapshots(
 		const positions = new Map(Object.keys(state.entries).map((key, index) => [key, index]))
 		const urgent = new Set(frozen.filter(({ entry }) => entry.urgent).map(({ key }) => key))
 		const due = frozen
-			.filter(
-				({ key, entry }) => !(state.entries[key] ?? entry).held && entry.retryAt <= now && !inUploadWindow(entry, now),
-			)
+			.filter(({ key, entry }) => {
+				const live = state.entries[key] ?? entry
+				// A settled body is refused by the server as long as its bytes are: neither the live
+				// entry's own mark nor an older frozen note's mark ever selects for delivery again.
+				const dead = live.dead !== undefined || entry.dead !== undefined
+				return !live.held && !dead && entry.retryAt <= now && !inUploadWindow(entry, now)
+			})
 			.sort((a, b) => {
 				const priority = Number(!urgent.has(a.key)) - Number(!urgent.has(b.key))
 				if (priority) return priority
@@ -340,8 +381,21 @@ export function deliverSnapshots(
 							// retry carries a body the server can accept instead of resending it for hours.
 							await trimFrozenSnapshot(agentDir, job, assertOwnership, limit)
 						}
-					} else if (uploadAttempted && status === 413 && (await trimFrozenSnapshot(agentDir, job, assertOwnership))) {
-						// The server rejected this body for its size; the next pass retries the halved one.
+					} else if (uploadAttempted && status === 410) {
+						// Explicitly gone: the server cannot say this about a missing route; settle.
+						await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+					} else if (uploadAttempted && status === 404 && (entry.attempts ?? 0) >= 2) {
+						// The third spaced 404: a durable deletion. A single 404 can be an undeployed
+						// or rolled-back /pr-cost-snapshots route while api-keys:verify still answers,
+						// and those windows last minutes, so a lone 404 must never settle the queue
+						// tail — it falls through to the normal defer below (attempts increments on
+						// defer, after this dispatch, so 2 already counted = two prior spaced refusals).
+						await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
+					} else if (uploadAttempted && status === 413) {
+						if (!(await trimFrozenSnapshot(agentDir, job, assertOwnership)))
+							// Halving reached its floor and the server still refuses the size: settle
+							// the body instead of deferring the same refusal forever.
+							await deadLetterFrozenSnapshot(agentDir, job, status, errorMessage, assertOwnership)
 					} else
 						await deferFrozenSnapshot(
 							agentDir,
@@ -356,6 +410,7 @@ export function deliverSnapshots(
 				}
 			}
 		}
+		return meta
 	})
 }
 
@@ -558,6 +613,147 @@ export function deliverEvents(
 
 const CAPTURE_FAILED = "PR reporting could not capture a complete inventory; previous reports were retained"
 
+/**
+ * Pass gate: an unchanged, not-due tick costs one file stat plus cheap ledger counters instead of a
+ * full freeze + capture + deliver cycle (which reads and deep-validates a queue of up to 24 MiB).
+ * The signature covers every input a pass consumes:
+ * - state.json's (mtime, size): every writer — this process or another session — replaces the file
+ *   atomically (queueing, acknowledgements, opt-outs, delivery bookkeeping, frozen-trim rewrites).
+ * - recordCount: ledger rows appended by capture between ticks, in any process.
+ * - dirtyWorks: a flagged projection forces repair regardless of row count.
+ * - dataVersion: PRAGMA data_version plus an own-commit counter — any ledger write in ANY process
+ *   (receipts, outbox schedule notes, frozen-trim writes) moves it; own writes are counted because
+ *   Bun:sqlite does not exempt same-connection commits from the pragma.
+ * - legacy journal stat identity: imported only inside passes, so it must open the gate itself.
+ * Time is the remaining input, and the snapshot due filter (worker.ts `due`) reads exactly the
+ * fields FrozenDueMeta and the stamp-time holds carry: held, dead, retryAt, urgency, the warm
+ * upload-window fields and account pauses — plus the earliest hold deadline queueSnapshots
+ * releases, stamped so a quiet tick still wakes for it. Frozen rows are content-addressed and every row mutation
+ * rides through queue.ts's update() (state.json) or a ledger commit (dataVersion), so a stamped
+ * gate cannot go stale behind a matching signature. Only isTelemetryEnabled is consulted live: an
+ * in-session toggle changes reporting duty without touching any file or ledger.
+ */
+interface PassGate {
+	signature: string
+	frozen: FrozenDueMeta[]
+	/** Held flag per queue key at the last sweep — the live key wins over frozen metadata. */
+	liveHeld: Record<string, boolean>
+	/** Dead-lettered flag per queue key at the last sweep — the live key wins over frozen metadata. */
+	liveDead: Record<string, boolean>
+	/** Earliest hold deadline; when it passes the freeze sweep releases the hold, so the pass opens. */
+	nextHoldExpiryAt?: number
+	/** Account pauses at the last sweep (retryAt thaws by clock, so frozen stamps stay exact). */
+	pauses: { account: string; retryAt: number }[]
+	/** Failed repository-identity lookups live only in repositoryCache; the next retry opens the pass. */
+	nextLookupRetryAt?: number
+	/** A pass that ran out of time leaves its changed records marked; translation continues next pass. */
+	captureDone: boolean
+	/** Next scheduled event-upload time across still-open outbox accounts (their own backoff note). */
+	eventsRetryAt?: number
+	enabled: boolean
+	followsTelemetry: boolean
+}
+const passGates = new Map<string, PassGate>()
+
+async function probePassSignature(agentDir: string): Promise<string> {
+	const file = reportingStateFileSignature(agentDir)
+	const backend = backendFor(agentDir)
+	return [
+		file?.mtimeMs ?? 0,
+		file?.size ?? 0,
+		// Records are insert-only, so the rowid watermark tracks appends O(1) where COUNT(*) was O(n).
+		backend.recordWatermark(),
+		backend.dataVersion(),
+		backend.dirtyWorks().length,
+		// Legacy journals are imported only inside passes, so their stat identity opens the gate itself;
+		// without it a torn-append repair or a late-arriving record could wait forever.
+		legacyInputSignature(agentDir),
+	].join(":")
+}
+
+/** True when this stamp says any frozen snapshot could match the delivery loop's selection this tick. */
+function gateHasDue(gate: PassGate, now: number): boolean {
+	const enabled = gate.followsTelemetry ? isTelemetryEnabled() : gate.enabled
+	if (!enabled) return false
+	if (gate.nextLookupRetryAt !== undefined && now >= gate.nextLookupRetryAt) return true
+	if (!gate.captureDone) return true
+	if (gate.eventsRetryAt !== undefined && now >= gate.eventsRetryAt) return true
+	if (gate.nextHoldExpiryAt !== undefined && now >= gate.nextHoldExpiryAt) return true
+	const paused = new Set(gate.pauses.filter((pause) => pause.retryAt > now).map((pause) => pause.account))
+	for (const meta of gate.frozen) {
+		// Mirrors the delivery loop's `due` pick and its per-attempt account-pause skip: a held key or a
+		// paused account with claims never goes out, anything else due re-opens the pass.
+		const held = gate.liveHeld[meta.key] ?? meta.held
+		const dead = meta.dead || gate.liveDead[meta.key] === true
+		if (held || dead || (paused.has(meta.account) && meta.hasContent)) continue
+		const inWindow =
+			!meta.urgent &&
+			meta.uploadedAt !== undefined &&
+			meta.uploadedAt <= now &&
+			now - meta.uploadedAt < UPLOAD_INTERVAL_MS
+		if (meta.retryAt <= now && !inWindow) return true
+	}
+	return false
+}
+
+/**
+ * Stamp-time picture of a sweep: the signature of what the pass actually consumed (NOT a fresh probe —
+ * a write landing mid-pass must reopen the next tick, and a post-pass probe would silently absorb it),
+ * plus every held/pause/enabled field gateHasDue reads.
+ */
+async function passGateStamp(
+	agentDir: string,
+	state: ReportingState,
+	frozen: FrozenDueMeta[],
+	signature: string,
+): Promise<PassGate> {
+	// Failed lookups (no resolved identity, not permanently unsupported) retry at checkedAt + 30 s,
+	// from the same skip window repositoryIdentities applies inside a pass. The cache key JSON-encodes
+	// an [agentDir, repository] pair; derive the directory prefix the same way so unrelated agent
+	// directories never share a deadline.
+	const prefix = JSON.stringify([agentDir, "x"]).replace(/x"\]$/, "")
+	let nextLookupRetryAt: number | undefined
+	for (const [key, cached] of repositoryCache)
+		if (key.startsWith(prefix) && cached.value === undefined && cached.unsupported !== true) {
+			const retryAt = cached.checkedAt + 30_000
+			if (nextLookupRetryAt === undefined || retryAt < nextLookupRetryAt) nextLookupRetryAt = retryAt
+		}
+	let eventsRetryAt: number | undefined
+	let unstampedOutbox = false
+	for (const status of readOutboxStatus(agentDir)) {
+		// An open account without a backoff note says "attempt now": keep opening until one appears.
+		if ((status.sendable > 0 || status.batches > 0) && !status.retry) unstampedOutbox = true
+		if (status.retry && (eventsRetryAt === undefined || status.retry.retryAt < eventsRetryAt))
+			eventsRetryAt = status.retry.retryAt
+	}
+	let nextHoldExpiryAt: number | undefined
+	// Only a hold with a parked body can wake something up; the freeze sweep releases those.
+	for (const entry of Object.values(state.entries))
+		if (entry.heldAt !== undefined && entry.pending !== undefined && entry.dead === undefined) {
+			// A settled entry can never deliver from a wakeup: it must not hold the gate open.
+			const expires = entry.heldAt + HOLD_EXPIRY_MS
+			if (nextHoldExpiryAt === undefined || expires < nextHoldExpiryAt) nextHoldExpiryAt = expires
+		}
+	return {
+		signature,
+		frozen,
+		liveHeld: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.held === true])),
+		liveDead: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, entry.dead !== undefined])),
+		nextHoldExpiryAt,
+		pauses: Object.entries(state.paused ?? []).map(([account, pause]) => ({ account, retryAt: pause.retryAt })),
+		nextLookupRetryAt,
+		captureDone: backendFor(agentDir).markedRecords().length === 0,
+		eventsRetryAt: unstampedOutbox ? Number.NEGATIVE_INFINITY : eventsRetryAt,
+		enabled: state.enabled,
+		followsTelemetry: state.followsTelemetry === true,
+	}
+}
+
+/** Test hook: drop pass-gate records (does not touch on-disk state). */
+export function resetReportingPassGates(): void {
+	passGates.clear()
+}
+
 /** Runs after local pricing, under the existing reconciliation lease, in sessions that may upload. */
 export async function reconcileReporting(
 	agentDir: string,
@@ -565,11 +761,18 @@ export async function reconcileReporting(
 	signal: AbortSignal,
 	assertLease: () => void,
 ): Promise<void> {
+	const signatureBefore = await probePassSignature(agentDir)
+	const gate = passGates.get(agentDir)
+	// Nothing moved and nothing could go out: this tick delays nothing by skipping its cycle.
+	if (gate?.signature === signatureBefore && !gateHasDue(gate, Date.now())) return
 	const state = await freezeSnapshots(agentDir, () => {
 		assertLease()
 		signal.throwIfAborted()
 	})
-	if (!state.enabled) return
+	if (!state.enabled) {
+		passGates.set(agentDir, await passGateStamp(agentDir, state, [], signatureBefore))
+		return
+	}
 	try {
 		await captureEvents(agentDir, signal, assertLease)
 	} catch {
@@ -577,12 +780,20 @@ export async function reconcileReporting(
 	}
 	// Reports already queued go out with their own time even when this pass could not capture a new inventory.
 	if (signal.aborted) return
+	let frozen: FrozenDueMeta[] | undefined
 	try {
-		await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
+		frozen = await deliverSnapshots(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 		await deliverEvents(agentDir, cwd, signal, assertLease, Date.now() + PASS_MS)
 	} catch {
 		if (!signal.aborted) await recordReportingError(agentDir, "PR reporting could not deliver queued reports")
 	}
+	// Stamp only a completed, quiet sweep: a failed or aborted pass leaves the next tick fully open.
+	// A still-open outbox no longer blocks the stamp — its own backoff note reopens the gate when due.
+	if (frozen !== undefined && !signal.aborted)
+		// signatureBefore is what this pass consumed; a write during the pass (own or foreign) differs
+		// from the stamp, so the next tick re-opens, discovers it, and stamps again — a quiet stamp
+		// survives only once a pass ran start-to-finish without anything changing underneath.
+		passGates.set(agentDir, await passGateStamp(agentDir, state, frozen, signatureBefore))
 }
 
 /** At most this many requests or auxiliary records commit their events in one transaction. */
