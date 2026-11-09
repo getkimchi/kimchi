@@ -43,6 +43,31 @@ describe("runEnv", () => {
 		}
 	})
 
+	it("hard-breaks tokens longer than the wrap width without losing content", async () => {
+		// descWidth floors at 20; pin columns so the description column gets
+		// exactly that. The OLLAMA_HOST description's URL token is longer than
+		// 20, so it must be hard-broken instead of overflowing the terminal.
+		const url = "http://localhost:11434"
+		expect(url.length, "fixture token must exceed the 20-column width floor").toBeGreaterThan(20)
+		const pad = Math.max(...ENV_VARS.map((v) => v.name.length))
+		const columns = pad + 4 + 20 // descIndent (pad + 4) + descWidth floor (20)
+		const stdout = process.stdout as { columns?: number }
+		const previousColumns = stdout.columns
+		stdout.columns = columns
+		try {
+			await runEnv([])
+		} finally {
+			if (previousColumns === undefined) stdout.columns = undefined
+			else stdout.columns = previousColumns
+		}
+		for (const line of logs) {
+			expect(line.length, `line exceeds ${columns} columns: "${line}"`).toBeLessThanOrEqual(columns)
+		}
+		// No content loss: the hard-broken URL survives across the chunk boundary.
+		const flattened = logs.join("\n").replace(/\s*\n\s*/g, "")
+		expect(flattened).toContain(url)
+	})
+
 	/** Value line of a registry entry — the `set` / `(not set)` marker row. */
 	function valueLineFor(name: string): string {
 		const nameIdx = logs.findIndex((l) => l.includes(name))

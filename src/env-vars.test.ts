@@ -27,6 +27,22 @@ const ENFORCED_PREFIX = /^(KIMCHI_|PI_|CASTAI_)/
  *   vi.stubEnv("KIMCHI_FOO", ...)
  *   readE2eSeam("KIMCHI_FOO")               (src/** e2e seam helper)
  *   parseEnvInt("KIMCHI_FOO", ...)          (numeric env helper)
+ *   const { KIMCHI_FOO, KIMCHI_BAR } = process.env
+ *                                         (destructuring — also let/var; the
+ *                                          braced list lands in capture group 2
+ *                                          and is split into individual keys;
+ *                                          `process?.env` is not supported)
+ *
+ * Known blind spots (ACCEPTED gaps — the scan deliberately does not see these):
+ *   (a) Dynamically composed names: `KIMCHI_OAUTH_CLIENT_ID_${regionTag}` in
+ *       oauth-config.ts is a template, so neither regex sees a complete name.
+ *       A new region needs a hand-added TEST_SUITE_ENV_VARS entry.
+ *   (b) Per-session dynamic keys: `KIMCHI_PERMISSIONS_<sessionId>` read/written
+ *       in src/extensions/permissions/mode-controller.ts — unregistrable by
+ *       design (the name exists only at runtime).
+ *   (c) LITERAL_EXEMPT_FILES disables the literal backstop within those files,
+ *       so a new constant-indirection env read there would escape the scan —
+ *       keep the exemption list narrow.
  *
  * The FULL identifier is captured (not only its SCREAMING prefix part), so a
  * truncated match cannot silently alias a registered var — e.g. a typo like
@@ -39,7 +55,7 @@ const ENFORCED_PREFIX = /^(KIMCHI_|PI_|CASTAI_)/
  * constant declarations regardless of how the constant is dereferenced.
  */
 const REFERENCE_RE =
-	/(?:process\.env\s*\??\s*(?:\.|\[\s*["'])|\benv\s*\??\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["']|readE2eSeam\(\s*["']|parseEnvInt\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)/g
+	/(?:process\.env\s*\??\s*(?:\.|\[\s*["'])|\benv\s*\??\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["']|readE2eSeam\(\s*["']|parseEnvInt\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)|\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*process\.env/g
 
 /**
  * String literals holding exactly a variable name — catches the named-constant
@@ -105,6 +121,12 @@ function stripComments(source: string): string {
 
 function collectReferencedEnvVars(sources: Map<string, string>): Map<string, string[]> {
 	const referenced = new Map<string, string[]>()
+	const addName = (name: string, file: string) => {
+		if (!ENFORCED_PREFIX.test(name) || name.endsWith("_")) return
+		const files = referenced.get(name) ?? []
+		if (!files.includes(file)) files.push(file)
+		referenced.set(name, files)
+	}
 	for (const [file, source] of sources) {
 		// Strip comments (as the stale check does) so prose like
 		// "// set process.env.KIMCHI_FOO to..." cannot trigger a spurious
@@ -113,11 +135,18 @@ function collectReferencedEnvVars(sources: Map<string, string>): Map<string, str
 		const matches = [...code.matchAll(REFERENCE_RE)]
 		if (!LITERAL_EXEMPT_FILES.has(file)) matches.push(...code.matchAll(LITERAL_RE))
 		for (const match of matches) {
-			const name = match[1]
-			if (!ENFORCED_PREFIX.test(name) || name.endsWith("_")) continue
-			const files = referenced.get(name) ?? []
-			if (!files.includes(file)) files.push(file)
-			referenced.set(name, files)
+			if (match[1]) {
+				addName(match[1], file)
+				continue
+			}
+			// Destructuring alternative (capture group 2): the whole braced list —
+			// capture each key individually. Handles renames (`A: alias`) and
+			// defaults (`A = "x"`); rest elements (`...env`) are skipped by the
+			// identifier check.
+			for (const part of (match[2] ?? "").split(",")) {
+				const key = part.split(/[:=]/)[0].trim()
+				if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) addName(key, file)
+			}
 		}
 	}
 	return referenced
@@ -144,10 +173,26 @@ describe("env var registry", () => {
 				missing.push(`  ${name} — referenced in ${files[0]}${files.length > 1 ? ` (+${files.length - 1} more)` : ""}`)
 			}
 		}
-		expect(missing, `unregistered environment variables — add them to src/env-vars.ts:\n${missing.join("\n")}`).toEqual(
-			[],
-		)
+		expect(
+			missing,
+			`unregistered environment variables — add them to src/env-vars.ts. Prefixed names that are NOT env vars (proto enum wire names, log prefixes) can be exempted from the literal scan via LITERAL_EXEMPT_FILES:\n${missing.join("\n")}`,
+		).toEqual([])
 		expect(typos, `prefixed names that are not SCREAMING_SNAKE_CASE — typos?:\n${typos.join("\n")}`).toEqual([])
+	})
+
+	it("detects prefixed names destructured from process.env", () => {
+		const sources = new Map([
+			[
+				"fake-scan-target.ts",
+				"const { KIMCHI_FAKE_SCAN_VAR, KIMCHI_FAKE_RENAMED: alias, KIMCHI_FAKE_DEFAULT = 'x', OTHER, ...rest } = process.env",
+			],
+		])
+		const referenced = collectReferencedEnvVars(sources)
+		expect([...referenced.keys()].sort()).toEqual([
+			"KIMCHI_FAKE_DEFAULT",
+			"KIMCHI_FAKE_RENAMED",
+			"KIMCHI_FAKE_SCAN_VAR",
+		])
 	})
 
 	it("flags registry entries for variables removed from business logic", () => {

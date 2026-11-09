@@ -6,7 +6,11 @@ const NOT_SET = "(not set)"
 /**
  * Word-wrap `text` so no line exceeds `width` columns. Long descriptions
  * (e.g. telemetry's) would otherwise wrap at the terminal edge and land at
- * column 0, visually breaking out of the description column.
+ * column 0, visually breaking out of the description column. A token longer
+ * than `width` (e.g. the OLLAMA_HOST URL in a narrow terminal) is hard-broken
+ * into width-sized chunks — mid-token breaks are acceptable for URLs; letting
+ * the terminal wrap them would land the tail at column 0, which is exactly
+ * what this wrapper exists to prevent.
  */
 function wrapText(text: string, width: number): string[] {
 	const lines: string[] = []
@@ -17,6 +21,10 @@ function wrapText(text: string, width: number): string[] {
 			line = word
 		} else {
 			line = line ? `${line} ${word}` : word
+		}
+		while (line.length > width) {
+			lines.push(line.slice(0, width))
+			line = line.slice(width)
 		}
 	}
 	if (line) lines.push(line)

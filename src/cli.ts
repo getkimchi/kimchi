@@ -252,20 +252,24 @@ applyInteractiveModelSessionPatch()
 applyPiTelemetryPatch()
 
 function getSubcommand(args: string[]): string {
+	const sub = args[0]
+	if (sub && !sub.startsWith("-")) {
+		// Telemetry allowlist: names reported as the `subcommand` label in the
+		// app_started event (getSubcommand's only consumer, below). This is NOT a
+		// dispatch table — dispatch happens independently in dispatchSubcommand()
+		// via the command registry. The list intentionally includes labels that are
+		// not registry commands (logout, doctor, skills, telemetry) so those
+		// invocations report their own label instead of the generic "harness"; `mcp`
+		// appears here for the same telemetry-accuracy reason even though it is also
+		// a registered command.
+		// Checked BEFORE the help/version flags: a known subcommand invocation
+		// (`kimchi env --help`) reports the subcommand, not "help" — the flags
+		// belong to the subcommand, not to the harness.
+		if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
+			return sub
+	}
 	if (args.includes("--version") || args.includes("-v")) return "version"
 	if (args.includes("--help") || args.includes("-h")) return "help"
-	const sub = args[0]
-	if (!sub || sub.startsWith("-")) return "harness"
-	// Telemetry allowlist: names reported as the `subcommand` label in the
-	// app_started event (getSubcommand's only consumer, below). This is NOT a
-	// dispatch table — dispatch happens independently in dispatchSubcommand()
-	// via the command registry. The list intentionally includes labels that are
-	// not registry commands (logout, doctor, skills, telemetry) so those
-	// invocations report their own label instead of the generic "harness"; `mcp`
-	// appears here for the same telemetry-accuracy reason even though it is also
-	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
-		return sub
 	return "harness"
 }
 
