@@ -769,3 +769,124 @@ describe("bashSegmentForms", () => {
 		expect(bashSegmentForms("echo `id`")).toEqual([])
 	})
 })
+
+// Regression corpus for the read-only classification used by plan mode (and
+// the default-mode no-prompt accept): commands a code-review workflow runs
+// (git history/plumbing, gh inspection, version queries, display tools) must
+// pass isReadOnlyBashCommand, while their write-capable neighbors stay blocked.
+describe("common read-only command corpus", () => {
+	it("allows git global options before the subcommand", () => {
+		expect(isReadOnlyBashCommand("git -C sub status")).toBe(true)
+		expect(isReadOnlyBashCommand("git --no-pager log -1")).toBe(true)
+		expect(isReadOnlyBashCommand("git -c core.quotepath=false status")).toBe(true)
+		expect(isReadOnlyBashCommand("git --git-dir=.git status")).toBe(true)
+	})
+
+	it("allows version/help queries for any program", () => {
+		expect(isReadOnlyBashCommand("git --version")).toBe(true)
+		expect(isReadOnlyBashCommand("node --version")).toBe(true)
+		expect(isReadOnlyBashCommand("node -v")).toBe(true)
+		expect(isReadOnlyBashCommand("python3 --version")).toBe(true)
+		expect(isReadOnlyBashCommand("gh --version")).toBe(true)
+		expect(isReadOnlyBashCommand("go version")).toBe(true)
+		expect(isReadOnlyBashCommand("java -version")).toBe(true)
+		// Bare `version` only counts where the program table defines it; mixed
+		// operands fall through to the program tables.
+		expect(isReadOnlyBashCommand("node version")).toBe(false)
+		expect(isReadOnlyBashCommand("node -v script.js")).toBe(false)
+	})
+
+	it("allows read-only git plumbing used by code review", () => {
+		expect(isReadOnlyBashCommand("git grep TODO")).toBe(true)
+		expect(isReadOnlyBashCommand("git merge-base main HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("git cat-file -p HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("git cherry -v main")).toBe(true)
+		expect(isReadOnlyBashCommand("git check-ignore -v node_modules/foo")).toBe(true)
+		expect(isReadOnlyBashCommand("git check-attr text src/foo.ts")).toBe(true)
+		expect(isReadOnlyBashCommand("git diff-tree -r HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("git diff-files")).toBe(true)
+		expect(isReadOnlyBashCommand("git diff-index HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("git range-diff main...feature")).toBe(true)
+		expect(isReadOnlyBashCommand("git var GIT_AUTHOR_IDENT")).toBe(true)
+		expect(isReadOnlyBashCommand("git verify-commit abc123")).toBe(true)
+		expect(isReadOnlyBashCommand("git verify-tag v1.0")).toBe(true)
+	})
+
+	it("allows git fetch --dry-run but not a real fetch", () => {
+		expect(isReadOnlyBashCommand("git fetch --dry-run")).toBe(true)
+		expect(isReadOnlyBashCommand("git fetch origin")).toBe(false)
+		expect(isReadOnlyBashCommand("git fetch --prune")).toBe(false)
+	})
+
+	it("allows git help but not browser/info variants", () => {
+		expect(isReadOnlyBashCommand("git help status")).toBe(true)
+		expect(isReadOnlyBashCommand("git help -w status")).toBe(false)
+		expect(isReadOnlyBashCommand("git help --web status")).toBe(false)
+	})
+
+	it("allows git config reads but blocks writes (config values like core.fsmonitor execute later)", () => {
+		expect(isReadOnlyBashCommand("git config user.name")).toBe(true)
+		expect(isReadOnlyBashCommand("git config --get user.name")).toBe(true)
+		expect(isReadOnlyBashCommand("git config --list")).toBe(true)
+		expect(isReadOnlyBashCommand("git config user.name John")).toBe(false)
+		expect(isReadOnlyBashCommand("git config --global user.email [REDACTED-EMAIL_ADDRESS]")).toBe(false)
+		expect(isReadOnlyBashCommand("git config core.fsmonitor /tmp/evil.sh")).toBe(false)
+		expect(isReadOnlyBashCommand("git config --unset user.name")).toBe(false)
+		expect(isReadOnlyBashCommand("git config --add user.name John")).toBe(false)
+		expect(isReadOnlyBashCommand("git config -e")).toBe(false)
+	})
+
+	it("still blocks diff-family file writes via --output", () => {
+		expect(isReadOnlyBashCommand("git log --output=/tmp/x")).toBe(false)
+		expect(isReadOnlyBashCommand("git diff --output /tmp/x HEAD~1")).toBe(false)
+		expect(isReadOnlyBashCommand("git diff-tree -r --output=/tmp/x HEAD")).toBe(false)
+		expect(isReadOnlyBashCommand("git log --oneline")).toBe(true)
+	})
+
+	it("allows stash listings but blocks stash mutations", () => {
+		expect(isReadOnlyBashCommand("git stash")).toBe(true)
+		expect(isReadOnlyBashCommand("git stash list")).toBe(true)
+		expect(isReadOnlyBashCommand("git stash show")).toBe(true)
+		expect(isReadOnlyBashCommand("git stash pop")).toBe(false)
+		expect(isReadOnlyBashCommand("git stash drop")).toBe(false)
+	})
+
+	it("allows reflog reads but blocks expiry/deletion", () => {
+		expect(isReadOnlyBashCommand("git reflog")).toBe(true)
+		expect(isReadOnlyBashCommand("git reflog show HEAD")).toBe(true)
+		expect(isReadOnlyBashCommand("git reflog expire --all")).toBe(false)
+		expect(isReadOnlyBashCommand("git reflog delete HEAD@{1}")).toBe(false)
+	})
+
+	it("allows basic system-info reads", () => {
+		expect(isReadOnlyBashCommand("readlink -f node_modules")).toBe(true)
+		expect(isReadOnlyBashCommand("tty")).toBe(true)
+		expect(isReadOnlyBashCommand("base64 package.json")).toBe(true)
+		expect(isReadOnlyBashCommand("cmp a.txt b.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("who")).toBe(true)
+		expect(isReadOnlyBashCommand("hostname -f")).toBe(true)
+		// `hostname <name>` sets the hostname.
+		expect(isReadOnlyBashCommand("hostname evil")).toBe(false)
+	})
+
+	it("allows output-only sort/yq but blocks their write flags", () => {
+		expect(isReadOnlyBashCommand("sort -rn sizes.txt")).toBe(true)
+		expect(isReadOnlyBashCommand("sort -o /tmp/out sizes.txt")).toBe(false)
+		expect(isReadOnlyBashCommand("sort --output=/tmp/out")).toBe(false)
+		expect(isReadOnlyBashCommand("sort --compress-program=sh sizes.txt")).toBe(false)
+		expect(isReadOnlyBashCommand("yq '.name' file.yaml")).toBe(true)
+		expect(isReadOnlyBashCommand("yq -i '.name = \"x\"' file.yaml")).toBe(false)
+		expect(isReadOnlyBashCommand("yq eval --in-place '.x = 1' file.yaml")).toBe(false)
+	})
+
+	it("allows compound reads across the corpus", () => {
+		expect(isReadOnlyBashCommand("git -C sub status && cat README.md")).toBe(true)
+		expect(isReadOnlyBashCommand("git status && npm install")).toBe(false)
+		expect(isReadOnlyBashCommand("git fetch --dry-run | tail -5")).toBe(true)
+	})
+
+	it("keeps hard blocks above version queries", () => {
+		expect(isReadOnlyBashCommand("sudo --version")).toBe(false)
+		expect(isReadOnlyBashCommand("git worktree add ../foo")).toBe(false)
+	})
+})

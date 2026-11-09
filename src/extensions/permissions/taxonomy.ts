@@ -111,7 +111,6 @@ const READ_ONLY_PROGRAMS = new Set([
 	"echo",
 	"printf",
 	"wc",
-	"sort",
 	"uniq",
 	"file",
 	"stat",
@@ -124,6 +123,7 @@ const READ_ONLY_PROGRAMS = new Set([
 	"printenv",
 	"uname",
 	"whoami",
+	"who",
 	"id",
 	"date",
 	"cal",
@@ -138,13 +138,14 @@ const READ_ONLY_PROGRAMS = new Set([
 	"rg",
 	"fd",
 	"jq",
-	"yq",
 	"bat",
 	"eza",
 	"column",
 	"basename",
 	"dirname",
 	"realpath",
+	"readlink",
+	"tty",
 	"tr",
 	"cut",
 	"true",
@@ -163,21 +164,133 @@ const READ_ONLY_PROGRAMS = new Set([
 	"cksum",
 	"b3sum",
 	"comm",
+	"cmp",
 	"tac",
 	"nl",
 	"od",
 	"hexdump",
 	"strings",
+	"base64",
+	// Windows counterpart of grep (no grep.exe on stock Windows).
+	"findstr",
 ])
 
 // Programs that look read-only but accept a flag that executes code or writes
 // files (`-exec`, `--output`, `system()` in awk, etc.). These are allowed only
 // if every argument passes a program-specific safety check.
+// Dashed flags that make any program print its version or usage to stdout
+// and exit: `node --version`, `python3 -V`, `git --version`, `gh --version`,
+// `java -version`. Bare words (`version`, `help`) are NOT covered — for many
+// programs they name a file or a mutating subcommand — only dashed flags.
+// Every non-program token must be such a flag, so `node -v script.js` still
+// falls through to the program tables.
+const VERSION_HELP_FLAGS = new Set(["--version", "-v", "-V", "-version", "--help", "-h"])
+
+// Flags that take a separate value token when they appear BEFORE a git
+// subcommand (`git -C <dir> status`, `git -c key=val diff`). `=`-attached
+// forms (`--git-dir=<dir>`) are single tokens and need no special handling.
+const GIT_GLOBAL_VALUE_FLAGS = new Set(["--git-dir", "--work-tree", "--namespace", "--super-prefix"])
+
+// git subcommands of the diff/log family that accept `--output=<file>` /
+// `--output <file>` and would write a file while looking like a read.
+const GIT_OUTPUT_CAPABLE_SUBCOMMANDS = new Set([
+	"diff",
+	"log",
+	"show",
+	"reflog",
+	"diff-tree",
+	"diff-files",
+	"diff-index",
+	"range-diff",
+])
+
 const RESTRICTED_PROGRAMS: Record<string, (args: string[]) => boolean> = {
 	find: (args) => !args.some((a) => FIND_EXECUTION_FLAGS.has(a)),
 	// `diff --output=FILE` / `-o FILE` writes to FILE.
 	diff: (args) =>
 		!args.some((a, i) => a === "-o" || a === "--output" || a.startsWith("--output=") || args[i - 1] === "-o"),
+	// `hostname <name>` SETS the system hostname; only flag forms are reads.
+	hostname: (args) => args.every((a) => a.startsWith("-")),
+	// `sort -o FILE` writes to FILE and `--compress-program=CMD` executes CMD.
+	sort: (args) =>
+		!args.some(
+			(a, i) =>
+				a === "-o" ||
+				a === "--output" ||
+				a.startsWith("--output=") ||
+				args[i - 1] === "-o" ||
+				a === "--compress-program" ||
+				a.startsWith("--compress-program=") ||
+				args[i - 1] === "--compress-program",
+		),
+	// `yq -i` / `yq --in-place` rewrites the input file.
+	yq: (args) => !args.some((a) => a === "-i" || a.startsWith("--in-place")),
+	// git: global options may precede the subcommand (`git -C <dir> status`,
+	// `git --no-pager log`), so they are skipped before the subcommand is
+	// matched against READ_ONLY_SUBCOMMANDS.git. A few subcommands carry write
+	// vectors the wildcard map cannot express and are gated here first:
+	// `config key value` writes .git/config (and values like core.fsmonitor
+	// name a command git later executes), `fetch` without --dry-run updates
+	// local refs, diff-family `--output` writes files, `reflog
+	// expire/delete` destroys history, and stash pop/apply/drop/clear mutate
+	// the stash and the working tree.
+	git: (args) => {
+		let i = 0
+		while (i < args.length) {
+			const a = args[i]
+			if (!a.startsWith("-")) break
+			if (a === "-c" || a === "-C" || GIT_GLOBAL_VALUE_FLAGS.has(a)) i += 2
+			else i++
+		}
+		const sub = args[i]
+		if (sub === undefined) return true // bare `git` (or only global flags) prints usage
+		const subArgs = args.slice(i + 1)
+
+		if (GIT_OUTPUT_CAPABLE_SUBCOMMANDS.has(sub)) {
+			for (const a of subArgs) {
+				if (a === "--output" || a.startsWith("--output=")) return false
+			}
+		}
+		// `git config key value` writes; read forms carry at most one bare
+		// operand (`git config user.name`, `git config --get x`, `git config
+		// --list`). -e opens an editor; --add/--unset(–-all)/--replace-all and
+		// the section operations write.
+		if (sub === "config") {
+			if (
+				subArgs.some(
+					(a) =>
+						a === "-e" ||
+						a === "--edit" ||
+						a === "--add" ||
+						a === "--unset" ||
+						a === "--unset-all" ||
+						a === "--replace-all" ||
+						a === "--rename-section" ||
+						a === "--remove-section",
+				)
+			)
+				return false
+			let bare = 0
+			for (const a of subArgs) if (!a.startsWith("-")) bare++
+			return bare <= 1
+		}
+		// `git fetch` updates local refs; only --dry-run is a pure read.
+		if (sub === "fetch") return subArgs.includes("--dry-run")
+		// `git help -w/-i` opens a browser/info viewer — process side effects.
+		if (sub === "help") return !subArgs.some((a) => a === "-w" || a === "--web" || a === "-i" || a === "--info")
+		// `git reflog expire/delete` destroys reflog history.
+		if (sub === "reflog") return subArgs[0] !== "expire" && subArgs[0] !== "delete"
+		// Only the listing forms of stash are read-only; pop/apply/drop/clear
+		// mutate the stash and the working tree. Bare `git stash` lists.
+		if (sub === "stash") return subArgs[0] === undefined || subArgs[0] === "list" || subArgs[0] === "show"
+
+		const allowedSubs = READ_ONLY_SUBCOMMANDS.git
+		const actions = allowedSubs instanceof Set ? undefined : allowedSubs[sub]
+		if (actions === undefined) return false
+		if (actions === "*") return true
+		const action = subArgs[0]
+		return action !== undefined && actions.includes(action)
+	},
 }
 
 const FIND_EXECUTION_FLAGS = new Set([
@@ -231,11 +344,8 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		"rev-parse": "*",
 		describe: "*",
 		blame: "*",
-		config: "*",
 		tag: "*",
-		stash: "*",
 		worktree: ["list"],
-		reflog: "*",
 		shortlog: "*",
 		fsck: "*",
 		"verify-pack": "*",
@@ -245,7 +355,24 @@ const READ_ONLY_SUBCOMMANDS: Record<string, Set<string> | Record<string, string[
 		"symbolic-ref": "*",
 		"name-rev": "*",
 		"rev-list": "*",
+		// Read-only search/plumbing used heavily by code-review workflows.
+		grep: "*",
+		"merge-base": "*",
+		"cat-file": "*",
+		cherry: "*",
+		"check-ignore": "*",
+		"check-attr": "*",
+		"check-mailmap": "*",
+		"diff-tree": "*",
+		"diff-files": "*",
+		"diff-index": "*",
+		"range-diff": "*",
+		var: "*",
+		"verify-commit": "*",
+		"verify-tag": "*",
+		version: "*",
 	},
+	go: new Set(["version"]),
 	npm: new Set(["list", "ls", "view", "info", "search", "outdated", "audit", "--version", "-v"]),
 	yarn: new Set(["list", "info", "why", "audit", "--version", "-v"]),
 	pnpm: new Set(["list", "ls", "view", "info", "outdated", "audit", "--version", "-v"]),
@@ -616,6 +743,15 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 	const program = tokens[0]
 	if (!program) return false
 
+	// Version/help queries are read-only for any program (see VERSION_HELP_FLAGS).
+	if (tokens.length > 1 && tokens.slice(1).every((t) => VERSION_HELP_FLAGS.has(t))) return true
+
+	// Restricted programs are checked before the subcommand map: their
+	// handlers encode per-subcommand rules the map cannot express (git falls
+	// back to the map itself after its global-flag normalization).
+	const restrictedCheck = RESTRICTED_PROGRAMS[program]
+	if (restrictedCheck) return restrictedCheck(tokens.slice(1))
+
 	const allowedSubs = READ_ONLY_SUBCOMMANDS[program]
 	if (allowedSubs) {
 		const sub = tokens[1]
@@ -637,9 +773,6 @@ function isSegmentReadOnly(tokens: string[]): boolean {
 		const action = tokens[2]
 		return action !== undefined && allowedActions.includes(action)
 	}
-
-	const restrictedCheck = RESTRICTED_PROGRAMS[program]
-	if (restrictedCheck) return restrictedCheck(tokens.slice(1))
 
 	return READ_ONLY_PROGRAMS.has(program)
 }
