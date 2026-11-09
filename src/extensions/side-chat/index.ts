@@ -242,6 +242,13 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				...(side.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
 			})
 		} catch (error) {
+			// The failure happened after the fact was published, so the record
+			// stands with this index — rolling back cannot retract it. What it
+			// prevents is the counter running ahead of the durable thread when
+			// the message never persisted: the reopen reseed (Math.max over the
+			// journal) would then restart below an already-emitted index and a
+			// later submit would re-emit it.
+			chat.userMessageCount -= 1
 			chat.panel.addInfo(`Side chat error: ${error instanceof Error ? error.message : String(error)}`)
 		}
 	}

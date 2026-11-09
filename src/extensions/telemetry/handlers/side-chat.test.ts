@@ -67,6 +67,7 @@ describe("side-chat telemetry handlers", () => {
 		const ctx = new TelemetryContext(makeConfig())
 		handleSideChatStarted(ctx, { quotedSelection: "yes" })
 		handleSideChatStarted(ctx, undefined)
+		handleSideChatStarted(ctx, "not a payload")
 		ctx.flushLogBuffer()
 
 		expect(findEvent(SIDE_CHAT_STARTED_EVENT)).toBeUndefined()
@@ -146,6 +147,7 @@ describe("side-chat telemetry handlers", () => {
 			{ messageCountAssistant: 1 },
 			{},
 			undefined,
+			"not a payload",
 		]) {
 			handleSideChatThreadCounts(ctx, payload, SIDE_CHAT_HISTORY_REOPENED_EVENT)
 			handleSideChatThreadCounts(ctx, payload, SIDE_CHAT_WRAPPED_EVENT)

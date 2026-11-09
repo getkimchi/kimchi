@@ -40,6 +40,8 @@ const sideState = vi.hoisted(() => ({
 	startError: undefined as Error | undefined,
 	/** When set, the mocked side-chat log read throws (corrupt transcript). */
 	logError: undefined as Error | undefined,
+	/** When set, the mocked side session prompt rejects (message never persists). */
+	promptError: undefined as Error | undefined,
 }))
 
 vi.mock("./harness.js", async (importOriginal) => {
@@ -123,7 +125,9 @@ vi.mock("./session.js", async (importOriginal) => {
 					subscribe: () => () => {},
 					dispose: () => {},
 					abort: async () => {},
-					prompt: async () => {},
+					prompt: async () => {
+						if (sideState.promptError) throw sideState.promptError
+					},
 					isStreaming: false,
 				},
 				contextLength: 0,
@@ -181,6 +185,7 @@ describe("side-chat lifecycle fact publishing", () => {
 		sideState.storedThread = []
 		sideState.startError = undefined
 		sideState.logError = undefined
+		sideState.promptError = undefined
 	})
 
 	function setup() {
@@ -309,6 +314,30 @@ describe("side-chat lifecycle fact publishing", () => {
 		await flush()
 
 		expect(published(pi).some(([channel]) => channel === SIDE_CHAT_EVENTS.MESSAGE_SENT)).toBe(false)
+	})
+
+	it("rolls the message index back when the prompt rejects before persisting", async () => {
+		const pi = setup()
+		const ctx = makeContext()
+		sideState.promptError = new Error("provider unreachable")
+
+		await pi.getRegisteredCommand("btw").handler("question that fails to deliver?", ctx)
+		await vi.waitFor(() =>
+			expect(openPanel().infos.some((text) => text.includes("Side chat error"))).toBe(true),
+		)
+		sideState.promptError = undefined
+		openPanel().submit("retry the question?")
+		await vi.waitFor(() =>
+			expect(published(pi).filter(([channel]) => channel === SIDE_CHAT_EVENTS.MESSAGE_SENT)).toHaveLength(2),
+		)
+
+		// The fact for the failed submit stands (it was already published), but
+		// the counter must run back so the retry — the message that actually
+		// persisted — keeps its rightful index instead of skipping ahead.
+		expect(published(pi).filter(([channel]) => channel === SIDE_CHAT_EVENTS.MESSAGE_SENT)).toEqual([
+			["side-chat:message_sent", { quotedSelection: false, messageIndex: 1 }],
+			["side-chat:message_sent", { quotedSelection: false, messageIndex: 1 }],
+		])
 	})
 
 	it("does not publish message_sent for /wrap and /close commands", async () => {

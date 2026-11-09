@@ -22,6 +22,15 @@ export const SIDE_CHAT_MESSAGE_SENT_EVENT = "side_chat.message_sent"
 export const SIDE_CHAT_HISTORY_REOPENED_EVENT = "side_chat.history_reopened"
 export const SIDE_CHAT_WRAPPED_EVENT = "side_chat.wrapped"
 
+/**
+ * Payloads arrive from the bus as `unknown`: drop anything that is not an
+ * object so a truthy non-object (e.g. a string) cannot slip through and
+ * produce an attribute-free record.
+ */
+function isPayloadObject(raw: unknown): raw is Record<string, unknown> {
+	return typeof raw === "object" && raw !== null
+}
+
 /** Non-negative integer (the uint32 range the OTLP contract allows). */
 function isCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0
@@ -45,7 +54,7 @@ function quotedSelectionAttr(payload: { quotedSelection?: unknown }): TelemetryA
  */
 export function handleSideChatStarted(tm: TelemetryContext, raw: unknown): void {
 	const payload = raw as Partial<SideChatStartedPayload> | undefined
-	if (!payload) return
+	if (!isPayloadObject(payload)) return
 	const quoted = quotedSelectionAttr(payload)
 	if (!quoted) return
 	tm.emit(SIDE_CHAT_STARTED_EVENT, { ...quoted, turn_index: tm.turnIndex }, undefined)
@@ -59,7 +68,7 @@ export function handleSideChatStarted(tm: TelemetryContext, raw: unknown): void 
  */
 export function handleSideChatMessageSent(tm: TelemetryContext, raw: unknown): void {
 	const payload = raw as Partial<SideChatMessageSentPayload> | undefined
-	if (!payload || !isCount(payload.messageIndex) || payload.messageIndex < 1) return
+	if (!isPayloadObject(payload) || !isCount(payload.messageIndex) || payload.messageIndex < 1) return
 	const quoted = quotedSelectionAttr(payload)
 	if (!quoted) return
 	tm.emit(
@@ -78,7 +87,7 @@ export function handleSideChatMessageSent(tm: TelemetryContext, raw: unknown): v
  */
 export function handleSideChatThreadCounts(tm: TelemetryContext, raw: unknown, eventName: string): void {
 	const payload = raw as Partial<SideChatThreadCountsPayload> | undefined
-	if (!isCount(payload?.messageCountUser) || !isCount(payload?.messageCountAssistant)) return
+	if (!isPayloadObject(payload) || !isCount(payload.messageCountUser) || !isCount(payload.messageCountAssistant)) return
 	tm.emit(
 		eventName,
 		{
