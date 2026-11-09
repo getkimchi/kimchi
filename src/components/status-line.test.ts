@@ -125,6 +125,7 @@ function createMockStatusLineData(opts?: {
 	permissionsMode?: string
 	permissionsWarning?: string
 	updateAvailable?: string
+	updateInstalled?: string
 	lsp?: string
 	dap?: string
 	workPr?: string
@@ -137,6 +138,7 @@ function createMockStatusLineData(opts?: {
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
+	if (opts?.updateInstalled) statuses.set("update-installed", opts.updateInstalled)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
 	if (opts?.dap) statuses.set("dap", opts.dap)
 	if (opts?.workPr) statuses.set("work-pr", opts.workPr)
@@ -1217,6 +1219,47 @@ describe("StatusLine info line", () => {
 		// The update segment ends at (or near) the right edge of the width.
 		expect(visibleWidth(lines[0])).toBeLessThanOrEqual(160)
 		expect(infoLine.trimEnd().endsWith("Update available: v1.2.0")).toBe(true)
+	})
+
+	it("renders the update-installed notice when only that status is set", () => {
+		const data = createMockStatusLineData({ updateInstalled: "✔ Update installed · Restart to update" })
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		const infoLine = stripAnsi(lines[0])
+		expect(infoLine).toContain("✔ Update installed · Restart to update")
+		expect(infoLine.trimEnd().endsWith("✔ Update installed · Restart to update")).toBe(true)
+	})
+
+	it("shows update-installed instead of update-available when both are set", () => {
+		// The install replaces the nag: both keys can coexist in the statuses
+		// map, and the installed outcome must win.
+		const data = createMockStatusLineData({
+			updateAvailable: "Update available: v1.2.0",
+			updateInstalled: "✔ Update installed · Restart to update",
+		})
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		const infoLine = stripAnsi(lines[0])
+		expect(infoLine).toContain("✔ Update installed · Restart to update")
+		expect(infoLine).not.toContain("Update available: v1.2.0")
+	})
+
+	it("shows both the warning and the update-installed notice on one info line", () => {
+		const data = createMockStatusLineData({
+			permissionsWarning: "Warning: check permissions",
+			updateInstalled: "✔ Update installed · Restart to update",
+		})
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		const infoLine = stripAnsi(lines[0])
+		expect(infoLine).toContain("Warning")
+		expect(infoLine.indexOf("Warning")).toBeLessThan(infoLine.indexOf("✔ Update installed"))
 	})
 
 	it("drops the update segment when there is no room for it after the warning", () => {

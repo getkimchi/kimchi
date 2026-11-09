@@ -919,14 +919,20 @@ export class StatusLine implements Component {
 		return this.theme.fg("warning", text)
 	}
 
-	private updateAvailableSegment(): { text: string; width: number } | null {
+	private updateSegment(): { text: string; width: number } | null {
 		// Info-line segment (rendered above the status line), NOT one of the
 		// status-line `Segment`s above — it has no SegmentId because it never
-		// participates in compaction.
-		const text = this.statusLineData.getExtensionStatuses().get("update-available")
-		if (!text) return null
-		const segText = this.theme.fg("accent", text)
-		return { text: segText, width: visibleWidth(text) }
+		// participates in compaction. The installed outcome (background-update
+		// extension) replaces the nag (startup-update extension) when both are
+		// set — same slot, success styling.
+		const statuses = this.statusLineData.getExtensionStatuses()
+		const installedText = statuses.get("update-installed")
+		if (installedText) {
+			return { text: this.theme.fg("success", installedText), width: visibleWidth(installedText) }
+		}
+		const nagText = statuses.get("update-available")
+		if (!nagText) return null
+		return { text: this.theme.fg("accent", nagText), width: visibleWidth(nagText) }
 	}
 
 	render(width: number): string[] {
@@ -996,7 +1002,7 @@ export class StatusLine implements Component {
 	private buildInfoLine(width: number): string {
 		let line = ""
 		const permissionsWarningText = this.permissionsWarning()
-		const updateSeg = this.updateAvailableSegment()
+		const updateSeg = this.updateSegment()
 
 		let remainingWidth = width
 		if (permissionsWarningText) {

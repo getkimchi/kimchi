@@ -1,14 +1,10 @@
 // Shared CLI mode detection — a leaf module with **zero imports**.
 //
-// This file is loaded very early (entry.ts dynamically imports
-// auto-update.ts before cli.js boots, and cli-args.ts is used by the CLI
-// dispatch path). It must not pull in pi-coding-agent or any other module
-// so it can be safely imported from any context.
+// It must not pull in pi-coding-agent or any other module so it can be
+// safely imported from any context, including very early startup.
 //
 // Consumers:
 //   - src/cli-args.ts re-exports these for the CLI dispatch path.
-//   - src/update/auto-update.ts uses them to skip auto-update in non-
-//     interactive modes.
 //   - src/extensions/onboarding/session-mode.ts uses them to decide whether
 //     to show the onboarding wizard.
 
