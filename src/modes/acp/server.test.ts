@@ -159,6 +159,7 @@ import { updateModelsConfig } from "../../models.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	ACP_SUCCESS_MESSAGE,
@@ -909,15 +910,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(4)
-			expect(response.authMethods?.[0]).toMatchObject({
+			expect(response.authMethods).toHaveLength(7)
+			// SSO is the default: advertised before Agent Auth (LLM-4134).
+			expect(response.authMethods?.[0]).toMatchObject({ id: "kimchi-sso", name: "CAST AI SSO" })
+			expect(response.authMethods?.[3]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
 			})
-			// Agent Auth is the default: the descriptor omits `type` (the
+			// Agent Auth is not terminal: the descriptor omits `type` (the
 			// registry treats an absent type as "agent"). AuthMethodAgent has no
 			// `type` field, so we verify absence rather than equality.
-			const method = response.authMethods?.[0]
+			const method = response.authMethods?.[3]
 			expect("type" in (method ?? {})).toBe(false)
 		})
 
@@ -932,21 +935,42 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			const ids = response.authMethods?.map((m) => m.id)
-			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu", "kimchi-agent-self-hosted"])
-			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
-			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
-			expect(response.authMethods?.[3]).toMatchObject({
+			expect(ids).toEqual([
+				"kimchi-sso",
+				"kimchi-sso-us",
+				"kimchi-sso-eu",
+				"kimchi-agent",
+				"kimchi-agent-us",
+				"kimchi-agent-eu",
+				"kimchi-agent-self-hosted",
+			])
+			expect(response.authMethods?.[1]).toMatchObject({
+				id: "kimchi-sso-us",
+				name: "CAST AI SSO (US)",
+				description: "Sign in with your CAST AI account (United States region)",
+			})
+			expect(response.authMethods?.[2]).toMatchObject({
+				id: "kimchi-sso-eu",
+				name: "CAST AI SSO (EU)",
+				description: "Sign in with your CAST AI account (Europe region)",
+			})
+			expect(response.authMethods?.[4]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
+			expect(response.authMethods?.[5]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			expect(response.authMethods?.[6]).toMatchObject({
 				id: "kimchi-agent-self-hosted",
 				name: "Kimchi Login (SELF-HOSTED)",
 				description: "Authenticate via browser to Kimchi (Self-hosted region)",
 			})
-			// Agent Auth leaves `type` absent, like the plain method.
+			// Auth methods leave `type` absent (terminal methods carry it).
 			for (const method of response.authMethods ?? []) {
 				expect("type" in method).toBe(false)
 			}
 		})
 
-		it("advertises the EU companion method without the flag; omits gated self-hosted", async () => {
+		// SSO region pins derive from ssoAvailableRegions() (Auth0 tenants), NOT
+		// selectableRegions(): with the flag off both EU companions advertise and
+		// gated self-hosted stays hidden (#1428 made EU selectable unconditionally).
+		it("advertises SSO and Agent Auth EU companions without the flag; omits gated self-hosted", async () => {
 			setExperimentalFeaturesEnabled(false)
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
@@ -955,7 +979,88 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(response.authMethods?.map((m) => m.id)).toEqual([
+				"kimchi-sso",
+				"kimchi-sso-us",
+				"kimchi-sso-eu",
+				"kimchi-agent",
+				"kimchi-agent-us",
+			])
+		})
+
+		// The plain kimchi-sso follows the configured region; a region without an
+		// Auth0 tenant (self-hosted) cannot offer it, so only the pins remain.
+		it("omits the plain kimchi-sso method when the configured region has no SSO tenant", async () => {
+			vi.stubEnv("KIMCHI_REGION", "self-hosted")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const configDir = join(homedir(), ".config", "kimchi")
+			mkdirSync(configDir, { recursive: true })
+			writeFileSync(
+				join(configDir, "config.json"),
+				JSON.stringify({
+					region: "self-hosted",
+					selfHostedEndpoints: {
+						api: "https://kimchi.example.com/api",
+						console: "https://kimchi.example.com",
+						llm: "https://kimchi.example.com/llm",
+					},
+				}),
+			)
+			onTestFinished(() => {
+				rmSync(join(configDir, "config.json"), { force: true })
+			})
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const ids = response.authMethods?.map((m) => m.id)
+			expect(ids).not.toContain("kimchi-sso")
+			expect(ids).toContain("kimchi-sso-us")
+			expect(ids).toContain("kimchi-sso-eu")
+		})
+
+		// Capability signal for the stepwise SSO ext methods (LLM-4134): clients
+		// gate their SSO UI on `_meta["kimchi.dev"].sso === true`.
+		it('advertises the sso capability flag in _meta["kimchi.dev"]', async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const meta = response.agentCapabilities?._meta?.["kimchi.dev"] as Record<string, unknown> | undefined
+			expect(meta?.sso).toBe(true)
+			// The four wire methods are advertised too.
+			expect(meta?.sso_begin).toBe(true)
+			expect(meta?.sso_await).toBe(true)
+			expect(meta?.sso_select_org).toBe(true)
+			expect(meta?.sso_cancel).toBe(true)
+		})
+
+		it("omits the EU companion method when EU is experimental-gated", async () => {
+>>>>>>> 13286213 (feat(acp): CAST AI SSO login via _kimchi.dev/sso_* ext methods + kimchi-sso auth methods)
+			setExperimentalFeaturesEnabled(false)
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.authMethods?.map((m) => m.id)).toEqual([
+				"kimchi-sso",
+				"kimchi-sso-us",
+				"kimchi-sso-eu",
+				"kimchi-agent",
+				"kimchi-agent-us",
+				"kimchi-agent-eu",
+			])
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
@@ -969,7 +1074,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(5)
+			expect(response.authMethods).toHaveLength(8)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -988,7 +1093,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(4)
+			expect(response.authMethods).toHaveLength(7)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -996,7 +1101,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(4)
+			expect(response2.authMethods).toHaveLength(7)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -1051,6 +1156,39 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
 			}),
 		)
+	}
+
+	/** Injectable fake for the SSO flow manager (LLM-4134): records the wire
+	 * calls authenticate() and the sso_* ext methods make and plays canned
+	 * outcomes. Partial stub — only the four manager methods the server
+	 * touches. */
+	function makeFakeSsoManager(
+		outcomes: {
+			begin?: Awaited<ReturnType<SsoFlowManager["begin"]>>
+			awaitResult?: Awaited<ReturnType<SsoFlowManager["awaitResult"]>>
+		} = {},
+	) {
+		const begin = vi.fn(
+			async (): Promise<Awaited<ReturnType<SsoFlowManager["begin"]>>> =>
+				outcomes.begin ?? {
+					requestId: "req-1",
+					authorizeUrl: "https://login.kimchi.dev/authorize?x=1",
+					expiresAt: "2026-01-01T00:00:00.000Z",
+				},
+		)
+		const awaitResult = vi.fn(
+			async (): Promise<Awaited<ReturnType<SsoFlowManager["awaitResult"]>>> =>
+				outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } },
+		)
+		const selectOrg = vi.fn(async () => ({ status: "authenticated" as const, org: { id: "org-1", name: "Acme" } }))
+		const cancel = vi.fn(() => ({}))
+		return {
+			manager: { begin, awaitResult, selectOrg, cancel } as unknown as SsoFlowManager,
+			begin,
+			awaitResult,
+			selectOrg,
+			cancel,
+		}
 	}
 
 	describe("authenticate", () => {
@@ -1262,6 +1400,102 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			await expect(testAgent.authenticate({ methodId: "kimchi-agent-moon" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		// ---- CAST AI SSO (LLM-4134): the plain authenticate() path ----
+
+		it("authenticates with kimchi-sso-us: drives the stepwise SSO flow with the region pin", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+				ssoManager: sso.manager,
+			})
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(result).toEqual({})
+			// Region pinned from the method id — never setPendingOAuthRegion.
+			expect(sso.begin).toHaveBeenCalledWith({ region: "us" })
+			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			// The web-app Agent Auth handoff is a different method — untouched.
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+
+		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_REGION", "eu")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+				ssoManager: sso.manager,
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-sso" })
+
+			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
+		})
+
+		// Contract §6.4: no interactive org picker exists on the plain
+		// authenticate surface — auto-selecting the first org would silently
+		// scope credentials wrong, so fail with the actionable hand-off instead.
+		it("fails a multi-org account with the actionable hand-off and cancels the parked flow", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager({
+				awaitResult: {
+					status: "org_selection_required",
+					organizations: [
+						{ id: "org-123", name: "Acme" },
+						{ id: "org-456", name: "Acme Staging" },
+					],
+				},
+			})
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+				ssoManager: sso.manager,
+			})
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow(
+				/multiple organizations.*Kimchi Studio|kimchi login/s,
+			)
+			// The parked flow must not block a retry (SSO_IN_PROGRESS).
+			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
+		})
+
+		it("dispatches the _kimchi.dev/sso_* ext methods to the shared manager", async () => {
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+				ssoManager: sso.manager,
+			})
+
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_begin, { region: "eu" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_await, { requestId: "req-1" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_select_org, { requestId: "req-1", orgId: "org-1" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_cancel, { requestId: "req-1" })
+
+			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
+			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			expect(sso.selectOrg).toHaveBeenCalledWith({ requestId: "req-1", orgId: "org-1" })
+			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
 		})
 
 		it("throws when browser auth returns no token", async () => {
