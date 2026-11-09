@@ -64,8 +64,12 @@ function unescapeShellPath(raw: string): string | null {
  * Classify a bracketed-paste payload as a dropped local image file.
  * Multi-line or multi-token payloads, URLs, non-image extensions, and
  * unreadable/oversized files all return null.
+ *
+ * `cwd` is required (the session cwd from the editor's session context) —
+ * resolving relative drops against the long-running process cwd would be
+ * wrong whenever the harness process outlives its session (e.g. ACP).
  */
-export function droppedImagePathCandidate(pastedText: string, cwd = process.cwd()): DroppedImageMatch | null {
+export function droppedImagePathCandidate(pastedText: string, cwd: string): DroppedImageMatch | null {
 	const trimmed = pastedText.trim()
 	if (!trimmed || trimmed.includes("\n")) return null
 

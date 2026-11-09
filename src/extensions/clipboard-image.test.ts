@@ -65,7 +65,7 @@ vi.mock("../utils/image-registry.js", () => ({
 const registryStore = new Map<number, ImageContent>()
 
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InputEvent, SessionStartEvent } from "@earendil-works/pi-coding-agent"
 import { PNG_SIGNATURE } from "../utils/image-utils.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -125,8 +125,8 @@ function getHandler<E, R = undefined>(pi: ExtensionAPI, event: string) {
 	return harness.getHandler<E, R>(event)
 }
 
-function startSession(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	getHandler<unknown, void>(pi, "session_start")(void 0, ctx)
+function startSession(pi: ExtensionAPI, ctx: ExtensionContext, reason: SessionStartEvent["reason"] = "startup"): void {
+	getHandler<SessionStartEvent, void>(pi, "session_start")({ type: "session_start", reason }, ctx)
 }
 
 function callInput(pi: ExtensionAPI, ctx: ExtensionContext, event: InputEventShape): Promise<unknown> {
@@ -186,7 +186,7 @@ describe("clipboard-image extension", () => {
 	// beforeEach can clear the mock — so capture the reference once in
 	// beforeAll and assert it in a dedicated test so failures are attributed.
 	let pasteHandler: (() => void) | undefined
-	let dropHandler: ((text: string) => boolean) | undefined
+	let dropHandler: ((text: string, cwd: string) => boolean) | undefined
 	let markersEditedHandler: ((present: Set<number>) => void) | undefined
 	function markersEdited(present: Set<number>): void {
 		if (!markersEditedHandler) throw new Error("markers-edited handler not registered")
@@ -194,7 +194,7 @@ describe("clipboard-image extension", () => {
 	}
 	beforeAll(() => {
 		pasteHandler = mockSetPasteImageHandler.mock.calls[0]?.[0] as (() => void) | undefined
-		dropHandler = mockSetImageDropHandler.mock.calls[0]?.[0] as ((text: string) => boolean) | undefined
+		dropHandler = mockSetImageDropHandler.mock.calls[0]?.[0] as ((text: string, cwd: string) => boolean) | undefined
 		markersEditedHandler = mockSetImageMarkersEditedHandler.mock.calls[0]?.[0] as
 			| ((present: Set<number>) => void)
 			| undefined
@@ -214,7 +214,10 @@ describe("clipboard-image extension", () => {
 		})
 		const resetPi = makeMockPi()
 		clipboardImageExtension(resetPi)
-		getHandler<unknown, void>(resetPi, "session_start")(void 0, makeMockCtx())
+		getHandler<SessionStartEvent, void>(resetPi, "session_start")(
+			{ type: "session_start", reason: "startup" },
+			makeMockCtx(),
+		)
 		getHandler<unknown, void>(resetPi, "session_shutdown")(void 0, makeMockCtx())
 		__resetVisionGateForTest()
 		vi.clearAllMocks()
@@ -506,7 +509,9 @@ describe("clipboard-image extension", () => {
 
 		function drop(text: string): boolean {
 			if (!dropHandler) throw new Error("drop handler not registered")
-			return dropHandler(text)
+			// The ui layer passes the session cwd through to the handler; the mock
+			// ctx holds "/tmp".
+			return dropHandler(text, "/tmp")
 		}
 
 		function startVisionSession(): { pi: ExtensionAPI; ctx: ExtensionContext } {
@@ -590,6 +595,32 @@ describe("clipboard-image extension", () => {
 			expect(result.images).toHaveLength(1)
 		})
 
+		it("numbers a fresh drop monotonically — a deleted marker's id is never reused", async () => {
+			const { pi, ctx } = startVisionSession()
+			const p1 = join(tmpDir, "a.png")
+			const p2 = join(tmpDir, "b.png")
+			const p3 = join(tmpDir, "c.png")
+			writeFileSync(p1, PNG_BYTES)
+			writeFileSync(p2, PNG_BYTES)
+			writeFileSync(p3, PNG_BYTES)
+			drop(p1) // [Image #1]
+			drop(p2) // [Image #2]
+			markersEdited(new Set([2])) // the user deletes [Image #1] — it detaches
+			drop(p3) // must NOT land on #2 (live): numbering continues at #3
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #3]")
+
+			const result = (await callInput(pi, ctx, {
+				text: "[Image #2] and [Image #3]",
+				images: [],
+				source: "interactive",
+			})) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(2)
+			// Both id 2 and id 3 registered exactly once — no overwrite of #2's file.
+			expect(mockAddImage.mock.calls.filter(([id]) => id === 2)).toHaveLength(1)
+			expect(mockAddImage.mock.calls.filter(([id]) => id === 3)).toHaveLength(1)
+		})
+
 		it("a replacement session still clears pending drops", async () => {
 			const { pi, ctx } = startVisionSession()
 			const p = join(tmpDir, "cat.png")
@@ -597,11 +628,28 @@ describe("clipboard-image extension", () => {
 			drop(p)
 
 			// A second session_start replaces the session: pending state resets.
-			startSession(pi, makeMockCtx())
+			startSession(pi, makeMockCtx(), "new")
 
 			const result = await callInput(pi, ctx, { text: "[Image #1]", images: [], source: "interactive" })
 			expect(result).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()
+		})
+
+		it("a session_start with reason 'reload' keeps pending drops, numbering and the cache", () => {
+			const { pi, ctx } = startVisionSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p) // [Image #1]
+			mockClearAllImages.mockClear()
+
+			// An extension reload re-fires session_start for the SAME session —
+			// resetting would delete the live cache and orphan transcript markers.
+			startSession(pi, ctx, "reload")
+
+			expect(mockClearAllImages).not.toHaveBeenCalled()
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toMatch(/^📎 1 image /)
+			drop(p) // numbering continues, not restarted at #1
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
 		})
 
 		it("marker removal detaches the pending drop and clears the indicator", async () => {
@@ -634,22 +682,24 @@ describe("clipboard-image extension", () => {
 			expect(mockAddImage).not.toHaveBeenCalled()
 		})
 
-		it("re-dropping after a removal attaches once under the reused number", async () => {
+		it("re-dropping after a removal attaches once under a fresh number", async () => {
 			const { pi, ctx } = startVisionSession()
 			const p = join(tmpDir, "cat.png")
 			writeFileSync(p, PNG_BYTES)
 			drop(p)
-			markersEdited(new Set()) // removedDrops{1}, pending empty
-			drop(p) // fresh drop takes #1 as canonical owner
+			markersEdited(new Set()) // detached under #1
+			drop(p) // fresh drop gets a fresh number; old #1 stays parked
+			expect(mockInsertTextAtPromptCursor).toHaveBeenCalledWith("[Image #2]")
 
 			const result = (await callInput(pi, ctx, {
-				text: "see [Image #1]",
+				text: "see [Image #2]",
 				images: [],
 				source: "interactive",
 			})) as { action?: string; images: ImageContent[] }
 			expect(result.action).toBe("transform")
 			expect(result.images).toHaveLength(1)
-			expect(mockAddImage.mock.calls.filter((c) => c[0] === 1)).toHaveLength(1)
+			expect(mockAddImage.mock.calls.filter(([id]) => id === 2)).toHaveLength(1)
+			expect(mockAddImage.mock.calls.filter(([id]) => id === 1)).toHaveLength(0)
 		})
 
 		it("a marker fully restored after removal (undo) re-arms the same image", async () => {
@@ -689,6 +739,50 @@ describe("clipboard-image extension", () => {
 			})) as { action?: string; images: ImageContent[] }
 			expect(result.action).toBe("transform")
 			expect(result.images).toHaveLength(1)
+		})
+
+		it("gate-cancel keeps a drop whose marker only the submit side could re-arm", async () => {
+			const { pi, ctx, resolveDialog } = startGateSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p)
+			markersEdited(new Set()) // deleted marker detaches the drop
+
+			// The marker returns via a setEditorText restore (e.g. the gate's own
+			// draft restore), which bypasses the editor's markers-edited channel —
+			// only submit-side reconciliation can re-arm the drop.
+			const attempt = callInput(pi, ctx, { text: "[Image #1] hi again", images: [], source: "interactive" })
+			resolveDialog(0, { kind: "cancel" })
+			await expect(attempt).resolves.toEqual({ action: "handled" })
+
+			// Cancel retained everything; the re-armed drop is pending again.
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toMatch(/^📎 1 image /)
+
+			const retry = callInput(pi, ctx, { text: "[Image #1] hi again", images: [], source: "interactive" })
+			resolveDialog(1, { kind: "switch", model: SWITCH_TARGET })
+			const result = (await retry) as { action?: string; images: ImageContent[] }
+			expect(result.action).toBe("transform")
+			expect(result.images).toHaveLength(1)
+			expect(mockAddImage).toHaveBeenCalledWith(1, expect.objectContaining({ mimeType: "image/png" }))
+		})
+
+		it("gate-cancel after a submit-side detach leaves the indicator empty (no double booking)", async () => {
+			const { pi, ctx, resolveDialog } = startGateSession()
+			const p = join(tmpDir, "cat.png")
+			writeFileSync(p, PNG_BYTES)
+			drop(p) // [Image #1] pending; the marker vanishes without an edit event
+
+			// An incoming image keeps the gate open (the detached drop alone would
+			// short-circuit before it). Cancel must leave the drop detached ONLY —
+			// not double-booked in pendingImages + removedDrops.
+			const attempt = callInput(pi, ctx, {
+				text: "no marker in this draft",
+				images: [img("other")],
+				source: "interactive",
+			})
+			resolveDialog(0, { kind: "cancel" })
+			await expect(attempt).resolves.toEqual({ action: "handled" })
+			expect(mockSetPendingImageIndicator.mock.calls.at(-1)?.[0]).toBeNull()
 		})
 
 		describe("registry references (typed/pasted markers from an earlier turn)", () => {
