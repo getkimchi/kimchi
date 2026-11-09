@@ -34,10 +34,26 @@ describe("runEnv", () => {
 		}
 	})
 
+	it("omits values by default; --values prints the current state", async () => {
+		vi.stubEnv("KIMCHI_REGION", "eu")
+
+		await runEnv([])
+		const bare = logs.join("\n")
+		expect(bare).toContain("KIMCHI_REGION")
+		expect(bare).not.toContain("set: eu")
+		expect(bare).not.toContain("(not set)")
+
+		logs = []
+		await runEnv(["--values"])
+		const withValues = logs.join("\n")
+		expect(withValues).toContain("set: eu")
+		expect(withValues).toContain("(not set)")
+	})
+
 	it("masks secret values and prints non-secret ones", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", "super-secret-key")
 		vi.stubEnv("KIMCHI_REGION", "eu")
-		await runEnv([])
+		await runEnv(["--values"])
 		const output = logs.join("\n")
 		expect(output).not.toContain("super-secret-key")
 		expect(output).toContain("set: ****")
@@ -48,13 +64,13 @@ describe("runEnv", () => {
 		vi.stubEnv("KIMCHI_REGION", "")
 		vi.unstubAllEnvs()
 		delete process.env.KIMCHI_REGION
-		await runEnv([])
+		await runEnv(["--values"])
 		expect(logs.join("\n")).toContain("(not set)")
 	})
 
 	it("treats an explicitly empty value as not set — never as a masked secret", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", "")
-		await runEnv([])
+		await runEnv(["--values"])
 		const nameIdx = logs.findIndex((l) => l.includes("KIMCHI_API_KEY"))
 		expect(nameIdx).toBeGreaterThanOrEqual(0)
 		const valueLine = logs.slice(nameIdx, nameIdx + 2).join("\n")

@@ -1,4 +1,4 @@
-import { ENV_VARS, type EnvVarDef, IGNORED_ENV_VARS, TEST_SUITE_ENV_VARS } from "../env-vars.js"
+import { ENV_VARS, type EnvVarDef } from "../env-vars.js"
 
 // Keep piped output (`kimchi env > out.txt`, CI logs) free of escape codes.
 const COLOR = process.stdout.isTTY && !process.env.NO_COLOR
@@ -25,7 +25,8 @@ function displayValue(def: EnvVarDef): string {
 
 /**
  * `kimchi env` — list the supported, user-facing environment variables with
- * their current set/unset state. Secret values are masked.
+ * their descriptions. `--values` additionally prints each variable's current
+ * state, masking secrets.
  *
  * Only ENV_VARS from the central registry (src/env-vars.ts) is printed;
  * IGNORED_ENV_VARS and TEST_SUITE_ENV_VARS hold internal/test plumbing that
@@ -33,21 +34,23 @@ function displayValue(def: EnvVarDef): string {
  */
 export async function runEnv(args: string[]): Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
-		console.log("Usage: kimchi env")
+		console.log("Usage: kimchi env [--values]")
 		console.log()
-		console.log("List the supported environment variables with their current values (secrets masked).")
+		console.log("List the supported environment variables.")
+		console.log("Add --values to show each variable's current state (secrets masked).")
 		return 0
 	}
+
+	const showValues = args.includes("--values") || args.includes("-v")
 
 	console.log(bold("Environment variables recognised by kimchi"))
 	console.log()
 	const pad = Math.max(...ENV_VARS.map((v) => v.name.length))
 	for (const def of ENV_VARS) {
 		console.log(`  ${def.name.padEnd(pad)}  ${def.description}`)
-		console.log(`  ${"".padEnd(pad)}  ${displayValue(def)}`)
+		if (showValues) {
+			console.log(`  ${"".padEnd(pad)}  ${displayValue(def)}`)
+		}
 	}
-	console.log()
-	const hidden = IGNORED_ENV_VARS.length + TEST_SUITE_ENV_VARS.length
-	console.log(dim(`(${hidden} internal/dev variables exist for tests and workflows; they are not listed.)`))
 	return 0
 }

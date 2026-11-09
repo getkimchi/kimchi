@@ -67,7 +67,7 @@ describe("binary smoke tests", () => {
 
 	it("env subcommand lists kimchi env vars with masked secrets", () => {
 		const result = runBinary({
-			args: ["env"],
+			args: ["env", "--values"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 		})
 		expect(result.status).toBe(0)
@@ -77,6 +77,19 @@ describe("binary smoke tests", () => {
 		expect(result.stdout).toContain("set: ****")
 		// Piped (non-TTY) output must be free of escape codes.
 		expect(result.stdout).not.toContain("\u001b[")
+	})
+
+	it("env subcommand omits values unless --values is passed", () => {
+		const result = runBinary({
+			args: ["env"],
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
+		})
+		expect(result.status).toBe(0)
+		expect(result.stdout).toContain("KIMCHI_API_KEY")
+		// No value lines without --values — not even the masked marker.
+		expect(result.stdout).not.toContain("smoke-test-dummy")
+		expect(result.stdout).not.toContain("set: ****")
+		expect(result.stdout).not.toContain("(not set)")
 	})
 
 	it("version subcommand prints version + platform without launching the harness", () => {

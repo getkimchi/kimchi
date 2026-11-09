@@ -81,8 +81,9 @@ export async function printMergedHelp(): Promise<void> {
 	printSection(KIMCHI_FLAGS, maxNameWidth(KIMCHI_FLAGS) + 2)
 	console.log()
 
+	console.log(bold("Environment variables:"))
 	console.log(
-		`${bold("Environment variables:")} run ${bold("kimchi env")} to list supported variables with their current values.`,
+		`  Run ${bold("kimchi env")} to list supported variables (add ${bold("--values")} to show current values, secrets masked).`,
 	)
 	console.log()
 
