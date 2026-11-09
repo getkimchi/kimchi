@@ -444,22 +444,26 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		// Steered and idle inputs deliver within the run that received them;
 		// remember the text so the user message it produces is attributed to
 		// this input (instead of to a queued follow-up) at message_start.
+		// Uncapped on purpose: entries are live expectations — capping would
+		// silently drop the oldest and lose its arming. The list is cleared at
+		// agent_end, so it never holds more than one run's undelivered inputs.
 		recentImmediateInputs.set(sessionId, [...(recentImmediateInputs.get(sessionId) ?? []), event.text])
 	})
 
 	// The delivery point for genuine user input — the user message entering
 	// history: this is where the session's input revision advances and the
-	// check-in gate arms. A user message has one of three causes, resolved
-	// in order:
+	// check-in gate arms. Upstream matches its own steering/follow-up queues
+	// by content too, but that queue state is not extension-visible, so the
+	// attribution necessarily re-implements consume-by-text-match here; if an
+	// upstream queue-drain event or shared matcher ever exists, adopt it.
+	// A user message has one of three causes, resolved in order:
 	// 1. a steered/idle input recorded at receipt — exact text match;
 	// 2. a delivered follow-up whose queued text survived upstream's queueing
 	//    untouched — exact match;
 	// 3. an input whose text was rewritten after the input event (skill/
 	//    template expansion, a later input handler's transform) — consumed
-	//    positionally. When both an unconsumed immediate input and queued
-	//    follow-ups exist, positional consumption is refused: the producer
-	//    is ambiguous, so no revision is assigned (under-arming — the next
-	//    delivery re-arms legitimately).
+	//    positionally; immediate expectations are preferred because every
+	//    pending immediate delivers before every queued follow-up.
 	// A message with no recorded input at all (extension-sourced, e.g. the
 	// ferment plan-confirmation reply, ferment/events.ts) is not advanced or
 	// armed: its direction is not the user's. Harness custom messages
@@ -467,6 +471,10 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	// excluded by the role check above.
 	pi.on("message_start", (event, ctx) => {
 		if (event.message.role !== "user") return
+		// Defense in depth: harness custom payloads (hidden steers, reminders)
+		// always carry role "custom" today — but if an upstream path ever emits
+		// a custom-typed user message, it must never advance the clock.
+		if ("customType" in event.message) return
 		const sessionId = ctx.sessionManager.getSessionId()
 		const content = event.message.content
 		const text =
@@ -508,13 +516,26 @@ export default function todosExtension(pi: ExtensionAPI): void {
 		}
 		const index = queue.indexOf(text)
 		if (index !== -1) {
-			queue.splice(index, 1)
-		} else if (recent.length === 0) {
-			// No unconsumed immediate input can have produced this message —
-			// it is a delivered follow-up whose queued text was rewritten.
-			queue.shift()
+			// Drop the match and every older entry: upstream delivers queued
+			// messages in queue order, so an entry older than the one just
+			// delivered belongs to a follow-up that was drained (Esc pull-back,
+			// ACP cancel) and will never be delivered.
+			queue.splice(0, index + 1)
+		} else if (recent.length > 0) {
+			// No text match anywhere — a rewritten text: consume positionally,
+			// preferring the immediate expectations. Every pending immediate
+			// delivers before every queued follow-up (steers inject into the
+			// current run; follow-ups deliver only after it ends), so a
+			// rewrite's producer is the oldest immediate entry whenever one
+			// exists. A drained follow-up (Esc pull-back, ACP cancel) can leave
+			// a permanently stale queue entry — it must not suppress arming for
+			// later rewritten prompts.
+			recent.shift()
+			recentImmediateInputs.set(sessionId, recent)
 		} else {
-			return
+			// No immediate expectation pending — the message is a rewritten
+			// follow-up.
+			queue.shift()
 		}
 		if (queue.length === 0) deferredCheckinInputs.delete(sessionId)
 		deliverGenuineInput(ctx)
