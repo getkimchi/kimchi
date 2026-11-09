@@ -21,12 +21,12 @@
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
 import { getRedactionConfig, type RedactionRenderMode } from "./config.js"
-import { getDefaultExcludedEntities } from "./entity-tiers.js"
+import { type CompiledCustomEntity, resolveRedactionPolicy } from "./policy.js"
 import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
 
 /**
- * One atomic view of the redaction policy: the engine, the engine-level
- * exclusion set, and the raw user exclusion list, resolved together.
+ * One atomic view of the redaction policy: the engine, the resolved
+ * policy, and the render mode, resolved together.
  *
  * A mid-flight settings edit rebuilds `current` wholesale; in-flight callers
  * keep the snapshot they resolved at pass entry, so a single redaction pass
@@ -38,8 +38,13 @@ import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "
 interface EngineSnapshot {
 	engine: GuardrailsEngine
 	exclusions: ReadonlySet<string>
-	userExclusions: ReadonlySet<string>
 	renderMode: RedactionRenderMode
+	/** Entities whose non-engine coverage is suspended (custom patterns, SECRET_FIELD). */
+	disabled: ReadonlySet<string>
+	/** User-defined custom patterns, appended after the built-in pass. */
+	customPatterns: readonly CompiledCustomEntity[]
+	/** Universe entity → category, for telemetry attribution. */
+	categories: ReadonlyMap<string, string>
 	/** Joined policy signature the snapshot was built from. */
 	signature: string
 }
@@ -85,12 +90,12 @@ export function createRedactionEngine(excludedEntities: readonly string[]): Guar
  * restart. The comparison is a joined-string signature — O(list), no
  * per-call engine construction.
  *
- * A broken `redaction.excludedEntities` settings block must not turn
- * redaction off: the lenient paths (hooks, bug report) would silently pass
- * text through and the operator's only signal would be a per-event log.
- * Instead the snapshot degrades to the registry defaults, the error is
- * remembered for the strict export path (which fails closed on it), and it
- * is logged once here, loudly.
+ * A broken `redaction` settings block must not turn redaction off: the
+ * lenient paths (hooks, bug report) would silently pass text through and
+ * the operator's only signal would be a per-event log. Instead the snapshot
+ * degrades to the registry defaults, the error is remembered for the strict
+ * export path (which fails closed on it), and it is logged once here,
+ * loudly.
  */
 function resolveSnapshot(): EngineSnapshot {
 	let config: ReturnType<typeof getRedactionConfig>
@@ -101,28 +106,21 @@ function resolveSnapshot(): EngineSnapshot {
 		const error = err instanceof Error ? err : new Error(String(err))
 		if (configError?.message !== error.message) {
 			console.error(
-				`[pii-redaction] ${error.message} — using default exclusions; exports will fail until settings.json is fixed.`,
+				`[pii-redaction] ${error.message} — using default redaction policy; exports will fail until settings.json is fixed.`,
 			)
 		}
 		configError = error
-		config = {
-			enabled: true,
-			renderMode: "markers",
-			excludedEntities: getDefaultExcludedEntities(),
-			userExcludedEntities: [],
-		}
+		config = { enabled: true, renderMode: "markers", resolved: resolveRedactionPolicy() }
 	}
-	const signature = [
-		config.excludedEntities.join("\u0001"),
-		config.userExcludedEntities.join("\u0001"),
-		config.renderMode,
-	].join("\u0002")
+	const signature = [config.resolved.signature, config.renderMode].join("\u0002")
 	if (current && signature === current.signature) return current
 	current = {
-		engine: createRedactionEngine(config.excludedEntities),
-		exclusions: new Set(config.excludedEntities),
-		userExclusions: new Set(config.userExcludedEntities),
+		engine: createRedactionEngine(config.resolved.engineExclusions),
+		exclusions: new Set(config.resolved.engineExclusions),
 		renderMode: config.renderMode,
+		disabled: config.resolved.disabledEntities,
+		customPatterns: config.resolved.customPatterns,
+		categories: config.resolved.categories,
 		signature,
 	}
 	return current
@@ -629,20 +627,28 @@ function isPreservedKey(key: string): boolean {
  * Apply custom regex patterns that the bulkhead engine does not cover.
  * This runs as a second pass after `engine.scan()`.
  *
- * Patterns whose name is in the USER-supplied exclusion list are skipped —
- * the user's `redaction.excludedEntities` governs kimchi-owned markers
- * (e.g. LOCAL_PATH). Registry defaults never filter customs: they exclude
- * anchor-required entities at the ENGINE so their anchored re-additions
- * here can fire (see config.ts / entity-tiers.ts).
+ * Patterns whose name is in the disabled set are skipped — the resolved
+ * policy's disabledEntities governs kimchi-owned markers (e.g. LOCAL_PATH):
+ * an entity/category OFF, or the legacy excludedEntities list. Registry
+ * defaults never filter customs: they exclude anchor-required entities at
+ * the ENGINE so their anchored re-additions here can fire (see config.ts /
+ * entity-tiers.ts).
+ *
+ * User-defined patterns (`extra`, from redaction.customEntities) run after
+ * the built-ins. An extra pattern can match an earlier marker's text — the
+ * same caveat the built-in GENERIC_SECRET documents; user regexes are the
+ * operator's responsibility.
  */
 export function applyCustomPatterns(
 	text: string,
-	excluded: ReadonlySet<string>,
+	disabled: ReadonlySet<string>,
 	onMatch?: (match: { name: string; secret: string }) => void,
+	extra?: readonly CompiledCustomEntity[],
 ): string {
 	let result = text
-	for (const { name, regex, secretGroup } of CUSTOM_PATTERNS) {
-		if (excluded.has(name)) continue
+	const patterns = extra === undefined ? CUSTOM_PATTERNS : [...CUSTOM_PATTERNS, ...extra]
+	for (const { name, regex, secretGroup } of patterns) {
+		if (disabled.has(name)) continue
 		const marker = `[REDACTED-${name}]`
 		result = result.replace(regex, (match, ...args: unknown[]) => {
 			if (secretGroup !== undefined) {
@@ -695,7 +701,7 @@ async function redactTextWithSnapshot(text: string, snapshot: EngineSnapshot, va
 		snapshot.renderMode === "tokens" && vault
 			? await detectAndComposeTokenized(text, snapshot.engine, snapshot.exclusions, vault)
 			: await detectAndCompose(text, snapshot.engine, snapshot.exclusions)
-	return applyCustomPatterns(afterEngine, snapshot.userExclusions)
+	return applyCustomPatterns(afterEngine, snapshot.disabled, undefined, snapshot.customPatterns)
 }
 
 export async function redactTextOrThrow(text: string): Promise<string> {
@@ -869,7 +875,7 @@ async function redactObjectStringsWith<T>(
 		// The snapshot was resolved once at the pass entry — the sensitive-key
 		// policy below is the same atomic view the string scans use, even if a
 		// concurrent settings edit rebuilds the engine mid-walk.
-		const secretFieldRedacts = !snapshot.userExclusions.has("SECRET_FIELD")
+		const secretFieldRedacts = !snapshot.disabled.has("SECRET_FIELD")
 		const source = obj as Record<PropertyKey, unknown>
 		const keys: PropertyKey[] = [
 			...Object.keys(source),
@@ -996,6 +1002,12 @@ export interface RedactionReport {
 	 * redacted text reports no new redactions.
 	 */
 	entities: Record<string, number>
+	/**
+	 * Category attribution for the tallied entities (entity → category key,
+	 * e.g. EMAIL_ADDRESS → "emails"), resolved from the pass's policy view.
+	 *
+	 */
+	categories: Record<string, string>
 	/** Non-empty strings scanned (values force-redacted via a sensitive key name are not scanned). */
 	stringsScanned: number
 	/** Engine scans that failed open (original text returned). */
@@ -1026,7 +1038,7 @@ export interface RedactionMeasurement<T> {
  *   retrieval). Omitted by exports and non-hook callers → markers always.
  */
 export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault): Promise<RedactionMeasurement<T>> {
-	const report: RedactionReport = { entities: {}, stringsScanned: 0, engineFailures: 0 }
+	const report: RedactionReport = { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
 	// every settle-bounded string scan see the same atomic policy view.
@@ -1054,12 +1066,18 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
 		tallyMarkersNet(input, output, report.entities),
 	)
+	// Attribute the tallied entities to categories from this pass's policy
+	// view, so the emitted facts can be grouped by the same unit admins
+	// toggle. A marker typesafe-unknown to the pass's map reports "custom".
+	for (const entity of Object.keys(report.entities)) {
+		report.categories[entity] = snapshot.categories.get(entity) ?? "custom"
+	}
 	return { redacted, report }
 }
 
 /** An empty report — the starting point for cross-invocation aggregation. */
 export function emptyRedactionReport(): RedactionReport {
-	return { entities: {}, stringsScanned: 0, engineFailures: 0 }
+	return { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
 }
 
 /** Merge `source` into `target` in place (both shaped as {@link RedactionReport}). */
@@ -1068,6 +1086,9 @@ export function mergeReports(target: RedactionReport, source: RedactionReport): 
 	target.engineFailures += source.engineFailures
 	for (const [entity, count] of Object.entries(source.entities)) {
 		target.entities[entity] = (target.entities[entity] ?? 0) + count
+	}
+	for (const [entity, category] of Object.entries(source.categories)) {
+		target.categories[entity] ??= category
 	}
 }
 

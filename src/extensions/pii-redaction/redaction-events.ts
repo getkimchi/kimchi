@@ -37,6 +37,11 @@ export interface PiiRedactedPayload {
 	 * Never the matched text.
 	 */
 	entity_type: string
+	/**
+	 * The category the entity belongs to (e.g. emails, network) — the unit
+	 * admins toggle. "custom" when the marker has no catalog attribution.
+	 */
+	category: string
 	/** How many occurrences of entity_type were redacted in this invocation. */
 	count: number
 	/**
@@ -74,6 +79,7 @@ export function emitRedactionFacts(pi: ExtensionAPI, surface: RedactionSurface, 
 		const payload: PiiRedactedPayload = {
 			surface,
 			entity_type,
+			category: report.categories[entity_type] ?? "custom",
 			count,
 			strings_scanned: report.stringsScanned,
 			is_subagent: isSubagent,

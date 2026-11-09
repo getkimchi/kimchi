@@ -6,30 +6,42 @@
  * the user's persistent /resources override, the transient
  * KIMCHI_ENABLE_RESOURCES env, and the definition default (off).
  *
- * Entity exclusions are governed locally by the `redaction` block of the
- * same settings.json the resources system reads:
+ * WHAT redacts is governed by the `redaction` block of the same
+ * settings.json — two mutually exclusive shapes:
  *
- *   { "redaction": { "excludedEntities": ["DATE_TIME", "PHONE_NUMBER"] } }
+ *   Legacy (unchanged semantics):
+ *     { "redaction": { "excludedEntities": ["DATE_TIME", "PHONE_NUMBER"] } }
+ *     A present array REPLACES the tier-registry default wholesale, unknown
+ *     entity names throw. It can switch bare detectors back on — the only
+ *     way to do so for anchor-required entities.
  *
- * A present `excludedEntities` array REPLACES the tier-registry default
- * wholesale; an absent key keeps the registry default byte-for-byte.
- * Unknown entity names throw (fail-visible — the same convention as a
- * malformed settings.json). Consumers split by failure policy: the strict
- * export path lets the throw propagate (fail closed — no transcript is
- * published under a policy nobody wrote down), while the redactor's
- * snapshot resolution degrades to the registry defaults with one loud log
- * so a settings typo can never silently switch the live pipeline's
- * redaction off. When the platform later carries the list via managed
- * settings, it takes precedence above the local key (managed → local →
- * registry default); see `.kimchi/plans/redaction-precision.md` for the
- * compatibility contract.
+ *   Policy (LLM-4416):
+ *     { "redaction": {
+ *         "categories": { "network": "off" },
+ *         "entities": { "PHONE_NUMBER": "on" },
+ *         "customEntities": [{ "name": "ACME_ID", "category": "identity_documents",
+ *                              "pattern": "…", "flags"?, "secretGroup"? }] } }
+ *     Entity states beat category states; "on" never enables an
+ *     anchor-required entity's bare engine detector (its anchored patterns
+ *     simply run). Unknown categories/entities or invalid custom entries
+ *     throw. Mixing the policy keys with legacy `excludedEntities` throws.
+ *
+ * An absent `redaction` block (or an empty one) resolves to the tier
+ * defaults byte-for-byte. Consumers split by failure policy: the strict
+ * export path lets a validation error propagate (fail closed), while the
+ * redactor's snapshot resolution degrades to the tier defaults with one loud
+ * log so a settings typo can never silently switch the live pipeline's
+ * redaction off. The org-managed policy (settings:resolve `kimchiRedaction`)
+ * takes precedence over the local block per key (managed → local →
+ * registry default); see `policy.ts` for the resolution contract and
+ * `.kimchi/plans/redaction-precision.md` for compatibility notes.
  *
  * Reads go through the stat-gated JSON cache shared with the resources
  * store, so per-event consultation is cheap and mid-session edits are
  * picked up without a restart (the redactor engine rebuilds when the
- * resolved exclusion list changes). With an org FORCE_* lock in force the
+ * resolved view's signature changes). With an org FORCE_* lock in force the
  * settings file is not read at all — a locked deployment cannot be broken
- * by a corrupt local file, and exclusions stay at the registry default.
+ * by a corrupt local file.
  *
  * The module is a thin seam by design: it is the one place that names the
  * redaction gate for consumers outside this extension's hooks
@@ -39,7 +51,14 @@
 
 import { readJsonCached } from "../../config/json.js"
 import { getResourceSettingsPath, isResourceEnabled, isResourceLocked } from "../../resources/store.js"
-import { getDefaultExcludedEntities, isKnownEntity } from "./entity-tiers.js"
+import { isKnownEntity } from "./entity-tiers.js"
+import {
+	type LocalRedactionInput,
+	parseLocalPolicy,
+	type RedactionPolicy,
+	type ResolvedRedaction,
+	resolveRedactionPolicy,
+} from "./policy.js"
 import { PII_REDACTION_RESOURCE_ID } from "./resource.js"
 
 /**
@@ -61,29 +80,15 @@ export interface RedactionConfig {
 	enabled: boolean
 	/** Detection rendering mode (default `tokens`). */
 	renderMode: RedactionRenderMode
-	/**
-	 * Entity types excluded at engine level: local settings.json
-	 * `redaction.excludedEntities` when present, else the tier-registry
-	 * default.
-	 */
-	excludedEntities: string[]
-	/**
-	 * The raw user-supplied exclusion list ([] when the settings key is
-	 * absent). Engine entities are excluded by resolved `excludedEntities`,
-	 * but kimchi-owned custom patterns must only honor what the user
-	 * explicitly wrote: the registry default excludes anchor-required
-	 * entities precisely so their anchored custom re-additions can fire —
-	 * letting defaults also filter customs would delete the anchored
-	 * coverage (e.g. no AWS-secret redaction at all).
-	 */
-	userExcludedEntities: string[]
+	/** The executable view: engine exclusions, disabled coverage, user patterns. */
+	resolved: ResolvedRedaction
 }
 
 /**
  * Non-throwing enablement gate for the extension hooks. The hooks need only
  * `enabled`, which never depends on the `redaction` settings block whose
- * validation can throw — a typo'd exclusion list must not turn the gate
- * into a rejection the extension runner discards (that would store and send
+ * validation can throw — a typo'd block must not turn the gate into a
+ * rejection the extension runner discards (that would store and send
  * unredacted content with only a per-event log). Exclusion degrade
  * semantics live in the redactor's snapshot resolution; a fully malformed
  * settings.json still fails visibly per the readJson convention.
@@ -106,47 +111,66 @@ export function getRedactionRenderMode(): RedactionRenderMode {
 	}
 }
 
-/** Read the current config: resources-system enablement + local exclusion list. */
+/**
+ * The org-managed redaction policy, undefined until the platform carriage
+ * lands (settings:resolve `kimchiRedaction`). Kept behind a small function
+ * so the K2 wiring touches only this seam.
+ */
+function getManagedRedactionPolicy(): RedactionPolicy | undefined {
+	return undefined
+}
+
+/** Read the current config: resources-system enablement + resolved policy + render mode. */
 export function getRedactionConfig(): RedactionConfig {
 	// Lock short-circuit mirrors the resources store: under FORCE_* the
-	// settings file is never opened. The org lock pins the resource, not
-	// the presentation — rendering follows the default (tokens) here too;
-	// only an explicit "markers" setting, readable in an unlocked
-	// deployment, restores the old flat markers.
+	// settings file is never opened — only the managed policy applies; the
+	// presentation follows the tokens default (the org lock pins the
+	// resource, never the presentation).
 	if (isResourceLocked(PII_REDACTION_RESOURCE_ID)) {
 		return {
 			enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
 			renderMode: "tokens",
-			excludedEntities: getDefaultExcludedEntities(),
-			userExcludedEntities: [],
+			resolved: resolveRedactionPolicy(getManagedRedactionPolicy()),
 		}
 	}
-	const user = readExcludedEntitiesSetting()
 	return {
 		enabled: isResourceEnabled(PII_REDACTION_RESOURCE_ID),
 		renderMode: readRenderModeSetting() ?? "tokens",
-		excludedEntities: user ?? getDefaultExcludedEntities(),
-		userExcludedEntities: user ?? [],
+		resolved: resolveRedactionPolicy(getManagedRedactionPolicy(), readLocalRedactionInput()),
 	}
 }
 
 /**
- * Read + validate settings.json `redaction.excludedEntities`. Returns
- * undefined when the key is absent (defaults apply). Malformed JSON
- * propagates through readJsonCached (fail-visible); unknown entity names
- * throw for the same reason — either way the operator learns their
- * settings file is wrong instead of running with silently different
- * redaction behavior than they wrote down.
+ * Read + validate the local settings.json `redaction` block. Returns
+ * undefined when the block is absent or empty (defaults apply). Malformed
+ * JSON propagates through readJsonCached (fail-visible); invalid blocks
+ * throw for the same reason — either way the operator learns their settings
+ * file is wrong instead of running with silently different redaction
+ * behavior than they wrote down.
  */
-function readExcludedEntitiesSetting(): string[] | undefined {
+function readLocalRedactionInput(): LocalRedactionInput | undefined {
 	const settings = readJsonCached(getResourceSettingsPath())
 	const redaction = settings.redaction
 	if (redaction === undefined) return undefined
 	if (redaction === null || typeof redaction !== "object" || Array.isArray(redaction)) {
 		throw new Error('settings.json "redaction" must be an object')
 	}
-	const raw = (redaction as Record<string, unknown>).excludedEntities
-	if (raw === undefined) return undefined
+	const block = redaction as Record<string, unknown>
+	const legacyRaw = block.excludedEntities
+	const hasPolicyKeys =
+		block.categories !== undefined || block.entities !== undefined || block.customEntities !== undefined
+	if (legacyRaw !== undefined && hasPolicyKeys) {
+		throw new Error(
+			'settings.json "redaction": "excludedEntities" cannot be combined with categories/entities/customEntities',
+		)
+	}
+	if (legacyRaw !== undefined) return { legacyExcluded: readLegacyExcludedEntities(legacyRaw) }
+	if (!hasPolicyKeys) return undefined
+	return parseLocalPolicy(block)
+}
+
+/** Validate the legacy list: array of known entity names (fail-visible). */
+function readLegacyExcludedEntities(raw: unknown): string[] {
 	if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) {
 		throw new Error('settings.json "redaction.excludedEntities" must be an array of strings')
 	}

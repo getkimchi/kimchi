@@ -572,17 +572,18 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		invalidateJsonCache(getResourceSettingsPath())
 	}
 
-	it("absent key → tier-registry defaults, empty user list", () => {
+	it("absent key → tier-registry defaults, nothing disabled", () => {
 		const config = getRedactionConfig()
-		expect(config.excludedEntities).toEqual(getDefaultExcludedEntities())
-		expect(config.userExcludedEntities).toEqual([])
+		expect(config.resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
+		expect(config.resolved.disabledEntities.size).toBe(0)
+		expect(config.resolved.customPatterns).toEqual([])
 	})
 
-	it("a present array replaces the defaults wholesale (raw list exposed)", () => {
+	it("a present array replaces the defaults wholesale (raw list preserved)", () => {
 		writeSettings({ excludedEntities: ["GUID"] })
 		const config = getRedactionConfig()
-		expect(config.excludedEntities).toEqual(["GUID"])
-		expect(config.userExcludedEntities).toEqual(["GUID"])
+		expect(config.resolved.engineExclusions).toEqual(["GUID"])
+		expect(config.resolved.disabledEntities).toEqual(new Set(["GUID"]))
 	})
 
 	it("unknown entity names throw (fail-visible)", () => {
@@ -600,7 +601,7 @@ describe("getRedactionConfig — redaction.excludedEntities settings", () => {
 		await setOrgPolicyForTests({ resources: { [PII_REDACTION_RESOURCE_ID]: "FORCE_ON" } })
 		const config = getRedactionConfig()
 		expect(config.enabled).toBe(true)
-		expect(config.excludedEntities).toEqual(getDefaultExcludedEntities())
+		expect(config.resolved.engineExclusions).toEqual(getDefaultExcludedEntities())
 	})
 
 	it("user-replaced exclusions re-enable bare-shape detection (replace semantics)", async () => {
@@ -1449,3 +1450,117 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		expect(out.image.source.bytes).toEqual(bytes)
 	})
 })
+
+describe("redaction policy — categories/entities/customEntities settings", () => {
+	let codingAgentDir: string
+
+	beforeEach(() => {
+		codingAgentDir = mkdtempSync(join(tmpdir(), "kimchi-redact-policy-"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", codingAgentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "")
+		resetRedactorEngine()
+	})
+
+	afterEach(() => {
+		resetRedactorEngine()
+		resetOrgPolicyForTests()
+		vi.unstubAllEnvs()
+		rmSync(codingAgentDir, { recursive: true, force: true })
+	})
+
+	function writeSettings(redaction: unknown): void {
+		writeFileSync(join(codingAgentDir, "settings.json"), JSON.stringify({ redaction }))
+		invalidateJsonCache(getResourceSettingsPath())
+	}
+
+	it("entity OFF passes that type through; other types still redact", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`Contact ${fx.email} CC: ${fx.creditCard}`)
+		expect(result).toContain(fx.email)
+		expect(result).not.toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).toContain("[REDACTED-CREDIT_CARD]")
+	})
+
+	it("category OFF secrets passes tokens, anchored secrets, and SECRET_FIELD through", async () => {
+		const secret = ["opaque-prox", "y-token-99"].join("")
+		writeSettings({ categories: { secrets: "off" } })
+		resetRedactorEngine()
+
+		for (const input of [
+			`Token ${fx.ghpToken} leaked`,
+			`key ${fx.castaiKey} here`,
+			["the api_secret: ", secret].join(""),
+		]) {
+			expect(await redactTextOrThrow(input)).toBe(input)
+		}
+		// SECRET_FIELD is a secrets member: the JSON-key force-redaction stops.
+		expect(await redactObjectStrings({ password: "abc" + "123" })).toEqual({ password: "abc123" })
+		// Other categories untouched.
+		const other = await redactTextOrThrow(`CC: ${fx.creditCard} config at ${fx.localPath}`)
+		expect(other).toContain("[REDACTED-CREDIT_CARD]")
+		expect(other).toContain("[REDACTED-LOCAL_PATH]")
+	})
+
+	it("entity ON redacts a bare-shape type (PHONE_NUMBER)", async () => {
+		writeSettings({ entities: { PHONE_NUMBER: "on" } })
+		resetRedactorEngine()
+		const result = await redactTextOrThrow(`Call ${fx.phone} to reach support`)
+		expectRedacted(result, fx.phone, "PHONE_NUMBER")
+	})
+
+	it("entity ON keeps an anchor-required bare shape off, anchored forms covered", async () => {
+		writeSettings({ entities: { AWS_SECRET_KEY: "on" } })
+		resetRedactorEngine()
+		const bare = `replica sharer ${fx.awsSecret} tail`
+		expect(await redactTextOrThrow(bare)).toBe(bare)
+		const anchored = await redactTextOrThrow(`aws_secret_access_key= "${fx.awsSecret}"`)
+		expectRedacted(anchored, fx.awsSecret, "AWS_SECRET_KEY")
+	})
+
+	it("custom entities redact their capture group and attribute their category", async () => {
+		writeSettings({
+			customEntities: [
+				{
+					name: "ACME_EMPLOYEE_ID",
+					category: "identity_documents",
+					pattern: "(emp[-_ ]?id\\s*[:=]\\s*)(E\\d{6})",
+					flags: "i",
+					secretGroup: 2,
+				},
+			],
+		})
+		resetRedactorEngine()
+		const { redacted, report } = await redactObjectStringsMeasured({ note: "assigned to emp id: E123456 today" })
+		expect(redacted).toEqual({ note: "assigned to emp id: [REDACTED-ACME_EMPLOYEE_ID] today" })
+		expect(report.entities).toEqual({ ACME_EMPLOYEE_ID: 1 })
+		expect(report.categories).toEqual({ ACME_EMPLOYEE_ID: "identity_documents" })
+	})
+
+	it("custom entities honor the OFF state (entity and category level)", async () => {
+		writeSettings({
+			customEntities: [{ name: "ACME_EMPLOYEE_ID", category: "identity_documents", pattern: "E\\d{6}" }],
+			entities: { ACME_EMPLOYEE_ID: "off" },
+		})
+		resetRedactorEngine()
+		const input = "assigned to E123456"
+		expect(await redactTextOrThrow(input)).toBe(input)
+	})
+
+	it("mixing legacy excludedEntities with the policy keys throws (fail-visible)", () => {
+		writeSettings({ excludedEntities: ["GUID"], categories: { secrets: "off" } })
+		expect(() => getRedactionConfig()).toThrow(/cannot be combined/)
+	})
+
+	it("mid-session edits rebuild the engine without restart", async () => {
+		writeSettings({ entities: { EMAIL_ADDRESS: "off" } })
+		resetRedactorEngine()
+		const nowOff = await redactTextOrThrow(fx.email)
+		expect(nowOff).toBe(fx.email)
+
+		writeSettings({ entities: { PHONE_NUMBER: "on" } })
+		// No resetRedactorEngine: the config signature change must rebuild.
+		const result = await redactTextOrThrow(`Call ${fx.phone}; mail ${fx.email}`)
+		expect(result).toContain("[REDACTED-PHONE_NUMBER]")
+		expect(result).toContain("[REDACTED-EMAIL_ADDRESS]")
+		expect(result).not.toContain(fx.email)
