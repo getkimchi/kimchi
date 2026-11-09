@@ -1,21 +1,6 @@
 import { ENV_VARS, type EnvVarDef } from "../env-vars.js"
+import { bold, dim } from "./console-style.js"
 
-// Keep piped output (`kimchi env > out.txt`, CI logs) free of escape codes.
-// Computed per call: a long-lived process may see NO_COLOR change after
-// import, and tests drive isTTY/NO_COLOR directly.
-function colorEnabled(): boolean {
-	return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR
-}
-
-function bold(text: string): string {
-	return colorEnabled() ? `\x1b[1m${text}\x1b[0m` : text
-}
-
-function dim(text: string): string {
-	return colorEnabled() ? `\x1b[2m${text}\x1b[0m` : text
-}
-
-const MASKED_VALUE = "****"
 const NOT_SET = "(not set)"
 
 /**
@@ -40,62 +25,34 @@ function wrapText(text: string, width: number): string[] {
 
 function displayValue(def: EnvVarDef): string {
 	const raw = process.env[def.name]
-	// An explicitly empty value is effectively unset — never render it as a
-	// masked secret, which would imply a real credential is configured.
+	// An explicitly empty value is effectively unset.
 	if (raw === undefined || raw === "") return dim(NOT_SET)
-	if (def.secret) return `set: ${MASKED_VALUE}`
-	return `set: ${sanitizeValue(redactUrlCredentials(raw))}`
-}
-
-// Values land in terminals and pasted bug reports: drop control characters
-// (ESC byte of ANSI sequences, DEL, C0) and collapse any stray newline so a
-// value can never inject escape codes or forge extra output lines (e.g. a
-// fake `set: ****` row).
-function sanitizeValue(value: string): string {
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
-	return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim()
-}
-
-/**
- * URL-valued variables (KIMCHI_PROXY, OLLAMA_HOST, endpoint overrides) can
- * embed basic-auth credentials in the userinfo part
- * (`http://[REDACTED-URL_WITH_CREDENTIALS]@proxy:8080`). Output is designed to be shared
- * (`kimchi env --values > out.txt`, CI logs, bug reports), so mask the
- * credentials while keeping host/port/path — the part that carries
- * diagnostic value. Non-URL values pass through unchanged.
- */
-function redactUrlCredentials(raw: string): string {
-	try {
-		const url = new URL(raw)
-		if (url.username || url.password) {
-			// Keep protocol + host + path/query (the diagnostic part), mask credentials.
-			const path = url.pathname === "/" ? "" : url.pathname
-			return `${url.protocol}//${MASKED_VALUE}@${url.host}${path}${url.search}`
-		}
-	} catch {
-		// Not a parseable URL — the scheme-less userinfo fallback below applies.
-	}
-	// Scheme-less proxy syntax (`user:pw@host:8080`) is common in the wild;
-	// mask anything userinfo-shaped so it can never print in the clear.
-	return raw.replace(/(^|\/\/)[^/@\s:]+(:[^/@\s]*)?@/, `$1${MASKED_VALUE}@`)
+	// Never print the value itself. The output is designed to be pasted into
+	// bug reports and CI logs, and even nominally non-secret values (proxy
+	// URLs, tags, endpoint overrides) can carry credentials or internal
+	// hostnames — "set" is all we disclose, so no masking logic can be wrong.
+	return "set"
 }
 
 /**
  * `kimchi env` — list the supported, user-facing environment variables with
- * their descriptions. `--values` additionally prints each variable's current
- * state, masking secrets.
+ * their descriptions. `--values` additionally prints whether each variable
+ * is currently set — never the value itself, so the output is anonymised
+ * and safe to paste.
  *
  * Only ENV_VARS from the central registry (src/env-vars.ts) is printed;
  * IGNORED_ENV_VARS and TEST_SUITE_ENV_VARS hold internal/test plumbing that
  * stays registered (so the scan test still accounts for it) but never shows.
  */
-const ACCEPTED_FLAGS = ["--help", "-h", "--values", "-v"] as const
+// No `-v` alias: -v is the global version flag, and getSubcommand /
+// isHelpOrVersionArgs in cli.ts check it before the subcommand name.
+const ACCEPTED_FLAGS = ["--help", "-h", "--values"] as const
 
 function printUsage(stream: typeof console.log): void {
 	stream("Usage: kimchi env [--values]")
 	stream("")
 	stream("List the supported environment variables.")
-	stream("Add --values to show each variable's current state (secrets masked).")
+	stream("Add --values to show whether each variable is currently set (values are never printed).")
 }
 
 export async function runEnv(args: string[]): Promise<number> {
@@ -112,7 +69,7 @@ export async function runEnv(args: string[]): Promise<number> {
 		return 0
 	}
 
-	const showValues = args.includes("--values") || args.includes("-v")
+	const showValues = args.includes("--values")
 
 	console.log(bold("Environment variables recognised by kimchi"))
 	console.log()

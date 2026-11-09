@@ -1,18 +1,7 @@
-import { ANSI, fg } from "../ansi.js"
 import { CLI_OPTIONS, type CliOptionDef } from "../cli-args.js"
+import { bold, dim } from "./console-style.js"
 import { listPackageCommands } from "./package-commands.js"
 import { COMMANDS } from "./registry.js"
-
-const SECTION_HEADER = "\x1b[1m"
-const RESET = "\x1b[0m"
-
-function bold(text: string): string {
-	return `${SECTION_HEADER}${text}${RESET}`
-}
-
-function dim(text: string): string {
-	return fg(ANSI.dim, text)
-}
 
 interface FlagDoc {
 	name: string
@@ -83,7 +72,7 @@ export async function printMergedHelp(): Promise<void> {
 
 	console.log(bold("Environment variables:"))
 	console.log(
-		`  Run ${bold("kimchi env")} to list supported variables (add ${bold("--values")} to show current values, secrets masked).`,
+		`  Run ${bold("kimchi env")} to list supported variables (add ${bold("--values")} to see which are currently set).`,
 	)
 	console.log()
 

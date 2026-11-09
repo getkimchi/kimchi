@@ -264,7 +264,8 @@ function getSubcommand(args: string[]): string {
 	// invocations report their own label instead of the generic "harness"; `mcp`
 	// appears here for the same telemetry-accuracy reason even though it is also
 	// a registered command.
-	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory"].includes(sub)) return sub
+	if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
+		return sub
 	return "harness"
 }
 

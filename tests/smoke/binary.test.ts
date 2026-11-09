@@ -65,30 +65,35 @@ describe("binary smoke tests", () => {
 		expect(result.stdout).not.toContain("OPENAI_API_KEY")
 	})
 
-	it("env subcommand lists kimchi env vars with masked secrets", () => {
+	it("env subcommand lists vars and never prints their values", () => {
+		// Credentials built at runtime — a static userinfo-shaped fixture gets
+		// rewritten by secret-scanning tooling, making the assertions vacuous.
+		const proxyUrl = `http://${["smoke-user", "smoke-pass"].join(":")}${String.fromCharCode(64)}proxy.internal:8080`
 		const result = runBinary({
 			args: ["env", "--values"],
-			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
+			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", KIMCHI_PROXY: proxyUrl },
 		})
 		expect(result.status).toBe(0)
 		expect(result.stdout).toContain("KIMCHI_API_KEY")
-		// The secret value itself must never be printed.
-		expect(result.stdout).not.toContain("smoke-test-dummy")
-		expect(result.stdout).toContain("set: ****")
+		// No value content may ever be printed — only set/not-set markers.
+		for (const leaked of ["smoke-test-dummy", "smoke-user", "smoke-pass", "proxy.internal"]) {
+			expect(result.stdout, `must not print any part of a value: ${leaked}`).not.toContain(leaked)
+		}
+		expect(result.stdout).toMatch(/^\s+set$/m)
 		// Piped (non-TTY) output must be free of escape codes.
 		expect(result.stdout).not.toContain("\u001b[")
 	})
 
-	it("env subcommand omits values unless --values is passed", () => {
+	it("env subcommand omits set/not-set markers unless --values is passed", () => {
 		const result = runBinary({
 			args: ["env"],
 			extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy" },
 		})
 		expect(result.status).toBe(0)
 		expect(result.stdout).toContain("KIMCHI_API_KEY")
-		// No value lines without --values — not even the masked marker.
+		// No value lines without --values — not even the anonymous marker.
 		expect(result.stdout).not.toContain("smoke-test-dummy")
-		expect(result.stdout).not.toContain("set: ****")
+		expect(result.stdout).not.toMatch(/^\s+set$/m)
 		expect(result.stdout).not.toContain("(not set)")
 	})
 

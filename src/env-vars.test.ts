@@ -22,6 +22,8 @@ const ENFORCED_PREFIX = /^(KIMCHI_|PI_|CASTAI_)/
  *   process.env.KIMCHI_FOO
  *   process.env?.KIMCHI_FOO                 (optional chaining)
  *   process.env["KIMCHI_FOO"]
+ *   env.KIMCHI_FOO / env["KIMCHI_FOO"]      (env = process.env parameter alias,
+ *                                            e.g. uploadSkipReason(mode, env))
  *   vi.stubEnv("KIMCHI_FOO", ...)
  *   readE2eSeam("KIMCHI_FOO")               (src/** e2e seam helper)
  *   parseEnvInt("KIMCHI_FOO", ...)          (numeric env helper)
@@ -32,12 +34,37 @@ const ENFORCED_PREFIX = /^(KIMCHI_|PI_|CASTAI_)/
  * and passed by accident. Mixed-case prefixed names are reported as typos.
  *
  * Vars referenced only via a named constant (e.g. REGION_ENV,
- * KIMCHI_DISABLE_REDACTION_EVENTS) or set only in object literals passed to
- * child processes (KIMCHI_BIN) are not machine-detectable with this pattern —
- * keep their registry entries accurate by hand.
+ * INFRA_BREAKER_THRESHOLD_ENV) are covered separately: LITERAL_RE below
+ * matches any string literal that IS a prefixed variable name, which catches
+ * constant declarations regardless of how the constant is dereferenced.
  */
 const REFERENCE_RE =
-	/(?:process\.env\s*\??\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["']|readE2eSeam\(\s*["']|parseEnvInt\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)/g
+	/(?:process\.env\s*\??\s*(?:\.|\[\s*["'])|\benv\s*\??\s*(?:\.|\[\s*["'])|(?:vi\.)?stubEnv\(\s*["']|readE2eSeam\(\s*["']|parseEnvInt\(\s*["'])([A-Za-z_][A-Za-z0-9_]*)/g
+
+/**
+ * String literals holding exactly a variable name — catches the named-constant
+ * indirection (`export const FOO_ENV = "KIMCHI_FOO"`) that REFERENCE_RE cannot
+ * see. The ENFORCED_PREFIX filter makes unrelated literals inert; requiring
+ * the literal to be exactly the identifier (quote on both sides) keeps
+ * template literals like `KIMCHI_OAUTH_CLIENT_ID_${regionTag}` and prose
+ * strings from matching. Names ending in "_" are prefix compositions
+ * (e.g. KIMCHI_RESOURCE_POLICY_PREFIX), not complete variable names.
+ */
+const LITERAL_RE = /["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]/g
+
+/**
+ * Files whose prefixed string literals are NOT environment variables:
+ * proto enum wire names (api/org-settings*) and a log-message prefix
+ * (infrastructure-error*, cli-infrastructure-exit.test.ts). REFERENCE_RE
+ * still applies to these files — only the literal scan is exempt.
+ */
+const LITERAL_EXEMPT_FILES = new Set([
+	"api/org-settings.ts",
+	"api/org-settings.test.ts",
+	"infrastructure-error.ts",
+	"infrastructure-error.test.ts",
+	"cli-infrastructure-exit.test.ts",
+])
 
 /** A well-formed env var name is entirely SCREAMING_SNAKE_CASE. */
 const SCREAMING = /^[A-Z][A-Z0-9_]+$/
@@ -82,11 +109,14 @@ function collectReferencedEnvVars(sources: Map<string, string>): Map<string, str
 		// Strip comments (as the stale check does) so prose like
 		// "// set process.env.KIMCHI_FOO to..." cannot trigger a spurious
 		// "unregistered" failure.
-		for (const match of stripComments(source).matchAll(REFERENCE_RE)) {
+		const code = stripComments(source)
+		const matches = [...code.matchAll(REFERENCE_RE)]
+		if (!LITERAL_EXEMPT_FILES.has(file)) matches.push(...code.matchAll(LITERAL_RE))
+		for (const match of matches) {
 			const name = match[1]
-			if (!ENFORCED_PREFIX.test(name)) continue
+			if (!ENFORCED_PREFIX.test(name) || name.endsWith("_")) continue
 			const files = referenced.get(name) ?? []
-			files.push(file)
+			if (!files.includes(file)) files.push(file)
 			referenced.set(name, files)
 		}
 	}

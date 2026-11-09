@@ -43,11 +43,11 @@ describe("runEnv", () => {
 		}
 	})
 
-	/** Value line of a registry entry — skips wrapped description lines. */
+	/** Value line of a registry entry — the `set` / `(not set)` marker row. */
 	function valueLineFor(name: string): string {
 		const nameIdx = logs.findIndex((l) => l.includes(name))
 		expect(nameIdx, `entry for ${name}`).toBeGreaterThanOrEqual(0)
-		const valueIdx = logs.findIndex((l, idx) => idx > nameIdx && (/set: /.test(l) || l.includes(NOT_SET)))
+		const valueIdx = logs.findIndex((l, idx) => idx > nameIdx && (l.includes(NOT_SET) || l.trim() === "set"))
 		return valueIdx >= 0 ? logs[valueIdx] : ""
 	}
 	const NOT_SET = "(not set)"
@@ -60,30 +60,59 @@ describe("runEnv", () => {
 		}
 	})
 
-	it("omits values by default; --values prints the current state", async () => {
+	it("omits markers by default; --values prints set/not-set only, never the value", async () => {
 		vi.stubEnv("KIMCHI_REGION", "eu")
 
 		await runEnv([])
 		const bare = logs.join("\n")
 		expect(bare).toContain("KIMCHI_REGION")
-		expect(bare).not.toContain("set: eu")
-		expect(bare).not.toContain("(not set)")
+		expect(
+			logs.every((l) => l.trim() !== "set"),
+			"no value lines without --values",
+		).toBe(true)
+		expect(bare).not.toContain(NOT_SET)
+		expect(
+			logs.every((l) => l.trim() !== "eu"),
+			"value must not appear as its own row",
+		).toBe(true)
 
 		logs = []
 		await runEnv(["--values"])
-		const withValues = logs.join("\n")
-		expect(withValues).toContain("set: eu")
-		expect(withValues).toContain("(not set)")
+		expect(valueLineFor("KIMCHI_REGION").trim()).toBe("set")
+		expect(logs.join("\n")).toContain(NOT_SET)
+		// The value itself is never disclosed as an output row — note
+		// "eu" legitimately appears inside the KIMCHI_REGION description text.
+		expect(
+			logs.every((l) => l.trim() !== "eu"),
+			"value must not appear as its own row",
+		).toBe(true)
 	})
 
-	it("masks secret values and prints non-secret ones", async () => {
+	it("never prints the value of any variable, whatever it contains", async () => {
+		// Values spanning the previous leak classes: secret, credential-bearing
+		// URL (built at runtime — a static userinfo fixture gets rewritten by
+		// secret scanners), free-text tags, and control-character injection.
+		const urlPassword = ["ci-user", "s3cret"].join(":") + String.fromCharCode(64)
 		vi.stubEnv("KIMCHI_API_KEY", "super-secret-key")
-		vi.stubEnv("KIMCHI_REGION", "eu")
+		vi.stubEnv("KIMCHI_PROXY", `http://${urlPassword}proxy.internal:8080`)
+		vi.stubEnv("KIMCHI_TAGS", "env:dbg,owner:[REDACTED-EMAIL_ADDRESS]")
+		vi.stubEnv("KIMCHI_REGION", "region-with\nnewline\x1b[2J")
 		await runEnv(["--values"])
 		const output = logs.join("\n")
-		expect(output).not.toContain("super-secret-key")
-		expect(output).toContain("set: ****")
-		expect(output).toContain("set: eu")
+		for (const leaked of [
+			"super-secret-key",
+			"ci-user",
+			"s3cret",
+			"proxy.internal",
+			"[REDACTED-EMAIL_ADDRESS]",
+			"region-with",
+			"\x1b",
+		]) {
+			expect(output, `value content must never reach output: ${JSON.stringify(leaked)}`).not.toContain(leaked)
+		}
+		expect(valueLineFor("KIMCHI_API_KEY").trim()).toBe("set")
+		expect(valueLineFor("KIMCHI_PROXY").trim()).toBe("set")
+		expect(valueLineFor("KIMCHI_REGION").trim()).toBe("set")
 	})
 
 	it("marks unset variables as not set", async () => {
@@ -100,12 +129,12 @@ describe("runEnv", () => {
 		}
 	})
 
-	it("treats an explicitly empty value as not set — never as a masked secret", async () => {
+	it("treats an explicitly empty value as not set", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", "")
 		await runEnv(["--values"])
 		const valueLine = valueLineFor("KIMCHI_API_KEY")
 		expect(valueLine).toContain("(not set)")
-		expect(valueLine).not.toContain("set: ****")
+		expect(valueLine.trim()).not.toBe("set")
 	})
 
 	it("prints usage on --help without the variable list", async () => {
@@ -113,24 +142,6 @@ describe("runEnv", () => {
 		const output = logs.join("\n")
 		expect(output).toContain("Usage: kimchi env")
 		expect(output).not.toContain("KIMCHI_API_KEY")
-	})
-
-	it("redacts credentials embedded in URL-valued variables", async () => {
-		vi.stubEnv("KIMCHI_PROXY", "http://[REDACTED-URL_WITH_CREDENTIALS]@proxy.internal:8080")
-		await runEnv(["--values"])
-		const valueLine = valueLineFor("KIMCHI_PROXY")
-		expect(valueLine).not.toContain("ci-user")
-		expect(valueLine).not.toContain("s3cret-pass")
-		expect(valueLine).toContain("set: http://****@proxy.internal:8080")
-	})
-
-	it("leaves credential-free and non-URL values untouched", async () => {
-		vi.stubEnv("KIMCHI_PROXY", "http://proxy.internal:8080")
-		vi.stubEnv("KIMCHI_TAGS", "env:dbg,run:42")
-		await runEnv(["--values"])
-		const output = logs.join("\n")
-		expect(output).toContain("set: http://proxy.internal:8080")
-		expect(output).toContain("set: env:dbg,run:42")
 	})
 
 	it("rejects unknown arguments with usage and a non-zero exit", async () => {
@@ -159,38 +170,10 @@ describe("runEnv", () => {
 		expect(logs.join("\n")).toContain("KIMCHI_BROWSER")
 	})
 
-	it("redacts credentials from scheme-less URL values", async () => {
-		// Built at runtime: a static userinfo-shaped fixture gets rewritten by
-		// secret-scanning tooling on its way into the file.
-		const userinfo = ["proxy-user", "s3cret"].join(":") + String.fromCharCode(64)
-		vi.stubEnv("KIMCHI_PROXY", userinfo + "proxy.internal:8080")
-		await runEnv(["--values"])
-		const valueLine = valueLineFor("KIMCHI_PROXY")
-		expect(valueLine).not.toContain("proxy-user")
-		expect(valueLine).not.toContain("s3cret")
-		expect(valueLine).toContain("set: ****@proxy.internal:8080")
-	})
-
-	it("keeps path and query when redacting URL credentials", async () => {
-		vi.stubEnv("KIMCHI_BASE_URL", "https://[REDACTED-URL_WITH_CREDENTIALS]@gw.internal:8443/v1/chat?region=eu")
-		await runEnv(["--values"])
-		const valueLine = valueLineFor("KIMCHI_BASE_URL")
-		expect(valueLine).not.toContain("svc")
-		expect(valueLine).not.toContain("t0ken")
-		expect(valueLine).toContain("set: https://****@gw.internal:8443/v1/chat?region=eu")
-	})
-
-	it("sanitises control characters and newlines out of printed values", async () => {
-		vi.stubEnv("KIMCHI_TAGS", "env:dbg\nrun:42\x1b[2J")
-		await runEnv(["--values"])
-		const valueLine = valueLineFor("KIMCHI_TAGS")
-		// Newlines must not forge extra output lines, and no escape byte may
-		// reach stdout even when output is piped elsewhere.
-		expect(valueLine).not.toContain("\x1b")
-		expect(valueLine).toContain("set: env:dbg run:42")
-	})
-
 	it("decides colour use per call, honouring NO_COLOR set after process start", async () => {
+		// Pin the host's NO_COLOR: with NO_COLOR=1 exported in CI the first
+		// (colour-on) assertion would fail even though the code is right.
+		vi.stubEnv("NO_COLOR", "")
 		const stdout = process.stdout as { isTTY?: boolean }
 		const previousIsTTY = stdout.isTTY
 		stdout.isTTY = true
@@ -205,7 +188,7 @@ describe("runEnv", () => {
 			await runEnv([])
 			expect(logs[0]).not.toContain("\x1b[")
 		} finally {
-			if (previousIsTTY === undefined) delete stdout.isTTY
+			if (previousIsTTY === undefined) stdout.isTTY = undefined
 			else stdout.isTTY = previousIsTTY
 		}
 	})

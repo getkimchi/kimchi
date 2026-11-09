@@ -20,8 +20,6 @@
 export interface EnvVarDef {
 	name: string
 	description: string
-	/** Secret value — `kimchi env` masks it when printing. */
-	secret?: boolean
 }
 
 /** User-facing, supported configuration surface. Printed by `kimchi env`. */
@@ -29,7 +27,6 @@ export const ENV_VARS: EnvVarDef[] = [
 	{
 		name: "KIMCHI_API_KEY",
 		description: "Kimchi API key (overrides config.json apiKey; session-only, never persisted)",
-		secret: true,
 	},
 	{
 		name: "KIMCHI_REGION",
@@ -88,6 +85,10 @@ export const ENV_VARS: EnvVarDef[] = [
 	{
 		name: "KIMCHI_MEMORY_CAPTURE",
 		description: "Set to `off` to skip memory capture entirely for the session",
+	},
+	{
+		name: "KIMCHI_PR_COST_REPORTING",
+		description: "Set 0/false to opt out of PR cost-report uploads (local attribution still runs)",
 	},
 	{
 		name: "KIMCHI_STREAM_IDLE_TIMEOUT_MS",
@@ -193,6 +194,13 @@ export const IGNORED_ENV_VARS: string[] = [
 	// debugging / pi-mono plumbing
 	"KIMCHI_DEBUG_TOOL_SURFACE",
 	"PI_TELEMETRY",
+	// CI/benchmark plumbing: provider retry-storm circuit breaker
+	// (src/upstream-retry-patch.ts), read via INFRA_BREAKER_THRESHOLD_ENV
+	"KIMCHI_INFRA_BREAKER_THRESHOLD",
+	// MCP keyring recovery helper pair (src/extensions/mcp/keyring-recovery.ts),
+	// read via named constants; set by kimchi itself or overridden together
+	"PI_MCP_ADAPTER_KEYRING_RECOVERY_NODE",
+	"PI_MCP_ADAPTER_KEYRING_RECOVERY_HELPER",
 	// test overrides
 	"KIMCHI_TEST_HARNESS",
 	"KIMCHI_TUI_E2E_CLIPBOARD_IMAGE",
@@ -244,6 +252,9 @@ export const TEST_SUITE_ENV_VARS: string[] = [
 	// literal appears only in tests — oauth-config.ts builds the
 	// region-tagged client-id var dynamically via `${KIMCHI_OAUTH_CLIENT_ID_${regionTag}}`
 	"KIMCHI_OAUTH_CLIENT_ID_US",
+	"KIMCHI_OAUTH_CLIENT_ID_EU",
+	// fixture name used by the e2e-seam helper's own unit test
+	"KIMCHI_E2E_TEST_SEAM",
 	// consumed by dependencies, referenced only from our tests
 	"PI_MCP_ADAPTER_TEST_AUTH_STORE",
 	"PI_OFFLINE",
