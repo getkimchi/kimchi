@@ -801,11 +801,13 @@ function isImageBase64From(text: string, start: number): boolean {
 /** Bounds the prefix match so a huge string is never handed to the regex. */
 const DATA_URL_PREFIX_MAX_CHARS = 128
 const IMAGE_DATA_URL_PREFIX = /^data:image\/[a-z0-9.+-]+(?:;[^;,]*)*;base64,/i
-const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["url", "image_url", "imageUrl"])
+const IMAGE_URL_KEYS: ReadonlySet<PropertyKey> = new Set(["image_url", "imageUrl"])
 
-/** A complete image data URL under a key that carries image URLs in provider payloads. */
-function isImageDataUrlField(key: PropertyKey, value: string): boolean {
-	if (!IMAGE_URL_KEYS.has(key)) return false
+/** A complete image data URL in `image_url`/`imageUrl`, or the `url` nested inside one. */
+function isImageDataUrlField(key: PropertyKey, value: string, parentKey: PropertyKey | undefined): boolean {
+	if (!IMAGE_URL_KEYS.has(key) && !(key === "url" && parentKey !== undefined && IMAGE_URL_KEYS.has(parentKey))) {
+		return false
+	}
 	const prefix = IMAGE_DATA_URL_PREFIX.exec(value.slice(0, DATA_URL_PREFIX_MAX_CHARS))
 	return prefix !== null && isImageBase64From(value, prefix[0].length)
 }
@@ -835,6 +837,7 @@ async function redactObjectStringsWith<T>(
 	redactString: (text: string) => Promise<string>,
 	snapshot: EngineSnapshot,
 	onScannedPair?: (input: string, output: string) => void,
+	parentKey?: PropertyKey,
 ): Promise<T> {
 	if (typeof obj === "string") {
 		const out = await redactString(obj)
@@ -865,7 +868,10 @@ async function redactObjectStringsWith<T>(
 				if (typeof key === "string" && isPreservedKey(key)) {
 					return Promise.resolve(value)
 				}
-				if (typeof value === "string" && (isImageBlockData(key, value, source) || isImageDataUrlField(key, value))) {
+				if (
+					typeof value === "string" &&
+					(isImageBlockData(key, value, source) || isImageDataUrlField(key, value, parentKey))
+				) {
 					return Promise.resolve(value)
 				}
 				// Redact any string value stored under a sensitive key name.
@@ -873,7 +879,7 @@ async function redactObjectStringsWith<T>(
 					onScannedPair?.(value, "[REDACTED-SECRET_FIELD]")
 					return Promise.resolve("[REDACTED-SECRET_FIELD]")
 				}
-				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair)
+				return redactObjectStringsWith(value, redactString, snapshot, onScannedPair, key)
 			}),
 		)
 		const result: Record<PropertyKey, unknown> = {}

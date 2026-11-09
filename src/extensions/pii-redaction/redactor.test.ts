@@ -1399,8 +1399,8 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 		["Mistral imageUrl part", { type: "image_url", imageUrl: `data:image/png;base64,${base64}` }],
 		["base64 with a trailing newline", { mimeType: "image/png", data: `${base64}\n` }],
 		["line-wrapped base64", { mimeType: "image/png", data: `${base64.slice(0, 60)}\r\n${base64.slice(60)}` }],
-		["data URL with parameters", { url: `data:image/png;name=a.png;base64,${base64}` }],
-		["data URL from a parameterised mime type", { url: `data:image/png; charset=x;base64,${base64}` }],
+		["data URL with parameters", { image_url: { url: `data:image/png;name=a.png;base64,${base64}` } }],
+		["data URL from a parameterised mime type", { image_url: { url: `data:image/png; charset=x;base64,${base64}` } }],
 		["JPEG bytes", { mimeType: "image/jpeg", data: fromBytes("\xff\xd8\xff") }],
 		["GIF bytes", { mimeType: "image/gif", data: fromBytes("GIF89a") }],
 		["WebP bytes", { mimeType: "image/webp", data: fromBytes("RIFF\x10\0\0\0WEBP") }],
@@ -1411,14 +1411,15 @@ describe("redactObjectStrings — image payloads are binary, not text", () => {
 	it.each([
 		["data field without an image mime type", { mimeType: "text/plain", data: tokenShaped }],
 		["image block whose data is not base64", { mimeType: "image/png", data: `note: ${tokenShaped}` }],
-		["data URL with text after the payload", { url: `data:image/png;base64,AAAA ${tokenShaped}` }],
-		["non-image data URL", { url: `data:text/plain;base64,${tokenShaped}` }],
+		["data URL with text after the payload", { image_url: { url: `data:image/png;base64,AAAA ${tokenShaped}` } }],
+		["non-image data URL", { image_url: { url: `data:text/plain;base64,${tokenShaped}` } }],
 		["bare secret labelled as an image", { mimeType: "image/png", data: tokenShaped }],
 		["bare secret with an empty image subtype", { mimeType: "image/", data: tokenShaped }],
 		["image-labelled data of an invalid base64 length", { mimeType: "image/png", data: `iVBORw0KGgo${tokenShaped}` }],
-		["image data URL whose bytes are not an image", { url: `data:image/png;base64,${tokenShaped}A` }],
+		["image data URL whose bytes are not an image", { image_url: { url: `data:image/png;base64,${tokenShaped}A` } }],
 		["image data URL inside a text block", { type: "text", text: `data:image/png;base64,${base64}` }],
 		["image data URL as a tool argument", { command: `data:image/png;base64,${base64}` }],
+		["image data URL under a generic url key", { url: `data:image/png;base64,${base64}` }],
 	])("still scans %s", async (_name, block) => {
 		expect(JSON.stringify(await redactObjectStrings(block))).toContain("[REDACTED-CRATES_IO_TOKEN]")
 	})
