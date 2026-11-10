@@ -320,6 +320,54 @@ describe("SsoFlowManager", () => {
 			})
 		})
 
+		// A TTL that passes while the exchange/listing is in flight must not
+		// park a dead flow: the client would get a list its requestId can no
+		// longer act on. The liveness re-check consumes the flow instead, and
+		// the slot is released for a fresh begin.
+		it("fails SSO_REQUEST_NOT_FOUND instead of parking when the TTL passed mid-completion", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockImplementation(async () => {
+				h.clock.now += 600_001 // TTL passes while the listing is in flight
+				return [
+					{ id: "org-123", name: "Acme" },
+					{ id: "org-456", name: "Acme Staging" },
+				]
+			})
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+			// Nothing parked, nothing settled, and the connection is free again.
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
+			await expect(h.manager.begin({})).resolves.toEqual(expect.objectContaining({ requestId: expect.any(String) }))
+		})
+
+		// A parked flow outlives its resolved awaitPromise with no active timer,
+		// so expiry is only enforced when a call touches it — begin() must reap
+		// the expired park (and its credential) instead of failing
+		// SSO_IN_PROGRESS forever.
+		it("reaps an expired parked flow so a later begin starts cleanly", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockResolvedValue([
+				{ id: "org-123", name: "Acme" },
+				{ id: "org-456", name: "Acme Staging" },
+			])
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			await h.manager.awaitResult({ requestId: begin.requestId })
+			h.clock.now += 600_001
+
+			const retry = await h.manager.begin({})
+			expect(retry.requestId).not.toBe(begin.requestId)
+			// The expired park is gone: its requestId no longer resolves and its
+			// parked credential was never handed to a settle tail.
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+		})
+
 		// the login page has a region dropdown — a user switching
 		// region mid-flow lands on a different tenant and the exchange fails.
 		// The SSO_IDP_ERROR must tell them what to do; no cross-tenant handling.

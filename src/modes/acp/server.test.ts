@@ -1197,12 +1197,26 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 					expiresAt: "2026-01-01T00:00:00.000Z",
 				},
 		)
+		// Status-aware, like the real manager: only a terminal authenticated
+		// settle hands a credential to the settle tail — a parked
+		// org_selection_required settle (or an error) must surface undefined so
+		// a bug persisting a phantom credential cannot hide behind the fake.
+		let lastSettle: "authenticated" | "parked" | "error" | undefined
 		const awaitResult = vi.fn(async (): Promise<Awaited<ReturnType<SsoFlowManager["awaitResult"]>>> => {
-			if (outcomes.awaitResultError !== undefined) throw outcomes.awaitResultError
-			return outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
+			if (outcomes.awaitResultError !== undefined) {
+				lastSettle = "error"
+				throw outcomes.awaitResultError
+			}
+			const response = outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
+			lastSettle = response.status === "authenticated" ? "authenticated" : "parked"
+			return response
 		})
 		const selectOrg = vi.fn(async (): Promise<Awaited<ReturnType<SsoFlowManager["selectOrg"]>>> => {
-			if (outcomes.selectOrgError !== undefined) throw outcomes.selectOrgError
+			if (outcomes.selectOrgError !== undefined) {
+				lastSettle = "error"
+				throw outcomes.selectOrgError
+			}
+			lastSettle = "authenticated"
 			return outcomes.selectOrg ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
 		})
 		const cancel = vi.fn(() => ({}))
@@ -1210,9 +1224,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			credential: { access: "castai_v1_sso-token" } as OAuthCredentials,
 			org: { id: "org-1", name: "Acme" },
 		}
-		const takeSettledCredential = vi.fn(() =>
-			outcomes.awaitResultError !== undefined || outcomes.selectOrgError !== undefined ? undefined : settledCredential,
-		)
+		const takeSettledCredential = vi.fn(() => (lastSettle === "authenticated" ? settledCredential : undefined))
 		// Single cast at the injection seam: the object is typed against the
 		// Pick the server actually consumes, so a new consumed method breaks the
 		// type check instead of silently staying behind.

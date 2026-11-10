@@ -401,6 +401,11 @@ export class SsoFlowManager {
 				// org via sso_select_org (or tears it down with sso_cancel). The
 				// loopback server is done — release port 8765 so other Kimchi
 				// surfaces can start a sign-in while the pick is pending.
+				// Same liveness re-check as the single-org settle below: a TTL that
+				// passed while the exchange/listing was in flight must not park a
+				// dead flow — the client would get a list its requestId can no
+				// longer act on (every later call fails SSO_REQUEST_NOT_FOUND).
+				this.assertFlowAlive(flow)
 				try {
 					flow.callbackServer.close()
 				} catch {
@@ -521,12 +526,20 @@ export class SsoFlowManager {
 		}
 	}
 
-	/** Refuse to settle a flow that was cancelled/expired while its completion
-	 * was in flight: discard() cleared the map entry, so a missing entry means
-	 * the credential must not be persisted. */
+	/** Refuse to settle or park a flow that was cancelled or expired while its
+	 * completion was in flight. Cancelled: discard() cleared the map entry, so
+	 * a missing entry means the credential must not be persisted. Expired: the
+	 * completion raced the TTL (the expiry race only guards the callback wait,
+	 * not the exchange/listing), so the clock is checked here too — either way
+	 * the flow is consumed and the slot released (mirrors flowById's expiry
+	 * handling). */
 	private assertFlowAlive(flow: PendingSsoFlow): void {
 		if (this.flow !== flow) {
 			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
+		}
+		if ((this.deps.now ?? Date.now)() > flow.expiresAtMs) {
+			this.discard(flow)
+			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in window expired; start the flow again")
 		}
 	}
 }
