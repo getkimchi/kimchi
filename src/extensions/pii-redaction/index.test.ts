@@ -993,6 +993,49 @@ describe("pii-redaction attestation — resume seeding from write-time evidence"
 		expect(emitted.length).toBeGreaterThan(0)
 	})
 
+	it("counts a settle timeout as an engine failure — no evidence, no cache", async () => {
+		vi.useFakeTimers()
+		try {
+			const h = makePi()
+			piiRedactionExtension(h.api)
+			// analyze never settles: only the walker's per-string settle bound
+			// (SCAN_SETTLE_TIMEOUT_MS, 30s) can complete the scan — and the
+			// completion must count as an engine failure, never as clean.
+			let scans = 0
+			engineScanOverride.scanImpl = (text: string) => {
+				// The walker scans every string in the message (`role`
+				// included) — count only the content string.
+				if (text.includes("@")) scans += 1
+				return new Promise(() => {})
+			}
+			const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+
+			const stored = { role: "assistant", content: `mail ${EMAIL}` }
+			const entries = [messageEntry("m1", stored)]
+			const ctx = ctxForEntries(entries)
+
+			const pendingEnd = h.invoke("message_end", { message: stored })
+			await vi.advanceTimersByTimeAsync(30_001)
+			const [replaced] = (await pendingEnd) as [{ message: typeof stored }]
+			// Fail-open semantics: the original text is returned.
+			expect(replaced.message.content).toContain(EMAIL)
+
+			// A timed-out (fail-open) scan is not evidence: nothing attested.
+			await h.invoke("turn_end", { type: "turn_end", turnIndex: 0 }, ctx)
+			expect(h.getAppendedEntries(PII_ATTEST_ENTRY_TYPE)).toEqual([])
+
+			// And not cached: a second request rescans rather than trusting it.
+			const first = h.invoke("before_provider_request", { payload: { messages: [stored] } }, ctx)
+			await vi.advanceTimersByTimeAsync(30_001)
+			await first
+			expect(scans).toBe(2)
+			errSpy.mockRestore()
+		} finally {
+			vi.useRealTimers()
+			engineScanOverride.scanImpl = null
+		}
+	})
+
 	it("survives a stale extension context at turn_end — nothing attested, no throw", async () => {
 		const h = makePi()
 		piiRedactionExtension(h.api)
