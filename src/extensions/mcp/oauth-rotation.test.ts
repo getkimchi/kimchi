@@ -391,34 +391,32 @@ describe("MCP OAuth refresh-token rotation", () => {
 		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 	})
 
-	it(
-		"recovers a stale-cache session whose grant is rejected after another process rotated",
-		{ timeout: 60_000 },
-		async () => {
-			fixture = await spawnFixture()
-			const serverName = "oauth-rotation-retry"
-			const envOptions = { agentDir, fileKey }
-			await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
+	it("recovers a stale-cache session whose grant is rejected after another process rotated", {
+		timeout: 60_000,
+	}, async () => {
+		fixture = await spawnFixture()
+		const serverName = "oauth-rotation-retry"
+		const envOptions = { agentDir, fileKey }
+		await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
 
-			// A child warms its cache with the current token, then sleeps while a
-			// second child rotates it — the first child's refresh grant is then
-			// rejected invalid_grant and it must recover from shared storage. The
-			// fixture's fingerprinted events prove the rejected grant happened
-			// (presented != current) and that a rotated grant follows the retry.
-			await Promise.all([
-				refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "stale-cache loser"),
-				(async () => {
-					await delay(3200)
-					await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
-				})(),
-			])
+		// A child warms its cache with the current token, then sleeps while a
+		// second child rotates it — the first child's refresh grant is then
+		// rejected invalid_grant and it must recover from shared storage. The
+		// fixture's fingerprinted events prove the rejected grant happened
+		// (presented != current) and that a rotated grant follows the retry.
+		await Promise.all([
+			refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "stale-cache loser"),
+			(async () => {
+				await delay(3200)
+				await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
+			})(),
+		])
 
-			// The loser recovered: both children exited 0, the rotator's grant
-			// rotated the token, and the shared credential remained usable
-			// (the post-recovery child below adopts or re-grants it).
-			expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(1)
-		},
-	)
+		// The loser recovered: both children exited 0, the rotator's grant
+		// rotated the token, and the shared credential remained usable
+		// (the post-recovery child below adopts or re-grants it).
+		expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(1)
+	})
 
 	it("adopts the token another process rotated while this session's cache was stale", { timeout: 40_000 }, async () => {
 		fixture = await spawnFixture()
