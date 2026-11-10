@@ -27,26 +27,23 @@
  * - No memory doubling — the WeakMap holds one redacted reference per
  *   message and is GC'd when the session manager drops the original
  *
- * Resume attestation (turn_end + session_start):
- * - A scan that completes with zero engine failures records evidence on
- *   the message object (fingerprint + content digest). At each turn end
- *   one `pii-redaction/attest` custom entry persists the turn's
- *   clean-scrubbed messages with their digests (custom entries never
- *   enter LLM context).
- * - On startup/resume/fork, attested ids under the CURRENT detection
- *   fingerprint whose content still matches the recorded digest seed the
- *   request-walk cache, so a resumed session does not re-scan history the
- *   write path proved clean — content-independent, so PII-heavy sessions
- *   benefit equally.
- * - Anything without valid evidence — legacy files, fail-open scans,
- *   writes made with redaction off, policy/build changes (fingerprint
- *   mismatch), content drift (digest mismatch), broken object identity —
- *   falls back to today's full scan. Healing applies once the stored
- *   content IS a scan fixed point: a message whose clean scan still
- *   redacts something (raw PII stored on disk) is never attested — it is
- *   rescanned on the first request of every resume, because serving its
- *   stored form would leak. An unreadable build version disables
- *   attestation outright (the fingerprint sentinel is the empty string).
+ * Resume attestation (turn_end + session_start) — attest and forget:
+ * - A message_end scan that completes with zero engine failures marks the
+ *   message object as clean-scrubbed. At each turn end one
+ *   `pii-redaction/attest` custom entry persists the turn's clean-scrubbed
+ *   message ids (custom entries never enter LLM context).
+ * - On startup/resume/fork, attested ids seed the request-walk cache, so
+ *   a resumed session does not re-scan history the write path scrubbed —
+ *   content-independent, so PII-heavy sessions benefit equally.
+ * - Anything without evidence — legacy files, fail-open scans, writes
+ *   made with redaction off, broken object identity — falls back to
+ *   today's full scan on every resume. There is deliberately no
+ *   fingerprint and no healing: policy/build changes do NOT re-redact
+ *   attested lines (accepted risk — the live pipeline applied the
+ *   then-current policy when the line ran, so anything a future policy
+ *   would newly redact was already sent to the provider at that time),
+ *   and the request hook records no evidence, so a stored message that
+ *   never went through a live write-path scrub is never attested.
  * - Trust boundary: the local session file, the same as the token vault
  *   seed in vault.ts.
  *
@@ -57,19 +54,11 @@
  */
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
-import {
-	ATTEST_SCHEMA_VERSION,
-	messageDigest,
-	PII_ATTEST_ENTRY_TYPE,
-	parseAttestEntry,
-	sessionEntriesFrom,
-	sessionManagerFrom,
-} from "./attestation.js"
+import { PII_ATTEST_ENTRY_TYPE, parseAttestEntry, sessionEntriesFrom, sessionManagerFrom } from "./attestation.js"
 import { getRedactionRenderMode, isRedactionEnabled } from "./config.js"
 import { emitRedactionFacts, type RedactionSurface } from "./redaction-events.js"
 import {
 	emptyRedactionReport,
-	getRedactionFingerprint,
 	mergeReports,
 	type RedactionMeasurement,
 	redactObjectStringsMeasured,
@@ -106,16 +95,12 @@ const redactionInFlight = new Map<object, Promise<RedactionMeasurement<object>>>
 
 /**
  * Write-time evidence that a message's full scan completed clean (zero
- * engine failures) under the recorded detection fingerprint, with a digest
- * of the scan output binding the evidence to the exact content. Keyed by
- * the message object that gets persisted — message_end replacements are
- * applied in place, so the entry's message keeps this reference.
+ * engine failures). Keyed by the message object that gets persisted —
+ * message_end replacements are applied in place, so the entry's message
+ * keeps this reference. Attest-and-forget: no fingerprint, no digest —
+ * see attestation.ts for the accepted-risk rationale.
  */
-interface CleanScrubEvidence {
-	fingerprint: string
-	digest: string
-}
-const cleanScrubbed = new WeakMap<object, CleanScrubEvidence>()
+const cleanScrubbed = new WeakSet<object>()
 
 /**
  * Per-sessionManager attestation bookkeeping — object-keyed, so concurrent
@@ -175,22 +160,15 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 		if (!message || typeof message !== "object") return
 
 		// Redact the message content (deep-walk all strings).
-		const { redacted, report, fingerprint } = await redactObjectStringsMeasured(message, hookVault(ctx))
-		// Record write-time evidence for resume attestation: this scan
-		// completed with zero engine failures under `fingerprint`, and the
-		// digest binds the evidence to the exact content. The runner applies
-		// the final replacement in place to the ORIGINAL event.message, so
-		// `message` here (the object this handler received) is the persisted
-		// object only while no earlier-ordered message_end handler returned a
-		// fresh replacement first. When one does, this evidence keys an
-		// intermediate object and never matches an entry — fail-safe (no
-		// attest, rescan on resume); the request hook's healing re-keys the
-		// true persisted object at its next scan. `fingerprint` is empty only
-		// when the build version is unreadable, which disables attestation.
-		if (report.engineFailures === 0 && fingerprint !== "") {
-			const digest = messageDigest(redacted)
-			if (digest !== undefined) cleanScrubbed.set(message, { fingerprint, digest })
-		}
+		const { redacted, report } = await redactObjectStringsMeasured(message, hookVault(ctx))
+		// Write-time evidence for resume attestation: this scan completed
+		// with zero engine failures. The runner applies the final replacement
+		// in place to the ORIGINAL event.message, so `message` here (the object
+		// this handler received) is the persisted object only while no
+		// earlier-ordered message_end handler returned a fresh replacement
+		// first. When one does, this evidence keys an intermediate object and
+		// never matches an entry — fail-safe (no attest, rescan on resume).
+		if (report.engineFailures === 0) cleanScrubbed.add(message)
 		// Emit redaction facts labelled by message role. message_end fires for
 		// user and assistant messages (and system messages — redacted for
 		// storage hygiene but never emitted, since they are not user data).
@@ -321,26 +299,14 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 					redactionInFlight.set(msg, inFlight)
 					inFlight.finally(() => redactionInFlight.delete(msg)).catch(() => {})
 				}
-				const { redacted: redactedMsg, report, fingerprint } = await inFlight
+				const { redacted: redactedMsg, report } = await inFlight
 				if (isEmitter) {
 					// Never cache a pass that failed open: the original text was
 					// returned for some strings, so the next request must rescan.
 					// (Previously a failed scan was cached as if clean until
-					// restart — the exact failure mode attestation must not
-					// inherit.) Facts are still emitted for what was found.
+					// restart.) Facts are still emitted for what was found.
 					if (report.engineFailures === 0) {
 						redactionCache.set(msg, redactedMsg as object)
-						// Healing: this full scan completed clean under the
-						// current fingerprint — evidence the next turn_end can
-						// persist, so an unattested or fingerprint-stale session
-						// pays one scan and is attested afterwards. Only when
-						// the stored content IS the scan output: a stored
-						// message that still contains raw PII (legacy file,
-						// laxer policy) never matches its redacted scan and is
-						// never attested — attesting it would seed the raw
-						// stored form on the next resume.
-						const digest = messageDigest(redactedMsg)
-						if (digest !== undefined && fingerprint !== "") cleanScrubbed.set(msg, { fingerprint, digest })
 					}
 					// Facts are labelled by the message role — a cache-miss
 					// assistant-message in restored history must not inflate the
@@ -378,28 +344,22 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 			// land at the current leaf, and ids outside the live branch simply
 			// never match a seeding read.
 			const attested = attestedIdsFor(manager)
-			const byFingerprint = new Map<string, { id: string; d: string }[]>()
+			const ids: string[] = []
 			for (const entry of entries) {
 				if (entry?.type !== "message" || typeof entry.id !== "string") continue
 				if (attested.has(entry.id)) continue
 				const message = entry.message
-				if (message === null || typeof message !== "object") continue
-				const evidence = cleanScrubbed.get(message)
-				// No evidence, or the content has drifted from what the clean
-				// scan produced (a later in-place mutation) — never attest.
-				if (!evidence || evidence.fingerprint === "") continue
-				const digest = messageDigest(message)
-				if (digest === undefined || digest !== evidence.digest) continue
-				const ids = byFingerprint.get(evidence.fingerprint)
-				if (ids) ids.push({ id: entry.id, d: digest })
-				else byFingerprint.set(evidence.fingerprint, [{ id: entry.id, d: digest }])
+				// No evidence (never scrubbed by this process's write path) —
+				// never attest.
+				if (message === null || typeof message !== "object" || !cleanScrubbed.has(message)) continue
+				ids.push(entry.id)
 			}
-			for (const [fingerprint, ids] of byFingerprint) {
+			if (ids.length > 0) {
 				// appendEntry is write-time only; a stale extension context
 				// (session replaced mid-flight) throws and lands in the catch —
 				// those messages simply stay unattested.
-				pi.appendEntry(PII_ATTEST_ENTRY_TYPE, { v: ATTEST_SCHEMA_VERSION, fp: fingerprint, ids })
-				for (const { id } of ids) attested.add(id)
+				pi.appendEntry(PII_ATTEST_ENTRY_TYPE, { v: 1, ids })
+				for (const id of ids) attested.add(id)
 			}
 		} catch (err) {
 			// Best-effort by design: a dropped attestation costs a rescan on
@@ -427,17 +387,13 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 			if (!manager || typeof manager !== "object") return
 			const entries = sessionEntriesFrom(ctx)
 			if (!entries) return
-			const fingerprint = getRedactionFingerprint()
-			// Unreadable build version: attestation is disabled outright.
-			if (fingerprint === "") return
-			// id → digest of the content the clean scan saw.
-			const trusted = new Map<string, string>()
+			const trusted = new Set<string>()
 			for (const entry of entries) {
 				if (entry?.type !== "custom" || entry.customType !== PII_ATTEST_ENTRY_TYPE) continue
-				// Malformed data or a fingerprint from another policy/build:
-				// ignore wholesale — those messages are rescanned instead.
-				const ids = parseAttestEntry(entry.data, fingerprint)
-				if (ids) for (const item of ids) trusted.set(item.id, item.d)
+				// Malformed data: ignore wholesale — those messages are
+				// rescanned instead.
+				const ids = parseAttestEntry(entry.data)
+				if (ids) for (const id of ids) trusted.add(id)
 			}
 			if (trusted.size === 0) return
 			const attested = attestedIdsFor(manager)
@@ -445,12 +401,8 @@ const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				if (entry?.type !== "message" || typeof entry.id !== "string") continue
 				const message = entry.message
 				if (!trusted.has(entry.id) || message === null || typeof message !== "object") continue
-				// Re-verify content against the recorded digest: drift between
-				// the attest write and this read fails closed into a rescan.
-				const digest = messageDigest(message)
-				if (digest === undefined || digest !== trusted.get(entry.id)) continue
-				// Stored content is already scrubbed and idempotent under
-				// rescans, so the message is its own redacted form.
+				// Stored content is the write path's scrubbed form — idempotent
+				// under rescans, so the message is its own redacted form.
 				redactionCache.set(message, message)
 				// Mark attested so the first turn_end does not re-append them.
 				attested.add(entry.id)

@@ -2,99 +2,59 @@
  * Write-time attestation for pii-redaction resume seeding.
  *
  * A stored message is skipped by the resume request-walk only when the
- * session file carries positive evidence that a full scan of it completed
- * with zero engine failures, under the same detection fingerprint the
- * current process would use. Evidence is an extension-owned custom
- * entry (`pii-redaction/attest`) appended once per turn; custom entries never
- * enter LLM context, so the attest stream is invisible to the model.
+ * session file carries positive evidence that the write path scrubbed it:
+ * a `message_end` scan that completed with zero engine failures. At each
+ * turn end one `pii-redaction/attest` custom entry persists the ids of
+ * the turn's clean-scrubbed messages; custom entries never enter LLM
+ * context, so the attest stream is invisible to the model.
  *
- * Each attested id carries a digest of the message content the clean scan
- * saw, so seeding re-verifies content: drift between the attest write and
- * the resume (a hand-edit, a partially written file) fails closed into a
- * rescan. Within a process, the same digest guards turn_end against
- * post-scan in-place mutation.
+ * Deliberately minimal — attest and forget:
+ * - No detection fingerprint. A policy or build change does NOT re-redact
+ *   attested lines. Accepted risk: the live pipeline applied the
+ *   then-current policy when the line ran, so anything a future policy
+ *   would newly redact was already sent to the provider at that time;
+ *   re-scanning cannot undo the first exposure.
+ * - No healing: the request hook records no evidence, so a stored message
+ *   that never went through a live message_end scrub (legacy files,
+ *   writes made with redaction off, broken object identity) is never
+ *   attested and is rescanned on every resume — today's behavior.
  *
  * Trust boundary: the local session file — the same boundary as the token
  * vault seed in vault.ts. A forged entry in a hand-edited or foreign file
  * can only skip scrubbing of that file's own content.
  */
 
-import { createHash } from "node:crypto"
-
 /** The custom-entry type used for attestation evidence. */
 export const PII_ATTEST_ENTRY_TYPE = "pii-redaction/attest"
 
 /**
- * Attestation schema version — the single source for the written `v` field,
- * the read-side validation, and the fingerprint payload. Bump it when the
- * entry shape or the fingerprint derivation changes: old entries must stop
- * validating rather than be misread. Deriving all three from one constant
- * keeps writer, reader, and fingerprint locked together by construction.
+ * Attest entry shape. `v` exists so old entries stop validating when the
+ * shape changes, rather than being misread.
  */
-export const ATTEST_SCHEMA_VERSION = 1
-
-/** One attested message entry: its id and the digest of its scanned content. */
-export interface AttestedId {
-	id: string
-	d: string
-}
-
-/** Attest entry shape. `v` exists so old entries stop validating when the shape changes. */
 export interface AttestEntryData {
-	v: typeof ATTEST_SCHEMA_VERSION
-	/** Detection fingerprint the attested scans ran under. */
-	fp: string
-	/** The turn's clean-scrubbed messages with their content digests. */
-	ids: AttestedId[]
+	v: 1
+	/** Ids of `message` entries whose write-path scan completed clean. */
+	ids: string[]
 }
 
 /**
- * Validate an attest entry's data against the current fingerprint.
- * Returns the per-id evidence to trust, or undefined when the data is
- * malformed or was produced under a different detection policy/build (in
- * which case the messages are rescanned instead). Fail-closed on any
- * malformed element: a structurally corrupt entry voids wholesale rather
- * than partially honoring its well-formed ids.
+ * Validate an attest entry's data. Returns the entry ids to trust, or
+ * undefined when malformed — fail-closed wholesale on any bad element
+ * rather than partially honoring well-formed ids.
  */
-export function parseAttestEntry(data: unknown, fingerprint: string): AttestedId[] | undefined {
+export function parseAttestEntry(data: unknown): string[] | undefined {
 	if (data === null || typeof data !== "object") return undefined
-	const d = data as { v?: unknown; fp?: unknown; ids?: unknown }
-	if (d.v !== ATTEST_SCHEMA_VERSION || d.fp !== fingerprint || !Array.isArray(d.ids)) return undefined
-	const out: AttestedId[] = []
-	for (const item of d.ids) {
-		if (item === null || typeof item !== "object") return undefined
-		const e = item as { id?: unknown; d?: unknown }
-		if (typeof e.id !== "string" || typeof e.d !== "string") return undefined
-		out.push({ id: e.id, d: e.d })
-	}
-	return out.length > 0 ? out : undefined
-}
-
-/**
- * Stable digest of a message, used to bind attestation to content: an
- * entry is attested only while its message is byte-identical (same JSON) to
- * what the clean scan produced. A later in-place mutation — by another
- * extension's message_end handler or anything else — voids the evidence
- * (safe direction: rescan). Agent messages are JSON-serializable by
- * construction (they are persisted as JSONL), so stringify cannot cycle.
- * Returns undefined for unserializable input; callers treat that as
- * "no evidence".
- */
-export function messageDigest(message: unknown): string | undefined {
-	try {
-		const serialized = JSON.stringify(message)
-		if (serialized === undefined) return undefined
-		return createHash("sha256").update(serialized).digest("hex")
-	} catch {
-		return undefined
-	}
+	const d = data as { v?: unknown; ids?: unknown }
+	if (d.v !== 1 || !Array.isArray(d.ids)) return undefined
+	const ids = d.ids.filter((id): id is string => typeof id === "string")
+	return ids.length === d.ids.length && ids.length > 0 ? ids : undefined
 }
 
 /**
  * The sessionManager object a hook ctx carries, when present — the shared
  * duck-typed extraction for every extension site that needs it (keying
- * per-session state, reading entries). Object-typed so WeakMap keys stay
- * honest; callers feature-detect the members they need.
+ * per-session state, reading entries). Object-typed so WeakMap/WeakSet keys
+ * stay honest; callers feature-detect the members they need.
  */
 export function sessionManagerFrom(ctx: unknown): unknown {
 	return (ctx as { sessionManager?: unknown } | undefined)?.sessionManager

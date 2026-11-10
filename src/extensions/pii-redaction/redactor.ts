@@ -19,10 +19,7 @@
  * `resetRedactorEngine()` is exported for test isolation.
  */
 
-import { createHash } from "node:crypto"
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
-import { getVersion } from "../../utils.js"
-import { ATTEST_SCHEMA_VERSION } from "./attestation.js"
 import { getManagedRedactionPolicy, getRedactionConfig, type RedactionRenderMode } from "./config.js"
 import { type RedactionPattern, resolveRedactionPolicy } from "./policy.js"
 import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
@@ -50,8 +47,6 @@ interface EngineSnapshot {
 	categories: ReadonlyMap<string, string>
 	/** Joined policy signature the snapshot was built from (includes render mode). */
 	signature: string
-	/** Policy-only signature (render mode excluded) — an input to the attestation fingerprint. */
-	policySignature: string
 }
 
 let current: EngineSnapshot | undefined
@@ -130,49 +125,8 @@ function resolveSnapshot(): EngineSnapshot {
 		patterns: [...CUSTOM_PATTERNS, ...config.resolved.customPatterns],
 		categories: config.resolved.categories,
 		signature,
-		policySignature: config.resolved.signature,
 	}
 	return current
-}
-
-/**
- * Fingerprint of everything a completed clean scan depends on, minus the
- * render mode: the policy view (engine exclusions, disabled entities, user
- * and org custom patterns — `policySignature`), the built-in custom patterns
- * (`CUSTOM_PATTERNS`), and the reported build version. Two scans with equal
- * fingerprints detect the same things, so an attestation ("this message was
- * scanned clean") made under one fingerprint can be trusted under an equal
- * one. A rescan today applies the current policy retroactively, and the
- * fingerprint preserves exactly that: any policy/pattern/build change
- * invalidates earlier attestations. Deliberately NOT tracked: detection
- * heuristics changed in-place within an unchanged dev build (accepted risk —
- * releases change `getVersion()`).
- *
- * Render mode is excluded on purpose: marker and token outputs are mutually
- * idempotent, so a message scanned clean under one renders clean under the
- * other.
- */
-function snapshotFingerprint(snapshot: EngineSnapshot): string {
-	const version = getVersion()
-	// An unreadable build version can alias two different builds to one
-	// fingerprint — attestation is disabled outright in that case, and ""
-	// is the sentinel every evidence site gates on (never recorded, never
-	// seeded). The value is cached per process, so it cannot flip mid-hook.
-	if (version === "unknown") return ""
-	const builtinPatternSig = CUSTOM_PATTERNS.map((p) => [p.name, p.regex.source, p.regex.flags, p.secretGroup ?? 0])
-	const payload = JSON.stringify([ATTEST_SCHEMA_VERSION, version, snapshot.policySignature, builtinPatternSig])
-	return createHash("sha256").update(payload).digest("hex").slice(0, 16)
-}
-
-/**
- * The current detection fingerprint — what new attestations are made against.
- * Empty when the build version cannot be resolved (getVersion() "unknown"):
- * two different builds can then alias to one fingerprint, so attestation is
- * disabled outright (no evidence recorded, no seeding) — the fail-closed
- * direction.
- */
-export function getRedactionFingerprint(): string {
-	return snapshotFingerprint(resolveSnapshot())
 }
 
 /**
@@ -1062,8 +1016,6 @@ export interface RedactionReport {
 export interface RedactionMeasurement<T> {
 	redacted: T
 	report: RedactionReport
-	/** Detection fingerprint of the snapshot this pass actually used. */
-	fingerprint: string
 }
 
 /**
@@ -1090,9 +1042,6 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
 	// every settle-bounded string scan see the same atomic policy view.
 	const snapshot = resolveSnapshot()
-	// Captured at pass entry: a mid-flight settings edit rebuilds the module
-	// snapshot, but this pass's evidence is keyed to the one it scanned with.
-	const fingerprint = snapshotFingerprint(snapshot)
 	const redactStringMeasured = async (text: string): Promise<string> => {
 		if (text.length === 0) return text
 		report.stringsScanned += 1
@@ -1122,7 +1071,7 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	for (const entity of Object.keys(report.entities)) {
 		report.categories[entity] = snapshot.categories.get(entity) ?? "custom"
 	}
-	return { redacted, report, fingerprint }
+	return { redacted, report }
 }
 /** An empty report — the starting point for cross-invocation aggregation. */
 export function emptyRedactionReport(): RedactionReport {
