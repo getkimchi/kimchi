@@ -164,32 +164,35 @@ export default function interactiveErrorSurfaceExtension(pi: ExtensionAPI): void
 	})
 
 	pi.on("agent_end", (event, ctx) => {
+		if (!lastPendingProviderError) return
 		const rawWillRetry = (event as { willRetry?: boolean }).willRetry
-		const willRetry = rawWillRetry === true
-		// The extension channel now carries the same willRetry the listener
 		// The extension channel now carries the same willRetry the listener
 		// channel gets (installed by agent-end-will-retry). True → the upstream
 		// retry loop is still going to fire; keep the pending entry and render
 		// nothing. False/undefined (retries disabled, exhausted, or a replay
 		// where the wrapper did not run) → the turn is over: render the
 		// sanitized exhaustion message now.
-		if (!willRetry && lastPendingProviderError) {
-			// Retries exhausted (or never enabled) — render the sanitized message
-			// directly. We can't rely on the upstream auto_retry_end → showError
-			// path because the finalError may have been mutated to the placeholder.
-			// Rendering here ensures the sanitized message reaches the user.
-			const sanitized = formatSanitizedErrorMessage(lastPendingProviderError.rawMessage, "interactive", {
-				exhausted: true,
-			})
-			ctx?.ui?.notify?.(sanitized, "error")
-			// Keep the raw error until the next non-error message_end: the
-			// imminent auto_retry_end → showError interception (Esc-cancel and
-			// exhausted paths) needs pending.rawMessage for the correct reason
-			// label, and the notified flag suppresses that duplicate render.
-			lastPendingProviderError.notified = true
-		} else if (lastPendingProviderError && willRetry) {
-			lastPendingProviderError.willRetry = willRetry
+		if (rawWillRetry === true) {
+			lastPendingProviderError.willRetry = true
+			return
 		}
+		// Already rendered at a previous agent_end (e.g. a replay re-emitting
+		// events without an intervening message_end): stay inert until a
+		// message_end boundary clears the entry.
+		if (lastPendingProviderError.notified) return
+		// Retries exhausted (or never enabled) — render the sanitized message
+		// directly. We can't rely on the upstream auto_retry_end → showError
+		// path because the finalError may have been mutated to the placeholder.
+		// Rendering here ensures the sanitized message reaches the user.
+		const sanitized = formatSanitizedErrorMessage(lastPendingProviderError.rawMessage, "interactive", {
+			exhausted: true,
+		})
+		ctx?.ui?.notify?.(sanitized, "error")
+		// Keep the raw error until the next non-error message_end: the
+		// imminent auto_retry_end → showError interception (Esc-cancel and
+		// exhausted paths) needs pending.rawMessage for the correct reason
+		// label, and the notified flag suppresses that duplicate render.
+		lastPendingProviderError.notified = true
 	})
 }
 

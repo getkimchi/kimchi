@@ -1,5 +1,6 @@
+import { AgentSession } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { installAgentEndWillRetryPatch } from "./agent-end-will-retry.js"
+import { computeAgentEndWillRetry, installAgentEndWillRetryPatch } from "./agent-end-will-retry.js"
 
 /** The retry-decision inputs the wrapper reads off the session. */
 type SessionState = {
@@ -161,5 +162,77 @@ describe("installAgentEndWillRetryPatch", () => {
 		}
 		installAgentEndWillRetryPatch({ prototype: proto } as never)
 		expect(proto).toEqual({})
+	})
+})
+
+describe("upstream-drift canaries (real AgentSession prototype)", () => {
+	const realProto = AgentSession.prototype as unknown as {
+		_emitExtensionEvent?: (this: unknown, event: unknown) => Promise<void>
+		_willRetryAfterAgentEnd?: (this: unknown, event: unknown) => boolean
+	}
+
+	// Runs the REAL upstream _emitExtensionEvent (pre-install) and the patched
+	// one on the same fixture, and asserts the patched output is the upstream
+	//-constructed event plus willRetry — nothing dropped, nothing invented.
+	// If pi changes the event construction or adds side effects, this fails
+	// instead of every registered extension silently degrading.
+	it("canary: patched agent_end emit is the upstream event plus willRetry", async () => {
+		expect(typeof realProto._emitExtensionEvent).toBe("function")
+		const captured: Array<Record<string, unknown>> = []
+		const fixture = () => ({
+			_extensionRunner: {
+				emit: async (event: unknown) => {
+					captured.push(event as Record<string, unknown>)
+				},
+			},
+		})
+		const input = { type: "agent_end", messages: [{ role: "assistant", stopReason: "error" }] }
+
+		await realProto._emitExtensionEvent?.call(fixture(), input)
+		installAgentEndWillRetryPatch()
+		await realProto._emitExtensionEvent?.call(fixture(), input)
+
+		expect(captured).toHaveLength(2)
+		const [upstream, patched] = captured
+		expect(patched).toBeDefined()
+		expect(Object.keys(patched).sort()).toEqual([...Object.keys(upstream).sort(), "willRetry"])
+		for (const key of Object.keys(upstream)) {
+			expect(patched[key]).toEqual(upstream[key])
+		}
+	})
+
+	// Asserts the mirror agrees with pi's own retry decision on copy-free
+	// fixtures (same inputs, both code paths). Deliberately NOT asserted in
+	// the message-copy case: divergence there is the mirror's reason to exist
+	// (copies lose the preserved raw error and pi's scan misclassifies).
+	it("canary: computeAgentEndWillRetry agrees with pi's _willRetryAfterAgentEnd on copy-free fixtures", () => {
+		expect(typeof realProto._willRetryAfterAgentEnd).toBe("function")
+		const message = {
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: "The service is temporarily unavailable.",
+		}
+		const event = { type: "agent_end", messages: [message] }
+		const base = {
+			_agentRunAbortRequested: false,
+			settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 3 }) },
+			_retryAttempt: 0,
+			_isRetryableError: () => true,
+			_lastAssistantMessage: message,
+		}
+		const cases: Array<{ state: Record<string, unknown>; expected: boolean }> = [
+			{ state: {}, expected: true },
+			{ state: { _retryAttempt: 3 }, expected: false },
+			{ state: { _agentRunAbortRequested: true }, expected: false },
+			{
+				state: { settingsManager: { getRetrySettings: () => ({ enabled: false, maxRetries: 3 }) } },
+				expected: false,
+			},
+		]
+		for (const { state, expected } of cases) {
+			const session = { ...base, ...state }
+			expect(computeAgentEndWillRetry.call(session)).toBe(expected)
+			expect(realProto._willRetryAfterAgentEnd?.call(session, event)).toBe(expected)
+		}
 	})
 })

@@ -1,9 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { InteractiveMode } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { getRawErrorMessage } from "./error-preservation.js"
 import {
 	__getPendingProviderError,
 	__resetInteractiveErrorSurfaceState,
+	applyInteractiveErrorSurfacePatch,
 	default as interactiveErrorSurfaceExtension,
 	interceptShowError,
 } from "./interactive-error-surface.js"
@@ -84,6 +86,39 @@ describe("interceptShowError (pure decision)", () => {
 			undefined,
 		)
 		expect(result).toContain("context window exceeded")
+	})
+})
+
+describe("patchedShowError (prototype patch end-to-end)", () => {
+	it("suppresses undefined decisions and forwards sanitized strings to the original", () => {
+		const imProto = InteractiveMode.prototype as unknown as {
+			showError?: (this: unknown, errorMessage: string) => void
+			__kimchiErrorSurfacePatched?: boolean
+		}
+		const seen: string[] = []
+		const original = imProto.showError
+		// Fake upstream original: the patch wraps whatever showError exists.
+		imProto.showError = (errorMessage: string) => {
+			seen.push(errorMessage)
+		}
+		imProto.__kimchiErrorSurfacePatched = undefined
+		try {
+			applyInteractiveErrorSurfacePatch()
+			const call = (msg: string) => imProto.showError?.call({}, msg)
+			call("Retrying…") // stale placeholder → suppressed
+			call("Compaction cancelled") // non-provider → passthrough
+			call(`Retry failed after 3 attempts: ${VLLM_RAW}`) // exhaustion, no pending → sanitized
+
+			expect(seen).toHaveLength(2)
+			expect(seen[0]).toBe("Compaction cancelled")
+			expect(seen[1]).toContain("The model provider is temporarily unavailable")
+			for (const forbidden of FORBIDDEN) {
+				expect(seen[1]).not.toContain(forbidden)
+			}
+		} finally {
+			imProto.showError = original
+			imProto.__kimchiErrorSurfacePatched = undefined
+		}
 	})
 })
 
@@ -180,6 +215,22 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		expect(__getPendingProviderError()?.notified).toBe(true)
 		emitMessageEnd({ role: "assistant", stopReason: "stop" })
 		expect(__getPendingProviderError()).toBeUndefined()
+	})
+
+	it("a notified pending stays inert on repeated agent_end events (replay)", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
+		const notify = vi.fn()
+		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).toHaveBeenCalledTimes(1)
+
+		// A replay/resume re-emits agent_end without an intervening message_end:
+		// the notified entry must not render again, and a stray willRetry:true
+		// must not resurrect the stale entry either.
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		emitAgentEnd({ willRetry: true }, { ui: { notify } })
+		expect(notify).toHaveBeenCalledTimes(1)
+		expect(__getPendingProviderError()?.notified).toBe(true)
 	})
 
 	it("suppresses the auto_retry_end duplicate once the exhaustion render already notified", () => {

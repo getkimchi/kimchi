@@ -61,8 +61,12 @@ export function installAgentEndWillRetryPatch(
 	proto._kimchiAgentEndWillRetryPatch = true
 }
 
-/** Mirror of pi's `_willRetryAfterAgentEnd`, but from session state the retry loop actually uses. */
-function computeAgentEndWillRetry(this: unknown): boolean {
+/**
+ * Mirror of pi's `_willRetryAfterAgentEnd`, but from session state the retry loop actually uses.
+ * Exported for the upstream-drift canary tests: they assert agreement with pi's own decision
+ * on copy-free fixtures, so a pi-side gate change fails CI instead of silently desyncing.
+ */
+export function computeAgentEndWillRetry(this: unknown): boolean {
 	const session = this as AgentEndWillRetrySession
 	if (session._agentRunAbortRequested) return false
 	const settings = session.settingsManager?.getRetrySettings?.()
