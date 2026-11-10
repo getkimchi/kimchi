@@ -21,6 +21,7 @@ import type {
 	SessionNotification,
 	TextContent,
 } from "@agentclientprotocol/sdk"
+import { RequestError } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
@@ -1526,9 +1527,20 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				sso.manager,
 			)
 
-			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow(
-				/2 organizations.*choose an organization/s,
+			// Typed machine code preserved: contract §3 says clients branch on
+			// data.code, never message text — a parked multi-org flow must fail
+			// as an SSO_IDP_ERROR JSON-RPC error, not a generic internal error.
+			const error = await testAgent.authenticate({ methodId: "kimchi-sso-us" }).then(
+				() => {
+					throw new Error("expected rejection")
+				},
+				(e: unknown) => e,
 			)
+			expect(error).toBeInstanceOf(RequestError)
+			expect((error as RequestError).code).toBe(-32000)
+			expect((error as RequestError).data).toMatchObject({ code: "SSO_IDP_ERROR" })
+			expect((error as Error).message).toContain("2 organizations")
+			expect((error as Error).message).toContain("choose an organization")
 			// The parked flow is torn down so a retry starts clean.
 			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
 			// Nothing was persisted — no org was chosen.
