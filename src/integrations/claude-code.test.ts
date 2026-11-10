@@ -309,6 +309,8 @@ describe("claude-code tool registration", () => {
 		scratchHome = mkdtempSync(join(tmpdir(), "kimchi-claude-test-"))
 		prevHome = process.env.HOME
 		process.env.HOME = scratchHome
+		// write() reads the shell's betas value; keep the developer's shell out of it.
+		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", undefined)
 		// Default: findBinary returns a valid path so existing tests pass
 		const { findBinary } = await import("../integrations/detect.js")
 		vi.mocked(findBinary).mockReturnValue(join(scratchHome, "bin", "claude"))
@@ -318,6 +320,7 @@ describe("claude-code tool registration", () => {
 		if (prevHome === undefined) delete process.env.HOME
 		else process.env.HOME = prevHome
 		rmSync(scratchHome, { recursive: true, force: true })
+		vi.unstubAllEnvs()
 	})
 
 	it("registers itself with the integrations registry on import", () => {
@@ -358,9 +361,6 @@ describe("claude-code tool registration", () => {
 
 	it("write() records a shell CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=0 in a fresh settings.json", async () => {
 		vi.stubEnv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "0")
-		onTestFinished(() => {
-			vi.unstubAllEnvs()
-		})
 		await byId("claudecode")?.write("global", "k", TEST_MODELS)
 
 		const written = JSON.parse(readFileSync(join(scratchHome, ".claude", "settings.json"), "utf-8"))

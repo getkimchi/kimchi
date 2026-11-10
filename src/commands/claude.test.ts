@@ -43,6 +43,8 @@ describe("runClaude", () => {
 		expect(await runClaude([])).toBe(0)
 
 		expect(launchedEnv().CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1")
+		// No --settings: a value in the user's settings.json still applies.
+		expect(runForeground).toHaveBeenCalledWith("claude", [], expect.any(Object))
 	})
 
 	it("passes an empty CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS from the shell through unchanged", async () => {
@@ -58,7 +60,12 @@ describe("runClaude", () => {
 
 		expect(await runClaude(["-p", "hi"])).toBe(0)
 
-		expect(runForeground).toHaveBeenCalledWith("claude", ["-p", "hi"], expect.any(Object))
 		expect(launchedEnv().CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("0")
+		// Also via --settings, which outranks a "1" left in settings.json by an earlier setup-tools.
+		expect(runForeground).toHaveBeenCalledWith(
+			"claude",
+			["--settings", '{"env":{"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":"0"}}', "-p", "hi"],
+			expect.any(Object),
+		)
 	})
 })

@@ -25,8 +25,8 @@ const CLAUDE_CONFIG_PATH = "~/.claude/settings.json"
  * Callers pass `process.env` as `userEnv`; without it the default always
  * applies. Claude Code 2.1.319 reads "1" and "true" as disabled, and "0",
  * "false" and "" as not disabled. It also applies the settings.json `env`
- * block over the process env, so under `kimchi claude` a value written there
- * by `setup-tools` (or by hand) still beats the one returned here.
+ * block over the process env, which is why `kimchi claude` also passes a
+ * shell-set value through `--settings`.
  */
 export function claudeCodeEnv(
 	apiKey: string,
