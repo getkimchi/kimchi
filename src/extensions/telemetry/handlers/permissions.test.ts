@@ -210,6 +210,50 @@ describe("handleToolDecision", () => {
 		expect(other?.attrs.mode_change_sources).toBeUndefined()
 	})
 
+	it("marks nested decisions with nested=true and parent_tool_use_id", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "cm-1/2",
+			toolName: "bash",
+			decision: "reject",
+			sourceDetail: "classifier_no_ui",
+			permissionMode: "auto",
+			parentToolCallId: "cm-1",
+		})
+
+		ctx.flushLogBuffer()
+
+		let event: ReturnType<typeof logEvents>[number] | undefined
+		await vi.waitFor(() => {
+			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
+			expect(event).toBeDefined()
+		})
+		expect(event?.attrs.nested).toBe("true")
+		expect(event?.attrs.parent_tool_use_id).toBe("cm-1")
+		expect(event?.attrs.permission_mode).toBe("auto")
+	})
+
+	it("omits the nested attrs for direct decisions", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "tc-direct",
+			toolName: "bash",
+			decision: "accept",
+			sourceDetail: "allow_once",
+			permissionMode: "default",
+		})
+
+		ctx.flushLogBuffer()
+
+		let event: ReturnType<typeof logEvents>[number] | undefined
+		await vi.waitFor(() => {
+			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
+			expect(event).toBeDefined()
+		})
+		expect(event?.attrs.nested).toBeUndefined()
+		expect(event?.attrs.parent_tool_use_id).toBeUndefined()
+	})
+
 	it("skips malformed payloads instead of emitting partial events", async () => {
 		const ctx = new TelemetryContext(makeConfig())
 		const valid = {

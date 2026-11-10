@@ -4251,6 +4251,38 @@ describe("permissions:tool_decision emissions", () => {
 		])
 	})
 
+	it("nested tool calls carry parentToolCallId on decisions; direct calls do not", async () => {
+		const harness = createPermissionsHarness(["bash", "read"], { yolo: true })
+		const decisions = collectDecisions(harness)
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		// A codemode-issued nested call: the id is `<parent>/<n>`.
+		const nested = { ...tcall("bash", { command: "ls" }, "cm-1/1"), parentToolCallId: "cm-1" }
+		expect(await harness.fire("tool_call", nested, createMockContext([]))).toBeUndefined()
+		// A direct (model-issued) call has no parent.
+		expect(
+			await harness.fire("tool_call", tcall("read", { path: "/a.ts" }, "tc-direct"), createMockContext([])),
+		).toBeUndefined()
+
+		expect(decisions).toEqual([
+			{
+				toolCallId: "cm-1/1",
+				toolName: "bash",
+				decision: "accept",
+				sourceDetail: "yolo_bypass",
+				permissionMode: "yolo",
+				parentToolCallId: "cm-1",
+			},
+			{
+				toolCallId: "tc-direct",
+				toolName: "read",
+				decision: "accept",
+				sourceDetail: "yolo_bypass",
+				permissionMode: "yolo",
+			},
+		])
+	})
+
 	it("builtin allow-listed tools emit accept/config/builtin_safe", async () => {
 		const harness = createPermissionsHarness(["set_phase"])
 		const decisions = collectDecisions(harness)

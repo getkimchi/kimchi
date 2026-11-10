@@ -439,6 +439,15 @@ export function classifyToolError(toolName: string, fullMsg: string): ToolErrorC
 	const engine = classifyEngineValidationError(msg)
 	if (engine) return engine
 
+	// Codemode script failure (upstream pi-codemode execute.js): a failed script
+	// returns the partial output text blocks followed by a separate block starting
+	// `Script error:\n<error>`. extractToolResultText joins blocks with \n, so the
+	// marker is anchored on a line start. Canonicalized before the fail-open
+	// fallback, which would leak the partial output text into telemetry.
+	if (toolName === "codemode" && /(?:^|\n)Script error:\n/.test(msg)) {
+		return { kind: "failure", message: "Codemode script error" }
+	}
+
 	// Fail-open fallback: today's behavior, unchanged.
 	return { kind: "failure", message: msg.slice(0, 300) }
 }
