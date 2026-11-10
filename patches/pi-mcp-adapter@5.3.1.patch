@@ -528,7 +528,6 @@ index 5e7800b..0f07d5c 100644
      const serverKey = raw.mcpServers !== undefined ? "mcpServers" : raw["mcp-servers"] !== undefined ? "mcp-servers" : "mcpServers";
      const rawServers = raw[serverKey];
 diff --git a/dist/mcp-auth-flow.js b/dist/mcp-auth-flow.js
-index 274849a3a2a60a176db5c16dc003d1aea204e18b..677d191182f25333dd30191e62c263d48e02cd42 100644
 index 274849a..677d191 100644
 --- a/dist/mcp-auth-flow.js
 +++ b/dist/mcp-auth-flow.js
@@ -789,7 +788,6 @@ index c10c541..5405787 100644
  //# sourceMappingURL=metadata-cache.js.map
 \ No newline at end of file
 diff --git a/dist/server-manager.js b/dist/server-manager.js
-index 45343f8e7ef172cded28b07b6495f99c8c806558..987f5e7edb4d23ebac622f63933f8a33ac9542e5 100644
 index 45343f8..987f5e7 100644
 --- a/dist/server-manager.js
 +++ b/dist/server-manager.js
@@ -1973,7 +1971,6 @@ index 453e728..af02f32 100644
        serverName,
        async (conn) => {
 diff --git a/server-manager.ts b/server-manager.ts
-index 9fb4f964fc1455666159ed4f1a442bba2ebf7799..c6d85aa030564d613c686a134c724fec4bf0947f 100644
 index 9fb4f96..c6d85aa 100644
 --- a/server-manager.ts
 +++ b/server-manager.ts
