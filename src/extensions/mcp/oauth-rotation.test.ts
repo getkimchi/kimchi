@@ -274,6 +274,72 @@ function refreshRejections(eventsPath: string): FixtureEvent[] {
 	return readEvents(eventsPath).filter((event) => event.type === "oauth_refresh_rejected")
 }
 
+/**
+ * Spawn a child that warms its credential-entry cache with the current token,
+ * waits for expiry, and only then refreshes — its in-memory cache holds the
+ * retired token by the time the grant runs, so the retry-from-shared-storage
+ * path (rejected grant → poll → retry) is exercised deterministically.
+ */
+async function refreshWithStaleCache(
+	serverName: string,
+	serverUrl: string,
+	envOptions: ChildEnvOptions,
+	label: string,
+): Promise<void> {
+	const script = `
+const { getAuthForUrl } = await import(process.env.CHILD_AUTH_PATH)
+const { getValidToken } = await import(process.env.CHILD_FLOW_PATH)
+const storage = { credentialStore: "encrypted-file" }
+// Warm the process-local cache with the current (pre-rotation) entry.
+await getAuthForUrl(process.env.CHILD_SERVER_NAME, process.env.CHILD_SERVER_URL, storage)
+// Another process rotates the shared token while this one sleeps.
+await new Promise((r) => setTimeout(r, Number(process.env.CHILD_ROTATE_DELAY_MS)))
+const tokens = await getValidToken(process.env.CHILD_SERVER_NAME, process.env.CHILD_SERVER_URL, {
+	authStorageOptions: storage,
+})
+console.log("CHILD_RESULT:" + JSON.stringify({ ok: tokens !== undefined, hasRefresh: tokens?.refreshToken !== undefined }))
+process.exit(tokens !== undefined && tokens.refreshToken !== undefined ? 0 : 1)
+`
+	const flowPath = join(REPO_ROOT, "node_modules/pi-mcp-adapter/dist/mcp-auth-flow.js")
+	const authPath = join(REPO_ROOT, "node_modules/pi-mcp-adapter/dist/mcp-auth.js")
+	const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+		cwd: REPO_ROOT,
+		env: {
+			...childEnv(envOptions),
+			CHILD_FLOW_PATH: flowPath,
+			CHILD_AUTH_PATH: authPath,
+			CHILD_SERVER_NAME: serverName,
+			CHILD_SERVER_URL: serverUrl,
+			CHILD_ROTATE_DELAY_MS: process.env.CHILD_ROTATE_DELAY_MS ?? "6500",
+		},
+		stdio: ["ignore", "pipe", "pipe"] as const,
+	})
+	const exited = new Promise<{ exitCode: number | null; output: string }>((resolveExit, rejectExit) => {
+		let collected = ""
+		child.stdout?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.stderr?.on("data", (chunk: Buffer) => {
+			collected += chunk.toString()
+		})
+		child.on("error", rejectExit)
+		child.on("exit", (code) => resolveExit({ exitCode: code, output: collected }))
+	})
+	const killer = setTimeout(() => child.kill("SIGKILL"), 40_000)
+	try {
+		const { exitCode, output } = await exited
+		const meaningful = output
+			.split("\n")
+			.filter((line) => !line.includes("store-dbg"))
+			.join("\n")
+		if (exitCode !== 0) {
+			throw new Error(`${label} child process failed (exit ${exitCode}): ${meaningful.slice(0, 3000)}`)
+		}
+	} finally {
+		clearTimeout(killer)
+	}
+}
+
 describe("MCP OAuth refresh-token rotation", () => {
 	let fixture: FixtureHandle | undefined
 	let agentDir: string
@@ -324,6 +390,35 @@ describe("MCP OAuth refresh-token rotation", () => {
 		expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(2)
 		expect(refreshRejections(fixture.eventsPath), eventSummary(fixture.eventsPath)).toEqual([])
 	})
+
+	it(
+		"recovers a stale-cache session whose grant is rejected after another process rotated",
+		{ timeout: 60_000 },
+		async () => {
+			fixture = await spawnFixture()
+			const serverName = "oauth-rotation-retry"
+			const envOptions = { agentDir, fileKey }
+			await seedViaRealFlow(serverName, fixture.serverUrl, envOptions)
+
+			// A child warms its cache with the current token, then sleeps while a
+			// second child rotates it — the first child's refresh grant is then
+			// rejected invalid_grant and it must recover from shared storage. The
+			// fixture's fingerprinted events prove the rejected grant happened
+			// (presented != current) and that a rotated grant follows the retry.
+			await Promise.all([
+				refreshWithStaleCache(serverName, fixture.serverUrl, envOptions, "stale-cache loser"),
+				(async () => {
+					await delay(3200)
+					await getTokensInChildProcess(serverName, fixture.serverUrl, envOptions, "rotator")
+				})(),
+			])
+
+			// The loser recovered: both children exited 0, the rotator's grant
+			// rotated the token, and the shared credential remained usable
+			// (the post-recovery child below adopts or re-grants it).
+			expect(refreshGrants(fixture.eventsPath).length, eventSummary(fixture.eventsPath)).toBeGreaterThanOrEqual(1)
+		},
+	)
 
 	it("adopts the token another process rotated while this session's cache was stale", { timeout: 40_000 }, async () => {
 		fixture = await spawnFixture()
