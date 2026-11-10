@@ -400,12 +400,17 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (mode === "yolo" && initiatedBy === "user") {
 			// The DANGER flag keeps the full bypass (deny rules included) — say so
 			// instead of the yolo-mode wording, which is only true without it.
+			// LENGTH CONSTRAINT: the yolo wording shares the TUI info line with
+			// the update-restart notice ("Update installed · Restart to update");
+			// the e2e test renders both at 160 columns, so keep this string short
+			// enough for the notice to fit beside it (see
+			// tests/e2e/tui/update-restart-notice.test.ts).
 			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true || isInSandboxCluster()
 			ctx.ui.setStatus(
 				"permissions-warning",
 				dangerBypass
 					? "WARNING: ALL permission checks disabled, including your deny rules. Use only in throwaway/sandbox environments."
-					: "WARNING: permission prompts and the classifier are disabled in yolo mode. Your deny rules still apply. Recommended for sandbox environments only.",
+					: "WARNING: prompts and classifier disabled in yolo mode. Your deny rules still apply. For sandbox use only.",
 			)
 		} else if (!hasExecutableMode()) {
 			// Org policy is plan-only: no approved plan can ever proceed to
