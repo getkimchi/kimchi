@@ -15,7 +15,7 @@ import {
 	stripDeprecationMarker,
 	writeModelDeprecations,
 } from "./model-deprecation.js"
-import { normalizeThinkingLevels } from "./thinking-levels.js"
+import { deriveThinkingLevelMap, normalizeThinkingLevels } from "./thinking-levels.js"
 import { getVersion } from "./utils.js"
 
 // Upstream catalog keyed by exact model id, used to inherit anthropic-messages
@@ -80,6 +80,10 @@ function supportsResponsesApi(provider: string, slug: string): boolean {
 // Effort "none" is only valid on gpt-5.1+/gpt-6; `off: null` makes pi omit the
 // reasoning param rather than send an invalid effort.
 const RESPONSES_NONE_EFFORT_SLUG_PATTERNS: RegExp[] = [/^gpt-5\.[1-9]/, /^gpt-6/]
+
+const GATEWAY_THINKING_LEVEL_MAP: ThinkingLevelMap = { off: "none", max: "max" }
+
+const GATEWAY_METADATA_PROVIDERS = new Set(["ai-enabler", "custom"])
 
 function responsesThinkingLevelMap(slug: string): ThinkingLevelMap {
 	if (/^o[134](-|$)/.test(slug)) return { off: null, minimal: null }
@@ -300,9 +304,9 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// claude-* models from non-anthropic providers still use openai-completions,
 	// so they keep the openai-completions compat flags.
 	//
-	// ai-enabler models don't support chat_template_kwargs, so we rely on the
-	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
-	// disables thinking with `none` and advertises max to Pi's selector.
+	// ai-enabler and custom models don't support chat_template_kwargs, so we rely on the
+	// default `openai` thinkingFormat which sends `reasoning_effort`. Their base map
+	// disables thinking with `none` and advertises max; curated levels prune it.
 	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
 	// NOTE: kimi slugs deliberately get NO `deferredToolsMode: "kimi"` compat.
 	// Verified against the live gateway (2026-09-30): the ai-enabler path (1)
@@ -319,12 +323,20 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
 			: undefined
 	const responsesApi = supportsResponsesApi(m.provider, m.slug)
-	let thinkingLevelMap =
-		m.provider === "ai-enabler"
-			? { off: "none", max: "max" }
-			: responsesApi && m.reasoning
-				? responsesThinkingLevelMap(m.slug)
-				: upstream?.thinkingLevelMap
+	// Normalized once so the persisted levels, the derived map and the
+	// curated-none check agree, including after a models.json round-trip.
+	const curatedLevels = Array.isArray(m.thinking_levels) ? normalizeThinkingLevels(m.thinking_levels) : undefined
+	// ai-enabler and the custom provider entry are the same gateway dialect
+	// (llm.kimchi.dev/openai/v1), so one base map serves both; curated levels
+	// prune it down to what each model actually accepts.
+	const gatewayDialect = GATEWAY_METADATA_PROVIDERS.has(m.provider)
+	let thinkingLevelMap = gatewayDialect
+		? curatedLevels !== undefined
+			? deriveThinkingLevelMap(curatedLevels, GATEWAY_THINKING_LEVEL_MAP)
+			: GATEWAY_THINKING_LEVEL_MAP
+		: responsesApi && m.reasoning
+			? responsesThinkingLevelMap(m.slug)
+			: upstream?.thinkingLevelMap
 	// Curated-none (`thinking_levels: []`): the model reasons at the provider
 	// default — no level controls and no explicit effort on the wire. Native
 	// anthropic and Responses-API models stamp `off: null` so the no-effort
@@ -334,7 +346,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 	// The openai-completions family drops `supportsReasoningEffort`, removing
 	// reasoning_effort from requests entirely. The session clamps to "off"
 	// (src/thinking-selection.ts), so no effort is derived anywhere.
-	const curatedNone = Array.isArray(m.thinking_levels) && m.thinking_levels.length === 0
+	const curatedNone = curatedLevels !== undefined && curatedLevels.length === 0
 	let effectiveCompat: OpenAICompletionsCompat | AnthropicMessagesCompat | undefined = compat
 	if (curatedNone) {
 		if (upstream) {
@@ -358,7 +370,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		provider: m.provider,
 		...(responsesApi && { api: "openai-responses" as const }),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
-		...(Array.isArray(m.thinking_levels) && { thinkingLevels: normalizeThinkingLevels(m.thinking_levels) }),
+		...(curatedLevels && { thinkingLevels: curatedLevels }),
 		...(effectiveCompat && { compat: effectiveCompat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
 	}
