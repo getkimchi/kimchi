@@ -36,13 +36,22 @@ import {
 	factTokens,
 	isAttributedNearDuplicate,
 	isDurableFact,
+	keepForStore,
+	splitDerivedTag,
 	mapWithConcurrency,
 	messageHash,
 	normalizeFactText,
 	PoisonExtractionError,
+	routeTaskFacts,
 	parseIdArray,
 	parseTaggedFacts,
 	runCaptureWorker,
+	STRICT_NOISE_FACT_PATTERNS,
+	strictNoiseEnabled,
+	taskScopeEnabled,
+	TASK_SCOPE_EXTRACTION_SUFFIX,
+	RECEIPTS_EXTRACTION_SUFFIX,
+	receiptsEnabled,
 	SUPERSEDE_SYSTEM_PROMPT,
 	stripAttribution,
 	tokenJaccard,
@@ -322,6 +331,83 @@ describe("extractMessages (user + gated assistant)", () => {
 	it("excludes thinking-only assistant turns", () => {
 		const entry = msgEntry("assistant", [{ type: "thinking", text: "only reasoning" }])
 		expect(extractMessages([entry])).toEqual([])
+	})
+})
+
+describe("extractMessages — tool-turn lane (KIMCHI_MEMORY_CAPTURE_TOOL_TURNS)", () => {
+	const msgEntry = (role: string, content: unknown, rest: Record<string, unknown> = {}) =>
+		({ type: "message", message: { role, content, ...rest } }) as unknown as SessionEntry
+	const toolCall = (id: string, name: string, args: unknown) => ({ type: "toolCall", id, name, arguments: args })
+
+	afterEach(() => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS
+	})
+
+	it("default OFF is byte-parity: toolCall turns excluded, toolResult unread", () => {
+		delete process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS
+		const messages = extractMessages([
+			msgEntry("user", "check the schema"),
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: "sqlite3 db .schema" })]),
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items ..." }], { toolCallId: "tc1" }),
+		])
+		expect(messages).toEqual([{ role: "user", content: "check the schema" }])
+	})
+
+	it("ON: toolCall turns splice attempt (assistant) + receipt (user) records in transcript position", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([
+			msgEntry("user", "how many reviews in 2031+?"),
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: "sqlite3 db \".schema\"" })]),
+			msgEntry("toolResult", [{ type: "text", text: "CREATE TABLE items_g1 (ref_id TEXT ...);" }], { toolCallId: "tc1" }),
+			msgEntry("assistant", [{ type: "text", text: "The table is items_g1 with ref_id as key." }]),
+		])
+		expect(messages).toEqual([
+			{ role: "user", content: "how many reviews in 2031+?" },
+			{ role: "assistant", content: '[tool] bash: {"command":"sqlite3 db \\".schema\\""}' },
+			{ role: "user", content: "CREATE TABLE items_g1 (ref_id TEXT ...);" },
+			{ role: "assistant", content: "The table is items_g1 with ref_id as key." },
+		])
+	})
+
+	it("ON: thinking blocks inside tool turns stay excluded (no reasoning in facts)", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([
+			msgEntry("assistant", [
+				{ type: "thinking", text: "the ts column must be ms not seconds" },
+				toolCall("tc1", "bash", { command: "select length(ts)" }),
+			]),
+		])
+		expect(messages).toHaveLength(1)
+		expect(messages[0]?.content).not.toContain("thinking")
+		expect(messages[0]?.content).not.toContain("ms not seconds")
+	})
+
+	it("ON: long tool results bound head+tail with elision marker", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const big = "HEAD:" + "x".repeat(900) + ":TAIL"
+		const messages = extractMessages([
+			msgEntry("assistant", [toolCall("tc1", "bash", { command: "big" })]),
+			msgEntry("toolResult", [{ type: "text", text: big }], { toolCallId: "tc1" }),
+		])
+		const receipt = messages.find((m) => m.role === "user")?.content ?? ""
+		expect(receipt).toContain("HEAD:")
+		expect(receipt).toContain(":TAIL")
+		expect(receipt).toContain("chars elided")
+		expect(receipt.length).toBeLessThan(big.length + 50)
+	})
+
+	it("ON: toolCall without a result still yields the attempt record", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([msgEntry("assistant", [toolCall("tc9", "read", { path: "a.ts" })])])
+		expect(messages).toEqual([{ role: "assistant", content: '[tool] read: {"path":"a.ts"}' }])
+	})
+
+	it("ON: pure-text assistant turns take the text path, not the tool lane", () => {
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS = "1"
+		const messages = extractMessages([
+			msgEntry("assistant", [{ type: "text", text: "The answer is 42." }]),
+		])
+		expect(messages).toEqual([{ role: "assistant", content: "The answer is 42." }])
 	})
 })
 
@@ -859,6 +945,70 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		writeFileSync(file, JSON.stringify({ messages, project: null }))
 		return file
 	}
+
+	it("watchdog: a hung extraction aborts at the drain budget and leaves the job pending", async () => {
+		const fake = makeFakeBackend()
+		// Fetch that settles only on abort — the drain watchdog must cut it,
+		// not hang the lock (the benchmark's lock_held=True, triggers=0 stall).
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const signal = init?.signal
+			return await new Promise<Response>((_resolve, reject) => {
+				if (signal?.aborted) reject(signal.reason)
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+			})
+		}
+		const jobFile = writeJob("stuck", [msg("user", "never resolves")])
+		const started = Date.now()
+		// Either the watchdog error propagates, or the drain completes via
+		// transient-failed windows — both satisfy the no-hang contract; the
+		// elapsed bound (vitest's 5s timeout) proves the watchdog, not the
+		// fetch, ended the wait.
+		try {
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				drainTimeoutMs: 80,
+			})
+		} catch (err) {
+			// The abort is a HARD failure: runCaptureWorker rejects with
+			// DrainWatchdogError (no partial exit-0 with swallowed windows).
+			expect(String(err)).toContain("capture drain aborted by hard timeout")
+		}
+		expect(Date.now() - started).toBeLessThan(5_000)
+		// Fail-soft: hashes unmarked → job stays pending for the next spawn.
+		expect(existsSync(jobFile)).toBe(true)
+		// Store untouched: no facts from the aborted drain.
+		expect(fake.added).toEqual([])
+	})
+
+	it("watchdog: the lock is released after a watchdog-aborted drain (next spawn proceeds)", async () => {
+		const fake = makeFakeBackend()
+		const fetchImpl: typeof fetch = async (_input, init) => {
+			const signal = init?.signal
+			return await new Promise<Response>((_resolve, reject) => {
+				if (signal?.aborted) reject(signal.reason)
+				signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+			})
+		}
+		const jobFile = writeJob("stuck2", [msg("user", "first drain hangs")])
+		try {
+			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
+				createBackend: () => Promise.resolve(fake.backend),
+				drainTimeoutMs: 80,
+			})
+		} catch {
+			// watchdog error acceptable
+		}
+		// Second worker with a healthy LLM drains the SAME job immediately —
+		// proves the first run's finally released the lock.
+		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+			llm: makeFakeLlm([]),
+			createBackend: () => Promise.resolve(fake.backend),
+		})
+		expect(captured).toBe(1)
+		expect(fake.added).toEqual(["first drain hangs"])
+	})
 
 	it("drains a job end to end: extract → add → hash-mark → job removal", async () => {
 		const fake = makeFakeBackend()
@@ -2056,5 +2206,194 @@ describe("poison job quarantine (runCaptureWorker, temp HOME)", () => {
 		}
 		// A sanitized counter never jumps to quarantine in one drain.
 		expect(existsSync(failedDir())).toBe(false)
+	})
+})
+
+describe("phase 1 strict-noise capture parity", () => {
+	const fixtureDir = join(__dirname, "testdata")
+	const fixture = JSON.parse(readFileSync(join(fixtureDir, "phase1-capture-parity.json"), "utf-8")) as {
+		facts: string[]
+		strict_keep: string[]
+	}
+	const baseline = JSON.parse(readFileSync(join(fixtureDir, "phase1-baseline-metrics.json"), "utf-8")) as {
+		aggregate: { rule_precision: number }
+	}
+
+	it("rubric + baselines stayed frozen (grading floor is reproducible, not remembered)", () => {
+		expect(baseline.aggregate.rule_precision).toBe(0.619)
+		expect(existsSync(join(fixtureDir, "phase1-rubric.md"))).toBe(true)
+	})
+
+	it("layer 1 (extraction output): frozen markdown reply parses to the pinned 12 facts in order", () => {
+		const txt = readFileSync(join(fixtureDir, "phase1-capture-parity.txt"), "utf-8")
+		const parsed = parseTaggedFacts(txt, "personal")
+		expect(parsed.project).toEqual([])
+		expect(parsed.personal).toEqual(fixture.facts)
+	})
+
+	it("layer 2 (post-filter store): flag OFF keeps all 12 Phase 1 facts byte-parity", () => {
+		vi.stubEnv("KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE", "")
+		try {
+			const kept = fixture.facts.filter((f) => keepForStore(f, { strictNoise: false }))
+			expect(kept).toEqual(fixture.facts)
+		} finally {
+			vi.unstubAllEnvs()
+		}
+	})
+
+	it("flag ON rejects the three Phase 1 noise classes and keeps exactly the 8 rule facts", () => {
+		const kept = fixture.facts.filter((f) => keepForStore(f, { strictNoise: true }))
+		expect(kept).toEqual(fixture.strict_keep)
+	})
+
+	it("rejections hit answer-level recall, framing echo, and extractor meta text", () => {
+		const noisy = [
+			"The user answered that 42 items were archived.",
+			"The user submitted the final answer.",
+			"The user is working with a graph database for a research task.",
+			"As of 2023, the user was working on a data-cleaning pipeline for the audit.",
+			"No durable facts about the user were found in this snippet.",
+		]
+		for (const f of noisy) {
+			expect(keepForStore(f, { strictNoise: true })).toBe(false)
+		}
+	})
+
+	it("positive control: durable personal preferences and project facts survive strict mode", () => {
+		const durable = [
+			"The user prefers dark mode in all editors.",
+			"The user's deploy box runs NixOS.",
+			"The signing table stores timestamps in milliseconds since epoch.",
+		]
+		for (const f of durable) {
+			expect(keepForStore(f, { strictNoise: true })).toBe(true)
+		}
+	})
+
+	it("base durability list is untouched by the strict extensions", () => {
+		const sample = ["As of the conversation, something happened.", "PR #42 merged."]
+		for (const f of sample) {
+			expect(isDurableFact(f)).toBe(false)
+			expect(STRICT_NOISE_FACT_PATTERNS.some((p) => p.test(f))).toBe(false)
+		}
+	})
+
+	it("strictNoiseEnabled parses the env flag like the other gate flags", () => {
+		for (const off of [undefined, "", "0", "false", "FALSE"]) {
+			expect(strictNoiseEnabled({ KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE: off } as NodeJS.ProcessEnv)).toBe(false)
+		}
+		for (const on of ["1", "true", "yes"]) {
+			expect(strictNoiseEnabled({ KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE: on } as NodeJS.ProcessEnv)).toBe(true)
+		}
+	})
+})
+
+describe("task-scope capture ([task] grammar + routing)", () => {
+	const fixture = JSON.parse(
+		readFileSync(join(__dirname, "testdata", "phase1-task-scope.json"), "utf-8"),
+	) as {
+		shapes: Record<
+			string,
+			{ input: string; defaultScope: "personal" | "project"; expected: { personal: string[]; project: string[]; task: string[] } }
+		>
+		flag_off_parity: Record<
+			string,
+			{ input: string; defaultScope: "personal" | "project"; expected: { personal: string[]; project: string[]; task?: string[] } }
+		>
+	}
+
+	for (const [name, c] of Object.entries(fixture.shapes)) {
+		it(`parses the ${name} shape with [task] when the flag is on`, () => {
+			expect(parseTaggedFacts(c.input, c.defaultScope, { taskScope: true })).toEqual(c.expected)
+		})
+	}
+
+	for (const [name, c] of Object.entries(fixture.flag_off_parity)) {
+		it(`flag OFF keeps Phase 1 behaviour: ${name}`, () => {
+			expect(parseTaggedFacts(c.input, c.defaultScope)).toEqual(c.expected)
+		})
+	}
+
+	it("routes [task] facts into the project store when a project context exists", () => {
+		expect(routeTaskFacts(["A"], true)).toEqual({ toProject: ["A"], dropped: 0 })
+	})
+
+	it("drops [task] facts with a logged reason when there is no project context", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			expect(routeTaskFacts(["A", "B"], false)).toEqual({ toProject: [], dropped: 2 })
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("dropped 2 task-scope fact(s): no project context"),
+			)
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("taskScopeEnabled parses the env flag like the other gate flags", () => {
+		for (const off of [undefined, "", "0", "false"]) {
+			expect(taskScopeEnabled({ KIMCHI_MEMORY_TASK_SCOPE: off } as NodeJS.ProcessEnv)).toBe(false)
+		}
+		for (const on of ["1", "true", "yes"]) {
+			expect(taskScopeEnabled({ KIMCHI_MEMORY_TASK_SCOPE: on } as NodeJS.ProcessEnv)).toBe(true)
+		}
+	})
+})
+
+describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
+	it("flag defaults OFF and parses standard truthy forms", () => {
+		expect(receiptsEnabled({} as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "0" } as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "false" } as NodeJS.ProcessEnv)).toBe(false)
+		expect(receiptsEnabled({ KIMCHI_MEMORY_EXTRACTION_RECEIPTS: "1" } as NodeJS.ProcessEnv)).toBe(true)
+	})
+
+	it("suffix is distinct and never in the OFF-composed prompt family", () => {
+		expect(RECEIPTS_EXTRACTION_SUFFIX).toContain("expectation-failure")
+		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("expectation-failure")
+		// OFF composition must stay byte-identical to the flags-off V2 prompt.
+		const offComposed =
+			EXTRACTION_SYSTEM_PROMPT + (true ? TASK_SCOPE_EXTRACTION_SUFFIX : "") + ""
+		expect(offComposed).toBe(EXTRACTION_SYSTEM_PROMPT + TASK_SCOPE_EXTRACTION_SUFFIX)
+	})
+
+	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {
+		expect(keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", { strictNoise: true })).toBe(false)
+		expect(keepForStore("The query on items_g2.prc_v2 returned 'no such column' — the schema dump lists only prc and prc_usd.", { strictNoise: true })).toBe(true)
+		expect(keepForStore("The correct answer to the brand-attribute count question is 1145, not 1153.", { strictNoise: false })).toBe(true)
+	})
+})
+
+describe("splitDerivedTag (KIMCHI_MEMORY_FACT_CLASSES lane)", () => {
+	const FLG = "KIMCHI_MEMORY_FACT_CLASSES"
+	afterEach(() => { delete process.env[FLG] })
+
+	it("flag OFF: identity, no parsing (byte-parity)", () => {
+		expect(splitDerivedTag("[derived] Treating main_cat as top-level")).toEqual({
+			text: "[derived] Treating main_cat as top-level",
+			derived: false,
+		})
+	})
+
+	it("flag ON: strips the [derived] tag", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("[derived] Treating main_cat as top-level")).toEqual({
+			text: "Treating main_cat as top-level",
+			derived: true,
+		})
+	})
+
+	it("flag ON: untagged fact stays trusted", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("The items table ts column is milliseconds.")).toEqual({
+			text: "The items table ts column is milliseconds.",
+			derived: false,
+		})
+	})
+
+	it("flag ON: leading whitespace tolerated; mid-string tags preserved", () => {
+		process.env[FLG] = "1"
+		expect(splitDerivedTag("  [derived] Aggregating per item.").derived).toBe(true)
+		expect(splitDerivedTag("Mentions [derived] mid-sentence stay text").derived).toBe(false)
 	})
 })

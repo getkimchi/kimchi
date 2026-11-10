@@ -1,0 +1,34 @@
+{
+  "provenance": {
+    "source_dir": "/Users/mike/Source/github.com/castai/continual-learning-bench/results/database_exploration/traces/matrix-kimchi-memory/artifacts",
+    "clone_pin": "5f8c50eb",
+    "run_group": "matrix-kimchi-memory",
+    "frozen_at": "2026-11-08",
+    "derivation": "store_snapshots.last.captured_hashes for window counts; sum(turn_meta.turn_usage.cache_read)/sum(input) for ratios; fact rubric A/B/C/D applied to the frozen facts list. Regenerated 2026-11-08 from the frozen artifacts; reproduces the 62% rule precision reported in .kimchi/docs/memory-vs-claude-clbench.md (13/21).",
+    "archive": "kimchi-master/.kimchi/evidence-backup/phase1-artifacts.tar.gz"
+  },
+  "artifacts_sha256": {
+    "run_0000": "4571b5ec63d2a71790c389a09898285d912878fe1deaa00f48097bef8495d7b7",
+    "run_0001": "fa1b3971b868fecb436171862db5e155d8bf2f9dfbcd93b6a008a207fb236c9f",
+    "run_0002": "6c29a2115ffaf4589ba6e08361f2697af8e914be43a214b3abe270e5f08647b9"
+  },
+  "runs": {
+    "run_0000": { "fact_count": 3, "captured_windows_final": 159, "cache_read_over_input": 15.9, "input": 236457, "output": 68791, "cache_read": 3748160, "turns": 50, "rules": 2, "noise": 1 },
+    "run_0001": { "fact_count": 6, "captured_windows_final": 182, "cache_read_over_input": 17.7, "input": 204414, "output": 65589, "cache_read": 3611904, "turns": 50, "rules": 3, "noise": 3 },
+    "run_0002": { "fact_count": 12, "captured_windows_final": 218, "cache_read_over_input": 14.5, "input": 218466, "output": 59503, "cache_read": 3172160, "turns": 50, "rules": 8, "noise": 4 }
+  },
+  "aggregate": {
+    "facts_total": 21,
+    "rules_total": 13,
+    "rule_precision": 0.619,
+    "facts_per_run_range": [3, 12],
+    "captured_windows_range": [159, 218],
+    "cache_ratio_range": [14.5, 17.7],
+    "noise_classes": {
+      "answer_level_recall": 2,
+      "session_framing_echo": 5,
+      "extractor_meta_leak": 0
+    },
+    "cross_check": { "run_0000_captured_windows_final": 159 }
+  }
+}

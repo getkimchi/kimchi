@@ -59,13 +59,29 @@ export function decisionGatesEnabled(env: { KIMCHI_MEMORY_DECISION_GATE?: string
 // triage/valuation framing; E6 extended digest criteria for dated events;
 // E4's one miss added the opaque-identifiers clause to recall.
 
+/** Task-lane acceptance wording — appended ONLY when KIMCHI_MEMORY_TASK_SCOPE
+ * is enabled; flag OFF keeps the criterion strings byte-identical to the
+ * calibrated set below. Change only with a calibration run (module rule). */
+const TASK_SCOPE_TRIAGE_SUFFIX =
+	" (d) DURABLE TASK facts — exact schema/identifier mappings, unit or format conventions, confirmed traps with their corrections, and decisions the asker settled with rationale"
+const TASK_SCOPE_VALUATION_KEEP_SUFFIX =
+	" OR durable task knowledge (exact schema/identifier mapping, unit/format convention, confirmed trap + correction, settled decision rationale)"
+
+/** Task-lane env flag, re-parsed per call — mirrors the other gate env reads. */
+export function taskLaneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_TASK_SCOPE
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
 /** Window triage: should this window pay extraction at all? (E1/E1b/E5b/E6/E8) */
 export function triageQuestion(): Record<"has_durable_fact", ChoiceQuestion> {
 	return {
 		has_durable_fact: {
 			type: "choice",
 			instructions:
-				"Does this snippet contain at least one DURABLE fact worth capturing to long-term memory? Durable sources are: (a) USER-STATED facts — stable preferences, decisions with rationale, corrections, personal context (role, family, plans, possessions, constraints), itemized values (counts, prices, dates, measurements) — each occurrence of recurring items as its own fact; (b) ASSISTANT-PROVIDED answers the user engaged with — the user asked a question it answers, or accepted/acted on/referred back to it (schedules, rotations, recipes, recommendations, numbers); (c) plans and dated events. NOT durable: small talk with no fact content, code/file contents, generic advice the user never engaged with.",
+				"Does this snippet contain at least one DURABLE fact worth capturing to long-term memory? Durable sources are: (a) USER-STATED facts — stable preferences, decisions with rationale, corrections, personal context (role, family, plans, possessions, constraints), itemized values (counts, prices, dates, measurements) — each occurrence of recurring items as its own fact; (b) ASSISTANT-PROVIDED answers the user engaged with — the user asked a question it answers, or accepted/acted on/referred back to it (schedules, rotations, recipes, recommendations, numbers); (c) plans and dated events" +
+				(taskLaneEnabled() ? `;${TASK_SCOPE_TRIAGE_SUFFIX}` : "") +
+				". NOT durable: small talk with no fact content, code/file contents, generic advice the user never engaged with.",
 			criteria: { yes: "At least one durable fact is present", no: "Nothing durable — only transient content" },
 		},
 	}
@@ -75,14 +91,53 @@ export function triageQuestion(): Record<"has_durable_fact", ChoiceQuestion> {
 export const VALUATION_STATE =
 	"A memory system extracted the following candidate facts from a user's assistant sessions. Judge each one independently for long-term value."
 
+/**
+ * Env flag (KIMCHI_MEMORY_GATE_NOISE_CLASSES, default OFF): append the
+ * empirically measured harness/evaluation protocol boilerplate class to
+ * the valuation discard criteria. The class is content-free — it names a
+ * *kind* of text (protocol meta, store-relevant nowhere), not any
+ * benchmark's content: attempt/query limits, reply-format rules, question
+ * numbering, and "the user is running an automated benchmark/evaluation"
+ * self-references. OFF keeps the criteria bit-identical.
+ */
+export function gateNoiseClassesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.KIMCHI_MEMORY_GATE_NOISE_CLASSES === "1"
+}
+
+const GATE_NOISE_CLASS_SUFFIX =
+	"; harness or evaluation protocol boilerplate (attempt/query limits, reply-format rules, question numbering, or statements that the user is running an automated benchmark or evaluation)"
+
+/**
+ * Env flag (KIMCHI_MEMORY_VALUATION_CONTEXT, default OFF): attach the
+ * existing store's fact texts to the valuation state so the gate can see
+ * what is already remembered — judging duplicates, conflicts, and
+ * genuinely-new information with context instead of blind per-fact.
+ */
+export function valuationContextEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.KIMCHI_MEMORY_VALUATION_CONTEXT === "1"
+}
+
+/** Bound on existing-store facts attached to the valuation state. */
+export const VALUATION_CONTEXT_MAX_FACTS = 100
+
+/** Build the valuation state: the static prompt, plus (flagged) the store's
+ * existing fact texts so discards/keeps can reference the live context. */
+export function buildValuationState(existing?: string[]): string {
+	if (!valuationContextEnabled() || !existing || existing.length === 0) return VALUATION_STATE
+	const head = existing.slice(0, VALUATION_CONTEXT_MAX_FACTS)
+	return `${VALUATION_STATE}\n\nThe store already holds these memories (use them to spot duplicates, conflicts, and genuinely-new information):\n${head.map((f) => `- ${f}`).join("\n")}`
+}
+
 export function valuationQuestion(fact: string, index: number): ChoiceQuestion {
 	return {
 		type: "choice",
 		instructions: `Candidate memory fact ${index + 1}: "${fact}" — should a long-term memory system KEEP this fact?`,
 		criteria: {
-			keep: "Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention",
+			keep: "Durable from ANY source: user-stated (stable preference, decision with rationale, correction, personal context, possession with purpose, itemized value, dated event/plan) OR assistant-provided fact the user engaged with (asked, accepted, acted on, referred back: schedules, rotations, recipes, numbers, recommendations) OR lasting project convention" +
+				(taskLaneEnabled() ? TASK_SCOPE_VALUATION_KEEP_SUFFIX : ""),
 			discard:
-				"Transient: task progress, statuses, work summaries, tool output, or content with no identifiable fact a future session could use",
+				"Transient: task progress, statuses, work summaries, tool output, or content with no identifiable fact a future session could use" +
+				(gateNoiseClassesEnabled() ? GATE_NOISE_CLASS_SUFFIX : ""),
 		},
 	}
 }

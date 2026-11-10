@@ -1,0 +1,72 @@
+{
+  "provenance": "First-principles fixtures for the [task] extension of parseTaggedFacts covering the parser's three output shapes, the single-lane precedence rule, and flag-OFF byte parity. Deliberately synthetic and domain-generic — not benchmark-derived.",
+  "shapes": {
+    "markdown": {
+      "input": "- [personal] The user prefers four-space indentation.\n- [task] In the ledger store, `qty` counts units and `cmp` counts minor currency units.\n- [project] The invoicing service owns the ledger tables.",
+      "defaultScope": "personal",
+      "expected": {
+        "personal": ["The user prefers four-space indentation."],
+        "project": ["The invoicing service owns the ledger tables."],
+        "task": ["In the ledger store, `qty` counts units and `cmp` counts minor currency units."]
+      }
+    },
+    "array_strings_keeps_default_scope": {
+      "input": "[\"[task] Timestamps in the ledger store are milliseconds since epoch\", \"[personal] The user keeps notes in Org mode\", \"The audit ledger uses snake_case column names\"]",
+      "defaultScope": "project",
+      "expected": {
+        "personal": ["The user keeps notes in Org mode"],
+        "project": ["The audit ledger uses snake_case column names"],
+        "task": ["Timestamps in the ledger store are milliseconds since epoch"]
+      }
+    },
+    "fact_objects": {
+      "input": "[{\"fact\": \"Identifiers in the ledger store use the `entry_` prefix\", \"scope\": \"task\"}, {\"fact\": \"The user reviews merges on Fridays\", \"scope\": \"personal\"}]",
+      "defaultScope": "project",
+      "expected": {
+        "personal": ["The user reviews merges on Fridays"],
+        "project": [],
+        "task": ["Identifiers in the ledger store use the `entry_` prefix"]
+      }
+    },
+    "object_shape": {
+      "input": "{\"personal\": [\"The user drafts specs in English\"], \"project\": [\"The gateway service owns rate limiting\"], \"task\": [\"Negative amounts never appear in the ledger store\"]}",
+      "defaultScope": "personal",
+      "expected": {
+        "personal": ["The user drafts specs in English"],
+        "project": ["The gateway service owns rate limiting"],
+        "task": ["Negative amounts never appear in the ledger store"]
+      }
+    },
+    "double_tag_single_lane": {
+      "input": "[\"[task] [project] The ledger store keys are zero-padded to 12 digits\"]",
+      "defaultScope": "project",
+      "expected": {
+        "personal": [],
+        "project": [],
+        "task": ["[project] The ledger store keys are zero-padded to 12 digits"]
+      },
+      "note": "The leading tag decides the lane (exactly one lane per string — no [task]/[project] double-routing); a trailing tag stays part of the fact text."
+    }
+  },
+  "flag_off_parity": {
+    "markdown_ignores_task_lines": {
+      "input": "- [task] Timestamps are milliseconds in the ledger store\n- [personal] The user prefers four-space indentation.",
+      "defaultScope": "personal",
+      "expected": { "personal": ["The user prefers four-space indentation."], "project": [] }
+    },
+    "array_string_keeps_literal_prefix": {
+      "input": "[\"[task] Timestamps are milliseconds in the ledger store\"]",
+      "defaultScope": "personal",
+      "expected": { "personal": ["[task] Timestamps are milliseconds in the ledger store"], "project": [] }
+    },
+    "object_shape_ignores_task_key": {
+      "input": "{\"personal\": [\"The user drafts specs in English\"], \"task\": [\"Negative amounts never appear\"]}",
+      "defaultScope": "personal",
+      "expected": { "personal": ["The user drafts specs in English"], "project": [] }
+    }
+  },
+  "routing": {
+    "with_project": { "taskFacts": ["A"], "expectedToProject": ["A"], "expectedDropped": 0 },
+    "without_project_logs_and_drops": { "taskFacts": ["A", "B"], "expectedToProject": [], "expectedDropped": 2 }
+  }
+}
