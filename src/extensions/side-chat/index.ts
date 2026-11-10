@@ -63,6 +63,7 @@ import {
 	type WrapUpRun,
 } from "./session.js"
 import { SIDE_CHAT_SHORTCUTS } from "./shortcuts.js"
+import { hasQuotedSelection, SIDE_CHAT_EVENTS } from "./side-chat-events.js"
 import { openSideChatLog, persistableThread, type SideChatLog, type SideThread } from "./store.js"
 
 /** Side panel width chosen by dragging the divider; kept for the process lifetime. */
@@ -82,6 +83,8 @@ interface ActiveSideChat {
 	recorded: boolean
 	/** The in-flight `/wrap` draft, if any. */
 	wrapUp?: WrapUpRun
+	/** User questions submitted into this side chat so far (incl. ones carried over by a reopen). */
+	userMessageCount: number
 	dispose: () => void
 }
 
@@ -137,6 +140,12 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	}
 
 	const countQuestions = (thread: SideThread) => thread.filter((message) => message.role === "user").length
+
+	/** Role counts of a side thread — the telemetry facts for reopened/wrapped chats. */
+	const messageCounts = (thread: SideThread) => ({
+		messageCountUser: thread.filter((message) => message.role === "user").length,
+		messageCountAssistant: thread.filter((message) => message.role === "assistant").length,
+	})
 
 	function writeRecord(chat: ActiveSideChat, outcome?: SideChatRecord["outcome"]): void {
 		const questions = chat.side ? countQuestions(sideThreadMessages(chat.side)) : chat.record.questions
@@ -199,6 +208,16 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	async function sendToMain(chat: ActiveSideChat, text: string): Promise<void> {
 		if (chat.ctx.isIdle()) pi.sendUserMessage(text)
 		else pi.sendUserMessage(text, { deliverAs: "steer" })
+		// `sendUserMessage` is fire-and-forget in the pi API: typed `void`, and
+		// its implementation swallows failures into runner.emitError, so this
+		// code never sees a rejection. The WRAPPED fact therefore records that
+		// the wrap was enqueued to the main agent (not confirmed delivery);
+		// genuine delivery failures surface only via pi's emitError path, which
+		// is not instrumentable here. Emit before closing: closeSideChat tears
+		// the side session down, and the counts must describe the wrapped thread.
+		if (chat.side) {
+			pi.events.emit(SIDE_CHAT_EVENTS.WRAPPED, messageCounts(persistableThread(sideThreadMessages(chat.side))))
+		}
 		notify(chat.ctx, "Side chat summary sent to the main session.")
 		await closeSideChat("sent")
 	}
@@ -206,6 +225,16 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	async function prompt(chat: ActiveSideChat, text: string): Promise<void> {
 		const side = await chat.ready
 		if (!side || active !== chat) return
+		// Count and publish the fact only now, once the ready guard confirms a
+		// live side session: a submit into a chat whose session never started
+		// (createSideSession rejected) is dropped, and a dropped submit must
+		// consume no message_index. Counting at submit time instead made the
+		// emitted indices lie and repeat after a close/reopen.
+		chat.userMessageCount += 1
+		pi.events.emit(SIDE_CHAT_EVENTS.MESSAGE_SENT, {
+			quotedSelection: hasQuotedSelection(text),
+			messageIndex: chat.userMessageCount,
+		})
 		try {
 			await side.session.prompt(text, {
 				expandPromptTemplates: false,
@@ -213,6 +242,13 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				...(side.session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
 			})
 		} catch (error) {
+			// The failure happened after the fact was published, so the record
+			// stands with this index — rolling back cannot retract it. What it
+			// prevents is the counter running ahead of the durable thread when
+			// the message never persisted: the reopen reseed (Math.max over the
+			// journal) would then restart below an already-emitted index and a
+			// later submit would re-emit it.
+			chat.userMessageCount -= 1
 			chat.panel.addInfo(`Side chat error: ${error instanceof Error ? error.message : String(error)}`)
 		}
 	}
@@ -450,6 +486,12 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			log: openSideChatLog(ctx.sessionManager, record.id),
 			persistedCount: owned ? thread.length : 0,
 			recorded: owned,
+			// Seed the per-chat counter from the durable sources — the record's
+			// persisted question count and the saved thread; either can be
+			// ahead of the other after a crash (a submit that never reached the
+			// log, or a record written before later saves), so take the max to
+			// keep message_index monotonic across close/reopen.
+			userMessageCount: resume ? Math.max(resume.questions, countQuestions(thread)) : 0,
 			dispose: () => {
 				unsubscribe?.()
 				panel.dispose()
@@ -464,6 +506,21 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			},
 		}
 		active = chat
+
+		// Lifecycle facts for telemetry (side-chat-events.ts channels): a
+		// fresh open reports how it was opened, a reopen reports the thread it
+		// came back with. Payloads are booleans/counts only — never side-chat
+		// text (privacy).
+		if (resume) {
+			// Skip the reopen fact when the transcript is unreadable but the
+			// record says questions were asked: 0/0 counts would read as an
+			// empty chat and make the data loss invisible downstream.
+			if (thread.length > 0 || resume.questions === 0) {
+				pi.events.emit(SIDE_CHAT_EVENTS.HISTORY_REOPENED, messageCounts(thread))
+			}
+		} else {
+			pi.events.emit(SIDE_CHAT_EVENTS.STARTED, { quotedSelection: options.quote !== undefined })
+		}
 
 		if (resume) {
 			panel.addInfo(`↺ Reopened side chat from ${new Date(record.startedAt).toLocaleString()}`)

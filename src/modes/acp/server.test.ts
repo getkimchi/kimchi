@@ -22,6 +22,8 @@ import type {
 	TextContent,
 } from "@agentclientprotocol/sdk"
 import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -68,6 +70,9 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// Mocked (real by default) so region-config tests can inject a region
+		// without touching the developer's real ~/.config/kimchi/config.json.
+		resolveEndpoints: vi.fn(actual.resolveEndpoints),
 		// The set_onboarding_flag ext-method writes the shared config's
 		// onboarding namespace; mock it so server-level tests don't touch the
 		// real config file. Write semantics are covered by the handler's own
@@ -82,6 +87,13 @@ vi.mock("../../config.js", async (importOriginal) => {
 // Mock the model cache refresh so tests don't hit the network.
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
+	applyOrganizationHeader: vi.fn(),
+}))
+// Hermetic settle tail: keep clearPiAuth/syncPiAuth real (logout tests use
+// them against temp dirs) but stub the OAuth credential fan-out.
+vi.mock("../../pi-auth.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../pi-auth.js")>()),
+	syncOAuthCredentialToKimchiProviders: vi.fn(),
 }))
 // Pin getVersion() so initialize() agentInfo assertions are deterministic
 // and don't depend on the repo's package.json.
@@ -138,7 +150,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 import type { Model } from "@earendil-works/pi-ai"
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, loadConfig, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
+import { clearApiKey, loadConfig, resolveEndpoints, writeApiKey, writeStudioOnboardingSeenAt } from "../../config.js"
 import { isCredentialStale, markCredentialStale, resetCredentialStalenessForTests } from "../../credential-staleness.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
@@ -154,11 +166,19 @@ import {
 	getSessionPermissionFlagController,
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
+import {
+	installVaultLifecycle,
+	resetTokenVaults,
+	tokenFor,
+	vaultForSession,
+} from "../../extensions/pii-redaction/vault.js"
 import { applyWriteTodos, clearTodoStore } from "../../extensions/todos/store.js"
 import { updateModelsConfig } from "../../models.js"
+import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
+import { type SsoFlowManager, ssoError } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	ACP_SUCCESS_MESSAGE,
@@ -366,14 +386,17 @@ class FakeAgentSession {
 	// on it. The real AgentSession exposes this via its extensionRunner
 	// getter; the fake keeps it on the session root for simpler test wiring.
 	setUIContextCalls: unknown[] = []
+	// Ordered lifecycle tape (event emits + disposal) so tests can assert
+	// that session_shutdown precedes dispose on every teardown path — the
+	// vault lifecycle evicts on shutdown, so losing the emit-or-order
+	// regresses vault eviction for orphan/early-fail sessions.
+	lifecycleEvents: string[] = []
 	extensionRunner = {
 		setUIContext: (ui: unknown) => {
 			this.setUIContextCalls.push(ui)
 		},
-		emit: async (_event: unknown) => {
-			// Real runner exposes emit for session lifecycle events; the fake
-			// just resolves so disposeSessionRecord's session_shutdown hook
-			// doesn't throw.
+		emit: async (event: unknown) => {
+			this.lifecycleEvents.push((event as { type?: string })?.type ?? "unknown")
 		},
 	}
 
@@ -469,6 +492,7 @@ class FakeAgentSession {
 
 	dispose(): void {
 		this.disposed = true
+		this.lifecycleEvents.push("disposed")
 		this.listeners.clear()
 	}
 }
@@ -652,6 +676,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		})
 		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 		sessionId = res.sessionId
+	})
+
+	afterEach(async () => {
+		// Every beforeEach attaches a FRESH agent under the same id; the
+		// multi-owner registry stacks otherwise accumulate one entry per
+		// test. Close after every test (no-ops when the test closed already).
+		try {
+			await agent.unstable_closeSession({ sessionId })
+		} catch {
+			// already closed
+		}
+		try {
+			await agent.shutdown()
+		} catch {
+			// already down
+		}
 	})
 
 	it("publishes todos written during extension startup before the plan subscription exists", async () => {
@@ -909,15 +949,17 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(4)
-			expect(response.authMethods?.[0]).toMatchObject({
+			expect(response.authMethods).toHaveLength(7)
+			// SSO is the default: advertised before Agent Auth.
+			expect(response.authMethods?.[0]).toMatchObject({ id: "kimchi-sso", name: "Cast AI SSO" })
+			expect(response.authMethods?.[3]).toMatchObject({
 				id: "kimchi-agent",
 				name: "Kimchi Login",
 			})
-			// Agent Auth is the default: the descriptor omits `type` (the
+			// Agent Auth is not terminal: the descriptor omits `type` (the
 			// registry treats an absent type as "agent"). AuthMethodAgent has no
 			// `type` field, so we verify absence rather than equality.
-			const method = response.authMethods?.[0]
+			const method = response.authMethods?.[3]
 			expect("type" in (method ?? {})).toBe(false)
 		})
 
@@ -932,21 +974,42 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			const ids = response.authMethods?.map((m) => m.id)
-			expect(ids).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu", "kimchi-agent-self-hosted"])
-			expect(response.authMethods?.[1]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
-			expect(response.authMethods?.[2]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
-			expect(response.authMethods?.[3]).toMatchObject({
+			expect(ids).toEqual([
+				"kimchi-sso",
+				"kimchi-sso-us",
+				"kimchi-sso-eu",
+				"kimchi-agent",
+				"kimchi-agent-us",
+				"kimchi-agent-eu",
+				"kimchi-agent-self-hosted",
+			])
+			expect(response.authMethods?.[1]).toMatchObject({
+				id: "kimchi-sso-us",
+				name: "Cast AI SSO (US)",
+				description: "Sign in with your Cast AI account (United States region)",
+			})
+			expect(response.authMethods?.[2]).toMatchObject({
+				id: "kimchi-sso-eu",
+				name: "Cast AI SSO (EU)",
+				description: "Sign in with your Cast AI account (Europe region)",
+			})
+			expect(response.authMethods?.[4]).toMatchObject({ id: "kimchi-agent-us", name: "Kimchi Login (US)" })
+			expect(response.authMethods?.[5]).toMatchObject({ id: "kimchi-agent-eu", name: "Kimchi Login (EU)" })
+			expect(response.authMethods?.[6]).toMatchObject({
 				id: "kimchi-agent-self-hosted",
 				name: "Kimchi Login (SELF-HOSTED)",
 				description: "Authenticate via browser to Kimchi (Self-hosted region)",
 			})
-			// Agent Auth leaves `type` absent, like the plain method.
+			// Auth methods leave `type` absent (terminal methods carry it).
 			for (const method of response.authMethods ?? []) {
 				expect("type" in method).toBe(false)
 			}
 		})
 
-		it("advertises the EU companion method without the flag; omits gated self-hosted", async () => {
+		// SSO region pins derive from ssoAvailableRegions() (Auth0 tenants), NOT
+		// selectableRegions(): with the flag off both EU companions advertise and
+		// gated self-hosted stays hidden (#1428 made EU selectable unconditionally).
+		it("advertises SSO and Agent Auth EU companions without the flag; omits gated self-hosted", async () => {
 			setExperimentalFeaturesEnabled(false)
 			const testAgent = new KimchiAcpAgent(makeConn(), {
 				extensionFactories: [],
@@ -955,7 +1018,65 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			})
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods?.map((m) => m.id)).toEqual(["kimchi-agent", "kimchi-agent-us", "kimchi-agent-eu"])
+			expect(response.authMethods?.map((m) => m.id)).toEqual([
+				"kimchi-sso",
+				"kimchi-sso-us",
+				"kimchi-sso-eu",
+				"kimchi-agent",
+				"kimchi-agent-us",
+				"kimchi-agent-eu",
+			])
+		})
+
+		// The plain kimchi-sso follows the configured region; a region without an
+		// Auth0 tenant (self-hosted) cannot offer it, so only the pins remain.
+		// The region is injected through the resolveEndpoints mock — tests must
+		// never write the developer's real ~/.config/kimchi/config.json (it can
+		// hold their API key and region settings).
+		it("omits the plain kimchi-sso method when the configured region has no SSO tenant", async () => {
+			const actualConfig = await vi.importActual<typeof import("../../config.js")>("../../config.js")
+			vi.mocked(resolveEndpoints).mockImplementation(() => ({
+				...regionEndpoints(
+					discoveredSelfHostedRegion({
+						api: "https://kimchi.example.com/api",
+						console: "https://kimchi.example.com",
+						llm: "https://kimchi.example.com/llm",
+					}),
+				),
+				llmEndpoint: "https://kimchi.example.com/llm",
+			}))
+			onTestFinished(() => {
+				vi.mocked(resolveEndpoints).mockImplementation(actualConfig.resolveEndpoints)
+			})
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const ids = response.authMethods?.map((m) => m.id)
+			expect(ids).not.toContain("kimchi-sso")
+			expect(ids).toContain("kimchi-sso-us")
+			expect(ids).toContain("kimchi-sso-eu")
+		})
+
+		// Capability signal for the stepwise SSO ext methods: clients
+		// gate their SSO UI on `_meta["kimchi.dev"].sso === true`.
+		it('advertises the sso capability flag in _meta["kimchi.dev"]', async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			const meta = response.agentCapabilities?._meta?.["kimchi.dev"] as Record<string, unknown> | undefined
+			expect(meta?.sso).toBe(true)
+			// The three wire methods are advertised too.
+			expect(meta?.sso_begin).toBe(true)
+			expect(meta?.sso_await).toBe(true)
+			expect(meta?.sso_cancel).toBe(true)
 		})
 
 		it("declares terminal auth method when client supports terminal capability", async () => {
@@ -969,7 +1090,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: true } },
 			})
-			expect(response.authMethods).toHaveLength(5)
+			expect(response.authMethods).toHaveLength(8)
 			const terminalMethod = response.authMethods?.find((m) => "type" in m && m.type === "terminal")
 			expect(terminalMethod).toMatchObject({
 				id: "kimchi-terminal",
@@ -988,7 +1109,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			// No clientCapabilities at all
 			const response = await testAgent.initialize({ protocolVersion: 1 })
-			expect(response.authMethods).toHaveLength(4)
+			expect(response.authMethods).toHaveLength(7)
 			expect(response.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 
 			// clientCapabilities present but auth.terminal is false/omitted
@@ -996,7 +1117,7 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				protocolVersion: 1,
 				clientCapabilities: { auth: { terminal: false } },
 			})
-			expect(response2.authMethods).toHaveLength(4)
+			expect(response2.authMethods).toHaveLength(7)
 			expect(response2.authMethods?.some((m) => "type" in m && m.type === "terminal")).toBe(false)
 		})
 
@@ -1051,6 +1172,52 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				providers: { "kimchi-dev": { baseUrl: "https://llm.kimchi.dev/openai/v1", models: [] } },
 			}),
 		)
+	}
+
+	/** Injectable fake for the SSO flow manager: records the wire
+	 * calls authenticate() and the sso_* ext methods make and plays canned
+	 * outcomes. Partial stub — only the manager methods the server
+	 * touches. */
+	function makeFakeSsoManager(
+		outcomes: {
+			begin?: Awaited<ReturnType<SsoFlowManager["begin"]>>
+			awaitResult?: Awaited<ReturnType<SsoFlowManager["awaitResult"]>>
+			awaitResultError?: unknown
+		} = {},
+	) {
+		const begin = vi.fn(
+			async (): Promise<Awaited<ReturnType<SsoFlowManager["begin"]>>> =>
+				outcomes.begin ?? {
+					requestId: "req-1",
+					authorizeUrl: "https://login.kimchi.dev/authorize?x=1",
+					expiresAt: "2026-01-01T00:00:00.000Z",
+				},
+		)
+		const awaitResult = vi.fn(async (): Promise<Awaited<ReturnType<SsoFlowManager["awaitResult"]>>> => {
+			if (outcomes.awaitResultError !== undefined) throw outcomes.awaitResultError
+			return outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
+		})
+		const cancel = vi.fn(() => ({}))
+		const settledCredential = {
+			credential: { access: "castai_v1_sso-token" } as OAuthCredentials,
+			org: { id: "org-1", name: "Acme" },
+		}
+		const takeSettledCredential = vi.fn(() => (outcomes.awaitResultError !== undefined ? undefined : settledCredential))
+		// Single cast at the injection seam: the object is typed against the
+		// Pick the server actually consumes, so a new consumed method breaks the
+		// type check instead of silently staying behind.
+		const manager = { begin, awaitResult, cancel, takeSettledCredential } as Pick<
+			SsoFlowManager,
+			"begin" | "awaitResult" | "cancel" | "takeSettledCredential"
+		>
+		return {
+			manager: manager as SsoFlowManager,
+			begin,
+			awaitResult,
+			cancel,
+			takeSettledCredential,
+			settledCredential,
+		}
 	}
 
 	describe("authenticate", () => {
@@ -1262,6 +1429,113 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			await expect(testAgent.authenticate({ methodId: "kimchi-agent-moon" })).rejects.toThrow(/unknown auth method/)
 			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+		})
+
+		// ---- Cast AI SSO: the plain authenticate() path ----
+
+		it("authenticates with kimchi-sso-us: drives the stepwise SSO flow with the region pin", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			const result = await testAgent.authenticate({ methodId: "kimchi-sso-us" })
+
+			expect(result).toEqual({})
+			// Region pinned from the method id — never setPendingOAuthRegion.
+			expect(sso.begin).toHaveBeenCalledWith({ region: "us" })
+			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			// The settle tail runs server-side on the settled credential.
+			expect(sso.takeSettledCredential).toHaveBeenCalled()
+			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_sso-token", {
+				allowCachedFallback: true,
+				organizationId: "org-1",
+			})
+			// The web-app Agent Auth handoff is a different method — untouched.
+			expect(authenticateViaBrowser).not.toHaveBeenCalled()
+			expect(writeApiKey).not.toHaveBeenCalled()
+		})
+
+		it("authenticates with the plain kimchi-sso method against the configured region", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			vi.stubEnv("KIMCHI_REGION", "eu")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.authenticate({ methodId: "kimchi-sso" })
+
+			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
+		})
+
+		// org selection happens on the Auth0-hosted login page, so a
+		// multi-org listing surfaces as the manager's actionable SSO_IDP_ERROR —
+		// there is no parked flow to cancel and no interactive picker here.
+		it("propagates the manager's multi-org SSO_IDP_ERROR", async () => {
+			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
+			onTestFinished(() => {
+				vi.unstubAllEnvs()
+			})
+			const sso = makeFakeSsoManager({
+				awaitResultError: ssoError(
+					"SSO_IDP_ERROR",
+					"The Cast AI login returned 2 organizations; sign in again and pick one organization on the Cast AI login page.",
+				),
+			})
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow(
+				/2 organizations.*login page/s,
+			)
+		})
+
+		it("dispatches the _kimchi.dev/sso_* ext methods to the shared manager", async () => {
+			const sso = makeFakeSsoManager()
+			const testAgent = new KimchiAcpAgent(
+				makeConn(),
+				{
+					extensionFactories: [],
+					agentDir: tempAgentDir,
+					sessionFactory: async () => asSession(fake),
+				},
+				sso.manager,
+			)
+
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_begin, { region: "eu" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_await, { requestId: "req-1" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_cancel, { requestId: "req-1" })
+
+			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
+			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
 		})
 
 		it("throws when browser auth returns no token", async () => {
@@ -2744,6 +3018,9 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 		await expect(localAgent.newSession({ cwd: "/tmp", mcpServers: [] })).rejects.toThrow(/subscribe boom/)
 		expect(leaky.disposed).toBe(true)
+		// Extensions bind before subscribe fails, so the failure path must
+		// still emit session_shutdown before dispose (vault eviction).
+		expect(leaky.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
 	})
 
 	it("unregisters the ACP permission prompter if bindExtensions throws during newSession", async () => {
@@ -2870,12 +3147,16 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 	})
 
 	it("closes a live session and unregisters its ACP permission prompter", async () => {
-		expect(getAcpPrompter(sessionId)).toBeDefined()
+		const ownPrompter = getAcpPrompter(sessionId)
+		expect(ownPrompter).toBeDefined()
 
 		await agent.unstable_closeSession({ sessionId })
 
 		expect(fake.disposed).toBe(true)
-		expect(getAcpPrompter(sessionId)).toBeUndefined()
+		// The OWN prompter is unwound from the multi-owner slot; what's
+		// visible afterwards may be ANOTHER same-id attach's object (only
+		// test-suite id reuse produces that here) — but never ours.
+		expect(getAcpPrompter(sessionId)).not.toBe(ownPrompter)
 		await expect(
 			agent.prompt({
 				sessionId,
@@ -10977,6 +11258,86 @@ describe("KimchiAcpAgent loadSession", () => {
 			code: -32602,
 		})
 		expect(fake.disposed).toBe(true)
+		// Orphan teardown must emit session_shutdown BEFORE dispose so
+		// extension state keyed on it (the token vault) is evicted.
+		expect(fake.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
+	})
+
+	it("a corrupt duplicate of a LIVE session's file leaves the live session's registrations intact", async () => {
+		// failure-004 trigger: loading a hand-edited copy of a RUNNING
+		// session's file — its header claims the live session's id while the
+		// request asks for a different one. The attach fails (mismatch), but
+		// its catch must unwind ONLY what THIS attach registered: the live
+		// session's prompter / mode controller / vault must survive. Without
+		// the identity guards the catch would evict them by key.
+		const conn = makeConn()
+		const live = new FakeAgentSession("session-alive")
+		const liveAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+		})
+		await liveAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		// Note: same header id as the LIVE session, different requested id.
+		const dup = new FakeAgentSession("session-alive")
+		const loadAgent = makeAgent(async () => asSession(dup), { conn })
+		await expect(
+			loadAgent.loadSession({
+				sessionId: "session-other",
+				cwd: "/tmp",
+				mcpServers: [],
+			}),
+		).rejects.toMatchObject({ code: -32602 })
+		// The orphan itself still got the full emit→dispose teardown...
+		expect(dup.lifecycleEvents).toEqual(["session_shutdown", "disposed"])
+		// ...but nothing registered by the LIVE session was touched.
+		expect(getAcpPrompter("session-alive")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeDefined()
+		await liveAgent.closeSession({ sessionId: "session-alive" })
+		expect(getAcpPrompter("session-alive")).toBeUndefined()
+		expect(getSessionPermissionFlagController("session-alive")).toBeUndefined()
+	})
+
+	it("a late-failing concurrent attach evicts only its own registrations (winner stays intact)", async () => {
+		// failure-006: load + resume of the same id coalesce separately and
+		// race; here the loser registers AFTER the winner installed its
+		// record. Registry slots are multi-owner stacks: the loser's
+		// identity-checked unwind evicts exactly its own objects, and the
+		// winner's triad (record, prompter, mode controller) stays intact.
+		const conn = makeConn()
+		const winner = new FakeAgentSession("session-raced")
+		const loser = new FakeAgentSession("session-raced")
+		loser.bindExtensionsImpl = async () => {
+			throw new Error("bind boom")
+		}
+		let gateLoser: (s: FakeAgentSession) => void = () => {}
+		const loserGate = new Promise<FakeAgentSession>((resolve) => {
+			gateLoser = resolve
+		})
+		let loaderCalls = 0
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(new FakeAgentSession("unused-x")),
+			sessionLoader: async () => {
+				loaderCalls += 1
+				return asSession(loaderCalls === 1 ? winner : await loserGate)
+			},
+		})
+		const winnerPromise = agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		const loserPromise = agent.resumeSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		await winnerPromise
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		gateLoser(loser)
+		await expect(loserPromise).rejects.toThrow(/bind boom/)
+		// Loser unwound exactly its own registrations; the winner lives on.
+		expect(getAcpPrompter("session-raced")).toBeDefined()
+		expect(getSessionPermissionFlagController("session-raced")).toBeDefined()
+		// The winner's record is still the registered, re-loadable session.
+		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject(
+			{},
+		)
 	})
 
 	it("coalesces contiguous text blocks within an assistant message into one chunk", async () => {
@@ -12573,5 +12934,465 @@ describe("plan-review held prompt", () => {
 		heldFake.emit({ type: "agent_settled", aborted: false })
 		await promptPromise
 		expect(isSettled()?.ok).toBe(false)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Reversible redaction — presentation substitution of `[ENTITY_N]` tokens
+// ---------------------------------------------------------------------------
+
+describe("ACP token substitution (pii-redaction token mode)", () => {
+	// Install the production vault lifecycle (same wiring the pii-redaction
+	// extension uses) keyed to whatever session ids the tests register.
+	const extApi = () => {
+		const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => Promise<unknown> | unknown>>()
+		return {
+			api: {
+				on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<unknown> | unknown) => {
+					const list = handlers.get(event) ?? []
+					list.push(handler)
+					handlers.set(event, list)
+				},
+			} as unknown as ExtensionAPI,
+			fire: (event: string, sessionId: string) => {
+				const ctx = { sessionManager: { getSessionId: () => sessionId } }
+				return Promise.all((handlers.get(event) ?? []).map((h) => h({}, ctx)))
+			},
+		}
+	}
+
+	const textDelta = (delta: string, contentIndex = 0): AgentSessionEvent => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			delta,
+			contentIndex,
+			partial: {} as unknown as AssistantMessage,
+		},
+		message: {} as unknown as AssistantMessage,
+	})
+
+	const messageEnd = (text: string): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	type Started = { agent: KimchiAcpAgent; updates: SessionNotification[]; fakes: Map<string, FakeAgentSession> }
+
+	async function startTwoSessions(): Promise<Started> {
+		const { conn: recordingConn, updates } = makeRecordingConn()
+		const fakes = new Map<string, FakeAgentSession>()
+		// ACP's session/new allocates ids itself — pre-assign on the fake so
+		// the response id IS the fake's id, then key the map by it.
+		const ids = ["token-a", "token-b"]
+		let next = 0
+		const localAgent = new KimchiAcpAgent(recordingConn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => {
+				const fake = new FakeAgentSession(ids[next] ?? `fake-${next}`)
+				next++
+				fakes.set(fake.sessionId, fake)
+				return asSession(fake)
+			},
+		})
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+		return { agent: localAgent, updates, fakes }
+	}
+
+	const chunks = (updates: SessionNotification[], sessionId: string) =>
+		updates
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	it("substitutes vault-known tokens in streamed chunks, incl. tokens split across deltas", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		expect(vaultA).toBeDefined()
+		if (!vaultA) return
+		const original = "jane.doe@acme.com"
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", original)
+
+		const fake = fakes.get("token-a")
+		expect(fake).toBeDefined()
+		if (!fake) return
+		// Token split mid-identifier across two deltas — no partial original
+		// or half-token may reach the wire.
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`ping ${token.slice(0, 10)}`))
+		fake.emit(textDelta(`${token.slice(10)} ok`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe(`ping ${original} ok`)
+		// token-b saw nothing — isolation is structural.
+		expect(chunks(updates, "token-b")).toEqual([])
+	})
+
+	it("message_end remainder + flush completes a cut token without a wrong-value or duplicated emission", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const vaultA = vaultForSession("token-a")
+		if (!vaultA) throw new Error("missing vault")
+		const token = tokenFor(vaultA, "EMAIL_ADDRESS", "jane.doe@acme.com")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta(`hi ${token.slice(0, 8)}`))
+		// message_end carries the full text; the remainder push + flush must
+		// reconstruct the token and substitute once.
+		fake.emit(messageEnd(`hi ${token}`))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("hi jane.doe@acme.com")
+	})
+
+	it("confabulated tokens pass through verbatim (no vault entry, no crash)", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		fake.emit(textDelta("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(messageEnd("imagine [EMAIL_ADDRESS_99] today"))
+		fake.emit(agentEnd())
+
+		expect(chunks(updates, "token-a").join("")).toBe("imagine [EMAIL_ADDRESS_99] today")
+	})
+
+	it("DEAD-vault negative: session A's shutdown mid-stream stops its substitution; B never sees A's originals", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+		await lifecycle.fire("session_start", "token-b")
+
+		const vaultA = vaultForSession("token-a")
+		const vaultB = vaultForSession("token-b")
+		if (!vaultA || !vaultB) throw new Error("missing vaults")
+		const secretA = "secret-a@acme-internal.io"
+		const tokenA = tokenFor(vaultA, "EMAIL_ADDRESS", secretA)
+		const tokenB = tokenFor(vaultB, "EMAIL_ADDRESS", "user-b@acme.com")
+
+		const fakeA = fakes.get("token-a")
+		const fakeB = fakes.get("token-b")
+
+		// A dies MID-STREAM. Its dangling partial tail must NOT complete into
+		// the wrong session, and its later deltas render tokens verbatim.
+		fakeA?.emit({ type: "agent_start" })
+		fakeA?.emit(textDelta(`a:${tokenA.slice(0, 12)}`))
+		await lifecycle.fire("session_shutdown", "token-a")
+		fakeA?.emit(textDelta(`${tokenA.slice(12)}.mid`))
+
+		// B streams normally while A is dead — B's vault substitutes only B's.
+		fakeB?.emit({ type: "agent_start" })
+		fakeB?.emit(textDelta(`b:${tokenB}.done`))
+		fakeB?.emit(agentEnd())
+
+		const aOut = chunks(updates, "token-a").join("")
+		const bOut = chunks(updates, "token-b").join("")
+		// A's original is recoverable from the vault that existed while it
+		// streamed — never from B's.
+		expect(aOut).toContain(secretA)
+		expect(bOut).toBe("b:user-b@acme.com.done")
+		expect(bOut).not.toContain(secretA)
+	})
+
+	const thinkingDelta = (delta: string, contentIndex = 0): AgentSessionEvent => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			delta,
+			contentIndex,
+			partial: {} as unknown as AssistantMessage,
+		},
+		message: {} as unknown as AssistantMessage,
+	})
+
+	const messageEndWithContent = (content: AssistantMessage["content"]): AgentSessionEvent => {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	const thoughts = (all: SessionNotification[], sessionId: string) =>
+		all
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_thought_chunk")
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	const textsOf = (all: SessionNotification[], sessionId: string, kind: string) =>
+		all
+			.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === kind)
+			.map((u) => (u.update as { content?: { text?: string } }).content?.text ?? "")
+
+	it("substitutes thinking deltas and drains a trailing held token at message end", async () => {
+		const { updates, fakes } = await startTwoSessions()
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-a")
+
+		const vault = vaultForSession("token-a")
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_23]"
+		const token = "[EMAIL_ADDRESS_1]"
+		// Seed the vault's substitution direction directly — allocation order
+		// is irrelevant to what this test asserts.
+		vault.fromToken.set(token, original)
+
+		const fake = fakes.get("token-a")
+		if (!fake) throw new Error("missing fake")
+		fake.emit({ type: "agent_start" })
+		// Split across deltas substitutes seamlessly; a token landing at the
+		// very END of the stream is held (it could still extend) and drains
+		// as the block's final thought chunk at message_end.
+		fake.emit(thinkingDelta(`about ${token.slice(0, 6)}`))
+		fake.emit(thinkingDelta(`${token.slice(6)} and `))
+		fake.emit(thinkingDelta(token))
+		fake.emit(messageEndWithContent([{ type: "thinking", thinking: `about ${token} and ${token}` }]))
+		fake.emit(agentEnd())
+
+		expect(thoughts(updates, "token-a").join("")).toBe(`about ${original} and ${original}`)
+		// Thinking never leaks into message chunks.
+		expect(chunks(updates, "token-a")).toEqual([])
+	})
+
+	it("tool-call display mirrors execution: bash stays tokenized, edit shows originals; content/rawOutput substitute", async () => {
+		const { conn, updates } = makeRecordingConn()
+		const fake = new FakeAgentSession("token-tools")
+		const localAgent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await localAgent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", res.sessionId)
+		const vault = vaultForSession(res.sessionId)
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_22]"
+		const token = tokenFor(vault, "EMAIL_ADDRESS", original)
+
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				args: { command: `mail ${token}` },
+			})
+			fake.emit({
+				type: "tool_execution_start",
+				toolCallId: "tc-2",
+				toolName: "edit",
+				args: { path: "c.txt", oldText: token, newText: token },
+			})
+			fake.emit({
+				type: "tool_execution_end",
+				toolCallId: "tc-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: `sent to ${token}` }] },
+				isError: false,
+			})
+			fake.emit(agentEnd())
+		}
+		const promptPromise = localAgent.prompt({ sessionId: res.sessionId, prompt: [{ type: "text", text: "go" }] })
+		await vi.waitFor(() => {
+			expect(fake.promptCalls).toHaveLength(1)
+		})
+		await delay(30)
+		fake.emit({ type: "agent_settled", aborted: false })
+		await promptPromise
+
+		const call = updates.find((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")?.update as
+			| { title?: string; rawInput?: { command?: string } }
+			| undefined
+		// Bash executes its byte-faithful tokenized args — the card shows the
+		// token (substituting would show a command that never ran).
+		expect(call?.title).toBe(`mail ${token}`)
+		expect(call?.rawInput?.command).toBe(`mail ${token}`)
+		// edit dereferences vault tokens at execute (EXEC_DEREF_TOOLS): the
+		// original bytes are what lands, so the card shows the original.
+		const editCall = updates
+			.filter((u) => u.sessionId === res.sessionId && u.update.sessionUpdate === "tool_call")
+			.map((u) => u.update as { rawInput?: { newText?: string } })
+			.find((u) => u.rawInput?.newText !== undefined)
+		expect(editCall?.rawInput?.newText).toBe(original)
+
+		const done = updates
+			.filter(
+				(u) =>
+					u.sessionId === res.sessionId &&
+					u.update.sessionUpdate === "tool_call_update" &&
+					(u.update as { status?: string }).status === "completed",
+			)
+			.map(
+				(u) =>
+					u.update as {
+						content?: Array<{ type: string; text?: string }>
+						rawOutput?: { content?: Array<{ type: string; text?: string }> }
+					},
+			)
+		expect(done).toHaveLength(1)
+		const finished = done[0] as
+			| {
+					content?: Array<{ type: string; content?: { type: string; text?: string } }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		expect(finished?.content?.[0]?.content?.text).toBe(`sent to ${original}`)
+		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
+	})
+
+	it("replay substitutes user, thinking, text, and tool RESULTS while the vault lives; args mirror execution (bash tokens, edit originals)", async () => {
+		const fake = new FakeAgentSession("token-replay")
+		// Install the vault BEFORE loadSession so replay paints through it.
+		const lifecycle = extApi()
+		installVaultLifecycle(lifecycle.api as ExtensionAPI, () => true)
+		await lifecycle.fire("session_start", "token-replay")
+		const vault = vaultForSession("token-replay")
+		if (!vault) throw new Error("missing vault")
+		const original = "[EMAIL_ADDRESS_21]"
+		const token = tokenFor(vault, "EMAIL_ADDRESS", original)
+
+		fake.branch = [
+			userTextEntry(`my mail is ${token}`, "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "thinking", thinking: `user wrote ${token}`, redacted: false },
+					{ type: "text", text: `got it, ${token} noted` },
+					{ type: "toolCall", id: "tc-r1", name: "bash", arguments: { command: `mail ${token}` } },
+					{ type: "toolCall", id: "tc-r2", name: "edit", arguments: { path: "c.txt", newText: token } },
+				],
+				"a1",
+				"u1",
+			),
+			toolResultEntry("tc-r1", "bash", `sent to ${token}`, false, "tr1", "a1"),
+			toolResultEntry("tc-r2", "edit", "edited", false, "tr2", "a1"),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			// loadSession resolves through sessionLoader, not sessionFactory.
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "token-replay", cwd: "/tmp", mcpServers: [] })
+
+		expect(textsOf(updates, "token-replay", "user_message_chunk").join("")).toBe(`my mail is ${original}`)
+		expect(textsOf(updates, "token-replay", "agent_thought_chunk").join("")).toBe(`user wrote ${original}`)
+		expect(textsOf(updates, "token-replay", "agent_message_chunk").join("")).toBe(`got it, ${original} noted`)
+
+		const call = updates.find((u) => u.update.sessionUpdate === "tool_call")?.update as
+			| { title?: string; rawInput?: { command?: string } }
+			| undefined
+		expect(call?.title).toBe(`mail ${token}`)
+		expect(call?.rawInput?.command).toBe(`mail ${token}`)
+		// edit replayed with a live vault shows the originals — execution of an
+		// allowlisted file-mutation tool would deref, so display mirrors it.
+		const editCall = updates
+			.filter((u) => u.update.sessionUpdate === "tool_call")
+			.map((u) => u.update as { rawInput?: { newText?: string } })
+			.find((u) => u.rawInput?.newText !== undefined)
+		expect(editCall?.rawInput?.newText).toBe(original)
+		const done = updates.find(
+			(u) =>
+				u.update.sessionUpdate === "tool_call_update" && (u.update as { content?: unknown[] }).content !== undefined,
+		)?.update as
+			| {
+					content?: Array<{ type: string; text?: string }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		const finished = done as
+			| {
+					content?: Array<{ type: string; content?: { type: string; text?: string } }>
+					rawOutput?: { content?: Array<{ type: string; text?: string }> }
+			  }
+			| undefined
+		expect(finished?.content?.[0]?.content?.text).toBe(`sent to ${original}`)
+		expect(finished?.rawOutput?.content?.[0]?.text).toBe(`sent to ${original}`)
+	})
+
+	it("replay without a vault (post-restart) renders tokens verbatim", async () => {
+		const fake = new FakeAgentSession("token-replay-dead")
+		const token = "[EMAIL_ADDRESS_7]"
+		fake.branch = [
+			userTextEntry(`my mail is ${token}`, "u1", null),
+			assistantBlocksEntry(
+				[
+					{ type: "thinking", thinking: `user wrote ${token}`, redacted: false },
+					{ type: "text", text: `got it, ${token} noted` },
+				],
+				"a1",
+				"u1",
+			),
+		]
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+			// loadSession resolves through sessionLoader, not sessionFactory.
+			sessionLoader: async () => asSession(fake),
+		})
+		await agent.loadSession({ sessionId: "token-replay-dead", cwd: "/tmp", mcpServers: [] })
+
+		expect(textsOf(updates, "token-replay-dead", "user_message_chunk").join("")).toBe(`my mail is ${token}`)
+		expect(textsOf(updates, "token-replay-dead", "agent_thought_chunk").join("")).toBe(`user wrote ${token}`)
+		expect(textsOf(updates, "token-replay-dead", "agent_message_chunk").join("")).toBe(`got it, ${token} noted`)
 	})
 })

@@ -1,5 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { substituteTokens, vaultForPaint } from "../pii-redaction/vault.js"
 import { getActiveThinkingState, getThinkingStepsMode } from "./state.js"
 import type { DerivedThinkingStep, ThinkingSemanticRole, ThinkingSourceBlock, ThinkingThemeLike } from "./types.js"
 
@@ -59,6 +60,18 @@ function sanitizeThinkingText(text: string): string {
 			// biome-ignore lint/suspicious/noControlCharactersInRegex: -
 			.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "")
 	)
+}
+
+/**
+ * Presentation-side token substitution for thinking display — the same
+ * contract as the pii-redaction markdown transformer (full text,
+ * stateless, every paint): thinking blocks are NOT part of the markdown
+ * paint path, so their text substitutes here. Unknown tokens pass through
+ * verbatim; no vault (markers mode) → passthrough.
+ */
+function paintText(text: string): string {
+	const vault = vaultForPaint()
+	return vault ? substituteTokens(vault, text) : text
 }
 
 function parseThinkingInlineSegments(text: string): InlineSegment[] {
@@ -208,7 +221,7 @@ export function tailRawLinesFromBlocks(blocks: ThinkingSourceBlock[], maxLines: 
 	let tail = ""
 	for (let index = blocks.length - 1; index >= 0; index -= 1) {
 		const block = blocks[index]
-		const text = block.text
+		const text = paintText(block.text)
 		if (!text || (block.redacted && !text.trim())) continue
 		const separator = tail ? "\n" : ""
 		const remaining = LIVE_PREVIEW_TAIL_CHARS - tail.length - separator.length
@@ -398,19 +411,27 @@ export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number
 	// "none" renders nothing; existing components repaint empty after a
 	// live mode switch without waiting for an updateContent rebuild.
 	if (options.mode === "none") return []
+	// Presentation-side token substitution (see paintText): step text
+	// here, block text inside tailRawLinesFromBlocks — each surface
+	// exactly once, never twice.
+	const steps = options.steps.map((step) => ({
+		...step,
+		summary: paintText(step.summary),
+		body: paintText(step.body),
+	}))
 	if (options.mode === "collapsed") {
 		return renderCollapsed(
 			theme,
 			width,
 			options.blocks,
-			options.steps,
+			steps,
 			options.activeStepId,
 			options.isActive,
 			options.nowMs,
 			options.cacheOwner,
 		)
 	}
-	return renderExpanded(theme, width, options.steps, options.cacheOwner)
+	return renderExpanded(theme, width, steps, options.cacheOwner)
 }
 
 export class ThinkingStepsComponent implements Component {

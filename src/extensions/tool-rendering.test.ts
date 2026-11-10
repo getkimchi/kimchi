@@ -10,9 +10,11 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { Container, ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import { installVaultLifecycle, resetTokenVaults, tokenFor, vaultForSession } from "./pii-redaction/vault.js"
 import { __resetCheckinGate, recordGateBlockedToolCall } from "./todos/checkin-gate.js"
 import {
 	createToolOutputStore,
@@ -23,6 +25,7 @@ import {
 } from "./tool-output-store.js"
 import toolRenderingExtension, {
 	createErrorTruncatingResultRenderer,
+	explainRedactedEditFailure,
 	formatToolTimer,
 	GREP_NO_MATCHES_SENTINEL,
 	getToolElapsedMs,
@@ -36,6 +39,7 @@ import toolRenderingExtension, {
 	summarizeMcpToolInvocationArgs,
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
+	ToolText,
 	toolHeader,
 	withCheckinGateCollapse,
 	withMarkerResolution,
@@ -48,6 +52,81 @@ const OSC133_C = "\x1b]133;C\x07"
 const SGR_RE = new RegExp(`${"\x1b"}\\[[0-9;]*m`, "g")
 
 const stripSgr = (line: string): string => line.replace(SGR_RE, "")
+
+describe("paint substitution (pii-redaction token mode)", () => {
+	beforeEach(() => {
+		resetTokenVaults()
+	})
+	afterEach(() => {
+		resetTokenVaults()
+	})
+
+	// Install the production vault lifecycle and fire its session_start for
+	// one session id — exactly what sets the TUI paint vault (vaultForPaint)
+	// that ToolText/toolHeader consult, without the whole extension.
+	async function paintTokenFor(original: string): Promise<string> {
+		const { api, emit } = createExtensionApi()
+		installVaultLifecycle(api, () => true)
+		await emit("session_start", {}, createContext({ sessionManager: { getSessionId: () => "paint" } }))
+		const vault = vaultForSession("paint")
+		if (!vault) throw new Error("paint vault missing")
+		return tokenFor(vault, "EMAIL_ADDRESS", original)
+	}
+
+	it("ToolText substitutes vault-known tokens at construction and setText", async () => {
+		const original = "[EMAIL_ADDRESS_14]"
+		const token = await paintTokenFor(original)
+		const view = new ToolText(`out: ${token}`)
+		expect(view.render(60).join("\n")).toContain(`out: ${original}`)
+		view.setText(`more ${token}`)
+		expect(view.render(60).join("\n")).toContain(`more ${original}`)
+	})
+
+	it("toolHeader keeps the arg summary tokenized for byte-faithful tools (bash ran the literal token)", async () => {
+		const original = "[EMAIL_ADDRESS_15]"
+		const token = await paintTokenFor(original)
+		const header = toolHeader("bash", `mail ${token}`, plainTheme, "● ")
+		expect(header).toContain(`mail ${token}`)
+		expect(header).not.toContain(original)
+	})
+
+	it("toolHeader mirrors execution for edit/write (EXEC_DEREF_TOOLS): originals are what lands", async () => {
+		const original = "[EMAIL_ADDRESS_16]"
+		const token = await paintTokenFor(original)
+		const header = toolHeader("edit", `c.txt ${token}`, plainTheme, "● ", undefined, true)
+		expect(header).toContain(`c.txt ${original}`)
+		expect(header).not.toContain(token)
+	})
+
+	it("renders tokens verbatim with no vault (markers mode / post-restart)", () => {
+		const view = new ToolText("out: [EMAIL_ADDRESS_99]")
+		expect(view.render(60).join("\n")).toContain("out: [EMAIL_ADDRESS_99]")
+	})
+
+	it("explainRedactedEditFailure appends the redaction story to Could-not-find errors over token-shaped args", () => {
+		// Fresh objects per case: the helper appends INTO the result, mirroring
+		// the surrounding execute, which reassigns result.details in place.
+		const base = () => ({
+			isError: true as const,
+			content: [
+				{ type: "text" as const, text: "Could not find the exact text in c.txt. The old text must match exactly." },
+			],
+		})
+		const out = explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, false)
+		expect(out.content).toHaveLength(2)
+		expect(out.content[1].text).toContain("redacted span")
+		expect(out.content[1].text).toContain("redaction.excludedEntities")
+		// Markers-shaped args get the same guidance.
+		const outMarker = explainRedactedEditFailure(base(), { oldText: "buyer [REDACTED-EMAIL_ADDRESS]" }, false)
+		expect(outMarker.content).toHaveLength(2)
+		// No shape, no guidance; and a SUCCESSFUL deref (file changed) stays quiet.
+		expect(explainRedactedEditFailure(base(), { oldText: "plain" }, false).content).toHaveLength(1)
+		expect(explainRedactedEditFailure(base(), { oldText: "buyer [EMAIL_ADDRESS_9]" }, true).content).toHaveLength(1)
+		// Non-error results pass through untouched.
+		const ok = { content: [] }
+		expect(explainRedactedEditFailure(ok, { oldText: "x [EMAIL_ADDRESS_9]" }, false)).toBe(ok)
+	})
+})
 const plainTheme = {
 	fg: (_name: string, value: string) => value,
 	bold: (value: string) => value,

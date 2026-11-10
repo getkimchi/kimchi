@@ -23,7 +23,7 @@ export const PI_CODING_AGENT_INTERNAL_MODULES = {
 } as const
 
 interface AssistantMessageComponentPrototype {
-	updateContent(message: AssistantMessage): void
+	updateContent(message: AssistantMessage, isStreaming?: boolean): void
 	setHideThinkingBlock(hide: boolean): void
 	setHiddenThinkingLabel(label: string): void
 	contentContainer: {
@@ -34,6 +34,17 @@ interface AssistantMessageComponentPrototype {
 	hideThinkingBlock: boolean
 	markdownTheme: unknown
 	hiddenThinkingLabel: string
+	// Constructor-bound upstream class fields the patched renderer must
+	// honor too — otherwise the patched paint path drops every extension
+	// markdown transformer (upstream mode/interactive/components/markdown-
+	// transform.js semantics) for assistant text blocks.
+	markdownTransformers?: Array<
+		(
+			markdown: string,
+			context: { messageType: string; isStreaming: boolean; availableWidth: number },
+		) => string | undefined
+	>
+	isStreaming?: boolean
 }
 
 export function assertPatchableAssistantMessageComponent(value: unknown): {
@@ -299,8 +310,13 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 	const patchedUpdateContent = function patchedUpdateContent(
 		this: AssistantMessageComponentPrototype,
 		message: AssistantMessage,
+		isStreaming?: boolean,
 	): void {
 		this.lastMessage = message
+		// Mirror upstream's `updateContent(message, isStreaming =
+		// this.isStreaming)`: an explicit second argument updates the field
+		// (markdown transformers receive it as context.isStreaming).
+		if (isStreaming !== undefined) this.isStreaming = isStreaming
 		// A refused turn has its own renderer, the refused-turns carve-out in the
 		// method this patch wrapped (installed from cli.ts before any session
 		// starts); rendering its notice as markdown here would hide that.
@@ -332,9 +348,34 @@ function installPatch(theme: ThinkingThemeLike): () => void {
 					.some((content) => content.type === "text" && content.text.trim().length > 0)
 			})()
 
+			// Forward extension markdown transformers to assistant text blocks,
+			// mirroring upstream's createMarkdownTransform ("assistant"):
+			// sequential application, string result wins, a throwing or
+			// non-string-returning transformer leaves the current markdown.
+			const applyMarkdownTransformers = (markdown: string, availableWidth: number): string => {
+				let transformed = markdown
+				for (const transformer of this.markdownTransformers ?? []) {
+					try {
+						const result = transformer(transformed, {
+							messageType: "assistant",
+							isStreaming: this.isStreaming ?? false,
+							availableWidth,
+						})
+						if (typeof result === "string") transformed = result
+					} catch {
+						// Keep the current Markdown and continue with the next transformer.
+					}
+				}
+				return transformed
+			}
+
 			for (const content of message.content) {
 				if (content.type === "text" && content.text.trim()) {
-					this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme as MarkdownTheme))
+					this.contentContainer.addChild(
+						new Markdown(content.text.trim(), 1, 0, this.markdownTheme as MarkdownTheme, undefined, {
+							transform: applyMarkdownTransformers,
+						}),
+					)
 					continue
 				}
 

@@ -735,10 +735,10 @@ export function applyOrganizationHeader(modelsJsonPath: string, organizationId: 
 				changed = true
 			}
 		} else if (hasHeader) {
-			// biome-ignore lint/performance/noDelete: explicit removal keeps the
-			// entry shape identical to a never-SSO'd provider
-			delete headers[ORGANIZATION_HEADER]
-			entry.headers = headers
+			// Drop the organization header so the entry shape is identical to a
+			// never-SSO'd provider.
+			const { [ORGANIZATION_HEADER]: _dropped, ...rest } = headers
+			entry.headers = rest
 			changed = true
 		}
 	}

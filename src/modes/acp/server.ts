@@ -45,6 +45,7 @@ import {
 	type ToolCallContent,
 } from "@agentclientprotocol/sdk"
 import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
+import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
@@ -62,8 +63,17 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import open from "open"
 import { getParsedCliArgs } from "../../cli-args.js"
+import {
+	authMethodRegion,
+	isSsoAuthMethodId,
+	KIMCHI_AGENT_AUTH_METHOD_ID,
+	KIMCHI_SSO_AUTH_METHOD_ID,
+} from "../../cli-auth/auth-methods.js"
+import { startCallbackServer } from "../../cli-auth/callback-server.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
+import { exchangeAuthorizationCode, type KimchiOrganization, listUserOrganizations } from "../../cli-auth/oauth.js"
 import {
 	clearApiKey,
 	endpointsForRegion,
@@ -72,6 +82,7 @@ import {
 	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
+	writeRegion,
 } from "../../config.js"
 import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "../../credential-staleness.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
@@ -85,6 +96,7 @@ import {
 } from "../../extensions/auto-model/constants.js"
 import { getAutoRoutingState, isRoutedModel } from "../../extensions/auto-model/state.js"
 import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
+import { readE2eSeam } from "../../extensions/e2e-seam.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
@@ -111,18 +123,30 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { getAllowedModes, hasOrgPolicyRestrictions, isModeAllowed } from "../../extensions/permissions/policy.js"
-import type { PermissionMode, PermissionModeState } from "../../extensions/permissions/types.js"
+import type {
+	PermissionMode,
+	PermissionModeState,
+	SessionPermissionFlagController,
+} from "../../extensions/permissions/types.js"
+import { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
+import {
+	EXEC_DEREF_TOOLS,
+	substituteTokens,
+	substituteTokensDeep,
+	vaultForSession,
+} from "../../extensions/pii-redaction/vault.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
-import { updateModelsConfig } from "../../models.js"
-import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
+import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
+import { oauthConfigForRegion, ssoAvailableRegions } from "../../oauth-config.js"
+import { clearPiAuth, syncOAuthCredentialToKimchiProviders, syncPiAuth } from "../../pi-auth.js"
 import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
-import { isRegionId, type KimchiRegion, type RegionId, selectableRegions } from "../../regions.js"
+import { isRegionId, type KimchiRegion, REGIONS, type RegionId, selectableRegions } from "../../regions.js"
 import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
@@ -155,6 +179,7 @@ import {
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
+import { SsoFlowManager, type SsoFlowManagerDeps } from "./ext-methods/sso.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -183,12 +208,7 @@ import type { FileChange, PendingFileChange, SessionTurnTarget, TurnContext, Tur
 import { emptyTurnUsage, updateTurnUsage } from "./usage.js"
 import { asString, extractImages, truncate } from "./utils.js"
 
-/** Auth method ID for Agent Auth (browser-based OAuth). Used in both
- * initialize() declaration and authenticate() validation to avoid typo drift. */
-const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
-
-/**
- * Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
+/** Region-pinned Agent Auth methods (`kimchi-agent-<regionId>`). Advertised in
  * addition to `kimchi-agent` — the advertised list doubles as the capability
  * signal: new Studio versions show a region picker only when these methods
  * exist, while old Studio ignores them and keeps calling `kimchi-agent`.
@@ -201,19 +221,36 @@ function regionAuthMethod(region: KimchiRegion): AuthMethod {
 	}
 }
 
-/** Region an Agent Auth method logs in to; undefined for an unknown method. */
-function authMethodRegion(methodId: string): RegionId | undefined {
-	if (methodId === KIMCHI_AGENT_AUTH_METHOD_ID) return resolveEndpoints().region
-	const prefix = `${KIMCHI_AGENT_AUTH_METHOD_ID}-`
-	if (!methodId.startsWith(prefix)) return undefined
-	const suffix = methodId.slice(prefix.length)
-	return isRegionId(suffix) ? suffix : undefined
+/** Region-pinned Cast AI SSO methods (`kimchi-sso-<regionId>`), advertised
+ * before `kimchi-agent` so clients that pick the first method get SSO as the
+ * default. Derived from `ssoAvailableRegions()` — SSO exists only
+ * where an Auth0 tenant is registered (us/eu), NOT everywhere
+ * `selectableRegions()` lists; the legacy EU gate stays experimental. */
+function ssoRegionAuthMethod(region: KimchiRegion): AuthMethod {
+	return {
+		id: `${KIMCHI_SSO_AUTH_METHOD_ID}-${region.id}`,
+		name: `Cast AI SSO (${region.id.toUpperCase()})`,
+		description: `Sign in with your Cast AI account (${region.label} region)`,
+	}
 }
 
 /** Copy shown on the OAuth callback success page when the flow was launched by
  * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
  * must not assume the terminal CLI. */
 export const ACP_SUCCESS_MESSAGE = "You are now connected to Kimchi. You can close this window and start using it."
+
+/** IO deps for the SSO flow manager: region-aware Auth0 tenant config, the
+ * loopback callback server, token exchange, and org listing. The manager is
+ * created per connection (one-flow-per-connection rule). */
+const SSO_FLOW_MANAGER_DEPS: SsoFlowManagerDeps = {
+	configuredRegion: () => resolveEndpoints().region,
+	// Map the region id through the registry: oauthConfigForRegion
+	// consumes the full KimchiRegion (castApiUrl etc.).
+	oauthConfigForRegion: (region) => oauthConfigForRegion(REGIONS[region]),
+	startCallbackServer,
+	exchangeAuthorizationCode,
+	listUserOrganizations,
+}
 
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
@@ -325,6 +362,15 @@ function cancelPendingPrompts(entry: SessionRecord): void {
 type SessionRecord = {
 	session: AgentSession
 	unsubscribe: () => void
+	/**
+	 * The prompter THIS record registered — threaded so every teardown of
+	 * the registry slot identity-checks it: a close/abort await window lets
+	 * a same-id respawn register first, and a by-key delete would then evict
+	 * the RESPAWN's live prompter.
+	 */
+	ownPrompter?: ReturnType<typeof createAcpPermissionPrompter>
+	/** Same identity discipline as ownPrompter, for the mode-controller registry slot. */
+	ownFlagController?: SessionPermissionFlagController
 	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
 	// its cwd private, but the ACP server needs it to resolve relative tool
 	// paths (pre-write reads for per-turn diffs).
@@ -372,6 +418,16 @@ type SessionRecord = {
 	 * message's last emitted block id.
 	 */
 	contentIndexToBlockId: Map<number, string>
+	/**
+	 * Per-assistant-message map from contentIndex → the token-stream
+	 * desanitizer for reversible redaction (pii-redaction token mode).
+	 * Deltas and the message_end remainder flow through one buffer per text
+	 * block so a token split across chunk boundaries substitutes
+	 * atomically. Created lazily ONLY when the session has an active token
+	 * vault; markers mode never allocates one. Cleared everywhere
+	 * contentIndexToBlockId is cleared — same per-message lifetime.
+	 */
+	streamDesanitizers: Map<number, StreamDesanitizer>
 	/**
 	 * Per-assistant-message map from pi-mono's contentIndex → text already
 	 * streamed to the client
@@ -478,6 +534,7 @@ export class KimchiAcpAgent implements Agent {
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
 	private readonly mcpProbe: McpProbe | undefined
+	private readonly sso: SsoFlowManager
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
 	private clientCapabilities: ClientCapabilities | undefined
 	// Track non-text prompt block types we've already warned about so a
@@ -516,12 +573,17 @@ export class KimchiAcpAgent implements Agent {
 	constructor(
 		private readonly conn: AgentSideConnection,
 		options: RunAcpOptions,
+		/** Test seam: production always builds the default manager. Shared by
+		 * the `kimchi-sso*` authenticate() path and the `_kimchi.dev/sso_*` ext
+		 * methods so one-flow-per-connection holds across both. */
+		ssoManager?: SsoFlowManager,
 	) {
 		this.sessionFactory = options.sessionFactory ?? defaultSessionFactory(options)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader = options.sessionLoader ?? defaultSessionLoader(options)
 		this.mcpProbe = options.mcpProbe
+		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
 			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
@@ -541,13 +603,29 @@ export class KimchiAcpAgent implements Agent {
 		const modelRegistry = new ModelRegistry(modelRuntime)
 		const supportsImages = modelRegistry.getAvailable().some((m) => modelSupportsImages(m))
 
-		// ACP Registry compliance: advertise at least one auth method. Agent Auth
-		// (browser-based OAuth via local callback server) is always declared.
-		// Terminal Auth (interactive `kimchi login`) is declared only when the
-		// client advertises the terminal capability, per the auth-methods RFD:
-		// "An Agent may advertise a terminal authentication method only when the
-		// Client advertised the corresponding capability."
+		// ACP Registry compliance: advertise at least one auth method.
+		//
+		// Cast AI SSO first: clients that pick the first advertised
+		// method get SSO as the default. `kimchi-sso` follows the configured
+		// region and is only advertised when that region has an Auth0 tenant
+		// (mirrors the TUI selector hiding SSO for self-hosted); the pinned
+		// companions cover every tenant region so clients can pick explicitly.
+		// Agent Auth + Terminal Auth stay as fallbacks, and old Studio versions
+		// ignore the kimchi-sso* ids and keep calling `kimchi-agent` — the
+		// advertised list doubles as the capability signal.
+		const configuredRegionHasSsoTenant = oauthConfigForRegion(REGIONS[resolveEndpoints().region]) !== undefined
 		const authMethods: AuthMethod[] = [
+			...(configuredRegionHasSsoTenant
+				? [
+						{
+							id: KIMCHI_SSO_AUTH_METHOD_ID,
+							name: "Cast AI SSO",
+							description: "Sign in with your Cast AI account",
+						},
+					]
+				: []),
+			// Region-pinned SSO companions for clients that can pick a region.
+			...ssoAvailableRegions().map(ssoRegionAuthMethod),
 			{
 				id: KIMCHI_AGENT_AUTH_METHOD_ID,
 				name: "Kimchi Login",
@@ -592,6 +670,9 @@ export class KimchiAcpAgent implements Agent {
 					// as `resource_link` chunks carrying
 					// `_meta["kimchi.dev"].type = "artifact"`.
 					artifacts: true,
+					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
+					// methods. Clients gate their SSO UI on this flag.
+					sso: true,
 				}),
 			},
 			authMethods,
@@ -632,15 +713,17 @@ export class KimchiAcpAgent implements Agent {
 		// regardless of config. Terminal Auth ("kimchi-terminal") is resolved
 		// out-of-band: the client launches `kimchi login` as a separate process,
 		// so this method is never called for it.
-		//
-		// NOTE: the experimental Kimchi SSO (OAuth code + PKCE) login is NOT
-		// offered here. ACP clients cannot reliably answer the manual-code prompt
-		// the SSH/headless path needs, so ACP keeps this web-app handoff; SSO
-		// credentials created by the TUI still work in ACP sessions (the
-		// provider's refreshToken renews them non-interactively at request time).
 		const region = authMethodRegion(params.methodId)
 		if (region === undefined) {
 			throw RequestError.invalidParams(undefined, `unknown auth method: ${params.methodId}`)
+		}
+
+		// Cast AI SSO (OAuth code + PKCE) rides the stepwise ext-method manager:
+		// the loopback callback works on localhost, so the plain path opens the
+		// browser harness-side. Studio drives the `_kimchi.dev/sso_*` ext methods
+		// itself; see ext-methods/sso.ts.
+		if (isSsoAuthMethodId(params.methodId)) {
+			return this.authenticateViaSso(region)
 		}
 
 		// Run the browser OAuth flow: starts a local callback server, opens the
@@ -700,6 +783,86 @@ export class KimchiAcpAgent implements Agent {
 		return {}
 	}
 
+	/** Plain-authenticate Cast AI SSO path (non-Studio ACP clients): reuse the
+	 * stepwise ext-method flow but open the browser harness-side. Shares the
+	 * manager's one-flow-per-connection slot, so it serializes with the ext
+	 * methods (SSO_IN_PROGRESS protects against interleaved logins). */
+	private async authenticateViaSso(region: RegionId): Promise<AuthenticateResponse> {
+		const begin = await this.sso.begin({ region })
+
+		// The e2e seam skips the opener (TUI e2e parity with
+		// authenticateViaBrowser).
+		if (readE2eSeam("KIMCHI_E2E_FAKE_BROWSER_OPEN") !== "1") {
+			try {
+				await open(begin.authorizeUrl)
+			} catch {
+				// Headless/SSH machines: no browser opens and no surface ever shows
+				// the URL — fail fast with the sign-in link instead of hanging
+				// until the loopback timeout.
+				this.sso.cancel({ requestId: begin.requestId })
+				throw RequestError.internalError(
+					undefined,
+					`Could not open a browser for Cast AI sign-in. Open ${begin.authorizeUrl} manually, then retry.`,
+				)
+			}
+		}
+
+		// sso_await settles directly to authenticated with the
+		// browser-chosen org (selection happens on the Auth0-hosted login page).
+		// Any terminal failure — including the multi-org listing, which the
+		// manager maps to an actionable SSO_IDP_ERROR — propagates and consumes
+		// the flow, so a retry starts clean.
+		await this.sso.awaitResult({ requestId: begin.requestId })
+		const settled = this.sso.takeSettledCredential()
+		if (settled) await this.settleSsoCredential(settled.credential, settled.org)
+		return {}
+	}
+
+	/**
+	 * Settle tail of a successful Cast AI SSO login — shared by the
+	 * authenticate() path above and the `_kimchi.dev/sso_*` ext methods. Mirrors
+	 * completeKimchiSsoLogin in the login extension (TUI):
+	 *
+	 * 1. Drop a stale config.json apiKey: the startup sync mirrors it into
+	 *    auth.json and would overwrite the OAuth entries at the next launch.
+	 * 2. Persist the signed-in region so endpoint derivation matches the
+	 *    tenant the user authenticated against.
+	 * 3. Refresh models metadata with the fresh bearer (cached fallback
+	 *    allowed, like the browser-key flow) and stamp the org header on every
+	 *    Kimchi provider — the gateway routes SSO requests by
+	 *    X-CastAi-Organization-Id (covers the cached-fallback path too).
+	 * 4. Fan the org-scoped credential out to every Kimchi-managed provider in
+	 *    models.json (sub-providers resolve auth per provider id).
+	 * 5. Clear stale marks — auth_status flips back — and refresh every OPEN
+	 *    session's ModelRuntime snapshot (same rationale as authenticate()).
+	 */
+	private async settleSsoCredential(credential: OAuthCredentials, org: KimchiOrganization): Promise<void> {
+		clearApiKey()
+		// `region` rides the credential extras (untyped in pi-ai's OAuthCredentials,
+		// same access pattern as the login extension's completeKimchiSsoLogin).
+		const credentialRegion = (credential as { region?: unknown }).region
+		if (isRegionId(credentialRegion)) {
+			writeRegion(credentialRegion)
+		}
+		const modelsPath = join(this.agentDir, "models.json")
+		await updateModelsConfig(modelsPath, credential.access, {
+			allowCachedFallback: true,
+			organizationId: org.id,
+		})
+		applyOrganizationHeader(modelsPath, org.id)
+		await syncOAuthCredentialToKimchiProviders(join(this.agentDir, "auth.json"), modelsPath, {
+			...credential,
+			orgId: org.id,
+			orgName: org.name,
+		})
+		clearCredentialStale(KIMCHI_PROVIDER_ID)
+		await Promise.all(
+			[...this.sessions.values()].map((record) =>
+				record.session.modelRuntime.refresh({ allowNetwork: false }).catch(() => {}),
+			),
+		)
+	}
+
 	async logout(_params: LogoutRequest): Promise<LogoutResponse> {
 		// Clear the persisted API key from config (loadConfig().apiKey), so
 		// new sessions no longer pick it up via the login extension.
@@ -714,6 +877,10 @@ export class KimchiAcpAgent implements Agent {
 
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const session = await this.sessionFactory(params)
+		// Captured for the identity-checked catch unwind: a concurrent
+		// attach of the same id may own the prompter registry by then.
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			const initialMode = this.getInitialPermissionMode(session)
 			assertSessionHasModel(session)
@@ -730,7 +897,7 @@ export class KimchiAcpAgent implements Agent {
 			// way setSessionModel does for an explicit client change.
 			setMultiModelEnabled(sessionId, isMultiModelOrchestrator(session))
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -741,23 +908,24 @@ export class KimchiAcpAgent implements Agent {
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamDesanitizers: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Populate skill commands only after binding: extensions contribute
@@ -784,10 +952,15 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(session.sessionId)
-			unregisterSessionPermissionFlagController(session.sessionId)
-			clearPermissionModeEnv(session.sessionId)
-			session.dispose()
+			// Only when registration actually ran — an `undefined` expected
+			// value means UNCONDITIONAL delete, which could evict a concurrent
+			// same-id session's registry slots (e.g. loading a corrupted
+			// duplicate of a LIVE session's file hits this catch).
+			if (ownPrompter) unregisterAcpPrompter(session.sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(session.sessionId, ownFlagController)) {
+				clearPermissionModeEnv(session.sessionId)
+			}
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1022,15 +1195,16 @@ export class KimchiAcpAgent implements Agent {
 		const session = await this.sessionLoader(params)
 		const initialMode = this.getInitialPermissionMode(session)
 		const sessionId = session.sessionId
+		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
+		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
 			// disagrees with the requested id would land under the wrong key in
 			// `sessions`. Subsequent session/prompt for params.sessionId would then
 			// fail with "unknown sessionId" while the file is still held open.
-			// Reject up front and dispose so we don't quietly diverge.
+			// Reject up front; the catch below tears the session down.
 			if (sessionId !== params.sessionId) {
-				session.dispose()
 				throw RequestError.invalidParams(
 					undefined,
 					`session header id ${sessionId} does not match requested sessionId ${params.sessionId}`,
@@ -1039,7 +1213,7 @@ export class KimchiAcpAgent implements Agent {
 			assertSessionHasModel(session)
 
 			const uiContext = this.createUiContext(session)
-			registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -1052,23 +1226,24 @@ export class KimchiAcpAgent implements Agent {
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
 				contentIndexToBlockId: new Map(),
+				streamDesanitizers: new Map(),
 				streamedText: new Map(),
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
+				ownFlagController,
 			}
-			registerAcpPrompter(
+			ownPrompter = createAcpPermissionPrompter(
+				this.conn,
 				sessionId,
-				createAcpPermissionPrompter(
-					this.conn,
-					sessionId,
-					uiContext,
-					(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
-					record.cwd,
-				),
+				uiContext,
+				(piToolCallId, toolName) => this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+				record.cwd,
 			)
+			registerAcpPrompter(sessionId, ownPrompter)
+			record.ownPrompter = ownPrompter
 			await this.bindAcpExtensions(session, uiContext)
 
 			// Same post-binding skill population as newSession (see there).
@@ -1101,16 +1276,20 @@ export class KimchiAcpAgent implements Agent {
 				configOptions,
 			}
 		} catch (err) {
-			unregisterAcpPrompter(sessionId)
-			unregisterSessionPermissionFlagController(sessionId)
-			clearPermissionModeEnv(sessionId)
+			if (ownPrompter) unregisterAcpPrompter(sessionId, ownPrompter)
+			if (ownFlagController && unregisterSessionPermissionFlagController(sessionId, ownFlagController)) {
+				clearPermissionModeEnv(sessionId)
+			}
+			// Identity check: load and resume of one id coalesce separately, so
+			// a concurrent attach may already own the registry slot — tearing
+			// down the WINNER's record would kill a live session.
 			const existing = this.sessions.get(sessionId)
-			if (existing) {
+			if (existing && existing.session === session) {
 				this.sessions.delete(sessionId)
 				existing.planTracker?.stop()
 				existing.unsubscribe()
 			}
-			session.dispose()
+			await this.disposeOrphanSession(session)
 			throw err
 		}
 	}
@@ -1354,6 +1533,23 @@ export class KimchiAcpAgent implements Agent {
 					authPath: join(this.agentDir, "auth.json"),
 					modelsPath: join(this.agentDir, "models.json"),
 				})
+			case AVAILABLE_EXT_METHODS.sso_begin:
+				// Cast AI SSO: stepwise login driven by the client.
+				// Sessionless; the manager owns the one-flow-per-connection rule,
+				// region resolution (per-param, never setPendingOAuthRegion), and
+				// the typed data.code errors. See ext-methods/sso.ts.
+				return this.sso.begin(params)
+			case AVAILABLE_EXT_METHODS.sso_await: {
+				// A settled browser leg persists nothing itself — the server applies
+				// the settle tail (persist + fan out + session refresh) so the
+				// manager stays free of agent-owned state.
+				const response = await this.sso.awaitResult(params)
+				const settled = this.sso.takeSettledCredential()
+				if (settled) await this.settleSsoCredential(settled.credential, settled.org)
+				return response
+			}
+			case AVAILABLE_EXT_METHODS.sso_cancel:
+				return this.sso.cancel(params)
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:
 				// Write the shared config per call through the harness's
 				// read-modify-write helper so sibling onboarding keys set by other
@@ -1475,9 +1671,10 @@ export class KimchiAcpAgent implements Agent {
 		for (const entry of this.sessions.values()) {
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
-			unregisterAcpPrompter(entry.session.sessionId)
-			unregisterSessionPermissionFlagController(entry.session.sessionId)
-			clearPermissionModeEnv(entry.session.sessionId)
+			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
+			if (unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)) {
+				clearPermissionModeEnv(entry.session.sessionId)
+			}
 			const droppedQueue = this.drainQueue(entry)
 			notifyDroppedQueue(this.conn, entry.session.sessionId, droppedQueue, "shutdown")
 			await this.disposeSessionRecord(entry)
@@ -1493,9 +1690,10 @@ export class KimchiAcpAgent implements Agent {
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
-		unregisterAcpPrompter(sessionId)
-		unregisterSessionPermissionFlagController(sessionId)
-		clearPermissionModeEnv(sessionId)
+		unregisterAcpPrompter(sessionId, entry.ownPrompter)
+		if (unregisterSessionPermissionFlagController(sessionId, entry.ownFlagController)) {
+			clearPermissionModeEnv(sessionId)
+		}
 		entry.unsubscribe()
 		// Prompts parked behind an unsolicited run own no turn yet: resolve them
 		// as cancelled rather than leaving the client's request unanswered.
@@ -1583,7 +1781,15 @@ export class KimchiAcpAgent implements Agent {
 			sessionId,
 			update: {
 				sessionUpdate: ame.type === "text_delta" ? "agent_message_chunk" : "agent_thought_chunk",
-				content: { type: "text", text: ame.delta },
+				content: {
+					type: "text",
+					// Presentation-side token substitution: the session file and
+					// provider keep `[ENTITY_N]` tokens; the user's IDE sees the
+					// original — text AND thinking deltas (both are user-facing display;
+					// thinking tails drain at message end in forwardThinkingTails).
+					// No session vault → markers mode passthrough.
+					text: this.pushText(sessionId, entry, ame.contentIndex, ame.delta),
+				},
 				messageId,
 				...spreadModelMeta(modelMeta),
 			},
@@ -1594,6 +1800,147 @@ export class KimchiAcpAgent implements Agent {
 			const streamed = entry.streamedText.get(ame.contentIndex) ?? ""
 			entry.streamedText.set(ame.contentIndex, streamed + ame.delta)
 		}
+	}
+
+	/**
+	 * Feed one text block's stream through its session desanitizer. No
+	 * vault → passthrough without allocating state (markers mode pays
+	 * zero cost).
+	 */
+	private pushText(sessionId: string, entry: SessionRecord, contentIndex: number, text: string): string {
+		let desanitizer = entry.streamDesanitizers.get(contentIndex)
+		if (!desanitizer) {
+			const vault = vaultForSession(sessionId)
+			if (!vault) return text
+			desanitizer = new StreamDesanitizer(vault)
+			entry.streamDesanitizers.set(contentIndex, desanitizer)
+		}
+		return desanitizer.push(text)
+	}
+
+	/**
+	 * Drain a block's desanitizer at block end. An empty result means no
+	 * desanitizer existed (markers mode) or nothing was held.
+	 */
+	private flushText(entry: SessionRecord, contentIndex: number): string {
+		const desanitizer = entry.streamDesanitizers.get(contentIndex)
+		if (!desanitizer) return ""
+		entry.streamDesanitizers.delete(contentIndex)
+		return desanitizer.flush()
+	}
+
+	/**
+	 * Thinking blocks' desanitizer tails. Streaming routes thinking deltas
+	 * through substitution, so a token split across the block's last deltas
+	 * is held back; the held tail goes out here as the block's final
+	 * agent_thought_chunk, on the id its streamed chunks used. Text blocks
+	 * drained in forwardUnsentMessageText above; any remaining desanitizer
+	 * after this pass (a block dropped from the final message) is flushed
+	 * and DISCARDED — content indexes restart at 0 next turn, so no
+	 * desanitizer may outlive the message that allocated its index.
+	 */
+	private forwardThinkingTails(sessionId: string, entry: SessionRecord, msg: AssistantMessage): void {
+		if (!Array.isArray(msg.content)) return
+		for (const [index, block] of msg.content.entries()) {
+			if (block.type !== "thinking") continue
+			const tail = this.flushText(entry, index)
+			if (!tail) continue
+			let messageId = entry.contentIndexToBlockId.get(index)
+			if (messageId === undefined) {
+				messageId = `km.${entry.nextBlockId++}`
+				entry.contentIndexToBlockId.set(index, messageId)
+			}
+			const modelMeta = modelMetaFor(entry.emittedModelMeta, messageId, modelAttributionFrom(msg))
+			this.send({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_thought_chunk",
+					content: { type: "text", text: tail },
+					messageId,
+					...spreadModelMeta(modelMeta),
+				},
+			})
+		}
+		for (const index of [...entry.streamDesanitizers.keys()]) {
+			this.flushText(entry, index)
+		}
+	}
+
+	/**
+	 * Display-only token substitution for whole strings (titles, replayed
+	 * message text). No vault (markers mode, post-restart) → passthrough.
+	 * NEVER apply to permission prompts: an approval is a decision about
+	 * execution, and what executes is the literal token — the prompt must
+	 * show what will run, not the original it stands for.
+	 */
+	private displayText(sessionId: string, text: string): string {
+		const vault = vaultForSession(sessionId)
+		return vault ? substituteTokens(vault, text) : text
+	}
+
+	/**
+	 * Display-only deep substitution for tool RESULTS (rawOutput).
+	 * substituteTokensDeep rebuilds plain objects — the in-memory values
+	 * stay tokenized because they are shared with agent state. rawInput
+	 * comes through displayArgs instead (see below). Use
+	 * displayOptionalRecord when the source itself may be undefined
+	 * (wireSafeToolResult's output).
+	 */
+	/**
+	 * Display for tool-call ARGS mirrors execution: tools in
+	 * EXEC_DEREF_TOOLS (edit/write) execute on vault-dereferenced args, so
+	 * their cards show the originals — that IS what runs. Every other tool
+	 * executes its byte-faithful tokenized args, and its card must show the
+	 * same tokens. No vault (markers mode, post-restart) → passthrough:
+	 * execution would not deref then either.
+	 */
+	private displayArgs(sessionId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+		return EXEC_DEREF_TOOLS.has(toolName) ? this.displayRecord(sessionId, args) : args
+	}
+	private displayRecord(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
+		const vault = vaultForSession(sessionId)
+		return vault ? (substituteTokensDeep(vault, value) as Record<string, unknown>) : value
+	}
+
+	/** The undefined-tolerant twin of displayRecord, for optional sources. */
+	private displayOptionalRecord(
+		sessionId: string,
+		value: Record<string, unknown> | undefined,
+	): Record<string, unknown> | undefined {
+		if (value === undefined) return undefined
+		return this.displayRecord(sessionId, value)
+	}
+
+	/**
+	 * Display-only substitution across a ToolCallContent array. Text takes
+	 * the ACP wrapper shape toolResultContent emits —
+	 * `{ type: "content", content: { type: "text", text } }` — so the nested
+	 * payload substitutes. Diffs pass through untouched BY DESIGN: a diff
+	 * displays what landed on disk, and what landed is the literal token
+	 * (side effects never substitute) — showing the original there would
+	 * misrepresent the file's actual content, the same way a substituted
+	 * permission prompt would mislead an approval. Generic over the item
+	 * type so callers keep their element types (ToolCallContent here).
+	 */
+	private displayContent<T>(sessionId: string, content: T[] | undefined): T[] | undefined {
+		if (content === undefined) return undefined
+		const vault = vaultForSession(sessionId)
+		if (!vault) return content
+		return content.map((item) => {
+			const wrapper = item as { type?: unknown; content?: { type?: unknown; text?: unknown } } | null
+			if (
+				wrapper &&
+				typeof wrapper === "object" &&
+				wrapper.type === "content" &&
+				wrapper.content &&
+				typeof wrapper.content === "object" &&
+				wrapper.content.type === "text" &&
+				typeof wrapper.content.text === "string"
+			) {
+				return { ...item, content: { ...wrapper.content, text: substituteTokens(vault, wrapper.content.text) } } as T
+			}
+			return item
+		})
 	}
 
 	/**
@@ -1611,7 +1958,14 @@ export class KimchiAcpAgent implements Agent {
 		msg.content.forEach((block, index) => {
 			if (block.type !== "text") return
 			const streamed = entry.streamedText.get(index) ?? ""
-			if (block.text === streamed || (streamed && !block.text.startsWith(streamed))) return
+			const unstreamed = block.text === streamed || (streamed && !block.text.startsWith(streamed))
+			// Even an unstreamed-remainder block routes through the desanitizer
+			// (token substitution applies to this emission too), and a fully
+			// streamed block can STILL hold bytes back (a token cut by the last
+			// delta) — flush drains them. Empty emits drop out below.
+			const substituted = unstreamed ? "" : this.pushText(sessionId, entry, index, block.text.slice(streamed.length))
+			const emitted = substituted + this.flushText(entry, index)
+			if (!emitted) return
 			let messageId = entry.contentIndexToBlockId.get(index)
 			if (messageId === undefined) {
 				messageId = `km.${entry.nextBlockId++}`
@@ -1624,7 +1978,7 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: block.text.slice(streamed.length) },
+					content: { type: "text", text: emitted },
 					messageId,
 					...spreadModelMeta(modelMeta),
 				},
@@ -1671,6 +2025,26 @@ export class KimchiAcpAgent implements Agent {
 		}
 	}
 
+	/**
+	 * The single emit→dispose teardown primitive: fire session_shutdown and
+	 * await extension handlers before dispose(), ALWAYS paired. Every
+	 * session teardown routes here — early attach-fail orphans (header-id
+	 * mismatch, registration unwind, newSession catch) and registered
+	 * sessions via disposeSessionRecord — because the vault lifecycle (and
+	 * every extension teardown keyed on it) listens for the session_shutdown
+	 * event, and disposing without emitting it would leak extension state
+	 * (token vaults, etc.) for a session that did start.
+	 */
+	private async disposeOrphanSession(session: AgentSession): Promise<void> {
+		try {
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		} catch {
+			// Teardown must not fail the caller: extension shutdown handlers
+			// are fail-quiet (matching disposeSessionRecord's contract).
+		}
+		session.dispose()
+	}
+
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
 		entry.planTracker?.stop()
 		// Stop the adapter from publishing skill-refresh results: a discovery
@@ -1683,8 +2057,7 @@ export class KimchiAcpAgent implements Agent {
 		// calling dispose(). dispose() is synchronous and returns void, so async
 		// extension handlers (e.g. telemetry drain, shutdown marker) would be
 		// fire-and-forgotten if we relied on dispose() alone.
-		await entry.session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		entry.session.dispose()
+		await this.disposeOrphanSession(entry.session)
 		this.skillWatcher?.removeSession(entry)
 	}
 
@@ -1799,6 +2172,7 @@ export class KimchiAcpAgent implements Agent {
 				// message's assignment.
 				entry.contentIndexToBlockId.clear()
 				entry.streamedText.clear()
+				entry.streamDesanitizers.clear()
 				entry.emittedModelMeta.clear()
 				// A resolved pick may already be known here (e.g. restored from the
 				// last session), so push the resolved label once per change so clients
@@ -1836,7 +2210,10 @@ export class KimchiAcpAgent implements Agent {
 							toolName: block.name,
 							toolCallId: this.getOrAllocateAcpToolCallId(entry, block.id, block.name),
 							piToolCallId: block.id,
-							rawInput: block.arguments,
+							// Args display mirrors execution (displayArgs): edit/write
+							// dereference at execute time, so their originals are what
+							// runs; every other tool keeps its tokens.
+							rawInput: this.displayArgs(sessionId, block.name, block.arguments as Record<string, unknown>),
 							// Arguments are still streaming: the call hasn't been approved or started
 							// executing yet, so ACP status is `pending`, not `in_progress`.
 							status: "pending",
@@ -1903,14 +2280,16 @@ export class KimchiAcpAgent implements Agent {
 					if (!turn.announcedToolCallIds.has(toolCall.id) || turn.hiddenToolCallIds.has(toolCall.id)) {
 						return
 					}
-					const { title, kind, locations } = describeToolCall(toolCall.name, toolCall.arguments, entry.cwd)
+					// Args display mirrors execution (displayArgs).
+					const rawInput = this.displayArgs(sessionId, toolCall.name, toolCall.arguments as Record<string, unknown>)
+					const { title, kind, locations } = describeToolCall(toolCall.name, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: this.getOrAllocateAcpToolCallId(entry, toolCall.id, toolCall.name),
 						piToolCallId: toolCall.id,
 						title,
 						kind,
 						locations,
-						rawInput: toolCall.arguments,
+						rawInput,
 						// Arguments are complete but the call hasn't been approved or
 						// started executing yet, so ACP status stays `pending`.
 						status: "pending",
@@ -1932,6 +2311,7 @@ export class KimchiAcpAgent implements Agent {
 				if (!turn) {
 					this.publishModelOptionIfChanged(sessionId, entry)
 					this.forwardUnsentMessageText(sessionId, entry, msg)
+					this.forwardThinkingTails(sessionId, entry, msg)
 					this.correctEmittedModelMeta(sessionId, entry, msg)
 					return
 				}
@@ -1993,6 +2373,7 @@ export class KimchiAcpAgent implements Agent {
 				this.forwardUnsentMessageText(sessionId, entry, msg, (messageId, attribution) =>
 					turn.artifactBuffer.noteTextBlock(messageId, attribution),
 				)
+				this.forwardThinkingTails(sessionId, entry, msg)
 				this.correctEmittedModelMeta(sessionId, entry, msg)
 				const usage = msg.usage
 				if (usage) {
@@ -2031,16 +2412,17 @@ export class KimchiAcpAgent implements Agent {
 				// MTIME_TOLERANCE_MS in extensions/artifacts/detect.ts).
 				turn.toolCallArgs.set(event.toolCallId, { toolName: event.toolName, args: event.args, startedAt: Date.now() })
 				const acpToolCallId = this.getOrAllocateAcpToolCallId(entry, event.toolCallId, event.toolName)
+				const rawInput = this.displayArgs(sessionId, event.toolName, event.args)
 				if (turn.announcedToolCallIds.has(event.toolCallId)) {
 					// Pending tool_call was already sent via toolcall_start → emit update
-					const { title, kind, locations } = describeToolCall(event.toolName, event.args, entry.cwd)
+					const { title, kind, locations } = describeToolCall(event.toolName, rawInput, entry.cwd)
 					const update: SessionUpdate = buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						title,
 						kind,
 						locations,
-						rawInput: event.args,
+						rawInput,
 						status: "in_progress",
 					})
 					this.send({ sessionId, update })
@@ -2049,7 +2431,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						toolName: event.toolName,
-						rawInput: event.args,
+						rawInput,
 						status: "in_progress",
 						cwd: entry.cwd,
 					})
@@ -2073,7 +2455,7 @@ export class KimchiAcpAgent implements Agent {
 				const update: SessionUpdate = buildToolCallUpdate({
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
-					content: partial,
+					content: this.displayContent(sessionId, partial),
 					status: "in_progress",
 				})
 				this.send({ sessionId, update })
@@ -2138,8 +2520,8 @@ export class KimchiAcpAgent implements Agent {
 					toolCallId: acpToolCallId,
 					piToolCallId: event.toolCallId,
 					status: event.isError ? "failed" : "completed",
-					content: [...toolResultContent(event.result), ...diffs],
-					rawOutput: wireSafeToolResult(event.result),
+					content: this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+					rawOutput: this.displayOptionalRecord(sessionId, wireSafeToolResult(event.result)),
 				})
 				this.send({ sessionId, update })
 				// Upstream ids can repeat after compaction or even within a turn. Retire
@@ -2230,7 +2612,7 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					update: {
 						sessionUpdate: "user_message_chunk",
-						content: { type: "text", text },
+						content: { type: "text", text: this.displayText(sessionId, text) },
 					},
 				})
 			} else if (msg.role === "assistant") {
@@ -2340,7 +2722,7 @@ export class KimchiAcpAgent implements Agent {
 				sessionId,
 				update: {
 					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: textBuffer },
+					content: { type: "text", text: this.displayText(sessionId, textBuffer) },
 					...(messageId !== undefined ? { messageId } : {}),
 					...spreadModelMeta(modelMeta),
 				},
@@ -2364,7 +2746,7 @@ export class KimchiAcpAgent implements Agent {
 							sessionId,
 							update: {
 								sessionUpdate: "agent_thought_chunk",
-								content: { type: "text", text: part.text },
+								content: { type: "text", text: this.displayText(sessionId, part.text) },
 								...(messageId !== undefined ? { messageId } : {}),
 								...spreadModelMeta(modelMeta),
 							},
@@ -2384,7 +2766,7 @@ export class KimchiAcpAgent implements Agent {
 					sessionId,
 					update: {
 						sessionUpdate: "agent_thought_chunk",
-						content: { type: "text", text: stripAnsi(thinking) },
+						content: { type: "text", text: this.displayText(sessionId, stripAnsi(thinking)) },
 						...(messageId !== undefined ? { messageId } : {}),
 						...spreadModelMeta(modelMeta),
 					},
@@ -2410,7 +2792,7 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						rawInput: args,
+						rawInput: this.displayArgs(sessionId, name, args),
 						cwd: record?.cwd,
 					}),
 				})
@@ -2420,8 +2802,8 @@ export class KimchiAcpAgent implements Agent {
 						toolCallId: acpToolCallId,
 						piToolCallId: tc.id,
 						status,
-						content: result ? toolResultContent(result) : [],
-						rawOutput: result ? wireSafeToolResult(result) : undefined,
+						content: this.displayContent(sessionId, result ? toolResultContent(result) : []),
+						rawOutput: this.displayOptionalRecord(sessionId, result ? wireSafeToolResult(result) : undefined),
 					}),
 				})
 				// The branch may contain multiple toolCalls with the same upstream id
@@ -3228,7 +3610,7 @@ function registerPermissionFlagController(
 	session: AgentSession,
 	initialMode: PermissionModeState,
 	send: (params: SessionNotification) => void,
-): void {
+): SessionPermissionFlagController {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: initialMode,
 	})
@@ -3244,6 +3626,7 @@ function registerPermissionFlagController(
 			},
 		})
 	})
+	return permissionFlagController
 }
 
 const TITLE_MAX = 80

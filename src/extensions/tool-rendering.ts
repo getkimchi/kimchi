@@ -49,6 +49,22 @@ import { formatDuration } from "../extensions/format.js"
 import { isDefaultToolEnabled, onThemeChange } from "../settings-watcher.js"
 import { resolveMarkerForDisplay } from "./display-budget.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import {
+	dereferenceToolArgs,
+	derefToolArgsForExecution,
+	substituteTokens,
+	vaultForPaint,
+	vaultForSession,
+} from "./pii-redaction/vault.js"
+
+/**
+ * The shape of a redaction span the model can carry: an irreversible marker
+ * or a reversible token. Used to recognize when an edit's "Could not find"
+ * outcome is about a redacted span (F2's residual: markers mode, dead
+ * vaults, and confabulated tokens never dereference).
+ */
+const REDACTED_SPAN_RE = /\[REDACTED-[A-Z0-9_]+\]|\[[A-Z][A-Z0-9_]{0,40}_\d+\]/
+
 import { isGateBlockedToolCall } from "./todos/checkin-gate.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
@@ -996,11 +1012,25 @@ function shortPath(cwd: string, filePath: string): string {
 // Status dot — flickers green/gray while pending
 // ---------------------------------------------------------------------------
 
-export function toolHeader(tool: string, summary: string, theme: Theme, prefix = "", timer?: string): string {
+export function toolHeader(
+	tool: string,
+	summary: string,
+	theme: Theme,
+	prefix = "",
+	timer?: string,
+	mirrorExecution = false,
+): string {
 	applyThemePaletteIfNeeded(theme)
 	const label = theme.fg("toolTitle", theme.bold(tool))
 	let result = `${prefix}${label}`
-	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", summary)}`
+	// By default the summary stays tokenized: it shows WHAT THE TOOL DID,
+	// and a byte-faithful tool (bash, grep…) ran the literal token
+	// (message_end tokenizes toolCall.arguments before execution). Only
+	// read-or-said surfaces (message text, thinking, tool RESULT panes)
+	// substitute. mirrorExecution is set by edit/write — those dereference
+	// vault tokens at execute time (EXEC_DEREF_TOOLS), so for them the
+	// originals ARE what runs and the header shows exactly that.
+	if (summary) result += ` ${WRAP_MARK}${theme.fg("accent", mirrorExecution ? paintText(summary) : summary)}`
 	if (timer) result += ` ${theme.fg("dim", timer)}`
 	return result
 }
@@ -1321,6 +1351,48 @@ export function wrapMarkedLine(line: string, width: number): string[] {
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`))
 }
 
+/**
+ * Presentation-side token substitution for tool panes — the same
+ * contract as the pii-redaction markdown transformer (full text,
+ * stateless, every paint): tool result/input panes are NOT part of the
+ * markdown paint path. Unknown tokens pass through verbatim; no vault
+ * (markers mode) → passthrough. Display only — never applied to executed
+ * payloads or to the result text logic (sentinel comparison, error
+ * classification) that runs before this layer.
+ */
+function paintText(text: string): string {
+	const vault = vaultForPaint()
+	return vault ? substituteTokens(vault, text) : text
+}
+
+/**
+ * F2 residual: when an edit's "Could not find" spans args carrying a
+ * redaction shape that execution could NOT dereference (markers mode, a
+ * dead vault, or a confabulated token), append guidance pointing at the
+ * real cause and its escape hatch instead of leaving the model to retry
+ * an unmatchable exact-match. Successful derefs that still miss mean the
+ * file changed — nothing added. The stored assistant message args stay
+ * tokenized; this text goes only into the tool RESULT (redacted on the
+ * way into storage like any other result content).
+ */
+export function explainRedactedEditFailure<T>(result: T, originalParams: unknown, substituted: boolean): T {
+	if (substituted || !result || typeof result !== "object") return result
+	const r = result as { isError?: boolean; content?: Array<{ type?: string; text?: string }> }
+	if (r.isError !== true) return result
+	const text = (r.content ?? [])
+		.filter((c) => c.type === "text" && typeof c.text === "string")
+		.map((c) => c.text)
+		.join("\n")
+	if (!text.includes("Could not find")) return result
+	if (!REDACTED_SPAN_RE.test(JSON.stringify(originalParams))) return result
+	const guidance =
+		"NOTE: the searched text contains a redacted span ([REDACTED-<TYPE>] marker or [<TYPE>_N] token). " +
+		"These are placeholders; the file holds the original value, which is never exposed to the model. " +
+		"To edit this file, exclude the entity type via redaction.excludedEntities in settings.json or disable PII redaction for the session."
+	r.content = [...(r.content ?? []), { type: "text", text: guidance }]
+	return result
+}
+
 export class ToolText extends Text {
 	private value = ""
 	private toolCachedValue?: string
@@ -1329,12 +1401,13 @@ export class ToolText extends Text {
 
 	constructor(text = "") {
 		super("", 0, 0)
-		this.value = text
+		this.value = paintText(text)
 	}
 
 	setText(text: string): void {
-		if (this.value === text) return
-		this.value = text
+		const substituted = paintText(text)
+		if (this.value === substituted) return
+		this.value = substituted
 		this.invalidate()
 	}
 
@@ -4667,7 +4740,13 @@ export default function (pi: ExtensionAPI) {
 			description: writeTool.description,
 			parameters: writeTool.parameters,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): the model
+				// issued tokens; the file gets the user's real values. params stay
+				// tokenized in the stored assistant message; everything below runs
+				// on the dereferenced execution copy — including the result diff,
+				// which therefore shows what actually landed.
+				const execParams = derefToolArgsForExecution(ctx.sessionManager?.getSessionId?.(), "write", params)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const sessionCwd = ctx.cwd
 				const fullPath = fp ? resolve(sessionCwd, fp) : ""
 				const existedBefore = !!fullPath && fileExistsForTool(sessionCwd, fp)
@@ -4678,8 +4757,8 @@ export default function (pi: ExtensionAPI) {
 				} catch {
 					old = null
 				}
-				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, params, signal, onUpdate)
-				const content = params.content ?? ""
+				const result = await createTrackedWriteTool(ctx, toolCallId).execute(toolCallId, execParams, signal, onUpdate)
+				const content = execParams.content ?? ""
 				if (old !== null && old !== content) {
 					const diff = parseDiff(old, content)
 					result.details = {
@@ -4712,7 +4791,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer)
+				// write is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader(label, summary, theme, toolStatusDot(ctx, theme), timer, true)
 				return makeText(ctx.lastComponent, hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
@@ -4800,12 +4880,21 @@ export default function (pi: ExtensionAPI) {
 			description: editTool.description,
 			parameters: editTool.parameters,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const fp = params.path ?? (params as { file_path?: string }).file_path ?? ""
+				// Execution-side deref (see vault.ts EXEC_DEREF_TOOLS): a model-issued
+				// token in oldText no longer beats the exact-match gate — ops run on
+				// the dereferenced execution copy, which is also what the result
+				// details (and so the diff preview) describe.
+				const { args: execParams, substituted } = dereferenceToolArgs(
+					vaultForSession(ctx.sessionManager?.getSessionId?.()),
+					params,
+				)
+				const fp = execParams.path ?? (execParams as { file_path?: string }).file_path ?? ""
 				const trackedTool = createTrackedEditTool(ctx, toolCallId)
-				const operations = getEditOperations(params)
+				const operations = getEditOperations(execParams)
 				const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, ctx.cwd) : null
-				const result = await trackedTool.execute(toolCallId, params, signal, onUpdate)
-				if (operations.length === 0) return result
+				const result = await trackedTool.execute(toolCallId, execParams, signal, onUpdate)
+				const explained = explainRedactedEditFailure(result, params, substituted)
+				if (operations.length === 0) return explained
 				const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations)
 				const baseDetails = (result as AgentEditResult | AgentMultiEditToolResult).details ?? {}
 				if (operations.length === 1) {
@@ -4850,7 +4939,8 @@ export default function (pi: ExtensionAPI) {
 					revealSummary,
 				)
 				const timer = formatToolTimer(getToolElapsedMs(ctx))
-				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer)
+				// edit is in EXEC_DEREF_TOOLS: the header mirrors what lands.
+				const hdr = toolHeader("Edit", summary, theme, ` ${toolStatusDot(ctx, theme)}`, timer, true)
 				if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr)
 				const diffWidth = branchDiffWidth()
 				const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`
@@ -4883,6 +4973,10 @@ export default function (pi: ExtensionAPI) {
 						})
 				}
 				const body = ctx.state._ptDisplay as string | undefined
+				// The preview mirrors execution: edit/write dereference vault tokens
+				// at execute time (EXEC_DEREF_TOOLS), so showing the originals IS
+				// showing what lands on disk. A dead/absent vault paints verbatim —
+				// exactly what execution would do then.
 				return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr)
 			},
 			renderResult(result, { isPartial }, theme, ctx) {
