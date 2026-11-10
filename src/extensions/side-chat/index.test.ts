@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 import type * as AcpState from "../../modes/acp/state.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createSideChatHost } from "../__mocks__/side-chat-host.js"
 import type * as Harness from "./harness.js"
 import sideChatExtension from "./index.js"
 
 const live = vi.hoisted(() => ({ compositors: 0, mouseInterceptors: 0, harnessInstalls: 0 }))
+/** Set to make getSideChatHost return a fake host (e.g. a non-fullscreen one). */
+const hostRef = vi.hoisted(() => ({ host: undefined as unknown }))
 const acpMode = vi.hoisted(() => ({ current: false }))
 
 vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
@@ -29,6 +32,7 @@ vi.mock("./harness.js", async (importOriginal) => {
 		}
 	return {
 		...actual,
+		getSideChatHost: () => hostRef.host ?? actual.getSideChatHost(),
 		addCompositor: counted(actual.addCompositor, "compositors"),
 		addMouseInterceptor: counted(actual.addMouseInterceptor, "mouseInterceptors"),
 		installSideChatHarnessPatch: () => {
@@ -110,6 +114,27 @@ describe("side chat extension errors", () => {
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Side chat needs the interactive TUI.", "warning")
 		expect(pi.appendEntry).not.toHaveBeenCalled()
+	})
+
+	it("shows an informational hint (not a warning) when the TUI is not fullscreen", async () => {
+		const { host } = createSideChatHost()
+		vi.mocked(host.isFullscreen).mockReturnValue(false)
+		hostRef.host = host
+		try {
+			const pi = setup()
+			const ctx = createCommandContext()
+
+			await pi.getRegisteredCommand("btw").handler("why?", ctx)
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Side chat needs the fullscreen TUI mode. Turn it on via /settings → TUI mode, then run /btw again.",
+				"info",
+			)
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("fullscreen"), "warning")
+			expect(pi.appendEntry).not.toHaveBeenCalled()
+		} finally {
+			hostRef.host = undefined
+		}
 	})
 
 	it("tells the user when there is no history yet", async () => {

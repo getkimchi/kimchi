@@ -125,7 +125,9 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			return undefined
 		}
 		if (!host.isFullscreen()) {
-			notify(ctx, "Side chat needs the fullscreen TUI mode (tuiMode: fullscreen).", "warning")
+			// Informational hint, not a warning: fullscreen is opt-in, so point the
+			// user at the exact place to enable it.
+			notify(ctx, "Side chat needs the fullscreen TUI mode. Turn it on via /settings → TUI mode, then run /btw again.")
 			return undefined
 		}
 		return host
