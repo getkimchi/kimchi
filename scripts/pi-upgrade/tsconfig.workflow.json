@@ -1,0 +1,19 @@
+{
+	"//": "Mirrors the strict options kimchi-workflows validates a workflow file with before running it (workflow-candidate-validator). A violation makes headless `/workflow run` silently do nothing, so CI checks it here.",
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023", "DOM"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"moduleDetection": "force",
+		"allowImportingTsExtensions": true,
+		"verbatimModuleSyntax": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"types": ["node"]
+	},
+	"files": ["pi-upgrade.workflow.ts"]
+}

@@ -1,0 +1,77 @@
+name: Pi upgrade trigger
+
+# Daily check for a settled Pi release. When one is due, measures the upgrade (patch dry-run,
+# runtime-hook diff, full test run vs master) and writes an AI-assisted report to the job summary
+# and the rolling `pi-upgrade` issue. Never upgrades anything. See docs/pi-upgrade-trigger.md.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: Force a report for this Pi version (job summary only, the issue is not touched)
+        type: string
+        required: false
+      suites:
+        description: Test suites (comma-separated or "all")
+        type: string
+        required: false
+        default: all
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pi-upgrade
+  cancel-in-progress: false
+
+jobs:
+  pi-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+          playwright: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy-helper
+        run: make copy-for-dev
+        working-directory: tools/proxy-helper
+
+      - name: Run Pi upgrade trigger
+        env:
+          KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.target_version }}
+          SUITES: ${{ inputs.suites || 'all' }}
+        run: |
+          export KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper"
+          args=(all --suites "$SUITES" --out "$PWD/.kimchi/pi-upgrade/run")
+          if [ -n "$TARGET" ]; then args+=(--target "$TARGET"); fi
+          # Forced runs only write the job summary; the publish step itself refuses to touch the issue.
+          args+=(--publish)
+          pnpm pi-upgrade "${args[@]}"
+
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-upgrade-${{ github.run_id }}
+          path: |
+            .kimchi/pi-upgrade/run/
+            !.kimchi/pi-upgrade/run/pkgs/
+          if-no-files-found: ignore
+          retention-days: 30
