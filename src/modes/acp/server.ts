@@ -807,12 +807,19 @@ export class KimchiAcpAgent implements Agent {
 			}
 		}
 
-		// sso_await settles directly to authenticated with the
-		// browser-chosen org (selection happens on the Auth0-hosted login page).
-		// Any terminal failure — including the multi-org listing, which the
-		// manager maps to an actionable SSO_IDP_ERROR — propagates and consumes
-		// the flow, so a retry starts clean.
-		await this.sso.awaitResult({ requestId: begin.requestId })
+		// sso_await settles either directly to authenticated (single-org listing)
+		// or to org_selection_required. This path has no interactive picker, so
+		// a parked multi-org flow is torn down and surfaced as an actionable
+		// error — org picking is the Studio ext-method flow's job. Any terminal
+		// failure propagates and consumes the flow, so a retry starts clean.
+		const awaitResponse = await this.sso.awaitResult({ requestId: begin.requestId })
+		if (awaitResponse.status === "org_selection_required") {
+			this.sso.cancel({ requestId: begin.requestId })
+			throw RequestError.internalError(
+				undefined,
+				`This Cast AI account has ${awaitResponse.organizations.length} organizations. Sign in from the Kimchi app, where you can choose an organization during login.`,
+			)
+		}
 		const settled = this.sso.takeSettledCredential()
 		if (settled) await this.settleSsoCredential(settled.credential, settled.org)
 		return {}
@@ -1542,8 +1549,20 @@ export class KimchiAcpAgent implements Agent {
 			case AVAILABLE_EXT_METHODS.sso_await: {
 				// A settled browser leg persists nothing itself — the server applies
 				// the settle tail (persist + fan out + session refresh) so the
-				// manager stays free of agent-owned state.
+				// manager stays free of agent-owned state. An
+				// org_selection_required settle carries no credential yet; the
+				// parked flow completes via sso_select_org below.
 				const response = await this.sso.awaitResult(params)
+				const settled = this.sso.takeSettledCredential()
+				if (settled) await this.settleSsoCredential(settled.credential, settled.org)
+				return response
+			}
+			case AVAILABLE_EXT_METHODS.sso_select_org: {
+				// Completes a parked org-selection flow: the manager hands over the
+				// credential scoped to the chosen org and the server runs the same
+				// settle tail (persist + fan out + session refresh) as sso_await's
+				// authenticated branch.
+				const response = await this.sso.selectOrg(params)
 				const settled = this.sso.takeSettledCredential()
 				if (settled) await this.settleSsoCredential(settled.credential, settled.org)
 				return response

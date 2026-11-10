@@ -178,7 +178,7 @@ import { discoveredSelfHostedRegion, regionEndpoints } from "../../regions.js"
 import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
-import { type SsoFlowManager, ssoError } from "./ext-methods/sso.js"
+import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
 	ACP_SUCCESS_MESSAGE,
@@ -1073,9 +1073,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			const meta = response.agentCapabilities?._meta?.["kimchi.dev"] as Record<string, unknown> | undefined
 			expect(meta?.sso).toBe(true)
-			// The three wire methods are advertised too.
+			// The four wire methods are advertised too.
 			expect(meta?.sso_begin).toBe(true)
 			expect(meta?.sso_await).toBe(true)
+			expect(meta?.sso_select_org).toBe(true)
 			expect(meta?.sso_cancel).toBe(true)
 		})
 
@@ -1183,6 +1184,8 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			begin?: Awaited<ReturnType<SsoFlowManager["begin"]>>
 			awaitResult?: Awaited<ReturnType<SsoFlowManager["awaitResult"]>>
 			awaitResultError?: unknown
+			selectOrg?: Awaited<ReturnType<SsoFlowManager["selectOrg"]>>
+			selectOrgError?: unknown
 		} = {},
 	) {
 		const begin = vi.fn(
@@ -1197,23 +1200,30 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			if (outcomes.awaitResultError !== undefined) throw outcomes.awaitResultError
 			return outcomes.awaitResult ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
 		})
+		const selectOrg = vi.fn(async (): Promise<Awaited<ReturnType<SsoFlowManager["selectOrg"]>>> => {
+			if (outcomes.selectOrgError !== undefined) throw outcomes.selectOrgError
+			return outcomes.selectOrg ?? { status: "authenticated", org: { id: "org-1", name: "Acme" } }
+		})
 		const cancel = vi.fn(() => ({}))
 		const settledCredential = {
 			credential: { access: "castai_v1_sso-token" } as OAuthCredentials,
 			org: { id: "org-1", name: "Acme" },
 		}
-		const takeSettledCredential = vi.fn(() => (outcomes.awaitResultError !== undefined ? undefined : settledCredential))
+		const takeSettledCredential = vi.fn(() =>
+			outcomes.awaitResultError !== undefined || outcomes.selectOrgError !== undefined ? undefined : settledCredential,
+		)
 		// Single cast at the injection seam: the object is typed against the
 		// Pick the server actually consumes, so a new consumed method breaks the
 		// type check instead of silently staying behind.
-		const manager = { begin, awaitResult, cancel, takeSettledCredential } as Pick<
+		const manager = { begin, awaitResult, selectOrg, cancel, takeSettledCredential } as Pick<
 			SsoFlowManager,
-			"begin" | "awaitResult" | "cancel" | "takeSettledCredential"
+			"begin" | "awaitResult" | "selectOrg" | "cancel" | "takeSettledCredential"
 		>
 		return {
 			manager: manager as SsoFlowManager,
 			begin,
 			awaitResult,
+			selectOrg,
 			cancel,
 			takeSettledCredential,
 			settledCredential,
@@ -1488,19 +1498,23 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
 		})
 
-		// org selection happens on the Auth0-hosted login page, so a
-		// multi-org listing surfaces as the manager's actionable SSO_IDP_ERROR —
-		// there is no parked flow to cancel and no interactive picker here.
-		it("propagates the manager's multi-org SSO_IDP_ERROR", async () => {
+		// The Cast AI login page does not scope the session to one org, so the
+		// manager parks multi-org flows as org_selection_required. This path has
+		// no interactive picker: it tears the parked flow down and surfaces an
+		// actionable error pointing at a surface that can pick (Studio).
+		it("cancels a parked multi-org flow and fails with an actionable error", async () => {
 			vi.stubEnv("KIMCHI_E2E_FAKE_BROWSER_OPEN", "1")
 			onTestFinished(() => {
 				vi.unstubAllEnvs()
 			})
 			const sso = makeFakeSsoManager({
-				awaitResultError: ssoError(
-					"SSO_IDP_ERROR",
-					"The Cast AI login returned 2 organizations; sign in again and pick one organization on the Cast AI login page.",
-				),
+				awaitResult: {
+					status: "org_selection_required",
+					organizations: [
+						{ id: "org-123", name: "Acme" },
+						{ id: "org-456", name: "Acme Staging" },
+					],
+				},
 			})
 			const testAgent = new KimchiAcpAgent(
 				makeConn(),
@@ -1513,8 +1527,13 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			)
 
 			await expect(testAgent.authenticate({ methodId: "kimchi-sso-us" })).rejects.toThrow(
-				/2 organizations.*login page/s,
+				/2 organizations.*choose an organization/s,
 			)
+			// The parked flow is torn down so a retry starts clean.
+			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
+			// Nothing was persisted — no org was chosen.
+			expect(sso.takeSettledCredential).not.toHaveBeenCalled()
+			expect(updateModelsConfig).not.toHaveBeenCalled()
 		})
 
 		it("dispatches the _kimchi.dev/sso_* ext methods to the shared manager", async () => {
@@ -1531,10 +1550,12 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_begin, { region: "eu" })
 			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_await, { requestId: "req-1" })
+			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_select_org, { requestId: "req-1", orgId: "org-1" })
 			await testAgent.extMethod(AVAILABLE_EXT_METHODS.sso_cancel, { requestId: "req-1" })
 
 			expect(sso.begin).toHaveBeenCalledWith({ region: "eu" })
 			expect(sso.awaitResult).toHaveBeenCalledWith({ requestId: "req-1" })
+			expect(sso.selectOrg).toHaveBeenCalledWith({ requestId: "req-1", orgId: "org-1" })
 			expect(sso.cancel).toHaveBeenCalledWith({ requestId: "req-1" })
 		})
 
