@@ -16,7 +16,7 @@ function makePi(): { pi: ReturnType<typeof createExtensionApi>["api"]; emitted: 
 }
 
 function report(overrides: Partial<RedactionReport> = {}): RedactionReport {
-	return { entities: {}, stringsScanned: 1, engineFailures: 0, ...overrides }
+	return { entities: {}, categories: {}, stringsScanned: 1, engineFailures: 0, ...overrides }
 }
 
 describe("emitRedactionFacts", () => {
@@ -29,7 +29,11 @@ describe("emitRedactionFacts", () => {
 		emitRedactionFacts(
 			pi,
 			"tool_result",
-			report({ entities: { EMAIL_ADDRESS: 2, OPENAI_API_KEY: 1 }, stringsScanned: 7 }),
+			report({
+				entities: { EMAIL_ADDRESS: 2, OPENAI_API_KEY: 1 },
+				categories: { EMAIL_ADDRESS: "emails", OPENAI_API_KEY: "secrets" },
+				stringsScanned: 7,
+			}),
 		)
 		expect(emitted).toEqual([
 			{
@@ -37,6 +41,7 @@ describe("emitRedactionFacts", () => {
 				payload: {
 					surface: "tool_result",
 					entity_type: "EMAIL_ADDRESS",
+					category: "emails",
 					count: 2,
 					strings_scanned: 7,
 					is_subagent: false,
@@ -47,12 +52,19 @@ describe("emitRedactionFacts", () => {
 				payload: {
 					surface: "tool_result",
 					entity_type: "OPENAI_API_KEY",
+					category: "secrets",
 					count: 1,
 					strings_scanned: 7,
 					is_subagent: false,
 				},
 			},
 		])
+	})
+
+	it('an unattributed tally reports category "custom"', () => {
+		const { pi, emitted } = makePi()
+		emitRedactionFacts(pi, "user_input", report({ entities: { THEIRS: 1 } }))
+		expect((emitted[0].payload as Record<string, unknown>).category).toBe("custom")
 	})
 
 	it("emits ENGINE_DEGRADED when scans failed, alongside REDACTED events", () => {
@@ -83,7 +95,9 @@ describe("emitRedactionFacts", () => {
 		// Structured fields only.
 		for (const { payload } of emitted) {
 			for (const key of Object.keys(payload as Record<string, unknown>)) {
-				expect(["surface", "entity_type", "count", "strings_scanned", "failures", "is_subagent"]).toContain(key)
+				expect(["surface", "entity_type", "category", "count", "strings_scanned", "failures", "is_subagent"]).toContain(
+					key,
+				)
 			}
 		}
 	})

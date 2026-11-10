@@ -80,6 +80,10 @@ const LITERAL_EXEMPT_FILES = new Set([
 	"infrastructure-error.ts",
 	"infrastructure-error.test.ts",
 	"cli-infrastructure-exit.test.ts",
+	"org-policy.test.ts", // KIMCHI_REDACTION_STATE_* proto enum wire names
+	"extensions/pii-redaction/policy.ts",
+	"extensions/pii-redaction/policy.test.ts",
+	"extensions/pii-redaction/redactor.test.ts",
 ])
 
 /** A well-formed env var name is entirely SCREAMING_SNAKE_CASE. */
