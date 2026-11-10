@@ -7,6 +7,7 @@ import {
 	McpKeychainDeniedError,
 	McpKeychainUnavailableError,
 } from "./keyring-require-bridge.js"
+import { unverifiableCredentialMessage } from "./probe.js"
 
 /**
  * Presence-only view of a server's stored OAuth grant. Built for support
@@ -43,9 +44,7 @@ export function inspectMcpOAuthGrant(
 	const account = inspectMcpCredentialAccount(serverName)
 	if (account.status === "absent") return { found: false }
 	if (account.status === "unavailable") {
-		throw new Error(
-			`Stored credentials for "${serverName}" could not be read (keychain unavailable or locked). Retry, or run "kimchi mcp forget-grant ${serverName}" to start over.`,
-		)
+		throw new Error(unverifiableCredentialMessage(serverName, "inspect"))
 	}
 	const serverUrl = account.serverUrl
 	const result: InspectMcpOAuthGrantResult = { found: true, ...(serverUrl === undefined ? {} : { serverUrl }) }

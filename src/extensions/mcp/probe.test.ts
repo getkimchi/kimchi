@@ -940,6 +940,7 @@ describe("UpstreamMcpProbe", () => {
 			needsAuth: true,
 			keychainDenied: true,
 			error: expected.message,
+			authReason: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()
@@ -959,6 +960,7 @@ describe("UpstreamMcpProbe", () => {
 			needsAuth: true,
 			keychainDenied: true,
 			error: expected.message,
+			authReason: expected.message,
 		})
 		expect(upstream.sessionStart).not.toHaveBeenCalled()
 		expect(upstream.logout).not.toHaveBeenCalled()

@@ -115,6 +115,9 @@ export async function handleProbeMcpServer(
 		throw RequestError.invalidParams(undefined, "MCP probe is not available")
 	}
 	const server = validateServerEntry(params.server)
+	if (params.serverName !== undefined && typeof params.serverName !== "string") {
+		throw RequestError.invalidParams("serverName must be a string")
+	}
 	const serverName = (params.serverName as string | undefined) ?? "probe"
 	// The name flows into keychain lookups and recovery messages shown to the
 	// user: apply the same validation as the CLI before it can steer a durable

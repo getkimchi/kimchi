@@ -60,6 +60,26 @@ export interface ProbeResult {
  * with the stable hint text below; the SDK's own HTTP 400 message is matched
  * too for versions where the hint is absent.
  */
+// Shared recovery text for a stored credential that cannot be verified/read.
+// One source so support flows never see three phrasings drift apart.
+function forgetGrantRecovery(name: string): string {
+	return `Retry, or run "kimchi mcp forget-grant ${name}" and sign in again.`
+}
+
+export function unverifiableCredentialMessage(name: string, context: "connect" | "interactive" | "inspect"): string {
+	if (context === "connect") {
+		return `Stored credentials for "${name}" could not be verified, so sign-in was skipped to protect them. ${forgetGrantRecovery(name)}`
+	}
+	if (context === "interactive") {
+		return (
+			`Stored credentials for the MCP server "${name}" could not be verified ` +
+			`(keychain unavailable or locked). ${forgetGrantRecovery(name)} ` +
+			"If the server is new, check that the configured URL matches the URL used during sign-in."
+		)
+	}
+	return `Stored credentials for "${name}" could not be read (keychain unavailable or locked). Retry, or run "kimchi mcp forget-grant ${name}" to start over.`
+}
+
 // Classification is advisory only: nothing branches a trust decision on
 // errorCode. Message patterns are deliberately SECONDARY to the typed
 // RegistrationRejectedError check (a remote server's error text is
@@ -485,7 +505,7 @@ export class UpstreamMcpProbe implements McpProbe {
 				// re-prompt the dialog or drift into an unwanted OAuth attempt). The
 				// per-process denial backoff in SecurityToolEntry already makes repeat
 				// probes of this server keychain-I/O-free.
-				return { tools: [], needsAuth: true, keychainDenied: true, error: error.message }
+				return { tools: [], needsAuth: true, keychainDenied: true, error: error.message, authReason: error.message }
 			}
 			throw error
 		}
@@ -609,11 +629,7 @@ export class UpstreamMcpProbe implements McpProbe {
 				// the same dead background loop; spell out the recovery path instead of
 				// leaving a bare "Authorization required".
 				if (options.authenticate === true && resolution.throwawayReason === "unverifiable") {
-					const recovery =
-						`Stored credentials for the MCP server "${name}" could not be verified ` +
-						"(keychain unavailable or locked). Retry, or run " +
-						`"kimchi mcp forget-grant ${name}" and sign in again. If the server is ` +
-						`new, check that the configured URL matches the URL used during sign-in.`
+					const recovery = unverifiableCredentialMessage(name, "interactive")
 					console.warn(recovery)
 					return { tools: [], needsAuth: true, error: recovery, authReason: reason }
 				}
@@ -644,7 +660,7 @@ export class UpstreamMcpProbe implements McpProbe {
 				if (!mayAutoAuth) {
 					const unverifiableError =
 						options.authenticate === true && resolution.throwawayReason === "unverifiable"
-							? `Stored credentials for "${name}" could not be verified, so sign-in was skipped to protect them. Retry, or run "kimchi mcp forget-grant ${name}" and sign in again.`
+							? unverifiableCredentialMessage(name, "connect")
 							: null
 					const declaredReason =
 						unverifiableError ?? "The server declares OAuth but no stored credentials match this URL"
@@ -707,10 +723,11 @@ export class UpstreamMcpProbe implements McpProbe {
 					if (reconnectDetails.error === "auth_required") {
 						// A denied/failed interactive attempt can still land here (e.g. tokens
 						// stored but rejected on reconnect); don't discard its reason.
+						const reconnectReason = authFailureMessage ?? String(reconnectDetails.message ?? resultMessage(reconnected))
 						return {
 							tools: [...capturedTools.values()],
 							needsAuth: true,
-							authReason: authFailureMessage ?? undefined,
+							authReason: reconnectReason,
 							...classifiedError(authFailureMessage),
 						}
 					}
@@ -718,9 +735,7 @@ export class UpstreamMcpProbe implements McpProbe {
 						return {
 							tools: [],
 							needsAuth: false,
-							...classifiedError(
-								reconnectDetails.message !== undefined ? String(reconnectDetails.message) : resultMessage(reconnected),
-							),
+							...classifiedError(String(reconnectDetails.message ?? resultMessage(reconnected))),
 						}
 					}
 				}
