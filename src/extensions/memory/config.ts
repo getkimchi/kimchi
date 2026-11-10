@@ -109,11 +109,22 @@ export const MEMORY_DRAIN_HARD_TIMEOUT_MS = 12 * 60_000
  * gets before quarantine. Each drain already pays the strict-format retry
  * per poisoned window, so the second failed drain confirms determinism and
  * the job moves to failed/ — 4 wasted LLM calls per poisoned window over
- * its lifetime instead of weeks of repeats (the Oct-9 pile-up). Transient
- * failures (network, timeouts, retry-exhausted 5xx) never quarantine — the
- * 7-day sweep above stays their backstop.
+ * its lifetime instead of weeks of repeats (the Oct-9 pile-up).
  */
 export const POISON_JOB_MAX_ATTEMPTS = 2
+
+/**
+ * Cross-drain attempt cap for a WHOLly-transient failing job: a sustained
+ * gateway outage (retry-exhausted 5xx) makes every drain re-run the same
+ * windows and the drain gate blocks on pending-until-empty forever — the
+ * transient livelock #1709-4523798599 flagged. Cap is generous (10 ≈ ~10
+ * minutes of storms across drains; well under the 7-day sweep) and the
+ * job JSON is preserved in failed/ for a deliberate requeue — the sweep
+ * no longer has to be the only backstop. In-window retry jitter already
+ * exists inside fetchWithRetry (computeRetryDelayMs), so no drain-level
+ * pacing knob is needed.
+ */
+export const TRANSIENT_JOB_MAX_ATTEMPTS = 10
 
 /**
  * How long quarantined jobs are kept in failed/ for post-mortems before

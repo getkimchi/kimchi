@@ -186,6 +186,7 @@ export const IGNORED_ENV_VARS: string[] = [
 	// memory pipeline tuning (src/extensions/memory)
 	"KIMCHI_MEMORY_DRAIN_CONCURRENCY",
 	"KIMCHI_MEMORY_DECISION_GATE",
+	"KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS",
 	// memory rollout flags (src/extensions/memory/flags.ts)
 	"KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES",
 	"KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE",

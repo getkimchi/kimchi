@@ -71,6 +71,7 @@ import {
 	POISON_JOB_TTL_MS,
 	SUPERSEDE_SEARCH_TOPK,
 	UNKNOWN_CAPTURE_SESSION_ID,
+	TRANSIENT_JOB_MAX_ATTEMPTS,
 } from "./config.js"
 import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
 import { factClassesEnabled, parseBooleanFlag } from "./flags.js"
@@ -1274,14 +1275,17 @@ export class DrainWatchdogError extends Error {
 /** One pending job's drain plan: windows to extract plus accumulated fact lists (exported for tests — applyDerivedTags consumes it). */
 export interface JobPlan {
 	jobFile: string
-	/** Raw parsed job JSON — re-serialized with the bumped drainAttempts
-	 * counter when poison bookkeeping persists a failed drain. */
-	jobObject: CaptureJob & { drainAttempts?: number }
+	/** Raw parsed job JSON — re-serialized with the bumped counter when
+	 * attempt bookkeeping (poison or transient) persists a failed drain. */
+	jobObject: CaptureJob & { drainAttempts?: number; transientAttempts?: number }
 	project: CaptureJob["project"]
 	/** Session id from the job — scopes the hashes marked at commit. */
 	session: string | undefined
 	/** Cross-drain poison bookkeeping, persisted on the job JSON. */
 	drainAttempts: number
+	/** Cross-drain transient bookkeeping (wholly-transient failing drains),
+	 * persisted alongside drainAttempts. */
+	transientAttempts: number
 	windows: CaptureMessage[][]
 	personalFacts: string[]
 	projectFacts: string[]
@@ -1568,20 +1572,25 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		)
 	}
 
-	// Cross-drain poison bookkeeping: jobs left behind by deterministic
-	// window failures count toward quarantine; transient-only failures keep
-	// retrying normally (their file is already left by commitPlan). A fully
-	// extracted job's file was removed at commit — the existsSync guard
-	// skips it without re-stating that connection.
+	// Cross-drain failure bookkeeping: every job left behind gets counted.
+	// Poison windows count against POISON_JOB_MAX_ATTEMPTS; transient-only
+	// failures count against TRANSIENT_JOB_MAX_ATTEMPTS (the livelock the
+	// bench's drain gate can no longer block on — a gateway outage retry-
+	// storms forever without the cap). A fully extracted job's file was
+	// removed at commit — the existsSync guard skips it without re-stating
+	// that connection. When BOTH classes fail, poison dominates: a window
+	// that can never complete is worth more than storm apartments.
 	let quarantined = 0
 	for (const plan of plans) {
-		if (plan.poisonedWindowCount === 0 || !existsSync(plan.jobFile)) continue
-		if (recordPoisonAttempt(plan)) quarantined += 1
+		if (!existsSync(plan.jobFile)) continue
+		if (plan.poisonedWindowCount > 0) {
+			if (recordFailedAttempt(plan, "poison")) quarantined += 1
+		} else if (plan.transientWindowCount > 0) {
+			if (recordFailedAttempt(plan, "transient")) quarantined += 1
+		}
 	}
 	if (quarantined > 0) {
-		console.info(
-			`[memory-capture] ${quarantined} poison job(s) quarantined to failed/ (requeue: mv back into pending/)`,
-		)
+		console.info(`[memory-capture] ${quarantined} job(s) quarantined to failed/ (requeue: mv back into pending/)`)
 	}
 
 	// Batched supersede: ONE judge pass per store across the whole drain —
@@ -1678,9 +1687,12 @@ function sweepJobsDir(dir: string, maxAgeMs: number, label: string): void {
  * dedupe here. Returns null when nothing is fresh (the job file is
  * removed); throws on a poison job (also removed). */
 function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): JobPlan | null {
-	let job: CaptureJob & { drainAttempts?: number }
+	let job: CaptureJob & { drainAttempts?: number; transientAttempts?: number }
 	try {
-		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob & { drainAttempts?: number }
+		job = JSON.parse(readFileSync(jobFile, "utf-8")) as CaptureJob & {
+			drainAttempts?: number
+			transientAttempts?: number
+		}
 	} catch (err) {
 		// Poison job: an unparseable file can never be processed — remove it
 		// so it doesn't fail every future drain (the session JSONL keeps the
@@ -1708,17 +1720,16 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 		rmSync(jobFile, { force: true })
 		return null
 	}
-	// Poison bookkeeping rides on the job JSON, defaulting to a fresh job.
-	const drainAttempts =
-		typeof job.drainAttempts === "number" && Number.isFinite(job.drainAttempts) && job.drainAttempts > 0
-			? Math.floor(job.drainAttempts)
-			: 0
+	// Failure bookkeeping rides on the job JSON, defaulting to a fresh job.
+	const toAttempt = (v: number | undefined): number =>
+		typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0
 	return {
 		jobFile,
 		jobObject: job,
 		project: job.project ?? null,
 		session: job.session,
-		drainAttempts,
+		drainAttempts: toAttempt(job.drainAttempts),
+		transientAttempts: toAttempt(job.transientAttempts),
 		windows: windowByBudget(fresh),
 		personalFacts: [],
 		projectFacts: [],
@@ -1729,25 +1740,29 @@ function planJob(jobFile: string, hashes: Set<string>, claimed: Set<string>): Jo
 }
 
 /**
- * Cross-drain poison accounting for one failed job. Under the
- * POISON_JOB_MAX_ATTEMPTS cap the job JSON is rewritten with the
- * incremented drainAttempts counter (atomic tmp+rename; the original mtime
- * restored so both mtime-sorted drain order and the 7-day sweep keep their
- * semantics). At the cap the job moves to failed/ — kept for post-mortems,
- * requeued only by a deliberate manual mv back into pending/ (e.g. after an
- * extraction-model upgrade). Returns true when the job was quarantined.
- * Never throws: bookkeeping must not break a drain.
+ * Cross-drain attempt accounting for one failed job. Under the kind's
+ * attempt cap the job JSON is rewritten with the incremented counter
+ * (atomic tmp+rename; the original mtime restored so both mtime-sorted
+ * drain order and the 7-day sweep keep their semantics). At the cap the
+ * job moves to failed/ — kept for post-mortems, requeued only by a
+ * deliberate manual mv back into pending/ (e.g. after an extraction-model
+ * upgrade, or after the operator fixed the gateway outage). Returns true
+ * when the job was quarantined. Never throws: bookkeeping must not break
+ * a drain.
  */
-function recordPoisonAttempt(plan: JobPlan): boolean {
+function recordFailedAttempt(plan: JobPlan, kind: "poison" | "transient"): boolean {
 	try {
-		const attempts = plan.drainAttempts + 1
+		const isPoison = kind === "poison"
+		const counterField = isPoison ? "drainAttempts" : "transientAttempts"
+		const cap = isPoison ? POISON_JOB_MAX_ATTEMPTS : transientJobMaxAttempts()
+		const attempts = (isPoison ? plan.drainAttempts : plan.transientAttempts) + 1
 		// Persist the count BEFORE the cap decision: a quarantined (and later
-		// manually requeued) job keeps its history — a requeued poison job
-		// dies on its very next proven-poison drain instead of earning a fresh
-		// cap's worth of LLM calls.
+		// manually requeued) job keeps its history — a requeued job dies on
+		// its very next proven-failure drain instead of earning a fresh cap's
+		// worth of LLM calls.
 		const mtime = statSync(plan.jobFile).mtime
 		const tmp = `${plan.jobFile}.${process.pid}.tmp`
-		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, drainAttempts: attempts }, null, 0)}\n`, "utf-8")
+		writeFileSync(tmp, `${JSON.stringify({ ...plan.jobObject, [counterField]: attempts }, null, 0)}\n`, "utf-8")
 		renameSync(tmp, plan.jobFile)
 		try {
 			utimesSync(plan.jobFile, new Date(), mtime)
@@ -1757,22 +1772,36 @@ function recordPoisonAttempt(plan: JobPlan): boolean {
 				err instanceof Error ? err.message : err,
 			)
 		}
-		if (attempts >= POISON_JOB_MAX_ATTEMPTS) {
+		if (attempts >= cap) {
 			const failedDir = failedJobsDir()
 			mkdirSync(failedDir, { recursive: true })
 			renameSync(plan.jobFile, join(failedDir, basename(plan.jobFile)))
 			console.error(
-				`[memory-capture] quarantined poison job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/`,
+				`[memory-capture] quarantined ${kind} job after ${attempts} attempts: ${basename(plan.jobFile)} → failed/`,
 			)
 			return true
 		}
 	} catch (err) {
 		console.warn(
-			`[memory-capture] poison bookkeeping failed for ${basename(plan.jobFile)} (retrying without counting):`,
+			`[memory-capture] ${kind} bookkeeping failed for ${basename(plan.jobFile)} (retrying without counting):`,
 			err instanceof Error ? err.message : err,
 		)
 	}
 	return false
+}
+
+/** Transient-failure cross-drain cap (env-overridable). Defaults to
+ * TRANSIENT_JOB_MAX_ATTEMPTS — 10 whole-drain transient failures before
+ * quarantine, far above a 503 spike's real tail but far under the
+ * pending-until-empty livelock the bench's drain gate would otherwise
+ * block on. */
+function transientJobMaxAttempts(): number {
+	const raw = process.env.KIMCHI_MEMORY_TRANSIENT_MAX_ATTEMPTS
+	if (raw !== undefined) {
+		const parsed = Number(raw)
+		if (Number.isFinite(parsed) && parsed >= 1) return Math.floor(parsed)
+	}
+	return TRANSIENT_JOB_MAX_ATTEMPTS
 }
 
 /**
