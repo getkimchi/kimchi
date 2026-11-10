@@ -287,11 +287,10 @@ describe("SsoFlowManager", () => {
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
 		})
 
-		// org selection happens in the browser, so the listing must
-		// resolve to exactly one org — a multi-org listing means the browser leg
-		// did not scope the session, and auto-picking would persist the wrong
-		// org. Surface an actionable SSO_IDP_ERROR instead of parking the flow.
-		it("fails a multi-org listing with an actionable SSO_IDP_ERROR and consumes the flow", async () => {
+		// The Cast AI login page does not scope the session to one org, so
+		// multi-org accounts are the norm: the flow parks with the listing and
+		// the client completes it via sso_select_org (see "sso_select_org").
+		it("settles a multi-org listing as org_selection_required and parks the flow", async () => {
 			const h = makeHarness()
 			h.listUserOrganizations.mockResolvedValue([
 				{ id: "org-123", name: "Acme" },
@@ -300,10 +299,73 @@ describe("SsoFlowManager", () => {
 			const begin = await h.manager.begin({})
 			h.server.settle({ code: "the-code", outcome: "code" })
 
-			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_IDP_ERROR")
-			// Nothing settles and the flow is consumed.
+			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
+				status: "org_selection_required",
+				organizations: [
+					{ id: "org-123", name: "Acme" },
+					{ id: "org-456", name: "Acme Staging" },
+				],
+			})
+			// Nothing settles yet — the credential is parked with the flow.
 			expect(h.manager.takeSettledCredential()).toBeUndefined()
+			// The loopback server is done: its port is released (close called)
+			// while the flow itself stays parked.
+			expect(h.server.closeCalls).toBeGreaterThan(0)
+			// Parked flow still holds the one-flow-per-connection slot...
+			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+			// ...and a repeat await re-settles the same org list instead of dying.
+			await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
+				status: "org_selection_required",
+				organizations: expect.any(Array),
+			})
+		})
+
+		// A TTL that passes while the exchange/listing is in flight must not
+		// park a dead flow: the client would get a list its requestId can no
+		// longer act on. The liveness re-check consumes the flow instead, and
+		// the slot is released for a fresh begin.
+		it("fails SSO_REQUEST_NOT_FOUND instead of parking when the TTL passed mid-completion", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockImplementation(async () => {
+				h.clock.now += 600_001 // TTL passes while the listing is in flight
+				return [
+					{ id: "org-123", name: "Acme" },
+					{ id: "org-456", name: "Acme Staging" },
+				]
+			})
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+
 			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+			// Nothing parked, nothing settled, and the connection is free again.
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
+			await expect(h.manager.begin({})).resolves.toEqual(expect.objectContaining({ requestId: expect.any(String) }))
+		})
+
+		// A parked flow outlives its resolved awaitPromise with no active timer,
+		// so expiry is only enforced when a call touches it — begin() must reap
+		// the expired park (and its credential) instead of failing
+		// SSO_IN_PROGRESS forever.
+		it("reaps an expired parked flow so a later begin starts cleanly", async () => {
+			const h = makeHarness()
+			h.listUserOrganizations.mockResolvedValue([
+				{ id: "org-123", name: "Acme" },
+				{ id: "org-456", name: "Acme Staging" },
+			])
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			await h.manager.awaitResult({ requestId: begin.requestId })
+			h.clock.now += 600_001
+
+			const retry = await h.manager.begin({})
+			expect(retry.requestId).not.toBe(begin.requestId)
+			// The expired park is gone: its requestId no longer resolves and its
+			// parked credential was never handed to a settle tail.
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
 		})
 
 		// the login page has a region dropdown — a user switching
@@ -390,6 +452,90 @@ describe("SsoFlowManager", () => {
 			const expectation = expectSsoError(pending, "SSO_CALLBACK_TIMEOUT")
 			await vi.advanceTimersByTimeAsync(20)
 			await expectation
+		})
+	})
+
+	describe("sso_select_org", () => {
+		async function parkMultiOrg(h: Harness) {
+			h.listUserOrganizations.mockResolvedValue([
+				{ id: "org-123", name: "Acme" },
+				{ id: "org-456", name: "Acme Staging" },
+			])
+			const begin = await h.manager.begin({})
+			h.server.settle({ code: "the-code", outcome: "code" })
+			await h.manager.awaitResult({ requestId: begin.requestId })
+			return begin
+		}
+
+		it("completes a parked flow with the chosen org and settles the credential once", async () => {
+			const h = makeHarness()
+			const begin = await parkMultiOrg(h)
+
+			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" })).resolves.toEqual({
+				status: "authenticated",
+				org: { id: "org-456", name: "Acme Staging" },
+			})
+
+			// The parked credential settles for the caller's settle tail,
+			// scoped to the chosen org, consumed on read.
+			expect(h.manager.takeSettledCredential()).toEqual({
+				credential: expect.anything(),
+				org: { id: "org-456", name: "Acme Staging" },
+			})
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
+			// Terminal success consumes the flow.
+			await expectSsoError(h.manager.awaitResult({ requestId: begin.requestId }), "SSO_REQUEST_NOT_FOUND")
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-456" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+		})
+
+		it("rejects an orgId outside the listing with SSO_UNKNOWN_ORG and keeps the flow parked", async () => {
+			const h = makeHarness()
+			const begin = await parkMultiOrg(h)
+
+			await expectSsoError(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-nope" }), "SSO_UNKNOWN_ORG")
+			// Non-terminal: the client can retry with a valid id.
+			await expect(h.manager.selectOrg({ requestId: begin.requestId, orgId: "org-123" })).resolves.toEqual({
+				status: "authenticated",
+				org: { id: "org-123", name: "Acme" },
+			})
+		})
+
+		it("fails SSO_REQUEST_NOT_FOUND on a cancelled, unknown, expired, or browser-phase flow", async () => {
+			const h = makeHarness()
+			// Cancelled parked flow.
+			const cancelled = await parkMultiOrg(h)
+			h.manager.cancel({ requestId: cancelled.requestId })
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: cancelled.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+			// Unknown requestId.
+			await expectSsoError(h.manager.selectOrg({ requestId: "nope", orgId: "org-123" }), "SSO_REQUEST_NOT_FOUND")
+			// Expired parked flow.
+			const expired = await parkMultiOrg(h)
+			h.clock.now += 600_001
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: expired.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+			// Browser phase: the flow is alive but no listing was parked yet.
+			const browserPhase = await h.manager.begin({})
+			await expectSsoError(
+				h.manager.selectOrg({ requestId: browserPhase.requestId, orgId: "org-123" }),
+				"SSO_REQUEST_NOT_FOUND",
+			)
+			// Nothing settled by any of the failed attempts.
+			expect(h.manager.takeSettledCredential()).toBeUndefined()
+		})
+
+		it("requires both requestId and orgId", async () => {
+			const h = makeHarness()
+			await expectInvalidParams(h.manager.selectOrg({}))
+			await expectInvalidParams(h.manager.selectOrg({ requestId: "req" }))
+			await expectInvalidParams(h.manager.selectOrg({ requestId: "req", orgId: "" }))
 		})
 	})
 

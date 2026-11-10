@@ -1,23 +1,31 @@
 // ACP extension methods for the Cast AI SSO login.
 //
-// Wire names: `_kimchi.dev/sso_begin|sso_await|sso_cancel` — sessionless,
-// driven stepwise by the client (Studio) per the frozen wire contract
-// (kimchi-studio branch `research/wire-contract-oauth-acp`): organization
-// selection happens in the browser during the OAuth flow (the Auth0-hosted
-// login page), so the original contract's interactive org-list step
-// (`org_selection_required` / `sso_select_org`) was dropped by amendment.
+// Wire names: `_kimchi.dev/sso_begin|sso_await|sso_select_org|sso_cancel` —
+// sessionless, driven stepwise by the client (Studio) per the frozen wire
+// contract (kimchi-studio branch `research/wire-contract-oauth-acp`): the
+// browser leg authenticates the user, org selection happens in Studio
+// (the `org_selection_required` / `sso_select_org` step; restored from the
+// original contract after the LLM-4138 amendment cut it).
 //   sso_begin {region?} → {requestId, authorizeUrl, expiresAt}
 //       Starts the loopback callback server (fixed port 8765) and builds the
 //       Auth0 Authorization Code + PKCE URL. Returns WITHOUT opening a
 //       browser — the client opens `authorizeUrl` itself.
 //   sso_await {requestId} → {status:"authenticated", org}
-//       Waits for the browser callback, exchanges the code, and resolves
-//       with the browser-chosen organization. The credential rides on the
+//                        | {status:"org_selection_required", organizations}
+//       Waits for the browser callback and exchanges the code. With exactly
+//       one org in the listing it resolves with that org; with several it
+//       settles `org_selection_required` and parks the flow (requestId stays
+//       valid) so Studio can offer a picker. The credential rides on the
 //       manager for the caller's settle tail (persist + fan-out the
 //       org-scoped credential, refresh models/sessions) via
 //       takeSettledCredential().
 //       Zero organizations is a defensive SSO_NO_ORGANIZATIONS: the stored
 //       credential must always carry an org id.
+//   sso_select_org {requestId, orgId} → {status:"authenticated", org}
+//       Completes a parked org-selection flow: settles the credential scoped
+//       to the chosen org (same settle tail as a single-org await). An orgId
+//       outside the listing is SSO_UNKNOWN_ORG; a dead/cancelled flow is
+//       SSO_REQUEST_NOT_FOUND.
 //   sso_cancel {requestId?} → {} — idempotent, never errors.
 //
 // Region comes from the `region` param (or the configured region), never from
@@ -70,6 +78,7 @@ export type SsoErrorCode =
 	| "SSO_IDP_ERROR"
 	| "SSO_ORG_FETCH_FAILED"
 	| "SSO_NO_ORGANIZATIONS"
+	| "SSO_UNKNOWN_ORG"
 
 export function ssoError(code: SsoErrorCode, message: string, extra?: Record<string, unknown>): RequestError {
 	// `message` rides the standard top-level JSON-RPC error field; it is also
@@ -97,7 +106,11 @@ export type SsoOrganization = {
 	name: string
 }
 
-export type SsoAwaitResponse = { status: "authenticated"; org: SsoOrganization }
+export type SsoAwaitResponse =
+	| { status: "authenticated"; org: SsoOrganization }
+	| { status: "org_selection_required"; organizations: SsoOrganization[] }
+
+export type SsoSelectOrgResponse = { status: "authenticated"; org: SsoOrganization }
 
 // ---------------------------------------------------------------------------
 // Flow manager
@@ -148,6 +161,10 @@ interface PendingSsoFlow {
 	expiresAtMs: number
 	/** Shared wait so concurrent/repeat `sso_await` calls settle once. */
 	awaitPromise?: Promise<SsoAwaitResponse>
+	/** Set when the browser leg settled with a multi-org listing: the
+	 * exchanged credential is parked here and the client must complete the
+	 * flow with `sso_select_org` (or tear it down with `sso_cancel`). */
+	orgSelection?: { credential: OAuthCredentials; organizations: SsoOrganization[] }
 }
 
 function requireStringParam(params: Record<string, unknown>, name: string): string {
@@ -162,7 +179,9 @@ function requireStringParam(params: Record<string, unknown>, name: string): stri
  * `SSO_IN_PROGRESS`. Every terminal outcome (authenticated, IdP error,
  * timeout, cancel) consumes the flow — later calls with the same requestId
  * get `SSO_REQUEST_NOT_FOUND`, which clients treat as "restart the flow"
- * (contract §6.2).
+ * (contract §6.2). The one non-terminal settle is `org_selection_required`:
+ * the flow stays parked until the client completes it with `sso_select_org`
+ * or tears it down with `sso_cancel`.
  */
 export class SsoFlowManager {
 	private flow?: PendingSsoFlow
@@ -267,6 +286,32 @@ export class SsoFlowManager {
 		return flow.awaitPromise
 	}
 
+	/** `_kimchi.dev/sso_select_org` — complete a parked org-selection flow. */
+	async selectOrg(params: Record<string, unknown>): Promise<SsoSelectOrgResponse> {
+		const requestId = requireStringParam(params, "requestId")
+		const orgId = requireStringParam(params, "orgId")
+		const flow = this.flowById(requestId)
+		const parked = flow.orgSelection
+		if (!parked) {
+			// The flow is alive but still in the browser phase — the client spoke
+			// too early. Same machine code as a dead flow: restart the flow.
+			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in has no organization selection pending")
+		}
+		const org = parked.organizations.find((candidate) => candidate.id === orgId)
+		if (!org) {
+			// Not terminal: the flow stays parked so the client can retry with a
+			// valid orgId (the listing is the source of truth for valid ids).
+			throw ssoError("SSO_UNKNOWN_ORG", `This Cast AI account has no organization with id ${orgId}`)
+		}
+		// The credential rides on the manager for the caller's settle tail
+		// (persist + fan out + session refresh) — nothing was written before
+		// this point (contract §3.2).
+		this.settled = { credential: parked.credential, org }
+		// Terminal success consumes the flow.
+		this.discard(flow)
+		return { status: "authenticated", org }
+	}
+
 	/** `_kimchi.dev/sso_cancel` — abort mid-flow; idempotent, never errors. */
 	cancel(params: Record<string, unknown>): Record<string, never> {
 		const requestId = typeof params.requestId === "string" && params.requestId ? params.requestId : undefined
@@ -291,8 +336,9 @@ export class SsoFlowManager {
 	}
 
 	/** Race the callback result against the flow TTL; map outcomes to typed
-	 * errors; resolve with the browser-chosen organization (selection happens
-	 * on the Auth0-hosted login page). */
+	 * errors; settle either directly (single-org listing → authenticated) or
+	 * by parking the flow for the client's org pick
+	 * (multi-org → org_selection_required + sso_select_org). */
 	private async runBrowserWait(flow: PendingSsoFlow): Promise<SsoAwaitResponse> {
 		try {
 			const result = await this.raceWithExpiry(flow, flow.callbackServer.result)
@@ -329,9 +375,9 @@ export class SsoFlowManager {
 				)
 			}
 
-			// The login page performed the org selection, so the listing is read
-			// to identify the browser-chosen org — no interactive selection step
-			// on the ACP surface.
+			// The browser leg authenticated the user but did not pick an org, so
+			// the listing is what the client's picker offers (and what
+			// sso_select_org validates against).
 			let organizations: KimchiOrganization[]
 			try {
 				organizations = await this.deps.listUserOrganizations(
@@ -349,14 +395,27 @@ export class SsoFlowManager {
 				throw ssoError("SSO_NO_ORGANIZATIONS", "This Cast AI account has no organizations")
 			}
 			if (organizations.length > 1) {
-				// The browser leg should have scoped the session to one org.
-				// Auto-picking one would silently scope the credential wrong, and
-				// the interactive org-list step was dropped from the ACP wire —
-				// the only fix is signing in again.
-				throw ssoError(
-					"SSO_IDP_ERROR",
-					`The Cast AI login returned ${organizations.length} organizations; sign in again and pick one organization on the Cast AI login page.`,
-				)
+				// The Cast AI login page does not scope the session to one org, so
+				// multi-org accounts are the norm. Park the flow: the browser leg
+				// stays settled, and the client completes the sign-in by picking an
+				// org via sso_select_org (or tears it down with sso_cancel). The
+				// loopback server is done — release port 8765 so other Kimchi
+				// surfaces can start a sign-in while the pick is pending.
+				// Same liveness re-check as the single-org settle below: a TTL that
+				// passed while the exchange/listing was in flight must not park a
+				// dead flow — the client would get a list its requestId can no
+				// longer act on (every later call fails SSO_REQUEST_NOT_FOUND).
+				this.assertFlowAlive(flow)
+				try {
+					flow.callbackServer.close()
+				} catch {
+					// Already closed — closing is idempotent by contract.
+				}
+				flow.orgSelection = { credential, organizations }
+				return {
+					status: "org_selection_required",
+					organizations: organizations.map((candidate) => ({ id: candidate.id, name: candidate.name })),
+				}
 			}
 			const org = organizations[0]
 			this.assertFlowAlive(flow)
@@ -467,12 +526,20 @@ export class SsoFlowManager {
 		}
 	}
 
-	/** Refuse to settle a flow that was cancelled/expired while its completion
-	 * was in flight: discard() cleared the map entry, so a missing entry means
-	 * the credential must not be persisted. */
+	/** Refuse to settle or park a flow that was cancelled or expired while its
+	 * completion was in flight. Cancelled: discard() cleared the map entry, so
+	 * a missing entry means the credential must not be persisted. Expired: the
+	 * completion raced the TTL (the expiry race only guards the callback wait,
+	 * not the exchange/listing), so the clock is checked here too — either way
+	 * the flow is consumed and the slot released (mirrors flowById's expiry
+	 * handling). */
 	private assertFlowAlive(flow: PendingSsoFlow): void {
 		if (this.flow !== flow) {
 			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in was cancelled")
+		}
+		if ((this.deps.now ?? Date.now)() > flow.expiresAtMs) {
+			this.discard(flow)
+			throw ssoError("SSO_REQUEST_NOT_FOUND", "The SSO sign-in window expired; start the flow again")
 		}
 	}
 }

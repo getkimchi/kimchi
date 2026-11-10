@@ -179,7 +179,7 @@ import {
 import { handleListResources, handleSetResourceEnabled } from "./ext-methods/resources.js"
 import { handleSetOnboardingFlag } from "./ext-methods/set-onboarding-flag.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
-import { SsoFlowManager, type SsoFlowManagerDeps } from "./ext-methods/sso.js"
+import { SsoFlowManager, type SsoFlowManagerDeps, ssoError } from "./ext-methods/sso.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
@@ -807,15 +807,45 @@ export class KimchiAcpAgent implements Agent {
 			}
 		}
 
-		// sso_await settles directly to authenticated with the
-		// browser-chosen org (selection happens on the Auth0-hosted login page).
-		// Any terminal failure — including the multi-org listing, which the
-		// manager maps to an actionable SSO_IDP_ERROR — propagates and consumes
-		// the flow, so a retry starts clean.
-		await this.sso.awaitResult({ requestId: begin.requestId })
+		// sso_await settles either directly to authenticated (single-org listing)
+		// or to org_selection_required. This path has no interactive picker, so
+		// a parked multi-org flow is torn down and surfaced as a typed,
+		// actionable SSO_IDP_ERROR (data.code preserved so clients keep their
+		// branch point) — org picking is the Studio ext-method flow's job. Any
+		// terminal failure propagates and consumes the flow, so a retry starts
+		// clean.
+		const awaitResponse = await this.sso.awaitResult({ requestId: begin.requestId })
+		if (awaitResponse.status === "org_selection_required") {
+			this.sso.cancel({ requestId: begin.requestId })
+			throw ssoError(
+				"SSO_IDP_ERROR",
+				`This Cast AI account has ${awaitResponse.organizations.length} organizations. Sign in from the Kimchi app, where you can choose an organization during login.`,
+			)
+		}
+		await this.applySsoSettledCredential()
+		return {}
+	}
+
+	/** Apply the manager's settled credential — the one shared piece of the
+	 * settle tail: consume takeSettledCredential() and, when a login just
+	 * settled, persist + fan out + refresh. No-op for a settle that carries no
+	 * credential (e.g. org_selection_required). */
+	private async applySsoSettledCredential(): Promise<void> {
 		const settled = this.sso.takeSettledCredential()
 		if (settled) await this.settleSsoCredential(settled.credential, settled.org)
-		return {}
+	}
+
+	/** Run an SSO ext-method manager call and apply the settle tail to its
+	 * response. The one seam through which `_kimchi.dev/sso_await` and
+	 * `_kimchi.dev/sso_select_org` reach the manager, so the tail cannot drift
+	 * between the two arms. */
+	private async settleSsoExtMethod(
+		call: (params: Record<string, unknown>) => Promise<Record<string, unknown>>,
+		params: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		const response = await call(params)
+		await this.applySsoSettledCredential()
+		return response
 	}
 
 	/**
@@ -1539,15 +1569,19 @@ export class KimchiAcpAgent implements Agent {
 				// region resolution (per-param, never setPendingOAuthRegion), and
 				// the typed data.code errors. See ext-methods/sso.ts.
 				return this.sso.begin(params)
-			case AVAILABLE_EXT_METHODS.sso_await: {
+			case AVAILABLE_EXT_METHODS.sso_await:
+			case AVAILABLE_EXT_METHODS.sso_select_org:
 				// A settled browser leg persists nothing itself — the server applies
 				// the settle tail (persist + fan out + session refresh) so the
-				// manager stays free of agent-owned state.
-				const response = await this.sso.awaitResult(params)
-				const settled = this.sso.takeSettledCredential()
-				if (settled) await this.settleSsoCredential(settled.credential, settled.org)
-				return response
-			}
+				// manager stays free of agent-owned state. An
+				// org_selection_required settle (sso_await) carries no credential
+				// yet; the parked flow completes via sso_select_org, whose
+				// authenticated settle carries it and settles through the same
+				// shared tail.
+				if (method === AVAILABLE_EXT_METHODS.sso_await) {
+					return this.settleSsoExtMethod((p) => this.sso.awaitResult(p), params)
+				}
+				return this.settleSsoExtMethod((p) => this.sso.selectOrg(p), params)
 			case AVAILABLE_EXT_METHODS.sso_cancel:
 				return this.sso.cancel(params)
 			case AVAILABLE_EXT_METHODS.set_onboarding_flag:

@@ -44,10 +44,12 @@ export const AVAILABLE_EXT_METHODS = {
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
 	// Cast AI SSO login: stepwise, sessionless flow driven by the client —
 	// begin returns the authorize URL without opening a browser, await waits
-	// for the browser leg and settles with the browser-chosen org, cancel
+	// for the browser leg and settles either directly (single org) or with
+	// the org list for an in-app pick (select_org completes it), cancel
 	// aborts. Advertised to clients via `_meta["kimchi.dev"].sso`.
 	sso_begin: `_${CAPABILITIES_KEY}/sso_begin`,
 	sso_await: `_${CAPABILITIES_KEY}/sso_await`,
+	sso_select_org: `_${CAPABILITIES_KEY}/sso_select_org`,
 	sso_cancel: `_${CAPABILITIES_KEY}/sso_cancel`,
 
 	set_onboarding_flag: `_${CAPABILITIES_KEY}/set_onboarding_flag`,
