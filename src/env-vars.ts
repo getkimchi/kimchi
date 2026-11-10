@@ -258,4 +258,10 @@ export const TEST_SUITE_ENV_VARS: string[] = [
 	// consumed by dependencies, referenced only from our tests
 	"PI_MCP_ADAPTER_TEST_AUTH_STORE",
 	"PI_OFFLINE",
+	// oauth-rotation e2e unit-suite debug toggles (tests keep the events log /
+	// print child store operations), and the adapter store key the suite
+	// overrides to scope credential storage per child
+	"KIMCHI_KEEP_OAUTH_TMP",
+	"KIMCHI_OAUTH_VERBOSE",
+	"PI_MCP_ADAPTER_OAUTH_FILE_KEY",
 ]
