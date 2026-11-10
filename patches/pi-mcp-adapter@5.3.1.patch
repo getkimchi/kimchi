@@ -1087,10 +1087,19 @@ index 247d300b839a3ab2669603f764fb8d343eee159f..29eae692d0daea6fa223454399c70acb
        return false;
      }
 diff --git a/mcp-auth-flow.ts b/mcp-auth-flow.ts
-index 506b513..1c775c4 100644
+index 9ded419..1c775c4 100644
 --- a/mcp-auth-flow.ts
 +++ b/mcp-auth-flow.ts
-@@ -17,6 +17,8 @@ import {
+@@ -8,6 +8,8 @@ import {
+   auth as runSdkAuth,
+   extractWWWAuthenticateParams,
+   LATEST_PROTOCOL_VERSION,
++  OAuthError,
++  OAuthErrorCode,
+   RegistrationRejectedError,
+   UnauthorizedError,
+   validateClientMetadataUrl,
+@@ -15,6 +17,8 @@ import {
  } from "@modelcontextprotocol/client"
  import open from "open"
  import {
@@ -1099,7 +1108,15 @@ index 506b513..1c775c4 100644
    getOAuthCallbackPort,
    McpOAuthProvider,
    type McpOAuthConfig,
-@@ -97,6 +99,12 @@ type PendingAuth = {
+@@ -38,6 +42,7 @@ import {
+   getAuthBaseDir,
+   beginOAuthRevocation,
+   captureOAuthAuthority,
++  invalidateAuthEntryCache,
+   OAuthCredentialStoreError,
+   type AuthStorageOptions,
+   type OAuthAuthority,
+@@ -94,6 +99,12 @@ type PendingAuth = {
    authorizationUrl: string
    manualRedirect: boolean
    manualCompletionController?: AbortController
@@ -1112,7 +1129,7 @@ index 506b513..1c775c4 100644
    discovery: AuthDiscovery
    getHeaders: () => Headers
    authStorageOptions: AuthStorageOptions
-@@ -464,7 +472,7 @@ export async function startAuth(
+@@ -461,7 +472,7 @@ export async function startAuth(
    definition?: ServerEntry,
    options: AuthenticateOptions = {},
    operationAuthority?: OAuthAuthority,
@@ -1121,7 +1138,7 @@ index 506b513..1c775c4 100644
    if (isServerDisabled(definition)) throw new Error(`MCP server "${serverName}" is disabled`)
    const authority = operationAuthority ?? captureOAuthAuthority(serverName)
    authority()
-@@ -515,13 +523,58 @@ export async function startAuth(
+@@ -512,13 +523,58 @@ export async function startAuth(
    const existingPendingAuth = runtimeState.pendingAuths.get(getPendingAuthKey(serverName, authStorageOptions))
    if (existingPendingAuth?.serverUrl === serverUrl) {
      existingPendingAuth.authority()
@@ -1181,7 +1198,7 @@ index 506b513..1c775c4 100644
    if (!manualRedirect) {
      try {
        await ensureCallbackServer({
-@@ -554,6 +607,18 @@ export async function startAuth(
+@@ -551,6 +607,18 @@ export async function startAuth(
        }
        throw error
      }
@@ -1200,7 +1217,7 @@ index 506b513..1c775c4 100644
    }
  
    let capturedUrl: URL | undefined
-@@ -615,13 +680,14 @@ export async function startAuth(
+@@ -612,13 +680,14 @@ export async function startAuth(
        authorizationUrl: capturedUrl.toString(),
        manualRedirect,
        ...(manualRedirect ? { manualCompletionController: new AbortController() } : {}),
@@ -1216,7 +1233,7 @@ index 506b513..1c775c4 100644
    } catch (error) {
      authProvider.deactivate()
      try {
-@@ -1048,7 +1114,7 @@ export async function authenticate(
+@@ -1045,7 +1114,7 @@ export async function authenticate(
        if (!pendingAuth) {
          throw new Error(`No pending OAuth flow for server: ${serverName}`)
        }
@@ -1225,7 +1242,7 @@ index 506b513..1c775c4 100644
          throw new Error(
            `OAuth for ${serverName} uses a remote redirect URI. Complete it with auth-start/auth-complete or /mcp-auth.`,
          )
-@@ -1056,7 +1122,7 @@ export async function authenticate(
+@@ -1053,7 +1122,7 @@ export async function authenticate(
  
        // Register the localhost callback before opening the browser. Remote
        // pre-registered callbacks are completed by pasting their full URL.
@@ -1234,7 +1251,7 @@ index 506b513..1c775c4 100644
          ? waitForManualCompletionCancellation(pendingAuth.manualCompletionController!.signal)
          : waitForCallback(oauthState)
        void callbackPromise.catch(() => {})
-@@ -1158,51 +1224,93 @@ export async function getValidToken(
+@@ -1155,51 +1224,93 @@ export async function getValidToken(
  
    if (expired === true && entry.tokens.refreshToken) {
      console.log(`MCP Auth: Token expired for ${serverName}, attempting refresh`)
