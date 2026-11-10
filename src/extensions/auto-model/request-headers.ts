@@ -64,6 +64,10 @@ export function withAutoRoutingHeaderStrip(create: typeof ModelRuntime.create): 
 		decorated.add(runtime)
 		const getAuth = runtime.getAuth.bind(runtime)
 		runtime.getAuth = async (providerOrModel, overrides) => {
+			// Provider-id lookups carry no model identity, so the strip cannot apply
+			// here — by design. Header resolution for an auto-routed request must
+			// always go through the model-object form; resolving by provider id
+			// would leak the block-level pinning headers.
 			if (typeof providerOrModel === "string") return getAuth(providerOrModel, overrides)
 			const resolution = await getAuth(providerOrModel, overrides)
 			if (!resolution?.auth.headers || !isAutoRoutedModel(providerOrModel)) return resolution

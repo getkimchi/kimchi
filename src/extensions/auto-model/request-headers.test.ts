@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { AnyModel, ProviderHeaders } from "@earendil-works/pi-ai"
-import { ModelRuntime } from "@earendil-works/pi-coding-agent"
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { createModel } from "../__mocks__/model-registry.js"
 import { stripProviderPinningHeaders, withAutoRoutingHeaderStrip } from "./request-headers.js"
@@ -24,6 +24,21 @@ const BLOCK_HEADERS: ProviderHeaders = {
 	"X-Provider-Type": "ai-enabler",
 	"X-Provider-Name": "ai-enabler",
 	"X-CastAi-Organization-Id": "org-1",
+}
+
+/** A models.json model entry shaped like the e2e fixture's (provider blocks
+ * round-trip this exact form), for loading through the real runtime. */
+function modelEntry(id: string): Record<string, unknown> {
+	return {
+		id,
+		name: id,
+		reasoning: false,
+		input: ["text"],
+		contextWindow: 128_000,
+		maxTokens: 8_192,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		provider: "ai-enabler",
+	}
 }
 
 /**
@@ -137,4 +152,54 @@ it("decorates a shared runtime only once", async () => {
 	const decorated = runtime.getAuth
 	await withAutoRoutingHeaderStrip(async () => runtime)()
 	expect(runtime.getAuth).toBe(decorated)
+})
+
+it("strips the pin through the real getApiKeyAndHeaders chain", async () => {
+	// No getAuth mock: a models.json block shaped like the one
+	// buildModelsConfig writes is loaded by a real runtime, decorated, and
+	// driven through the public API the direct callers use — pinning the
+	// whole chain (config load → withConfiguredAuth → resolveConfiguredModelHeaders
+	// → the strip) instead of just the wrap logic.
+	const modelsPath = join(dir, "models.json")
+	writeFileSync(
+		modelsPath,
+		JSON.stringify({
+			providers: {
+				"kimchi-dev": {
+					baseUrl: "https://example.invalid",
+					apiKey: "test-key",
+					api: "openai-completions",
+					authHeader: true,
+					headers: { ...BLOCK_HEADERS },
+					models: [modelEntry("auto"), modelEntry("routed")],
+				},
+			},
+		}),
+	)
+	const runtime = await ModelRuntime.create({
+		authPath: join(dir, "auth.json"),
+		modelsPath,
+		refreshOnCreate: false,
+		allowModelNetwork: false,
+	})
+	await withAutoRoutingHeaderStrip(async () => runtime)()
+	const registry = new ModelRegistry(runtime)
+
+	const auto = registry.find("kimchi-dev", "auto")
+	if (!auto) throw new Error("auto model not registered")
+	const autoAuth = await registry.getApiKeyAndHeaders(auto)
+	if (!autoAuth.ok) throw new Error(autoAuth.error)
+	// Authorization comes from the block's authHeader — proof the real auth
+	// resolution ran, not just the strip wrap.
+	expect(autoAuth.headers).toEqual({
+		Authorization: "Bearer test-key",
+		"User-Agent": "kimchi/1.0",
+		"X-CastAi-Organization-Id": "org-1",
+	})
+
+	const routed = registry.find("kimchi-dev", "routed")
+	if (!routed) throw new Error("routed model not registered")
+	const routedAuth = await registry.getApiKeyAndHeaders(routed)
+	if (!routedAuth.ok) throw new Error(routedAuth.error)
+	expect(routedAuth.headers).toMatchObject({ "X-Provider-Type": "ai-enabler" })
 })
