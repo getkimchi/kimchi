@@ -2355,9 +2355,8 @@ describe("receipts lane (KIMCHI_MEMORY_EXTRACTION_RECEIPTS)", () => {
 	it("suffix is distinct and never in the OFF-composed prompt family", () => {
 		expect(RECEIPTS_EXTRACTION_SUFFIX).toContain("expectation-failure")
 		expect(EXTRACTION_SYSTEM_PROMPT).not.toContain("expectation-failure")
-		// OFF composition must stay byte-identical to the flags-off V2 prompt.
-		const offComposed = EXTRACTION_SYSTEM_PROMPT + (true ? TASK_SCOPE_EXTRACTION_SUFFIX : "") + ""
-		expect(offComposed).toBe(EXTRACTION_SYSTEM_PROMPT + TASK_SCOPE_EXTRACTION_SUFFIX)
+		// OFF-composition byte-parity to the Phase 1 prompt family is pinned by
+		// the parity fixture + the flagDefaults test above; nothing to re-derive here.
 	})
 
 	it("strict-noise pattern blocks bare corrected-answer receipts when the flag is on", () => {
