@@ -22,6 +22,72 @@ function textResult(text: string): { content: Array<{ type: "text"; text: string
 	return { content: [{ type: "text", text }], details: null }
 }
 
+/** Env-gated authored lane (save_memory tool) — parsed at the call site, default OFF. */
+export function authoredEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_AUTHORED
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
+/** Provenance tag carried in the stored text (visible in digests) so the model
+ * can tell its own notes from extraction-derived facts. */
+export const AUTHORED_PREFIX = "[authored] "
+
+export const MEMORY_SAVE_MIN_CHARS = 12
+export const MEMORY_SAVE_MAX_CHARS = 300
+
+/** Light normalization for dup checks — punctuation/whitespace-insensitive. */
+export function normalizeAuthored(text: string): string {
+	return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+}
+
+export interface MemorySaveDeps {
+	/** Persist `text` to the personal store; resolves to the persisted text. */
+	write: (text: string) => Promise<void>
+	/** Existing stored texts for the normalized dup check. */
+	existing: () => Promise<string[]>
+	/** Session-toggle gate — when false, the tool reports the disabled state instead of saving. */
+	isEnabled: () => boolean
+}
+
+const MemorySaveSchema = Type.Object({
+	fact: Type.String({
+		description:
+			"One short self-contained sentence to remember (12–300 characters): a verified convention, a discovered trap and its correction, or a settled decision with rationale.",
+	}),
+})
+
+export function createMemorySaveTool(deps: MemorySaveDeps): ToolDefinition<typeof MemorySaveSchema> {
+	return {
+		name: "save_memory",
+		label: "Save memory",
+		description:
+			"Save a durable memory for future sessions: a verified convention you just confirmed, a trap and its correction you just discovered, or a settled decision with its rationale. Write one short self-contained sentence. Saved memories persist across sessions and surface automatically when relevant. Do not save transient task state, session progress, or bare answers.",
+		parameters: MemorySaveSchema,
+		execute: async (_toolCallId, params) => {
+			if (!deps.isEnabled()) {
+				return textResult(
+					"Memory is currently disabled for this session — the user can turn it back on with /memory enable.",
+				)
+			}
+			const fact = params.fact.replace(/\s+/g, " ").trim()
+			if (fact.length < MEMORY_SAVE_MIN_CHARS) {
+				return textResult("Not saved: the fact is too short to be durable signal (write a full sentence).")
+			}
+			if (fact.length > MEMORY_SAVE_MAX_CHARS) {
+				return textResult("Not saved: keep memory entries under 300 characters — split into separate saves if needed.")
+			}
+			const text = `${AUTHORED_PREFIX}${fact}`
+			const existingTexts = await deps.existing()
+			const wanted = normalizeAuthored(fact)
+			if (existingTexts.some((t) => normalizeAuthored(t.replace(AUTHORED_PREFIX, "")) === wanted)) {
+				return textResult("Already stored — unchanged.")
+			}
+			await deps.write(text)
+			return textResult(`Saved to memory: ${fact}`)
+		},
+	}
+}
+
 export function createMemorySearchTool(deps: MemorySearchDeps): ToolDefinition<typeof MemorySearchSchema> {
 	return {
 		name: "memory_search",

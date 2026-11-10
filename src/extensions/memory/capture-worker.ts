@@ -59,6 +59,7 @@ import {
 	resolveExtractionModel,
 } from "./backend.js"
 import {
+	EXTRACTION_DERIVED_TAG,
 	MEMORY_CAPTURE_WINDOW_CHARS,
 	MEMORY_DRAIN_CONCURRENCY,
 	MEMORY_SUPERSEDE_BATCH_FACTS,
@@ -69,17 +70,19 @@ import {
 	SUPERSEDE_SEARCH_TOPK,
 	UNKNOWN_CAPTURE_SESSION_ID,
 } from "./config.js"
-import { batchChoice, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
+import { batchChoice, type ChoiceAnswer, type DecisionGateOptions, decide, systemoneEndpoint } from "./decision-gate.js"
 import type { DecisionGateKind } from "./gates.js"
 import {
+	buildValuationState,
 	parseDecisionGateFlag,
 	TRIAGE_DURABLE_MIN_P,
 	triageQuestion,
 	VALUATION_DISCARD_MIN_P,
-	VALUATION_STATE,
+	valuationContextEnabled,
 	valuationQuestion,
 } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
+import { MEMORY_DRAIN_HARD_TIMEOUT_MS } from "./config.js"
 import { createDecisionSupersedeJudge, findSupersededIds, type SupersedeJudge } from "./supersede.js"
 
 export interface CaptureMessage {
@@ -162,10 +165,16 @@ export async function mapWithConcurrency<T, R>(
 	return results
 }
 
-/** Parsed two-scope extraction: personal vs project facts. */
+/** Parsed three-scope extraction: personal vs project vs task facts.
+ * The `task` lane is only populated when the parser runs with
+ * `taskScope: true` (KIMCHI_MEMORY_TASK_SCOPE); callers routing the lanes
+ * decide where task facts land (they are project-anchored by definition). */
 export interface TaggedFacts {
 	personal: string[]
 	project: string[]
+	/** Only set when the parser runs with taskScope: true — flag OFF keeps
+	 * the returned object shape byte-identical to the two-scope design. */
+	task?: string[]
 }
 
 /**
@@ -179,16 +188,26 @@ export interface TaggedFacts {
  * recoverable; a project fact in the global store pollutes every other
  * project) and "personal" otherwise.
  */
-export function parseTaggedFacts(text: string, defaultScope: "personal" | "project" = "personal"): TaggedFacts {
+export function parseTaggedFacts(
+	text: string,
+	defaultScope: "personal" | "project" = "personal",
+	opts: { taskScope?: boolean } = {},
+): TaggedFacts {
+	const taskScope = opts.taskScope === true
 	const stripPrefix = (f: string): string => f.replace(/^\[(?:personal|project)\]\s*/, "")
+	const stripTaskPrefix = (f: string): string => f.replace(/^\[task\]\s*/, "")
 
-	const obj = tryParseObject(text)
+	const obj = tryParseObject(text, taskScope)
 	if (obj) {
 		const filter = (v: unknown): string[] =>
 			Array.isArray(v)
 				? v.filter((f): f is string => typeof f === "string" && f.trim().length > 0).map(stripPrefix)
 				: []
-		return { personal: filter(obj.personal), project: filter(obj.project) }
+		return {
+			personal: filter(obj.personal),
+			project: filter(obj.project),
+			...(taskScope ? { task: filter(obj.task) } : {}),
+		}
 	}
 
 	const arr = tryParseArray(text)
@@ -204,10 +223,14 @@ export function parseTaggedFacts(text: string, defaultScope: "personal" | "proje
 		}
 		const personal: string[] = []
 		const project: string[] = []
-		// Explicit tags win; untagged strings route to defaultScope (the
-		// unsure→project rule when a project scope exists).
+		const task: string[] = []
+		// Explicit tags win — the leading tag decides the lane, exactly one
+		// lane per string, so no [task]/[project] double-routing; a trailing
+		// tag stays part of the fact text. Untagged strings route to
+		// defaultScope (the unsure→project rule when a project scope exists).
 		for (const f of strings) {
-			if (f.startsWith("[project]")) project.push(stripPrefix(f))
+			if (taskScope && f.startsWith("[task]")) task.push(stripTaskPrefix(f))
+			else if (f.startsWith("[project]")) project.push(stripPrefix(f))
 			else if (f.startsWith("[personal]")) personal.push(stripPrefix(f))
 			else if (defaultScope === "project") project.push(stripPrefix(f))
 			else personal.push(stripPrefix(f))
@@ -215,30 +238,44 @@ export function parseTaggedFacts(text: string, defaultScope: "personal" | "proje
 		for (const o of factObjects) {
 			if (typeof o.fact !== "string" || o.fact.trim().length === 0) continue
 			const fact = stripPrefix(o.fact)
-			if (o.scope === "project") project.push(fact)
+			if (taskScope && o.scope === "task") task.push(fact)
+			else if (o.scope === "project") project.push(fact)
 			else if (o.scope === "personal") personal.push(fact)
 			else if (defaultScope === "project") project.push(fact)
 			else personal.push(fact)
 		}
-		return { personal, project }
+		const parsed: TaggedFacts = { personal, project }
+		if (taskScope) parsed.task = task
+		return parsed
 	}
 
 	// Markdown-list shape: "- [project] fact text" lines, no JSON at all.
 	const personal: string[] = []
 	const project: string[] = []
+	const task: string[] = []
+	const tagPattern = taskScope ? /^-\s*\[(personal|project|task)\]\s*(.+)$/ : /^-\s*\[(personal|project)\]\s*(.+)$/
 	for (const rawLine of text.split("\n")) {
 		const line = rawLine.trim()
-		const m = line.match(/^-\s*\[(personal|project)\]\s*(.+)$/)
+		const m = line.match(tagPattern)
 		if (m) {
-			;(m[1] === "project" ? project : personal).push(m[2].trim())
+			if (m[1] === "project") project.push(m[2].trim())
+			else if (m[1] === "task") task.push(m[2].trim())
+			else personal.push(m[2].trim())
 		}
 	}
-	if (personal.length > 0 || project.length > 0) return { personal, project }
+	if (personal.length > 0 || project.length > 0 || task.length > 0) {
+		const parsed: TaggedFacts = { personal, project }
+		if (taskScope) parsed.task = task
+		return parsed
+	}
 
 	throw new Error(`tagged extraction response unparseable: ${text.slice(0, 150)}`)
 }
 
-function tryParseObject(text: string): { personal?: unknown; project?: unknown } | null {
+function tryParseObject(
+	text: string,
+	taskScope = false,
+): { personal?: unknown; project?: unknown; task?: unknown } | null {
 	const start = text.indexOf("{")
 	const end = text.lastIndexOf("}")
 	if (start === -1 || end <= start) return null
@@ -250,8 +287,8 @@ function tryParseObject(text: string): { personal?: unknown; project?: unknown }
 		return parsed &&
 			typeof parsed === "object" &&
 			!Array.isArray(parsed) &&
-			("personal" in parsed || "project" in parsed)
-			? (parsed as { personal?: unknown; project?: unknown })
+			("personal" in parsed || "project" in parsed || (taskScope && "task" in parsed))
+			? (parsed as { personal?: unknown; project?: unknown; task?: unknown })
 			: null
 	} catch {
 		return null
@@ -278,6 +315,9 @@ interface GatewayLlmOptions {
 	model: string
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
+	/** Drain watchdog signal — when aborted, every in-flight gate/extraction
+	 * call rejects with the abort reason instead of hanging on the lock. */
+	abortSignal?: AbortSignal
 }
 
 /**
@@ -295,9 +335,13 @@ export class PoisonExtractionError extends Error {}
  * reliability utility (src/utils/http.ts): jittered backoff, retry-after
  * honoring (seconds and HTTP-date), and the shared retryable-status set
  * (429 + the Cloudflare 5xx family, including 524 — the spike-documented
- * edge timeout). The 300s per-attempt timeout sits safely above the
- * Cloudflare edge's ~100s cutoff so long extractions are never cut short
- * client-side. Non-retryable 4xx rejections throw immediately.
+ * edge timeout). The 120s per-attempt timeout leaves a ~20s buffer above
+ * the Cloudflare edge's ~100s cutoff, and — with the retry budget — keeps
+ * a fully-stuck call's worst case (~9min) inside a legitimate drain
+ * backlog's natural completion window AND the benchmark driver's 360s
+ * drain cap (the v5-sonnet55-memory-all-tool hang: one suspended gateway
+ * call held the capture lock past the driver's abort point at 300s/attempt).
+ * Non-retryable 4xx rejections throw immediately.
  */
 export async function chatJson(
 	options: GatewayLlmOptions,
@@ -334,8 +378,9 @@ export async function chatJson(
 		},
 		{
 			fetchImpl: options.fetchImpl,
-			timeoutMs: 300_000,
+			timeoutMs: 120_000,
 			retry: { maxRetries: maxAttempts - 1 },
+			signal: options.abortSignal,
 		},
 	)
 	if (!response.ok) {
@@ -447,9 +492,12 @@ async function extractFacts(
 	// (4) already bounds the instantaneous call rate.
 	const userFacts = await extractUserFacts(llm, window, scopeContextLine)
 	const assistantFacts = await extractAssistantFacts(llm, window, scopeContextLine)
+	// The assistant pass never emits task facts (its prompt is conversation-
+	// scoped on purpose) — the lane passes through untransformed.
 	return {
 		personal: [...userFacts.personal, ...assistantFacts.personal],
 		project: [...userFacts.project, ...assistantFacts.project],
+		task: userFacts.task ?? [],
 	}
 }
 
@@ -459,9 +507,15 @@ async function extractUserFacts(
 	scopeContextLine: string | null | undefined,
 ): Promise<TaggedFacts> {
 	const transcript = renderWindow(window)
-	const system = scopedPrompt(EXTRACTION_SYSTEM_PROMPT, scopeContextLine)
+	const taskScope = taskScopeEnabled()
+	const system = scopedPrompt(
+		EXTRACTION_SYSTEM_PROMPT +
+			(taskScope ? TASK_SCOPE_EXTRACTION_SUFFIX : "") +
+			(receiptsEnabled() ? RECEIPTS_EXTRACTION_SUFFIX : ""),
+		scopeContextLine,
+	)
 	return chatWithRetry(llm, system, transcript, (text) =>
-		parseTaggedFacts(text, scopeContextLine ? "project" : "personal"),
+		parseTaggedFacts(text, scopeContextLine ? "project" : "personal", { taskScope }),
 	)
 }
 
@@ -485,7 +539,10 @@ export async function extractAssistantFacts(
 	// Pure-user windows are the common case — no assistant pass, no extra call.
 	if (!window.some((m) => m.role === "assistant")) return { personal: [], project: [] }
 	const transcript = renderWindow(window)
-	const system = scopedPrompt(ASSISTANT_FACTS_SYSTEM_PROMPT, scopeContextLine)
+	const system = scopedPrompt(
+		ASSISTANT_FACTS_SYSTEM_PROMPT + (factClassesEnabled() ? FACT_CLASS_EXTRACTION_SUFFIX : ""),
+		scopeContextLine,
+	)
 	return chatWithRetry(llm, system, transcript, (text) =>
 		parseTaggedFacts(text, scopeContextLine ? "project" : "personal"),
 	)
@@ -547,6 +604,8 @@ function saveHashes(hashes: Set<string>): void {
 	const tmp = `${path}.${process.pid}.tmp`
 	writeFileSync(tmp, `${JSON.stringify([...hashes], null, 0)}\n`, "utf-8")
 	renameSync(tmp, path)
+}
+
 }
 
 /** Completion record path — per-session stored-fact counts for in-session
@@ -613,6 +672,16 @@ function writeCaptureCompletions(savedBySession: Map<string, number>): void {
 	}
 }
 
+/** Valuation verdict, shared by the drain and by calibration spike scripts:
+ * discard only at/above VALUATION_DISCARD_MIN_P confidence on "discard". */
+export function isValuationDiscard(answer: ChoiceAnswer | undefined): boolean {
+	return (
+		answer !== undefined &&
+		answer.choice === "discard" &&
+		(answer.probabilities.discard ?? 0) >= VALUATION_DISCARD_MIN_P
+	)
+}
+
 /**
  * The store surface the capture pipeline needs — the injectable seam for
  * Node-side orchestration tests (the default factory builds mem0 via
@@ -639,6 +708,102 @@ export function normalizeFactText(text: string): string {
 // ---------------------------------------------------------------------------
 // Capture quality gates: durability, credential redaction, attributed twins.
 // Deterministic and local — zero extra LLM or embedding calls. The extraction
+/**
+ * Fact-class classifier prompt (KIMCHI_MEMORY_FACT_CLASSES lane). Runs as
+ * ONE call over the drain's extracted facts, AFTER extraction — the
+ * extractor consistently rewrites derivations into observation prose (v7
+ * replay), so the tag cannot ride the extraction prompt; it must be a
+ * deterministic post-pass. Indexes are returned, not text, so the tag
+ * never rewrites the fact. Shapes-only definitions; never benchmark
+ * content.
+ */
+export const FACT_CLASS_CLASSIFIER_PROMPT = `Classify each listed fact as a DERIVATION or an OBSERVATION.
+- A DERIVATION is an interpretation, judgment call, aggregation rule, or inferred conclusion someone settled by reasoning from evidence — a choice between alternatives, a "use this column/rule" decision, an inference that combines values, or why something is the case.
+- An OBSERVATION is an externally recorded value: a schema's actual columns, a graded correct answer, an environment-reported count, a user-provided datum or statement of possession/preference.
+When unsure, classify OBSERVATION.
+Input: a JSON array of fact strings (possibly empty).
+Respond with ONLY a JSON object {"derived": [indexes]} — 0-based indexes of the DERIVATION facts.
+`
+
+/** Batched derived-class pass: label facts across the whole drain in one
+ * call (batched like the supersede judge). Facts the classifier names are
+ * prefixed with the [derived] tag IN PLACE on the plan's fact lists so the
+ * commit path stores them marked. Fail-open: a classifier error leaves
+ * every fact trusted (the v6 behavior). */
+async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions): Promise<void> {
+	if (!factClassesEnabled()) return
+	const all: Array<{ plan: JobPlan; kind: "personal" | "project"; index: number; text: string }> = []
+	const seen = new Map<string, number>()
+	const unique: string[] = []
+	for (const plan of plans) {
+		for (const kind of ["personal", "project"] as const) {
+			const list = kind === "personal" ? plan.personalFacts : plan.projectFacts
+			for (let index = 0; index < list.length; index++) {
+				const text = list[index] as string
+				let u = seen.get(text)
+				if (u === undefined) {
+					u = unique.length
+					seen.set(text, u)
+					unique.push(text)
+				}
+				all.push({ plan, kind, index, text })
+			}
+		}
+	}
+	if (unique.length === 0) return
+	// Pre-tagged facts (the extraction suffix sometimes elicits the prefix
+	// directly): make them count without asking the classifier, and strip
+	// the marker from what the classifier sees so it never double-prefixes.
+	const preDerived = new Set<string>()
+	for (let i = 0; i < unique.length; i++) {
+		const t = unique[i] as string
+		const stripped = t.trimStart()
+		if (stripped.startsWith(EXTRACTION_DERIVED_TAG)) {
+			const bare = stripped.slice(EXTRACTION_DERIVED_TAG.length).trimStart()
+			preDerived.add(bare)
+			unique[i] = bare
+			seen.set(bare, seen.get(t) as number)
+			seen.delete(t)
+		}
+	}
+	const derived = new Set<string>()
+	for (let offset = 0; offset < unique.length; offset += MEMORY_SUPERSEDE_BATCH_FACTS) {
+		const batch = unique.slice(offset, offset + MEMORY_SUPERSEDE_BATCH_FACTS)
+		try {
+			const indexes = await chatWithRetry(llm, FACT_CLASS_CLASSIFIER_PROMPT, JSON.stringify(batch), (text) => {
+				const start = text.indexOf("{")
+				const end = text.lastIndexOf("}")
+				if (start === -1 || end === -1) throw new Error("no JSON object")
+				const parsed = JSON.parse(text.slice(start, end + 1)) as { derived?: unknown }
+				if (!Array.isArray(parsed.derived)) throw new Error("derived must be an array")
+				return parsed.derived.filter((i): i is number => typeof i === "number" && Number.isInteger(i))
+			})
+			for (const i of indexes) {
+				if (i >= 0 && i < batch.length) derived.add(batch[i] as string)
+			}
+		} catch (err) {
+			// Fail-open: banner + all facts stay trusted (v6 byte-parity).
+			console.error(
+				"[memory-capture] derived-class classifier failed, facts stay trusted (fail-open):",
+				err instanceof Error ? err.message : err,
+			)
+			return
+		}
+	}
+	for (const t of preDerived) derived.add(t)
+	if (derived.size === 0) return
+	for (const entry of all) {
+		const stripped = entry.text.trimStart()
+		const bare = stripped.startsWith(EXTRACTION_DERIVED_TAG)
+			? stripped.slice(EXTRACTION_DERIVED_TAG.length).trimStart()
+			: entry.text
+		if (derived.has(bare)) {
+			const list = entry.kind === "personal" ? entry.plan.personalFacts : entry.plan.projectFacts
+			list[entry.index] = `${EXTRACTION_DERIVED_TAG} ${bare}`
+		}
+	}
+}
+
 // prompts (EXTRACTION_SYSTEM_PROMPT / ASSISTANT_FACTS_SYSTEM_PROMPT) carry
 // the same categories as negatives and decide first; these gates are the
 // floor underneath the model's judgment.
@@ -673,6 +838,114 @@ export const NON_DURABLE_FACT_PATTERNS: RegExp[] = [
  */
 export function isDurableFact(text: string): boolean {
 	return !NON_DURABLE_FACT_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+/**
+ * Split the [derived] class tag off a fact — extraction tagging elicits
+ * it (FACT_CLASS_EXTRACTION_SUFFIX + EXTRACTION_DERIVED_TAG), digest
+ * rendering splits on it, and nothing else in the pipeline should touch
+ * it (valuation, dedupe, supersession all see the fact text untouched).
+ */
+export function splitDerivedTag(fact: string): { text: string; derived: boolean } {
+	if (!factClassesEnabled()) return { text: fact, derived: false }
+	const trimmed = fact.trim()
+	if (!trimmed.startsWith(EXTRACTION_DERIVED_TAG)) return { text: fact, derived: false }
+	return { text: trimmed.slice(EXTRACTION_DERIVED_TAG.length).trim(), derived: true }
+}
+
+/**
+ * Strict-noise extensions, applied to BOTH lanes only when
+ * KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE is enabled — default OFF, so the
+ * base list above is byte-parity with Phase 1 behaviour. Generic classes
+ * measured in the CL-Bench Phase 1 grading (testdata/phase1-baseline-metrics.json):
+ * extractor self-references persisted as facts, answer-level task
+ * conclusions, and task/session-context framing echoes. Deliberately
+ * domain-agnostic — they match statement SHAPE, never benchmark content.
+ */
+export const STRICT_NOISE_FACT_PATTERNS: RegExp[] = [
+	/^no durable facts?\b/i, // extractor meta echo ("No durable facts about the user were found...")
+	/\bfinal answer\b/i, // answer-level conclusion phrasing
+	/^the user (?:has )?(?:answered|submitted|provided)\b/i, // the user's session reply stored as a fact
+	/^(?:as of [^,.]+,\s*)?the user (?:is|was|has been) (?:currently )?working (?:on|with|in) a\b/i, // task/session framing echo
+	/^the (?:correct )?answer (?:to|for) \S.+ (?:is|was) /i, // answer-level conclusion persisted as a durable fact (answer-recall class)
+]
+
+/** Env-gated strictness — parsed at the call site like KIMCHI_MEMORY_DECISION_GATE. */
+export function strictNoiseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
+/** Env-gated task lane ([task] extraction) — parsed at the call site, default OFF. */
+export function taskScopeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_TASK_SCOPE
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
+/** Env-gated expectation-failure receipts extraction — parsed at the call site, default OFF. */
+export function receiptsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_EXTRACTION_RECEIPTS
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
+/** Env-gated derived-fact tagging lane — parsed at the call site, default OFF. */
+export function factClassesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	const v = env.KIMCHI_MEMORY_FACT_CLASSES
+	return v !== undefined && v !== "" && v !== "0" && v.toLowerCase() !== "false"
+}
+
+/**
+ * Derived-fact tagging lane, appended to EXTRACTION_SYSTEM_PROMPT ONLY
+ * when KIMCHI_MEMORY_FACT_CLASSES is enabled — flag OFF keeps the prompt
+ * byte-identical. Generic by design: a derivation is any interpretation,
+ * judgment call, aggregation rule, or inferred choice someone settled
+ * during the session; an observation is an externally given value the
+ * transcript records. Never benchmark content.
+ */
+export const FACT_CLASS_EXTRACTION_SUFFIX = `
+Mark each fact with a class prefix:
+- Tag [derived] any fact expressing an interpretation, judgment call, aggregation rule, or inferred choice someone settled during the session (the right column to query, a unit/scale mapping worked out by reasoning, a conclusion drawn from several values).
+- No prefix for observations: externally given values the transcript records — a schema's actual columns, a graded correct answer, an environment-reported count, a user-provided datum.
+When unsure, skip the prefix — trusted observations stay trusted.
+
+Example of the split, same window:
+- The items table has a prc_usd column in dollar units.
+- [derived] prc_usd is the reliable price column (prc includes extreme outliers the USD column pre-filters).
+The class tag goes at the very start of the fact string, before any "As of" date.`
+
+/**
+ * Task-lane instruction, appended to EXTRACTION_SYSTEM_PROMPT ONLY when
+ * KIMCHI_MEMORY_TASK_SCOPE is enabled — flag OFF keeps the prompt string
+ * byte-identical to Phase 1. Generic by design: durable facts about the
+ * task/strategy a future conversation could fail without, never
+ * answer-level conclusions or session progress.
+ */
+export const TASK_SCOPE_EXTRACTION_SUFFIX = `
+Additionally capture durable facts about the task itself, tagging them [task]: exact schema/identifier mappings, unit and format conventions, confirmed traps with their corrections, and decisions the user settled with their rationale. Tag a fact [task] only when a future worker in the same conversation type could fail without it — never for answers, results, or progress. When a fact fits both [project] and [task], prefer the tag that carries more durable signal.`
+
+/**
+ * Expectation-failure receipts lane, appended to EXTRACTION_SYSTEM_PROMPT ONLY when
+ * KIMCHI_MEMORY_EXTRACTION_RECEIPTS is enabled — flag OFF keeps the prompt
+ * byte-identical. Generic by design: a receipt is defined by the dialogue
+ * (what the turns expected vs what the environment returned), never by
+ * benchmark content. Calibrated on the frozen-V2 spike (.kimchi/docs/receipts-spike.md):
+ * captures wrong-then-right corrections the plain pipeline misses; hard
+ * signals only — soft traps with no contradiction event stay invisible by
+ * construction.
+ */
+export const RECEIPTS_EXTRACTION_SUFFIX = `
+Additionally capture expectation-failure receipts: cases where a tool or environment message contradicted what the surrounding turns expected or assumed — an error message, an empty result where the approach implied data, a column or table named in an attempt that the schema does not have, values returned in a different unit or scale than the turns assumed. Write each as a self-contained observation: what was assumed or attempted, and what the environment actually returned. Do not guess causes the transcript does not show; omit failures the turns already explained fully. Never capture a bare corrected answer — record the assumption and the contradiction, not the new value alone.`
+
+/**
+ * The store-eligibility filter stage of the drain's add path (post-
+ * redaction, pre-valuation). Exported so the Phase 1 parity fixture
+ * (testdata/phase1-capture-parity.json) pins both layers against the real
+ * pipeline: extraction parse and post-filter store set.
+ */
+export function keepForStore(fact: string, opts: { strictNoise: boolean }): boolean {
+	if (!isDurableFact(fact)) return false
+	if (opts.strictNoise && STRICT_NOISE_FACT_PATTERNS.some((p) => p.test(fact))) return false
+	return true
 }
 
 /**
@@ -859,6 +1132,10 @@ interface ExistingFacts {
 	 * (assistant-pass twins re-phrase the user-pass fact, so text equality
 	 * never fires). Built once per store per job; hundreds of entries, cheap. */
 	tokenSets: Set<string>[]
+	/** Raw stored texts, store order — the gated valuation digest
+	 * (KIMCHI_MEMORY_VALUATION_CONTEXT); normalizing would tell the gate
+	 * lies like casing changes. */
+	rawTexts: string[]
 }
 
 /**
@@ -872,19 +1149,21 @@ async function existingFacts(backend: Backend): Promise<ExistingFacts> {
 		const { results } = await backend.getAll({ filters: { user_id: MEMORY_USER_ID } })
 		const texts = new Set<string>()
 		const tokenSets: Set<string>[] = []
+		const rawTexts: string[] = []
 		for (const item of results) {
 			const normalized = normalizeFactText(item.memory)
 			if (normalized.length === 0) continue
 			texts.add(normalized)
 			tokenSets.push(factTokens(normalized))
+			rawTexts.push(item.memory)
 		}
-		return { texts, tokenSets }
+		return { texts, tokenSets, rawTexts }
 	} catch (err) {
 		console.error(
 			"[memory-capture] duplicate guard unavailable, adding without dedupe:",
 			err instanceof Error ? err.message : err,
 		)
-		return { texts: new Set(), tokenSets: [] }
+		return { texts: new Set(), tokenSets: [], rawTexts: [] }
 	}
 }
 
@@ -900,6 +1179,12 @@ export interface RunCaptureWorkerOptions {
 	 * every decision gate; a gate with enabled names turns those gates on).
 	 * Default: resolved from config + KIMCHI_MEMORY_DECISION_GATE. */
 	decision?: { gate: DecisionGateOptions | null; enabled: ReadonlySet<DecisionGateKind> }
+	/** Internal: the runCaptureWorker watchdog's abort signal — threaded into
+	 * every LLM call so the hard timeout rejects in-flight fetches instead of
+	 * hanging while the lock stays held. */
+	abortSignal?: AbortSignal
+	/** Injectable for tests — overrides MEMORY_DRAIN_HARD_TIMEOUT_MS. */
+	drainTimeoutMs?: number
 }
 
 /** The d3 gate context for this drain: flagged-on gates get a live endpoint;
@@ -956,9 +1241,31 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	// entire run; later spawns wait — see lock.ts.
 	const release = await acquireCaptureLock(defaultMemoryDir())
 	try {
-		return await drainPendingJobs(dbPath, options)
+		// Dead-man switch (fix 3, the benchmark's lock_held=True hang): a
+		// worker hung on LLM calls otherwise holds the lock forever — the
+		// live mtime refresh never goes stale, so nothing can steal it.
+		// At the hard budget the drain aborts, the finally releases the
+		// lock, and the process exits nonzero; job files stay pending for
+		// the next spawn's retry (ledger dedupe makes overlap no-op).
+		const abort = options.abortSignal === undefined ? new AbortController() : { signal: options.abortSignal, abort: () => undefined }
+		const budget = options.drainTimeoutMs ?? MEMORY_DRAIN_HARD_TIMEOUT_MS
+		const watchdog = setTimeout(() => abort.abort(new DrainWatchdogError()), budget)
+		try {
+			return await drainPendingJobs(dbPath, { ...options, abortSignal: abort.signal })
+		} finally {
+			clearTimeout(watchdog)
+		}
 	} finally {
 		await release()
+	}
+}
+
+/** Raised by the drain hard-timeout watchdog instead of a generic Error so
+ * the CLI can exit with a distinct, greppable class. */
+export class DrainWatchdogError extends Error {
+	constructor() {
+		super(`capture drain aborted by hard timeout (${MEMORY_DRAIN_HARD_TIMEOUT_MS / 60_000}min)`)
+		this.name = "DrainWatchdogError"
 	}
 }
 
@@ -984,6 +1291,19 @@ interface JobPlan {
 	/** Phase-B failure classes — poisoned counts toward quarantine. */
 	poisonedWindowCount: number
 	transientWindowCount: number
+}
+
+/**
+ * Whether a window carries tool-work evidence: [tool] attempt records can
+ * only appear in extraction transcripts under KIMCHI_MEMORY_CAPTURE_TOOL_TURNS,
+ * so a single flag-check on the content marker suffices (flag OFF → no such
+ * records anywhere → bit-identical behavior for both consumers).
+ */
+export function windowHasToolEvidence(window: CaptureMessage[]): boolean {
+	return (
+		process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS === "1" &&
+		window.some((m) => m.role === "assistant" && m.content.startsWith("[tool] "))
+	)
 }
 
 /** One extraction unit for phase B: a window with a pointer back to its plan. */
@@ -1038,7 +1358,9 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	}
 
 	const llm = await resolveWorkerLlm(options)
+	if (options.abortSignal) llm.abortSignal = options.abortSignal
 	const decision = await resolveDecisionContext(options)
+	if (options.abortSignal && decision.gate) decision.gate.abortSignal = options.abortSignal
 	const createBackend = options.createBackend ?? defaultCaptureBackend
 
 	// Valuation gate (spike E2/E6/E8): post-extraction keep/discard judged by
@@ -1049,13 +1371,16 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	const valuationGate = (() => {
 		if (!decision.enabled.has("valuation") || !decision.gate) return undefined
 		const gate = decision.gate
-		return async (facts: string[]): Promise<Set<string>> => {
+		return async (facts: string[], existing?: string[]): Promise<Set<string>> => {
 			const discard = new Set<string>()
 			if (facts.length === 0) return discard
-			const answers = await batchChoice(gate, VALUATION_STATE, facts, valuationQuestion)
+			// KIMCHI_MEMORY_VALUATION_CONTEXT: with the store's fact list in the
+			// state, the same keep/discard contract runs WITH context — the
+			// batch sees what a dup would duplicate and what a conflict would
+			// contradict (the gates-off paraphrase-dup class from the sweep).
+			const answers = await batchChoice(gate, buildValuationState(existing), facts, valuationQuestion)
 			for (const [i, fact] of facts.entries()) {
-				const answer = answers[i]
-				if (answer && answer.choice === "discard" && (answer.probabilities.discard ?? 0) >= VALUATION_DISCARD_MIN_P) {
+				if (isValuationDiscard(answers[i])) {
 					discard.add(fact)
 				}
 			}
@@ -1072,6 +1397,12 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 		try {
 			return { ok: true, facts: await extractFacts(llm, task.window, task.plan.project?.contextLine ?? null) }
 		} catch (err) {
+			// The drain watchdog's abort is NOT a transient window failure:
+			// fold it through the fail-soft path and the drain would exit 0
+			// with partial work (and the harness would read the lock release
+			// as a completed drain). Re-throw so the drain rejects — jobs stay
+			// pending and the process exits nonzero.
+			if (options.abortSignal?.aborted) throw err
 			const kind = err instanceof PoisonExtractionError ? "poison" : "transient"
 			// Fail-soft: hashes stay unmarked so a future drain reprocesses.
 			// Poison failures are deterministic — the drain counts the job toward
@@ -1095,6 +1426,14 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	if (decision.enabled.has("triage") && decision.gate) {
 		const gate = decision.gate
 		const skips = await mapWithConcurrency(tasks, drainConcurrency, async (task) => {
+			// Tool-evidence windows bypass the d3 triage: the gate is a skip
+			// OPTIMIZATION calibrated on conversational text — A/B on the
+			// sonnet runs shows it scores tool records ([tool] action +
+			// receipt pairs) p_durable ≈ 0.01–0.2 regardless of question
+			// framing, while their content (schema dumps, unit forensics)
+			// is exactly class-(d) task knowledge. [tool] records exist only
+			// under KIMCHI_MEMORY_CAPTURE_TOOL_TURNS; OFF → bit-identical.
+			if (windowHasToolEvidence(task.window)) return false
 			try {
 				const response = await decide(gate, renderWindow(task.window), triageQuestion())
 				const pDurable = response.answers.has_durable_fact?.probabilities.yes
@@ -1132,6 +1471,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 	// dedupes those, so the retry lives here instead. Poisoned windows sit
 	// this out: same model + temperature 0 + same input reproduces the same
 	// answer, so re-running them in this drain is wasted tokens.
+	// A watchdog abort mid-drain short-circuits: never retry a window that
+	// was killed by the budget instead of by its own error.
+	if (options.abortSignal?.aborted) {
+		throw options.abortSignal.reason instanceof Error ? options.abortSignal.reason : new DrainWatchdogError()
+	}
 	const retryIndices = results
 		.map((result, index) => (!result.ok && result.kind === "transient" ? index : -1))
 		.filter((index) => index >= 0)
@@ -1160,6 +1504,10 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 					plan.extractedWindows.push(window)
 					plan.personalFacts.push(...outcome.facts.personal)
 					plan.projectFacts.push(...outcome.facts.project)
+					if (taskScopeEnabled()) {
+						const routed = routeTaskFacts(outcome.facts.task ?? [], plan.project !== null)
+						plan.projectFacts.push(...routed.toProject)
+					}
 				} else if (outcome.kind === "poison") {
 					plan.poisonedWindowCount += 1
 				} else {
@@ -1168,6 +1516,11 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			}
 		}
 	}
+
+	// Derived-fact classification (KIMCHI_MEMORY_FACT_CLASSES) — one batched
+	// call over the whole drain's facts, in place, before commit so the
+	// store carries the [derived] tag. Fail-open (facts stay trusted).
+	await applyDerivedTags(plans, llm)
 
 	// Phase C — sequential commit in job order (chronological). Stores are
 	// created once per drain and reused across jobs; the added facts collect
@@ -1416,6 +1769,23 @@ function recordPoisonAttempt(plan: JobPlan): boolean {
 	return false
 }
 
+/**
+ * Task-lane routing (settled): [task] facts are project-anchored by
+ * definition — they land in the same project store [project] facts use.
+ * With no project context they are DROPPED with a logged reason: never
+ * sunk into the personal store, never silently ignored.
+ */
+export function routeTaskFacts(
+	taskFacts: string[],
+	hasProject: boolean,
+): { toProject: string[]; dropped: number } {
+	if (taskFacts.length === 0 || hasProject) return { toProject: taskFacts, dropped: 0 }
+	console.warn(
+		`[memory-capture] dropped ${taskFacts.length} task-scope fact(s): no project context (task facts are project-anchored)`,
+	)
+	return { toProject: [], dropped: taskFacts.length }
+}
+
 /** Commit one job's extracted facts (phase C): adds per store with the
  * exact-duplicate guard (idempotent adds — a crash between add and
  * hash-mark does not double-add on the retry drain), hash-marks its
@@ -1426,7 +1796,7 @@ async function commitPlan(
 	personalBackend: Backend,
 	projectBackends: Map<string, Backend>,
 	createBackend: (dbPath: string) => Promise<CaptureBackend>,
-	valueGate?: (facts: string[]) => Promise<Set<string>>,
+	valueGate?: (facts: string[], existing?: string[]) => Promise<Set<string>>,
 ): Promise<{
 	captured: number
 	personal: string[]
@@ -1439,6 +1809,7 @@ async function commitPlan(
 	let skippedNonDurable = 0
 	let skippedByValuation = 0
 	let redacted = 0
+	const strictNoise = strictNoiseEnabled()
 	const addAll = async (backend: Backend, facts: string[]): Promise<string[]> => {
 		if (facts.length === 0) return []
 		const existing = await existingFacts(backend)
@@ -1455,7 +1826,7 @@ async function commitPlan(
 		for (const rawFact of facts) {
 			const fact = await redactText(rawFact)
 			if (fact !== rawFact) redacted += 1
-			if (!isDurableFact(fact)) {
+			if (!keepForStore(fact, { strictNoise })) {
 				skippedNonDurable += 1
 				continue
 			}
@@ -1467,7 +1838,14 @@ async function commitPlan(
 		let valuationDiscard: Set<string> | undefined
 		if (valueGate) {
 			try {
-				valuationDiscard = await valueGate(eligible)
+				// The digest attached to the gate call is the store state BEFORE
+				// this addAll — judging new facts against what is already known,
+				// which is exactly the duplicate/paraphrase judgment a blind
+				// per-fact verdict cannot make (KIMCHI_MEMORY_VALUATION_CONTEXT).
+				valuationDiscard = await valueGate(
+					eligible,
+					valuationContextEnabled() ? existing.rawTexts : undefined,
+				)
 			} catch (err) {
 				console.error("[memory-capture] valuation gate failed, keeping this job's facts (fail-open):", err)
 				valuationDiscard = undefined

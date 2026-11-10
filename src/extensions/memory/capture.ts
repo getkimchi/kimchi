@@ -18,7 +18,14 @@ import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent
 import { getEnvironmentApiKey } from "../../config.js"
 import { defaultMemoryDir } from "./backend.js"
 import type { CaptureMessage } from "./capture-worker.js"
-import { digestDbPath, MEMORY_CAPTURE_ASSISTANT_MAX_CHARS, MEMORY_CAPTURE_INCREMENTAL_MESSAGES } from "./config.js"
+import {
+	digestDbPath,
+	MEMORY_CAPTURE_ASSISTANT_MAX_CHARS,
+	MEMORY_CAPTURE_INCREMENTAL_MESSAGES,
+	MEMORY_CAPTURE_TOOL_CALL_CHARS,
+	MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS,
+	MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS,
+} from "./config.js"
 import { resolveProjectScope } from "./scope.js"
 
 /** `session` — the calling session's capture id (per extension instance,
@@ -97,7 +104,9 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 	// or imported history — recording time never reaches the LLM's input, so
 	// no instruction can launder it into fact text.
 	const messages: CaptureMessage[] = []
-	for (const entry of entries) {
+	const toolWork = toolTurnsEnabled() ? extractToolWork(entries) : new Map<number, CaptureMessage[]>()
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
 		if (entry.type !== "message") continue
 		const message = entry.message
 		if (message.role === "user") {
@@ -106,9 +115,96 @@ export function extractMessages(entries: readonly SessionEntry[]): CaptureMessag
 		} else if (message.role === "assistant") {
 			const content = gatedAssistantText(message.content)
 			if (content) messages.push({ role: "assistant", content })
+			else {
+				// Lane 1 (flagged): an omitted text gate returned null only when
+				// the turn carried toolCall blocks — splice its paired
+				// tool work summaries at this exact position instead.
+				const work = toolWork.get(i)
+				if (work) messages.push(...work)
+			}
 		}
 	}
 	return messages
+}
+
+/**
+ * Tool-turn capture lane (env KIMCHI_MEMORY_CAPTURE_TOOL_TURNS, default OFF):
+ * tool-using turns carry the benchmark's most valuable memory material —
+ * the attempt (toolCall args: the command/query) and the receipt
+ * (toolResult: what the environment returned). OFF is byte-parity with
+ * before: assistant toolCall turns excluded whole, toolResults never read.
+ */
+export function toolTurnsEnabled(): boolean {
+	return process.env.KIMCHI_MEMORY_CAPTURE_TOOL_TURNS === "1"
+}
+
+/**
+ * Pair assistant toolCall blocks with their toolResult follow-ups into
+ * bounded request/response records ("[tool] name: args → result"), keyed
+ * by the entries index of the owning assistant turn so the extractor
+ * splices them in transcript order only when the text gate excluded that
+ * turn. Records use the assistant role: the attempt is the agent's own
+ * action, and receipts extraction reads the result as the environment's
+ * response to that expectation. Thinking stays excluded — reasoning never
+ * enters fact text.
+ */
+function extractToolWork(entries: readonly SessionEntry[]): Map<number, CaptureMessage[]> {
+	const out = new Map<number, CaptureMessage[]>()
+	const results = new Map<string, string>()
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const m = entry.message as { role?: string; content?: unknown; toolCallId?: string }
+		if (m?.role !== "toolResult") continue
+		if (typeof m.toolCallId !== "string") continue
+		const text = messageText(m.content).trim()
+		if (text) results.set(m.toolCallId, text)
+	}
+	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i]
+		if (entry.type !== "message") continue
+		const m = entry.message as { role?: string; content?: unknown }
+		if (m?.role !== "assistant" || !Array.isArray(m.content)) continue
+		const records: CaptureMessage[] = []
+		for (const part of m.content) {
+			const p = part as { type?: string; name?: string; id?: string; arguments?: unknown }
+			if (p?.type !== "toolCall" || typeof p.name !== "string") continue
+			const args = toolCallArgsText(p.arguments)
+			const call = args ? `${p.name}: ${args.slice(0, MEMORY_CAPTURE_TOOL_CALL_CHARS)}` : p.name
+			// Attempt (assistant) and receipt (user) as separate records: that
+		// is the text-protocol shape (QUERY action text + observation user
+		// message) the extraction contracts were built on — extraction
+		// explicitly excludes assistant-side tool output, so a combined
+		// assistant record would starve itself.
+			records.push({ role: "assistant", content: `[tool] ${call}` })
+			const result = typeof p.id === "string" ? results.get(p.id) : undefined
+			if (result !== undefined) records.push({ role: "user", content: boundedResult(result) })
+			if (typeof p.id === "string") results.delete(p.id)
+		}
+		if (records.length > 0) out.set(i, records)
+	}
+	return out
+}
+
+function toolCallArgsText(args: unknown): string {
+	if (typeof args === "string") return args.trim()
+	if (args == null) return ""
+	try {
+		return JSON.stringify(args)
+	} catch {
+		return ""
+	}
+}
+
+/**
+ * Bound a tool result: keep the head (column lists, first rows) plus the
+ * tail (final aggregate / verdict), elide the middle; short results pass
+ * through whole.
+ */
+function boundedResult(text: string): string {
+	const head = MEMORY_CAPTURE_TOOL_RESULT_HEAD_CHARS
+	const tail = MEMORY_CAPTURE_TOOL_RESULT_TAIL_CHARS
+	if (text.length <= head + tail) return text
+	return `${text.slice(0, head)} …[${text.length - head - tail} chars elided]… ${text.slice(-tail)}`
 }
 
 /**

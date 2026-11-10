@@ -66,6 +66,7 @@ import {
 	DIGEST_SCORE_THRESHOLD,
 	MEMORY_PRE_REQUEST_TIMEOUT_MS,
 	MEMORY_SEARCH_TIMEOUT_MS,
+	MEMORY_USER_ID,
 	TURN_RECALL_QUERY_MAX_CHARS,
 	TURN_RECALL_RESPONSE_CHARS,
 } from "./config.js"
@@ -83,15 +84,20 @@ import {
 	buildTurnRecall,
 	type DigestComposition,
 	digestCandidateTexts,
+	digestSelectionFloor,
 	factKey,
 	isCovered,
+	shouldRunDigestSelection,
 	MEMORY_ENABLED_NOTICE,
+	MEMORY_ENABLED_NOTICE_AUTHORED,
 } from "./inject.js"
 import { MemoryPanel, type MemoryPanelFact } from "./memory-panel.js"
 import { migrateAgentMemory } from "./migrate-agent-memory.js"
 import { createScopedSearcher } from "./scoped-searcher.js"
 import { getSessionMemoryOverride, setSessionMemoryOverride } from "./session-toggle.js"
-import { createMemorySearchTool } from "./tools.js"
+import { authoredEnabled, createMemorySaveTool, createMemorySearchTool } from "./tools.js"
+import { memoryDbPath } from "./backend.js"
+import { createMemoryBackend } from "./backend.js"
 
 /** What one search call returns after the value gate. */
 interface DigestState {
@@ -103,7 +109,9 @@ interface DigestState {
 }
 
 export interface MemorySearcher {
-	search(query: string): Promise<Array<{ memory?: string; score?: number }>>
+	/** topK override: the digest selection floor widens its net to floor+1
+	 * so the floor can actually be crossed; omit for the store default. */
+	search(query: string, topK?: number): Promise<Array<{ memory?: string; score?: number }>>
 }
 
 export interface MemoryExtensionDeps {
@@ -511,11 +519,21 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 		}
 
+		/** Digest selection floor (settled): the decision-model selection call runs
+		 * only when the candidate count STRICTLY exceeds the floor; at/below the floor
+		 * the pre-gate threshold rule applies untouched (small stores keep recall).
+		 * Env: KIMCHI_MEMORY_DIGEST_SELECTION_MIN_CANDIDATES, default 0 = Phase 1. */
 		const computeDigest = async (query: string): Promise<DigestState | null> => {
 			try {
 				const s = await getSearcher()
 				if (!s) return null
-				const hits = await s.search(query)
+				// Wide-net digest search when a selection floor is configured: the
+				// search default (topK 8) is below any useful floor, which would
+				// make the selection gate unreachable for EVERY store size. The
+				// widened cap tops out at floor+1 — bounded work, and a store
+				// smaller than the floor provably returns at most floor candidates.
+				const floor = digestSelectionFloor(process.env)
+				const hits = await s.search(query, floor > 0 ? floor + 1 : undefined)
 				// Digest selection (spike E3/E6/E8): the decision model picks which
 				// retrieved candidates earn an injection slot — embedding rank is a
 				// weak relevance signal (rank-1 echo, topic twins) and bge-m3 made
@@ -525,7 +543,7 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				let selected: ReadonlySet<string> | undefined
 				if (decision.enabled.has("digest") && decision.gate) {
 					const candidates = digestCandidateTexts(hits)
-					if (candidates.length > 0) {
+					if (shouldRunDigestSelection(candidates.length, floor)) {
 						try {
 							const answers = await batchChoice(decision.gate, digestState(query), candidates, digestQuestion)
 							const kept = new Set<string>()
@@ -661,9 +679,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				updateMemoryStatus(ctx)
 				// The digest search already used this prompt — no recall this turn.
 				if (digest === null) {
-					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+					return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 				}
-				return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
+				return { systemPrompt: `${event.systemPrompt}${digest.text}${memoryEnabledNotice()}` }
 			}
 
 			// Turns 2+: progressive recall on drift — every user message is
@@ -813,9 +831,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			}
 
 			if (digest === null) {
-				return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+				return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 			}
-			return { systemPrompt: `${event.systemPrompt}${digest.text}${MEMORY_ENABLED_NOTICE}` }
+			return { systemPrompt: `${event.systemPrompt}${digest.text}${memoryEnabledNotice()}` }
 		})
 
 		pi.on("session_compact", (_event, ctx) => {
@@ -847,11 +865,47 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				isEnabled: memoryActive,
 			}),
 		)
+
+		// Authored lane (flag-gated, default OFF): the model writes its own
+		// durable findings with save_memory. Personal store, [authored]
+		// provenance prefix in the text so digests show the source; the
+		// quality gates stay on the passive lane — an authored fact is already
+		// intent-filtered by the model itself.
+		if (authoredEnabled()) {
+			type WriterBackend = Awaited<ReturnType<typeof createMemoryBackend>>
+			let writer: WriterBackend | undefined
+			const getWriter = async (): Promise<WriterBackend> => {
+				if (!writer) writer = await createMemoryBackend({ dbPath: memoryDbPath("personal") })
+				return writer
+			}
+			pi.registerTool(
+				createMemorySaveTool({
+					write: async (text) => {
+						const w = await getWriter()
+						await w.add(text, { userId: MEMORY_USER_ID, infer: false })
+					},
+					existing: async () => {
+						const w = await getWriter()
+						const { results } = await w.getAll({ filters: { user_id: MEMORY_USER_ID }, topK: 100_000 })
+						return results.map((r) => r.memory ?? "")
+					},
+					isEnabled: memoryActive,
+				}),
+			)
+		}
 	}
 }
 
 export default function memoryExtension(pi: ExtensionAPI): void {
 	createMemoryExtension()(pi)
+}
+
+/** Notice selection: the authored-lane variant ONLY when its flag is on —
+ * the flag-OFF default keeps the "no write tool" wording, so the prompt
+ * never contradicts the registered tool surface (and stays byte-identical
+ * to Phase 1 / V2 runs with flags off). */
+export function memoryEnabledNotice(env: NodeJS.ProcessEnv = process.env): string {
+	return authoredEnabled(env) ? MEMORY_ENABLED_NOTICE_AUTHORED : MEMORY_ENABLED_NOTICE
 }
 
 /** The last assistant response, or "" — one more drift signal for the gate. */

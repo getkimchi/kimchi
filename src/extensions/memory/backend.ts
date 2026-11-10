@@ -23,6 +23,7 @@ import {
 	resolveGatewayCredentials,
 } from "../../auth/gateway-credentials.js"
 import { type KimchiConfig, loadConfig } from "../../config.js"
+import { MEMORY_REQUEST_TIMEOUT_MS } from "./config.js"
 import type { SharedEmbedder } from "./embedder.js"
 import { PROJECT_SEGMENT_RE, sanitizeScopeId } from "./scope.js"
 
@@ -169,12 +170,28 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input?.url ?? "")
 		const state = gatewayInterceptorState
 		if (!state.origin || requestOrigin(url) !== state.origin) return original(input, init)
+		let signal = init?.signal
 		// Headers: only the SSO org routing value, only when missing — a
 		// models.json-stamped provider request keeps its own (identical) value.
 		let headers: Headers | undefined
 		if (state.organizationId) {
 			headers = new Headers(init?.headers)
 			if (!headers.has(GATEWAY_ORGANIZATION_HEADER)) headers.set(GATEWAY_ORGANIZATION_HEADER, state.organizationId)
+		}
+		if (url.includes("/embeddings")) {
+			// The OpenAI SDK default is a ~10-minute per-attempt timeout and
+			// mem0's embedder constructor never sets one (see OpenAIEmbedder in
+			// mem0ai/oss), and the SDK *does* pass its per-request signal — so
+			// MERGE, don't replace (the bound needs to win over the default,
+			// and replacing would break the SDK's own retry semantics). One
+			// hung gateway socket otherwise parks a capture drain for tens of
+			// minutes (v6 crash: lock_held=True at the 900s driver cap). Scope
+			// the bound to embedding requests only: gateway session LLM traffic
+			// on the same origin needs its longer stream budgets.
+			signal = AbortSignal.any([
+				...(init?.signal ? [init.signal] : []),
+				AbortSignal.timeout(MEMORY_REQUEST_TIMEOUT_MS),
+			])
 		}
 		if (url.includes("/embeddings") && init?.body) {
 			try {
@@ -183,13 +200,13 @@ export function tagEmbeddingRequests(gatewayBaseUrl: string, organizationId?: st
 				if (!tags.includes(MEMORY_EMBEDDING_TAG)) tags.push(MEMORY_EMBEDDING_TAG)
 				const taggedBody = JSON.stringify({ ...body, tags })
 				return headers
-					? original(input, { ...init, headers, body: taggedBody })
-					: original(input, { ...init, body: taggedBody })
+					? original(input, { ...init, headers, body: taggedBody, signal })
+					: original(input, { ...init, body: taggedBody, signal })
 			} catch {
 				// Not a JSON body — pass through untouched
 			}
 		}
-		return headers ? original(input, { ...init, headers }) : original(input, init)
+		return headers ? original(input, { ...init, headers, signal }) : original(input, { ...init, signal })
 	}
 	intercepted._memoryGatewayIntercepted = true
 	globalThis.fetch = intercepted
@@ -342,6 +359,10 @@ export function buildMemoryConfig(options: MemoryBackendOptions, config: KimchiC
 				model: llm.model,
 				apiKey: llm.apiKey,
 				baseURL: llm.baseURL,
+				// mem0's OpenAILLM/OpenAIStructuredLLM thread config.timeout into
+				// the SDK client (see mem0ai/oss); same bound as the fetch
+				// interceptor for the embedder path.
+				timeout: MEMORY_REQUEST_TIMEOUT_MS,
 			},
 		},
 		vectorStore: {

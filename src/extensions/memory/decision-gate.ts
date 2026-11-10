@@ -64,6 +64,10 @@ export interface DecisionGateOptions {
 	maxRetries?: number
 	/** Injectable for tests. */
 	fetchImpl?: typeof fetch
+	/** Drain watchdog signal — abort rejects in-flight gate calls so a hung
+	 * drain can release the capture lock instead of waiting out a retry
+	 * budget while the mtime keeps the lock from looking stale. */
+	abortSignal?: AbortSignal
 }
 
 /** A gate call failed in a way the caller must degrade on (never session-fatal). */
@@ -133,6 +137,7 @@ export async function decide(
 			fetchImpl: gate.fetchImpl,
 			timeoutMs: gate.timeoutMs ?? 20_000,
 			retry: { maxRetries: gate.maxRetries ?? 2 },
+			signal: gate.abortSignal,
 		},
 	)
 	if (!response.ok) {

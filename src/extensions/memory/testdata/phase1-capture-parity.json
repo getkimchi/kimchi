@@ -1,0 +1,39 @@
+{
+  "provenance": {
+    "run_group": "matrix-kimchi-memory",
+    "run": "run_0002",
+    "artifact_relpath": "results/database_exploration/traces/matrix-kimchi-memory/artifacts/run_0002/artifacts.json",
+    "artifact_sha256": "6c29a2115ffaf4589ba6e08361f2697af8e914be43a214b3abe270e5f08647b9",
+    "clone_pin": "5f8c50eb",
+    "derivation": [
+      "1. Read facts[] from the frozen artifact (12 personal-scope facts, verbatim strings).",
+      "2. phase1-capture-parity.txt stores the equivalent markdown tagged extraction reply (- [personal] <fact> lines, same order).",
+      "3. Layer 1 (extraction output): parseTaggedFacts(txt, 'personal') must equal facts[] exactly.",
+      "4. Layer 2 (post-filter store eligibility): keepForStore(fact, {strictNoise: false}) must keep all 12 (flag OFF = Phase 1 behaviour); keepForStore(fact, {strictNoise: true}) must keep exactly strict_keep (the 8 rule-class facts)."
+    ]
+  },
+  "facts": [
+    "The office products dataset uses tables `items_g1` and `fdbk_g1`, joined on `ref_id`.",
+    "The user determined that the `vrf` integer flag (vrf=1) is the reliable definition of a verified review, since `verified_status` is blank on ~30% of rows.",
+    "The user is working with a SQLite database containing three product datasets (office products, electronics, musical instruments) for a data-analysis task.",
+    "The user uses prc_usd as the canonical price for the 'Computers & Accessories' category.",
+    "In the electronics dataset, prices are stored as prc (integer cents) and prc_usd (dollar price), both of which are NULL-or-valued with no zero values.",
+    "In the electronics dataset, the main_cat field uses 'Computers' rather than the literal 'Computers & Accessories'.",
+    "The 'Computers & Accessories' top-level category is identified in the taxn_g2 table at cat_lvl=1, with root level 0 being the degenerate 'Electronics' category.",
+    "The electronics dataset is named g2 in the SQLite database.",
+    "The user is working with a SQLite database containing three product datasets: office products, electronics, and musical instruments.",
+    "The user answered that 1,867 electronics product reviews were posted in Q4 (October through December) of 2021.",
+    "As of 2021, the user was working with a SQLite database containing product review datasets for office products, electronics, and musical instruments.",
+    "The user decided that Amazon's `main_cat` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`cat_lvl=0`) as degenerate."
+  ],
+  "strict_keep": [
+    "The office products dataset uses tables `items_g1` and `fdbk_g1`, joined on `ref_id`.",
+    "The user determined that the `vrf` integer flag (vrf=1) is the reliable definition of a verified review, since `verified_status` is blank on ~30% of rows.",
+    "The user uses prc_usd as the canonical price for the 'Computers & Accessories' category.",
+    "In the electronics dataset, prices are stored as prc (integer cents) and prc_usd (dollar price), both of which are NULL-or-valued with no zero values.",
+    "In the electronics dataset, the main_cat field uses 'Computers' rather than the literal 'Computers & Accessories'.",
+    "The 'Computers & Accessories' top-level category is identified in the taxn_g2 table at cat_lvl=1, with root level 0 being the degenerate 'Electronics' category.",
+    "The electronics dataset is named g2 in the SQLite database.",
+    "The user decided that Amazon's `main_cat` field is the correct interpretation of 'top-level categories' for the analysis, rejecting the taxonomy-root reading (`cat_lvl=0`) as degenerate."
+  ]
+}
