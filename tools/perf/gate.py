@@ -80,6 +80,20 @@ EXTRACTORS = {
         # canonical runner.
         "think_instr": (lambda r: r.get("think_instr") or 0, "work units",
                         "renderer work for a streaming step-shaped thinking turn (#1645 class)", (ABS, 40e9)),
+        # Enter to the user's message entering the session, from the
+        # KIMCHI_SUBMIT_TIMING marks the binary itself writes (max across
+        # the scenario's turns). Bounded pre-request legs (2s digest bound,
+        # detached recall) keep healthy runs far below; reintroduced blocking
+        # between Enter and the request lands here at its full duration —
+        # the submit-latency PR class. ABS budget: keyed to regression
+        # magnitude, not machine noise. BINARY-gated lane: a binary without
+        # the instrument records submit_timing=false and the classifier
+        # treats the empty lane as SKIP, not FAIL (the e2e locks the echo's
+        # existence; this lane locks its timing once marks exist). The
+        # scenario fails the rep if marks exist but no samples were parsed,
+        # so the SKIP can never mask a measurement failure.
+        "submit_echo_max_ms": (lambda r: r.get("submit_echo_max_ms"), "ms",
+                                 "Enter to message-entry (blocking pre-request work)", (ABS, 1000.0)),
     },
     "resume": {
         "load_instr": (lambda r: _wu((r.get("load") or {}).get("instr"), (r.get("load") or {}).get("cycles"),
@@ -223,6 +237,24 @@ def run_selfcheck():
     rows, _ = classify("session", rec_tpl["session"], b7)
     if not any("unknown budget key" in r[-1] for r in rows):
         problems.append("session: unknown budget key not flagged")
+    # 7. The submit-latency lane: absent instrument skips (dormant), a value
+    #    gates, and a breach fails.
+    absent = dict(rec_tpl["session"])
+    absent["submit_timing"] = False
+    rows, fails = classify("session", absent, good)
+    if any(r[1] == "submit_echo_max_ms" and "SKIP" not in (r[5] or "") for r in rows) or any(
+        f[1] == "submit_echo_max_ms" for f in fails
+    ):
+        problems.append("session: absent submit-timing instrument did not SKIP cleanly")
+    present = dict(rec_tpl["session"])
+    present.update({"submit_timing": True, "submit_echo_max_ms": 42.0})
+    _, fails = classify("session", present, good)
+    if any(f[1] == "submit_echo_max_ms" for f in fails):
+        problems.append("session: in-budget submit_echo_max_ms failed")
+    present["submit_echo_max_ms"] = 5000.0
+    _, fails = classify("session", present, good)
+    if not any(f[1] == "submit_echo_max_ms" for f in fails):
+        problems.append("session: over-budget submit_echo_max_ms did not fail")
     if tier_mismatch([rec_tpl["session"]], "cgroup-instructions") is not None:
         problems.append("tier guard: matching tier flagging as mismatch")
     if tier_mismatch([{"counter": "cpu_ms"}], "cgroup-instructions") is None:
@@ -261,6 +293,10 @@ def collect(records):
     out, adv = {}, {}
     for r in records:
         for m, ex in EXTRACTORS.get(r["scenario"], {}).items():
+            if m == "submit_echo_max_ms" and r.get("submit_timing") is False:
+                # Instrument absent from this binary: the lane is dormant for
+                # this rep, not unmeasured — see the extractor note.
+                continue
             v = ex[0](r)
             if isinstance(v, (int, float)):
                 out.setdefault(m, []).append(v)
@@ -277,6 +313,13 @@ def compare(scenario, metrics, budgets):
         values = metrics.get(m, [])
         mode = EXTRACTORS[scenario][m][3][0]
         if not values:
+            if m == "submit_echo_max_ms":
+                # Dormant lane: no rep's binary carried the submit-timing
+                # instrument. Distinct from a measurement failure, which the
+                # scenario itself fails (marks present but no samples), so
+                # this SKIP can never mask one.
+                rows.append((scenario, m, None, None, None, "SKIP (submit-timing marks absent from binary)"))
+                continue
             # Fail closed for an unmeasured gated metric too (e.g. keystroke
             # probing never produced a sample): an absent observation is not
             # evidence of health.

@@ -29,6 +29,10 @@
   "think_instr": {
    "limit": 40000000000.0,
    "budget_note": "renderer work for a streaming step-shaped thinking turn (#1645 class)"
+  },
+  "submit_echo_max_ms": {
+   "limit": 1000.0,
+   "budget_note": "Enter to message-entry (blocking pre-request work); dormant until the binary carries the submit-timing marks"
   }
  },
  "resume": {

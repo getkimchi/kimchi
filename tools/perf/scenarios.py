@@ -157,6 +157,13 @@ def check_version(binary, env, cwd):
 # ---------------------------------------------------------------- scenarios
 def run_session(binary, env, cwd, srv_state, idle_s=10):
     """Clean TUI session with two turns (one with tools). Gate: disk_w, instr."""
+    # Submit-latency marks (KIMCHI_SUBMIT_TIMING, when the binary carries the
+    # instrument): Enter to the user's message entering the session. The gate
+    # budgets the max across turns; reintroduced blocking between submit and
+    # the request lands here at its full duration. The env var points inside
+    # the per-run HOME; a binary without the instrument never writes the file.
+    marks_path = os.path.join(env["HOME"], "submit-timing.jsonl")
+    env["KIMCHI_SUBMIT_TIMING"] = marks_path
     argv = [binary, "--provider", "fake", "--model", "basic"]
     tp, sampler, cg = launch(env, cwd, argv, "session")
     pid = tp.proc.pid
@@ -275,6 +282,33 @@ def run_session(binary, env, cwd, srv_state, idle_s=10):
                     tot["main"][k] = final[k]
         res["total"] = flatten_total(tot)
         res["counter"] = counter_tier(tot)
+        # Parse the submit-timing marks after the process is gone: the file
+        # is complete then, and the quit flush cannot interleave.
+        res["submit_timing"] = False
+        try:
+            with open(marks_path, encoding="utf-8") as fh:
+                marks = [json.loads(line) for line in fh if line.strip()]
+        except OSError:
+            marks = []
+        if marks:
+            res["submit_timing"] = True
+            lat, pending = [], None
+            for mark in marks:
+                if mark.get("event") == "submit.input":
+                    pending = mark["t"]
+                elif (mark.get("event") == "message.entryStart" and mark.get("role") == "user"
+                      and pending is not None):
+                    lat.append(mark["t"] - pending)
+                    pending = None
+            if lat:
+                res["submit_echo_ms"] = lat
+                res["submit_echo_max_ms"] = max(lat)
+            else:
+                # The instrument ran but produced no user-entry samples — a
+                # measurement failure, not an absent instrument; fail the rep
+                # so the classifier's dormant-lane SKIP can never mask it.
+                res["ok"] = False
+                res["error"] = "submit-timing marks present but no user-entry samples"
     finally:
         cleanup(tp, pid, sampler, cg)
     res["home_bytes"] = home_footprint(env["HOME"])
