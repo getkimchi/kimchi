@@ -1,8 +1,13 @@
 /**
  * PII redaction extension.
  *
- * Uses three hooks to scrub PII/secrets from the message pipeline with
+ * Uses four hooks to scrub PII/secrets from the message pipeline with
  * minimal per-request overhead:
+ *
+ * 0. `tool_call` — fail-closed guard: refuses a tool call whose PATH-like
+ *    argument (`path`, `file_path`, `filePath`) carries a redaction marker
+ *    (`[REDACTED-…]`) instead of letting file tools treat the marker as a
+ *    literal relative file name. Free-text arguments are never inspected.
  *
  * 1. `message_end` — redacts assistant messages before they are stored.
  *    One-time cost per message; the stored message is already clean.
@@ -31,6 +36,7 @@
 
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { getRedactionRenderMode, isRedactionEnabled } from "./config.js"
+import { findPathArgPlaceholder, pathArgPlaceholderReason } from "./path-arg-guard.js"
 import { emitRedactionFacts, type RedactionSurface } from "./redaction-events.js"
 import {
 	emptyRedactionReport,
@@ -73,6 +79,40 @@ function surfaceForRole(role: unknown): RedactionSurface | undefined {
 }
 
 const piiRedactionExtension: ExtensionFactory = (pi: ExtensionAPI) => {
+	// 0. Fail closed on redaction placeholders in path-like arguments: refuse
+	// the call before it runs. The message_end hook below redacts assistant
+	// messages (tool-call arguments included) before they are stored and
+	// re-sent, so an unguarded placeholder reaches file tools as a literal
+	// file name — a write lands in a file named after the marker in the cwd,
+	// silently, while the UI still shows the original path. Blocking gives
+	// the agent a visible error instead of a wrong write. Only path-like
+	// argument keys are inspected (see path-arg-guard.ts); `content` and
+	// other free text are never checked, so writing tests or docs containing
+	// markers keeps working. Nested codemode calls fire the same `tool_call`
+	// event, so the guard covers them with no extra wiring. Active only when
+	// redaction is enabled — with it off, arguments never carry markers, and
+	// the guard must not become a second, always-on tool gate.
+	pi.on("tool_call", (event: unknown) => {
+		// Fail-visible gate: isRedactionEnabled() can throw on a malformed
+		// settings.json, and pi runs hook handlers with no per-handler
+		// try/catch — so the throw surfaces as a visible failure on every
+		// tool call until the settings are fixed. That is the platform's
+		// inherited convention (bash-tool-guard.ts fails the same way on the
+		// same corrupt file): a broken settings block fails loudly rather than
+		// letting calls run through a silently half-working guard.
+		if (!isRedactionEnabled()) return
+
+		const evt = event as Record<string, unknown> | null
+		if (!evt || typeof evt !== "object") return
+
+		const finding = findPathArgPlaceholder(evt.input)
+		if (!finding) return
+
+		return {
+			block: true,
+			reason: pathArgPlaceholderReason(finding, typeof evt.toolName === "string" ? evt.toolName : "tool"),
+		}
+	})
 	// Vault lifecycle: one reversible-token vault per session when the
 	// configured render mode is "tokens" (markers mode creates nothing).
 	installVaultLifecycle(pi, () => isRedactionEnabled() && getRedactionRenderMode() === "tokens")
