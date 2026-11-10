@@ -352,6 +352,18 @@ async function runModernHttpFixture() {
 							complete({ ...mrtr.result })
 							return
 						}
+						// A declined/cancelled elicitation answer must not re-prompt: a client
+						// that keeps declining would loop forever. Complete with a
+						// cancellation-shaped error so the decline/cancel path is testable.
+						if (confirm && typeof confirm === "object") {
+							if (minted?.name === name && minted.open) minted.open = false
+							record("modern_tool_cancelled", { name, action: confirm.action ?? null })
+							complete({
+								isError: true,
+								content: [{ type: "text", text: `elicitation for "${name}" was ${confirm.action ?? "declined"}` }],
+							})
+							return
+						}
 						const requestState = randomUUID()
 						mrtrRequestStates.set(requestState, { name, open: true })
 						record("modern_tool_input_required", { name })
