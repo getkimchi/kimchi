@@ -20,9 +20,10 @@
  *      dedupe — the first job to claim a message owns it for this drain.
  *   B. Parallel extraction: every window from every job in one
  *      bounded-concurrency queue (MEMORY_DRAIN_CONCURRENCY) — the LLM phase
- *      is the throughput bottleneck (serialized jobs outran the benchmark's
- *      drain budget, its dominant failure cause). A failed window retries
- *      once; a second failure leaves its hashes unmarked for a future drain.
+ *      is the throughput bottleneck: serialized jobs would otherwise outrun
+ *      the drain budget any external driver gives the capture pass. A
+ *      failed window retries once; a second failure leaves its hashes
+ *      unmarked for a future drain.
  *   C. Sequential commit in job order (chronological — supersede
  *      correctness depends on newer facts arriving after older ones), then
  *      ONE batched supersede judge pass per store across the whole drain
@@ -338,9 +339,9 @@ export class PoisonExtractionError extends Error {}
  * edge timeout). The 120s per-attempt timeout leaves a ~20s buffer above
  * the Cloudflare edge's ~100s cutoff, and — with the retry budget — keeps
  * a fully-stuck call's worst case (~9min) inside a legitimate drain
- * backlog's natural completion window AND the benchmark driver's 360s
- * drain cap (the v5-sonnet55-memory-all-tool hang: one suspended gateway
- * call held the capture lock past the driver's abort point at 300s/attempt).
+ * backlog's natural completion window AND any benchmark driver's drain
+ * budget: one suspended gateway call would otherwise hold the capture
+ * lock past any external abort point.
  * Non-retryable 4xx rejections throw immediately.
  */
 export async function chatJson(
@@ -415,9 +416,10 @@ The new facts are listed in chronological order — a later fact reflects the us
 An identical or near-identical memory is not a replacement: never delete a fact merely because it also appears among the new facts. A fact that only considers, questions, or wants something is replaced when a later fact records the decision or approval for that same subject ("considering a rename to X" → "approved the rename to X"; "wants to disable websockets" → "adopted a provider that skips websockets").
 Respond with ONLY a JSON array of memory ids to delete; [] when nothing is replaced.`
 
-/** Appended on retry when the model ignored the format (seen in the benchmark:
- * the model answered the session's question instead of following the format). Shape-neutral:
- * works for both the bare-array and the tagged-object response contracts. */
+/** Appended on retry when the model ignored the format — the observed
+ * failure is the model answering the session's question instead of
+ * following the format. Shape-neutral: works for both the bare-array and
+ * the tagged-object response contracts. */
 const STRICT_JSON_RETRY_SUFFIX = `\n\nCRITICAL FORMAT REMINDER: Respond with ONLY the requested JSON — no prose, no headings, no markdown, no code fences.`
 
 /** Parse a JSON array of string ids from a response (the supersede judge contract). */
@@ -711,9 +713,9 @@ export function normalizeFactText(text: string): string {
 /**
  * Fact-class classifier prompt (KIMCHI_MEMORY_FACT_CLASSES lane). Runs as
  * ONE call over the drain's extracted facts, AFTER extraction — the
- * extractor consistently rewrites derivations into observation prose (v7
- * replay), so the tag cannot ride the extraction prompt; it must be a
- * deterministic post-pass. Indexes are returned, not text, so the tag
+ * extractor consistently rewrites derivations into observation prose, so
+ * the tag cannot ride the extraction prompt; it must be a deterministic
+ * post-pass. Indexes are returned, not text, so the tag
  * never rewrites the fact. Shapes-only definitions; never benchmark
  * content.
  */
@@ -729,7 +731,7 @@ Respond with ONLY a JSON object {"derived": [indexes]} — 0-based indexes of th
  * call (batched like the supersede judge). Facts the classifier names are
  * prefixed with the [derived] tag IN PLACE on the plan's fact lists so the
  * commit path stores them marked. Fail-open: a classifier error leaves
- * every fact trusted (the v6 behavior). */
+ * every fact trusted. */
 async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions): Promise<void> {
 	if (!factClassesEnabled()) return
 	const all: Array<{ plan: JobPlan; kind: "personal" | "project"; index: number; text: string }> = []
@@ -782,7 +784,7 @@ async function applyDerivedTags(plans: JobPlan[], llm: GatewayLlmOptions): Promi
 				if (i >= 0 && i < batch.length) derived.add(batch[i] as string)
 			}
 		} catch (err) {
-			// Fail-open: banner + all facts stay trusted (v6 byte-parity).
+			// Fail-open: banner kept + all facts stay trusted (flag-OFF semantics).
 			console.error(
 				"[memory-capture] derived-class classifier failed, facts stay trusted (fail-open):",
 				err instanceof Error ? err.message : err,
@@ -856,10 +858,10 @@ export function splitDerivedTag(fact: string): { text: string; derived: boolean 
 /**
  * Strict-noise extensions, applied to BOTH lanes only when
  * KIMCHI_MEMORY_EXTRACTION_STRICT_NOISE is enabled — default OFF, so the
- * base list above is byte-parity with Phase 1 behaviour. Generic classes
- * measured in the CL-Bench Phase 1 grading (testdata/phase1-baseline-metrics.json):
- * extractor self-references persisted as facts, answer-level task
- * conclusions, and task/session-context framing echoes. Deliberately
+ * base list above is byte-parity with the pre-flag behaviour. Generic
+ * classes grounded in measured failure modes: extractor self-references
+ * persisted as facts, answer-level task conclusions, and task/session-
+ * context framing echoes. Deliberately
  * domain-agnostic — they match statement SHAPE, never benchmark content.
  */
 export const STRICT_NOISE_FACT_PATTERNS: RegExp[] = [
@@ -916,8 +918,8 @@ The class tag goes at the very start of the fact string, before any "As of" date
 /**
  * Task-lane instruction, appended to EXTRACTION_SYSTEM_PROMPT ONLY when
  * KIMCHI_MEMORY_TASK_SCOPE is enabled — flag OFF keeps the prompt string
- * byte-identical to Phase 1. Generic by design: durable facts about the
- * task/strategy a future conversation could fail without, never
+ * byte-identical to the pre-flag shape. Generic by design: durable facts
+ * about the task/strategy a future conversation could fail without, never
  * answer-level conclusions or session progress.
  */
 export const TASK_SCOPE_EXTRACTION_SUFFIX = `
@@ -928,19 +930,18 @@ Additionally capture durable facts about the task itself, tagging them [task]: e
  * KIMCHI_MEMORY_EXTRACTION_RECEIPTS is enabled — flag OFF keeps the prompt
  * byte-identical. Generic by design: a receipt is defined by the dialogue
  * (what the turns expected vs what the environment returned), never by
- * benchmark content. Calibrated on the frozen-V2 spike (.kimchi/docs/receipts-spike.md):
- * captures wrong-then-right corrections the plain pipeline misses; hard
- * signals only — soft traps with no contradiction event stay invisible by
- * construction.
+ * benchmark content. The measured gain is wrong-then-right corrections
+ * the plain pipeline misses; hard signals only — soft traps with no
+ * contradiction event stay invisible by construction.
  */
 export const RECEIPTS_EXTRACTION_SUFFIX = `
 Additionally capture expectation-failure receipts: cases where a tool or environment message contradicted what the surrounding turns expected or assumed — an error message, an empty result where the approach implied data, a column or table named in an attempt that the schema does not have, values returned in a different unit or scale than the turns assumed. Write each as a self-contained observation: what was assumed or attempted, and what the environment actually returned. Do not guess causes the transcript does not show; omit failures the turns already explained fully. Never capture a bare corrected answer — record the assumption and the contradiction, not the new value alone.`
 
 /**
  * The store-eligibility filter stage of the drain's add path (post-
- * redaction, pre-valuation). Exported so the Phase 1 parity fixture
- * (testdata/phase1-capture-parity.json) pins both layers against the real
- * pipeline: extraction parse and post-filter store set.
+ * redaction, pre-valuation). Exported so the parity tests pin both
+ * layers against the real pipeline: extraction parse and post-filter
+ * store set.
  */
 export function keepForStore(fact: string, opts: { strictNoise: boolean }): boolean {
 	if (!isDurableFact(fact)) return false
@@ -1241,9 +1242,9 @@ export async function runCaptureWorker(argv: string[], options: RunCaptureWorker
 	// entire run; later spawns wait — see lock.ts.
 	const release = await acquireCaptureLock(defaultMemoryDir())
 	try {
-		// Dead-man switch (fix 3, the benchmark's lock_held=True hang): a
-		// worker hung on LLM calls otherwise holds the lock forever — the
-		// live mtime refresh never goes stale, so nothing can steal it.
+		// Dead-man switch: a worker hung on LLM calls otherwise holds the
+		// lock forever — the live mtime refresh never goes stale, so nothing
+		// can steal it.
 		// At the hard budget the drain aborts, the finally releases the
 		// lock, and the process exits nonzero; job files stay pending for
 		// the next spawn's retry (ledger dedupe makes overlap no-op).
@@ -1380,7 +1381,7 @@ async function drainPendingJobs(dbPath: string, options: RunCaptureWorkerOptions
 			// KIMCHI_MEMORY_VALUATION_CONTEXT: with the store's fact list in the
 			// state, the same keep/discard contract runs WITH context — the
 			// batch sees what a dup would duplicate and what a conflict would
-			// contradict (the gates-off paraphrase-dup class from the sweep).
+			// contradict (paraphrase dups being the measured failure class).
 			const answers = await batchChoice(gate, buildValuationState(existing), facts, valuationQuestion)
 			for (const [i, fact] of facts.entries()) {
 				if (isValuationDiscard(answers[i])) {

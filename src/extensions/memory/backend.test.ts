@@ -134,17 +134,17 @@ describe("buildMemoryConfig", () => {
 })
 
 describe("embedding endpoint configuration", () => {
-	// The env knobs from the phase-1 A/B runs (MEMORY_EMBEDDING_*,
-	// OPENROUTER_API_KEY) were removed — the model and dims come from the
-	// kimchi config file (memoryEmbedding.model / .dims) or stay pinned.
+	// The env knobs (MEMORY_EMBEDDING_* and the third-party provider key)
+	// were removed — the model and dims come from the kimchi config file
+	// (memoryEmbedding.model / .dims) or stay pinned.
 	// This guards that leftover env from old setups neither redirects nor
 	// breaks anything.
-	it("ignores leftover MEMORY_EMBEDDING_* / OPENROUTER env from the A/B runs", () => {
+	it("ignores leftover MEMORY_EMBEDDING_* / third-party env from old setups", () => {
 		process.env.MEMORY_EMBEDDING_MODEL = "text-embedding-3-large"
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://openrouter.ai/api/v1"
-		process.env.MEMORY_EMBEDDING_API_KEY = "or-key"
+		process.env.MEMORY_EMBEDDING_BASE_URL = "https://provider.test/api/v1"
+		process.env.MEMORY_EMBEDDING_API_KEY = "stale-key"
 		process.env.MEMORY_EMBEDDING_DIMS = "3072"
-		process.env.OPENROUTER_API_KEY = "or-key"
+		process.env.OLD_PROVIDER_API_KEY = "stale-key"
 		try {
 			const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
 			expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
@@ -157,7 +157,7 @@ describe("embedding endpoint configuration", () => {
 			delete process.env.MEMORY_EMBEDDING_BASE_URL
 			delete process.env.MEMORY_EMBEDDING_API_KEY
 			delete process.env.MEMORY_EMBEDDING_DIMS
-			delete process.env.OPENROUTER_API_KEY
+			delete process.env.OLD_PROVIDER_API_KEY
 		}
 	})
 
@@ -337,7 +337,7 @@ describe("createMemoryBackend", () => {
 					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "bge-m3" }),
 				})
-				await globalThis.fetch("https://openrouter.ai/api/v1/embeddings", {
+				await globalThis.fetch("https://other-origin.test/api/v1/embeddings", {
 					method: "POST",
 					headers: { authorization: "Bearer k" },
 					body: JSON.stringify({ input: ["text"], model: "openai/text-embedding-3-small" }),
@@ -460,7 +460,7 @@ describe("tagEmbeddingRequests organization header", () => {
 				headers: { "X-CastAi-Organization-Id": "org-stamped" },
 				body: JSON.stringify({ input: ["t"] }),
 			})
-			await globalThis.fetch("https://openrouter.ai/v1/embeddings", { method: "POST", body: "{}" })
+			await globalThis.fetch("https://other-origin.test/v1/embeddings", { method: "POST", body: "{}" })
 			expect(seen[0]?.headers.get("x-castai-organization-id")).toBe("org-7")
 			// pre-stamped (models.json provider headers) is never clobbered
 			expect(seen[1]?.headers.get("x-castai-organization-id")).toBe("org-stamped")
