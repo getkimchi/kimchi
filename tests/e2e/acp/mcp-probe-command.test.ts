@@ -267,7 +267,7 @@ describe("compiled kimchi mcp probe command", () => {
 		}
 	})
 
-	it("preserves orphaned same-name credentials for an undiscoverable URL and removes the probe entry", async () => {
+	it("an authenticate=true probe rebinds a URL-mismatched same-name entry and leaves no probe residue", async () => {
 		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-home-"))
 		const workDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-work-"))
 		tempDirs.push(homeDir, workDir)
@@ -306,7 +306,15 @@ describe("compiled kimchi mcp probe command", () => {
 
 		expect(result.error).toBeUndefined()
 		expect(result.status, result.stderr).toBe(0)
-		expect(readFileSync(credentialPath, "utf8")).toBe(originalCredential)
+		// Deliberate contract change (see mcp.ts docs): an authenticate=true probe
+		// overwrites a stored entry bound to a different URL — this is what lets a
+		// Studio Connect login survive a server-URL change. The old protectionist
+		// behavior (throwaway name that discards the fresh login) is gone.
+		const rebound = JSON.parse(readFileSync(credentialPath, "utf8"))
+		expect(rebound.serverUrl).toBe(fixture.serverDefinition.url)
+		expect(rebound.tokens?.accessToken).toBeTruthy()
+		expect(rebound.serverUrl).not.toBe(originalServerUrl)
+		// No __probe_ residue: only the rebound entry remains.
 		expect(readdirSync(keyringDir)).toHaveLength(1)
 	})
 })

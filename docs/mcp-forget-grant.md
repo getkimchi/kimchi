@@ -48,6 +48,34 @@ in-process). How the budget is kept:
   `keyring-require-bridge.ts`), so repeat calls in one process cannot
   re-prompt. Across invocations the caller is expected to honor `denied`.
 
+## `kimchi mcp inspect-grant`
+
+The read-side companion: a presence-only view of one server's stored grant,
+for diagnosing re-auth loops. Answers the questions that decide such a bug's
+cause — which URL the grant is bound to (a mismatch with the configured server
+URL is the classic stale-grant cause), whether a refresh token exists, and
+when the access token expires — without ever exposing token values.
+
+```
+kimchi mcp inspect-grant <server-name> --json
+→ 0: { "ok": true, "name", "found": false }
+→ 0: { "ok": true, "name", "found": true, "serverUrl"?,
+       "tokens"?: { "hasAccessToken", "hasRefreshToken", "expiresAt"?, "expiresInSec"?, "scope"? } }
+→ 1: { "ok": false, "name", "error", "reason": "invalid-input" | "denied" | "unavailable" | "error" }
+```
+
+`serverUrl` is absent when the account record does not carry one; `tokens` is
+absent when the tokens payload is missing or unreadable (a client-info-only
+entry looks the same as a corrupt one). `expiresInSec` is negative when the
+access token has already expired. The same name-validation rules and
+`denied`/`unavailable` failure mapping as `forget-grant` apply, with one
+refinement: `denied`/`unavailable` surface only from the token read; an
+account that cannot be read at all (keychain unavailable or entry corrupt)
+surfaces as `reason: "error"` with the forget-grant recovery hint in its
+message. Consent
+budget: reads go through the same keyring bridge, so a legacy item prompts at
+most one dialog per invocation and a denial is tombstoned in-process.
+
 ## Why a harness-side implementation
 
 pi-mcp-adapter has the operation internally (`removeAuthEntry`, behind its
