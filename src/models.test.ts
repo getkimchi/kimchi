@@ -2002,8 +2002,23 @@ describe("curated thinking levels drive the engine thinkingLevelMap", () => {
 		expect(curated.compat).toBeUndefined()
 	})
 
+	it("treats a list of only unknown levels exactly like the curated empty array", () => {
+		// The persisted thinkingLevels is the normalized list, so a fresh fetch must
+		// already behave the way the models.json round-trip will.
+		const [unknownOnly] = providerModels([metadata("m", ["turbo"])])
+		const [curatedNone] = providerModels([metadata("m", [])])
+		expect(unknownOnly).toEqual(curatedNone)
+		expect(unknownOnly.compat).toEqual({ supportsReasoningEffort: false })
+	})
+
 	it("keeps uncurated models on the base map", () => {
 		const [model] = providerModels([metadata("m", undefined)])
+		expect(model.thinkingLevelMap).toEqual({ off: "none", max: "max" })
+		expect(supportedLevels(model)).toEqual(["off", "minimal", "low", "medium", "high", "max"])
+	})
+
+	it("gives uncurated custom models the gateway base map (same gateway dialect)", () => {
+		const [model] = providerModels([metadata("m", undefined, "custom")], "kimchi-dev/custom")
 		expect(model.thinkingLevelMap).toEqual({ off: "none", max: "max" })
 		expect(supportedLevels(model)).toEqual(["off", "minimal", "low", "medium", "high", "max"])
 	})
@@ -2037,6 +2052,9 @@ describe("curated thinking levels drive the engine thinkingLevelMap", () => {
 		expect(openai.map((m) => m.compat)).toEqual([undefined, undefined, undefined])
 
 		const upstream = ANTHROPIC_MODELS["claude-sonnet-4-6"]
+		// Without the catalog entry both sides would be undefined and the
+		// comparison below would pass without checking anything.
+		expect(upstream).toBeDefined()
 		const [anthropic] = providerModels(
 			[metadata("claude-sonnet-4-6", ["low", "high"], "anthropic")],
 			"kimchi-dev/anthropic",
